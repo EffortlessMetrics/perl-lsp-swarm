@@ -153,8 +153,11 @@ impl ModuleObservationReceipt {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum DetectionConfigurationValue {
+    /// Boolean configuration value, such as an explicit enable/disable flag.
     Boolean(bool),
+    /// Integer configuration value.
     Integer(i64),
+    /// String configuration value, compared verbatim during exclusion checks.
     String(String),
 }
 
