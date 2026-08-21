@@ -39,6 +39,14 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
                 "not_proven",
             )
 
+    def test_malformed_unhashable_context_or_command_is_not_proven(self) -> None:
+        for case in (
+            {"context": ["conflict_repair"], "command": "cargo update"},
+            {"context": "conflict_repair", "command": ["cargo update"]},
+        ):
+            with self.subTest(case=case):
+                self.assertEqual(validator.classify(case), "not_proven")
+
     def test_weakened_policy_text_is_rejected(self) -> None:
         errors = validator.validate_semantics(
             "Active conflict repair may use `cargo generate-lockfile`.\n",
@@ -49,8 +57,8 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
 
     def test_empty_semantic_assertion_strings_are_rejected(self) -> None:
         for semantics, message in (
-            ({"required": [""], "forbidden": []}, "required source semantics must not be empty"),
-            ({"required": [], "forbidden": [""]}, "forbidden source semantics must not be empty"),
+            ({"required": [" \t\n"], "forbidden": []}, "required source semantics must not be empty"),
+            ({"required": [], "forbidden": [" \t\n"]}, "forbidden source semantics must not be empty"),
         ):
             with self.subTest(semantics=semantics):
                 errors = validator.validate_semantics("anchor\n", 1, semantics)
@@ -63,6 +71,10 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
     def test_non_string_forbidden_assertions_are_rejected(self) -> None:
         errors = validator.validate_semantics("anchor\n", 1, {"required": ["anchor"], "forbidden": [7]})
         self.assertIn("forbidden source semantics must be strings", errors[0])
+
+    def test_non_string_required_assertions_are_rejected(self) -> None:
+        errors = validator.validate_semantics("anchor\n", 1, {"required": [7], "forbidden": []})
+        self.assertIn("required source semantics must be strings", errors[0])
 
     def test_nearby_text_cannot_satisfy_anchor_semantics(self) -> None:
         errors = validator.validate_semantics(

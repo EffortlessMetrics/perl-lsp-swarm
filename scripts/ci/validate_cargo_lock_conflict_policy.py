@@ -52,14 +52,14 @@ def validate_semantics(
     for phrase in required:
         if not isinstance(phrase, str):
             errors.append(f"required source semantics must be strings: {phrase!r}")
-        elif not phrase:
+        elif not phrase.strip():
             errors.append("required source semantics must not be empty")
         elif phrase not in semantic_source:
             errors.append(f"missing required source semantics: {phrase!r}")
     for phrase in forbidden:
         if not isinstance(phrase, str):
             errors.append(f"forbidden source semantics must be strings: {phrase!r}")
-        elif not phrase:
+        elif not phrase.strip():
             errors.append("forbidden source semantics must not be empty")
         elif phrase in semantic_source:
             errors.append(f"forbidden source semantics present: {phrase!r}")
@@ -70,6 +70,8 @@ def classify(case: dict[str, object]) -> str:
     """Classify an explicitly scoped command-surface case."""
     context = case.get("context")
     command = case.get("command")
+    if not isinstance(context, str) or not isinstance(command, (str, type(None))):
+        return "not_proven"
     if context == "conflict_repair" and command in {
         "cargo generate-lockfile",
         "cargo update",

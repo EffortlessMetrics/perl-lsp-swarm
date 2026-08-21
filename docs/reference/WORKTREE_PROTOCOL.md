@@ -269,19 +269,6 @@ The following are not active conflict-repair instructions: `cargo generate-lockf
 in `scripts/ci/check_perl_lsp_rs_core_package.py` operates on an extracted package,
 and `just bump-version` belongs to the release/version-refresh scope.
 
-The deterministic fixture anchors are deliberately explicit source locations:
-
-```text
-active conflict repair: accepted Cargo.lock remains byte-identical
-active conflict repair: cargo generate-lockfile
-active conflict repair: bare cargo update
-active conflict repair: delete/recreate Cargo.lock
-active conflict repair: manifest-required lock change
-active conflict repair: branch admission
-active conflict repair: targeted dependency guidance
-active conflict repair: dynamically constructed command
-```
-
 The validator emits deterministic output with:
 
 ```text
