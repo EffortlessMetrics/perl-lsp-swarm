@@ -185,7 +185,7 @@ Debug Adapter Protocol configuration is *not* part of this `perl.*` namespace â€
     },
     "formatting": {
       "type": "object",
-      "description": "Native-first formatter configuration. The default engine is native; external perltidy is explicit compatibility mode.",
+      "description": "Native-first formatter configuration for generic LSP client settings. External perltidy remains project-configured.",
       "properties": {
         "enabled": {
           "type": "boolean",
@@ -194,13 +194,9 @@ Debug Adapter Protocol configuration is *not* part of this `perl.*` namespace â€
         },
         "engine": {
           "type": "string",
-          "description": "Formatter engine: native, compat/perltidy-compat, external-perltidy/external-legacy/perltidy, or off/disabled/none",
-          "enum": ["native", "compat", "perltidy-compat", "external-perltidy", "external-legacy", "perltidy", "off", "disabled", "none"],
+          "description": "Formatter engine for generic LSP client settings: native, compat, or off",
+          "enum": ["native", "compat", "off"],
           "default": "native"
-        },
-        "perltidy_profile": {
-          "type": "string",
-          "description": "Path to a .perltidyrc profile used for compatibility reporting or explicit external mode"
         },
         "perltidy_maximum_line_length": {
           "type": "integer",

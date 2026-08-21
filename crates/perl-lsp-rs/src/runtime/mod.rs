@@ -368,6 +368,10 @@ pub struct LspServer {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) critic_runtime_override:
         Mutex<Option<std::sync::Arc<dyn perl_subprocess_runtime::SubprocessRuntime>>>,
+    /// Test-only subprocess runtime override for formatter construction.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub(crate) formatter_runtime_override:
+        Mutex<Option<std::sync::Arc<dyn perl_subprocess_runtime::SubprocessRuntime>>>,
     /// When `true`, skip the `command_exists("perlcritic")` guard during
     /// diagnostic collection.  Always present on non-WASM targets but only
     /// settable to `true` through the test API exposed via

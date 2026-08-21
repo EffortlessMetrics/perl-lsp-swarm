@@ -135,6 +135,14 @@ fn generic_settings_schema_is_server_native_and_namespaced() -> Result<(), Box<d
 }
 
 #[test]
+fn generic_formatter_schema_excludes_external_process_modes() -> Result<(), Box<dyn Error>> {
+    let schema = load_schema()?;
+    let engine = &schema["properties"]["perl"]["properties"]["formatting"]["properties"]["engine"];
+    assert_eq!(engine["enum"], json!(["native", "compat", "off"]));
+    Ok(())
+}
+
+#[test]
 fn generic_schema_fields_are_behavior_backed_by_runtime_config() {
     let settings = json!({
         "workspace": {

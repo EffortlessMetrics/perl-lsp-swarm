@@ -118,6 +118,8 @@ impl LspServer {
             critic_analyzer: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             critic_runtime_override: Mutex::new(None),
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            formatter_runtime_override: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             skip_perlcritic_command_check: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
@@ -298,6 +300,8 @@ impl LspServer {
             critic_analyzer: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             critic_runtime_override: Mutex::new(None),
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            formatter_runtime_override: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             skip_perlcritic_command_check: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
@@ -419,6 +423,8 @@ impl LspServer {
             critic_analyzer: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             critic_runtime_override: Mutex::new(None),
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            formatter_runtime_override: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             skip_perlcritic_command_check: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]

@@ -94,6 +94,17 @@ mod tests {
     }
 
     #[test]
+    fn formatter_engine_uses_project_and_generic_client_channels_only() {
+        let field = authority_by_id("formatting.engine").expect("missing formatter authority");
+
+        assert_eq!(field.owner, ConfigOwner::Server);
+        assert!(field.sources.contains(&ConfigSource::ProjectFile));
+        assert!(field.sources.contains(&ConfigSource::InitializationOptions));
+        assert!(field.sources.contains(&ConfigSource::GlobalClientSettings));
+        assert!(!field.sources.contains(&ConfigSource::WorkspaceConfiguration));
+    }
+
+    #[test]
     fn workspace_policy_fields_are_not_written_by_observed_environment() {
         for id in
             ["workspace.perl5lib_precedence", "workspace.use_perl5lib", "workspace.use_system_inc"]

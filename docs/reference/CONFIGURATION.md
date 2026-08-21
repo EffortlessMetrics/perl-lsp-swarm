@@ -430,8 +430,8 @@ Every `.perl-lsp.toml` setting has a VSCode `settings.json` counterpart. The tab
 | `[critic] engine = "native"` | `"critic": {"engine": "native"}` | Use `"legacy"` or `"external"` for Perl::Critic shell-out compatibility |
 | `[critic] profile = "recommended"` | `"critic": {"profile": "recommended"}` | Lower-noise native rule bundle |
 | `[formatting] enabled = true` | `"formatting": {"enabled": true}` | |
-| `[formatting] engine = "native"` | `"formatting": {"engine": "native"}` | Use `"external-perltidy"` for legacy shell-out compatibility |
-| `[formatting] perltidy_profile = ".perltidyrc"` | `"formatting": {"profile": ".perltidyrc"}` | LSP key is `profile` |
+| `[formatting] engine = "native"` | `"formatting": {"engine": "native"}` | Generic LSP settings accept native, compat, or off; external-perltidy is project-only |
+| `[formatting] perltidy_profile = ".perltidyrc"` | — | Profile paths and external formatter arguments are project-only |
 | `[features] inlay_hints = true` | `"inlayHints": {"enabled": true}` | TOML is global toggle; LSP has finer-grained control |
 
 **Full VSCode `settings.json` with all settings:**
@@ -454,7 +454,6 @@ Every `.perl-lsp.toml` setting has a VSCode `settings.json` counterpart. The tab
     "formatting": {
       "enabled": true,
       "engine": "native",
-      "profile": "${workspaceFolder}/.perltidyrc",
       "maximumLineLength": 100,
       "indentColumns": 4
     },

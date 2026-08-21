@@ -478,7 +478,8 @@ Maximum character length for a single hint label before it is truncated.
 ### perl.formatting
 
 Controls LSP document and range formatting. Native formatting is built into the
-server; external perltidy is available as an explicit compatibility adapter.
+server. External perltidy remains available only through trusted project
+configuration, not generic client settings.
 
 #### `perl.formatting.enabled`
 
@@ -494,33 +495,18 @@ edits regardless of the selected engine.
 
 | Property | Value |
 |---|---|
-| Type | `"native"\|"compat"\|"external-perltidy"\|"off"` |
+| Type | `"native"\|"compat"\|"off"` |
 | Default | `"native"` |
 
 Formatter engine for LSP formatting requests:
 
 - `native` uses the Rust-native formatter.
 - `compat` uses the native formatter with compatibility-oriented defaults.
-- `external-perltidy` shells out through the legacy perltidy adapter.
 - `off` disables formatting.
 
-The TOML parser also accepts compatibility aliases such as `perltidy-compat`,
-`external-legacy`, `perltidy`, `disabled`, and `none`.
-
-#### `perl.formatting.profile`
-
-| Property | Value |
-|---|---|
-| Type | `string` |
-| Default | (none) |
-
-Path to a `.perltidyrc` profile. This is used by the external perltidy adapter
-and by native-tooling compatibility reports. Run
-`perllsp --perltidy-compat-report .perltidyrc` for an installed-binary
-migration check, or `cargo xtask native-format perltidy-compat --profile
-.perltidyrc` when you need a JSON/Markdown receipt in this repository. The
-Markdown report includes a suggested native `[formatting]` snippet for
-compatible options and lists external-only options separately.
+External formatter aliases are project-configuration values, not accepted
+through the generic LSP client-settings channel. Use the project `[formatting]`
+configuration above when legacy perltidy execution is explicitly required.
 
 #### `perl.formatting.maximumLineLength`
 
@@ -540,7 +526,7 @@ Maximum line length for formatting compatibility options.
 
 Indent width in spaces. When unset, formatting uses the editor-supplied
 `tabSize` from the `textDocument/formatting` request. When set, the configured
-width wins over `tabSize` on both the native and external perltidy paths.
+width wins over `tabSize` for the native formatting path.
 
 #### Additional formatting compatibility options
 
@@ -553,13 +539,15 @@ The server also accepts:
 - `perl.formatting.addTrailingCommas`
 - `perl.formatting.verticalAlignment`
 - `perl.formatting.blockCommentIndentation`
-- `perl.formatting.extraArgs`
 - `perl.formatting.timeoutSecs`
 
-Some options are native compatibility hints; others only affect the external
-perltidy adapter. Use `perllsp --perltidy-compat-report .perltidyrc` or the
-receipt-backed native-tooling compatibility reports to classify a specific
-`.perltidyrc` before switching a project.
+These are native compatibility hints on the generic client-settings channel.
+External perltidy profile and argument settings are project-only: configure
+`perltidy_profile` and `perltidy_extra_args` in the trusted project
+`[formatting]` section above. They are not accepted as generic client settings.
+Use `perllsp --perltidy-compat-report .perltidyrc` or the receipt-backed
+native-tooling compatibility reports to classify a specific `.perltidyrc`
+before switching a project.
 
 ```json
 {
