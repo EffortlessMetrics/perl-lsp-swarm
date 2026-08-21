@@ -213,8 +213,45 @@ fn sort_and_cap_completions(
     let mut completions =
         perl_lsp_rs_core::providers::completion_item::deduplicate_and_sort(completions);
     let is_incomplete = completions.len() > cap;
+    if is_incomplete {
+        reserve_fundamental_constructs(&mut completions, cap);
+    }
     completions.truncate(cap);
     (completions, is_incomplete)
+}
+
+/// Guarantee the fundamental control-flow constructs a seat in a truncated
+/// page (#11858). The evidence ranking orders candidates by semantic fit with
+/// the label as a late tiebreaker, so for an empty prefix — where hundreds of
+/// items tie and fall through to alphabetical order — a 100-item page becomes
+/// an arbitrary alphabetical window: file-test operators fill it and every
+/// control-flow keyword sorts past the cut. `is_incomplete` already tells
+/// compliant clients to re-query, but the initial page must still show the
+/// constructs a user is most likely to type next. Each construct label absent
+/// from the page swaps its best-ranked candidate into a tail slot — bounded
+/// to [`FUNDAMENTAL_CONSTRUCT_LABELS`], ordering-preserving otherwise.
+fn reserve_fundamental_constructs(
+    completions: &mut [crate::completion::CompletionItem],
+    cap: usize,
+) {
+    use perl_lsp_rs_core::providers::completion::FUNDAMENTAL_CONSTRUCT_LABELS;
+    // `completionCap` is configurable and may be smaller than the reserve
+    // list — stop at zero tail slots instead of underflowing (#11863 review).
+    let mut tail_slot = cap;
+    for label in FUNDAMENTAL_CONSTRUCT_LABELS {
+        if tail_slot == 0 {
+            break;
+        }
+        if completions[..cap].iter().any(|c| c.label.as_ref() == *label) {
+            continue;
+        }
+        let Some(offset) = completions[cap..].iter().position(|c| c.label.as_ref() == *label)
+        else {
+            continue;
+        };
+        tail_slot -= 1;
+        completions.swap(tail_slot, cap + offset);
+    }
 }
 
 impl LspServer {
@@ -2234,6 +2271,83 @@ mod tests {
             })))?
             .ok_or("missing explain-provider-decision response")?;
         Ok(response)
+    }
+
+    /// #11858: a truncated page must not silently omit every Keyword or
+    /// Snippet item when such items exist beyond the cap — for an empty
+    /// prefix the alphabetical tiebreak otherwise turns the page into an
+    /// arbitrary a–g window with no control-flow keywords at all.
+    #[test]
+    fn completion_cap_backfills_fundamental_kinds() {
+        let item = |label: &str, kind: CompletionItemKind| crate::completion::CompletionItem {
+            label: label.to_string().into(),
+            kind,
+            detail: None,
+            documentation: None,
+            insert_text: None,
+            sort_text: None,
+            filter_text: None,
+            additional_edits: Vec::new(),
+            text_edit_range: None,
+            commit_characters: None,
+            insert_text_format: InsertTextFormat::PlainText,
+            label_details: None,
+        };
+
+        // 104 same-ranked a–g items fill a 100 page alphabetically; BOTH
+        // reserved constructs ("while", and the "if" snippet — labeled exactly
+        // as the real provider labels it) sort past the cut, so each must be
+        // swapped in by the reserve. The a–g function range deliberately
+        // excludes any label that could accidentally contain them.
+        let mut candidates: Vec<_> = ('a'..='g')
+            .flat_map(|c| {
+                (0..15).map(move |n| item(&format!("{c}{n:02}"), CompletionItemKind::Function))
+            })
+            .collect();
+        candidates.push(item("while", CompletionItemKind::Keyword));
+        candidates.push(item("if", CompletionItemKind::Snippet));
+
+        let (page, is_incomplete) = sort_and_cap_completions(candidates, 100);
+
+        assert!(is_incomplete);
+        let labels: Vec<&str> = page.iter().map(|c| c.label.as_ref()).collect();
+        assert!(labels.contains(&"while"), "page must reserve the 'while' keyword");
+        assert!(labels.contains(&"if"), "page must reserve the 'if' snippet");
+        // Bounded: one tail slot per swapped construct.
+        assert_eq!(page.len(), 100);
+        assert_eq!(page.iter().filter(|c| c.kind == CompletionItemKind::Function).count(), 98);
+    }
+
+    /// `completionCap` is configurable; a cap smaller than the reserve list
+    /// must clamp the reserve instead of underflowing the tail slot (#11863
+    /// review).
+    #[test]
+    fn completion_cap_smaller_than_reserve_clamps() {
+        let item = |label: &str| crate::completion::CompletionItem {
+            label: label.to_string().into(),
+            kind: CompletionItemKind::Function,
+            detail: None,
+            documentation: None,
+            insert_text: None,
+            sort_text: None,
+            filter_text: None,
+            additional_edits: Vec::new(),
+            text_edit_range: None,
+            commit_characters: None,
+            insert_text_format: InsertTextFormat::PlainText,
+            label_details: None,
+        };
+        let mut candidates: Vec<_> = ('a'..='z').map(|c| item(&c.to_string())).collect::<Vec<_>>();
+        for construct in ["if", "else", "elsif", "unless", "while", "until", "for", "foreach"] {
+            candidates.push(item(construct));
+        }
+
+        // cap 3 with 11 absent reserve labels: must not panic, must fill only
+        // 3 reserve slots, and the page must still be exactly the cap.
+        let (page, is_incomplete) = sort_and_cap_completions(std::mem::take(&mut candidates), 3);
+        assert!(is_incomplete);
+        assert_eq!(page.len(), 3);
+        assert!(page.iter().all(|c| c.label.as_ref() != "zzz"));
     }
 
     #[test]

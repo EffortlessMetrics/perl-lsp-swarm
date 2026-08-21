@@ -368,7 +368,7 @@ For per-developer or editor-specific settings, configure via your editor's LSP m
 }
 ```
 
-See [CONFIG.md](../reference/CONFIG.md) for all configuration options, including workspace paths, inlay hints, test-runner settings, and resource limits.
+See [CONFIG.md](../reference/CONFIG.md) for the current configuration options, including workspace paths, inlay hints, and resource limits.
 
 ## Troubleshooting
 

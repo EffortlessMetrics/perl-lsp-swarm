@@ -96,6 +96,7 @@ mod functions;
 mod import_map;
 mod items;
 mod keywords;
+pub use keywords::FUNDAMENTAL_CONSTRUCT_LABELS;
 mod lexical_context;
 mod methods;
 mod packages;

@@ -53,8 +53,8 @@ pub enum CriticEngine {
 
 /// Server configuration
 ///
-/// Runtime configuration for the LSP server features including inlay hints
-/// and test runner integration. Updated dynamically via `didChangeConfiguration`.
+/// Runtime configuration for LSP server features. Updated dynamically via
+/// `didChangeConfiguration`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerConfig {
     /// Whether inlay hints are globally enabled.
@@ -67,15 +67,6 @@ pub struct ServerConfig {
     pub inlay_hints_chained_hints: bool,
     /// Maximum character length for hint labels before truncation.
     pub inlay_hints_max_length: usize,
-
-    /// Whether the integrated test runner is enabled.
-    pub test_runner_enabled: bool,
-    /// Command to execute tests (e.g., "perl", "prove").
-    pub test_runner_command: String,
-    /// Additional arguments passed to the test command.
-    pub test_runner_args: Vec<String>,
-    /// Test execution timeout in milliseconds.
-    pub test_runner_timeout: u64,
 
     /// Whether telemetry events are enabled.
     pub telemetry_enabled: bool,
@@ -347,10 +338,6 @@ impl Default for ServerConfig {
             inlay_hints_type_hints: true,
             inlay_hints_chained_hints: false,
             inlay_hints_max_length: 30,
-            test_runner_enabled: true,
-            test_runner_command: "perl".to_string(),
-            test_runner_args: vec![],
-            test_runner_timeout: 60000,
             telemetry_enabled: false,
             perlcritic_enabled: true,
             perlcritic_severity: 3,
@@ -401,22 +388,6 @@ impl ServerConfig {
             }
             if let Some(max_len) = inlay.get("maxLength").and_then(as_config_u64) {
                 self.inlay_hints_max_length = max_len as usize;
-            }
-        }
-
-        if let Some(test) = settings.get("testRunner") {
-            if let Some(enabled) = test.get("enabled").and_then(|v| v.as_bool()) {
-                self.test_runner_enabled = enabled;
-            }
-            if let Some(cmd) = test.get("command").and_then(|v| v.as_str()) {
-                self.test_runner_command = cmd.to_string();
-            }
-            if let Some(args) = test.get("args").and_then(|v| v.as_array()) {
-                self.test_runner_args =
-                    args.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
-            }
-            if let Some(timeout) = test.get("timeout").and_then(|v| v.as_u64()) {
-                self.test_runner_timeout = timeout;
             }
         }
 
@@ -536,13 +507,13 @@ impl ServerConfig {
                 self.format_on_save = format_on_save;
             }
             if let Some(engine) = formatting.get("engine").and_then(|v| v.as_str()) {
-                match parse_formatter_mode(engine) {
+                match parse_client_formatter_mode(engine) {
                     Some(mode) => self.formatting_engine = mode,
                     None => tracing::warn!(
                         target: "perl_lsp::config",
                         setting = "formatting.engine",
                         value = %engine,
-                        valid = FORMATTER_MODE_VALID_OPTIONS,
+                        valid = CLIENT_FORMATTER_MODE_VALID_OPTIONS,
                         "unrecognized formatting.engine value; keeping current setting",
                     ),
                 }
@@ -656,7 +627,6 @@ impl ServerConfig {
         warn_on_type_mismatch(settings, "inlayHints", "enabled", "boolean");
         warn_on_type_mismatch(settings, "inlayHints", "parameterHints", "boolean");
         warn_on_type_mismatch(settings, "inlayHints", "typeHints", "boolean");
-        warn_on_type_mismatch(settings, "testRunner", "enabled", "boolean");
         warn_on_type_mismatch(settings, "diagnostics", "enabled", "boolean");
         warn_on_type_mismatch(settings, "critic", "enabled", "boolean");
         warn_on_type_mismatch(settings, "formatting", "enabled", "boolean");
@@ -707,14 +677,16 @@ impl ServerConfig {
         if let Some(formatting) = settings.get("formatting")
             && let Some(engine) = formatting.get("engine")
         {
-            let invalid_engine =
-                engine.as_str().map(|value| parse_formatter_mode(value).is_none()).unwrap_or(true);
+            let invalid_engine = engine
+                .as_str()
+                .map(|value| parse_client_formatter_mode(value).is_none())
+                .unwrap_or(true);
             if invalid_engine {
                 invalid.push(InvalidClientSetting {
                     setting: "formatting.engine",
                     value: client_setting_display_value(engine),
                     value_type: client_setting_value_type(engine),
-                    valid_options: FORMATTER_MODE_VALID_OPTIONS,
+                    valid_options: CLIENT_FORMATTER_MODE_VALID_OPTIONS,
                 });
             }
         }
@@ -789,6 +761,15 @@ fn parse_formatter_mode(value: &str) -> Option<FormatterMode> {
     }
 }
 
+fn parse_client_formatter_mode(value: &str) -> Option<FormatterMode> {
+    match normalize_formatter_mode_value(value).as_str() {
+        "native" => Some(FormatterMode::Native),
+        "compat" | "perltidy-compat" => Some(FormatterMode::Compat),
+        "off" | "disabled" | "none" => Some(FormatterMode::Off),
+        _ => None,
+    }
+}
+
 fn parse_critic_engine(value: &str) -> Option<CriticEngine> {
     match value.trim().to_ascii_lowercase().as_str() {
         "legacy" | "external" | "perlcritic" => Some(CriticEngine::Legacy),
@@ -809,6 +790,11 @@ fn parse_lsp_critic_engine(value: &str) -> Option<CriticEngine> {
 /// Kept in sync with [`parse_formatter_mode`].
 const FORMATTER_MODE_VALID_OPTIONS: &str = "native, compat (perltidy-compat), external-legacy (external-perltidy, perltidy), \
      off (disabled, none)";
+
+/// Human-readable values accepted for `formatting.engine` on the LSP
+/// client-settings channel. External process selection remains project-owned.
+const CLIENT_FORMATTER_MODE_VALID_OPTIONS: &str =
+    "native, compat (perltidy-compat), off (disabled, none)";
 
 /// Human-readable list of accepted `critic.engine` values, used in
 /// `tracing::warn!` messages when a user supplies an unrecognized value.
@@ -3349,7 +3335,7 @@ profile = "recommended"
     }
 
     #[test]
-    fn server_config_update_from_value_applies_lsp_settings() -> TestResult {
+    fn server_config_update_from_value_ignores_removed_test_runner_authority() -> TestResult {
         let mut config = ServerConfig::default();
 
         config.update_from_value(&serde_json::json!({
@@ -3362,8 +3348,10 @@ profile = "recommended"
             },
             "testRunner": {
                 "enabled": false,
-                "command": "prove",
-                "args": ["-lv", 42, "t/unit.t"],
+                "command": "CANARY-EXECUTABLE",
+                "args": ["CANARY-ARG"],
+                "cwd": "CANARY-CWD",
+                "env": {"CANARY": "CANARY-VALUE"},
                 "timeout": 12_345
             },
             "telemetry": {
@@ -3382,10 +3370,6 @@ profile = "recommended"
         assert!(!config.inlay_hints_type_hints);
         assert!(config.inlay_hints_chained_hints);
         assert_eq!(config.inlay_hints_max_length, 12);
-        assert!(!config.test_runner_enabled);
-        assert_eq!(config.test_runner_command, "prove");
-        assert_eq!(config.test_runner_args, vec!["-lv".to_string(), "t/unit.t".to_string()]);
-        assert_eq!(config.test_runner_timeout, 12_345);
         assert!(config.telemetry_enabled);
         assert!(!config.perlcritic_enabled);
         assert_eq!(config.perlcritic_severity, 5);
@@ -3512,7 +3496,7 @@ profile = "recommended"
     }
 
     #[test]
-    fn server_config_accepts_formatter_engine_aliases() {
+    fn server_config_rejects_external_formatter_engine_from_client_settings() {
         let mut config = ServerConfig::default();
 
         config.update_from_value(&serde_json::json!({
@@ -3520,7 +3504,7 @@ profile = "recommended"
                 "engine": "external-perltidy"
             }
         }));
-        assert_eq!(config.formatting_engine, FormatterMode::ExternalLegacy);
+        assert_eq!(config.formatting_engine, FormatterMode::Native);
 
         config.update_from_value(&serde_json::json!({
             "formatting": {
@@ -3986,7 +3970,7 @@ profile = "recommended"
                     setting: "formatting.engine",
                     value: "perltide".to_string(),
                     value_type: "string",
-                    valid_options: FORMATTER_MODE_VALID_OPTIONS,
+                    valid_options: CLIENT_FORMATTER_MODE_VALID_OPTIONS,
                 },
             ]
         );
@@ -3995,9 +3979,40 @@ profile = "recommended"
             "critic": { "engine": " LEGACY ", "profile": "STRICT" },
             "formatting": { "engine": "external_perltidy" }
         }));
-        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy.len(), 2);
         assert_eq!(legacy[0].setting, "critic.engine");
         assert_eq!(legacy[0].valid_options, CLIENT_CRITIC_ENGINE_VALID_OPTIONS);
+        assert_eq!(legacy[1].setting, "formatting.engine");
+        assert_eq!(legacy[1].valid_options, CLIENT_FORMATTER_MODE_VALID_OPTIONS);
+    }
+
+    #[test]
+    fn client_formatter_external_aliases_are_rejected_but_project_alias_remains_supported() {
+        for value in ["external-legacy", "external_perltidy", "perltidy"] {
+            let mut config = ServerConfig::default();
+            config.update_from_value(&serde_json::json!({
+                "formatting": { "engine": value }
+            }));
+            assert_eq!(config.formatting_engine, FormatterMode::Native, "client value {value}");
+            assert_eq!(
+                ServerConfig::invalid_client_setting_values(&serde_json::json!({
+                    "formatting": { "engine": value }
+                }))[0]
+                    .valid_options,
+                CLIENT_FORMATTER_MODE_VALID_OPTIONS
+            );
+        }
+
+        let mut config = ServerConfig::default();
+        let project = ProjectConfig {
+            formatting: ProjectFormattingConfig {
+                engine: Some("external-legacy".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        project.apply_to_server_config(&mut config);
+        assert_eq!(config.formatting_engine, FormatterMode::ExternalLegacy);
     }
 
     #[test]

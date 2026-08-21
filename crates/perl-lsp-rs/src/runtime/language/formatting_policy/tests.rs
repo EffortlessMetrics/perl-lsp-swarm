@@ -1,5 +1,7 @@
 use super::*;
 use crate::protocol::{JsonRpcId, JsonRpcRequest};
+use perl_subprocess_runtime::mock::{MockResponse, MockSubprocessRuntime};
+use std::sync::Arc;
 
 fn advertise(server: &LspServer, surface: Surface) {
     server.advertised_feature_ids.lock().push(surface.feature_id());
@@ -56,6 +58,112 @@ fn disabled_is_a_typed_refusal() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(receipt["actual_engine"], "disabled");
     assert_eq!(receipt["requested_mode"], "native");
     assert_eq!(receipt["effective_mode"], "off");
+    Ok(())
+}
+
+#[test]
+fn generic_external_formatter_alias_is_contained_before_formatting()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::Document);
+    let runtime = Arc::new(MockSubprocessRuntime::new());
+    server.test_install_formatter_runtime(runtime.clone());
+    server.test_handle_did_change_configuration(Some(json!({
+        "settings": { "perl": { "formatting": { "engine": "external-legacy" } } }
+    })));
+    assert_eq!(server.config.lock().formatting_engine, FormatterMode::Native);
+
+    let uri = "file:///generic-external-alias.pl";
+    server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
+    let result = server.handle_formatting_policy(
+        Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })),
+        None,
+    )?;
+    assert!(result.is_some(), "native formatting should return a response");
+    assert!(
+        runtime.invocations().is_empty(),
+        "native formatting must not invoke the external runtime"
+    );
+    let receipt = receipt(&server)?;
+    assert_eq!(receipt["actual_engine"], "native");
+    assert_eq!(receipt["effective_mode"], "native");
+    Ok(())
+}
+
+#[test]
+fn trusted_project_external_formatter_reaches_injected_runtime()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::Document);
+    let runtime = Arc::new(MockSubprocessRuntime::new());
+    runtime.add_response(MockResponse::success("my $x = 1;\n"));
+    server.test_install_formatter_runtime(runtime.clone());
+
+    let temp = tempfile::tempdir()?;
+    std::fs::write(
+        temp.path().join(".perl-lsp.toml"),
+        "[formatting]\nengine = \"external-perltidy\"\n",
+    )?;
+    let folder_uri = url::Url::from_directory_path(temp.path())
+        .map_err(|()| "failed to create project folder URI")?
+        .to_string();
+    server.workspace_folders.lock().push(
+        crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+            .with_path(temp.path().to_path_buf()),
+    );
+    server.load_and_apply_project_config();
+
+    assert_eq!(server.config.lock().formatting_engine, FormatterMode::ExternalLegacy);
+    let uri = "file:///project-external-formatting.pl";
+    server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
+    let result = server.handle_formatting_policy(
+        Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })),
+        None,
+    )?;
+
+    let edits = result.ok_or("project external formatting returned no response")?;
+    assert_eq!(edits.as_array().map(Vec::len), Some(1));
+    assert_eq!(runtime.invocations().len(), 1);
+    assert_eq!(receipt(&server)?["actual_engine"], "external_legacy");
+    Ok(())
+}
+
+#[test]
+fn multi_range_external_formatter_reaches_injected_runtime()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::Ranges);
+    let runtime = Arc::new(MockSubprocessRuntime::new());
+    runtime.add_response(MockResponse::success("my $x = 1;\nmy $y = 2;\n"));
+    server.test_install_formatter_runtime(runtime.clone());
+    server.config.lock().formatting_engine = FormatterMode::ExternalLegacy;
+
+    let uri = "file:///multi-range-external-formatting.pl";
+    server.test_apply_did_open(uri, "my$x=1;\nmy$y=2;\n", 1)?;
+    let result = server.handle_ranges_formatting_policy(
+        Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "ranges": [
+                {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 2, "character": 0 }
+                }
+            ],
+            "options": { "tabSize": 4, "insertSpaces": true }
+        })),
+        None,
+    )?;
+
+    let edits = result.ok_or("multi-range external formatting returned no response")?;
+    assert_eq!(edits.as_array().map(Vec::len), Some(1));
+    assert_eq!(runtime.invocations().len(), 1);
+    assert_eq!(receipt(&server)?["actual_engine"], "external_legacy");
     Ok(())
 }
 

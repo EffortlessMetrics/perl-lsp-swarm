@@ -48,5 +48,6 @@ pub use state_machine::{
     InvalidationReason, ResourceKind, TransitionResult,
 };
 pub use workspace_index::{
-    CrossFileReferenceQueryResult, IndexResourceLimits, Location, SymbolIdentity, WorkspaceIndex,
+    CrossFileReferenceQueryResult, IndexResourceLimits, Location, SourceCommit,
+    SourceCommitOutcome, SymbolIdentity, WorkspaceIndex,
 };
