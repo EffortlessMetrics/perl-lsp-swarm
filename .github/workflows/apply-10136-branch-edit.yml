@@ -31,17 +31,35 @@ jobs:
           ref: agent/remove-client-test-runner-authority
           fetch-depth: 0
 
-      - name: Repair final-property matcher
+      - name: Repair current-document matchers
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
           path = Path("scripts/maintenance/apply_10136_test_runner_removal.py")
           text = path.read_text(encoding="utf-8")
-          old = r'^    "testRunner": \{\n(?:      .*\n)+?    \},\n'
-          new = r'^    "testRunner": \{\n(?:      .*\n)+?    \},?\n'
-          assert text.count(old) == 2, text.count(old)
-          path.write_text(text.replace(old, new), encoding="utf-8")
+
+          old_pattern = r'^    "testRunner": \{\n(?:      .*\n)+?    \},\n'
+          new_pattern = r'^    "testRunner": \{\n(?:      .*\n)+?    \},?\n'
+          assert text.count(old_pattern) == 2, text.count(old_pattern)
+          text = text.replace(old_pattern, new_pattern)
+
+          marker = '''sub_exact(
+              CONFIG_DOC,
+              r'\\n### perl\\.testRunner\\n.*?(?=\\n### perl\\.formatting\\n)',
+              "",
+              flags=re.DOTALL,
+          )
+          '''
+          insertion = marker + '''sub_exact(
+              CONFIG_DOC,
+              r'\\n### CI / testing environment\\n.*?(?=\\n### Editor-specific snippets\\n)',
+              "\\n### CI / testing environment\\n\\n```json\\n{\\n  \\\"perl\\\": {\\n    \\\"workspace\\\": { \\\"useSystemInc\\\": false },\\n    \\\"perlcritic\\\": { \\\"enabled\\\": true }\\n  }\\n}\\n```\\n",
+              flags=re.DOTALL,
+          )
+          '''
+          assert text.count(marker) == 1, text.count(marker)
+          path.write_text(text.replace(marker, insertion), encoding="utf-8")
           PY
 
       - name: Apply count-checked source edit
