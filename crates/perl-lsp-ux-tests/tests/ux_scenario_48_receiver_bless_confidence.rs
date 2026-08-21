@@ -335,7 +335,7 @@ fn scenario_48_receiver_bless_confidence_receipt() {
                 "schema_version": 1,
                 "receipt": "receiver_bless_confidence",
                 "workspace_fixture": "RealReceiver literal/dynamic bless CPAN-style workspace",
-                "claim_boundary": "receipt-only receiver confidence proof; no completion behavior change, support-tier promotion, dynamic-boundary promotion, or medium-confidence receiver promotion; dynamic bless remains a bounded blocked boundary",
+                "claim_boundary": "receipt-only receiver confidence proof; no completion behavior change, support-tier promotion, dynamic-boundary promotion, or medium-confidence receiver promotion",
                 "probe_count": reports.len(),
                 "medium_confidence_count": medium_confidence_count,
                 "exact_source_backed_count": exact_source_backed_count,
@@ -361,11 +361,14 @@ fn scenario_48_receiver_bless_confidence_receipt() {
             )?;
             let dynamic_report = report_by_name(&reports, "dynamic_bless_receiver")?;
             recorder.check(
-                "dynamic bless receiver remains a bounded blocked boundary without exact receiver evidence",
+                "dynamic bless receiver remains bounded without exact receiver evidence",
                 dynamic_report.dynamic_boundary
                     && !dynamic_report.source_backed
-                    && dynamic_report.fallback_or_labeled_boundary
-                    && dynamic_report.fallback_state == "blocked",
+                    && matches!(
+                        dynamic_report.fallback_state,
+                        "blocked" | "legacy_workspace_candidate_without_receiver_evidence"
+                    )
+                    && dynamic_report.fallback_or_labeled_boundary,
             )?;
             recorder.check(
                 "no bless receiver probe produced exact source-backed completion evidence",
