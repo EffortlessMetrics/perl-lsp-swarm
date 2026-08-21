@@ -110,8 +110,8 @@ pub struct LspServer {
     /// records the last lines so a handshake stall can be diagnosed from the
     /// failure output alone, without rerunning with LSP_TEST_ECHO_STDERR.
     /// Shared with the drain thread, hence the Arc; the tuple's second
-    /// element is the unterminated final line.
-    stderr_tail: std::sync::Arc<Mutex<(VecDeque<String>, String)>>,
+    /// element is the unterminated final line's raw bytes.
+    stderr_tail: std::sync::Arc<Mutex<(VecDeque<String>, Vec<u8>)>>,
     /// Flag to track if shutdown has been initiated (prevents double-shutdown)
     pub(crate) shutdown_initiated: std::sync::atomic::AtomicBool,
 }
@@ -120,11 +120,11 @@ pub struct LspServer {
 const STDERR_TAIL_LINES: usize = 40;
 const STDERR_PARTIAL_MAX_BYTES: usize = 8 * 1024;
 
-fn record_stderr_chunk(tail: &mut (VecDeque<String>, String), chunk: &[u8]) -> Vec<String> {
+fn record_stderr_chunk(tail: &mut (VecDeque<String>, Vec<u8>), chunk: &[u8]) -> Vec<String> {
     let mut completed = Vec::new();
-    tail.1.push_str(&String::from_utf8_lossy(chunk));
-    while let Some(pos) = tail.1.find('\n') {
-        let line = tail.1[..pos].trim_end().to_owned();
+    tail.1.extend_from_slice(chunk);
+    while let Some(pos) = tail.1.iter().position(|byte| *byte == b'\n') {
+        let line = String::from_utf8_lossy(&tail.1[..pos]).trim_end().to_owned();
         tail.1.drain(..=pos);
         if tail.0.len() >= STDERR_TAIL_LINES {
             tail.0.pop_front();
@@ -133,10 +133,7 @@ fn record_stderr_chunk(tail: &mut (VecDeque<String>, String), chunk: &[u8]) -> V
         tail.0.push_back(line);
     }
     if tail.1.len() > STDERR_PARTIAL_MAX_BYTES {
-        let mut start = tail.1.len() - STDERR_PARTIAL_MAX_BYTES;
-        while !tail.1.is_char_boundary(start) {
-            start += 1;
-        }
+        let start = tail.1.len() - STDERR_PARTIAL_MAX_BYTES;
         tail.1.drain(..start);
     }
     completed
@@ -172,7 +169,7 @@ impl LspServer {
         }
         if !tail.1.is_empty() {
             rendered.push_str("  | ");
-            rendered.push_str(tail.1.trim_end());
+            rendered.push_str(String::from_utf8_lossy(&tail.1).trim_end());
             rendered.push_str("  (unterminated final line)\n");
         }
         rendered
@@ -276,7 +273,7 @@ pub fn start_lsp_server() -> LspServer {
     // produced, and a `read_line` drain would sit blocked on it forever while
     // `stderr_tail` reported "no stderr" (#11853 review). Chunked reads keep
     // the partial visible.
-    let stderr_tail = std::sync::Arc::new(Mutex::new((VecDeque::<String>::new(), String::new())));
+    let stderr_tail = std::sync::Arc::new(Mutex::new((VecDeque::<String>::new(), Vec::new())));
     let stderr_tail_for_thread = std::sync::Arc::clone(&stderr_tail);
     let _stderr_thread =
         match std::thread::Builder::new().name("lsp-stderr-drain".into()).spawn(move || {
@@ -417,7 +414,7 @@ mod stderr_tests {
 
     #[test]
     fn stderr_fragments_reconstruct_across_reads() {
-        let mut tail = (VecDeque::new(), String::new());
+        let mut tail = (VecDeque::new(), Vec::new());
         assert!(record_stderr_chunk(&mut tail, b"warning: split ").is_empty());
         assert_eq!(
             record_stderr_chunk(&mut tail, b"across reads\nnext"),
@@ -425,25 +422,37 @@ mod stderr_tests {
         );
 
         assert_eq!(tail.0.iter().collect::<Vec<_>>(), vec!["warning: split across reads"]);
-        assert_eq!(tail.1, "next");
+        assert_eq!(tail.1, b"next");
+    }
+
+    #[test]
+    fn stderr_preserves_utf8_code_points_split_across_reads() {
+        let mut tail = (VecDeque::new(), Vec::new());
+        let character = "界".as_bytes();
+
+        assert!(record_stderr_chunk(&mut tail, &character[..1]).is_empty());
+        assert_eq!(
+            record_stderr_chunk(&mut tail, &[character[1], character[2], b'\n']),
+            vec!["界"]
+        );
     }
 
     #[test]
     fn unterminated_stderr_keeps_newest_bounded_bytes() {
-        let mut tail = (VecDeque::new(), String::new());
+        let mut tail = (VecDeque::new(), Vec::new());
         record_stderr_chunk(
             &mut tail,
             format!("old{}new", "x".repeat(STDERR_PARTIAL_MAX_BYTES)).as_bytes(),
         );
 
         assert!(tail.1.len() <= STDERR_PARTIAL_MAX_BYTES);
-        assert!(tail.1.ends_with("new"));
+        assert!(tail.1.ends_with(b"new"));
         assert!(tail.0.len() <= STDERR_TAIL_LINES);
     }
 
     #[test]
     fn stderr_echo_lines_survive_tail_eviction() {
-        let mut tail = (VecDeque::new(), String::new());
+        let mut tail = (VecDeque::new(), Vec::new());
         for index in 0..STDERR_TAIL_LINES {
             record_stderr_chunk(&mut tail, format!("line {index}\n").as_bytes());
         }

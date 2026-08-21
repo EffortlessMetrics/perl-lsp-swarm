@@ -271,6 +271,12 @@ mod tests {
         assert!(matches!(result, Err(message) if message.contains("not a regular executable")));
     }
 
+    #[test]
+    fn current_executable_is_accepted_as_a_real_binary() {
+        let path = std::env::current_exe().expect("resolve the current test executable");
+        assert_eq!(built_binary_or_refuse(path.clone()), Ok(path));
+    }
+
     #[cfg(unix)]
     #[test]
     fn non_regular_and_non_executable_paths_refuse_cargo_run_fallback() {
