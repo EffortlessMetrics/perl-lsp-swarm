@@ -27,12 +27,71 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
             "not_proven",
         )
 
-    def test_compatible_accepted_lock_is_byte_identical(self) -> None:
-        original = b"accepted\n"
-        self.assertEqual(
-            validator.validate_transition(original, original, manifest_requires_lock=False),
-            "accepted_lock_preserved",
+    def test_contexts_do_not_override_forbidden_or_unknown_commands(self) -> None:
+        for context in ("release_refresh", "targeted_dependency", "isolated_extracted_package"):
+            self.assertEqual(
+                validator.classify({"context": context, "command": "cargo update"}),
+                "not_proven",
+            )
+            self.assertEqual(
+                validator.classify({"context": context, "command": "dynamic command"}),
+                "not_proven",
+            )
+
+    def test_marker_without_source_prohibition_is_rejected(self) -> None:
+        errors = validator.validate_semantics(
+            "marker\nactive conflict repair: cargo generate-lockfile\nweakened text\n",
+            2,
+            {"required": ["must not use `cargo generate-lockfile`"], "forbidden": []},
         )
+        self.assertTrue(errors)
+
+    def test_compatible_accepted_lock_is_byte_identical(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            lock = Path(temp) / "Cargo.lock"
+            original = b"accepted\n"
+            lock.write_bytes(original)
+            self.assertEqual(
+                validator.validate_transition(
+                    original,
+                    original,
+                    manifest_requires_lock=False,
+                    temporary_lock_path=lock,
+                ),
+                "accepted_lock_preserved",
+            )
+            self.assertEqual(lock.read_bytes(), original)
+
+    def test_missing_proposed_lock_is_not_proven(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            lock = Path(temp) / "Cargo.lock"
+            original = b"accepted\n"
+            lock.write_bytes(original)
+            self.assertEqual(
+                validator.validate_transition(
+                    original,
+                    None,
+                    manifest_requires_lock=False,
+                    temporary_lock_path=lock,
+                ),
+                "not_proven",
+            )
+
+    def test_differing_lock_requires_admission(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            lock = Path(temp) / "Cargo.lock"
+            original = b"accepted\n"
+            lock.write_bytes(original)
+            self.assertEqual(
+                validator.validate_transition(
+                    original,
+                    b"different\n",
+                    manifest_requires_lock=False,
+                    temporary_lock_path=lock,
+                ),
+                "lock_conflict_requires_admission",
+            )
+            self.assertEqual(lock.read_bytes(), original)
 
     def test_manifest_required_change_refuses_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -40,7 +99,12 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
             original = b"accepted\n"
             lock.write_bytes(original)
             self.assertEqual(
-                validator.validate_transition(original, b"new\n", manifest_requires_lock=True),
+                validator.validate_transition(
+                    original,
+                    b"new\n",
+                    manifest_requires_lock=True,
+                    temporary_lock_path=lock,
+                ),
                 "manifest_requires_lock_change",
             )
             self.assertEqual(lock.read_bytes(), original)

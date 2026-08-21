@@ -34,6 +34,28 @@ class ValidationError(ValueError):
     """Raised when this validator cannot establish its bounded contract."""
 
 
+def validate_semantics(
+    source: str, line_number: int, semantics: dict[str, object], *, window: int = 30
+) -> list[str]:
+    """Require source meaning near an anchor, rather than trusting its marker."""
+    lines = source.splitlines()
+    start = max(0, line_number - 1 - window)
+    end = min(len(lines), line_number + window)
+    semantic_source = "\n".join(lines[start:end])
+    required = semantics.get("required", [])
+    forbidden = semantics.get("forbidden", [])
+    if not isinstance(required, list) or not isinstance(forbidden, list):
+        return ["semantic required/forbidden assertions must be lists"]
+    errors = []
+    for phrase in required:
+        if not isinstance(phrase, str) or phrase not in semantic_source:
+            errors.append(f"missing required source semantics: {phrase!r}")
+    for phrase in forbidden:
+        if isinstance(phrase, str) and phrase in semantic_source:
+            errors.append(f"forbidden source semantics present: {phrase!r}")
+    return errors
+
+
 def classify(case: dict[str, object]) -> str:
     """Classify an explicitly scoped command-surface case."""
     context = case.get("context")
@@ -52,20 +74,42 @@ def classify(case: dict[str, object]) -> str:
         return "branch_admission_preserved"
     if context == "isolated_extracted_package" and command == "cargo generate-lockfile":
         return "controlled_isolated_generation"
-    if context in {"release_refresh", "targeted_dependency"}:
+    if context == "release_refresh" and command == "just bump-version":
         return "branch_admission_preserved"
-    if context == "historical_archive":
+    if context == "targeted_dependency" and command == "cargo update -p name":
+        return "branch_admission_preserved"
+    if context == "historical_archive" and command == "just bump-version":
         return "historical_text"
     return "not_proven"
 
 
-def validate_transition(accepted_lock: bytes, proposed_lock: bytes | None, *, manifest_requires_lock: bool) -> str:
-    """Return a typed result without writing to the accepted worktree."""
+def validate_transition(
+    accepted_lock: bytes,
+    proposed_lock: bytes | None,
+    *,
+    manifest_requires_lock: bool,
+    temporary_lock_path: Path,
+) -> str:
+    """Classify a transition and prove the supplied temporary lock was untouched."""
+    try:
+        before = temporary_lock_path.read_bytes()
+    except OSError:
+        return "not_proven"
+    if before != accepted_lock:
+        return "not_proven"
     if manifest_requires_lock:
-        return "manifest_requires_lock_change"
-    if proposed_lock is None or proposed_lock == accepted_lock:
-        return "accepted_lock_preserved"
-    return "lock_conflict_requires_admission"
+        result = "manifest_requires_lock_change"
+    elif proposed_lock is None:
+        result = "not_proven"
+    elif proposed_lock == accepted_lock:
+        result = "accepted_lock_preserved"
+    else:
+        result = "lock_conflict_requires_admission"
+    try:
+        unchanged = temporary_lock_path.read_bytes() == before
+    except OSError:
+        return "not_proven"
+    return result if unchanged else "not_proven"
 
 
 def load_fixture(root: Path) -> list[dict[str, object]]:
@@ -117,6 +161,14 @@ def validate(root: Path) -> list[str]:
         actual = classify(case)
         if actual != expected:
             errors.append(f"{case_id}: classified {actual}, expected {expected}")
+        semantics = case.get("semantics")
+        if not isinstance(semantics, dict):
+            errors.append(f"{case_id}: semantic assertions are required")
+            continue
+        for semantic_error in validate_semantics(
+            source, line_number, semantics, window=int(case.get("semantic_window", 30))
+        ):
+            errors.append(f"{case_id}: {semantic_error}")
 
     expected_outcomes = OUTCOMES - {"not_proven"}
     missing = sorted(expected_outcomes - {case.get("expected") for case in cases})
@@ -138,13 +190,23 @@ def main() -> int:
         accepted = Path(temp) / "Cargo.lock"
         original = b"# accepted lock\n"
         accepted.write_bytes(original)
-        if validate_transition(original, original, manifest_requires_lock=False) != "accepted_lock_preserved":
+        if validate_transition(
+            original,
+            original,
+            manifest_requires_lock=False,
+            temporary_lock_path=accepted,
+        ) != "accepted_lock_preserved":
             print("FAIL: compatible lock transition was not accepted")
             return 1
         if accepted.read_bytes() != original:
             print("FAIL: compatible transition mutated accepted lock")
             return 1
-        if validate_transition(original, b"# different lock\n", manifest_requires_lock=True) != "manifest_requires_lock_change":
+        if validate_transition(
+            original,
+            b"# different lock\n",
+            manifest_requires_lock=True,
+            temporary_lock_path=accepted,
+        ) != "manifest_requires_lock_change":
             print("FAIL: manifest-required transition was not refused")
             return 1
         if accepted.read_bytes() != original:
