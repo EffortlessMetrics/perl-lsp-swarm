@@ -1,5 +1,7 @@
 use super::ImportMap;
 use perl_parser_core::ast::{Node, NodeKind};
+use perl_semantic_analyzer::analysis::import_extractor::ImportExtractor;
+use perl_semantic_facts::{FileId, ImportKind, ImportSymbols};
 use std::collections::{HashMap, HashSet};
 
 mod symbols;
@@ -16,6 +18,75 @@ pub(super) fn extract_import_map(ast: &Node) -> ImportMap {
     let mut map: ImportMap = HashMap::new();
     collect(ast, &mut map);
     map
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RuntimeImportAuthority {
+    pub end: usize,
+    pub module: String,
+    pub symbols: HashSet<String>,
+}
+
+/// Recover exact runtime import facts without making them file-wide authority.
+pub(super) fn extract_runtime_import_authority(ast: &Node) -> Vec<RuntimeImportAuthority> {
+    let specs = ImportExtractor::extract(ast, FileId(0));
+    let mut authorities = Vec::new();
+    collect_runtime_import_authority(ast, &specs, &mut authorities);
+    authorities
+}
+
+fn collect_runtime_import_authority(
+    node: &Node,
+    specs: &[perl_semantic_facts::ImportSpec],
+    authorities: &mut Vec<RuntimeImportAuthority>,
+) {
+    let statements: &[Node] = match &node.kind {
+        NodeKind::Program { statements } | NodeKind::Block { statements } => statements,
+        NodeKind::Package { block: Some(block), .. } => match &block.kind {
+            NodeKind::Block { statements } => statements,
+            _ => &[],
+        },
+        _ => &[],
+    };
+
+    for (index, statement) in statements.iter().enumerate() {
+        let Some(next) = statements.get(index + 1) else { continue };
+        let Some(spec) = specs.iter().find(|spec| {
+            spec.kind == ImportKind::RequireThenImport
+                && spec.span_start_byte == Some(statement.location.start as u32)
+        }) else {
+            continue;
+        };
+        let expression = unwrap_expression_statement(next);
+        let NodeKind::MethodCall { object, method, .. } = &expression.kind else { continue };
+        if method != "import"
+            || !matches!(&object.kind, NodeKind::Identifier { name } if name == &spec.module)
+        {
+            continue;
+        }
+        let ImportSymbols::Explicit(symbols) = &spec.symbols else { continue };
+        if !authorities
+            .iter()
+            .any(|authority| authority.end == next.location.end && authority.module == spec.module)
+        {
+            authorities.push(RuntimeImportAuthority {
+                end: next.location.end,
+                module: spec.module.clone(),
+                symbols: symbols.iter().cloned().collect(),
+            });
+        }
+    }
+
+    for child in node.children() {
+        collect_runtime_import_authority(child, specs, authorities);
+    }
+}
+
+fn unwrap_expression_statement(node: &Node) -> &Node {
+    match &node.kind {
+        NodeKind::ExpressionStatement { expression } => expression,
+        _ => node,
+    }
 }
 
 fn collect(node: &Node, map: &mut ImportMap) {
@@ -184,6 +255,27 @@ mod tests {
             "runtime imports must not enter the file-wide map: {map:?}"
         );
         assert!(!collect_used_module_names(&ast).contains("Foo"));
+    }
+
+    #[test]
+    fn runtime_import_authority_starts_after_the_import_call() {
+        let code = "require Foo; Foo->import(qw(bar));\nbar";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let authorities = extract_runtime_import_authority(&ast);
+
+        assert_eq!(authorities.len(), 1);
+        assert_eq!(authorities[0].module, "Foo");
+        assert_eq!(authorities[0].symbols, HashSet::from(["bar".to_string()]));
+        assert!(authorities[0].end <= code.find("\nbar").unwrap());
+    }
+
+    #[test]
+    fn require_only_has_no_runtime_import_authority() {
+        let code = "require Foo;\nbar";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        assert!(extract_runtime_import_authority(&ast).is_empty());
     }
 
     /// Multiple explicit symbols alongside an unresolved tag — all explicit symbols

@@ -488,6 +488,7 @@ fn complete_general_context(
     filepath: Option<&str>,
     is_cancelled: &dyn Fn() -> bool,
 ) -> CompletionFlow {
+    let (import_map, used_modules) = provider.import_state_at(context.position);
     let keyword_set = keywords::keywords();
     // Suppress statement keywords in expression positions to reduce noise.
     // Statement keywords (package, sub, use, etc.) are only valid at the start
@@ -534,8 +535,8 @@ fn complete_general_context(
         context,
         &provider.workspace_index,
         filepath,
-        &provider.import_map,
-        &provider.used_modules,
+        &import_map,
+        &used_modules,
     );
     if is_cancelled() {
         return CompletionFlow::Cancelled;
@@ -545,8 +546,8 @@ fn complete_general_context(
         completions,
         context,
         &provider.workspace_index,
-        &provider.import_map,
-        &provider.used_modules,
+        &import_map,
+        &used_modules,
     );
     if is_cancelled() {
         return CompletionFlow::Cancelled;
