@@ -31,7 +31,7 @@
 | perl-kwalitee | — | 82 |
 | perl-lexer | — | 234 |
 | perl-line-index | — | 40 |
-| perl-lsp | — | 1599 |
+| perl-lsp | — | 1601 |
 | perl-lsp-perltidy | — | 34 |
 | perl-lsp-rs-core | — | 3250 |
 | perl-lsp-ux-tests | — | 78 |
