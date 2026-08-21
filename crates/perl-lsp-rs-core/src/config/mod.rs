@@ -4881,7 +4881,17 @@ profile = "recommended"
         let mut config = WorkspaceConfig {
             use_system_inc: true,
             perl_path: Some(perl_path.to_string_lossy().into_owned()),
-            perl_args: vec!["-e".into(), "print \"cache-sentinel\\n\"".into()],
+            // Quote-, space-, and backslash-free program: the sentinel arg
+            // passes through the oracle's env-stripped command, where
+            // embedded double quotes broke arg quoting into a NonZeroExit,
+            // and msys perl on Windows ate the backslash of a qq newline
+            // escape. The trailing semicolon is load-bearing —
+            // `fetch_perl_inc` appends its own `-e` block and perl
+            // concatenates -e programs into ONE script, so without it the
+            // concatenation is a syntax error — and the chr(10) keeps the
+            // sentinel on its own line so it never fuses with the first
+            // @INC entry.
+            perl_args: vec!["-e".into(), "print(qq(cache-sentinel).chr(10));".into()],
             ..WorkspaceConfig::default()
         };
 
