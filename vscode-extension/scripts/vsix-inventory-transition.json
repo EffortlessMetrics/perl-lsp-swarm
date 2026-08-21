@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 7041,
-  "reason": "The transition instrument measures the produced VSIX archive: vsce normalizes the three metadata names (README.md→readme.md, LICENSE→LICENSE.txt, CHANGELOG.md→changelog.md) and its ChangelogProcessor rewrites relative links and issue references during packaging, so the baseline adopts archive naming and packaged bytes. PR #11859 removed the withdrawn organize-imports contributions, shrinking package.json 58611→58170, package.nls.json 2110→2048, and out/extension.js 1463570→1462804; the candidate baseline adopts the measured packaged bytes from CI run 32480935866 attempt 2 subject 7d31d71649166f1193bd3c32444df37ac7194606, whose tree matches current head dc8783a69 after rebase. The adopted totals are the instrument's linux-x64 current-source projection; platform bundle entries stay outside this baseline and are ignored by the instrument in current-source mode.",
+  "reason": "The transition instrument measures the produced VSIX archive: vsce normalizes the three metadata names (README.md→readme.md, LICENSE→LICENSE.txt, CHANGELOG.md→changelog.md) and its ChangelogProcessor rewrites relative links and issue references during packaging, so the baseline adopts archive naming and packaged bytes. PR #11859 removes the withdrawn organize-imports contributions, shrinking package.json, package.nls.json, out/extension.js, and the packaged readme.md. The candidate baseline adopts the exact current-source archive inventory; platform bundle entries stay outside this baseline and are ignored by the instrument in current-source mode.",
   "base_baseline_file_sha256": "f0878ed4a946e4dbe0edc5c9e488a0b9a25d0dbff96afcd8c7a22e99b85d94a4",
-  "candidate_baseline_file_sha256": "48b9b02a4a3652a068503fc3976c12d1e82ee5b54c2ea2fa4b20b00663510afd",
+  "candidate_baseline_file_sha256": "5fd137d8d989b9ae457d765ce001ea77dc5bfeec6161b4b814e60e9c5d71e517",
   "base_inventory_sha256": "7b76e6f3fd1b9ef84bfb828897805940087541cf89e7514d7e1a9316b8ab7ac2",
-  "candidate_inventory_sha256": "e592e47a70aaea8c00aa7c99262c29a8963b3c556c6291061cd5106a4737ebdf"
+  "candidate_inventory_sha256": "86bdbcda8099542244f4ab88121dd7c913bb4d06b6de6c733e0a0756daa0a227"
 }
