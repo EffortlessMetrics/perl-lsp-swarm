@@ -199,7 +199,8 @@ just ci-gate
 
 ```bash
 # Do not blindly delete or recreate a lockfile during conflict repair.
-# First validate locked metadata without mutation and preserve the accepted lock.
+# Validate the repository-local policy fixture/oracle; this does not validate
+# actual Cargo metadata or provide a runtime typed result.
 python3 scripts/ci/validate_cargo_lock_conflict_policy.py --repo-root .
 
 # Always run from repo root
@@ -207,11 +208,13 @@ cd /path/to/perl-lsp
 just ci-gate
 ```
 
-If a manifest change genuinely requires a new lock, the validator returns the typed
-`manifest_requires_lock_change` outcome. Stop for explicit dependency admission; do
-not use `cargo generate-lockfile`, bare `cargo update`, or delete/recreate `Cargo.lock`
-as conflict repair. Nested lock detection remains a gate, but cleanup must be scoped
-to an independently identified accidental artifact rather than a blind deletion.
+If a manifest change genuinely requires a new lock, the validator reports the typed
+fixture/transition proof outcome `manifest_requires_lock_change`. This is not a
+runtime result and does not validate actual Cargo metadata. Stop for explicit
+dependency admission; do not use `cargo generate-lockfile`, bare `cargo update`, or
+delete/recreate `Cargo.lock` as conflict repair. Nested lock detection remains a gate,
+but cleanup must be scoped to an independently identified accidental artifact rather
+than a blind deletion.
 
 The merge gate includes `ci-check-no-nested-lock` to catch this automatically.
 

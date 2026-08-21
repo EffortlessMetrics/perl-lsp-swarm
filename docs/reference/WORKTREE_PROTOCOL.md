@@ -240,9 +240,7 @@ return `SALVAGE_REQUIRED`; publish nothing until state is understood.
 
 This candidate validates the lockfile conflict policy and its fixture oracle; it does
 not validate actual Cargo metadata or provide a production conflict-repair helper.
-The fixture oracle models the accepted `Cargo.lock` preservation policy without
-mutation. The accepted lock remains byte-identical unless an explicit branch
-admission is made for a manifest-required lock change. The typed routing is:
+The fixture oracle models the accepted `Cargo.lock` preservation policy. The accepted lock remains byte-identical without mutation unless an explicit branch admission is made for a manifest-required lock change. The typed routing is:
 
 | Result | Meaning |
 | --- | --- |
