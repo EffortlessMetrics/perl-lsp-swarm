@@ -285,7 +285,7 @@ fn workspace_symbol_visible_without_import(
     module.is_empty()
         || module == "main"
         || module == context.current_package
-        || (used_modules.contains(module)
+        || (module_has_import_authority(module, import_map, used_modules)
             && match import_map.get(module) {
                 None => true,
                 Some(symbols) => symbols.contains(&symbol.name),
@@ -374,11 +374,22 @@ fn visible_symbol_has_import_authority(
         return true;
     };
 
-    used_modules.contains(module)
+    module_has_import_authority(module, import_map, used_modules)
         && match import_map.get(module) {
             None => true,
             Some(symbols) => symbols.contains(&symbol.name),
         }
+}
+
+/// `used_modules` covers `use` statements for the unknown-receiver fallback.
+/// An exact runtime `require Module; Module->import(...)` fact is also import
+/// authority, and is already represented by the symbol-specific `import_map`.
+fn module_has_import_authority(
+    module: &str,
+    import_map: &HashMap<String, HashSet<String>>,
+    used_modules: &HashSet<String>,
+) -> bool {
+    used_modules.contains(module) || import_map.contains_key(module)
 }
 
 fn is_live_visible_completion_candidate(symbol: &VisibleSymbol) -> bool {
@@ -2458,8 +2469,12 @@ fn semantic_file_id(uri: &str) -> FileId {
 
 #[cfg(test)]
 mod visible_symbol_completion_tests {
-    use super::{VisibleSymbol, VisibleSymbolSource, is_live_visible_completion_candidate};
-    use perl_semantic_facts::{Confidence, EntityId};
+    use super::{
+        VisibleSymbol, VisibleSymbolSource, is_live_visible_completion_candidate,
+        visible_symbol_has_import_authority,
+    };
+    use perl_semantic_facts::{Confidence, EntityId, VisibleSymbolContext};
+    use std::collections::{HashMap, HashSet};
 
     fn visible(source: VisibleSymbolSource, confidence: Confidence) -> VisibleSymbol {
         VisibleSymbol {
@@ -2502,6 +2517,20 @@ mod visible_symbol_completion_tests {
             VisibleSymbolSource::LocalLexical,
             Confidence::High,
         )));
+    }
+
+    #[test]
+    fn explicit_runtime_import_is_authority_without_use_module_entry() {
+        let symbol = VisibleSymbol {
+            name: "bar".to_string(),
+            entity_id: Some(EntityId(1)),
+            source: VisibleSymbolSource::ExplicitImport,
+            confidence: Confidence::High,
+            context: Some(VisibleSymbolContext::new(Some("Foo".to_string()), None, None)),
+        };
+        let import_map = HashMap::from([("Foo".to_string(), HashSet::from(["bar".to_string()]))]);
+
+        assert!(visible_symbol_has_import_authority(&symbol, &import_map, &HashSet::new()));
     }
 }
 

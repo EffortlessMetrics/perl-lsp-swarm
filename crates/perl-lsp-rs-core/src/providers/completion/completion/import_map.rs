@@ -164,6 +164,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn runtime_import_records_explicit_symbols() {
+        let code = "require Foo; Foo->import(qw(bar));\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let map = extract_import_map(&ast);
+
+        let symbols = must_some(map.get("Foo"));
+        assert_eq!(symbols, &HashSet::from(["bar".to_string()]));
+    }
+
     /// Multiple explicit symbols alongside an unresolved tag — all explicit symbols
     /// must survive; unresolvable tag symbols are silently omitted (acceptable partial miss).
     #[test]
