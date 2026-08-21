@@ -1425,7 +1425,11 @@ impl LspServer {
                         perl,
                         perl_lsp_rs_core::config::WorkspaceConfigUpdateContext {
                             workspace_root: root_path.as_deref(),
-                            apply_external_include_paths: true,
+                            external_include_paths:
+                                perl_lsp_rs_core::config::ExternalIncludePathAuthority::Untrusted(
+                                    perl_lsp_rs_core::config::UnauthorizedExternalIncludePathSource::
+                                        DidChangeConfiguration,
+                                ),
                         },
                     );
                     for entry in rejected {
@@ -1456,7 +1460,13 @@ impl LspServer {
                         let mut effective_config =
                             perl_lsp_rs_core::config::WorkspaceConfig::default();
                         if let Some(init_opts) = init_options_perl.as_ref() {
-                            let rejected = effective_config.update_from_value(init_opts);
+                            let rejected = effective_config.update_from_value_with_context(
+                                init_opts,
+                                perl_lsp_rs_core::config::WorkspaceConfigUpdateContext {
+                                    workspace_root: folder.path.as_deref(),
+                                    external_include_paths: perl_lsp_rs_core::config::ExternalIncludePathAuthority::Untrusted(perl_lsp_rs_core::config::UnauthorizedExternalIncludePathSource::InitializationOptions),
+                                },
+                            );
                             for entry in rejected {
                                 tracing::warn!(
                                     target: "perl_lsp::config",
@@ -1480,7 +1490,11 @@ impl LspServer {
                             perl,
                             perl_lsp_rs_core::config::WorkspaceConfigUpdateContext {
                                 workspace_root: folder.path.as_deref(),
-                                apply_external_include_paths: true,
+                                external_include_paths:
+                                    perl_lsp_rs_core::config::ExternalIncludePathAuthority::Untrusted(
+                                        perl_lsp_rs_core::config::UnauthorizedExternalIncludePathSource::
+                                            DidChangeConfiguration,
+                                    ),
                             },
                         );
                         for entry in rejected {
