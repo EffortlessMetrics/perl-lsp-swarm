@@ -135,6 +135,39 @@ fn trusted_project_external_formatter_reaches_injected_runtime()
 }
 
 #[test]
+fn multi_range_external_formatter_reaches_injected_runtime()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::Ranges);
+    let runtime = Arc::new(MockSubprocessRuntime::new());
+    runtime.add_response(MockResponse::success("my $x = 1;\nmy $y = 2;\n"));
+    server.test_install_formatter_runtime(runtime.clone());
+    server.config.lock().formatting_engine = FormatterMode::ExternalLegacy;
+
+    let uri = "file:///multi-range-external-formatting.pl";
+    server.test_apply_did_open(uri, "my$x=1;\nmy$y=2;\n", 1)?;
+    let result = server.handle_ranges_formatting_policy(
+        Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "ranges": [
+                {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 2, "character": 0 }
+                }
+            ],
+            "options": { "tabSize": 4, "insertSpaces": true }
+        })),
+        None,
+    )?;
+
+    let edits = result.ok_or("multi-range external formatting returned no response")?;
+    assert_eq!(edits.as_array().map(Vec::len), Some(1));
+    assert_eq!(runtime.invocations().len(), 1);
+    assert_eq!(receipt(&server)?["actual_engine"], "external_legacy");
+    Ok(())
+}
+
+#[test]
 fn cancellation_records_a_typed_receipt() -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     advertise(&server, Surface::Document);
