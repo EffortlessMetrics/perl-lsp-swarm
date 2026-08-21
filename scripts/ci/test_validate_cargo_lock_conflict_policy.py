@@ -59,6 +59,31 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
                 ["cases[0] must be a mapping", "cases[1] must be a mapping"],
             )
 
+    def test_not_proven_cases_reject_malformed_context_and_command_types(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fixture = root / validator.FIXTURE
+            source = root / "source.txt"
+            fixture.parent.mkdir(parents=True)
+            source.write_text("anchor\n", encoding="utf-8")
+            fixture.write_text(
+                '{"cases": [{"id": "bad-context", "path": "source.txt", '
+                '"needle": "anchor", "context": [], "command": "x", '
+                '"expected": "not_proven", "semantics": {"required": ["anchor"]}}, '
+                '{"id": "bad-command", "path": "source.txt", "needle": "anchor", '
+                '"context": "dynamic", "command": {}, "expected": "not_proven", '
+                '"semantics": {"required": ["anchor"]}}]}',
+                encoding="utf-8",
+            )
+            errors = validator.validate(root)
+            self.assertEqual(
+                errors[:2],
+                [
+                    "bad-context: context must be a string",
+                    "bad-command: command must be a string or null",
+                ],
+            )
+
     def test_weakened_policy_text_is_rejected(self) -> None:
         errors = validator.validate_semantics(
             "Active conflict repair may use `cargo generate-lockfile`.\n",
@@ -98,6 +123,9 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
         source = "intro\nanchor statement\ntrailing\n"
         self.assertEqual(validator.anchor_line(source, "anchor statement"), 2)
         self.assertIsNone(validator.anchor_line(source, "missing"))
+
+    def test_duplicate_source_needles_are_rejected_by_anchor_line(self) -> None:
+        self.assertIsNone(validator.anchor_line("duplicate\nduplicate\n", "duplicate"))
 
     def test_compatible_accepted_lock_is_byte_identical(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

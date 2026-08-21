@@ -173,6 +173,12 @@ def validate(root: Path) -> list[str]:
             continue
         if not isinstance(expected, str) or expected not in OUTCOMES:
             errors.append(f"{case_id}: unsupported expected outcome {expected!r}")
+        context = case.get("context")
+        command = case.get("command")
+        if not isinstance(context, str):
+            errors.append(f"{case_id}: context must be a string")
+        if not isinstance(command, (str, type(None))):
+            errors.append(f"{case_id}: command must be a string or null")
         source_path = root / path
         try:
             source = source_path.read_text(encoding="utf-8")
