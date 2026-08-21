@@ -8816,9 +8816,10 @@ sub inspect {
 /// document variables (`$var`) in addition to keywords and built-ins.
 ///
 /// Confirms that `add_all_variables` correctly populates from the symbol table
-/// when the provider is built via `new_with_index_and_source` (the same path
-/// used by `handle_completion_cancellable` in the production binary). This is
-/// the provider-level seam the integration test probes at the binary level.
+/// when the provider is built via `new_with_index_and_source_and_paths` and
+/// queried through `get_completions_with_path_cancellable`, the production
+/// provider seam. Binary launch and document-state behavior remain outside
+/// this unit test's scope.
 #[test]
 fn test_empty_prefix_emits_document_variables() {
     // Matches the fixture in lsp_completion_tests::test_empty_prefix_completion.
@@ -8829,10 +8830,16 @@ fn test_empty_prefix_emits_document_variables() {
     let mut parser = Parser::new(source);
     let ast = must(parser.parse());
 
-    // Build the provider the same way the production completion handler does:
-    // new_with_index_and_source so the symbol table is extracted from the AST.
-    let provider = CompletionProvider::new_with_index_and_source(&ast, source, None);
-    let completions = provider.get_completions(source, pos);
+    // Build and query the provider through the production completion seam.
+    let provider = CompletionProvider::new_with_index_and_source_and_paths(
+        &ast,
+        source,
+        None,
+        Vec::new(),
+        Vec::new(),
+        false,
+    );
+    let completions = provider.get_completions_with_path_cancellable(source, pos, None, &|| false);
 
     let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
 
