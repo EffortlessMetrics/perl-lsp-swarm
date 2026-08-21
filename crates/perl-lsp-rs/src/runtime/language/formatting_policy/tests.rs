@@ -1,6 +1,6 @@
 use super::*;
 use crate::protocol::{JsonRpcId, JsonRpcRequest};
-use perl_subprocess_runtime::mock::MockSubprocessRuntime;
+use perl_subprocess_runtime::mock::{MockResponse, MockSubprocessRuntime};
 use std::sync::Arc;
 
 fn advertise(server: &LspServer, surface: Surface) {
@@ -90,6 +90,47 @@ fn generic_external_formatter_alias_is_contained_before_formatting()
     let receipt = receipt(&server)?;
     assert_eq!(receipt["actual_engine"], "native");
     assert_eq!(receipt["effective_mode"], "native");
+    Ok(())
+}
+
+#[test]
+fn trusted_project_external_formatter_reaches_injected_runtime()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::Document);
+    let runtime = Arc::new(MockSubprocessRuntime::new());
+    runtime.add_response(MockResponse::success("my $x = 1;\n"));
+    server.test_install_formatter_runtime(runtime.clone());
+
+    let temp = tempfile::tempdir()?;
+    std::fs::write(
+        temp.path().join(".perl-lsp.toml"),
+        "[formatting]\nengine = \"external-perltidy\"\n",
+    )?;
+    let folder_uri = url::Url::from_directory_path(temp.path())
+        .map_err(|()| "failed to create project folder URI")?
+        .to_string();
+    server.workspace_folders.lock().push(
+        crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+            .with_path(temp.path().to_path_buf()),
+    );
+    server.load_and_apply_project_config();
+
+    assert_eq!(server.config.lock().formatting_engine, FormatterMode::ExternalLegacy);
+    let uri = "file:///project-external-formatting.pl";
+    server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
+    let result = server.handle_formatting_policy(
+        Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })),
+        None,
+    )?;
+
+    let edits = result.ok_or("project external formatting returned no response")?;
+    assert_eq!(edits.as_array().map(Vec::len), Some(1));
+    assert_eq!(runtime.invocations().len(), 1);
+    assert_eq!(receipt(&server)?["actual_engine"], "external_legacy");
     Ok(())
 }
 

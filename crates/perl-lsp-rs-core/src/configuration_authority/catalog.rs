@@ -505,7 +505,7 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         Server.formatting_engine,
         Global,
         Enum,
-        CLIENT_FOLDER,
+        CLIENT_GLOBAL,
         Validation::KnownEnum,
         KeepLastValid,
         Ordinary,
