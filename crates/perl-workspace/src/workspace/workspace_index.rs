@@ -2142,6 +2142,13 @@ impl WorkspaceIndex {
     /// ```
     ///
     /// Returns: `Ok(())` when indexing succeeds, otherwise an error string.
+    ///
+    /// # Compatibility and migration
+    ///
+    /// This is a deprecated compatibility surface retained for existing
+    /// initial-index callers. New code should use [`Self::index_initial_file`]
+    /// for discovery/import or [`Self::index_live_file`] for an owner-checked
+    /// live source commit.
     pub fn index_file(&self, uri: Url, text: String) -> Result<(), String> {
         self.index_initial_file(uri, text)
     }
@@ -2176,7 +2183,8 @@ impl WorkspaceIndex {
             let _lifecycle = self.lifecycle_guard(&key);
             let mut files = self.files.write();
             if let Some(file) = files.get_mut(&key) {
-                if file.generation > commit.generation.get() {
+                let high_water = file.generation.max(file.pending_generation);
+                if high_water > commit.generation.get() {
                     return SourceCommitOutcome::RejectedStale;
                 }
                 if file.content_hash == content_hash {
@@ -2196,6 +2204,13 @@ impl WorkspaceIndex {
     }
 
     /// Index a file from its URI, text content, and document generation.
+    ///
+    /// # Compatibility and migration
+    ///
+    /// This is a deprecated compatibility surface for callers that still pass
+    /// a raw generation. New initial-index code should use
+    /// [`Self::index_initial_file`], and live source commits should use
+    /// [`Self::index_live_file`] with [`SourceCommit`].
     pub fn index_file_with_generation(
         &self,
         uri: Url,
@@ -2831,6 +2846,12 @@ impl WorkspaceIndex {
     /// # Ok(())
     /// # }
     /// ```
+    /// # Compatibility and migration
+    ///
+    /// This is a deprecated compatibility surface retained for existing
+    /// initial-index callers. New code should use [`Self::index_initial_file_str`]
+    /// for discovery/import or [`Self::index_live_file`] for an owner-checked
+    /// live source commit.
     pub fn index_file_str(&self, uri: &str, text: &str) -> Result<(), String> {
         let path = Path::new(uri);
         let url = if path.is_absolute() {
@@ -14345,6 +14366,32 @@ sub bar { return $greeting; }
                 "package NoOpGeneration; sub older { 2 } 1;".to_string(),
                 SourceCommit::new(generation_one),
             ),
+            SourceCommitOutcome::RejectedStale
+        );
+    }
+
+    #[test]
+    fn live_noop_rejects_generation_below_pending_high_water() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit-pending-noop.pl"));
+        let text = "package PendingNoOp; sub stable { 1 } 1;".to_string();
+        let generation_one = NonZeroU32::new(1).expect("test generation is non-zero");
+
+        must(index.index_initial_file(uri.clone(), text.clone()));
+        let key = DocumentStore::uri_key(uri.as_str());
+        {
+            // Model the ordered state after a newer live writer reserves its
+            // generation but before it publishes parsed content. The lower
+            // live commit has identical content, which used to bypass the
+            // pending high-water guard through the NoOp fast path.
+            let mut files = index.files.write();
+            let file = files.get_mut(&key).expect("initial file is present");
+            file.pending_generation = 3;
+            assert_eq!(file.generation, 0);
+        }
+
+        assert_eq!(
+            index.index_live_file(uri, text, SourceCommit::new(generation_one)),
             SourceCommitOutcome::RejectedStale
         );
     }
