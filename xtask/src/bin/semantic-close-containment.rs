@@ -590,8 +590,10 @@ fn evaluate_relation(
     };
 
     let controlling = section_text(sections, &[SectionKind::ControllingIssue]);
-    let scoped_to_issue =
-        relation_count == 1 || references_issue(&controlling, &relation.key, &pull.repository);
+    let claim_boundary = section_text(sections, &[SectionKind::ClaimBoundary]);
+    let scoped_to_issue = relation_count == 1
+        || references_issue(&controlling, &relation.key, &pull.repository)
+        || references_issue(&claim_boundary, &relation.key, &pull.repository);
 
     if issue_is_controller(&issue)
         && !has_semantic_close_packet(sections, &relation.key, &pull.repository)
@@ -639,7 +641,13 @@ fn evaluate_relation(
     if scoped_to_issue && !issue_is_phase_leaf(&issue) {
         let phase_text = format!(
             "{}\n{}",
-            section_text(sections, &[SectionKind::ClaimBoundary]),
+            relation_scoped_section_text(
+                sections,
+                &[SectionKind::ClaimBoundary],
+                relation_count,
+                &relation.key,
+                &pull.repository,
+            ),
             relation.source_line
         );
         if contains_partial_boundary(&phase_text) {
@@ -653,7 +661,14 @@ fn evaluate_relation(
         }
     }
 
-    if scoped_to_issue && explicitly_not_proven_required_work(sections) {
+    let explicitly_unproven_text = relation_scoped_section_text(
+        sections,
+        &[SectionKind::ClaimBoundary, SectionKind::NonGoals],
+        relation_count,
+        &relation.key,
+        &pull.repository,
+    );
+    if scoped_to_issue && explicitly_not_proven_required_work(&explicitly_unproven_text) {
         return failed_row(
             &relation,
             ResultCode::FailExplicitUnprovenRequiredWork,
@@ -742,7 +757,7 @@ fn parse_closing_relations(body: &str, current_repository: &str) -> Result<Vec<C
         bail!("PR body exceeds the bounded containment input");
     }
     let relation_re = Regex::new(
-        r"(?i)\b(close(?:s|d)?|fix(?:es|ed)?|resolve(?:s|d)?)\s+(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<number>[0-9]+)\b",
+        r"(?i)\b(close(?:s|d)?|fix(?:es|ed)?|resolve(?:s|d)?)\s+(?:https://github\.com/(?P<url_repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(?P<url_number>[0-9]+)\b|(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<number>[0-9]+)\b)",
     )
     .context("compiling closing-relation parser")?;
     let mut relations = Vec::new();
@@ -773,12 +788,13 @@ fn parse_closing_relations(body: &str, current_repository: &str) -> Result<Vec<C
                 .get(1)
                 .map(|value| value.as_str().to_ascii_lowercase())
                 .context("closing relation omitted keyword")?;
-            let repository = match capture.name("repo") {
+            let repository = match capture.name("url_repo").or_else(|| capture.name("repo")) {
                 Some(value) => canonical_repository(value.as_str())?,
                 None => current_repository.to_string(),
             };
             let number = capture
-                .name("number")
+                .name("url_number")
+                .or_else(|| capture.name("number"))
                 .context("closing relation omitted issue number")?
                 .as_str()
                 .parse::<u64>()
@@ -803,6 +819,7 @@ fn parse_sections(body: &str, max_body_bytes: usize) -> Result<BTreeMap<SectionK
     }
     let mut sections: BTreeMap<SectionKind, Section> = BTreeMap::new();
     let mut current: Option<SectionKind> = None;
+    let mut current_level: Option<usize> = None;
     let mut fence: Option<char> = None;
 
     for line in body.lines() {
@@ -822,6 +839,14 @@ fn parse_sections(body: &str, max_body_bytes: usize) -> Result<BTreeMap<SectionK
             let section = sections.entry(kind).or_default();
             section.headings.push(heading);
             current = Some(kind);
+            current_level = markdown_heading_level(trimmed);
+            continue;
+        }
+        if let Some(level) = markdown_heading_level(trimmed)
+            && current_level.is_some_and(|current| level <= current)
+        {
+            current = None;
+            current_level = None;
             continue;
         }
         if let Some(kind) = current {
@@ -879,6 +904,15 @@ fn classify_heading(line: &str) -> Option<(SectionKind, String)> {
         return None;
     };
     Some((kind, sanitize_for_output(heading, 512)))
+}
+
+fn markdown_heading_level(line: &str) -> Option<usize> {
+    let hash_count = line.chars().take_while(|character| *character == '#').count();
+    if !(2..=6).contains(&hash_count) {
+        return None;
+    }
+    let heading = line.get(hash_count..)?.trim().trim_matches('*').trim();
+    (!heading.is_empty()).then_some(hash_count)
 }
 
 fn fence_marker(line: &str) -> Option<char> {
@@ -961,9 +995,8 @@ fn proof_level_is_explicitly_excluded(
     TERMS.iter().any(|term| issue_requirements.contains(term) && exclusions.contains(term))
 }
 
-fn explicitly_not_proven_required_work(sections: &BTreeMap<SectionKind, Section>) -> bool {
-    let text = section_text(sections, &[SectionKind::ClaimBoundary, SectionKind::NonGoals])
-        .to_ascii_lowercase();
+fn explicitly_not_proven_required_work(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
     contains_explicit_exclusion(&text)
         && [
             "full",
@@ -1017,7 +1050,29 @@ fn references_issue(text: &str, key: &IssueKey, current_repository: &str) -> boo
         return true;
     }
     let qualified = format!("{}#{}", key.repository, key.number);
-    text.to_ascii_lowercase().contains(&qualified)
+    let lower = text.to_ascii_lowercase();
+    lower.contains(&qualified)
+        || lower.contains(&format!("https://github.com/{}/issues/{}", key.repository, key.number))
+}
+
+fn relation_scoped_section_text(
+    sections: &BTreeMap<SectionKind, Section>,
+    kinds: &[SectionKind],
+    relation_count: usize,
+    key: &IssueKey,
+    current_repository: &str,
+) -> String {
+    if relation_count == 1 {
+        return section_text(sections, kinds);
+    }
+
+    kinds
+        .iter()
+        .filter_map(|kind| sections.get(kind))
+        .flat_map(|section| section.body.lines())
+        .filter(|line| references_issue(line, key, current_repository))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn references_number(text: &str, number: u64) -> bool {
@@ -1262,9 +1317,21 @@ mod tests {
 
     #[test]
     fn code_fences_and_blockquotes_do_not_create_terminal_relations() -> Result<()> {
-        let body = "```text\nCloses #123\n```\n> Fixes #456\nRefs #789\n";
+        let body = "```text\nCloses #123\nCloses https://github.com/org/repo/issues/124\n```\n> Fixes #456\nRefs #789\n";
         let relations = parse_closing_relations(body, "effortlessmetrics/perl-lsp-swarm")?;
         assert!(relations.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn github_url_terminal_relation_is_parsed_and_normalized() -> Result<()> {
+        let relations = parse_closing_relations(
+            "Closes https://github.com/OtherOrg/OtherRepo/issues/42",
+            "effortlessmetrics/perl-lsp-swarm",
+        )?;
+        assert_eq!(relations.len(), 1);
+        assert_eq!(relations[0].key.repository, "otherorg/otherrepo");
+        assert_eq!(relations[0].key.number, 42);
         Ok(())
     }
 
@@ -1277,6 +1344,62 @@ mod tests {
         assert_eq!(relations.len(), 1);
         assert_eq!(relations[0].key.repository, "otherorg/otherrepo");
         assert_eq!(relations[0].key.number, 42);
+        Ok(())
+    }
+
+    #[test]
+    fn multiple_relations_use_only_their_claim_boundary_association() -> Result<()> {
+        let pull = PullRequestSubject {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 9000002,
+            title: "test: relation-specific boundary scope".into(),
+            body: "## Claim Boundary\n#1 is a partial phase only.\n#2 is a complete implementation.\n\nCloses #1\nCloses #2\n".into(),
+        };
+        let report = evaluate(&pull, |key| {
+            IssueEvidence::Available(IssueSubject {
+                number: key.number,
+                title: format!("issue #{}", key.number),
+                body: "## Acceptance\nThe complete issue is required.".into(),
+            })
+        })?;
+        assert_eq!(report.rows.len(), 2);
+        assert_eq!(report.rows[0].issue_number, 1);
+        assert_eq!(report.rows[0].code, ResultCode::FailPhaseTerminalRelation);
+        assert_eq!(report.rows[1].issue_number, 2);
+        assert_eq!(report.rows[1].code, ResultCode::PassNoHighConfidenceContradiction);
+        Ok(())
+    }
+
+    #[test]
+    fn multiple_relations_scope_explicitly_unproven_work_to_the_named_issue() -> Result<()> {
+        let pull = PullRequestSubject {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 9000002,
+            title: "test: relation-specific unproven scope".into(),
+            body: "## Claim Boundary\n#1 does not prove full acceptance.\n#2 proves full acceptance.\n\nCloses #1\nCloses #2\n".into(),
+        };
+        let report = evaluate(&pull, |key| {
+            IssueEvidence::Available(IssueSubject {
+                number: key.number,
+                title: format!("issue #{}", key.number),
+                body: "## Acceptance\nThe complete issue is required.".into(),
+            })
+        })?;
+        assert_eq!(report.rows[0].code, ResultCode::FailExplicitUnprovenRequiredWork);
+        assert_eq!(report.rows[1].code, ResultCode::PassNoHighConfidenceContradiction);
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_sibling_headings_end_stable_sections_but_nested_headings_do_not() -> Result<()> {
+        let sections = parse_sections(
+            "## Claim Boundary\nfirst boundary line\n### Unrecognized nested heading\nnested boundary line\n## Unrecognized sibling heading\nsibling prose must not be boundary\n",
+            MAX_PR_BODY_BYTES,
+        )?;
+        let boundary = section_text(&sections, &[SectionKind::ClaimBoundary]);
+        assert!(boundary.contains("first boundary line"));
+        assert!(boundary.contains("nested boundary line"));
+        assert!(!boundary.contains("sibling prose must not be boundary"));
         Ok(())
     }
 
