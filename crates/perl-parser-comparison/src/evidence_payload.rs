@@ -894,6 +894,29 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
                     "privacy": {"enum": ["public", "redacted", "private"]}
                 }),
             ),
+            "diagnostic_summary": object_schema(
+                &["diagnostic_count", "recovery_observed", "error_node_observed"],
+                json!({
+                    "diagnostic_count": {"type": "integer", "minimum": 0},
+                    "recovery_observed": {"type": "boolean"},
+                    "error_node_observed": {"type": "boolean"}
+                }),
+            ),
+            "mismatch_detail": object_schema(
+                &["class", "first_divergence"],
+                json!({
+                    "class": registered_or_enum_schema(&[
+                        "wrong_kind", "wrong_parent_or_field", "wrong_order_or_ownership",
+                        "wrong_value_or_payload", "wrong_range_or_geometry",
+                        "wrong_recovery_or_terminal_state", "silently_empty", "wrong_but_plausible"
+                    ]),
+                    "first_divergence": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                    }
+                }),
+            ),
             "subject_execution": object_schema(
                 &[
                     "schema_version", "source_case", "subject_manifest", "harness",
@@ -919,7 +942,7 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
                     "instrument_state": {"enum": [
                         "complete", "partial", "unavailable", "failed", "truncated", "schema_mismatch"
                     ]},
-                    "diagnostics": {"type": "object"},
+                    "diagnostics": {"$ref": "#/$defs/diagnostic_summary"},
                     "attachments": {"type": "array", "items": {"$ref": "#/$defs/attachment"}},
                     "semantic_digest": {"$ref": "#/$defs/semantic_digest"}
                 }),
@@ -959,7 +982,10 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
                     ]},
                     "expected_fingerprint": {"type": ["string", "null"]},
                     "actual_fingerprint": {"type": ["string", "null"]},
-                    "mismatch": {"type": ["object", "null"]},
+                    "mismatch": {"oneOf": [
+                        {"type": "null"},
+                        {"$ref": "#/$defs/mismatch_detail"}
+                    ]},
                     "reason": {"type": ["string", "null"]},
                     "attachments": {"type": "array", "items": {"$ref": "#/$defs/attachment"}},
                     "semantic_digest": {"$ref": "#/$defs/semantic_digest"}

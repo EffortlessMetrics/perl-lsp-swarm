@@ -529,6 +529,79 @@ fn schema_rejects_arbitrary_modeled_values() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[test]
+fn schema_rejects_malformed_terminal_nested_shapes() -> Result<(), Box<dyn Error>> {
+    let generic = generic_execution(InstrumentState::Complete)?;
+    let execution = execution_evidence(&generic, Vec::new())?;
+    let schema: Value = serde_json::from_str(&parser_comparison_evidence_schema_json()?)?;
+
+    let mut malformed_diagnostics: Value =
+        serde_json::from_str(&execution.canonical_payload_json()?)?;
+    malformed_diagnostics["diagnostics"]["diagnostic_count"] = Value::String("one".to_owned());
+    assert!(
+        validate_value(&malformed_diagnostics, &schema, &schema).is_err(),
+        "diagnostic_count type"
+    );
+
+    let mut missing_diagnostic_field: Value =
+        serde_json::from_str(&execution.canonical_payload_json()?)?;
+    missing_diagnostic_field["diagnostics"]
+        .as_object_mut()
+        .ok_or("diagnostics must be an object")?
+        .remove("error_node_observed");
+    assert!(
+        validate_value(&missing_diagnostic_field, &schema, &schema).is_err(),
+        "diagnostic required field"
+    );
+
+    let mut extra_diagnostic_field: Value =
+        serde_json::from_str(&execution.canonical_payload_json()?)?;
+    extra_diagnostic_field["diagnostics"]["unexpected"] = Value::Bool(true);
+    assert!(
+        validate_value(&extra_diagnostic_field, &schema, &schema).is_err(),
+        "diagnostic additional property"
+    );
+
+    let observer = observer_manifest("observer.structure.v1", ObservationPlane::Structure)?;
+    let observation = exact_observation(&execution, observer.clone(), "assignment(actual)")?;
+    let comparison = ScoredComparison::mismatch(
+        &generic,
+        ObserverId::new("observer.structure.v1")?,
+        ReviewedExpectationId::new("obligation.assignment.shape.v1")?,
+        ObservationPlane::Structure,
+        SemanticFingerprint::new("assignment(expected)")?,
+        SemanticFingerprint::new("assignment(actual)")?,
+        MismatchDetail::new(MismatchClass::WrongKind, DivergencePath::new("children[0]")?),
+    )?;
+    let conformance = SubjectConformanceEvidence::scored(
+        &observation,
+        obligation(observer)?,
+        &comparison,
+        Vec::new(),
+    )?;
+
+    let mut invalid_mismatch: Value = serde_json::from_str(&conformance.canonical_payload_json()?)?;
+    invalid_mismatch["mismatch"]["class"] = Value::String("arbitrary_mismatch".to_owned());
+    assert!(validate_value(&invalid_mismatch, &schema, &schema).is_err(), "mismatch class");
+
+    let mut invalid_first_divergence: Value =
+        serde_json::from_str(&conformance.canonical_payload_json()?)?;
+    invalid_first_divergence["mismatch"]["first_divergence"] = Value::String(String::new());
+    assert!(
+        validate_value(&invalid_first_divergence, &schema, &schema).is_err(),
+        "first divergence"
+    );
+
+    let mut extra_mismatch_field: Value =
+        serde_json::from_str(&conformance.canonical_payload_json()?)?;
+    extra_mismatch_field["mismatch"]["unexpected"] = Value::Bool(true);
+    assert!(
+        validate_value(&extra_mismatch_field, &schema, &schema).is_err(),
+        "mismatch additional property"
+    );
+    Ok(())
+}
+
 #[cfg(feature = "historical")]
 #[test]
 fn harness_terminal_execution_reaches_durable_schema_evidence() -> Result<(), Box<dyn Error>> {
@@ -614,6 +687,16 @@ fn validate_value(value: &Value, schema: &Value, root: &Value) -> Result<(), Str
         }
     }
     if let Some(string) = value.as_str() {
+        if let Some(minimum) = schema.get("minLength").and_then(Value::as_u64) {
+            if string.chars().count() < minimum as usize {
+                return Err("minimum string length mismatch".to_owned());
+            }
+        }
+        if let Some(maximum) = schema.get("maxLength").and_then(Value::as_u64) {
+            if string.chars().count() > maximum as usize {
+                return Err("maximum string length mismatch".to_owned());
+            }
+        }
         if let Some(pattern) = schema.get("pattern").and_then(Value::as_str) {
             if !matches_pattern(string, pattern) {
                 return Err("pattern mismatch".to_owned());
@@ -634,6 +717,7 @@ fn matches_type(value: &Value, kind: &str) -> bool {
         "object" => value.is_object(),
         "array" => value.is_array(),
         "string" => value.is_string(),
+        "boolean" => value.is_boolean(),
         "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
         "number" => value.is_number(),
         _ => false,
