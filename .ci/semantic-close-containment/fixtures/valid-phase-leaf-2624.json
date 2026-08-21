@@ -1,0 +1,35 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/2624"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves only the CP00 contradiction class."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 990004,
+    "title": "policy(cargo-allow): commit the Phase 1 advisory baseline (#2624)",
+    "body": "## Claim Boundary (Phase 1 only)\n\nThe advisory baseline named by the issue is complete.\n\nCloses #2624."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 2624,
+      "title": "policy(cargo-allow): commit baseline debt floor (179 entries, advisory)",
+      "body": "Baseline debt floor for cargo-allow policy established via ratchet.\n\nThis is Phase 1 (establish baseline); enforcement comes in a follow-up.\n\n## Acceptance\n\nThe advisory 179-entry baseline is committed with its exact schema and expiry."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 2624,
+        "code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION"
+      }
+    ]
+  }
+}

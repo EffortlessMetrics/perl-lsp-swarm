@@ -31,9 +31,9 @@
 | perl-kwalitee | — | 82 |
 | perl-lexer | — | 234 |
 | perl-line-index | — | 40 |
-| perl-lsp | — | 1588 |
+| perl-lsp | — | 1601 |
 | perl-lsp-perltidy | — | 34 |
-| perl-lsp-rs-core | — | 3240 |
+| perl-lsp-rs-core | — | 3250 |
 | perl-lsp-ux-tests | — | 78 |
 | perl-module | — | 20 |
 | perl-parser | — | 355 |
@@ -45,7 +45,7 @@
 | perl-regex | — | 80 |
 | perl-ripr-facts | — | 149 |
 | perl-semantic-analyzer | — | 431 |
-| perl-semantic-facts | — | 83 |
+| perl-semantic-facts | — | 85 |
 | perl-source-identity | — | 63 |
 | perl-subprocess-runtime | — | 38 |
 | perl-symbol | — | 77 |
@@ -56,7 +56,7 @@
 | perl-token | — | 55 |
 | perl-tree-sitter-compat | — | 12 |
 | perl-uri | — | 60 |
-| perl-workspace | — | 771 |
+| perl-workspace | — | 781 |
 | perl-workspace-core | — | 122 |
 | tree-sitter-perl-c | — | 13 |
 | tree-sitter-perl-rs | — | 47 |

@@ -33,6 +33,17 @@ on:
       - 'scripts/ci/test_validate_policy_checks_inventory.py'
       - 'docs/ci/policy-checks-inventory.md'
       - 'scripts/ci/validate_provider_fact_reads.py'
+      - 'scripts/ci/validate_cargo_lock_conflict_policy.py'
+      - 'scripts/ci/test_validate_cargo_lock_conflict_policy.py'
+      - 'scripts/ci/fixtures/cargo_lock_conflict_policy.json'
+      - 'docs/how-to/DEPENDENCY_QUICK_REFERENCE.md'
+      - 'docs/how-to/DEPENDENCY_MANAGEMENT.md'
+      - 'docs/reference/WORKTREE_PROTOCOL.md'
+      - 'docs/project/CI_LOCAL_VALIDATION.md'
+      - 'scripts/ci/check_perl_lsp_rs_core_package.py'
+      - 'docs/release/RUNBOOK.md'
+      - 'docs/project/RELEASE_RUNBOOK_0_12_3.md'
+      - 'justfile'
       # The fact-read inventory anchors to provider SOURCES: editing a governed
       # provider source without touching the catalog is the primary drift class,
       # so these paths (the exact roots of every catalog-anchored source) must
@@ -121,6 +132,11 @@ jobs:
       - name: Validate provider fact-read inventory
         run: |
           python3 scripts/ci/validate_provider_fact_reads.py
+
+      - name: Validate Cargo.lock conflict-repair policy
+        run: |
+          python3 scripts/ci/test_validate_cargo_lock_conflict_policy.py
+          python3 scripts/ci/validate_cargo_lock_conflict_policy.py --repo-root .
 
       - name: Validate bounded-result overflow invariants
         run: |

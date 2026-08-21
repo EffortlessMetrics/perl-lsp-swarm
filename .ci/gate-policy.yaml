@@ -470,6 +470,22 @@ gates:
     planning:
       role: always_on
 
+  - name: source_commit_api_check
+    tier: pr_fast
+    description: "Validate source-commit API callers against the owner ledger"
+    required: true
+    command: python3 scripts/ci/check_source_commit_api.py
+    timeout_seconds: 30
+    retry_count: 0
+    budgets:
+      max_duration_ms: 10000
+    quarantine: false
+    tags:
+      - workspace
+      - caller-ledger
+    planning:
+      role: always_on
+
   - name: clippy_scoped
     tier: pr_fast
     description: "Scope-aware library clippy for ci-scope selected crates"

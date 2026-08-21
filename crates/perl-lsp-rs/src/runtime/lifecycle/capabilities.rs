@@ -1018,6 +1018,14 @@ mod tests {
                     },
                     "inlayHints": {
                         "enabled": false
+                    },
+                    "testRunner": {
+                        "enabled": true,
+                        "command": "CANARY-EXECUTABLE",
+                        "args": ["CANARY-ARG"],
+                        "cwd": "CANARY-CWD",
+                        "env": {"CANARY": "CANARY-VALUE"},
+                        "timeout": 1
                     }
                 }
             }
@@ -1030,6 +1038,9 @@ mod tests {
 
         let config = server.config.lock();
         assert!(!config.inlay_hints_enabled);
+        let serialized = serde_json::to_value(&*config)?;
+        assert!(serialized.get("testRunner").is_none());
+        assert!(serialized.to_string().find("CANARY").is_none());
         Ok(())
     }
 

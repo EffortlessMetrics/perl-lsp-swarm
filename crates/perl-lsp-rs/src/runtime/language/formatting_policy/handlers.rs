@@ -1,7 +1,7 @@
 use super::{
-    CodeFormatter, FormatContext, FormatterMode, JsonRpcError, JsonRpcId, LspServer,
-    RequestCleanupGuard, Surface, Value, actual_engine_for_mode, cancellation_token,
-    invalid_params, json, parse_range, req_position,
+    FormatContext, FormatterMode, JsonRpcError, JsonRpcId, LspServer, RequestCleanupGuard, Surface,
+    Value, actual_engine_for_mode, cancellation_token, invalid_params, json, parse_range,
+    req_position,
 };
 
 #[path = "multi_range.rs"]
@@ -23,10 +23,7 @@ impl LspServer {
         let snapshot = self.admit(Surface::Document, &params)?;
         self.ensure_not_cancelled(Surface::Document, token.as_ref(), Some(&snapshot), None)?;
 
-        let formatter = CodeFormatter::with_config_and_mode(
-            snapshot.config.perltidy.clone(),
-            snapshot.config.mode,
-        );
+        let formatter = self.formatter_for(snapshot.config.perltidy.clone(), snapshot.config.mode);
         let context = FormatContext::new(Some(snapshot.uri.clone()), Some(snapshot.generation));
         let decision =
             formatter.format_document_decision(&snapshot.text, &snapshot.options, &context);
@@ -73,10 +70,7 @@ impl LspServer {
         )?;
         self.ensure_not_cancelled(Surface::Range, token.as_ref(), Some(&snapshot), None)?;
 
-        let formatter = CodeFormatter::with_config_and_mode(
-            snapshot.config.perltidy.clone(),
-            snapshot.config.mode,
-        );
+        let formatter = self.formatter_for(snapshot.config.perltidy.clone(), snapshot.config.mode);
         let context = FormatContext::new(Some(snapshot.uri.clone()), Some(snapshot.generation));
         let decision =
             formatter.format_range_decision(&snapshot.text, &range, &snapshot.options, &context);
