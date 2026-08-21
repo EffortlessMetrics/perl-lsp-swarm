@@ -31,6 +31,19 @@ jobs:
           ref: agent/remove-client-test-runner-authority
           fetch-depth: 0
 
+      - name: Repair final-property matcher
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/maintenance/apply_10136_test_runner_removal.py")
+          text = path.read_text(encoding="utf-8")
+          old = r'^    "testRunner": \{\n(?:      .*\n)+?    \},\n'
+          new = r'^    "testRunner": \{\n(?:      .*\n)+?    \},?\n'
+          assert text.count(old) == 2, text.count(old)
+          path.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+
       - name: Apply count-checked source edit
         run: python3 scripts/maintenance/apply_10136_test_runner_removal.py
 
