@@ -917,7 +917,8 @@ fn count_canonical_names_missing_from(
     candidates: &[String],
 ) -> usize {
     let candidates: HashSet<&str> = candidates.iter().map(String::as_str).collect();
-    results.iter().filter(|symbol| !candidates.contains(symbol.name.as_str())).count()
+    let result_names: HashSet<&str> = results.iter().map(|symbol| symbol.name.as_str()).collect();
+    result_names.iter().filter(|name| !candidates.contains(**name)).count()
 }
 
 impl LspServer {
@@ -928,6 +929,13 @@ impl LspServer {
     /// the accelerator would have contributed. The result never restricts the
     /// canonical workspace-symbol search: a non-empty candidate set is not
     /// completeness evidence (#8262).
+    ///
+    /// Live measurements are best-effort across transient `didChange` windows:
+    /// `symbol_index` reflects the prior generation until post-parse side
+    /// effects run, so counts recorded during a pending parse may compare
+    /// canonical results and candidates from different generations. Discriminating
+    /// accelerator validation happens through the pinned differential tests, not
+    /// through live-window receipts.
     fn name_index_measurement_candidates(&self, query: &str) -> Vec<String> {
         let mut candidates = self.symbol_index.lock().search_prefix(query);
         if candidates.is_empty() && !query.is_empty() {
