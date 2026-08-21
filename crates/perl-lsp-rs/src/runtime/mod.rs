@@ -59,7 +59,7 @@ pub use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcRespon
 // Re-export window types for public API
 pub use window::{MessageType, ShowDocumentOptions};
 
-use perl_lsp_rs_core::tooling::performance::{AstCache, SymbolIndex};
+use perl_lsp_rs_core::tooling::performance::SymbolIndex;
 use perl_lsp_rs_core::tooling::perl_critic::BuiltInAnalyzer;
 use perl_parser::{
     Parser,
@@ -162,8 +162,6 @@ pub struct LspServer {
     /// Index coordinator for workspace-wide features with lifecycle management
     #[cfg(feature = "workspace")]
     pub(crate) index_coordinator: Option<Arc<IndexCoordinator>>,
-    /// AST cache for performance
-    ast_cache: Arc<AstCache>,
     /// Symbol index for fast lookups
     symbol_index: Arc<Mutex<SymbolIndex>>,
     /// Server configuration
@@ -755,7 +753,6 @@ impl LspServer {
 
         for key in &uri_keys {
             self.stream_sessions().cancel_for_uri(key);
-            self.ast_cache.remove(key);
             self.clear_document_symbols(key);
         }
 
@@ -1346,7 +1343,6 @@ impl LspServer {
         };
         let worker = parse_worker::ParseWorker::spawn_with_pending_count_hooks(
             Arc::clone(&self.documents),
-            Arc::clone(&self.ast_cache),
             on_published,
             on_activated,
             on_settled,
