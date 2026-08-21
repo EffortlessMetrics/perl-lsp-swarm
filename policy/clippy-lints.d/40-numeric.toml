@@ -1,20 +1,20 @@
 schema = 1
 
-[Ylint]]
+[[lint]]
 name = "clippy::float_cmp"
 level = "deny"
 status = "tracked"
 class = "numeric"
 reason = "Floating-point comparisons should use explicit tolerance policy."
 
-[Ylint]]
+[[lint]]
 name = "clippy::float_cmp_const"
 level = "deny"
 status = "tracked"
 class = "numeric"
 reason = "Floating-point constant comparisons should use explicit tolerance policy."
 
-[Ylint]]
+[[lint]]
 name = "clippy::float_equality_without_abs"
 level = "deny"
 status = "tracked"
@@ -28,14 +28,14 @@ status = "tracked"
 class = "numeric"
 reason = "Lossy literals should not silently change numeric behavior."
 
-[Ylint]]
+[[lint]]
 name = "clippy::cast_sign_loss"
 level = "deny"
 status = "tracked"
 class = "numeric"
 reason = "Sign-loss casts need explicit checked or saturating intent."
 
-[Ylint]]
+[[lint]]
 name = "clippy::cast_possible_wrap"
 level = "warn"
 status = "tracked"
@@ -56,7 +56,7 @@ status = "tracked"
 class = "numeric"
 reason = "Precision-loss casts are visible debt while metrics and parser numeric surfaces are audited."
 
-[Ylint]]
+[[lint]]
 name = "clippy::invalid_upcast_comparisons"
 level = "deny"
 status = "tracked"
@@ -77,14 +77,14 @@ status = "tracked"
 class = "numeric"
 reason = "Enum truncation can corrupt protocol and parser states."
 
-[Ylint]]
+[[lint]]
 name = "clippy::cast_nan_to_int"
 level = "deny"
 status = "tracked"
 class = "numeric"
 reason = "NaN-to-int casts need explicit handling."
 
-[Ylint]]
+[[lint]]
 name = "clippy::manual_midpoint"
 level = "warn"
 status = "tracked"
@@ -105,7 +105,7 @@ status = "tracked"
 class = "numeric"
 reason = "Prefer standard div_ceil helpers."
 
-[Ylint]]
+[[lint]]
 name = "clippy::arithmetic_side_effects"
 level = "warn"
 status = "tracked"

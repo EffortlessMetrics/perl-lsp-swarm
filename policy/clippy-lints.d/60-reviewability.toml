@@ -1,13 +1,13 @@
 schema = 1
 
-[Ylint]]
+[[lint]]
 name = "clippy::format_in_format_args"
 level = "deny"
 status = "tracked"
 class = "reviewability"
 reason = "Nested formatting obscures review and allocation behavior."
 
-[Ylint]]
+[[lint]]
 name = "clippy::to_string_in_format_args"
 level = "deny"
 status = "tracked"

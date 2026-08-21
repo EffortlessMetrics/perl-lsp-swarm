@@ -128,15 +128,11 @@ impl RustVersion {
             if part.is_empty() {
                 bail!("Rust version {version} contains an empty component");
             }
-            parsed[index] = part
-                .parse::<u64>()
-                .map_err(|err| eyre!("invalid Rust version component {part} in {version}: {err}"))?;
+            parsed[index] = part.parse::<u64>().map_err(|err| {
+                eyre!("invalid Rust version component {part} in {version}: {err}")
+            })?;
         }
 
-        Ok(Self {
-            major: parsed[0],
-            minor: parsed[1],
-            patch: parsed[2],
-        })
+        Ok(Self { major: parsed[0], minor: parsed[1], patch: parsed[2] })
     }
 }

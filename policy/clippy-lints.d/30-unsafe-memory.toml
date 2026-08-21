@@ -1,13 +1,13 @@
 schema = 1
 
-[Ylint]]
+[[lint]]
 name = "rust::unsafe_code"
 level = "deny"
 status = "tracked"
 class = "unsafe-memory"
 reason = "No unsafe code in production or tests without a narrow expect-with-reason receipt."
 
-[Ylint]]
+[[lint]]
 name = "rust::unsafe_op_in_unsafe_fn"
 level = "deny"
 status = "tracked"
@@ -35,14 +35,14 @@ status = "tracked"
 class = "unsafe-memory"
 reason = "Dropping non-Drop values should not encode control flow."
 
-[Ylint]]
+[[lint]]
 name = "clippy::undocumented_unsafe_blocks"
 level = "deny"
 status = "tracked"
 class = "unsafe-memory"
 reason = "Unsafe blocks need explicit safety documentation if ever introduced."
 
-[Ylint]]
+[[lint]]
 name = "clippy::multiple_unsafe_ops_per_block"
 level = "deny"
 status = "tracked"

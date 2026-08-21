@@ -1,7 +1,5 @@
 use super::super::validate::validate_workspace_lints;
-use super::{
-    deferred_lint, empty_cargo, ledger_with, lint_entry, planned_lint, test_date,
-};
+use super::{deferred_lint, empty_cargo, ledger_with, lint_entry, planned_lint, test_date};
 use color_eyre::eyre::{Result, bail};
 use toml::Value;
 

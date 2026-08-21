@@ -1,6 +1,6 @@
-use super::common::{parse_review_date, validate_level, validate_lint_name, validate_nonempty};
 use super::super::model::{DeferredLint, LintEntry, LintLedger, PlannedLint, RustVersion};
 use super::super::read::collect_workspace_lints;
+use super::common::{parse_review_date, validate_level, validate_lint_name, validate_nonempty};
 use chrono::NaiveDate;
 use color_eyre::eyre::{Result, bail, eyre};
 use std::collections::BTreeMap;
@@ -74,10 +74,7 @@ pub(crate) fn validate_workspace_lints(
             .get(name)
             .ok_or_else(|| eyre!("Cargo.toml activates unledgered lint {name}"))?;
         if !matches!(lint.status.as_str(), "active" | "debt") {
-            bail!(
-                "Cargo.toml activates lint {name}, but its ledger status is {}",
-                lint.status
-            );
+            bail!("Cargo.toml activates lint {name}, but its ledger status is {}", lint.status);
         }
         if &lint.level != cargo_level {
             bail!(
@@ -146,10 +143,7 @@ fn validate_deferred_lint(
     validate_nonempty(&deferred.name, "owner", &deferred.owner)?;
     validate_nonempty(&deferred.name, "reason", &deferred.reason)?;
     if !matches!(deferred.next_status.as_str(), "active" | "debt") {
-        bail!(
-            "deferred_due lint {} next_status must be active or debt",
-            deferred.name
-        );
+        bail!("deferred_due lint {} next_status must be active or debt", deferred.name);
     }
 
     let activation = RustVersion::from_text(&deferred.activate_when_msrv)?;
@@ -163,10 +157,7 @@ fn validate_deferred_lint(
 
     let review_after = parse_review_date(&deferred.name, &deferred.review_after)?;
     if review_after < today {
-        bail!(
-            "deferred_due lint {} review date expired on {review_after}",
-            deferred.name
-        );
+        bail!("deferred_due lint {} review date expired on {review_after}", deferred.name);
     }
 
     Ok(())

@@ -7,14 +7,14 @@ status = "tracked"
 class = "silent-failure"
 reason = "Must-use values represent work that cannot be silently discarded."
 
-[Ylint]]
+[[lint]]
 name = "clippy::let_underscore_future"
 level = "deny"
 status = "tracked"
 class = "silent-failure"
 reason = "Futures must be awaited, spawned, or explicitly dropped by policy."
 
-[Ylint]]
+[[lint]]
 name = "clippy::let_underscore_must_use"
 level = "deny"
 status = "tracked"
@@ -49,7 +49,7 @@ status = "tracked"
 class = "silent-failure"
 reason = "Line iteration must not hide repeated IO errors."
 
-[Ylint]]
+[[lint]]
 name = "clippy::await_holding_invalid_type"
 level = "deny"
 status = "tracked"
@@ -63,7 +63,7 @@ status = "tracked"
 class = "async"
 reason = "Non-Send futures should be reviewed before becoming server boundary debt."
 
-[Ylint]]
+[[lint]]
 name = "clippy::large_futures"
 level = "warn"
 status = "tracked"
@@ -77,7 +77,7 @@ status = "tracked"
 class = "async"
 reason = "Arc should not imply cross-thread safety for non-Send and non-Sync payloads."
 
-[Ylint]]
+[[lint]]
 name = "clippy::rc_mutex"
 level = "deny"
 status = "tracked"

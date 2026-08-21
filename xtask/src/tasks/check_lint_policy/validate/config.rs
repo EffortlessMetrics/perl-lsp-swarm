@@ -1,7 +1,7 @@
-use super::common::ensure_version_matches;
 use super::super::model::{GatePolicyFile, LintLedger, RustToolchainFile, RustVersion};
 use super::super::read::{read_toml, read_toml_as, read_yaml_as, value_at};
 use super::super::{CLIPPY_CONFIG, GATE_POLICY, LINT_LEDGER, ROOT_MANIFEST, RUST_TOOLCHAIN};
+use super::common::ensure_version_matches;
 use color_eyre::eyre::{Result, bail, eyre};
 use std::path::Path;
 use toml::Value;
@@ -33,11 +33,7 @@ pub(super) fn validate_policy_header(ledger: &LintLedger) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn validate_msrv_sources(
-    root: &Path,
-    cargo: &Value,
-    ledger: &LintLedger,
-) -> Result<()> {
+pub(super) fn validate_msrv_sources(root: &Path, cargo: &Value, ledger: &LintLedger) -> Result<()> {
     let cargo_msrv = value_at(cargo, &["workspace", "package", "rust-version"])?
         .as_str()
         .ok_or_else(|| eyre!("workspace.package.rust-version must be a string"))?;
@@ -61,10 +57,7 @@ pub(super) fn validate_msrv_sources(
     Ok(())
 }
 
-pub(super) fn validate_workspace_members_inherit_lints(
-    root: &Path,
-    cargo: &Value,
-) -> Result<()> {
+pub(super) fn validate_workspace_members_inherit_lints(root: &Path, cargo: &Value) -> Result<()> {
     let members = value_at(cargo, &["workspace", "members"])?
         .as_array()
         .ok_or_else(|| eyre!("workspace.members must be an array"))?;
@@ -95,14 +88,10 @@ pub(super) fn validate_workspace_members_inherit_lints(
 pub(super) fn validate_clippy_config(root: &Path, ledger: &LintLedger) -> Result<()> {
     let path = root.join(CLIPPY_CONFIG);
     let config = read_toml(path.clone())?;
-    validate_clippy_config_value(&config, ledger)
-        .map_err(|err| eyre!("{}: {err}", path.display()))
+    validate_clippy_config_value(&config, ledger).map_err(|err| eyre!("{}: {err}", path.display()))
 }
 
-pub(crate) fn validate_clippy_config_value(
-    config: &Value,
-    ledger: &LintLedger,
-) -> Result<()> {
+pub(crate) fn validate_clippy_config_value(config: &Value, ledger: &LintLedger) -> Result<()> {
     if ledger.policy.allow_test_carveouts {
         bail!("lint policy must disable test carveouts before validating clippy.toml");
     }

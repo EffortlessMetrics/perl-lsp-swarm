@@ -1,13 +1,13 @@
 schema = 1
 
-[Ylint]]
+[[lint]]
 name = "clippy::match_result_ok"
 level = "deny"
 status = "tracked"
 class = "reviewability"
 reason = "Match on Ok directly instead of discarding error information."
 
-[Ylint]]
+[[lint]]
 name = "clippy::cloned_instead_of_copied"
 level = "warn"
 status = "tracked"
@@ -35,7 +35,7 @@ status = "tracked"
 class = "reviewability"
 reason = "Avoid temporary allocations when iteration can remain lazy."
 
-[Ylint]]
+[[lint]]
 name = "clippy::redundant_closure"
 level = "warn"
 status = "tracked"
@@ -70,7 +70,7 @@ status = "tracked"
 class = "suppression"
 reason = "Do not enable broad restriction groups without explicit lint policy."
 
-[Ylint]]
+[[lint]]
 name = "clippy::ignore_without_reason"
 level = "deny"
 status = "tracked"

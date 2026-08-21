@@ -24,11 +24,7 @@ pub(super) fn render_policy_summary(ledger: &LintLedger, debt: &DebtLedger) -> S
     append_summary_group(
         &mut output,
         "due-deferred",
-        ledger
-            .deferred_due
-            .iter()
-            .map(|lint| lint.name.clone())
-            .collect(),
+        ledger.deferred_due.iter().map(|lint| lint.name.clone()).collect(),
     );
 
     output

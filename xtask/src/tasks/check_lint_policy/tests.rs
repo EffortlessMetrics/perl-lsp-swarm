@@ -77,10 +77,7 @@ pub(super) fn empty_cargo() -> Result<Value> {
 }
 
 pub(super) fn empty_debt() -> DebtLedger {
-    DebtLedger {
-        schema: 2,
-        debt: Vec::new(),
-    }
+    DebtLedger { schema: 2, debt: Vec::new() }
 }
 
 pub(super) fn debt_entry(lint: &str) -> DebtEntry {

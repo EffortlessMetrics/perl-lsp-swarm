@@ -1,6 +1,6 @@
+use super::super::model::{DebtEntry, DebtLedger, LintLedger};
 use super::common::{parse_review_date, validate_level, validate_lint_name, validate_nonempty};
 use super::disposition::validate_unique_dispositions;
-use super::super::model::{DebtEntry, DebtLedger, LintLedger};
 use chrono::NaiveDate;
 use color_eyre::eyre::{Result, bail};
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,11 +15,8 @@ pub(crate) fn validate_debt_ledger(
     }
     validate_unique_dispositions(lint_ledger)?;
 
-    let lint_by_name: BTreeMap<_, _> = lint_ledger
-        .lint
-        .iter()
-        .map(|lint| (lint.name.as_str(), lint))
-        .collect();
+    let lint_by_name: BTreeMap<_, _> =
+        lint_ledger.lint.iter().map(|lint| (lint.name.as_str(), lint)).collect();
     let debt_lints: BTreeSet<_> = lint_ledger
         .lint
         .iter()
