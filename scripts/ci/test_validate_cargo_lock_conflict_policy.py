@@ -188,8 +188,24 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
             )
             errors = validator.validate(root)
             self.assertIn(
-                "fixture is missing command anchors: docs/guidance.md:4",
+                "fixture is missing command anchors: docs/guidance.md:4-4:cargo generate-lockfile",
                 errors,
+            )
+
+    def test_multiline_command_occurrence_reports_all_touched_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "docs" / "guidance.md"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "### Existing guidance\n"
+                "cargo \\\n"
+                "update\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                {"docs/guidance.md": [(2, 3, "cargo update")]},
+                validator.discover_command_occurrences(root),
             )
 
     def test_fixture_claim_boundary_must_be_non_empty(self) -> None:

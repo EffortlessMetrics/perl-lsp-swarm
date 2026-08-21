@@ -39,7 +39,7 @@ INVENTORY_EXCLUSIONS = {
 INVENTORY_ARCHIVE_PREFIXES = ("docs/reference/archive/",)
 INVENTORY_TEXT_SUFFIXES = {".json", ".md", ".py", ".sh", ".toml", ".yaml", ".yml"}
 LOCK_COMMAND_RE = re.compile(
-    r"(?P<cargo>\bcargo\s+(?:generate-lockfile\b|update\b))|"
+    r"(?P<cargo>\bcargo(?:\s+\\\s+|\s+)(?:generate-lockfile\b|update(?:\s+--workspace|\s+-p\s+<[^>\n]+>)?))|"
     r"(?P<delete>\bdelete\s*/\s*recreate\s+`?Cargo\.lock`?)",
     re.IGNORECASE,
 )
@@ -209,6 +209,22 @@ def classify(case: Mapping[str, object]) -> str:
     return "not_proven"
 
 
+def normalize_command(command: str) -> str:
+    """Normalize one discovered command to the fixture classifier vocabulary."""
+    normalized = " ".join(
+        re.sub(r"\\\s+", " ", command.lower().replace("`", "")).split()
+    )
+    if normalized.startswith("cargo generate-lockfile"):
+        return "cargo generate-lockfile"
+    if normalized.startswith("cargo update --workspace"):
+        return "cargo update --workspace"
+    if normalized.startswith("cargo update -p "):
+        return normalized
+    if normalized.startswith("cargo update"):
+        return "cargo update"
+    return "delete-and-recreate-Cargo.lock"
+
+
 def validate_transition(
     accepted_lock: bytes,
     proposed_lock: bytes | None,
@@ -262,9 +278,11 @@ def load_fixture(root: Path) -> list[object]:
     return cases
 
 
-def discover_command_occurrences(root: Path) -> dict[str, set[int]]:
-    """Find lock-repair command lines in tracked-style source files."""
-    occurrences: dict[str, set[int]] = {}
+def discover_command_occurrences(
+    root: Path,
+) -> dict[str, list[tuple[int, int, str]]]:
+    """Find lock-repair command ranges in tracked-style source files."""
+    occurrences: dict[str, list[tuple[int, int, str]]] = {}
     for relative_root in INVENTORY_ROOTS:
         source_root = root / relative_root
         if not source_root.is_dir():
@@ -287,13 +305,13 @@ def discover_command_occurrences(root: Path) -> dict[str, set[int]]:
                 raise ValidationError(
                     f"command-surface inventory could not read {relative}: {error}"
                 ) from error
-            lines = {
-                line_number
-                for line_number, line in enumerate(source.splitlines(), start=1)
-                if LOCK_COMMAND_RE.search(line)
-            }
-            if lines:
-                occurrences[relative] = lines
+            matches: list[tuple[int, int, str]] = []
+            for match in LOCK_COMMAND_RE.finditer(source):
+                start_line = source.count("\n", 0, match.start()) + 1
+                end_line = source.count("\n", 0, match.end()) + 1
+                matches.append((start_line, end_line, normalize_command(match.group())))
+            if matches:
+                occurrences[relative] = matches
     return occurrences
 
 
@@ -423,15 +441,57 @@ def validate(root: Path) -> list[str]:
         errors.append(
             "fixture is missing command-surface cases: " + ", ".join(unregistered)
         )
-    for path, lines in discover_command_occurrences(root).items():
-        ranges = covered_ranges.get(path, [])
-        uncovered = sorted(
-            line for line in lines if not any(start <= line <= end for start, end in ranges)
+    compatible_cases: dict[str, list[tuple[int, int, str, str, str]]] = {}
+    for case in cases:
+        if not isinstance(case, Mapping):
+            continue
+        path = case.get("path")
+        command = case.get("command")
+        context = case.get("context")
+        expected = case.get("expected")
+        semantics = case.get("semantics")
+        if (
+            not isinstance(path, str)
+            or not isinstance(command, str)
+            or not isinstance(context, str)
+            or not isinstance(expected, str)
+            or not isinstance(semantics, dict)
+        ):
+            continue
+        source_path = root / Path(path)
+        try:
+            source = source_path.read_text(encoding="utf-8")
+            line_number = anchor_line(source, case.get("needle", ""))
+            semantic_range, _ = semantic_line_range(
+                source, line_number, semantics.get("scope", "line")
+            )
+        except (OSError, UnicodeDecodeError, ValueError, AttributeError):
+            continue
+        if line_number is None or semantic_range is None:
+            continue
+        compatible_cases.setdefault(path.replace("\\", "/"), []).append(
+            (*semantic_range, normalize_command(command), context, expected)
         )
+
+    for path, occurrences in discover_command_occurrences(root).items():
+        ranges = covered_ranges.get(path, [])
+        uncovered = []
+        for start_line, end_line, command in occurrences:
+            compatible = any(
+                start <= start_line
+                and end_line <= end
+                and case_command == command
+                and classify({"context": case_context, "command": command}) == expected
+                for start, end, case_command, case_context, expected in compatible_cases.get(
+                    path, []
+                )
+            )
+            if not compatible:
+                uncovered.append(f"{start_line}-{end_line}:{command}")
         if uncovered:
             errors.append(
                 f"fixture is missing command anchors: {path}:"
-                + ",".join(str(line) for line in uncovered)
+                + ",".join(uncovered)
             )
     return errors
 
