@@ -198,10 +198,6 @@ Debug Adapter Protocol configuration is *not* part of this `perl.*` namespace â€
           "enum": ["native", "compat", "off"],
           "default": "native"
         },
-        "perltidy_profile": {
-          "type": "string",
-          "description": "Path to a .perltidyrc profile used for native compatibility reporting"
-        },
         "perltidy_maximum_line_length": {
           "type": "integer",
           "description": "Maximum native formatter line width",
