@@ -734,6 +734,70 @@ class GateShardTests(unittest.TestCase):
                         root=Path(tmp),
                     )
 
+    def test_gate_policy_preflight_confines_output_option_paths(self) -> None:
+        flags = (
+            "--artifact-dir",
+            "--json-out",
+            "--log-path",
+            "--output",
+            "--receipt-dir",
+            "--receipt-path",
+            "--report",
+            "--summary",
+            "--output-path",
+        )
+        for flag in flags:
+            for form in ("separate", "equals"):
+                with self.subTest(flag=flag, form=form), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "scripts/ci").mkdir(parents=True)
+                    (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+                    value = "../outside.log"
+                    option = f"{flag} {value}" if form == "separate" else f"{flag}={value}"
+                    policy = write_gate_policy(
+                        root,
+                        "  - name: output_path\n"
+                        f"    command: python3 scripts/ci/check.py {option}\n",
+                    )
+                    with self.assertRaisesRegex(ValueError, "checked-out tree"):
+                        shard.load_gate_commands(policy, ["output_path"], root=root)
+
+    def test_gate_policy_preflight_confines_optional_receipt_paths(self) -> None:
+        for command in (
+            "python3 scripts/ci/check.py --receipt ../outside.json",
+            "python3 scripts/ci/check.py --receipt=../outside.json",
+        ):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "scripts/ci").mkdir(parents=True)
+                (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+                policy = write_gate_policy(
+                    root,
+                    "  - name: receipt_path\n"
+                    f"    command: {command}\n",
+                )
+                with self.assertRaisesRegex(ValueError, "checked-out tree"):
+                    shard.load_gate_commands(policy, ["receipt_path"], root=root)
+
+    def test_gate_policy_preflight_rejects_windows_nested_cmd_wrappers(self) -> None:
+        for command in (
+            "cmd /C python3 ../outside.py",
+            "cmd.exe /C python3 ../outside.py",
+            "cmd.exe /c scripts/ci/missing.py",
+        ):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                policy = write_gate_policy(
+                    Path(tmp),
+                    "  - name: source_commit_api_check\n"
+                    f"    command: {command}\n",
+                )
+                with self.assertRaisesRegex(ValueError, "nested-shell wrapper"):
+                    shard.load_gate_commands(
+                        policy,
+                        ["source_commit_api_check"],
+                        root=Path(tmp),
+                    )
+
     def test_gate_policy_preflight_rejects_extensionless_and_incomplete_paths(self) -> None:
         for command, message in (
             ("python3 missing_script", "missing command path"),

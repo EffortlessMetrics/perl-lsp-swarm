@@ -65,6 +65,7 @@ OUTPUT_PATH_FLAGS = {
     "--json-out",
     "--log-path",
     "--output",
+    "--output-path",
     "--receipt-dir",
     "--receipt-path",
     "--report",
@@ -136,6 +137,8 @@ ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 MALFORMED_SHELL_PUNCTUATION = {";;", ";&", ";;&", "&&&", "|||"}
 UNSUPPORTED_WRAPPER_COMMANDS = {
     "busybox",
+    "cmd",
+    "cmd.exe",
     "chroot",
     "nice",
     "nohup",
@@ -461,13 +464,13 @@ def _validate_shell_constructs(tokens: Sequence[str], root: Path) -> None:
         )
 
 
-def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
-    """Return input script and option paths, excluding output destinations.
+def _referenced_command_paths(tokens: Sequence[str], root: Path) -> list[str]:
+    """Return input script and option paths while validating output destinations.
 
     The shard accepts only paths that can be resolved against the checked-out
     tree. Shell expansions and globbed paths are rejected rather than guessed.
-    Output destinations are intentionally outside this proof boundary: they
-    are consumed only to reject missing values, not required to pre-exist.
+    Output destinations remain outside the existence proof: they are confined
+    to the checkout and checked for values, but are not required to pre-exist.
     """
     references: list[str] = []
     skip_next_output = False
@@ -489,13 +492,35 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
             skip_next_output = False
             if token.startswith("-") or token in SHELL_OPERATORS or REDIRECTION.match(token):
                 raise ValueError(f"output path option is missing its value: {token}")
+            _repository_relative_path(token, root, subject="output path")
             continue
         if token in OUTPUT_PATH_FLAGS:
             skip_next_output = True
             continue
-        if any(token.startswith(f"{flag}=") for flag in OUTPUT_PATH_FLAGS):
-            if not token.split("=", 1)[1]:
+        if token == "--receipt":
+            # The xtask corpus gates use `--receipt` as a boolean, while
+            # several standalone gates use `--receipt PATH`. Treat a
+            # non-option successor as the optional output destination.
+            if index + 1 < len(tokens):
+                successor = tokens[index + 1]
+                if (
+                    not successor.startswith("-")
+                    and successor not in SHELL_OPERATORS
+                    and REDIRECTION.match(successor) is None
+                ):
+                    skip_next_output = True
+            continue
+        if token.startswith("--receipt="):
+            value = token.split("=", 1)[1]
+            if not value:
                 raise ValueError(f"output path option is missing its value: {token}")
+            _repository_relative_path(value, root, subject="output path")
+            continue
+        if any(token.startswith(f"{flag}=") for flag in OUTPUT_PATH_FLAGS):
+            value = token.split("=", 1)[1]
+            if not value:
+                raise ValueError(f"output path option is missing its value: {token}")
+            _repository_relative_path(value, root, subject="output path")
             continue
 
         if redirection_target_pending:
@@ -709,7 +734,7 @@ def load_gate_commands(
         if not tokens or not any(token.strip() for token in tokens):
             raise ValueError(f"selected gate {gate!r} has no executable command")
         _validate_shell_constructs(tokens, repository_root)
-        for reference in _referenced_command_paths(tokens):
+        for reference in _referenced_command_paths(tokens, repository_root):
             referenced = Path(reference)
             if not referenced.is_absolute():
                 referenced = repository_root / referenced
