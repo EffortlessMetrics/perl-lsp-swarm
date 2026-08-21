@@ -820,6 +820,7 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/parser-comparison-evidence-v1",
         "title": "Parser comparison exact terminal evidence",
+        "description": "Finite typed vocabularies are constrained here; constructor validation remains authoritative for cross-field identity and terminal-state rules. Generic referenced schema versions remain bounded stable IDs because this domain cell does not own their producer-specific version registry.",
         "oneOf": [
             {"$ref": "#/$defs/subject_execution"},
             {"$ref": "#/$defs/subject_observation"},
@@ -837,7 +838,10 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
             "evidence_ref": object_schema(
                 &["kind", "schema_version", "semantic_id", "semantic_digest"],
                 json!({
-                    "kind": {"type": "string"},
+                    "kind": {"enum": [
+                        "source_case", "subject_manifest", "observer_manifest", "case_obligation",
+                        "subject_execution", "subject_observation", "subject_conformance"
+                    ]},
                     "schema_version": {"$ref": "#/$defs/stable_id"},
                     "semantic_id": {"$ref": "#/$defs/stable_id"},
                     "semantic_digest": {"$ref": "#/$defs/semantic_digest"}
@@ -855,7 +859,10 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
                 &["authority", "role"],
                 json!({
                     "authority": {"$ref": "#/$defs/evidence_ref"},
-                    "role": {"type": "string"}
+                    "role": {"enum": [
+                        "current_upstream_tree_sitter", "historical_tree_sitter_c", "experimental_pest",
+                        "native_recursive_descent", "native_tree_sitter_facade"
+                    ]}
                 }),
             ),
             "observer_manifest_ref": object_schema(
@@ -863,7 +870,10 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
                 json!({
                     "authority": {"$ref": "#/$defs/evidence_ref"},
                     "observer_id": {"$ref": "#/$defs/stable_id"},
-                    "plane": {"type": "string"}
+                    "plane": registered_or_enum_schema(&[
+                        "structure", "source_geometry", "recovery", "body_ownership",
+                        "incremental_final_state", "query_or_highlight"
+                    ])
                 }),
             ),
             "obligation_ref": object_schema(
@@ -894,9 +904,21 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
                     "schema_version": {"const": SUBJECT_EXECUTION_EVIDENCE_SCHEMA_VERSION},
                     "source_case": {"$ref": "#/$defs/source_case_ref"},
                     "subject_manifest": {"$ref": "#/$defs/subject_manifest_ref"},
-                    "harness": {"type": "string"},
-                    "subject_disposition": {"type": ["string", "null"]},
-                    "instrument_state": {"type": "string"},
+                    "harness": {"enum": [
+                        "completed", "failed:not_run", "failed:setup_failed", "failed:cancelled",
+                        "failed:timed_out", "failed:crashed_or_signalled", "failed:output_limited",
+                        "failed:worker_protocol_failed", "failed:supervisor_failed"
+                    ]},
+                    "subject_disposition": {"oneOf": [
+                        {"type": "null"},
+                        registered_or_enum_schema(&[
+                            "accepted_clean", "accepted_recovered", "rejected", "unsupported",
+                            "cancelled", "budget_exhausted", "catastrophic"
+                        ])
+                    ]},
+                    "instrument_state": {"enum": [
+                        "complete", "partial", "unavailable", "failed", "truncated", "schema_mismatch"
+                    ]},
                     "diagnostics": {"type": "object"},
                     "attachments": {"type": "array", "items": {"$ref": "#/$defs/attachment"}},
                     "semantic_digest": {"$ref": "#/$defs/semantic_digest"}
@@ -912,7 +934,10 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
                     "execution": {"$ref": "#/$defs/evidence_ref"},
                     "observer_manifest": {"$ref": "#/$defs/observer_manifest_ref"},
                     "mode": {"$ref": "#/$defs/stable_id"},
-                    "disposition": {"type": "string"},
+                    "disposition": {"enum": [
+                        "observed", "observed_with_limitations", "unsupported", "not_applicable",
+                        "not_observable", "not_proven"
+                    ]},
                     "fingerprint": {"type": ["string", "null"]},
                     "limitation_reason": {"type": ["string", "null"]},
                     "attachments": {"type": "array", "items": {"$ref": "#/$defs/attachment"}},
@@ -929,7 +954,9 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
                     "schema_version": {"const": SUBJECT_CONFORMANCE_EVIDENCE_SCHEMA_VERSION},
                     "observation": {"$ref": "#/$defs/evidence_ref"},
                     "obligation": {"$ref": "#/$defs/obligation_ref"},
-                    "outcome": {"type": "string"},
+                    "outcome": {"enum": [
+                        "matches_expected", "mismatch", "unscored", "unknown", "not_proven"
+                    ]},
                     "expected_fingerprint": {"type": ["string", "null"]},
                     "actual_fingerprint": {"type": ["string", "null"]},
                     "mismatch": {"type": ["object", "null"]},
@@ -940,6 +967,15 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
             )
         }
     }))
+}
+
+fn registered_or_enum_schema(values: &[&str]) -> Value {
+    json!({
+        "oneOf": [
+            {"enum": values},
+            {"type": "string", "pattern": "^registered:[a-z0-9][a-z0-9._-]{0,127}$"}
+        ]
+    })
 }
 
 /// Fail-closed durable evidence construction/validation error.

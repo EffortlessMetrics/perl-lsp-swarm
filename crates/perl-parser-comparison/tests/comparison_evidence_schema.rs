@@ -5,16 +5,16 @@ use std::io;
 use perl_parser_comparison::{
     AttachmentPrivacy, BoundedAttachment, BoundedText, ConformanceOutcome, DiagnosticSummary,
     DivergencePath, EvidenceKind, EvidencePayloadError, EvidenceRef, InstrumentState,
-    MismatchClass, MismatchDetail, ObligationRef, ObservationDisposition,
-    ObservationPlane, ObserverId, ObserverManifestRef, ReviewedExpectationId, ScoredComparison,
-    SemanticDigest, SemanticFingerprint, SourceCaseRef, StableId, SubjectConformanceEvidence,
-    SubjectDisposition, SubjectExecution, SubjectExecutionEvidence, SubjectManifestRef,
-    SubjectObservationEvidence, SubjectRole, parser_comparison_evidence_schema_json,
+    MismatchClass, MismatchDetail, ObligationRef, ObservationDisposition, ObservationPlane,
+    ObserverId, ObserverManifestRef, ReviewedExpectationId, ScoredComparison, SemanticDigest,
+    SemanticFingerprint, SourceCaseRef, StableId, SubjectConformanceEvidence, SubjectDisposition,
+    SubjectExecution, SubjectExecutionEvidence, SubjectManifestRef, SubjectObservationEvidence,
+    SubjectRole, parser_comparison_evidence_schema_json,
 };
 use serde_json::Value;
 
 #[cfg(feature = "historical")]
-use perl_parser_comparison::{execute_v3, HarnessOutcome};
+use perl_parser_comparison::{HarnessOutcome, execute_v3};
 
 fn stable(value: &str) -> Result<StableId, Box<dyn Error>> {
     Ok(StableId::new(value)?)
@@ -446,15 +446,86 @@ fn schema_rejects_realistic_constraint_violations() -> Result<(), Box<dyn Error>
         Value::String("not-a-digest".to_owned());
     assert!(validate_value(&broken_ref, &schema, &schema).is_err(), "$ref");
 
-    // A payload that matches two root alternatives is invalid even when each
-    // alternative independently accepts it. This catches an accidental `anyOf`
-    // or a duplicated branch in the terminal evidence union.
-    let mut ambiguous_schema = schema.clone();
-    ambiguous_schema["oneOf"] = serde_json::json!([
-        {"$ref": "#/$defs/subject_execution"},
-        {"$ref": "#/$defs/subject_execution"}
-    ]);
-    assert!(validate_value(&payload, &ambiguous_schema, &ambiguous_schema).is_err(), "oneOf");
+    // Validate the unchanged generated root with a near-miss. The terminal
+    // branches must reject an otherwise valid payload whose discriminator is
+    // not one of their distinct schema-version consts.
+    let mut invalid_root = payload.clone();
+    invalid_root["schema_version"] =
+        Value::String("parser_comparison_subject_execution.v2".to_owned());
+    assert!(validate_value(&invalid_root, &schema, &schema).is_err(), "oneOf");
+    Ok(())
+}
+
+#[test]
+fn schema_rejects_arbitrary_modeled_values() -> Result<(), Box<dyn Error>> {
+    let generic = generic_execution(InstrumentState::Complete)?;
+    let execution = execution_evidence(&generic, Vec::new())?;
+    let observer = observer_manifest("observer.structure.v1", ObservationPlane::Structure)?;
+    let observation =
+        exact_observation(&execution, observer.clone(), "assignment(variable,integer)")?;
+    let comparison = ScoredComparison::matches_expected(
+        &generic,
+        ObserverId::new("observer.structure.v1")?,
+        ReviewedExpectationId::new("obligation.assignment.shape.v1")?,
+        ObservationPlane::Structure,
+        SemanticFingerprint::new("assignment(variable,integer)")?,
+        SemanticFingerprint::new("assignment(variable,integer)")?,
+    )?;
+    let conformance = SubjectConformanceEvidence::scored(
+        &observation,
+        obligation(observer)?,
+        &comparison,
+        Vec::new(),
+    )?;
+    let schema: Value = serde_json::from_str(&parser_comparison_evidence_schema_json()?)?;
+
+    let mut invalid_kind: Value = serde_json::from_str(&execution.canonical_payload_json()?)?;
+    invalid_kind["source_case"]["authority"]["kind"] = Value::String("arbitrary_kind".to_owned());
+    assert!(validate_value(&invalid_kind, &schema, &schema).is_err(), "kind");
+
+    let mut invalid_role: Value = serde_json::from_str(&execution.canonical_payload_json()?)?;
+    invalid_role["subject_manifest"]["role"] = Value::String("arbitrary_role".to_owned());
+    assert!(validate_value(&invalid_role, &schema, &schema).is_err(), "role");
+
+    let mut invalid_harness: Value = serde_json::from_str(&execution.canonical_payload_json()?)?;
+    invalid_harness["harness"] = Value::String("arbitrary_harness".to_owned());
+    assert!(validate_value(&invalid_harness, &schema, &schema).is_err(), "harness");
+
+    let mut invalid_subject_disposition: Value =
+        serde_json::from_str(&execution.canonical_payload_json()?)?;
+    invalid_subject_disposition["subject_disposition"] =
+        Value::String("arbitrary_subject_disposition".to_owned());
+    assert!(
+        validate_value(&invalid_subject_disposition, &schema, &schema).is_err(),
+        "subject_disposition"
+    );
+
+    let mut invalid_instrument_state: Value =
+        serde_json::from_str(&execution.canonical_payload_json()?)?;
+    invalid_instrument_state["instrument_state"] =
+        Value::String("arbitrary_instrument_state".to_owned());
+    assert!(
+        validate_value(&invalid_instrument_state, &schema, &schema).is_err(),
+        "instrument_state"
+    );
+
+    let mut invalid_plane: Value = serde_json::from_str(&observation.canonical_payload_json()?)?;
+    invalid_plane["observer_manifest"]["plane"] = Value::String("arbitrary_plane".to_owned());
+    assert!(validate_value(&invalid_plane, &schema, &schema).is_err(), "plane");
+
+    let mut invalid_disposition: Value =
+        serde_json::from_str(&observation.canonical_payload_json()?)?;
+    invalid_disposition["disposition"] = Value::String("arbitrary_disposition".to_owned());
+    assert!(validate_value(&invalid_disposition, &schema, &schema).is_err(), "disposition");
+
+    let mut invalid_outcome: Value = serde_json::from_str(&conformance.canonical_payload_json()?)?;
+    invalid_outcome["outcome"] = Value::String("arbitrary_outcome".to_owned());
+    assert!(validate_value(&invalid_outcome, &schema, &schema).is_err(), "outcome");
+
+    let mut invalid_schema_version: Value =
+        serde_json::from_str(&execution.canonical_payload_json()?)?;
+    invalid_schema_version["schema_version"] = Value::String("arbitrary_schema_version".to_owned());
+    assert!(validate_value(&invalid_schema_version, &schema, &schema).is_err(), "schema_version");
     Ok(())
 }
 
@@ -584,6 +655,18 @@ fn matches_pattern(value: &str, pattern: &str) -> bool {
                                 || character.is_ascii_digit()
                                 || matches!(character, '.' | '_' | '-')))
                 })
+        }
+        "^registered:[a-z0-9][a-z0-9._-]{0,127}$" => {
+            value.strip_prefix("registered:").is_some_and(|id| {
+                (1..=128).contains(&id.len())
+                    && id.chars().enumerate().all(|(index, character)| {
+                        (index == 0 && character.is_ascii_lowercase())
+                            || (index > 0
+                                && (character.is_ascii_lowercase()
+                                    || character.is_ascii_digit()
+                                    || matches!(character, '.' | '_' | '-')))
+                    })
+            })
         }
         _ => false,
     }
