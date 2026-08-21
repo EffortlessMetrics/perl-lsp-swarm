@@ -53,7 +53,14 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
         // Prefer the profile these tests were themselves built with, so a `cargo test
         // --release` run does not silently drive a debug server (or vice versa).
         for profile in active_profile_order() {
-            let binary = target_dir(workspace_root).join(profile).join(perllsp_file_name());
+            // Deliberately the DEFAULT target dir, not env-aware: a directly
+            // executed binary is the configuration #11858 shows dropping the
+            // keyword/snippet completion set (cargo-run-shaped launches carry
+            // CARGO_* env; a bare binary does not) — until that product bug
+            // is fixed, the harness keeps resolving the way CI has always
+            // run. The #11848 stall's resolver half stays mitigated by the
+            // fail-loud pre-build refusal below instead.
+            let binary = workspace_root.join("target").join(profile).join(perllsp_file_name());
             if binary.exists() {
                 let mut c = Command::new(&binary);
                 c.arg("--stdio");
@@ -114,16 +121,6 @@ fn perllsp_file_name() -> String {
     format!("perllsp{}", std::env::consts::EXE_SUFFIX)
 }
 
-/// The cargo target directory for this run. CI's pr-smoke job points
-/// `CARGO_TARGET_DIR` at a per-run location (see ci.yml's pr-smoke job);
-/// probing the default `workspace/target` there misses a perfectly good
-/// binary and forced the fallbacks that produced the #11848 stall family.
-fn target_dir(workspace_root: &std::path::Path) -> std::path::PathBuf {
-    std::env::var_os("CARGO_TARGET_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| workspace_root.join("target"))
-}
-
 /// Cargo profile directory these tests were compiled into.
 fn active_profile() -> &'static str {
     if cfg!(debug_assertions) { "debug" } else { "release" }
@@ -164,13 +161,18 @@ fn ensure_perllsp_built(workspace_root: &std::path::Path) -> Option<std::path::P
                     .output();
             match output {
                 Ok(out) if out.status.success() => {
-                    let path = target_dir(workspace_root).join(profile).join(perllsp_file_name());
+                    // Default target dir, matching the probe above (see the
+                    // probe's comment for why this is deliberately NOT
+                    // env-aware until #11858 lands).
+                    let path =
+                        workspace_root.join("target").join(profile).join(perllsp_file_name());
                     if !path.exists() {
-                        // The silent killer of the #11848 stall family: with a
-                        // custom CARGO_TARGET_DIR the build succeeds HERE while
-                        // the old workspace/target probe saw nothing — the
-                        // resolver returned None without a word and fell to
-                        // cargo run. Say where we looked.
+                        // A successful build whose binary is not where we
+                        // look (a custom CARGO_TARGET_DIR redirected it on
+                        // CI) previously returned None SILENTLY and fell to
+                        // cargo run — the exact shape of the #11848 stall.
+                        // Say where we looked so the next occurrence is
+                        // diagnosable in one run.
                         eprintln!(
                             "perl-lsp-rs tests: `cargo build -p perllsp` succeeded but {} is \
                              absent; CARGO_TARGET_DIR={:?}",
