@@ -43,6 +43,7 @@ impl TestAdapter for MinimalAdapter {
 }
 
 #[test]
+#[allow(deprecated)]
 fn external_adapter_can_construct_and_validate_public_sdk_values() {
     let input = AdapterInput::new(
         AdapterDescriptor::new(

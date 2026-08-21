@@ -650,6 +650,38 @@ pub enum AdapterAuthorityError {
     ConfidenceLimitExceeded,
 }
 
+impl std::fmt::Display for AdapterAuthorityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::UnsupportedSchema => "result or descriptor schema version is unsupported",
+            Self::NonProduction => "adapter disposition is not production",
+            Self::GenerationMismatch => "generations are unknown or disagree",
+            Self::IncompleteOutcome => "outcome is not a complete `Applied` outcome",
+            Self::BlockingLimitation => "a result-level blocking limitation exists",
+            Self::SinkIdentityMismatch => "sink identity disagrees with the descriptor",
+            Self::InvalidFact => "an emitted fact is structurally incoherent",
+            Self::InputRequired => "authority requires the admitted invocation input",
+            Self::InputMismatch => "result identity does not match the admitted input",
+            Self::BudgetExceeded => "the result exceeded the admitted budget",
+            Self::UnsupportedFactClass => "the result emitted a fact class that was not requested",
+            Self::InvalidationMismatch => {
+                "an emitted fact did not preserve the input invalidation dependencies"
+            }
+            Self::PayloadMismatch => "the sink payload total is not the canonical serialized size",
+            Self::DuplicateFactId => "two emitted facts reused one canonical fact identity",
+            Self::PackageIdentityMismatch => {
+                "a fact package did not match the invocation source scope"
+            }
+            Self::ConfidenceLimitExceeded => {
+                "a fact confidence exceeded a declared limitation ceiling"
+            }
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for AdapterAuthorityError {}
+
 /// Full result of one adapter invocation.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -698,6 +730,9 @@ impl AdapterResult {
     }
 
     /// Fail closed because publication authority requires the admitted invocation input.
+    #[deprecated(
+        note = "use `validate_authority_against(&input)`; unbound results are never authoritative"
+    )]
     pub fn validate_authority(&self) -> Result<(), AdapterAuthorityError> {
         Err(AdapterAuthorityError::InputRequired)
     }
@@ -766,6 +801,10 @@ impl AdapterResult {
             return Err(AdapterAuthorityError::PayloadMismatch);
         }
 
+        let Some(expected_dependencies) = coherent_sorted_dependencies(&input.invalidation_inputs)
+        else {
+            return Err(AdapterAuthorityError::InvalidationMismatch);
+        };
         let mut fact_ids = BTreeSet::new();
         for fact in &sink.facts {
             if !fact_ids.insert(fact.envelope.fact_id) {
@@ -779,7 +818,7 @@ impl AdapterResult {
             }
             if !dependencies_match(
                 fact.envelope.invalidation_dependencies(),
-                &input.invalidation_inputs,
+                &expected_dependencies,
             ) {
                 return Err(AdapterAuthorityError::InvalidationMismatch);
             }
@@ -813,23 +852,36 @@ impl FactSink {
     }
 }
 
+/// Sort and validate the expected dependency set once per invocation so the
+/// per-fact comparison does not re-clone and re-sort the same input slice.
+fn coherent_sorted_dependencies(
+    expected: &[InvalidationDependency],
+) -> Option<Vec<InvalidationDependency>> {
+    let mut expected = expected.to_vec();
+    expected.sort();
+    dependencies_are_coherent(&expected).then_some(expected)
+}
+
 fn dependencies_match(
     actual: &[InvalidationDependency],
-    expected: &[InvalidationDependency],
+    expected_sorted: &[InvalidationDependency],
 ) -> bool {
     let mut actual = actual.to_vec();
-    let mut expected = expected.to_vec();
     actual.sort();
-    expected.sort();
-    dependencies_are_coherent(&actual) && dependencies_are_coherent(&expected) && actual == expected
+    dependencies_are_coherent(&actual) && actual == expected_sorted
 }
 
 fn confidence_exceeds(actual: Confidence, ceiling: Confidence) -> bool {
-    matches!(
-        (actual, ceiling),
+    // Exhaustive over every pair so a future `Confidence` variant fails to
+    // compile here instead of being silently accepted past its ceiling.
+    // Derived `Ord` is not used because declaration order ranks `High` lowest.
+    match (actual, ceiling) {
         (Confidence::High, Confidence::Medium | Confidence::Low)
-            | (Confidence::Medium, Confidence::Low)
-    )
+        | (Confidence::Medium, Confidence::Low) => true,
+        (Confidence::High, Confidence::High)
+        | (Confidence::Medium, Confidence::High | Confidence::Medium)
+        | (Confidence::Low, Confidence::High | Confidence::Medium | Confidence::Low) => false,
+    }
 }
 
 fn dependencies_are_coherent(dependencies: &[InvalidationDependency]) -> bool {
@@ -839,7 +891,7 @@ fn dependencies_are_coherent(dependencies: &[InvalidationDependency]) -> bool {
         return false;
     }
     // Adjacency is not the invariant. `dependencies_match` happens to sort before
-    // calling this, but the envelope path in `EmittedFact::is_coherent` validates
+    // calling this, but the envelope path in `EmittedFact::is_structurally_coherent` validates
     // dependencies in stored order, where `[a@g1, b@g1, a@g2]` has no adjacent pair
     // that can observe `a` carrying two generations. Compare every occurrence of a
     // key instead, so the result does not depend on the caller having sorted.
@@ -1009,6 +1061,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn authority_requires_the_admitted_input() {
         let fact = EmittedFact::new(
             FactSinkId(7),
@@ -1024,6 +1077,52 @@ mod tests {
         let result = applied(AdapterDisposition::Production, fact);
         assert_eq!(result.validate_authority(), Err(AdapterAuthorityError::InputRequired));
         assert!(result.is_authoritative_against(&input()));
+    }
+
+    #[test]
+    fn authority_rejects_a_result_bound_to_a_different_input() {
+        let fact = EmittedFact::new(
+            FactSinkId(7),
+            AdapterId(1),
+            "Moo",
+            Provenance::FrameworkSynthesis,
+            Confidence::High,
+            envelope(Provenance::FrameworkSynthesis),
+            FactClass::GeneratedMembers,
+            None,
+            false,
+        );
+        let result = applied(AdapterDisposition::Production, fact);
+
+        // The descriptor differs while both generations stay internally
+        // consistent, so `GenerationMismatch` cannot mask the binding check.
+        let mut other_descriptor = input();
+        other_descriptor.descriptor = AdapterDescriptor::new(
+            AdapterId(2),
+            "moo",
+            "Moo",
+            None,
+            1,
+            AdapterDisposition::Production,
+        );
+        assert_eq!(
+            result.validate_authority_against(&other_descriptor),
+            Err(AdapterAuthorityError::InputMismatch)
+        );
+
+        // The source scope digest differs; generations still agree.
+        let mut other_scope = input();
+        other_scope.source_scope = AdapterSourceScope::new(
+            FileId(10),
+            SourceGeneration::known("generation-1"),
+            Some("digest-b".to_string()),
+            Some(AnchorId(2)),
+            Some("Example".to_string()),
+        );
+        assert_eq!(
+            result.validate_authority_against(&other_scope),
+            Err(AdapterAuthorityError::InputMismatch)
+        );
     }
 
     #[test]
