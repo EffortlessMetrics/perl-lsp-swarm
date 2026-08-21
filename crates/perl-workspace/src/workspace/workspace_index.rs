@@ -1377,11 +1377,14 @@ impl Drop for LifecycleGuard {
         // Unlock before touching the registry. The entry Arc held by this
         // guard keeps the mutex alive even if the registry removes it.
         drop(self.lock.take());
-        if self.entry.holders.fetch_sub(1, Ordering::AcqRel) == 1 {
-            let mut guards = self.registry.lock();
-            if guards.get(&self.key).is_some_and(|current| Arc::ptr_eq(current, &self.entry)) {
-                guards.remove(&self.key);
-            }
+        // Keep the registry locked while decrementing and possibly removing
+        // the entry. A new holder must not observe the unlocked URI mutex and
+        // then lose its registry entry to this guard's cleanup.
+        let mut guards = self.registry.lock();
+        if self.entry.holders.fetch_sub(1, Ordering::AcqRel) == 1
+            && guards.get(&self.key).is_some_and(|current| Arc::ptr_eq(current, &self.entry))
+        {
+            guards.remove(&self.key);
         }
     }
 }
@@ -1898,20 +1901,21 @@ impl WorkspaceIndex {
     }
 
     fn lifecycle_guard(&self, key: &str) -> LifecycleGuard {
-        let mut guards = self.lifecycle_guards.lock();
-        let entry = Arc::clone(guards.entry(key.to_string()).or_insert_with(|| {
-            Arc::new(LifecycleGuardEntry {
-                lock: Arc::new(Mutex::new(())),
-                holders: AtomicUsize::new(0),
-            })
-        }));
-        entry.holders.fetch_add(1, Ordering::Relaxed);
-        LifecycleGuard {
-            key: key.to_string(),
-            lock: Some(entry.lock.lock_arc()),
-            entry,
-            registry: Arc::clone(&self.lifecycle_guards),
-        }
+        let (entry, registry) = {
+            let mut guards = self.lifecycle_guards.lock();
+            let entry = Arc::clone(guards.entry(key.to_string()).or_insert_with(|| {
+                Arc::new(LifecycleGuardEntry {
+                    lock: Arc::new(Mutex::new(())),
+                    holders: AtomicUsize::new(0),
+                })
+            }));
+            // The registry owns the entry while this holder is being
+            // registered. Do not hold the registry mutex while waiting for
+            // another operation on this URI.
+            entry.holders.fetch_add(1, Ordering::Relaxed);
+            (entry, Arc::clone(&self.lifecycle_guards))
+        };
+        LifecycleGuard { key: key.to_string(), lock: Some(entry.lock.lock_arc()), entry, registry }
     }
 
     fn admission_limit_for(
@@ -2009,6 +2013,7 @@ impl WorkspaceIndex {
     /// `pending_generation` to 0 lets the reopened file index normally.
     pub fn reset_generation_for_close(&self, uri: &str) {
         let key = DocumentStore::uri_key(&Self::normalize_uri(uri));
+        let _lifecycle = self.lifecycle_guard(&key);
         let mut files = self.files.write();
         if let Some(file_index) = files.get_mut(&key) {
             file_index.generation = 0;
@@ -2090,20 +2095,12 @@ impl WorkspaceIndex {
         text.hash(&mut hasher);
         let content_hash = hasher.finish();
 
-        // Check if content is unchanged (early-exit optimization), and --
-        // still under the SAME `files.write()` guard -- update
-        // `document_store`. `document_store` has its own, entirely separate
-        // internal lock (`DocumentStore::documents: Arc<RwLock<..>>`, no
-        // cross-reference to `self.files`), so holding `files.write()`
-        // across both the generation check AND the `document_store` write
-        // does not risk any lock-ordering deadlock; it makes the two
-        // genuinely atomic with respect to any other writer of this URI's
-        // entry, closing the race outright rather than narrowing it (an
-        // earlier revision applied this same generation check here but
-        // released `files.write()` before the `document_store` write,
-        // leaving a real, if nanosecond-scale, window a stale out-of-order
-        // task could still land in -- flagged again by factory-droid on
-        // PR #3618 after that partial fix).
+        // Check the current generation under the per-URI lifecycle guard, then
+        // publish the DocumentStore candidate and the index projections in
+        // their respective critical sections. The guard serializes writers of
+        // this URI; the separate stores are not one cross-store atomic
+        // transaction, so readers must use the write-version/torn-read
+        // protections where a coherent snapshot is required.
         let key = DocumentStore::uri_key(&uri_str);
         let _lifecycle = self.lifecycle_guard(&key);
         // Set below iff this task's generation genuinely advances the
@@ -2735,9 +2732,10 @@ impl WorkspaceIndex {
         let mut positions = HashMap::new();
         for item in files_to_index {
             let key = DocumentStore::uri_key(item.0.as_str());
-            if let Some(position) = positions.insert(key, deduplicated.len()) {
+            if let Some(position) = positions.get(&key).copied() {
                 deduplicated[position] = item;
             } else {
+                positions.insert(key, deduplicated.len());
                 deduplicated.push(item);
             }
         }
@@ -2826,7 +2824,12 @@ impl WorkspaceIndex {
                     continue;
                 }
 
-                if !self.commit_document(&uri_str, 1, text.clone(), true) {
+                // Batch indexing is an untracked filesystem/initial-scan
+                // refresh, matching `index_file` and generation-zero callers.
+                // It has no document generation with which to reject a stale
+                // candidate; tracked LSP updates use
+                // `index_file_with_generation` instead.
+                if !self.commit_document(&uri_str, 1, text.clone(), false) {
                     errors
                         .push(format!("Document store rejected candidate version for {}", uri_str));
                     continue;
@@ -9819,7 +9822,7 @@ Utils::process_data();
     }
 
     #[test]
-    fn batch_stale_document_rejection_preserves_accepted_projections() {
+    fn batch_untracked_refresh_accepts_existing_document() {
         let index = WorkspaceIndex::new();
         let uri = must(Url::parse("file:///batch/stale.pm"));
         let accepted = "package BatchStale;\nsub accepted { 1 }\n1;\n";
@@ -9829,12 +9832,12 @@ Utils::process_data();
         let candidate = "package BatchStale;\nsub changed { 1 }\n1;\n";
         let errors = index.index_files_batch(vec![(uri.clone(), candidate.to_string())]);
 
-        assert_eq!(errors.len(), 1);
-        assert_eq!(index.document_store().get_text(uri.as_str()).as_deref(), Some(accepted));
+        assert!(errors.is_empty(), "untracked batch refresh errors: {errors:?}");
+        assert_eq!(index.document_store().get_text(uri.as_str()).as_deref(), Some(candidate));
         let symbols = index.file_symbols(uri.as_str());
-        assert!(symbols.iter().any(|symbol| symbol.name == "accepted"));
-        assert!(!symbols.iter().any(|symbol| symbol.name == "changed"));
-        assert_eq!(index.indexed_generation(uri.as_str()), Some(4));
+        assert!(symbols.iter().any(|symbol| symbol.name == "changed"));
+        assert!(!symbols.iter().any(|symbol| symbol.name == "accepted"));
+        assert_eq!(index.indexed_generation(uri.as_str()), Some(0));
     }
 
     #[test]
@@ -9843,6 +9846,7 @@ Utils::process_data();
         let uri = must(Url::parse("file:///batch/duplicate.pm"));
         let errors = index.index_files_batch(vec![
             (uri.clone(), "package Duplicate; sub first { 1 } 1;".to_string()),
+            (uri.clone(), "package Duplicate; sub middle { 1 } 1;".to_string()),
             (uri.clone(), "package Duplicate; sub last { 1 } 1;".to_string()),
         ]);
 
@@ -9850,6 +9854,7 @@ Utils::process_data();
         let symbols = index.file_symbols(uri.as_str());
         assert!(symbols.iter().any(|symbol| symbol.name == "last"));
         assert!(!symbols.iter().any(|symbol| symbol.name == "first"));
+        assert!(!symbols.iter().any(|symbol| symbol.name == "middle"));
         assert_eq!(
             index.document_store().get_text(uri.as_str()).as_deref(),
             Some("package Duplicate; sub last { 1 } 1;")
