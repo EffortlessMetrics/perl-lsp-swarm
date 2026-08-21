@@ -761,7 +761,8 @@ fn parse_closing_relations(body: &str, current_repository: &str) -> Result<Vec<C
     )
     .context("compiling closing-relation parser")?;
     let mut relations = Vec::new();
-    let mut fence: Option<char> = None;
+    let mut fence: Option<Fence> = None;
+    let mut in_blockquote = false;
 
     for (index, line) in body.lines().enumerate() {
         if line.len() > MAX_SOURCE_LINE_BYTES {
@@ -769,14 +770,25 @@ fn parse_closing_relations(body: &str, current_repository: &str) -> Result<Vec<C
         }
         let trimmed = line.trim_start();
         if let Some(marker) = fence_marker(trimmed) {
-            if fence == Some(marker) {
+            if fence.is_some_and(|opening| marker.closes(opening)) {
                 fence = None;
             } else if fence.is_none() {
                 fence = Some(marker);
             }
             continue;
         }
-        if fence.is_some() || trimmed.starts_with('>') {
+        if fence.is_some() {
+            continue;
+        }
+        if trimmed.is_empty() {
+            in_blockquote = false;
+            continue;
+        }
+        if trimmed.starts_with('>') {
+            in_blockquote = true;
+            continue;
+        }
+        if in_blockquote {
             continue;
         }
 
@@ -820,12 +832,12 @@ fn parse_sections(body: &str, max_body_bytes: usize) -> Result<BTreeMap<SectionK
     let mut sections: BTreeMap<SectionKind, Section> = BTreeMap::new();
     let mut current: Option<SectionKind> = None;
     let mut current_level: Option<usize> = None;
-    let mut fence: Option<char> = None;
+    let mut fence: Option<Fence> = None;
 
     for line in body.lines() {
         let trimmed = line.trim_start();
         if let Some(marker) = fence_marker(trimmed) {
-            if fence == Some(marker) {
+            if fence.is_some_and(|opening| marker.closes(opening)) {
                 fence = None;
             } else if fence.is_none() {
                 fence = Some(marker);
@@ -915,14 +927,25 @@ fn markdown_heading_level(line: &str) -> Option<usize> {
     (!heading.is_empty()).then_some(hash_count)
 }
 
-fn fence_marker(line: &str) -> Option<char> {
-    if line.starts_with("```") {
-        Some('`')
-    } else if line.starts_with("~~~") {
-        Some('~')
-    } else {
-        None
+#[derive(Clone, Copy)]
+struct Fence {
+    character: char,
+    length: usize,
+}
+
+impl Fence {
+    fn closes(self, opening: Self) -> bool {
+        self.character == opening.character && self.length >= opening.length
     }
+}
+
+fn fence_marker(line: &str) -> Option<Fence> {
+    let character = line.chars().next()?;
+    if !matches!(character, '`' | '~') {
+        return None;
+    }
+    let length = line.chars().take_while(|marker| *marker == character).count();
+    (length >= 3).then_some(Fence { character, length })
 }
 
 fn section_text(sections: &BTreeMap<SectionKind, Section>, kinds: &[SectionKind]) -> String {
@@ -1320,6 +1343,24 @@ mod tests {
         let body = "```text\nCloses #123\nCloses https://github.com/org/repo/issues/124\n```\n> Fixes #456\nRefs #789\n";
         let relations = parse_closing_relations(body, "effortlessmetrics/perl-lsp-swarm")?;
         assert!(relations.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn shorter_fence_marker_cannot_close_a_longer_fence() -> Result<()> {
+        for body in ["````text\n```\nCloses #123\n````\n", "~~~~text\n~~~\nCloses #123\n~~~~\n"] {
+            let relations = parse_closing_relations(body, "effortlessmetrics/perl-lsp-swarm")?;
+            assert!(relations.is_empty());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn lazy_blockquote_continuation_cannot_create_terminal_relation() -> Result<()> {
+        let body = "> quoted paragraph\nCloses #123\n\nCloses #456\n";
+        let relations = parse_closing_relations(body, "effortlessmetrics/perl-lsp-swarm")?;
+        assert_eq!(relations.len(), 1);
+        assert_eq!(relations[0].key.number, 456);
         Ok(())
     }
 
