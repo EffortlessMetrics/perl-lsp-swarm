@@ -560,6 +560,31 @@ fn two_file_shards_never_collide_fact_ids() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn unqualified_single_shard_match_retains_multi_shard_limitation() -> Result<(), Box<dyn Error>> {
+    let first = shard_in_file(FileId(10), Provenance::ExactAst, Confidence::High);
+    let mut second = shard_in_file(FileId(11), Provenance::ExactAst, Confidence::High);
+    second.entities[0].canonical_name = "Other::different".to_string();
+    let port = parser_port(&[first, second], ProviderSnapshotCompleteness::Complete)?;
+
+    // Only file 10 currently matches, but an unqualified symbol query still
+    // needs cross-shard generation ownership before it can claim exactness.
+    let result = execute(
+        &port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".into())),
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Degraded);
+    assert_eq!(result.value_facts().count(), 1);
+    assert!(
+        result
+            .evidence()
+            .limitations()
+            .iter()
+            .any(|limitation| limitation == "multi_shard_single_snapshot_exactness")
+    );
+    Ok(())
+}
+
+#[test]
 fn cross_generation_snapshot_cannot_answer_exact() -> Result<(), Box<dyn Error>> {
     let port = parser_port(
         &[shard(Provenance::ExactAst, Confidence::High)],
@@ -640,7 +665,7 @@ fn live_controls_are_rechecked_after_adapter_query() -> Result<(), Box<dyn Error
 
     // The first admission check is clear; the second check, performed by the
     // checked result boundary, observes cancellation after the adapter draft.
-    let cancelled = ScriptedControl::new(1, usize::MAX);
+    let cancelled = ScriptedControl::new(3, usize::MAX);
     let cancellation = execute_provider_query(&port, &query, &cancelled);
     assert_eq!(
         cancellation,
@@ -651,7 +676,7 @@ fn live_controls_are_rechecked_after_adapter_query() -> Result<(), Box<dyn Error
     assert!(cancelled.cancellation_checks.load(Ordering::Relaxed) >= 2);
 
     // Exercise the same post-query guard for a deadline independently.
-    let deadline = ScriptedControl::new(usize::MAX, 1);
+    let deadline = ScriptedControl::new(usize::MAX, 3);
     let expiry = execute_provider_query(&port, &query, &deadline);
     assert_eq!(
         expiry,
@@ -660,6 +685,42 @@ fn live_controls_are_rechecked_after_adapter_query() -> Result<(), Box<dyn Error
         ))
     );
     assert!(deadline.deadline_checks.load(Ordering::Relaxed) >= 2);
+    Ok(())
+}
+
+#[test]
+fn scripted_controls_abort_selection_completeness_and_fact_construction()
+-> Result<(), Box<dyn Error>> {
+    let port = parser_port(
+        &[shard(Provenance::ExactAst, Confidence::High)],
+        ProviderSnapshotCompleteness::Complete,
+    )?;
+
+    // Admission is active, but cancellation changes before selection can
+    // construct a value. The adapter returns the typed terminal refusal.
+    let selection =
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".into()));
+    let cancelled_during_selection = ScriptedControl::new(1, usize::MAX);
+    let result = execute_provider_query(&port, &selection, &cancelled_during_selection)?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Cancelled);
+    assert_eq!(result.value_facts().count(), 0);
+
+    // A missing symbol would otherwise issue an exact-empty completeness
+    // grant. Deadline expiry at that issuance boundary must refuse it.
+    let missing =
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("missing".into()));
+    let deadline_during_completeness = ScriptedControl::new(usize::MAX, 2);
+    let result = execute_provider_query(&port, &missing, &deadline_during_completeness)?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::DeadlineExceeded);
+    assert!(!result.is_exact_empty());
+
+    // A live cancellation after selection but before fact construction cannot
+    // allow an exact value to escape the checked adapter path.
+    let fact = request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".into()));
+    let cancelled_during_fact_construction = ScriptedControl::new(2, usize::MAX);
+    let result = execute_provider_query(&port, &fact, &cancelled_during_fact_construction)?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Cancelled);
+    assert_eq!(result.value_facts().count(), 0);
     Ok(())
 }
 

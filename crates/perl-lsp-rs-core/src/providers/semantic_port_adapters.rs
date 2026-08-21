@@ -1099,6 +1099,10 @@ fn query_records(
         ));
     }
 
+    if let Some(terminal) = live_control_terminal(control) {
+        return Ok(terminal);
+    }
+
     if matches!(request.subject, ProviderQuerySubject::Entity(_))
         && records
             .iter()
@@ -1156,6 +1160,11 @@ fn query_records(
         ));
     }
 
+    // A multi-shard adapter can answer a query scoped to one represented file,
+    // but it cannot claim that an answer assembled across shards is exact:
+    // FileFactShard has no per-shard generation owner. Keep that limitation
+    // attached only to the query scopes it actually affects.
+    let limitations = scoped_limitations(request, limitations);
     let selection = select_records(request, records);
     let any_stale = selection.all().chain(blockers.iter().copied()).any(|record| {
         record.envelope.status() == SemanticFactStatus::Stale || !record_is_current(record, request)
@@ -1207,6 +1216,9 @@ fn query_records(
                 limitations.to_vec(),
             ));
         }
+        if let Some(terminal) = live_control_terminal(control) {
+            return Ok(terminal);
+        }
         if let Some(grant) = issue_completeness_grant(
             request,
             capability,
@@ -1215,7 +1227,7 @@ fn query_records(
             producer,
             denominator_scope,
             snapshot_id,
-            limitations,
+            &limitations,
         ) {
             return Ok(ProviderQueryResultDraft::new(
                 ProviderQueryOutcome::Exact,
@@ -1230,7 +1242,7 @@ fn query_records(
             producer,
             trace_source,
             records.len(),
-            limitations,
+            &limitations,
             "no_supporting_denominator",
         ));
     }
@@ -1251,6 +1263,9 @@ fn query_records(
     }
 
     if !blockers.is_empty() {
+        if let Some(terminal) = live_control_terminal(control) {
+            return Ok(terminal);
+        }
         let mut facts = selection_facts(&selection)?;
         let mut present: BTreeSet<FactId> =
             facts.iter().map(|fact| fact.envelope().fact_id).collect();
@@ -1268,6 +1283,9 @@ fn query_records(
     }
 
     if snapshot.fallback_state == ProviderFallbackState::Fallback {
+        if let Some(terminal) = live_control_terminal(control) {
+            return Ok(terminal);
+        }
         let facts = selection_facts(&selection)?;
         let mut traces = traces_for(request, &facts, records);
         traces.push(coverage_trace(
@@ -1300,6 +1318,9 @@ fn query_records(
         // shard degrades with its limitations named instead.
         && limitations.is_empty();
     if exact_eligible {
+        if let Some(terminal) = live_control_terminal(control) {
+            return Ok(terminal);
+        }
         let facts = selection_facts(&selection)?;
         let traces = traces_for(request, &facts, records);
         return Ok(value_draft(
@@ -1331,6 +1352,9 @@ fn query_records(
     if exact_grade && notes.is_empty() && !snapshot.facts_can_be_exact() {
         notes.push("snapshot_not_exact_grade".to_string());
     }
+    if let Some(terminal) = live_control_terminal(control) {
+        return Ok(terminal);
+    }
     let facts = selection_facts(&selection)?;
     let traces = traces_for(request, &facts, records);
     Ok(value_draft(
@@ -1341,6 +1365,36 @@ fn query_records(
         notes,
         ProviderResultPath::Primary,
     ))
+}
+
+fn live_control_terminal(control: &dyn ProviderQueryControl) -> Option<ProviderQueryResultDraft> {
+    if control.is_cancelled() {
+        return Some(terminal_draft(
+            ProviderQueryOutcome::Cancelled,
+            ProviderQueryTerminalState::Cancelled,
+        ));
+    }
+    if control.deadline_expired() {
+        return Some(terminal_draft(
+            ProviderQueryOutcome::DeadlineExceeded,
+            ProviderQueryTerminalState::DeadlineExceeded,
+        ));
+    }
+    None
+}
+
+fn scoped_limitations(request: &ProviderQueryRequest, limitations: &[String]) -> Vec<String> {
+    let explicitly_file_qualified = matches!(
+        request.subject,
+        ProviderQuerySubject::File(_) | ProviderQuerySubject::Position { .. }
+    );
+    limitations
+        .iter()
+        .filter(|limitation| {
+            *limitation != "multi_shard_single_snapshot_exactness" || !explicitly_file_qualified
+        })
+        .cloned()
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1404,17 +1458,22 @@ fn issue_completeness_grant(
     {
         return None;
     }
-    let units: Vec<_> =
-        records.iter().filter(|record| capability_covers(capability, record)).collect();
-    if units.is_empty() {
-        return None;
-    }
     let requested_file = match &request.subject {
         ProviderQuerySubject::File(file_id) | ProviderQuerySubject::Position { file_id, .. } => {
             Some(*file_id)
         }
         _ => None,
     };
+    let units: Vec<_> = records
+        .iter()
+        .filter(|record| capability_covers(capability, record))
+        .filter(|record| {
+            requested_file.is_none_or(|file_id| record.envelope.anchor.file_id == file_id)
+        })
+        .collect();
+    if units.is_empty() {
+        return None;
+    }
     if requested_file.is_some_and(|file_id| {
         !units.iter().any(|record| record.envelope.anchor.file_id == file_id)
     }) {
@@ -1435,10 +1494,13 @@ fn issue_completeness_grant(
     {
         return None;
     }
+    let grant_denominator_scope = requested_file
+        .map(|file_id| format!("files:{}", file_id.0))
+        .unwrap_or_else(|| denominator_scope.to_string());
     ProviderCompletenessGrant::issue_for_request(
         request,
         producer,
-        format!("{producer:?}:{capability:?}:{denominator_scope}"),
+        format!("{producer:?}:{capability:?}:{grant_denominator_scope}"),
         snapshot_id.to_string(),
         units.len() as u64,
         provenance,
