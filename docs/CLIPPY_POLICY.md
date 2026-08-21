@@ -26,9 +26,9 @@ A lint cannot appear in two states. A Cargo lint without a ledger entry fails, a
 
 ## Workspace posture
 
-The policy applies to production code and every test target. Test failures should use `Result`, `?`, or repository assertion helpers that preserve the underlying error. The old Clippy test-carveout keys are not accepted policy and cannot return through `clippy.toml`.
+The policy applies to production code and to test, example, and benchmark targets reached by the maintained gates. The active Cargo lint block denies unchecked `Result`/`Option` collapse through `unwrap_used` and `expect_used`; `clippy.toml` no longer grants an `allow-unwrap-in-tests` exception and currently configures no method-level exceptions.
 
-The tracked catalog covers five broad families:
+For fallible test setup that should propagate, return `Result` and use `?`. For an asserted branch at the test boundary, use the extraction helpers owned by `perl-test-must`, such as `perl_test_must::must` and `perl_test_must::must_some`. Existing `perl_tdd_support::must*` imports are compatibility and migration state governed by #8605 and #8436; do not add a new dependency on the umbrella package solely for these helpers.
 
 1. **Panic and silent-failure control:** unchecked `Result`/`Option` collapse, discarded futures, ignored `must_use` work, and hidden errors.
 2. **AST, UTF-8, and numeric correctness:** unchecked slicing/indexing, byte/character confusion, unsafe casts, and arithmetic hazards.
@@ -38,7 +38,11 @@ The tracked catalog covers five broad families:
 
 ## Suppression and debt
 
-Use `#[expect]` only where the lint is correct and the exact exception is intentional:
+Intentional assertion helpers and explicit panic-injection tests may carry narrow, reviewed exceptions. They do not create a general test carveout.
+
+## Suppression style
+
+Use `#[expect]` only when the lint is correct but the local exception is intentional and reviewed:
 
 ```rust
 #[expect(
@@ -52,19 +56,11 @@ fn generated_lookup(table: &[usize], index: usize) -> usize {
 
 A temporary repository debt row records `lint`, `level`, `path`, `owner`, `reason`, and `review_after`. Empty, expired, unowned, pathless, level-inconsistent, or orphaned debt fails the policy check. An unchanged count cannot hide one finding replacing another.
 
-## Toolchain currentness
+## Rust-version lint planning
 
-The product Rust version is normalized across:
+The product MSRV is recorded in `Cargo.toml`, `clippy.toml`, and the governed lint ledger. `cargo xtask check-lint-policy` verifies that planned lints are present in the ledger, active lints agree with Cargo, and version-gated lints are not activated ahead of the product toolchain.
 
-```text
-Cargo.toml workspace.package.rust-version
-policy/clippy-lints.toml msrv
-clippy.toml msrv
-rust-toolchain.toml channel
-.ci/gate-policy.yaml global.toolchain.msrv
-```
-
-`1.95` and `1.95.0` describe the same product version. Any other drift fails closed. A private analysis-tool toolchain, including Cargo-Hawk's compiler, does not satisfy this product contract.
+The Rust 1.95 rollout material remains useful historical and design context, but current configuration is authoritative for current-state claims. The former `allow-unwrap-in-tests = true` setting has already been removed. Historical documents may describe that earlier rollout state; active policy must not present it as a current exception or pending removal.
 
 ## Local check
 
@@ -78,4 +74,7 @@ The command prints deterministic active, debt, tracked, future-planned, and due-
 
 ## Protected fields
 
-`clippy::disallowed_fields` is active at deny, while `clippy.toml` deliberately carries an empty `disallowed-fields` set. This proves the mechanism is live; it does not claim any parser, LSP, DAP, or workspace field is protected yet. [`CLIPPY_PROTECTED_FIELDS.md`](CLIPPY_PROTECTED_FIELDS.md) owns the reviewed field-selection programme.
+The `clippy::disallowed_fields` rail is **activated** (#6114) with an empty
+denylist in `clippy.toml` (`disallowed-fields = []`). The design anchor lives in
+[`CLIPPY_PROTECTED_FIELDS.md`](CLIPPY_PROTECTED_FIELDS.md). Concrete field
+selectors and accessors will be added incrementally through their owning lint-policy work.

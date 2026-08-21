@@ -33,6 +33,7 @@ pub(crate) mod parse_worker;
 #[cfg(feature = "workspace")]
 pub(crate) mod readiness;
 mod refresh;
+mod resolve_session;
 /// Routing module for lifecycle-aware index access
 pub mod routing;
 pub(crate) mod scheduler;
@@ -58,7 +59,7 @@ pub use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcRespon
 // Re-export window types for public API
 pub use window::{MessageType, ShowDocumentOptions};
 
-use perl_lsp_rs_core::tooling::performance::{AstCache, SymbolIndex};
+use perl_lsp_rs_core::tooling::performance::SymbolIndex;
 use perl_lsp_rs_core::tooling::perl_critic::BuiltInAnalyzer;
 use perl_parser::{
     Parser,
@@ -161,8 +162,6 @@ pub struct LspServer {
     /// Index coordinator for workspace-wide features with lifecycle management
     #[cfg(feature = "workspace")]
     pub(crate) index_coordinator: Option<Arc<IndexCoordinator>>,
-    /// AST cache for performance
-    ast_cache: Arc<AstCache>,
     /// Symbol index for fast lookups
     symbol_index: Arc<Mutex<SymbolIndex>>,
     /// Server configuration
@@ -242,6 +241,12 @@ pub struct LspServer {
     trace_level: Arc<Mutex<String>>,
     /// Stream session manager for progressive inline completion.
     stream_session_manager: stream_session::StreamSessionManager,
+    /// Session-keyed resolve-envelope authenticator owned by this connection
+    /// (#8342). Constructed at the connection boundary with fresh
+    /// process-random keys; taken and destroyed by the `shutdown` request so
+    /// every old envelope becomes unverifiable. `None` after teardown.
+    pub(crate) resolve_session_authenticator:
+        Mutex<Option<perl_lsp_rs_core::protocol::resolve_envelope::SessionResolveAuthenticator>>,
     /// Runtime feature profile selected by launch arguments or compiled default.
     feature_profile: FeatureProfile,
     /// Runtime workload tuning (e2e mode, diagnostic scope, debounce, indexing gates).
@@ -748,7 +753,6 @@ impl LspServer {
 
         for key in &uri_keys {
             self.stream_sessions().cancel_for_uri(key);
-            self.ast_cache.remove(key);
             self.clear_document_symbols(key);
         }
 
@@ -1339,7 +1343,6 @@ impl LspServer {
         };
         let worker = parse_worker::ParseWorker::spawn_with_pending_count_hooks(
             Arc::clone(&self.documents),
-            Arc::clone(&self.ast_cache),
             on_published,
             on_activated,
             on_settled,
@@ -1748,6 +1751,14 @@ mod tests {
     }
 
     #[test]
+    // Left nested rather than collapsed into a let-chain. Collapsing it
+    // registers a new gap under `enforce-new-ripr` that this PR could not
+    // discharge: focused unit tests, an integration test, and moving this
+    // suppression between the seam and the function were all tried, and
+    // none cleared it. The nested form matches main. The exact gap-identity
+    // rule is NOT established -- see the NOT_PROVEN note on PR #9674 before
+    // assuming one. See #9528.
+    #[allow(clippy::collapsible_if)]
     fn code_action_append_uses_document_end() {
         use ropey::Rope;
         use std::sync::Arc;

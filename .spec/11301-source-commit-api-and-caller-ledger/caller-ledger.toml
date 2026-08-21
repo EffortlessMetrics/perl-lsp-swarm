@@ -1,0 +1,145 @@
+schema_version = 1
+issue = 11301
+canonical_initial_api = "index_initial_file"
+canonical_initial_batch_api = "index_initial_files_batch"
+canonical_live_api = "index_live_file"
+compatibility_apis = ["index_file", "index_file_str", "index_file_with_generation", "index_files_batch"]
+compatibility_baseline = 694
+
+# Live identity is the URI argument plus an owner-supplied non-zero NonZeroU32
+# generation; #11305 owns didOpen/didSave migration. Exact source paths are the
+# ledger identity. A new caller must be deliberately
+# added with an owner, role, successor, and removal condition; broad directory
+# globs are intentionally not accepted by the validator.
+caller_paths = [
+  "crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs",
+  "crates/perl-lsp-rs-core/src/providers/completion/completion/workspace.rs",
+  "crates/perl-lsp-rs-core/src/providers/completion/completion_shadow.rs",
+  "crates/perl-lsp-rs-core/src/providers/navigation/definition_shadow.rs",
+  "crates/perl-lsp-rs-core/src/providers/navigation/references_shadow.rs",
+  "crates/perl-lsp-rs-core/tests/detect_dead_code_mid_surrogate_position.rs",
+  "crates/perl-lsp-rs-core/tests/dynamic_callable_integration_tests.rs",
+  "crates/perl-lsp-rs-core/tests/role_conflict_cross_file_wiring_tests.rs",
+  "crates/perl-lsp-rs/src/features/workspace_rename.rs",
+  "crates/perl-lsp-rs/src/runtime/dispatch/workspace/file_preflight.rs",
+  "crates/perl-lsp-rs/src/runtime/document_access.rs",
+  "crates/perl-lsp-rs/src/runtime/language/completion.rs",
+  "crates/perl-lsp-rs/src/runtime/language/hover/signature_help.rs",
+  "crates/perl-lsp-rs/src/runtime/language/misc.rs",
+  "crates/perl-lsp-rs/src/runtime/language/navigation.rs",
+  "crates/perl-lsp-rs/src/runtime/language/provider_decision_live_trace_tests.rs",
+  "crates/perl-lsp-rs/src/runtime/language/rename.rs",
+  "crates/perl-lsp-rs/src/runtime/test_api.rs",
+  "crates/perl-lsp-rs/src/runtime/text_sync.rs",
+  "crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs",
+  "crates/perl-lsp-rs/src/runtime/text_sync/tests.rs",
+  "crates/perl-lsp-rs/src/runtime/workspace.rs",
+  "crates/perl-lsp-rs/tests/critical_fixes_tests.rs",
+  "crates/perl-lsp-rs/tests/dynamic_diagnostics_suppression_tests.rs",
+  "crates/perl-lsp-rs/tests/fixtures/mocks/test_infrastructure_mocks.rs",
+  "crates/perl-lsp-rs/tests/lsp_protocol_tests.rs",
+  "crates/perl-lsp-rs/tests/lsp_workspace_index_e2e.rs",
+  "crates/perl-lsp-rs/tests/multi_root_workspace_tests.rs",
+  "crates/perl-lsp-rs/tests/workstream_e_trust_anchor_tests.rs",
+  "crates/perl-parser/src/refactor/refactoring.rs",
+  "crates/perl-parser/src/refactor/scoped_rename_tests.rs",
+  "crates/perl-parser/src/refactor/workspace_refactor.rs",
+  "crates/perl-parser/src/refactor/workspace_rename.rs",
+  "crates/perl-parser/tests/dead_code_detector.rs",
+  "crates/perl-parser/tests/index_lifecycle_tests.rs",
+  "crates/perl-parser/tests/lsp_cancellation_mutation_hardening.rs",
+  "crates/perl-parser/tests/mutation_hardening_tests.rs",
+  "crates/perl-parser/tests/workspace_index_tests.rs",
+  "crates/perl-semantic-analyzer/src/analysis/index.rs",
+  "crates/perl-semantic-analyzer/src/analysis/semantic/query_facade.rs",
+  "crates/perl-semantic-analyzer/tests/ripr_seam_proof_qw_whitespace.rs",
+  "crates/perl-workspace/benches/workspace_index_benchmark.rs",
+  "crates/perl-workspace/src/bin/workspace_memory_profile.rs",
+  "crates/perl-workspace/src/workspace/workspace_index.rs",
+  "crates/perl-workspace/src/workspace_index_utf16_test.rs",
+  "crates/perl-workspace/tests/common/mod.rs",
+  "crates/perl-workspace/tests/comprehensive_unit_tests.rs",
+  "crates/perl-workspace/tests/cross_file_reference_query_tests.rs",
+  "crates/perl-workspace/tests/definition_ambiguity_regression_tests.rs",
+  "crates/perl-workspace/tests/dual_indexing_tests.rs",
+  "crates/perl-workspace/tests/exporter_visibility_bridge_tests.rs",
+  "crates/perl-workspace/tests/fact_shard_lifecycle_tests.rs",
+  "crates/perl-workspace/tests/file_semantic_bundle_tests.rs",
+  "crates/perl-workspace/tests/folder_provenance_tests.rs",
+  "crates/perl-workspace/tests/generated_member_facts.rs",
+  "crates/perl-workspace/tests/interpolated_string_usage_tests.rs",
+  "crates/perl-workspace/tests/legacy_public_api_regression_tests.rs",
+  "crates/perl-workspace/tests/memory_leak_regression.rs",
+  "crates/perl-workspace/tests/memory_profiling_test.rs",
+  "crates/perl-workspace/tests/semantic_real_workspace_baseline.rs",
+  "crates/perl-workspace/tests/short_query_workspace_symbols_bdd.rs",
+  "crates/perl-workspace/tests/surface_workspace_parity.rs",
+  "crates/perl-workspace/tests/test_package_scoped_queries.rs",
+  "crates/perl-workspace/tests/use_lib_fact_tests.rs",
+  "crates/perl-workspace/tests/workspace_scorecard.rs",
+  "xtask/src/tasks/metrics/parser_accuracy.rs",
+  "xtask/src/tasks/semantic_scorecard.rs",
+]
+
+[[owner]]
+prefix = "crates/perl-lsp-rs/src/runtime/text_sync"
+role = "live didOpen/didSave generation path"
+owner = "perl-lsp-rs text synchronization"
+successor = "index_live_file with the #11305 currentness guard"
+removal_condition = "#11305 lands the owner-supplied live commit identity"
+
+[[owner]]
+prefix = "crates/perl-workspace/tests"
+role = "explicit workspace fixture"
+owner = "perl-workspace test fixtures"
+successor = "index_initial_file or index_initial_files_batch"
+removal_condition = "fixture is migrated when its test seam is next edited"
+
+[[owner]]
+prefix = "crates/perl-workspace/src"
+role = "workspace implementation/profile fixture"
+owner = "perl-workspace"
+successor = "index_initial_file or index_initial_files_batch"
+removal_condition = "initial profile and internal tests use canonical initial names"
+
+[[owner]]
+prefix = "crates/perl-workspace/benches"
+role = "workspace benchmark fixture"
+owner = "perl-workspace benchmark owner"
+successor = "index_initial_file or index_initial_files_batch"
+removal_condition = "benchmark contract is next revised"
+
+[[owner]]
+prefix = "crates/perl-parser"
+role = "parser/refactor fixture or file-operation path"
+owner = "perl-parser refactor authority"
+successor = "initial API for fixtures; live API when file-operation currentness is settled"
+removal_condition = "owning refactor/file-operation claim defines its source commit authority"
+
+[[owner]]
+prefix = "crates/perl-lsp-rs"
+role = "LSP/provider or explicit test fixture"
+owner = "perl-lsp-rs caller owner"
+successor = "initial API for fixtures; live API for provider-owned currentness"
+removal_condition = "owning lifecycle/provider claim defines the successor contract"
+
+[[owner]]
+prefix = "crates/perl-lsp-rs-core"
+role = "provider shadow or explicit test fixture"
+owner = "perl-lsp-rs-core provider owner"
+successor = "initial API for fixtures; live API for provider-owned currentness"
+removal_condition = "provider semantics claim supplies a non-zero source commit guard"
+
+[[owner]]
+prefix = "crates/perl-semantic-analyzer"
+role = "semantic analyzer fixture"
+owner = "perl-semantic-analyzer"
+successor = "index_initial_file_str for fixture setup"
+removal_condition = "fixture-only setup is migrated with the next semantic test edit"
+
+[[owner]]
+prefix = "xtask"
+role = "repository validation and scorecard fixture"
+owner = "xtask task owner"
+successor = "index_initial_file_str for fixture setup"
+removal_condition = "task fixture is migrated when its validation contract is next revised"

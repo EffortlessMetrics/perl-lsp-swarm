@@ -1,0 +1,12 @@
+project: product
+component: Editor Integrations
+kind: Added
+body: >-
+  Register perl-dap directly with Sublime Debugger using trusted binary
+  authority, native stdio transport, and bound exact-source host/runtime
+  receipts.
+time: 2026-08-13T11:22:00Z
+custom:
+  PR: "7922"
+  Slug: sublime-native-perl-dap
+  Breaking: "no"

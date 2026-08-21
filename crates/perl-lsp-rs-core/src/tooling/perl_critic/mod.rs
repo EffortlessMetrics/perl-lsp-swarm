@@ -9,6 +9,8 @@ mod identity;
 mod native;
 mod normalized;
 mod quick_fix;
+mod remediation;
+mod result_identity;
 mod types;
 
 pub use analyzer::{CriticAnalyzer, hash_content};
@@ -33,6 +35,12 @@ pub use normalized::{
     NormalizedCriticFinding, OwnedCriticObservedIdentity, normalize_critic_findings,
 };
 pub use quick_fix::{QuickFix, TextEdit};
+pub use remediation::{CriticRemediationClass, CriticRemediationEligibility};
+pub use result_identity::{
+    CriticPolicyIdentity, CriticPolicyIdentityError, DIAGNOSTIC_RESULT_IDENTITY_SCHEMA_VERSION,
+    DiagnosticFactIdentity, DiagnosticResultIdentity, DiagnosticResultIdentityInput,
+    DiagnosticResultSchemaVersions, DiagnosticSourceIdentity,
+};
 pub use types::{CriticConfig, Severity, Violation};
 
 /// Error returned when an external native-critic profile token is not recognized.

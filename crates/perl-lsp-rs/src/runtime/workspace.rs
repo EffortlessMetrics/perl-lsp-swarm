@@ -1199,10 +1199,6 @@ impl LspServer {
                                     json!(config.inlay_hints_chained_hints)
                                 }
                                 "perl.inlayHints.maxLength" => json!(config.inlay_hints_max_length),
-                                "perl.testRunner.enabled" => json!(config.test_runner_enabled),
-                                "perl.testRunner.testCommand" => json!(config.test_runner_command),
-                                "perl.testRunner.testArgs" => json!(config.test_runner_args),
-                                "perl.testRunner.testTimeout" => json!(config.test_runner_timeout),
                                 "perl.formatting.enabled" => json!(config.perltidy_enabled),
                                 "perl.formatting.engine" => {
                                     let engine = match config.formatting_engine {
@@ -1347,7 +1343,7 @@ impl LspServer {
                     )
                 };
 
-                // Update server config (inlay hints, test runner)
+                // Update server-owned LSP configuration.
                 {
                     let mut config = self.config.lock();
                     config.update_from_value(perl);
@@ -2827,6 +2823,9 @@ pub(super) fn path_to_module_name(uri: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    // Test assertions favor `expect_err()` with a descriptive message over
+    // silent unwraps; the workspace-wide deny is a production-code rule.
+    #![allow(clippy::expect_used)]
     #[cfg(feature = "workspace")]
     use super::WORKSPACE_INDEX_PROGRESS_TOKEN;
     use super::{LspServer, module_name_appears_in_text};
@@ -2980,6 +2979,32 @@ mod tests {
         );
         assert_eq!(current_engine, perl_lsp_rs_core::config::CriticEngine::Native);
         Ok(())
+    }
+
+    #[test]
+    fn did_change_configuration_ignores_removed_test_runner_authority() {
+        let server = LspServer::new();
+
+        server.test_handle_did_change_configuration(Some(json!({
+            "settings": {
+                "perl": {
+                    "testRunner": {
+                        "enabled": false,
+                        "command": "CANARY-EXECUTABLE",
+                        "args": ["CANARY-ARG"],
+                        "cwd": "CANARY-CWD",
+                        "env": {"CANARY": "CANARY-VALUE"},
+                        "timeout": 0
+                    },
+                    "telemetry": {"enabled": true}
+                }
+            }
+        })));
+
+        assert!(server.config.lock().telemetry_enabled);
+        let serialized = serde_json::to_value(&*server.config.lock()).expect("serialize config");
+        assert!(serialized.get("testRunner").is_none());
+        assert!(serialized.to_string().find("CANARY").is_none());
     }
 
     #[test]

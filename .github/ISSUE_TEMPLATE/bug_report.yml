@@ -1,12 +1,14 @@
 name: Bug Report
-description: Report a bug in the LSP server or parser
+description: Report a reproducible bug in perl-lsp, its parser, or editor integrations
 title: "[Bug] "
 labels: ["bug", "needs-triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting a bug! Please fill out the sections below so we can reproduce and fix it.
+        Thanks for reporting a bug. Please provide the smallest reproducible journey you can share.
+
+        **VS Code public-beta users:** `Perl: Report Issue` can copy a bounded support packet with product/editor identity and only the support state the extension can establish safely. Please review the packet before pasting it below. Do not paste private source, full logs, environment dumps, credentials, debugger values, or test output unless a maintainer asks for one specifically bounded excerpt.
 
   - type: dropdown
     id: component
@@ -14,17 +16,32 @@ body:
       label: Component
       description: Which part of the project is affected?
       options:
-        - LSP server (perl-lsp)
+        - VS Code extension
+        - LSP server (perl-lsp / perllsp)
         - Parser (perl-parser)
         - Lexer (perl-lexer)
         - Completion provider
         - Hover provider
-        - Go-to-definition
+        - Go-to-definition / references / symbols
         - Diagnostics
         - Workspace indexing
+        - Formatting / critic
+        - Test Explorer
         - DAP / debugger
-        - VSCode extension
+        - Installation / managed binaries / update
         - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-source
+    attributes:
+      label: Installation / Evidence Source
+      description: This keeps released-public reports distinct from source/pre-release builds.
+      options:
+        - Released public artifact (Marketplace/Open VSX/GitHub release/package)
+        - Pre-release or local/source build
+        - Unknown installation source
     validations:
       required: true
 
@@ -32,8 +49,8 @@ body:
     id: description
     attributes:
       label: Bug Description
-      description: A clear and concise description of the bug.
-      placeholder: When I open a Perl file with ..., the LSP server ...
+      description: A clear and concise description of the behavior you believe is wrong.
+      placeholder: When I open a Perl file with ..., perl-lsp ...
     validations:
       required: true
 
@@ -41,15 +58,12 @@ body:
     id: reproduce
     attributes:
       label: Steps to Reproduce
-      description: Minimal steps to reproduce the behavior.
+      description: Minimal steps that reproduce the same behavior. Use a small public/synthetic example where possible.
       value: |
-        1. Create a Perl file with the following content:
-           ```perl
-           # paste minimal Perl code here
-           ```
-        2. Open it in your editor with perl-lsp running
+        1. Start from ...
+        2. Open / edit / invoke ...
         3. ...
-        4. See error
+        4. Observe ...
     validations:
       required: true
 
@@ -69,31 +83,49 @@ body:
     validations:
       required: true
 
-  - type: textarea
-    id: logs
+  - type: dropdown
+    id: restart-result
     attributes:
-      label: LSP Logs / Error Output
+      label: Does an explicit Perl language-server restart change the result?
+      description: In VS Code use the normal Perl restart command; do not reinstall or delete caches just to answer this.
+      options:
+        - No — it reproduces after restart
+        - Yes — restart clears the problem
+        - Not tested / not applicable
+    validations:
+      required: true
+
+  - type: textarea
+    id: support-packet
+    attributes:
+      label: VS Code Support Packet (recommended for VS Code reports)
       description: |
-        Paste any relevant LSP log output.
-        - **VS Code**: run the `Perl: Show Output Channel` command (Ctrl+Shift+P → "Perl: Show Output Channel") and paste the contents.
-        - **Other editors**: start the server with `perllsp --stdio 2>lsp.log` and paste `lsp.log`.
+        In VS Code run `Perl: Report Issue` → `Copy Support Packet`, review it, then paste it here.
+        The packet is user-triggered and should contain bounded/redacted product state rather than full logs or source.
+        Leave blank for other editors or if packet generation is unavailable.
       render: text
+
+  - type: textarea
+    id: public-reproducer
+    attributes:
+      label: Minimal Public Reproducer
+      description: |
+        If you can share a minimal public fixture/repository, link it or paste only the synthetic/minimized code needed to reproduce the issue.
+        Do not attach proprietary/private project source solely for this report.
 
   - type: input
     id: version
     attributes:
-      label: perl-lsp Version
+      label: perl-lsp / perllsp Version (if known)
       description: |
-        Run `perllsp --version` in your terminal, or in VS Code run the `Perl: Show Server Version` command (Ctrl+Shift+P → "Perl: Show Server Version").
-      placeholder: "0.12.0"
-    validations:
-      required: true
+        Run `perllsp --version`, or use the VS Code support packet. Leave blank rather than guessing if the executed binary identity is unknown.
+      placeholder: "perllsp 0.17.0"
 
   - type: input
     id: perl-version
     attributes:
-      label: Perl Version
-      description: Output of `perl --version` (the first line, e.g. "This is perl 5, version 38...").
+      label: Perl Version (if relevant)
+      description: Output of `perl --version` when the reported path actually depends on the Perl runtime or an external Perl tool.
       placeholder: "perl 5.38.2"
 
   - type: input
@@ -101,27 +133,29 @@ body:
     attributes:
       label: Editor / Client
       description: Which editor or LSP client are you using?
-      placeholder: "VS Code 1.96, Neovim 0.10, Helix 24.07, etc."
+      placeholder: "VS Code 1.128, Neovim 0.11, Helix 25.x, etc."
     validations:
       required: true
-
-  - type: input
-    id: vscode-version
-    attributes:
-      label: VS Code Version (if applicable)
-      description: Help > About in VS Code — only needed if using the VS Code extension.
-      placeholder: "1.96.2"
 
   - type: input
     id: os
     attributes:
       label: Operating System
-      placeholder: "Ubuntu 24.04, macOS 15, Windows 11 WSL2, etc."
+      placeholder: "Ubuntu 24.04, macOS 15, Windows 11, etc."
     validations:
       required: true
+
+  - type: textarea
+    id: bounded-diagnostics
+    attributes:
+      label: Additional Bounded Diagnostics (optional)
+      description: |
+        Add only the small diagnostic excerpt needed to explain the reproduction if the support packet is insufficient.
+        Avoid full Output-panel dumps, complete settings files, environment-variable dumps, home/workspace/cache paths, credentials, private source, test output, and debugger variable/evaluate contents.
+      render: text
 
   - type: textarea
     id: context
     attributes:
       label: Additional Context
-      description: Any other context, screenshots, or files that help explain the problem.
+      description: Any other non-sensitive context that materially helps reproduce or classify the problem.

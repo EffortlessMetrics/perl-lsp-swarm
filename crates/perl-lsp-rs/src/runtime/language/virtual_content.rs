@@ -224,6 +224,16 @@ fn collect_simple_pod_module_links(line: &str, current_module: &str, uris: &mut 
     }
 }
 
+/// Classify perldoc stdout as documentation content or unavailable.
+///
+/// Returns `false` when the output is empty, whitespace-only, or begins with a
+/// "No documentation found" notice that some `perldoc` implementations
+/// (notably `perldoc.bat` on Windows) emit to stdout on exit-0.
+fn is_useful_perldoc_output(content: &str) -> bool {
+    let trimmed = content.trim();
+    !trimmed.is_empty() && !trimmed.starts_with("No documentation found")
+}
+
 /// Fetch Perl documentation using perldoc
 #[cfg(not(target_arch = "wasm32"))]
 fn fetch_perldoc(module: &str, config: &WorkspaceConfig) -> Option<String> {
@@ -247,6 +257,7 @@ fn fetch_perldoc(module: &str, config: &WorkspaceConfig) -> Option<String> {
         String::from_utf8(output.stdout)
             .map_err(|e| tracing::warn!(module, error = %e, "Invalid UTF-8 in perldoc output"))
             .ok()
+            .filter(|content| is_useful_perldoc_output(content))
     } else {
         None
     }
@@ -265,6 +276,95 @@ mod tests {
     use std::fs;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn write_fake_perldoc_fixture(
+        temp: &tempfile::TempDir,
+    ) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+        let perl_name = if cfg!(windows) { "perl.exe" } else { "perl" };
+        let perldoc_name = if cfg!(windows) { "perldoc.bat" } else { "perldoc" };
+        let perl_path = temp.path().join(perl_name);
+        let perldoc_path = temp.path().join(perldoc_name);
+
+        // The marker makes PerlOracleEnv resolve the fixture as the configured
+        // toolchain's perldoc sibling; the production route executes perldoc.
+        fs::write(&perl_path, b"")?;
+        let script = if cfg!(windows) {
+            "@echo off\r\nif /I \"%~3\"==\"Fake::Empty\" exit /b 0\r\nif /I \"%~3\"==\"Fake::Missing\" (\r\n  echo No documentation found for Fake::Missing.\r\n  exit /b 0\r\n)\r\necho NAME\r\necho     Fake::Documented\r\n"
+        } else {
+            "#!/bin/sh\ncase \"$3\" in\n  Fake::Empty) exit 0 ;;\n  Fake::Missing) printf '%s\\n' 'No documentation found for Fake::Missing.'; exit 0 ;;\nesac\nprintf '%s\\n' 'NAME' '    Fake::Documented'\n"
+        };
+        fs::write(&perldoc_path, script)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&perldoc_path)?.permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&perldoc_path, permissions)?;
+        }
+
+        Ok(perl_path)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn parser_fetch_perldoc_request_path_filters_fixture_output() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_path = write_fake_perldoc_fixture(&temp)?;
+        let mut config = WorkspaceConfig::default();
+        config.perl_path = Some(perl_path.to_string_lossy().into_owned());
+        let server = LspServer::new();
+        *server.workspace_config.lock() = config;
+
+        for module in ["Fake::Empty", "Fake::Missing"] {
+            let uri = format!("perldoc://{module}");
+            let error = server
+                .handle_text_document_content(Some(json!({ "uri": uri })))
+                .expect_err("unavailable perldoc output must not become a document response");
+            assert!(
+                error.message.contains("content not found"),
+                "unexpected unavailable response for {module}: {}",
+                error.message
+            );
+        }
+
+        let result = server
+            .handle_text_document_content(Some(json!({ "uri": "perldoc://Fake::Documented" })))?
+            .ok_or("real perldoc fixture output should become a document response")?;
+        let text = result.get("text").and_then(Value::as_str).ok_or("expected document text")?;
+        assert!(text.contains("Fake::Documented"), "real documentation response was lost: {text}");
+        Ok(())
+    }
+
+    #[test]
+    fn parser_fetch_perldoc_classifies_empty_stdout_as_unavailable() {
+        assert!(!is_useful_perldoc_output(""), "empty stdout must be classified as unavailable");
+        assert!(
+            !is_useful_perldoc_output("   "),
+            "whitespace-only stdout must be classified as unavailable"
+        );
+        assert!(
+            !is_useful_perldoc_output("\n\n"),
+            "newline-only stdout must be classified as unavailable"
+        );
+    }
+
+    #[test]
+    fn parser_fetch_perldoc_classifies_no_doc_notice_as_unavailable() {
+        assert!(
+            !is_useful_perldoc_output("No documentation found for NonExistent.\n"),
+            "perldoc.bat exit-0 no-doc notice must be classified as unavailable"
+        );
+        assert!(
+            !is_useful_perldoc_output("No documentation found.\n"),
+            "short no-doc notice must be classified as unavailable"
+        );
+        assert!(
+            is_useful_perldoc_output("NAME\n    strict\n"),
+            "real documentation content must be classified as available"
+        );
+    }
 
     #[test]
     fn parser_fetch_perldoc_strict() {

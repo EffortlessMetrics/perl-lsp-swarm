@@ -21,6 +21,15 @@ Use the highest applicable current authority:
 4. shared method/reference docs under `docs/agents/`;
 5. runtime plans, workers, worktrees, memory, and conversation.
 
+Document applicability and status are governed by
+[`docs/agents/AUTHORITY_STATUS.md`](docs/agents/AUTHORITY_STATUS.md) and its
+[machine registry](docs/agents/authority_status.toml). Before using an agent,
+review, queue, branch, or orchestration spec/ADR/doc, check that registry. A path listed
+as `transitional`, `historical`, or `superseded` does not re-enter the hierarchy merely
+because its own old header says “accepted,” “active doctrine,” “north star,” or
+“current.” The registry classifies documentation authority; current source and live
+GitHub evidence still govern the underlying facts and transaction state.
+
 This file is Codex's route map. `.agents/skills/` contains the executable provider-
 native procedures. Shared docs define invariants and GitHub surface ownership; they do
 not replace a named `$skill`.
@@ -227,6 +236,9 @@ Otherwise detect, explain, repair, and continue.
 
 ## Repository hygiene and local proof
 
+- use direct PowerShell, Git, GitHub, Cargo, and repository commands for local
+  work; do not require a token-saving command wrapper or wrapper initialization;
+- preserve the direct command and its relevant output in evidence and handoffs;
 - read nearest package-local owner guidance before modifying an owning crate;
 - production code must not use `unwrap`, `expect`, `panic!`, `todo!`,
   `unimplemented!`, `abort`, or `dbg!` outside documented narrow exceptions;

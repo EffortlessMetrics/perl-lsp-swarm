@@ -1579,7 +1579,7 @@ fn lsp_smoke_e2e_will_save_wait_until_request_response() -> Result<(), Box<dyn s
     };
 
     // If server returns edits, validate they have the required TextEdit structure.
-    // Under default config (test_runner_enabled: true) the formatter runs, so edits
+    // Under the default server-owned formatting policy, the formatter runs, so edits
     // are likely non-empty for this fixture — the loop will execute.
     for edit in edits {
         let range = edit.get("range").ok_or("TextEdit should have range field")?;

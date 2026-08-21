@@ -46,9 +46,83 @@ fn ignored_test_issue_reference_gate_is_required_on_prs() {
         "PR Smoke must persist its cargo target for the shared gate runner"
     );
     assert!(
+        target_step.contains("PR_SMOKE_RUN_ID: ${{ github.run_id }}")
+            && target_step.contains("PR_SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}")
+            && target_step.contains("pr-smoke-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}"),
+        "PR Smoke must pass run identity through step env into the cargo target path"
+    );
+    assert!(
         smoke.contains("\"$CARGO_TARGET_DIR/debug/xtask\" gates --tier pr-fast"),
         "PR Smoke must invoke the warmed xtask from its selected cargo target"
     );
+    let scope_step = must_some(workflow_step(smoke, "Determine inline-completion warm-up scope"));
+    assert!(
+        scope_step.contains("id: inline-completion-scope")
+            && scope_step.contains(
+                "\"$CARGO_TARGET_DIR/debug/xtask\" ci-scope --base origin/main --format json"
+            )
+            && scope_step.contains("fail-closed"),
+        "PR Smoke must use the warmed xtask's ci-scope JSON with fail-closed warm-up fallback"
+    );
+    for validation in [
+        "any(.direct_crates[]?; type != \"object\" or (.name | type) != \"string\")",
+        "any(.reverse_dep_closure[]?; type != \"object\" or (.name | type) != \"string\")",
+        "any(.architecture_wideners[]?; type != \"object\" or (.name | type) != \"string\")",
+        "any(.selected_lanes[]?; type != \"object\" or (.scope | type) != \"array\" or any(.scope[]?; type != \"string\"))",
+    ] {
+        assert!(
+            scope_step.contains(validation),
+            "PR Smoke ci-scope schema must reject malformed nested data: {validation}"
+        );
+    }
+    assert!(
+        scope_step.contains("code|mixed")
+            && scope_step.contains("jq -r '")
+            && scope_step.contains("any(. == \"perl-lsp-rs\" or . == \"perl-lsp-rs-core\")")
+            && scope_step.contains("elif [ \"$relevant\" = \"false\" ]"),
+        "PR Smoke must evaluate code/mixed relevance while retaining fail-closed jq fallback"
+    );
+    assert!(
+        scope_step.contains("PR_SMOKE_RUN_ID: ${{ github.run_id }}")
+            && scope_step.contains("PR_SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}")
+            && scope_step
+                .contains("pr-smoke-ci-scope-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}.json"),
+        "PR Smoke must pass run identity through step env into the temporary scope path"
+    );
+    assert!(
+        scope_step.contains("warm_inline_completion=true"),
+        "PR Smoke must default inline-completion warm-up to enabled"
+    );
+    assert!(
+        scope_step
+            .contains("warm_inline_completion=$warm_inline_completion\" >> \"$GITHUB_OUTPUT\""),
+        "PR Smoke must publish the inline-completion warm-up decision"
+    );
+    let warm_targets_start = must_some(smoke.find("- name: Warm inline-completion test targets"));
+    let run_start = must_some(smoke.find("- name: Run PR-fast via shared xtask gate runner"));
+    assert!(
+        warm_start < warm_targets_start,
+        "PR Smoke must warm inline-completion targets after warming xtask"
+    );
+    assert!(
+        warm_targets_start < run_start,
+        "PR Smoke must warm inline-completion targets before the actual shared PR-fast gate step"
+    );
+    let warm_targets = must_some(workflow_step(smoke, "Warm inline-completion test targets"));
+    assert!(
+        warm_targets
+            .contains("if: steps.inline-completion-scope.outputs.warm_inline_completion == 'true'"),
+        "PR Smoke must condition inline-completion warm-up on the fail-closed scope decision"
+    );
+    for command in [
+        "cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests --no-run",
+        "cargo test -p perl-lsp-rs-core --locked --lib inline_completion --no-run",
+    ] {
+        assert!(
+            warm_targets.contains(command),
+            "PR Smoke must prebuild `{command}` before running independent gates"
+        );
+    }
 }
 
 #[test]

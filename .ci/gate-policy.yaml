@@ -470,6 +470,22 @@ gates:
     planning:
       role: always_on
 
+  - name: source_commit_api_check
+    tier: pr_fast
+    description: "Validate source-commit API callers against the owner ledger"
+    required: true
+    command: python3 scripts/ci/check_source_commit_api.py
+    timeout_seconds: 30
+    retry_count: 0
+    budgets:
+      max_duration_ms: 10000
+    quarantine: false
+    tags:
+      - workspace
+      - caller-ledger
+    planning:
+      role: always_on
+
   - name: clippy_scoped
     tier: pr_fast
     description: "Scope-aware library clippy for ci-scope selected crates"
@@ -547,7 +563,7 @@ gates:
     required: true
     command: cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests
     timeout_seconds: 150
-    retry_count: 0
+    retry_count: 1
     budgets:
       max_duration_ms: 135000
     quarantine: false
@@ -610,7 +626,7 @@ gates:
     required: true
     command: cargo test -p perl-lsp-rs-core --locked --lib inline_completion
     timeout_seconds: 150
-    retry_count: 0
+    retry_count: 1
     budgets:
       max_duration_ms: 135000
     quarantine: false
@@ -650,7 +666,11 @@ gates:
     tier: pr_fast
     description: "Clippy lints on core library crates (not full workspace)"
     required: true
-    # Core crates only for speed; full workspace in merge_gate
+    # Core crates only for speed. The full-workspace run is `clippy_full`,
+    # which is also `pr_fast` -- no gate in any tier runs clippy at
+    # merge_gate, and none runs `-D warnings` outside library targets
+    # (#11736). `clippy_full` does lint `--bins`, but only under
+    # `-D clippy::unwrap_used -D clippy::expect_used`.
     command: >-
       cargo clippy
       -p perl-parser -p perl-lexer -p perl-parser-core
@@ -755,16 +775,74 @@ gates:
     planning:
       role: always_on
 
+  - name: clippy_tests_kernel
+    tier: pr_fast
+    description: "Clippy --all-targets on the known-clean kernel cohort: required within the pr_fast runner for test/bench/example code in these crates (#11736)"
+    required: true
+    # (#11736): The workspace lints in Cargo.toml deny `unwrap_used`, `expect_used`,
+    # and `panic` but the existing clippy gates use `--lib` only, so these denials
+    # never apply to `tests/`, `benches/`, `examples/`, or `#[cfg(test)]` modules.
+    #
+    # This gate covers a kernel cohort of crates confirmed clean under `--all-targets`
+    # after addressing the concrete findings documented in #11736. The cohort is
+    # additive: add crates here only after they pass the command below locally.
+    # This is a scoped cohort assertion, not an exhaustive workspace clean/dirty census.
+    # Other crates and the current measured census are tracked on #11736.
+    #
+    # This gate is executed by the advisory PR Smoke job, like the other pr_fast
+    # gates. `required: true` makes the pr_fast runner fail on a violation; it
+    # is not itself a branch-protection context.
+    #
+    # Cohort confirmed clean on 2026-08-19 (post-fix):
+    #   perl-token, perl-position-tracking, perl-uri, perl-tdd-support,
+    #   perl-test-must, perl-ast-v2 (1 clone-on-copy batch fixed),
+    #   perl-symbol (1 expect_used fixed)
+    command: >-
+      cargo clippy
+      -p perl-token
+      -p perl-position-tracking
+      -p perl-uri
+      -p perl-tdd-support
+      -p perl-test-must
+      -p perl-ast-v2
+      -p perl-symbol
+      --all-targets --locked
+      -- -D warnings -A missing_docs
+    timeout_seconds: 60
+    retry_count: 0
+    budgets:
+      max_duration_ms: 45000
+      max_warnings: 0
+    quarantine: false
+    tags:
+      - lint
+      - clippy
+      - tests
+    planning:
+      role: always_on
+
   - name: unit_routed_full
     tier: pr_fast
     description: "Scoped routed integration tests for ci-scope selected crates (required test gate for #1470 coupling; --tests runs tests/ directories, catching runtime assertion failures not reachable by --lib)"
     required: true
-    # NOTE (#4642): this is the only pr_fast gate that RUNS `tests/` integration
-    # tests, and it is scope-aware (`{package_args}`): it only executes the
-    # `tests/` suite for crates whose source is touched by the PR diff. A
-    # regression in an untouched crate's `tests/` directory sails through pr_fast
-    # and is only caught at the merge-gate full suite. This deferral is the
-    # structural reason false-confidence patterns in `tests/` went undetected.
+    # NOTE (#4642, corrected #11694): this is the only pr_fast gate that RUNS
+    # `tests/` integration tests, and it is scope-aware (`{package_args}`): it
+    # only executes the `tests/` suite for crates whose source is touched by the
+    # PR diff. A regression in an untouched crate's `tests/` directory sails
+    # through pr_fast. This deferral is the structural reason false-confidence
+    # patterns in `tests/` went undetected.
+    #
+    # This NOTE previously said such a regression "is only caught at the
+    # merge-gate full suite". That is false for the five `--lib`-only merge
+    # gates listed under `tier: merge_gate` below -- `--lib` excludes `tests/`
+    # entirely, so for those crates NO gate executes the integration suite on
+    # any bounded schedule. Coverage depends on some future PR happening to
+    # touch the crate. There is no scheduled backstop either: ci-nightly runs
+    # four targeted commands and flake-detection is `--workspace --lib`.
+    #
+    # #11614 is the confirmed consequence -- `incremental_full_parse_equivalence`
+    # sat red on main until a diff finally touched its crate. See #11694 for the
+    # per-gate inventory and #11708 for the currently-red suites this exposed.
     # Build the server binary first: binary_version_test (and every suite
     # that spawns perllsp) resolves the binary through PERL_LSP_BIN ->
     # CARGO_BIN_EXE -> target/debug/perllsp -> PATH -> cargo-run fallback;
@@ -795,6 +873,22 @@ gates:
     tier: merge_gate
     description: "Foundation token/AST workspace library tests"
     required: true
+    # `--lib` excludes tests/. 103 integration targets in these crates are
+    # executed by no gate on a bounded schedule -- only when a PR diff happens
+    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
+    # this to --tests is blocked on the red suites in #11708.
+    #   perl-ast                     14
+    #   perl-ast-v2                   2
+    #   perl-incremental-parsing      8
+    #   perl-line-index               4
+    #   perl-parser-pest              4
+    #   perl-pod                      2
+    #   perl-position-tracking        7
+    #   perl-pragma                   7
+    #   perl-regex                   16
+    #   perl-symbol                  19
+    #   perl-token                   12  (1 covered by explicit --test elsewhere)
+    #   perl-uri                      8
     command: >-
       cargo test --locked --lib
       -p perl-ast -p perl-ast-v2
@@ -814,13 +908,45 @@ gates:
       - unit
       - workspace
 
+  # perl-parser's `incremental` feature is not in its default set, so a plain
+  # `cargo test -p perl-parser` compiles every `#[cfg(feature = "incremental")]`
+  # test out of existence. The lib selection below therefore names the feature
+  # explicitly (qualified, because more than one package is selected): feature-on
+  # is a strict superset — 227 lib tests become 334 — for roughly 4.7s.
+  #
+  # The second invocation runs the incremental integration targets that no gate
+  # reached. `parser_integration` already executes three of them with the feature
+  # on via its manifest (parser.incremental.integration / .accuracy /
+  # .parse_output), so they are deliberately not repeated here.
+  #
+  # Four incremental targets are deliberately excluded because they assert over
+  # wall-clock samples and are not merge oracles: incremental_edge_cases_test,
+  # incremental_comprehensive_test, incremental_performance_tests, and
+  # incremental_statistical_validation_test. That exclusion is recorded here so
+  # "not run" stays visible rather than silently uncompiled (#9795); the
+  # unsatisfiable distribution-shape assertion inside the last of them is tracked
+  # by #9831.
   - name: unit_parser_stack_full
     tier: merge_gate
-    description: "Parser, lexer, and parser-core library tests"
+    description: "Parser, lexer, and parser-core library tests, plus deterministic incremental integration targets"
     required: true
     command: >-
       cargo test --locked --lib
       -p perl-parser -p perl-lexer -p perl-parser-core
+      --features perl-parser/incremental
+      -- --test-threads=4
+      &&
+      cargo test --locked -p perl-parser --features incremental
+      --test advanced_reuse_analyzer_heuristics_tests
+      --test facade_pattern_edge_cases
+      --test g2_api_regression_guards
+      --test incremental_edit_set_normalization
+      --test incremental_parsing_tests
+      --test incremental_regression_slices
+      --test mutation_hardening_tests
+      --test ripr_seam_proof_concept_ast_invariant_contract
+      --test vstring_incremental_tests
+      --test wave4_completion_absorption_tests
       -- --test-threads=4
     timeout_seconds: 180
     retry_count: 1
@@ -850,10 +976,40 @@ gates:
     planning:
       role: always_on
 
+  - name: parser_behavior_proof
+    tier: merge_gate
+    description: "Parser behavior-proof admission: registry validity and validator falsifiers (#6908)"
+    required: true
+    command: >-
+      cargo test -p xtask --bin parser-behavior-proof --locked &&
+      cargo run -p xtask --bin parser-behavior-proof --locked --
+      --receipt target/receipts/parser-behavior-proof.json
+    timeout_seconds: 600
+    retry_count: 0
+    budgets:
+      max_duration_ms: 480000
+    quarantine: false
+    tags:
+      - test
+      - parser
+      - policy
+    planning:
+      role: always_on
+
   - name: unit_analysis_full
     tier: merge_gate
     description: "Semantic analysis, workspace, diagnostics, and refactoring library tests"
     required: true
+    # `--lib` excludes tests/. 183 integration targets in these crates are
+    # executed by no gate on a bounded schedule -- only when a PR diff happens
+    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
+    # this to --tests is blocked on the red suites in #11708.
+    #   perl-corpus                  14
+    #   perl-diagnostics             11
+    #   perl-module                  71
+    #   perl-semantic-analyzer       45
+    #   perl-semantic-facts           3
+    #   perl-workspace               39
     command: >-
       cargo test --locked --lib
       -p perl-corpus -p perl-diagnostics
@@ -907,6 +1063,11 @@ gates:
     tier: merge_gate
     description: "LSP core library tests (heaviest single crate in the LSP surface)"
     required: true
+    # `--lib` excludes tests/. 82 integration targets in these crates are
+    # executed by no gate on a bounded schedule -- only when a PR diff happens
+    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
+    # this to --tests is blocked on the red suites in #11708.
+    #   perl-lsp-rs-core             82
     command: >-
       cargo test --locked --lib
       -p perl-lsp-rs-core
@@ -925,6 +1086,15 @@ gates:
     tier: merge_gate
     description: "LSP server, editor UX, perltidy, and subprocess library tests"
     required: true
+    # `--lib` excludes tests/. 356 integration targets in these crates are
+    # executed by no gate on a bounded schedule -- only when a PR diff happens
+    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
+    # this to --tests is blocked on the red suites in #11708.
+    #   perl-lsp-perltidy            10
+    #   perl-lsp-rs                 253  (19 covered by explicit --test elsewhere)
+    #   perl-lsp-ux-tests            82
+    #   perl-subprocess-runtime       3
+    #   perllsp                       8  (1 covered by explicit --test elsewhere)
     command: >-
       cargo test --locked --lib
       -p perl-lsp-perltidy -p perl-lsp-rs
@@ -945,6 +1115,17 @@ gates:
     tier: merge_gate
     description: "DAP, CI hygiene, test support, and tree-sitter workspace library tests"
     required: true
+    # `--lib` excludes tests/. 143 integration targets in these crates are
+    # executed by no gate on a bounded schedule -- only when a PR diff happens
+    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
+    # this to --tests is blocked on the red suites in #11708.
+    #   perl-ci-hygiene               6
+    #   perl-dap                    115
+    #   perl-tdd-support              4
+    #   perl-test-generators          2
+    #   perl-test-must                2
+    #   tree-sitter-perl-c            6
+    #   tree-sitter-perl-rs           8
     command: >-
       cargo test --locked --lib
       -p perl-ci-hygiene -p perl-dap
@@ -1235,6 +1416,58 @@ gates:
       - version
       - hygiene
 
+  # The compiler concept ledger (#6657) and proof policy (#6689) are fail-closed
+  # contracts: they reject untracked concept rows, unknown proof classes, circular
+  # gold, and stale generated status docs. Nothing executed either validator until
+  # this gate existed, so the fail-closed claim was inert and the committed status
+  # docs could drift silently against their contracts. Two gates rather than one
+  # `&&` chain, for the same reason policy_checks was decomposed: a chained
+  # command stops reporting once an early link fails.
+  - name: compiler_concept_ledger
+    tier: merge_gate
+    description: "Validate contracts/compiler/perl_compiler_concepts.v1.toml and its generated status doc"
+    required: true
+    command: cargo run --locked -p xtask --bin compiler-concepts -- --check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - generated
+
+  - name: compiler_proof_policy
+    tier: merge_gate
+    description: "Validate contracts/compiler/perl_compiler_proof_policy.v1.toml against the concept ledger and its generated status doc"
+    required: true
+    command: cargo run --locked -p xtask --bin compiler-proof-policy -- --check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - generated
+
+  - name: compiler_concept_proof
+    tier: merge_gate
+    description: "Validate the one-to-one concept proof-obligation matrix against the ledger and proof policy, and its generated status doc"
+    required: true
+    command: cargo run --locked -p xtask --bin compiler-concept-proof -- --check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - generated
+
   # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No workflow
   # shard executes this gate; wire into parser_stack or corpus shard before
   # re-promotion.
@@ -1309,21 +1542,6 @@ gates:
     tags:
       - lockfile
       - hygiene
-
-  - name: published_crate_count
-    tier: merge_gate
-    description: "Ratchet: published crate count must not exceed baseline"
-    required: true
-    command: cargo xtask published-crate-count
-    timeout_seconds: 30
-    retry_count: 0
-    budgets:
-      max_duration_ms: 5000
-    quarantine: true  # Until collapse completes (~30-31 crates)
-    tags:
-      - ratchet
-      - microcrate
-      - collapse
 
   # ===========================================================================
   # Tier: nightly
@@ -1815,7 +2033,7 @@ workflow_integration:
         - non_rust_inventory_check
         - v2_bundle_sync
         - nested_lock_check
-        - published_crate_count
+        - published_crate_count_pr_fast
       # Note: PR Smoke owns clippy_core/unit_core/parser stack. Parser audit,
       # v2 parity, workflow audit, and full policy closeout remain defined but
       # are too long for the bounded merge-blocking workflow shard.

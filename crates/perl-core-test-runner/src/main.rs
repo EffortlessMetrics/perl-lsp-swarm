@@ -141,13 +141,13 @@ where
             });
         }
 
-        if let Some(code) = arg_ref.strip_prefix("-e") {
-            if !code.is_empty() {
-                return Ok(Invocation {
-                    source: SourceInput::Inline(code.to_string()),
-                    display_path: "-e".to_string(),
-                });
-            }
+        if let Some(code) = arg_ref.strip_prefix("-e")
+            && !code.is_empty()
+        {
+            return Ok(Invocation {
+                source: SourceInput::Inline(code.to_string()),
+                display_path: "-e".to_string(),
+            });
         }
 
         if consumes_next_arg(arg_ref) {

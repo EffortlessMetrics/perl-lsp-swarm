@@ -20,6 +20,9 @@ pub mod document_store;
 pub mod memory;
 /// Index lifecycle instrumentation and production readiness monitoring helpers.
 pub mod monitoring;
+/// Process-local root-generation and publication-eligibility authority.
+#[doc(hidden)]
+pub mod runtime_generation;
 /// Service-level objective types and trackers used by workspace operations.
 pub mod slo;
 /// State machine defining valid index lifecycle transitions and degraded states.
@@ -45,5 +48,6 @@ pub use state_machine::{
     InvalidationReason, ResourceKind, TransitionResult,
 };
 pub use workspace_index::{
-    CrossFileReferenceQueryResult, IndexResourceLimits, Location, SymbolIdentity, WorkspaceIndex,
+    CrossFileReferenceQueryResult, IndexResourceLimits, Location, SourceCommit,
+    SourceCommitOutcome, SymbolIdentity, WorkspaceIndex,
 };

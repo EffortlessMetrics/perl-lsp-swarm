@@ -582,6 +582,82 @@ class ContractTests(unittest.TestCase):
             {finding["code"] for finding in result["findings"]},
         )
 
+    def test_unknown_context_field_fails_closed_with_actionable_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = fixture(
+                root,
+                REQUIRED.replace(
+                    'enforcement = "github-ruleset"',
+                    'enforcement = "github-ruleset"\nenforcemnt = "github-branch-protection"',
+                ),
+            )
+            result = contract.validate(root, policy)
+        finding = next(
+            finding
+            for finding in result["findings"]
+            if finding["code"] == "unknown_context_field"
+        )
+        self.assertEqual("BLOCKED", result["status"])
+        self.assertEqual("Compile All Targets", finding["subject"])
+        self.assertIn("enforcemnt", finding["message"])
+
+    def test_context_source_order_does_not_move_semantic_subject(self) -> None:
+        advisory = """
+        [[checks]]
+        name = "codecov/patch"
+        producer = "external"
+        workflow = "codecov"
+        required = false
+        policy_role = "informational"
+        applicability = "conditional"
+        enforcement = "neither"
+        reason = "External telemetry is not merge authority."
+        """
+        with (
+            tempfile.TemporaryDirectory() as left_tmp,
+            tempfile.TemporaryDirectory() as right_tmp,
+        ):
+            left_root = Path(left_tmp)
+            right_root = Path(right_tmp)
+            left = contract.validate(
+                left_root,
+                fixture(left_root, advisory + REQUIRED),
+            )
+            right = contract.validate(
+                right_root,
+                fixture(right_root, REQUIRED + advisory),
+            )
+        self.assertEqual("SUCCESS", left["status"])
+        self.assertEqual("SUCCESS", right["status"])
+        self.assertEqual(left["semantic_subject"], right["semantic_subject"])
+        self.assertEqual(left["subject_sha256"], right["subject_sha256"])
+        self.assertNotEqual(
+            left["subjects"]["policy"]["sha256"],
+            right["subjects"]["policy"]["sha256"],
+        )
+        self.assertNotEqual(
+            left["exact_source_sha256"],
+            right["exact_source_sha256"],
+        )
+
+    def test_binding_movement_changes_semantic_subject(self) -> None:
+        bound = REQUIRED.replace(
+            'enforcement = "github-ruleset"',
+            'enforcement = "github-ruleset"\nruleset_integration_id = 15368',
+        )
+        with (
+            tempfile.TemporaryDirectory() as left_tmp,
+            tempfile.TemporaryDirectory() as right_tmp,
+        ):
+            left_root = Path(left_tmp)
+            right_root = Path(right_tmp)
+            left = contract.validate(left_root, fixture(left_root, REQUIRED))
+            right = contract.validate(right_root, fixture(right_root, bound))
+        self.assertEqual("SUCCESS", left["status"])
+        self.assertEqual("SUCCESS", right["status"])
+        self.assertNotEqual(left["subject_sha256"], right["subject_sha256"])
+
 
 if __name__ == "__main__":
     unittest.main()
