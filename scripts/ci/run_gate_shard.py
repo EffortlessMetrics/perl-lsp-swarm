@@ -71,6 +71,29 @@ OUTPUT_PATH_FLAGS = {
     "--report",
     "--summary",
 }
+INPUT_PATH_FLAGS = {
+    "--baseline",
+    "--config",
+    "--config-path",
+    "--file",
+    "--input",
+    "--input-path",
+    "--manifest",
+    "--manifest-path",
+    "--policy",
+    "--receipt-schema",
+    "--schema",
+}
+INTERPRETER_OPTIONS_WITH_ARGUMENT = {
+    "--command",
+    "--file",
+    "-Command",
+    "-W",
+    "-X",
+    "-c",
+    "-m",
+}
+SHELL_OPERATORS = {"&&", ";", "||", "|", "&"}
 
 
 @dataclass(frozen=True)
@@ -147,6 +170,9 @@ def _read_gate_command_specs(path: Path) -> dict[str, str]:
                 in_gates = True
             line_number += 1
             continue
+        if stripped.startswith("#"):
+            line_number += 1
+            continue
         if stripped and not raw.startswith(" "):
             break
         if raw.startswith("  - name:"):
@@ -201,27 +227,76 @@ def _looks_like_command_path(token: str) -> bool:
     )
 
 
+def _contains_shell_expansion(token: str) -> bool:
+    return "$" in token or "`" in token or "*" in token or "?" in token
+
+
 def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
-    """Return input script paths, excluding output/receipt destinations."""
+    """Return input script and option paths, excluding output destinations.
+
+    The shard accepts only paths that can be resolved against the checked-out
+    tree. Shell expansions and globbed paths are rejected rather than guessed.
+    """
     references: list[str] = []
-    skip_next = False
+    skip_next_output = False
+    skip_next_interpreter_option = False
+    expect_input_path = False
+    interpreter_pending = False
     for index, token in enumerate(tokens):
-        if skip_next:
-            skip_next = False
+        if skip_next_output:
+            skip_next_output = False
             continue
         if token in OUTPUT_PATH_FLAGS:
-            skip_next = True
+            skip_next_output = True
             continue
         if any(token.startswith(f"{flag}=") for flag in OUTPUT_PATH_FLAGS):
             continue
+
+        if expect_input_path:
+            if token.startswith("-"):
+                raise ValueError(f"input path option is missing its value: {token}")
+            if _contains_shell_expansion(token):
+                raise ValueError(f"unsupported shell expansion in input path: {token}")
+            references.append(token)
+            expect_input_path = False
+            continue
+
+        if token in INPUT_PATH_FLAGS:
+            expect_input_path = True
+            continue
+        if any(token.startswith(f"{flag}=") for flag in INPUT_PATH_FLAGS):
+            value = token.split("=", 1)[1]
+            if not value or _contains_shell_expansion(value):
+                raise ValueError(f"unsupported shell expansion in input path: {token}")
+            references.append(value)
+            continue
+
+        if token in SHELL_OPERATORS:
+            interpreter_pending = False
+            skip_next_interpreter_option = False
+            continue
+        if skip_next_interpreter_option:
+            skip_next_interpreter_option = False
+            continue
+        if interpreter_pending:
+            if token in INTERPRETER_OPTIONS_WITH_ARGUMENT:
+                skip_next_interpreter_option = True
+                continue
+            if token.startswith("-"):
+                continue
+            if _contains_shell_expansion(token):
+                raise ValueError(f"unsupported shell expansion in command path: {token}")
+            if _looks_like_command_path(token):
+                references.append(token)
+                interpreter_pending = False
+            continue
+
+        token_name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if token_name in COMMAND_INTERPRETERS:
+            interpreter_pending = True
+            continue
         if index == 0 and _looks_like_command_path(token):
             references.append(token)
-            continue
-        if index > 0 and _looks_like_command_path(token):
-            previous = tokens[index - 1]
-            previous_name = previous.replace("\\", "/").rsplit("/", 1)[-1].lower()
-            if previous in {"-m", "-c"} or previous_name in COMMAND_INTERPRETERS:
-                references.append(token)
     return references
 
 
@@ -248,7 +323,7 @@ def load_gate_commands(
         if not command:
             raise ValueError(f"selected gate {gate!r} has no executable command")
         try:
-            tokens = shlex.split(command, posix=True)
+            tokens = shlex.split(command, comments=True, posix=True)
         except ValueError as error:
             raise ValueError(f"selected gate {gate!r} has an invalid command: {error}") from error
         if not tokens or not any(token.strip() for token in tokens):
@@ -257,6 +332,12 @@ def load_gate_commands(
             referenced = Path(reference)
             if not referenced.is_absolute():
                 referenced = repository_root / referenced
+            try:
+                referenced.resolve().relative_to(repository_root)
+            except ValueError as error:
+                raise ValueError(
+                    f"selected gate {gate!r} references path outside checked-out tree: {reference}"
+                ) from error
             if not referenced.exists() or referenced.is_symlink() or not referenced.is_file():
                 raise ValueError(
                     f"selected gate {gate!r} references missing command path: {reference}"

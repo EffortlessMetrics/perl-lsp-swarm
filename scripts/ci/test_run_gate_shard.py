@@ -582,6 +582,87 @@ class GateShardTests(unittest.TestCase):
                     root=Path(tmp),
                 )
 
+    def test_gate_policy_preflight_rejects_missing_path_after_interpreter_option(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            policy = write_gate_policy(
+                Path(tmp),
+                "  - name: source_commit_api_check\n"
+                "    command: python3 -u scripts/ci/missing.py\n",
+            )
+            with self.assertRaisesRegex(ValueError, "missing command path"):
+                shard.load_gate_commands(
+                    policy,
+                    ["source_commit_api_check"],
+                    root=Path(tmp),
+                )
+
+    def test_gate_policy_preflight_rejects_missing_explicit_input_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            policy = write_gate_policy(
+                Path(tmp),
+                "  - name: source_commit_api_check\n"
+                "    command: cargo run --manifest .ci/missing-manifest.txt\n",
+            )
+            with self.assertRaisesRegex(ValueError, "missing command path"):
+                shard.load_gate_commands(
+                    policy,
+                    ["source_commit_api_check"],
+                    root=Path(tmp),
+                )
+
+    def test_gate_policy_preflight_supports_shell_wrappers_and_comments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "scripts/ci").mkdir(parents=True)
+            (root / "scripts/ci/first.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            (root / "scripts/ci/second.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            policy = write_gate_policy(
+                root,
+                "  - name: first\n"
+                "    command: bash -u scripts/ci/first.sh # inline comment\n"
+                "# A top-level YAML comment must not end the gates sequence.\n"
+                "  - name: second\n"
+                "    command: sh ./scripts/ci/second.sh\n",
+            )
+            commands = shard.load_gate_commands(policy, ["first", "second"], root=root)
+            self.assertEqual(
+                "bash -u scripts/ci/first.sh # inline comment",
+                commands["first"],
+            )
+            self.assertEqual("sh ./scripts/ci/second.sh", commands["second"])
+
+    def test_gate_policy_preflight_rejects_path_outside_checked_out_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            root = parent / "repo"
+            root.mkdir()
+            (parent / "outside.py").write_text("# outside\n", encoding="utf-8")
+            policy = write_gate_policy(
+                root,
+                "  - name: source_commit_api_check\n"
+                "    command: python3 ../outside.py\n",
+            )
+            with self.assertRaisesRegex(ValueError, "outside checked-out tree"):
+                shard.load_gate_commands(
+                    policy,
+                    ["source_commit_api_check"],
+                    root=root,
+                )
+
+    def test_gate_policy_preflight_rejects_unresolvable_shell_expansion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            policy = write_gate_policy(
+                Path(tmp),
+                "  - name: source_commit_api_check\n"
+                "    command: python3 $SCRIPT\n",
+            )
+            with self.assertRaisesRegex(ValueError, "shell expansion"):
+                shard.load_gate_commands(
+                    policy,
+                    ["source_commit_api_check"],
+                    root=Path(tmp),
+                )
+
     def test_canonical_receipt_schema_is_loadable(self) -> None:
         contract = shard.load_receipt_contract(
             REPO_ROOT / ".ci/receipt.schema.json"
