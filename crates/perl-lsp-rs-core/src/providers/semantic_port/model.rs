@@ -889,5 +889,11 @@ mod tests {
         .expect("valid args must succeed");
 
         assert!(grant.matches(&request));
+
+        // A non-originating request must not match; an always-true matches()
+        // implementation would otherwise satisfy the positive case above.
+        let mut other = exact_ready_request();
+        other.subject = ProviderQuerySubject::Entity(EntityId(2));
+        assert!(!grant.matches(&other));
     }
 }

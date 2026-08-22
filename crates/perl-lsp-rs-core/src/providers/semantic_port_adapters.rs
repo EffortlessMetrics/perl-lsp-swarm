@@ -1583,8 +1583,16 @@ fn ambiguity_applies(request: &ProviderQueryRequest) -> bool {
         )
 }
 
-fn distinct_value_entities(values: &[&AdapterFactRecord]) -> BTreeSet<EntityId> {
-    values.iter().filter_map(|record| record.envelope.entity_id).collect()
+fn distinct_value_entities(values: &[&AdapterFactRecord]) -> BTreeSet<(FileId, EntityId)> {
+    // Entity ids are shard-local, so ambiguity counting uses the same
+    // file-qualified identity as target binding: same-numbered entities in
+    // different shards are distinct candidates, not one.
+    values
+        .iter()
+        .filter_map(|record| {
+            record.envelope.entity_id.map(|entity_id| (record.envelope.anchor.file_id, entity_id))
+        })
+        .collect()
 }
 
 fn select_records<'a>(

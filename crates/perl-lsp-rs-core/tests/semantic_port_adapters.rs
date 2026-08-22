@@ -1144,6 +1144,26 @@ fn mixed_exact_provenance_degrades_instead_of_answering_exact() -> Result<(), Bo
 }
 
 #[test]
+fn cross_shard_same_symbol_same_local_id_stays_ambiguous() -> Result<(), Box<dyn Error>> {
+    // Two shards declare a bare symbol "work" and both use local EntityId(30).
+    // Entity ids are shard-local, so these are two distinct logical candidates
+    // for Symbol("work") and the answer must block as Ambiguous rather than
+    // collapse them into one ambiguity-free value set.
+    let first = shard_in_file(FileId(10), Provenance::ExactAst, Confidence::High);
+    let mut second = shard_in_file(FileId(11), Provenance::ExactAst, Confidence::High);
+    second.entities[0].canonical_name = "Other::work".to_string();
+    let port = parser_port(&[first, second], ProviderSnapshotCompleteness::Complete)?;
+
+    let result = execute(
+        &port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".into())),
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Ambiguous);
+    assert_eq!(result.value_facts().count(), 0);
+    Ok(())
+}
+
+#[test]
 fn ambiguous_symbol_declarations_are_blocked() -> Result<(), Box<dyn Error>> {
     let mut ambiguous = shard(Provenance::ExactAst, Confidence::High);
     ambiguous.entities.push(EntityFact {
