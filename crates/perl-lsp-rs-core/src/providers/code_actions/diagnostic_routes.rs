@@ -255,6 +255,7 @@ mod tests {
             related_information: Vec::new(),
             tags: Vec::new(),
             suggestion: None,
+            fixable: false,
         }
     }
 
