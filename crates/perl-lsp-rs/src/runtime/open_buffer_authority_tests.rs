@@ -6,10 +6,6 @@
 //! contradicting disk bytes, and `didSave`/`didClose` complete the handoff
 //! deterministically.
 #![expect(
-    clippy::unwrap_used,
-    reason = "test-only policy proof: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
-#![expect(
     clippy::expect_used,
     reason = "test-only policy proof: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
 )]
@@ -107,6 +103,15 @@ fn did_close(server: &LspServer, uri: &str) {
     wait_for_index_tasks(server);
 }
 
+fn did_create(server: &LspServer, uri: &str) {
+    server
+        .handle_did_create_files(Some(json!({
+            "files": [{ "uri": uri }]
+        })))
+        .expect("didCreateFiles params are valid");
+    wait_for_index_tasks(server);
+}
+
 #[test]
 fn watched_change_on_open_document_never_indexes_disk_over_buffer() {
     let dir = TempDir::new().expect("tempdir");
@@ -149,6 +154,66 @@ fn watched_change_on_open_document_never_indexes_disk_over_buffer() {
         Some(BackingFileTransition::Changed),
         "the divergence must be recorded for the save/close handoff"
     );
+}
+
+#[test]
+fn did_create_over_open_document_never_indexes_disk_over_buffer() {
+    let dir = TempDir::new().expect("tempdir");
+    let uri = file_uri(&dir, "recreated.pl");
+
+    write_file(&dir, "recreated.pl", "package Recreated;\nsub v1_only { }\n1;\n");
+    let server = LspServer::new();
+    did_open(&server, &uri, "package Recreated;\nsub v1_only { }\n1;\n");
+
+    // Unsaved editor edit to v2; the inline commit binds the index to the buffer.
+    did_change_full(&server, &uri, 2, "package Recreated;\nsub v2_only { }\n1;\n");
+    assert_eq!(
+        index_symbols(&server, "v2_only").len(),
+        1,
+        "buffer snapshot committed at the edited generation"
+    );
+
+    // External recreate puts v3 bytes on disk, then the client reports the
+    // file-operation create over the still-open document.
+    write_file(&dir, "recreated.pl", "package Recreated;\nsub v3_only { }\n1;\n");
+    did_create(&server, &uri);
+
+    assert!(
+        index_symbols(&server, "v3_only").is_empty(),
+        "disk bytes behind an authoritative open buffer must never be indexed via didCreateFiles (#8041)"
+    );
+    assert_eq!(
+        index_symbols(&server, "v2_only").len(),
+        1,
+        "the last accepted buffer snapshot remains the cross-file authority"
+    );
+    assert_eq!(
+        document_text(&server, &uri).as_deref(),
+        Some("package Recreated;\nsub v2_only { }\n1;\n"),
+        "the open buffer text is untouched by the create observation"
+    );
+    assert_eq!(
+        server.take_backing_file_transition(&uri),
+        Some(BackingFileTransition::Changed),
+        "the external recreate must be recorded for the close handoff"
+    );
+}
+
+#[test]
+fn did_create_of_closed_file_still_indexes_disk_truth() {
+    let dir = TempDir::new().expect("tempdir");
+    let uri = file_uri(&dir, "fresh_created.pl");
+
+    write_file(&dir, "fresh_created.pl", "package FreshCreated;\nsub created_on_disk { }\n1;\n");
+    let server = LspServer::new();
+    did_create(&server, &uri);
+
+    assert_eq!(
+        index_symbols(&server, "created_on_disk").len(),
+        1,
+        "the open-buffer guard must not suppress indexing for genuinely closed creates"
+    );
+    assert_eq!(server.take_backing_file_transition(&uri), None);
 }
 
 #[test]
