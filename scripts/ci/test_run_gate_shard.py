@@ -1246,6 +1246,13 @@ class GateShardTests(unittest.TestCase):
             marker = root / "slow.pid"
             xtask = fake_sleeping_xtask(root, marker)
             policy = write_policy(root, {"slow": [], "later": []})
+            gate_policy = write_gate_policy(
+                root,
+                "  - name: slow\n"
+                "    command: echo slow\n"
+                "  - name: later\n"
+                "    command: echo later\n",
+            )
             receipt_schema = write_receipt_schema(root)
             process = subprocess.Popen(
                 [
@@ -1259,6 +1266,8 @@ class GateShardTests(unittest.TestCase):
                     str(root / "summary.json"),
                     "--execution-policy",
                     str(policy),
+                    "--gate-policy",
+                    str(gate_policy),
                     "--receipt-schema",
                     str(receipt_schema),
                     "--subject-sha",
@@ -1266,6 +1275,7 @@ class GateShardTests(unittest.TestCase):
                     "slow",
                     "later",
                 ],
+                cwd=root,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
