@@ -455,11 +455,12 @@ impl FileWatcherDebouncer {
 
     #[cfg(test)]
     fn failed_start_for_test(clock: Arc<dyn DebounceClock>) -> Self {
-        let injected = Err(std::io::Error::other("injected worker spawn failure"));
+        let injected =
+            || Err::<JoinHandle<()>, _>(std::io::Error::other("injected worker spawn failure"));
         Self::assemble(
             make_shared(clock, DEFAULT_DEBOUNCE_MS, MAX_PENDING_SUBJECTS, MAX_BATCH_SUBJECTS),
-            injected,
-            Err(std::io::Error::other("injected worker spawn failure")),
+            injected(),
+            injected(),
         )
     }
 
