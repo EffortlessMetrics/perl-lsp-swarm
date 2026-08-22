@@ -17,9 +17,7 @@ use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{Args, Parser};
 pub mod timing;
 pub use crate::features::contracts::trackable_feature_count_for_grid;
-pub use crate::features::grid::{
-    compliance_counts_for_profile, compliance_percent_for_profile, to_json_for_profile,
-};
+pub use crate::features::grid::{compliance_counts_for_profile, to_json_for_profile};
 pub use crate::features::policy::{FeatureProfile, catalog_advertised_feature_ids};
 use crate::features::profile_cli::{feature_profile_supported_tokens, parse_feature_profile_arg};
 use crate::runtime::tuning::{DiagnosticMode, RuntimeMode, RuntimeTuning};
@@ -1205,13 +1203,10 @@ pub fn format_info_output(
     use_color: bool,
 ) -> String {
     let feature_count = catalog_advertised_feature_ids(profile).len();
-    // Numerator, denominator, and percent all come from the same helper. The
-    // advertised count above is deliberately not reused here: it includes
-    // features that do not count toward coverage, and using it as the numerator
-    // is what made this line print a fraction that disagreed with its own
-    // percentage.
+    // Numerator and denominator come from the same declaration-count helper.
+    // This is navigation data about the catalog, not behavior evidence: since
+    // #6731 the line must not render a percentage or a compliance claim.
     let (covered, spec_total) = compliance_counts_for_profile(profile);
-    let coverage = compliance_percent_for_profile(profile);
 
     let mut out = String::with_capacity(256);
 
@@ -1226,7 +1221,12 @@ pub fn format_info_output(
     // Not `N/N active (100%)`: both sides were the same binding, so the line
     // could only ever read 100% and told the reader nothing.
     out.push_str(&format!("Features:         {feature_count} advertised\n"));
-    out.push_str(&format!("LSP spec coverage: {covered}/{spec_total} ({coverage:.0}%)\n"));
+    // Not `LSP spec coverage: N/M (P%)`: a declaration-count fraction is
+    // navigation data, and rendering it as coverage/percentage presented
+    // declarations as behavior proof (#6731).
+    out.push_str(&format!(
+        "LSP catalog rows: {covered}/{spec_total} declared ga/preview (navigation only, not behavior evidence)\n"
+    ));
     out.push_str(&format!("Executable:       {exe_path}\n"));
     out.push_str("\nTip: run with --log or set PERL_LSP_LOG=1 for diagnostics\n");
 
@@ -1566,7 +1566,7 @@ mod tests {
         assert!(out.contains("0.10.0"));
         assert!(out.contains("perl-parser v3"));
         assert!(out.contains("Features:"));
-        assert!(out.contains("LSP spec coverage:"));
+        assert!(out.contains("LSP catalog rows:"));
         assert!(out.contains("/usr/bin/perl-lsp"));
     }
 
@@ -1588,11 +1588,11 @@ mod tests {
     }
 
     #[test]
-    fn info_coverage_fraction_evaluates_to_its_printed_percentage() -> Result<(), String> {
-        // The line read `33/60 (53%)` — 33/60 is 55%. The numerator was the raw
-        // advertised count while the percent came from the trackable count.
-        // Recompute the printed percentage from the printed fraction and
-        // require them to agree; restoring the old numerator fails this.
+    fn info_catalog_line_reports_navigation_counts_without_a_percentage() -> Result<(), String> {
+        // The line used to read `LSP spec coverage: 123/125 (98%)` — a
+        // declaration-count fraction rendered as behavior-backed coverage.
+        // Since #6731 the counts may remain as navigation data, but the line
+        // must not carry a percentage or a coverage/compliance claim.
         let profile = super::FeatureProfile::current();
         let out = super::format_info_output(
             "0.17.0",
@@ -1605,35 +1605,38 @@ mod tests {
 
         let line = out
             .lines()
-            .find(|line| line.starts_with("LSP spec coverage:"))
-            .ok_or_else(|| format!("no coverage line in:\n{out}"))?;
-        let rendered = line.trim_start_matches("LSP spec coverage:").trim();
-        let (fraction, percent) = rendered
-            .split_once(" (")
-            .ok_or_else(|| format!("unexpected coverage format: {line:?}"))?;
-        let (covered, total) = fraction
-            .split_once('/')
-            .ok_or_else(|| format!("unexpected fraction format: {fraction:?}"))?;
+            .find(|line| line.starts_with("LSP catalog rows:"))
+            .ok_or_else(|| format!("no catalog-rows line in:\n{out}"))?;
 
+        assert!(
+            !line.contains('%'),
+            "catalog navigation line must not render a percentage: {line:?}"
+        );
+        assert!(
+            !line.contains("coverage") && !line.contains("compliance"),
+            "catalog navigation line must not frame counts as coverage or compliance: {line:?}"
+        );
+        assert!(
+            line.contains("navigation only"),
+            "catalog counts must be labeled navigation only: {line:?}"
+        );
+
+        let rendered = line.trim_start_matches("LSP catalog rows:").trim();
+        let (covered, total) = rendered
+            .split_whitespace()
+            .next()
+            .ok_or_else(|| format!("unexpected catalog format: {line:?}"))?
+            .split_once('/')
+            .ok_or_else(|| format!("unexpected fraction format: {line:?}"))?;
         let covered: f64 = covered
             .trim()
             .parse()
             .map_err(|err| format!("invalid covered value {covered:?}: {err}"))?;
         let total: f64 =
             total.trim().parse().map_err(|err| format!("invalid total value {total:?}: {err}"))?;
-        let printed: f64 = percent
-            .trim_end_matches("%)")
-            .trim()
-            .parse()
-            .map_err(|err| format!("invalid printed percentage {percent:?}: {err}"))?;
 
-        assert!(total > 0.0, "coverage denominator must be positive: {line:?}");
-        let recomputed = (covered / total * 100.0).round();
-        assert!(
-            (recomputed - printed).abs() < f64::EPSILON,
-            "coverage fraction and percentage disagree: {line:?} \
-             — {covered}/{total} is {recomputed}%, printed {printed}%"
-        );
+        assert!(total > 0.0, "catalog denominator must be positive: {line:?}");
+        assert!(covered <= total, "declared count cannot exceed its denominator: {line:?}");
         Ok(())
     }
 

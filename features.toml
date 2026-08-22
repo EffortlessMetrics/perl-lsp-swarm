@@ -1,11 +1,13 @@
 # LSP Feature Catalog - Single Source of Truth
 # This file defines all LSP features and their maturity status
 # Used to generate capabilities, documentation, and compliance reports
+# Aggregate compliance percentages are not declared here: maturity labels are
+# declarations, not behavior evidence (#6731). Generated status renders rows
+# without an exact current evidence owner as not_proven.
 
 [meta]
 version = "0.17.0"
 lsp_version = "3.18"
-compliance_percent = 98  # 125 total features; notebook sync/execution remain non-GA previews
 
 # Text Document Features
 

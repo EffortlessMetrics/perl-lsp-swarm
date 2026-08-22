@@ -348,6 +348,7 @@ fn check_surfaces(root: &Path, contract_path: &Path) -> Result<Vec<String>> {
             "ratio_projection" => check_ratio_projection(surface, &text)?,
             "evidence_verdict" => check_evidence_verdict(surface, &text)?,
             "attribution_table" => check_attribution_table(surface, &text)?,
+            "not_proven_navigation" => check_not_proven_navigation(surface, &text)?,
             other => bail!("surface {}: unknown kind {other:?}", surface.id),
         }
         checked.push(surface.id.clone());
@@ -599,6 +600,67 @@ fn check_attribution_table(surface: &SurfaceRow, text: &str) -> Result<()> {
             "surface {}: NOT_PROVEN — the per-crate attribution table is missing or empty; incomplete attribution must not render as ordinary status",
             surface.id
         );
+    }
+    Ok(())
+}
+
+/// First `N%` percentage token on the line, if any.
+fn percent_token(line: &str) -> Option<u64> {
+    let bytes = line.as_bytes();
+    let at = bytes.iter().position(|&b| b == b'%')?;
+    let mut start = at;
+    while start > 0 && bytes[start - 1].is_ascii_digit() {
+        start -= 1;
+    }
+    if start == at {
+        return None;
+    }
+    line.get(start..at)?.parse().ok()
+}
+
+/// A registered region that publishes declaration counts as navigation data.
+///
+/// #6731 containment: until every promoted row names an exact current
+/// behavior-evidence owner, this surface must render `not_proven` and must not
+/// reintroduce an aggregate percentage or a passing verdict derived from
+/// maturity/advertised declarations.
+fn check_not_proven_navigation(surface: &SurfaceRow, text: &str) -> Result<()> {
+    let begin_marker = surface.begin_marker.as_deref().ok_or_else(|| {
+        color_eyre::eyre::eyre!("surface {}: not_proven_navigation needs begin_marker", surface.id)
+    })?;
+    let end_marker = surface.end_marker.as_deref().ok_or_else(|| {
+        color_eyre::eyre::eyre!("surface {}: not_proven_navigation needs end_marker", surface.id)
+    })?;
+    let start = text.find(begin_marker).ok_or_else(|| {
+        color_eyre::eyre::eyre!(
+            "surface {}: containment markers are gone — an unowned claim surface must not render as ordinary status",
+            surface.id
+        )
+    })?;
+    let region = text[start..].split(end_marker).next().unwrap_or(&text[start..]);
+
+    if !region.contains("not_proven") {
+        bail!(
+            "surface {}: NOT_PROVEN marker is missing — rows without an exact current evidence \
+             owner must render not_proven, not inherited green (#6731)",
+            surface.id
+        );
+    }
+    for line in region.lines() {
+        if line.contains("PASS") {
+            bail!(
+                "surface {}: CONTRADICTORY — a passing verdict reappeared; declarations are \
+                 navigation, not behavior proof (#6731)",
+                surface.id
+            );
+        }
+        if let Some(percent) = percent_token(line) {
+            bail!(
+                "surface {}: CONTRADICTORY — aggregate percentage {percent}% reappeared; \
+                 derived counts are navigation only and must carry no percentage (#6731)",
+                surface.id
+            );
+        }
     }
     Ok(())
 }
@@ -983,6 +1045,97 @@ no data yet
             surface_fixture(&[("status/lsp.md", LSP_OK), ("status/tests.md", TESTS_OK)]);
         let error = check_surfaces(dir.path(), &contract).unwrap_err();
         assert!(format!("{error:#}").contains("cannot read"));
+    }
+
+    // ── not_proven_navigation (#6731 containment) ─────────────────
+
+    const CONTAINED_LSP: &str = "<!-- BEGIN: LSP_COVERAGE -->
+| **LSP Coverage** | not_proven — no exact current behavior-evidence owner (#6731); catalog counts below are navigation only |
+<!-- END: LSP_COVERAGE -->
+
+## Computed Metrics
+
+<!-- BEGIN: COMPLIANCE_TABLE -->
+| Area | Declared ga/preview rows | Total rows |
+|------|---------------------------|------------|
+| **Overall** | **123** | **125** |
+
+Counts are navigation only (#6731).
+<!-- END: COMPLIANCE_TABLE -->
+";
+
+    fn containment_fixture(content: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let contract = r#"
+schema_version = 1
+policy = "generated-status-contract"
+
+[[surface]]
+id = "lsp.claim_containment"
+kind = "not_proven_navigation"
+path = "status/lsp.md"
+begin_marker = "<!-- BEGIN: LSP_COVERAGE -->"
+end_marker = "<!-- END: COMPLIANCE_TABLE -->"
+claim_boundary = "fixture"
+"#;
+        fs::write(dir.path().join("contract.toml"), contract).unwrap();
+        fs::create_dir_all(dir.path().join("status")).unwrap();
+        fs::write(dir.path().join("status/lsp.md"), content).unwrap();
+        let contract_path = dir.path().join("contract.toml");
+        (dir, contract_path)
+    }
+
+    #[test]
+    fn contained_navigation_surface_passes() {
+        let (dir, contract) = containment_fixture(CONTAINED_LSP);
+        let checked = check_surfaces(dir.path(), &contract).unwrap();
+        assert_eq!(checked, vec!["lsp.claim_containment".to_string()]);
+    }
+
+    #[test]
+    fn reintroduced_passing_verdict_fails_closed() {
+        // Mutation control: reattaching PASS to the coverage row must fail.
+        let content = CONTAINED_LSP.replace(
+            "catalog counts below are navigation only |",
+            "catalog counts below are navigation only | PASS |",
+        );
+        assert!(content.contains("PASS"));
+        let (dir, contract) = containment_fixture(&content);
+        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        assert!(format!("{error:#}").contains("passing verdict"));
+    }
+
+    #[test]
+    fn reintroduced_aggregate_percentage_fails_closed() {
+        // Mutation control: a declaration-count percentage in any generated
+        // region must fail, even without a passing verdict.
+        let content = CONTAINED_LSP.replace("**123** | **125**", "**123** | **125** | 98%");
+        assert!(content.contains("98%"));
+        let (dir, contract) = containment_fixture(&content);
+        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        assert!(format!("{error:#}").contains("aggregate percentage 98%"));
+    }
+
+    #[test]
+    fn inherited_green_without_not_proven_fails_closed() {
+        // Mutation control: dropping the not_proven marker so unowned cells
+        // inherit a green-looking presentation must fail.
+        let content = CONTAINED_LSP.replace(
+            "| **LSP Coverage** | not_proven — no exact current behavior-evidence owner (#6731); catalog counts below are navigation only |",
+            "| **LSP Coverage** | counts below are informational |",
+        );
+        assert!(!content.contains("not_proven"));
+        let (dir, contract) = containment_fixture(&content);
+        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        assert!(format!("{error:#}").contains("NOT_PROVEN marker is missing"));
+    }
+
+    #[test]
+    fn removed_containment_markers_fail_closed() {
+        let content = "no generated regions here";
+        let (dir, contract) = containment_fixture(content);
+        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        assert!(format!("{error:#}").contains("containment markers are gone"));
     }
 
     #[test]

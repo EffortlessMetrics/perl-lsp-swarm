@@ -21,7 +21,9 @@ pub struct Meta {
     pub version: String,
     /// LSP version this catalog was built against.
     pub lsp_version: String,
-    /// Optional tracked compliance percentage from the catalog source.
+    /// Declared aggregate compliance percentage. Refused by [`Catalog::validate`]
+    /// since #6731: a declaration-count percentage is not behavior evidence and
+    /// must not re-enter the authoritative catalog.
     #[serde(default)]
     pub compliance_percent: Option<u32>,
 }
@@ -217,6 +219,14 @@ impl Catalog {
     pub fn validate(&self) -> Result<(), CatalogError> {
         let mut seen = BTreeSet::new();
         let mut issues = Vec::new();
+
+        if self.meta.compliance_percent.is_some() {
+            issues.push(
+                "meta.compliance_percent is refused (#6731): a declaration-count aggregate \
+                 is not behavior evidence; generated status renders evidence state instead"
+                    .to_string(),
+            );
+        }
 
         for feature in &self.feature {
             if feature.id.trim().is_empty() {
@@ -645,6 +655,55 @@ mod tests {
         let err = catalog.validate().err().ok_or("duplicate id must fail validation")?;
         let message = err.to_string();
         assert!(message.contains("duplicate feature id: lsp.completion"));
+        Ok(())
+    }
+
+    #[test]
+    fn validation_refuses_declared_aggregate_compliance_percent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #6731 recurrence control: a declared aggregate percentage in the
+        // catalog must fail validation instead of silently re-entering
+        // authoritative status as a compliance claim.
+        let mut catalog = sample_catalog();
+        catalog.meta.compliance_percent = Some(98);
+
+        let err = catalog.validate().err().ok_or("declared aggregate must fail validation")?;
+        let message = err.to_string();
+        assert!(
+            message.contains("meta.compliance_percent is refused"),
+            "unexpected refusal message: {message}"
+        );
+        assert!(message.contains("#6731"), "refusal must cite its claim: {message}");
+        Ok(())
+    }
+
+    #[test]
+    fn shipped_vendored_catalogs_pass_validation_without_declared_percent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #6731 recurrence control: every crate-local features_sot.toml that a
+        // standalone/packaged build can resolve to must still parse and pass
+        // validation. A reintroduced meta.compliance_percent fails here instead
+        // of poisoning vendored builds into silent zero-feature advertisement.
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .ok_or("cannot resolve workspace root from CARGO_MANIFEST_DIR")?;
+        let catalog_files = [
+            "crates/perl-lsp-rs/features_sot.toml",
+            "crates/perl-lsp-rs-core/features_sot.toml",
+            "crates/perl-parser/features_sot.toml",
+            "crates/perl-dap/features_sot.toml",
+        ];
+        for relative in catalog_files {
+            let path = workspace_root.join(relative);
+            let raw = fs::read_to_string(&path).map_err(|e| format!("reading {relative}: {e}"))?;
+            assert!(
+                !raw.contains("compliance_percent"),
+                "{relative} must not declare meta.compliance_percent (#6731)"
+            );
+            let catalog = read_catalog(&path).map_err(|e| format!("parsing {relative}: {e}"))?;
+            catalog.validate().map_err(|e| format!("validating {relative}: {e}"))?;
+        }
         Ok(())
     }
 

@@ -114,6 +114,13 @@ impl Catalog {
     pub fn validate(&self) -> Result<(), String> {
         let mut seen = BTreeSet::new();
         let mut issues = Vec::new();
+        if self.meta.compliance_percent.is_some() {
+            issues.push(
+                "meta.compliance_percent is refused (#6731): a declaration-count aggregate \
+                 is not behavior evidence; generated status renders evidence state instead"
+                    .to_string(),
+            );
+        }
         for feature in &self.feature {
             if feature.id.trim().is_empty() {
                 issues.push("feature id must not be empty".to_string());

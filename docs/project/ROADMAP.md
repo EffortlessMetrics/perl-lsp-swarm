@@ -514,15 +514,17 @@ is open on `master` readiness tracking.
 The LSP compliance table is auto-generated from `features.toml`.
 
 <!-- BEGIN: COMPLIANCE_TABLE -->
-| Area | Implemented | Total | Coverage |
-|------|-------------|-------|----------|
-| debug | 22 | 24 | 92% |
-| notebook | 2 | 2 | 100% |
-| protocol | 9 | 9 | 100% |
-| text_document | 53 | 53 | 100% |
-| window | 9 | 9 | 100% |
-| workspace | 28 | 28 | 100% |
-| **Overall** | **123** | **125** | **98%** |
+| Area | Declared ga/preview rows | Total rows |
+|------|---------------------------|------------|
+| debug | 22 | 24 |
+| notebook | 2 | 2 |
+| protocol | 9 | 9 |
+| text_document | 53 | 53 |
+| window | 9 | 9 |
+| workspace | 28 | 28 |
+| **Overall** | **123** | **125** |
+
+Counts are navigation only (#6731): maturity labels are declarations without per-row behavior-evidence ownership.
 <!-- END: COMPLIANCE_TABLE -->
 
 For live capability posture, run `just status-check` or read [CURRENT_STATUS.md](CURRENT_STATUS.md).

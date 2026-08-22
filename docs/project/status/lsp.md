@@ -6,28 +6,31 @@
 ## LSP Coverage
 
 <!-- BEGIN: LSP_COVERAGE -->
-| **LSP Coverage** | 100% (60/60 advertised features, `features.toml`) | 100% | PASS |
+| **LSP Coverage** | not_proven — no exact current behavior-evidence owner (#6731); catalog counts below are navigation only |
 <!-- END: LSP_COVERAGE -->
 
 ## Computed Metrics
 
 <!-- BEGIN: LSP_METRICS_BULLETS -->
-- **LSP Coverage**: 100% user-visible feature coverage (60/60 advertised features from `features.toml`)
-- **Protocol Compliance**: 98% overall LSP protocol support (123/125 including plumbing)
+- **Advertised ga/production rows**: 60 of 60 coverage-tracked advertised rows declare ga/production (navigation count from `features.toml`)
+- **Protocol surface labels**: 123 of 125 declared rows carry ga/production/preview labels (navigation only)
+- **Evidence state**: not_proven — cells without an exact current behavior-evidence owner render `not_proven`, never inherited green
 
-**Target**: maintain 100% LSP coverage (no regressions)
+**Target**: every promoted cell names exact current behavior and subject evidence (#6731)
 <!-- END: LSP_METRICS_BULLETS -->
 
-## Protocol Compliance Table
+## Declared Catalog Rows
 
 <!-- BEGIN: COMPLIANCE_TABLE -->
-| Area | Implemented | Total | Coverage |
-|------|-------------|-------|----------|
-| debug | 22 | 24 | 92% |
-| notebook | 2 | 2 | 100% |
-| protocol | 9 | 9 | 100% |
-| text_document | 53 | 53 | 100% |
-| window | 9 | 9 | 100% |
-| workspace | 28 | 28 | 100% |
-| **Overall** | **123** | **125** | **98%** |
+| Area | Declared ga/preview rows | Total rows |
+|------|---------------------------|------------|
+| debug | 22 | 24 |
+| notebook | 2 | 2 |
+| protocol | 9 | 9 |
+| text_document | 53 | 53 |
+| window | 9 | 9 |
+| workspace | 28 | 28 |
+| **Overall** | **123** | **125** |
+
+Counts are navigation only (#6731): maturity labels are declarations without per-row behavior-evidence ownership.
 <!-- END: COMPLIANCE_TABLE -->
