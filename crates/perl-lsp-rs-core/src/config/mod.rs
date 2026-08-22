@@ -1546,8 +1546,16 @@ impl WorkspaceConfig {
                 match context.external_include_paths {
                     ExternalIncludePathAuthority::TrustedUserOperator => {
                         let (accepted, external_rejected) = parse_external_include_paths(paths);
-                        self.external_include_paths = accepted;
-                        rejected.extend(external_rejected);
+                        if external_rejected.is_empty() {
+                            self.external_include_paths = accepted;
+                        } else {
+                            // Atomic admission (catalog fallback `RejectSource`):
+                            // a candidate with any invalid entry is rejected as
+                            // a whole, so a malformed or partially valid
+                            // payload never clears or partially replaces the
+                            // previously accepted complete set (INC-AUTH-007).
+                            rejected.extend(external_rejected);
+                        }
                     }
                     ExternalIncludePathAuthority::Untrusted(source) => {
                         // Fail closed (#4998): reject non-empty unauthorized
@@ -4555,15 +4563,29 @@ profile = "recommended"
     }
 
     #[test]
-    fn update_from_value_rejects_relative_external_include_paths() {
+    fn trusted_channel_rejects_mixed_external_candidate_atomically() {
         let mut workspace = WorkspaceConfig::default();
         let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
 
+        // Seed an accepted complete set first.
+        workspace
+            .update_from_value_with_context(
+                &serde_json::json!({
+                    "workspace": { "externalIncludePaths": [absolute] }
+                }),
+                WorkspaceConfigUpdateContext {
+                    workspace_root: None,
+                    external_include_paths: ExternalIncludePathAuthority::TrustedUserOperator,
+                },
+            )
+            .into_iter()
+            .for_each(|_| {});
+
+        // A later mixed candidate (one valid, one relative) is rejected as a
+        // whole; the previously accepted complete set survives untouched.
         let rejected = workspace.update_from_value_with_context(
             &serde_json::json!({
-                "workspace": {
-                    "externalIncludePaths": ["lib", absolute, ""]
-                }
+                "workspace": { "externalIncludePaths": ["lib", absolute] }
             }),
             WorkspaceConfigUpdateContext {
                 workspace_root: None,
@@ -4574,7 +4596,11 @@ profile = "recommended"
         assert_eq!(rejected.len(), 1);
         assert_eq!(rejected[0].entry, "lib");
         assert!(matches!(rejected[0].reason, RejectedClientIncludePathReason::ExternalRelative));
-        assert_eq!(workspace.external_include_paths, vec![absolute.to_string()]);
+        assert_eq!(
+            workspace.external_include_paths,
+            vec![absolute.to_string()],
+            "mixed candidate must not partially replace the accepted set"
+        );
     }
 
     #[test]
