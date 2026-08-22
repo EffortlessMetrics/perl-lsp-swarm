@@ -1981,14 +1981,6 @@ mod tests {
     }
 
     #[test]
-    // Left nested rather than collapsed into a let-chain. Collapsing it
-    // registers a new gap under `enforce-new-ripr` that this PR could not
-    // discharge: focused unit tests, an integration test, and moving this
-    // suppression between the seam and the function were all tried, and
-    // none cleared it. The nested form matches main. The exact gap-identity
-    // rule is NOT established -- see the NOT_PROVEN note on PR #9674 before
-    // assuming one. See #9528.
-    #[allow(clippy::collapsible_if)]
     fn code_action_append_uses_document_end() {
         use ropey::Rope;
         use std::sync::Arc;
@@ -2002,23 +1994,19 @@ mod tests {
             DocumentState::from_parts(rope, text.to_string(), 1, Arc::new(AtomicU32::new(0))),
         );
 
-        let result =
-            server.handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}})));
-        if let Ok(Some(result)) = result {
-            if let Some(actions) = result.as_array() {
-                assert!(!actions.is_empty());
-                let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
-                let expected_end = json!({"line": 0, "character": text.chars().count()});
-                assert_eq!(edit["start"], expected_end);
-                assert_eq!(edit["end"], expected_end);
-            }
-        }
+        let result = server
+            .handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}})))
+            .expect("pragma code action handler must succeed");
+        let result = result.expect("handler must return an action response");
+        let actions = result.as_array().expect("response must be an action array");
+        assert!(!actions.is_empty(), "missing pragma must yield an action");
+        let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
+        let expected_end = json!({"line": 0, "character": text.chars().count()});
+        assert_eq!(edit["start"], expected_end);
+        assert_eq!(edit["end"], expected_end);
     }
 
     #[test]
-    // Nested form required; see the gap-identity note on
-    // `code_action_append_uses_document_end` (#9528).
-    #[allow(clippy::collapsible_if)]
     fn code_action_append_projects_utf16_eof_not_byte_columns() {
         use ropey::Rope;
         use std::sync::Arc;
@@ -2034,23 +2022,19 @@ mod tests {
             DocumentState::from_parts(rope, text.to_string(), 1, Arc::new(AtomicU32::new(0))),
         );
 
-        let result =
-            server.handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}})));
-        if let Ok(Some(result)) = result {
-            if let Some(actions) = result.as_array() {
-                assert!(!actions.is_empty());
-                let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
-                // Byte columns would report character 19; true EOF is unit 17.
-                assert_eq!(edit["start"], json!({"line": 0, "character": 17}));
-                assert_eq!(edit["end"], json!({"line": 0, "character": 17}));
-            }
-        }
+        let result = server
+            .handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}})))
+            .expect("pragma code action handler must succeed");
+        let result = result.expect("handler must return an action response");
+        let actions = result.as_array().expect("response must be an action array");
+        assert!(!actions.is_empty(), "missing pragma must yield an action");
+        let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
+        // Byte columns would report character 19; true EOF is unit 17.
+        assert_eq!(edit["start"], json!({"line": 0, "character": 17}));
+        assert_eq!(edit["end"], json!({"line": 0, "character": 17}));
     }
 
     #[test]
-    // Nested form required; see the gap-identity note on
-    // `code_action_append_uses_document_end` (#9528).
-    #[allow(clippy::collapsible_if)]
     fn code_action_append_projects_bare_cr_separator_before_eof() {
         use ropey::Rope;
         use std::sync::Arc;
@@ -2066,16 +2050,15 @@ mod tests {
             DocumentState::from_parts(rope, text.to_string(), 1, Arc::new(AtomicU32::new(0))),
         );
 
-        let result =
-            server.handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}})));
-        if let Ok(Some(result)) = result {
-            if let Some(actions) = result.as_array() {
-                assert!(!actions.is_empty());
-                let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
-                assert_eq!(edit["start"], json!({"line": 1, "character": 9}));
-                assert_eq!(edit["end"], json!({"line": 1, "character": 9}));
-            }
-        }
+        let result = server
+            .handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}})))
+            .expect("pragma code action handler must succeed");
+        let result = result.expect("handler must return an action response");
+        let actions = result.as_array().expect("response must be an action array");
+        assert!(!actions.is_empty(), "missing pragma must yield an action");
+        let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
+        assert_eq!(edit["start"], json!({"line": 1, "character": 9}));
+        assert_eq!(edit["end"], json!({"line": 1, "character": 9}));
     }
 
     #[test]
