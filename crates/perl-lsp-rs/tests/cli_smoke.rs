@@ -77,7 +77,8 @@ fn help_prints_to_stdout() {
 fn info_shows_version_and_features() -> Result<(), Box<dyn std::error::Error>> {
     // The catalog line reports declaration counts as navigation data only; a
     // percentage there would re-present declarations as behavior evidence
-    // (#6731), so this oracle pins both the wording and the absence of `%`.
+    // (#6731), so this oracle pins the wording and rejects coverage,
+    // compliance, and percentage claims.
     let mut cmd = product_command();
     let output = cmd.arg("--info").output()?;
     let stdout = String::from_utf8(output.stdout)?;
@@ -97,6 +98,14 @@ fn info_shows_version_and_features() -> Result<(), Box<dyn std::error::Error>> {
     assert!(
         !catalog_line.contains('%'),
         "catalog rows must not present a percentage as evidence: {catalog_line:?}"
+    );
+    assert!(
+        !catalog_line.contains("coverage"),
+        "catalog rows must not use coverage wording: {catalog_line:?}"
+    );
+    assert!(
+        !catalog_line.contains("compliance"),
+        "catalog rows must not use compliance wording: {catalog_line:?}"
     );
     Ok(())
 }
