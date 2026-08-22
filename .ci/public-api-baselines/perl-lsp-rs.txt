@@ -375,11 +375,14 @@ pub use perl_lsp::runtime::file_discovery::DiscoveryResult
 pub use perl_lsp::runtime::file_discovery::discover_perl_files
 pub mod perl_lsp::runtime::file_watcher_debounce
 pub struct perl_lsp::runtime::file_watcher_debounce::FileWatcherDebouncer
-pub fn perl_lsp::runtime::file_watcher_debounce::FileWatcherDebouncer::new<F>(publish_fn: F) -> Self where F: core::ops::function::Fn(alloc::vec::Vec<alloc::string::String>) + core::marker::Send + 'static
+pub fn perl_lsp::runtime::file_watcher_debounce::FileWatcherDebouncer::new<F>(publish_fn: F) -> Self where F: core::ops::function::Fn(alloc::vec::Vec<alloc::string::String>) + core::marker::Send + core::marker::Sync + 'static
+pub fn perl_lsp::runtime::file_watcher_debounce::FileWatcherDebouncer::is_operational(&self) -> bool
 pub fn perl_lsp::runtime::file_watcher_debounce::FileWatcherDebouncer::pending_uris(&self) -> usize
 pub fn perl_lsp::runtime::file_watcher_debounce::FileWatcherDebouncer::schedule(&self, uri: &str)
-pub fn perl_lsp::runtime::file_watcher_debounce::FileWatcherDebouncer::with_interval<F>(interval: core::time::Duration, publish_fn: F) -> Self where F: core::ops::function::Fn(alloc::vec::Vec<alloc::string::String>) + core::marker::Send + 'static
+pub fn perl_lsp::runtime::file_watcher_debounce::FileWatcherDebouncer::try_schedule(&self, uri: &str) -> perl_lsp::runtime::file_watcher_debounce::WatcherAdmission
+pub fn perl_lsp::runtime::file_watcher_debounce::FileWatcherDebouncer::with_interval<F>(interval: core::time::Duration, publish_fn: F) -> Self where F: core::ops::function::Fn(alloc::vec::Vec<alloc::string::String>) + core::marker::Send + core::marker::Sync + 'static
 pub fn perl_lsp::runtime::file_watcher_debounce::FileWatcherDebouncer::drop(&mut self)
+pub enum perl_lsp::runtime::file_watcher_debounce::WatcherAdmission
 pub mod perl_lsp::runtime::routing
 pub enum perl_lsp::runtime::routing::IndexAccessMode<'a>
 pub perl_lsp::runtime::routing::IndexAccessMode::Full(&'a alloc::sync::Arc<perl_workspace::workspace::workspace_index::IndexCoordinator>)

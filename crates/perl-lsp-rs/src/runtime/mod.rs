@@ -475,6 +475,12 @@ pub struct RuntimePressureSnapshot {
     pub pending_index_tasks: usize,
     /// Number of unique file-watcher URIs waiting in the debounce window.
     pub file_watcher_pending_uris: usize,
+    /// Number of file-watcher URIs currently inside a dispatched batch.
+    ///
+    /// Moving work from pending to active never reports zero total watcher
+    /// pressure (#8064): during a long batch this stays non-zero while
+    /// [`Self::file_watcher_pending_uris`] drains.
+    pub file_watcher_active_subjects: usize,
     /// Number of unique diagnostic URIs waiting in the debounce window.
     pub diagnostic_debounce_pending_uris: usize,
     /// Number of workspace/configuration requests waiting for client replies.
@@ -861,15 +867,19 @@ impl LspServer {
             .lock()
             .as_ref()
             .map_or(0, diagnostic_debounce::DiagnosticDebouncer::pending_uris);
-        let file_watcher_pending_uris = self
+        let watcher_pressure = self
             .file_watcher_debouncer
             .lock()
             .as_ref()
-            .map_or(0, file_watcher_debounce::FileWatcherDebouncer::pending_uris);
+            .map(file_watcher_debounce::FileWatcherDebouncer::pressure);
+        let file_watcher_pending_uris = watcher_pressure.as_ref().map_or(0, |p| p.pending_subjects);
 
         RuntimePressureSnapshot {
             pending_index_tasks: self.pending_index_task_count.load(Ordering::SeqCst),
             file_watcher_pending_uris,
+            file_watcher_active_subjects: watcher_pressure
+                .as_ref()
+                .map_or(0, |p| p.active_subjects),
             diagnostic_debounce_pending_uris,
             pending_workspace_configuration_requests: self
                 .pending_workspace_configuration_requests
@@ -1386,15 +1396,22 @@ impl LspServer {
 
     /// Schedule a file watcher URI for debounced batch processing.
     ///
-    /// Returns `true` if a debouncer is installed (production runtime) and the
-    /// URI was queued, `false` if no debouncer is present (unit-test path).
+    /// Returns `true` only when the URI is genuinely queued for debounced
+    /// processing (accepted, or coalesced into an already-pending subject).
+    /// Returns `false` when no debouncer is installed (unit-test path) or the
+    /// debouncer reports a degraded admission — worker spawn failure,
+    /// saturated pending set, or shutdown — so callers fall back to immediate
+    /// synchronous processing instead of losing events behind false success
+    /// (#8064).
     pub fn schedule_file_watcher_uri(&self, uri: &str) -> bool {
         let guard = self.file_watcher_debouncer.lock();
-        if let Some(ref d) = *guard {
-            d.schedule(uri);
-            true
-        } else {
-            false
+        match guard.as_ref() {
+            None => false,
+            Some(debouncer) => matches!(
+                debouncer.try_schedule(uri),
+                file_watcher_debounce::WatcherAdmission::Accepted
+                    | file_watcher_debounce::WatcherAdmission::Coalesced
+            ),
         }
     }
 }

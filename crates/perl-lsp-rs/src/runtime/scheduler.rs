@@ -483,9 +483,15 @@ impl Scheduler {
         server.install_diagnostic_debouncer(debouncer);
 
         // Install file watcher debouncer now that server is wrapped in Arc.
-        let fw_server = Arc::clone(&server);
+        // The callback captures the server weakly (#8064): the debouncer is
+        // owned by the server, so a strong capture would be an ownership
+        // cycle that keeps the server alive past teardown and allows
+        // post-shutdown publication.
+        let fw_server = Arc::downgrade(&server);
         let fw_debouncer = super::file_watcher_debounce::FileWatcherDebouncer::new(move |uris| {
-            fw_server.handle_watched_file_batch(uris);
+            if let Some(server) = fw_server.upgrade() {
+                server.handle_watched_file_batch(uris);
+            }
         });
         server.install_file_watcher_debouncer(fw_debouncer);
 
