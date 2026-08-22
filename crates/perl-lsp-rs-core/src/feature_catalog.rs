@@ -190,13 +190,19 @@ impl Catalog {
             .count()
     }
 
-    /// Compatibility-only alias for [`Self::compliance_percent_for_grid`].
+    /// Pre-#6731 compatibility percentage using the compatibility count aliases.
     ///
     /// This name is retained for existing catalog consumers. It is not a
     /// compliance, status, or reporting authority.
     #[deprecated(note = "compatibility-only; use compliance_percent_for_grid")]
+    #[allow(deprecated)]
     pub fn compliance_percent(&self) -> f32 {
-        self.compliance_percent_for_grid()
+        let trackable = self.trackable_feature_count();
+        if trackable == 0 {
+            return 0.0;
+        }
+        let advertised = self.advertised_trackable_count();
+        (advertised as f64 / trackable as f64 * 100.0).round() as f32
     }
 
     /// Per-area statistics useful for documentation and reporting.
@@ -634,6 +640,29 @@ mod tests {
         assert_eq!(catalog.trackable_feature_count(), 3);
         assert_eq!(catalog.advertised_trackable_count(), 2);
         assert_eq!(catalog.compliance_percent(), 67.0);
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn compatibility_compliance_preserves_pre_6731_counts() {
+        let mut catalog = sample_catalog();
+        catalog.feature.push(Feature {
+            id: "lsp.compatibility_only".to_string(),
+            spec: "LSP 3.18".to_string(),
+            area: "text_document".to_string(),
+            maturity: Maturity::Ga,
+            advertised: true,
+            tests: vec![],
+            counts_in_coverage: false,
+            description: "Compatibility-only catalog row".to_string(),
+        });
+
+        assert_eq!(catalog.trackable_feature_count_for_grid(), 3);
+        assert_eq!(catalog.advertised_trackable_count_for_grid(), 2);
+        assert_eq!(catalog.compliance_percent_for_grid(), 67.0);
+        assert_eq!(catalog.trackable_feature_count(), 4);
+        assert_eq!(catalog.advertised_trackable_count(), 3);
+        assert_eq!(catalog.compliance_percent(), 75.0);
     }
 
     #[test]

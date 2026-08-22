@@ -254,7 +254,8 @@ perllsp --features-json --feature-profile all
 perllsp --health
 ```
 
-The `features.toml` file is the canonical definition. The Rust code in `perl-lsp-feature-contracts` generates type-safe bindings from it at compile time.
+The `features.toml` file is the canonical definition. `perl-lsp-rs-core` reads it
+through `feature_catalog.rs` and generates type-safe bindings at compile time.
 
 ---
 
@@ -303,32 +304,34 @@ DAP features (`dap.*`) are not gated by profile selection and are always present
 
 ## Architecture Overview
 
-The feature governance system is split across several microcrates to keep concerns separate:
+The feature governance system is organized as modules in `perl-lsp-rs-core`:
 
-| Crate | Responsibility |
+| Module | Responsibility |
 |---|---|
-| `perl-lsp-feature-ids` | Raw `&'static str` constants for every feature ID |
-| `perl-lsp-feature-contracts` | `FeatureProfileKind` enum, `FeatureProfileSpec` metadata, alias table |
-| `perl-lsp-feature-flags` | `BuildFlags` and `AdvertisedFeatures` structs; static profile shapes |
-| `perl-lsp-feature-profile` | Token normalization (trimming, case, underscore/hyphen) |
-| `perl-lsp-feature-policy` | `FeatureProfile` runtime enum; bridges profile to flags and advertised IDs |
-| `perl-lsp-feature-profile-cli` | CLI argument parsing; structured error with supported-token list |
-| `perl-lsp-feature-grid` | JSON grid rendering for BDD and tooling output |
-| `perl-lsp-feature-governance` | Facade re-exporting all of the above under one stable API |
+| `feature_catalog` | Catalog parsing, validation, and generated source rendering |
+| `features::ids` | Stable feature identifiers |
+| `features::contracts` | Generated catalog rows and profile contracts |
+| `features::flags` | Build flags and advertised feature projections |
+| `features::profile` / `features::profile_cli` | Profile normalization and CLI parsing |
+| `features::policy` | Runtime profile selection and advertised IDs |
+| `features::grid` | JSON grid rendering for BDD and tooling output |
+| `governance` | Stable facade over the core feature modules |
 
 The data flow at startup:
 
 ```
 CLI --feature-profile <token>
-    -> parse_feature_profile_arg()          [perl-lsp-feature-profile-cli]
-    -> FeatureProfile::from_kind()          [perl-lsp-feature-policy]
-    -> FeatureProfile::runtime_flags()      [perl-lsp-feature-policy]
-    -> BuildFlags                           [perl-lsp-feature-flags]
-    -> AdvertisedFeatures                   [perl-lsp-feature-flags]
+    -> parse_feature_profile_arg()          [features::profile_cli]
+    -> FeatureProfile::from_kind()          [features::policy]
+    -> FeatureProfile::runtime_flags()      [features::policy]
+    -> BuildFlags                           [features::flags]
+    -> AdvertisedFeatures                   [features::flags]
     -> ServerCapabilities in initialize     [perl-lsp runtime]
 ```
 
-The `features.toml` file feeds into `perl-lsp-feature-contracts` at build time via a build script that generates Rust types, keeping the catalog as the single source of truth for both runtime behavior and documentation tooling.
+The `features.toml` file feeds into `perl-lsp-rs-core` at build time via its build
+script, keeping the catalog as the single source of truth for runtime behavior and
+documentation tooling.
 
 ---
 
