@@ -1584,8 +1584,11 @@ impl LspServer {
                     // (git checkout, formatter rewrites, etc.) coalesce into a
                     // single batch rather than triggering many sequential file reads.
                     if !self.schedule_file_watcher_uri(&uri) {
-                        // No debouncer installed (unit-test path) — fall through to
-                        // immediate synchronous processing.
+                        // `false` means the event was NOT queued: no debouncer
+                        // is installed (unit-test path), or the coalescer
+                        // reported Overflowed/Unavailable/ShuttingDown (#8064).
+                        // Either way, fall through to immediate synchronous
+                        // processing so degraded modes never lose events.
                         self.process_file_watcher_uri_immediate(&uri);
                     }
                 }

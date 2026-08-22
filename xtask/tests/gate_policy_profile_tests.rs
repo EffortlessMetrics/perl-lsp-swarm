@@ -267,8 +267,13 @@ fn parser_integration_gate_is_required_and_manifest_driven()
 /// (issue #6845) The former `inline_completion_contract` gate chained four
 /// Cargo commands with `&&`, masking which contract failed and preventing
 /// later contracts from running. It is now one ordered four-row family:
-/// every change to either owning package selects every child, and the family
-/// preserves the former 600-second timeout / 540-second budget envelope.
+/// every change to either owning package selects every child. The family
+/// envelope was re-sized for cold-cache PR Smoke compilation (#11797): the
+/// two members that compile the perl-lsp-rs-core dependency graph
+/// (`inline_completion_registration`, `inline_completion_core`) carry
+/// 240s/210000ms each, while `lsp_registration_contract` and
+/// `lsp_capability_snapshots` keep their original 150s/135000ms, for a
+/// 780-second timeout / 690000ms budget envelope.
 #[test]
 fn inline_completion_gates_are_split_scoped_ordered_and_budgeted()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -343,8 +348,16 @@ fn inline_completion_gates_are_split_scoped_ordered_and_budgeted()
             .and_then(|budget| budget.max_duration_ms)
             .ok_or("child budget must be explicit")?;
     }
-    assert_eq!(timeout_total, 600, "split family must preserve the old hard timeout");
-    assert_eq!(budget_total, 540_000, "split family must preserve the old duration budget");
+    // 240 + 150 + 150 + 240: the two perl-lsp-rs-core-compiling members were
+    // re-sized for cold-cache PR Smoke compilation (#11797); the two smaller
+    // lsp_registration_contract / lsp_capability_snapshots members keep the
+    // original split envelope. Pinning the exact sum keeps any future drift
+    // in any member a deliberate, review-visible change.
+    assert_eq!(timeout_total, 780, "family hard timeout must match the #11797 cold-cache sizing");
+    assert_eq!(
+        budget_total, 690_000,
+        "family duration budget must match the #11797 cold-cache sizing"
+    );
 
     let quality = gates
         .get("inline_completion_quality_receipt")
