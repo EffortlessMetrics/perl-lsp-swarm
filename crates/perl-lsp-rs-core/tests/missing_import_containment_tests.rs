@@ -211,6 +211,11 @@ fn no_production_route_references_the_withdrawn_import_authority() -> Result<(),
                     offenders.push(format!("{relative}: {explanation}"));
                 }
             }
+            if contains_withdrawn_import_helper_invocation(&content) {
+                offenders.push(format!(
+                    "{relative}: invokes the retained package-blind insertion helper as production authority"
+                ));
+            }
         }
     }
 
@@ -221,6 +226,27 @@ fn no_production_route_references_the_withdrawn_import_authority() -> Result<(),
         offenders.join("\n")
     );
     Ok(())
+}
+
+fn contains_withdrawn_import_helper_invocation(source: &str) -> bool {
+    const METHOD: &str = "find_import_insert_position";
+    const RETAINED_DECLARATION: &str = "pub fn find_import_insert_position(&self) -> usize {";
+
+    let mut search_from = 0;
+    while let Some(relative_offset) = source[search_from..].find(METHOD) {
+        let offset = search_from + relative_offset;
+        let method_end = offset + METHOD.len();
+        if source[method_end..].trim_start().starts_with('(') {
+            let line_start = source[..offset].rfind('\n').map_or(0, |index| index + 1);
+            let line = source[line_start..].lines().next().map(str::trim).unwrap_or_default();
+            if line != RETAINED_DECLARATION {
+                return true;
+            }
+        }
+        search_from = method_end;
+    }
+
+    false
 }
 
 /// Byte patterns whose presence under any `crates/*/src` path means the
@@ -234,14 +260,30 @@ const WITHDRAWN_IMPORT_AUTHORITY_PATTERNS: &[(&str, &str)] = &[
     ),
     ("fix_import_for_bareword_function", "references the withdrawn PL109 diagnostic import fix"),
     (
-        ".find_import_insert_position(",
-        "invokes the retained package-blind insertion helper as production authority",
-    ),
-    (
         "create_add_missing_imports_action",
         "re-creates the withdrawn compatibility empty-edit placeholder",
     ),
 ];
+
+#[test]
+fn recurrence_guard_rejects_qualified_and_ufcs_helper_calls() {
+    let declaration = r#"
+        pub fn find_import_insert_position(&self) -> usize {
+            0
+        }
+    "#;
+    assert!(!contains_withdrawn_import_helper_invocation(declaration));
+
+    let qualified_call = r#"
+        Helpers::find_import_insert_position(&helpers);
+    "#;
+    assert!(contains_withdrawn_import_helper_invocation(qualified_call));
+
+    let ufcs_call = r#"
+        <Helpers as ImportHelpers>::find_import_insert_position(&helpers);
+    "#;
+    assert!(contains_withdrawn_import_helper_invocation(ufcs_call));
+}
 
 #[test]
 fn feature_catalog_does_not_advertise_automatic_missing_import_insertion() -> Result<(), String> {
