@@ -6,10 +6,12 @@ use perl_parser_comparison::{
     AttachmentPrivacy, BoundedAttachment, BoundedText, ConformanceOutcome, DiagnosticSummary,
     DivergencePath, EvidenceKind, EvidencePayloadError, EvidenceRef, HarnessFailure,
     InstrumentState, MismatchClass, MismatchDetail, ObligationRef, ObservationDisposition,
-    ObservationPlane, ObserverId, ObserverManifestRef, ReviewedExpectationId, ScoredComparison,
-    SemanticDigest, SemanticFingerprint, SourceCaseRef, StableId, SubjectConformanceEvidence,
-    SubjectDisposition, SubjectExecution, SubjectExecutionEvidence, SubjectManifestRef,
-    SubjectObservationEvidence, SubjectRole, parser_comparison_evidence_schema_json,
+    ObservationPlane, ObserverId, ObserverManifestRef, ReviewedExpectationId,
+    SUBJECT_CONFORMANCE_EVIDENCE_SCHEMA_VERSION, SUBJECT_OBSERVATION_EVIDENCE_SCHEMA_VERSION,
+    ScoredComparison, SemanticDigest, SemanticFingerprint, SourceCaseRef, StableId,
+    SubjectConformanceEvidence, SubjectDisposition, SubjectExecution, SubjectExecutionEvidence,
+    SubjectManifestRef, SubjectObservationEvidence, SubjectRole,
+    parser_comparison_evidence_schema_json,
 };
 use serde_json::Value;
 
@@ -387,15 +389,31 @@ fn unscored_observation_cannot_fabricate_conformance() -> Result<(), Box<dyn Err
 
 #[test]
 fn payload_references_are_content_bound_and_deterministic() -> Result<(), Box<dyn Error>> {
-    let execution = generic_execution(InstrumentState::Complete)?;
-    let execution = execution_evidence(&execution, Vec::new())?;
-    let reference = execution.evidence_ref()?;
+    let first_execution = generic_execution(InstrumentState::Complete)?;
+    let second_execution = generic_execution(InstrumentState::Complete)?;
+    let first = execution_evidence(
+        &first_execution,
+        vec![
+            attachment("z-trace", "second", AttachmentPrivacy::Private)?,
+            attachment("a-trace", "first", AttachmentPrivacy::Public)?,
+        ],
+    )?;
+    let second = execution_evidence(
+        &second_execution,
+        vec![
+            attachment("a-trace", "first", AttachmentPrivacy::Public)?,
+            attachment("z-trace", "second", AttachmentPrivacy::Private)?,
+        ],
+    )?;
+    let reference = first.evidence_ref()?;
 
     assert_eq!(reference.kind(), EvidenceKind::SubjectExecution);
     assert_eq!(reference.schema_version().as_str(), "parser_comparison_subject_execution.v1");
     assert!(reference.semantic_id().as_str().starts_with("subject_execution."));
-    assert_eq!(reference.semantic_digest(), execution.semantic_digest());
-    assert_eq!(execution.canonical_semantic_json()?, execution.canonical_semantic_json()?);
+    assert_eq!(reference.semantic_digest(), first.semantic_digest());
+    assert_eq!(first.semantic_digest(), second.semantic_digest());
+    assert_eq!(first.canonical_semantic_json()?, second.canonical_semantic_json()?);
+    assert_eq!(first.canonical_payload_json()?, second.canonical_payload_json()?);
     Ok(())
 }
 
@@ -718,6 +736,82 @@ fn schema_rejects_cross_field_false_greens_and_wrong_nested_reference_kinds()
     wrong_obligation_observer_kind["obligation"]["observer"]["authority"]["kind"] =
         Value::String("source_case".to_owned());
     assert!(validate_value(&wrong_obligation_observer_kind, &schema, &schema).is_err());
+
+    let mut wrong_nested_execution_version = observation_payload.clone();
+    wrong_nested_execution_version["execution"]["schema_version"] =
+        Value::String(SUBJECT_OBSERVATION_EVIDENCE_SCHEMA_VERSION.to_owned());
+    assert!(validate_value(&wrong_nested_execution_version, &schema, &schema).is_err());
+
+    let mut unknown_nested_execution_version = observation_payload.clone();
+    unknown_nested_execution_version["execution"]["schema_version"] =
+        Value::String("parser_comparison_subject_execution.v999".to_owned());
+    assert!(validate_value(&unknown_nested_execution_version, &schema, &schema).is_err());
+
+    let mut wrong_nested_observation_version = serde_json::from_str::<Value>(
+        &SubjectConformanceEvidence::scored(
+            &observation,
+            obligation(observer_manifest("observer.structure.v1", ObservationPlane::Structure)?)?,
+            &comparison,
+            Vec::new(),
+        )?
+        .canonical_payload_json()?,
+    )?;
+    wrong_nested_observation_version["observation"]["schema_version"] =
+        Value::String(SUBJECT_CONFORMANCE_EVIDENCE_SCHEMA_VERSION.to_owned());
+    assert!(validate_value(&wrong_nested_observation_version, &schema, &schema).is_err());
+    Ok(())
+}
+
+#[test]
+fn schema_accepts_registered_vocabularies_and_rejects_invalid_ids() -> Result<(), Box<dyn Error>> {
+    let complete = generic_execution(InstrumentState::Complete)?;
+    let execution = execution_evidence(&complete, Vec::new())?;
+    let observer = observer_manifest("observer.structure.v1", ObservationPlane::Structure)?;
+    let observation = exact_observation(&execution, observer.clone(), "actual")?;
+    let comparison = ScoredComparison::mismatch(
+        &complete,
+        ObserverId::new("observer.structure.v1")?,
+        ReviewedExpectationId::new("obligation.assignment.shape.v1")?,
+        ObservationPlane::Structure,
+        SemanticFingerprint::new("expected")?,
+        SemanticFingerprint::new("actual")?,
+        MismatchDetail::new(MismatchClass::WrongKind, DivergencePath::new("root")?),
+    )?;
+    let conformance = SubjectConformanceEvidence::scored(
+        &observation,
+        obligation(observer)?,
+        &comparison,
+        Vec::new(),
+    )?;
+    let schema: Value = serde_json::from_str(&parser_comparison_evidence_schema_json()?)?;
+
+    let mut registered_subject_disposition: Value =
+        serde_json::from_str(&execution.canonical_payload_json()?)?;
+    registered_subject_disposition["subject_disposition"] =
+        Value::String("registered:9subject-disposition".to_owned());
+    assert!(validate_value(&registered_subject_disposition, &schema, &schema).is_ok());
+
+    let mut registered_observation_plane: Value =
+        serde_json::from_str(&observation.canonical_payload_json()?)?;
+    registered_observation_plane["observer_manifest"]["plane"] =
+        Value::String("registered:9observation-plane".to_owned());
+    assert!(validate_value(&registered_observation_plane, &schema, &schema).is_ok());
+
+    let mut registered_mismatch_class: Value =
+        serde_json::from_str(&conformance.canonical_payload_json()?)?;
+    registered_mismatch_class["mismatch"]["class"] =
+        Value::String("registered:9mismatch-class".to_owned());
+    assert!(validate_value(&registered_mismatch_class, &schema, &schema).is_ok());
+
+    for invalid_id in ["registered:Uppercase", "registered:", "registered:9bad\nvalue"] {
+        let mut invalid = registered_subject_disposition.clone();
+        invalid["subject_disposition"] = Value::String(invalid_id.to_owned());
+        assert!(validate_value(&invalid, &schema, &schema).is_err(), "{invalid_id:?}");
+    }
+    let oversized_id = format!("registered:{}", "a".repeat(129));
+    let mut oversized = registered_subject_disposition;
+    oversized["subject_disposition"] = Value::String(oversized_id);
+    assert!(validate_value(&oversized, &schema, &schema).is_err());
     Ok(())
 }
 
@@ -1009,7 +1103,7 @@ fn matches_pattern(value: &str, pattern: &str) -> bool {
         "^[a-z0-9][a-z0-9._-]{0,127}$" => {
             (1..=128).contains(&value.len())
                 && value.chars().enumerate().all(|(index, character)| {
-                    (index == 0 && character.is_ascii_lowercase())
+                    (index == 0 && (character.is_ascii_lowercase() || character.is_ascii_digit()))
                         || (index > 0
                             && (character.is_ascii_lowercase()
                                 || character.is_ascii_digit()
@@ -1020,7 +1114,8 @@ fn matches_pattern(value: &str, pattern: &str) -> bool {
             value.strip_prefix("registered:").is_some_and(|id| {
                 (1..=128).contains(&id.len())
                     && id.chars().enumerate().all(|(index, character)| {
-                        (index == 0 && character.is_ascii_lowercase())
+                        (index == 0
+                            && (character.is_ascii_lowercase() || character.is_ascii_digit()))
                             || (index > 0
                                 && (character.is_ascii_lowercase()
                                     || character.is_ascii_digit()

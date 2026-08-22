@@ -838,7 +838,7 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/parser-comparison-evidence-v1",
         "title": "Parser comparison exact terminal evidence",
-        "description": "Finite vocabularies, advertised terminal-state contradictions, and nested evidence-reference roles are constrained here. This document uses the Draft 2020-12 dialect marker but claims only the repository-supported validation subset; it is not independent full-specification interoperability proof. Constructor validation remains authoritative for producer identity, freshness, digest recomputation, observer/obligation binding, and terminal rules not expressible in this bounded JSON projection. Generic referenced schema versions remain bounded stable IDs because this domain cell does not own their producer-specific version registry.",
+        "description": "Finite vocabularies, advertised terminal-state contradictions, and nested evidence-reference roles are constrained here. This document uses the Draft 2020-12 dialect marker but claims only the repository-supported validation subset; it is not independent full-specification interoperability proof. Constructor validation remains authoritative for producer identity, freshness, digest recomputation, observer/obligation binding, and terminal rules not expressible in this bounded JSON projection. External producer-owned reference versions remain bounded stable IDs because this domain cell does not own their registries; domain-owned terminal payload references are bound to their exact version constants.",
         "x-perl-lsp-validation-profile": "draft-2020-12-supported-subset-v1",
         "oneOf": [
             {"$ref": "#/$defs/subject_execution"},
@@ -852,7 +852,7 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
             },
             "stable_id": {
                 "type": "string",
-                "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+                "pattern": STABLE_ID_PATTERN
             },
             "semantic_fingerprint": {
                 "type": "string",
@@ -872,12 +872,12 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
                     "semantic_digest": {"$ref": "#/$defs/semantic_digest"}
                 }),
             ),
-            "source_case_authority_ref": evidence_ref_for_kind_schema("source_case"),
-            "subject_manifest_authority_ref": evidence_ref_for_kind_schema("subject_manifest"),
-            "observer_manifest_authority_ref": evidence_ref_for_kind_schema("observer_manifest"),
-            "case_obligation_authority_ref": evidence_ref_for_kind_schema("case_obligation"),
-            "subject_execution_ref": evidence_ref_for_kind_schema("subject_execution"),
-            "subject_observation_ref": evidence_ref_for_kind_schema("subject_observation"),
+            "source_case_authority_ref": evidence_ref_for_kind_schema(EvidenceKind::SourceCase),
+            "subject_manifest_authority_ref": evidence_ref_for_kind_schema(EvidenceKind::SubjectManifest),
+            "observer_manifest_authority_ref": evidence_ref_for_kind_schema(EvidenceKind::ObserverManifest),
+            "case_obligation_authority_ref": evidence_ref_for_kind_schema(EvidenceKind::CaseObligation),
+            "subject_execution_ref": evidence_ref_for_kind_schema(EvidenceKind::SubjectExecution),
+            "subject_observation_ref": evidence_ref_for_kind_schema(EvidenceKind::SubjectObservation),
             "source_case_ref": object_schema(
                 &["case_id", "authority", "content_digest"],
                 json!({
@@ -1107,17 +1107,35 @@ fn registered_or_enum_schema(values: &[&str]) -> Value {
     json!({
         "oneOf": [
             {"enum": values},
-            {"type": "string", "pattern": "^registered:[a-z0-9][a-z0-9._-]{0,127}$"}
+            {"type": "string", "pattern": REGISTERED_ID_PATTERN}
         ]
     })
 }
 
-fn evidence_ref_for_kind_schema(kind: &str) -> Value {
+const STABLE_ID_PATTERN: &str = "^[a-z0-9][a-z0-9._-]{0,127}$";
+const REGISTERED_ID_PATTERN: &str = "^registered:[a-z0-9][a-z0-9._-]{0,127}$";
+
+fn evidence_ref_for_kind_schema(kind: EvidenceKind) -> Value {
+    let schema_version = match kind {
+        EvidenceKind::SubjectExecution => {
+            json!({"const": SUBJECT_EXECUTION_EVIDENCE_SCHEMA_VERSION})
+        }
+        EvidenceKind::SubjectObservation => {
+            json!({"const": SUBJECT_OBSERVATION_EVIDENCE_SCHEMA_VERSION})
+        }
+        EvidenceKind::SubjectConformance => {
+            json!({"const": SUBJECT_CONFORMANCE_EVIDENCE_SCHEMA_VERSION})
+        }
+        EvidenceKind::SourceCase
+        | EvidenceKind::SubjectManifest
+        | EvidenceKind::ObserverManifest
+        | EvidenceKind::CaseObligation => json!({"$ref": "#/$defs/stable_id"}),
+    };
     object_schema(
         &["kind", "schema_version", "semantic_id", "semantic_digest"],
         json!({
-            "kind": {"const": kind},
-            "schema_version": {"$ref": "#/$defs/stable_id"},
+            "kind": {"const": kind.as_str()},
+            "schema_version": schema_version,
             "semantic_id": {"$ref": "#/$defs/stable_id"},
             "semantic_digest": {"$ref": "#/$defs/semantic_digest"}
         }),
@@ -1609,18 +1627,66 @@ fn validate_stored_digest(
 }
 
 fn canonical_json(value: &Value) -> Result<String, EvidencePayloadError> {
-    serde_json::to_string(value)
+    serde_json::to_string(&sorted_json_value(value))
         .map_err(|error| EvidencePayloadError::Serialization(error.to_string()))
 }
 
 fn canonical_pretty_json(value: &Value) -> Result<String, EvidencePayloadError> {
-    serde_json::to_string_pretty(value)
+    serde_json::to_string_pretty(&sorted_json_value(value))
         .map_err(|error| EvidencePayloadError::Serialization(error.to_string()))
+}
+
+/// Recursively sort JSON object keys before deterministic serialization.
+///
+/// This is deterministic JSON for this repository, not RFC 8785 canonical
+/// JSON: it does not claim the full RFC 8785 number or string canonicalization
+/// contract.
+fn sorted_json_value(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => {
+            let mut entries = object.iter().collect::<Vec<_>>();
+            entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+            let mut sorted = serde_json::Map::new();
+            for (key, value) in entries {
+                sorted.insert(key.clone(), sorted_json_value(value));
+            }
+            Value::Object(sorted)
+        }
+        Value::Array(values) => {
+            Value::Array(values.iter().map(sorted_json_value).collect::<Vec<_>>())
+        }
+        _ => value.clone(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deterministic_json_sorts_independently_constructed_nested_objects() {
+        let first = json!({
+            "z": {"b": 2, "a": [{"d": 4, "c": 3}]},
+            "a": 1,
+        });
+        let second = json!({
+            "a": 1,
+            "z": {"a": [{"c": 3, "d": 4}], "b": 2},
+        });
+
+        assert_eq!(
+            canonical_json(&first).expect("first JSON should serialize"),
+            canonical_json(&second).expect("second JSON should serialize")
+        );
+        assert_eq!(
+            canonical_pretty_json(&first).expect("first pretty JSON should serialize"),
+            canonical_pretty_json(&second).expect("second pretty JSON should serialize")
+        );
+        assert_eq!(
+            canonical_json(&first).expect("JSON should serialize"),
+            r#"{"a":1,"z":{"a":[{"c":3,"d":4}],"b":2}}"#
+        );
+    }
 
     fn schema_enum_contains(schema: &Value, expected: &str) -> bool {
         if schema
