@@ -1,0 +1,148 @@
+schema = 1
+
+[[lint]]
+name = "rust::unexpected_cfgs"
+level = "warn"
+status = "active"
+class = "workspace"
+reason = "Keep cfg spelling drift visible while preserving the repository-specific cfg allowlist in Cargo.toml."
+
+[[lint]]
+name = "clippy::dbg_macro"
+level = "deny"
+status = "active"
+class = "panic"
+reason = "Debug macros are not a reviewable diagnostics path."
+
+[[lint]]
+name = "clippy::todo"
+level = "deny"
+status = "active"
+class = "panic"
+reason = "TODO execution paths are not allowed in production or tests."
+
+[[lint]]
+name = "clippy::unimplemented"
+level = "deny"
+status = "active"
+class = "panic"
+reason = "Unimplemented execution paths are not allowed in production or tests."
+
+[[lint]]
+name = "clippy::panic"
+level = "deny"
+status = "active"
+class = "panic"
+reason = "Parser, LSP, DAP, and test code should return structured errors rather than abort execution."
+
+[[lint]]
+name = "clippy::unwrap_used"
+level = "deny"
+status = "active"
+class = "panic"
+reason = "No unchecked Result or Option collapse in production or tests."
+
+[[lint]]
+name = "clippy::expect_used"
+level = "deny"
+status = "active"
+class = "panic"
+reason = "Expect messages are not a substitute for typed error handling or test helpers."
+
+[[lint]]
+name = "clippy::await_holding_lock"
+level = "deny"
+status = "active"
+class = "async"
+reason = "Do not hold locks across await points."
+
+[[lint]]
+name = "clippy::await_holding_refcell_ref"
+level = "deny"
+status = "active"
+class = "async"
+reason = "Do not hold RefCell borrows across await points."
+
+[[lint]]
+name = "clippy::mutex_atomic"
+level = "warn"
+status = "active"
+class = "async"
+reason = "Primitive mutex candidates remain visible while #9884 classifies compound invariants and memory-order requirements before any atomic conversion."
+
+[[lint]]
+name = "clippy::collapsible_match"
+level = "allow"
+status = "active"
+class = "style"
+reason = "The temporary workspace allow remains current until #6113 remeasures the Rust 1.97.1 denominator and performs the behavior-preserving deny ratchet."
+
+[[lint]]
+name = "clippy::decimal_bitwise_operands"
+level = "warn"
+status = "active"
+class = "numeric"
+reason = "Make bit masks visually inspectable."
+
+[[lint]]
+name = "clippy::duration_suboptimal_units"
+level = "warn"
+status = "active"
+class = "readability"
+reason = "Make durations legible without mental unit conversion."
+
+[[lint]]
+name = "clippy::needless_type_cast"
+level = "warn"
+status = "active"
+class = "numeric"
+reason = "Keep stale numeric type drift visible without claiming every boundary cast should be removed."
+
+[[lint]]
+name = "clippy::manual_ilog2"
+level = "warn"
+status = "active"
+class = "numeric"
+reason = "Prefer the standard integer logarithm helper where domain and failure semantics match."
+
+[[lint]]
+name = "clippy::manual_take"
+level = "warn"
+status = "active"
+class = "reviewability"
+reason = "The warning is active today; #1802 owns exact site review and final deny promotion."
+
+[[lint]]
+name = "clippy::unnecessary_trailing_comma"
+level = "warn"
+status = "active"
+class = "readability"
+reason = "Keep generated and hand-written format macro calls clean."
+
+[[lint]]
+name = "clippy::wildcard_imports"
+level = "warn"
+status = "active"
+class = "reviewability"
+reason = "Production wildcard imports remain visible while #2895 owns measured cleanup and the final deny ratchet."
+
+[[lint]]
+name = "clippy::print_stderr"
+level = "deny"
+status = "active"
+class = "reviewability"
+reason = "Library code must use tracing rather than direct stderr, with only narrow reasoned boundary expectations."
+
+[[lint]]
+name = "clippy::print_stdout"
+level = "deny"
+status = "active"
+class = "reviewability"
+reason = "Library code must use tracing rather than direct stdout, with intentional CLI output bounded at its owner."
+
+[[lint]]
+name = "clippy::disallowed_fields"
+level = "deny"
+status = "active"
+class = "architecture"
+reason = "The mechanism is active; clippy.toml deliberately carries an empty protected-field set until #6114 completes the governed Phase 1 contract."

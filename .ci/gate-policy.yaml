@@ -1447,6 +1447,20 @@ gates:
       - docs
       - generated
 
+  - name: lint_policy
+    tier: merge_gate
+    description: "Validate the workspace Clippy lint policy against its catalog and ledgers"
+    required: true
+    command: cargo xtask check-lint-policy
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - lint
+
   # Guards the MSRV declared by Cargo.toml, rust-toolchain.toml, this file's
   # global.toolchain.msrv, and the pinned matrix legs below. #6106 exists
   # because those authorities drifted apart with nothing running to notice;
