@@ -368,7 +368,16 @@ mod tests {
         for profile_value in profiles {
             assert!(profile_value.get("profile").is_some(), "missing 'profile' key");
             assert!(profile_value.get("advertised").is_some(), "missing 'advertised' key");
-            assert!(profile_value.get("compliance_percent").is_none());
+            for forbidden_key in [
+                "compliance_percent",
+                "trackable_feature_count",
+                "advertised_trackable_feature_count",
+            ] {
+                assert!(
+                    profile_value.get(forbidden_key).is_none(),
+                    "profile summary must not contain '{forbidden_key}'"
+                );
+            }
             assert!(
                 profile_value.get("advertised_feature_count").is_some(),
                 "missing 'advertised_feature_count'"

@@ -158,8 +158,17 @@ pub enum CatalogSourceKind {
 }
 
 pub fn resolve_catalog_source(manifest_dir: &Path) -> Result<CatalogSource, String> {
-    if let Ok(override_path) = env::var("FEATURES_TOML_OVERRIDE") {
-        let override_path = PathBuf::from(override_path);
+    resolve_catalog_source_with_override(
+        manifest_dir,
+        env::var("FEATURES_TOML_OVERRIDE").ok().map(PathBuf::from),
+    )
+}
+
+fn resolve_catalog_source_with_override(
+    manifest_dir: &Path,
+    override_path: Option<PathBuf>,
+) -> Result<CatalogSource, String> {
+    if let Some(override_path) = override_path {
         if !override_path.exists() {
             return Err(format!(
                 "FEATURES_TOML_OVERRIDE path does not exist: {}",
@@ -188,6 +197,37 @@ pub fn resolve_catalog_source(manifest_dir: &Path) -> Result<CatalogSource, Stri
     }
 
     Err(format!("features catalog not found for manifest dir: {}", manifest_dir.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_catalog_source_with_override;
+    use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn missing_explicit_override_does_not_fall_back_to_workspace_catalog() {
+        let root = std::env::temp_dir().join(format!(
+            "perl-lsp-build-catalog-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create test catalog directory");
+        let workspace_catalog = root.join("features.toml");
+        let missing_override = root.join("missing-features.toml");
+        fs::write(&workspace_catalog, "[meta]\nversion = 'test'\nlsp_version = 'test'\n")
+            .expect("write fallback workspace catalog");
+
+        let result = resolve_catalog_source_with_override(
+            &root,
+            Some(PathBuf::from(&missing_override)),
+        );
+
+        assert!(result.is_err(), "missing explicit override must be terminal");
+        assert!(result
+            .expect_err("missing explicit override must be terminal")
+            .contains("FEATURES_TOML_OVERRIDE path does not exist"));
+        fs::remove_dir_all(root).expect("remove test catalog directory");
+    }
 }
 
 pub fn read_catalog(path: &Path) -> Result<Catalog, String> {
