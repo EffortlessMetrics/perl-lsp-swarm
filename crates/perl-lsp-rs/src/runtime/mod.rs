@@ -1889,19 +1889,95 @@ mod tests {
     }
 
     #[test]
-    fn end_position_handles_trailing_final_newline() {
+    fn eof_offset_projection_preserves_terminal_line_identity() {
+        use ropey::Rope;
+        use std::sync::Arc;
+
         let server = LspServer::new();
-        let content = "package Foo;\n";
-        let pos = server.get_document_end_position(content);
-        assert_eq!(pos, json!({"line": 1, "character": 0}));
+
+        let lf = "package Foo;\n";
+        let crlf = "package Foo;\r\n";
+        let bare_cr = "a\rb";
+        for (uri, content) in [
+            ("file:///eof-lf.pl", lf),
+            ("file:///eof-crlf.pl", crlf),
+            ("file:///eof-cr.pl", bare_cr),
+        ] {
+            server.documents.lock().insert(
+                uri.to_string(),
+                DocumentState::from_parts(
+                    Rope::from_str(content),
+                    content.to_string(),
+                    1,
+                    Arc::new(AtomicU32::new(0)),
+                ),
+            );
+        }
+
+        let documents = server.documents.lock();
+        let lf_doc = documents.get("file:///eof-lf.pl").expect("lf doc");
+        let crlf_doc = documents.get("file:///eof-crlf.pl").expect("crlf doc");
+        let cr_doc = documents.get("file:///eof-cr.pl").expect("cr doc");
+
+        // A terminal separator ends the last content line, so true EOF sits on
+        // the final empty line (#10220): byte length alone would report (0, N).
+        assert_eq!(server.offset_to_pos16(lf_doc, lf.len()), (1, 0));
+        assert_eq!(server.offset_to_pos16(crlf_doc, crlf.len()), (1, 0));
+        // Bare CR is an admitted separator: EOF follows the second line.
+        assert_eq!(server.offset_to_pos16(cr_doc, bare_cr.len()), (1, 1));
     }
 
     #[test]
-    fn end_position_handles_missing_final_newline() {
+    fn eof_offset_projection_counts_utf16_not_bytes() {
+        use ropey::Rope;
+        use std::sync::Arc;
+
         let server = LspServer::new();
-        let content = "package Foo;";
-        let pos = server.get_document_end_position(content);
-        assert_eq!(pos, json!({"line": 0, "character": content.len()}));
+        let text = "#!/usr/bin/perl😀"; // 15 ASCII chars + one non-BMP char
+        server.documents.lock().insert(
+            "file:///eof-emoji.pl".to_string(),
+            DocumentState::from_parts(
+                Rope::from_str(text),
+                text.to_string(),
+                1,
+                Arc::new(AtomicU32::new(0)),
+            ),
+        );
+        let documents = server.documents.lock();
+        let doc = documents.get("file:///eof-emoji.pl").expect("emoji doc");
+        // The source is 19 bytes long; the wire position counts UTF-16 units.
+        assert_eq!(server.offset_to_pos16(doc, text.len()), (0, 17));
+    }
+
+    #[test]
+    fn lifecycle_eof_projection_agrees_with_formatter_geometry() {
+        use ropey::Rope;
+        use std::sync::Arc;
+
+        let server = LspServer::new();
+        let sources =
+            ["", "package Foo;", "package Foo;\n", "a\r\n", "a\r", "#!/usr/bin/perl😀", "x\n\r\nz"];
+        for (idx, content) in sources.iter().enumerate() {
+            let uri = format!("file:///eof-parity-{idx}.pl");
+            server.documents.lock().insert(
+                uri.clone(),
+                DocumentState::from_parts(
+                    Rope::from_str(content),
+                    (*content).to_string(),
+                    1,
+                    Arc::new(AtomicU32::new(0)),
+                ),
+            );
+            let documents = server.documents.lock();
+            let doc = documents.get(&uri).expect("parity doc");
+            let projected = server.offset_to_pos16(doc, content.len());
+            let range = FormatRange::whole_document(content);
+            assert_eq!(
+                projected,
+                (range.end.line, range.end.character),
+                "lifecycle EOF projection diverges from formatter geometry for {content:?}"
+            );
+        }
     }
 
     #[test]
@@ -1932,23 +2008,73 @@ mod tests {
             if let Some(actions) = result.as_array() {
                 assert!(!actions.is_empty());
                 let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
-                let end = server.get_document_end_position(text);
-                assert_eq!(edit["start"], end);
-                assert_eq!(edit["end"], end);
+                let expected_end = json!({"line": 0, "character": text.chars().count()});
+                assert_eq!(edit["start"], expected_end);
+                assert_eq!(edit["end"], expected_end);
             }
         }
     }
 
     #[test]
-    fn formatting_edit_has_correct_end_position() {
-        let code = "sub test{my$x=1;return$x;}";
-        let server = LspServer::new();
-        let end = server.get_document_end_position(code);
-        let range = FormatRange::whole_document(code);
+    // Nested form required; see the gap-identity note on
+    // `code_action_append_uses_document_end` (#9528).
+    #[allow(clippy::collapsible_if)]
+    fn code_action_append_projects_utf16_eof_not_byte_columns() {
+        use ropey::Rope;
+        use std::sync::Arc;
 
-        if let (Some(line), Some(character)) = (end["line"].as_u64(), end["character"].as_u64()) {
-            assert_eq!(range.end.line, line as u32);
-            assert_eq!(range.end.character, character as u32);
+        let server = LspServer::new();
+        let uri = "file:///utf16-eof.pl";
+        // Unterminated shebang: pragma insertion lands at true EOF, and the
+        // tail is a non-BMP character so byte counting and UTF-16 disagree.
+        let text = "#!/usr/bin/perl😀";
+        let rope = Rope::from_str(text);
+        server.documents.lock().insert(
+            uri.to_string(),
+            DocumentState::from_parts(rope, text.to_string(), 1, Arc::new(AtomicU32::new(0))),
+        );
+
+        let result =
+            server.handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}})));
+        if let Ok(Some(result)) = result {
+            if let Some(actions) = result.as_array() {
+                assert!(!actions.is_empty());
+                let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
+                // Byte columns would report character 19; true EOF is unit 17.
+                assert_eq!(edit["start"], json!({"line": 0, "character": 17}));
+                assert_eq!(edit["end"], json!({"line": 0, "character": 17}));
+            }
+        }
+    }
+
+    #[test]
+    // Nested form required; see the gap-identity note on
+    // `code_action_append_uses_document_end` (#9528).
+    #[allow(clippy::collapsible_if)]
+    fn code_action_append_projects_bare_cr_separator_before_eof() {
+        use ropey::Rope;
+        use std::sync::Arc;
+
+        let server = LspServer::new();
+        let uri = "file:///bare-cr-eof.pl";
+        // Lone CR is an admitted line separator; true EOF is line 1, not the
+        // single-line byte column the split('\n') helper reported.
+        let text = "#!/usr/bin/perl\rwarn 'x';";
+        let rope = Rope::from_str(text);
+        server.documents.lock().insert(
+            uri.to_string(),
+            DocumentState::from_parts(rope, text.to_string(), 1, Arc::new(AtomicU32::new(0))),
+        );
+
+        let result =
+            server.handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}})));
+        if let Ok(Some(result)) = result {
+            if let Some(actions) = result.as_array() {
+                assert!(!actions.is_empty());
+                let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
+                assert_eq!(edit["start"], json!({"line": 1, "character": 9}));
+                assert_eq!(edit["end"], json!({"line": 1, "character": 9}));
+            }
         }
     }
 
