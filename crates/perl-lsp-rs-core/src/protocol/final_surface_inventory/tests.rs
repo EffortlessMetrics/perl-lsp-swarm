@@ -79,6 +79,7 @@ fn wasm_inventory_is_target_scoped_instead_of_matching_host_artifact() {
 /// (pre-existing unstable `windows_by_handle` usage in
 /// `generate_semantic_snapshot.rs`), and this way one render API owns both
 /// check and write paths.
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 #[ignore = "writes docs/specs/lsp-final-surface-inventory.json; explicit regeneration only (#9662)"]
 fn regenerate_checked_in_artifact() {
