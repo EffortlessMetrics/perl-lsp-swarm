@@ -883,6 +883,78 @@ fn test_object_method_completion_replaces_typed_method_prefix()
     Ok(())
 }
 
+/// Verify that workspace method candidates survive a typed method prefix.
+///
+/// Method context must be detected from an arrow receiver with a partially
+/// typed identifier (`$obj->co`), not only from text ending exactly at `->`;
+/// otherwise the runtime workspace fallback withdraws its method candidates
+/// after the first typed character (#11158 review).
+#[test]
+fn test_workspace_method_candidates_survive_typed_method_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = start_lsp_server();
+    initialize_lsp(&server);
+
+    let module_uri = "file:///workspace/TypedPrefix.pm";
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": module_uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "package TypedPrefix;\nsub connect_stream { }\n1;\n"
+                }
+            }
+        }),
+    );
+    await_module_indexed(&server);
+
+    // The receiver has no static evidence: `load_object()` resolves to nothing
+    // and the script never imports TypedPrefix, so only the runtime workspace
+    // method fallback can supply `connect_stream`.
+    let script_uri = "file:///workspace/typed_prefix.pl";
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": script_uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $obj = load_object();\n$obj->co"
+                }
+            }
+        }),
+    );
+    await_open_processing(&server);
+
+    let response = send_request(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": script_uri },
+                "position": { "line": 1, "character": 8 }
+            }
+        }),
+    );
+
+    let items = completion_items(&response);
+    assert!(
+        items.iter().any(|item| item["label"].as_str() == Some("connect_stream")),
+        "workspace method candidate must survive a typed prefix after '->'; got: {items:?}"
+    );
+
+    Ok(())
+}
+
 /// Test that method completion detail includes medium-confidence receiver labels.
 ///
 /// Integration counterpart for the receiver-evidence detail format covered in

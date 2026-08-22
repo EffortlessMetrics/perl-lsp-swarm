@@ -366,7 +366,7 @@ fn scenario_48_receiver_bless_confidence_receipt() {
                     && !dynamic_report.source_backed
                     && matches!(
                         dynamic_report.fallback_state,
-                        "blocked" | "legacy_workspace_candidate_without_receiver_evidence"
+                        "blocked" | "low_confidence_labeled"
                     )
                     && dynamic_report.fallback_or_labeled_boundary,
             )?;

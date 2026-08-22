@@ -856,7 +856,13 @@ impl LspServer {
                 let index = coordinator.index();
 
                 let text_before = &doc_text[..offset.min(doc_text.len())];
-                let is_method_completion = text_before.trim_end().ends_with("->");
+                // Method context survives once a method name is partially typed:
+                // `$obj->` and `$obj->co` are both method-completion positions,
+                // while `$x->[0]` or plain identifiers are not.
+                let is_method_completion =
+                    text_before.trim_end().rsplit_once("->").is_some_and(|(_, suffix)| {
+                        suffix.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                    });
                 let prefix = text_before
                     .chars()
                     .rev()
@@ -910,6 +916,15 @@ impl LspServer {
                 use std::collections::HashSet;
                 let mut seen: HashSet<String> =
                     completions.iter().map(|completion| completion.label.to_string()).collect();
+
+                // The runtime pass has no receiver facts of its own. When the
+                // core provider already attached receiver evidence to this
+                // response, keep its quiet name-only extras; otherwise label
+                // callable candidates honestly instead of emitting an
+                // unlabelled dynamic-boundary insertion (issue #11158).
+                let receiver_evidence_present = completions.iter().any(|completion| {
+                    completion.detail.as_deref().is_some_and(|detail| detail.contains("receiver:"))
+                });
 
                 for symbol in workspace_symbols {
                     if should_continue.is_some_and(|check| !check()) {
@@ -980,7 +995,21 @@ impl LspServer {
 
                     let label = symbol.name.clone();
                     let qualified_name = Self::workspace_symbol_qualified_name(&symbol);
-                    let detail = Some(qualified_name.clone());
+                    let detail = if !receiver_evidence_present
+                        && matches!(
+                            symbol.kind,
+                            crate::workspace_index::SymbolKind::Subroutine
+                                | crate::workspace_index::SymbolKind::Method
+                                | crate::workspace_index::SymbolKind::Constant
+                                | crate::workspace_index::SymbolKind::Export
+                        ) {
+                        // Callable kinds only reach this pass through the
+                        // method-completion gate above, which carries no
+                        // receiver evidence; say so on the item.
+                        Some(format!("{qualified_name} — receiver: unknown, low confidence"))
+                    } else {
+                        Some(qualified_name.clone())
+                    };
                     // Invariant: text_edit_range.is_some() ⟺ insert_text is the
                     // fully-qualified name.  The serializer (completion_item_to_lsp_value)
                     // depends on this to locate the newText from `item["insertText"]`.
