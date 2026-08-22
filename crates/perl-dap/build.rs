@@ -37,11 +37,25 @@ struct CatalogSource {
 }
 
 fn resolve_catalog_source(manifest_dir: &Path) -> Result<CatalogSource, Box<dyn Error>> {
-    if let Ok(override_path) = env::var("FEATURES_TOML_OVERRIDE") {
-        let override_path = PathBuf::from(override_path);
+    resolve_catalog_source_with_override(
+        manifest_dir,
+        env::var("FEATURES_TOML_OVERRIDE").ok().map(PathBuf::from),
+    )
+}
+
+fn resolve_catalog_source_with_override(
+    manifest_dir: &Path,
+    override_path: Option<PathBuf>,
+) -> Result<CatalogSource, Box<dyn Error>> {
+    if let Some(override_path) = override_path {
         if override_path.exists() {
             return Ok(CatalogSource { path: override_path });
         }
+        return Err(format!(
+            "FEATURES_TOML_OVERRIDE path does not exist: {}",
+            override_path.display()
+        )
+        .into());
     }
 
     let local = manifest_dir.join("features.toml");
