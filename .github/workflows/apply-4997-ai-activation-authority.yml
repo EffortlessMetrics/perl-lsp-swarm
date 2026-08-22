@@ -1,0 +1,61 @@
+name: Apply #4997 AI activation authority
+
+on:
+  pull_request:
+    branches: [main]
+    types: [synchronize]
+    paths:
+      - scripts/maintenance/apply_4997_ai_activation_authority.py
+      - .github/workflows/apply-4997-ai-activation-authority.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-4997-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: >-
+      github.repository == 'EffortlessMetrics/perl-lsp-swarm' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'agent/4997-ai-activation-authority'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout implementation branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/4997-ai-activation-authority
+          fetch-depth: 0
+
+      - name: Apply count-checked cutover
+        run: python3 scripts/maintenance/apply_4997_ai_activation_authority.py
+
+      - name: Format and validate focused contracts
+        run: |
+          cargo fmt --all
+          python3 -m json.tool schemas/perllsp-settings.schema.json >/dev/null
+          python3 -m json.tool vscode-extension/package.json >/dev/null
+          cargo test -p perl-lsp-rs-core --test ai_activation_authority_contract --locked
+          cargo test -p perl-lsp-rs-core --test perllsp_settings_schema_tests --locked
+          cargo test -p perl-lsp-rs-core --lib ai_completion --locked
+          cargo test -p perl-lsp-rs --features expose_lsp_test_api \
+            --test lsp_ai_inline_completion_tests --locked
+          cargo check -p perl-lsp-rs --all-targets --all-features --locked
+          git diff --check
+
+      - name: Publish implementation commit and remove one-shot machinery
+        env:
+          BRANCH: agent/4997-ai-activation-authority
+        run: |
+          rm -- scripts/maintenance/apply_4997_ai_activation_authority.py
+          rm -- .github/workflows/apply-4997-ai-activation-authority.yml
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git add -A
+          git diff --cached --check
+          git commit -m 'security(ai-completion): bind remote backend to trusted authority (#4997)'
+          git push origin HEAD:"$BRANCH"
