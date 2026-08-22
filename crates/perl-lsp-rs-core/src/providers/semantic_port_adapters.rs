@@ -50,6 +50,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
+/// Limitation naming the unproven cross-shard generation binding that keeps
+/// multi-shard snapshots below exact answers.
+///
+/// Pushed when several shards adapt under one snapshot and matched in
+/// `scoped_limitations`; the two sites must stay the same string, so they
+/// share this constant.
+const MULTI_SHARD_EXACTNESS_LIMITATION: &str = "multi_shard_single_snapshot_exactness";
+
 /// Completeness of an adapter snapshot for one query capability.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -276,7 +284,7 @@ impl FileFactShardPort {
             // FileFactShard does not carry a per-shard document generation.
             // Until that producer contract exists, adapting multiple shards
             // under one snapshot cannot support an exact answer.
-            limitations.push("multi_shard_single_snapshot_exactness".to_string());
+            limitations.push(MULTI_SHARD_EXACTNESS_LIMITATION.to_string());
         }
         for shard in shards {
             file_ids.insert(shard.file_id);
@@ -1140,6 +1148,9 @@ fn query_records(
         if binding == GenerationBinding::Mismatched
             && (!selection.is_empty() || !blockers.is_empty())
         {
+            if let Some(terminal) = live_control_terminal(control) {
+                return Ok(terminal);
+            }
             // Facts exist but belong to another generation, so they are stale
             // for this request. Freshness is request-relative; the supporting
             // copies carry the staleness explicitly.
@@ -1170,6 +1181,9 @@ fn query_records(
         record.envelope.status() == SemanticFactStatus::Stale || !record_is_current(record, request)
     });
     if any_stale {
+        if let Some(terminal) = live_control_terminal(control) {
+            return Ok(terminal);
+        }
         let mut facts = selection_as_supporting(&selection, request, true)?;
         let mut present: BTreeSet<FactId> =
             facts.iter().map(|fact| fact.envelope().fact_id).collect();
@@ -1187,6 +1201,9 @@ fn query_records(
         .chain(blockers.iter().copied())
         .any(|record| record.envelope.status() == SemanticFactStatus::Refused)
     {
+        if let Some(terminal) = live_control_terminal(control) {
+            return Ok(terminal);
+        }
         let mut facts = selection_as_supporting(&selection, request, false)?;
         let mut present: BTreeSet<FactId> =
             facts.iter().map(|fact| fact.envelope().fact_id).collect();
@@ -1202,6 +1219,9 @@ fn query_records(
 
     if selection.values.is_empty() {
         if !blockers.is_empty() {
+            if let Some(terminal) = live_control_terminal(control) {
+                return Ok(terminal);
+            }
             let mut facts = selection_as_supporting(&selection, request, false)?;
             let mut present: BTreeSet<FactId> =
                 facts.iter().map(|fact| fact.envelope().fact_id).collect();
@@ -1248,6 +1268,9 @@ fn query_records(
     }
 
     if ambiguity_applies(request) && distinct_value_entities(&selection.values).len() > 1 {
+        if let Some(terminal) = live_control_terminal(control) {
+            return Ok(terminal);
+        }
         let mut facts = Vec::new();
         for record in selection.all() {
             // Every candidate selects the ambiguity; none is a value.
@@ -1391,7 +1414,7 @@ fn scoped_limitations(request: &ProviderQueryRequest, limitations: &[String]) ->
     limitations
         .iter()
         .filter(|limitation| {
-            *limitation != "multi_shard_single_snapshot_exactness" || !explicitly_file_qualified
+            *limitation != MULTI_SHARD_EXACTNESS_LIMITATION || !explicitly_file_qualified
         })
         .cloned()
         .collect()
@@ -1472,11 +1495,9 @@ fn issue_completeness_grant(
         })
         .collect();
     if units.is_empty() {
-        return None;
-    }
-    if requested_file.is_some_and(|file_id| {
-        !units.iter().any(|record| record.envelope.anchor.file_id == file_id)
-    }) {
+        // A requested file outside this denominator has no units at all, so
+        // the grant fails closed here rather than borrowing another file's
+        // records.
         return None;
     }
     // Every denominator unit must itself be exact-grade and current for this
@@ -1666,8 +1687,20 @@ fn select_reference_records<'a>(
                 .filter(|record| subject_matches(&request.subject, record))
                 .filter(|record| record.envelope.entity_id.is_some())
                 .collect();
-            let targets = selectors.iter().filter_map(|record| record.envelope.entity_id).collect();
-            (selectors, EntityTargets::Unqualified(targets))
+            // Entity ids are local to their owning shard, so file-, symbol-,
+            // package-, and workspace-scoped selectors bind targets by
+            // (file, entity) exactly like `cursor_targets`: a same-numbered
+            // entity in another file must not enter the values.
+            let targets = selectors
+                .iter()
+                .filter_map(|record| {
+                    record
+                        .envelope
+                        .entity_id
+                        .map(|entity_id| (record.envelope.anchor.file_id, entity_id))
+                })
+                .collect();
+            (selectors, EntityTargets::FileQualified(targets))
         }
     };
     let values = records
@@ -1813,6 +1846,9 @@ fn selection_as_supporting(
 ///
 /// For position subjects a boundary sits at the cursor by selection, so it
 /// carries the selector role and satisfies the cursor-binding requirement.
+/// Like `selection_as_supporting`, `mark_stale` relabels only the records that
+/// are themselves stale or out of generation for this request; current
+/// blockers keep their own freshness and reason code.
 fn blocker_facts(
     request: &ProviderQueryRequest,
     blockers: &[&AdapterFactRecord],
@@ -1829,7 +1865,9 @@ fn blocker_facts(
         } else {
             ProviderQueryFactRole::Supporting
         };
-        let envelope = if mark_stale {
+        let stale = record.envelope.status() == SemanticFactStatus::Stale
+            || !record_is_current(record, request);
+        let envelope = if mark_stale && stale {
             let mut envelope = record.envelope.clone();
             envelope.freshness = SemanticFreshness::Stale;
             envelope.reason_code = SemanticReasonCode::StaleDependency;

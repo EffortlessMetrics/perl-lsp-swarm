@@ -186,6 +186,48 @@ fn exact_shard_queries_preserve_workspace_producer() -> Result<(), Box<dyn Error
 }
 
 #[test]
+fn file_scoped_references_do_not_select_cross_shard_entity_id_collisions()
+-> Result<(), Box<dyn Error>> {
+    // Both shards reuse EntityId(30)/OccurrenceId(40): entity ids are local to
+    // their owning shard, so a File-scoped references query must bind targets
+    // to the requested file, exactly like stable_fact_id binds fact ids.
+    let first = shard_in_file(FileId(10), Provenance::ExactAst, Confidence::High);
+    let second = shard_in_file(FileId(11), Provenance::ExactAst, Confidence::High);
+    let port = parser_port(&[first, second], ProviderSnapshotCompleteness::Complete)?;
+
+    let references = execute(
+        &port,
+        &request(
+            ProviderQueryKind::References { include_declaration: false },
+            ProviderQuerySubject::File(FileId(10)),
+        ),
+    )?;
+    assert_eq!(references.outcome(), ProviderQueryOutcome::Exact);
+    let values: Vec<_> = references.value_facts().collect();
+    assert_eq!(
+        values.len(),
+        1,
+        "a same-numbered occurrence in another shard must not enter File-scoped references"
+    );
+    assert_eq!(values[0].anchor.file_id, FileId(10));
+    assert!(references.facts().iter().all(|fact| fact.envelope().anchor.file_id == FileId(10)));
+
+    // Control: querying the other file selects only that file's occurrence.
+    let mirrored = execute(
+        &port,
+        &request(
+            ProviderQueryKind::References { include_declaration: false },
+            ProviderQuerySubject::File(FileId(11)),
+        ),
+    )?;
+    assert_eq!(mirrored.outcome(), ProviderQueryOutcome::Exact);
+    let mirrored_values: Vec<_> = mirrored.value_facts().collect();
+    assert_eq!(mirrored_values.len(), 1);
+    assert_eq!(mirrored_values[0].anchor.file_id, FileId(11));
+    Ok(())
+}
+
+#[test]
 fn complete_and_partial_empty_results_stay_distinct() -> Result<(), Box<dyn Error>> {
     let complete = parser_port(
         &[shard(Provenance::ExactAst, Confidence::High)],
@@ -655,6 +697,141 @@ fn stale_boundary_blockers_are_retained_as_stale_evidence() -> Result<(), Box<dy
 }
 
 #[test]
+fn fresh_blockers_keep_fresh_labels_when_stale_records_drive_the_outcome()
+-> Result<(), Box<dyn Error>> {
+    // One stale declaration drives the Stale outcome; the current boundary
+    // blocker and the current declaration must keep their own metadata in the
+    // emitted evidence instead of inheriting the relabeling.
+    let stale_declaration = compiler_envelope(SemanticFreshness::Stale, "document-7");
+    let mut current_declaration = compiler_envelope(SemanticFreshness::Fresh, "document-7");
+    current_declaration.fact_id = FactId(901);
+    current_declaration.entity_id = Some(EntityId(31));
+    let mut current_boundary = boundary_envelope(SemanticFreshness::Fresh, "document-7");
+    current_boundary.fact_id = FactId(902);
+    let port = CanonicalEnvelopePort::new(
+        &[stale_declaration, current_declaration, current_boundary],
+        snapshot(ProviderSnapshotCompleteness::Complete),
+    )?;
+
+    let result = execute(
+        &port,
+        &request(
+            ProviderQueryKind::Declaration,
+            ProviderQuerySubject::Position { file_id: FileId(10), byte_offset: 5 },
+        ),
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Stale);
+
+    let boundary = result
+        .facts()
+        .iter()
+        .find(|fact| fact.envelope().kind == SemanticFactKind::Boundary)
+        .ok_or("the current boundary blocker must stay in the stale draft")?;
+    assert_eq!(
+        boundary.envelope().freshness,
+        SemanticFreshness::Fresh,
+        "a current boundary fact must not be relabeled Stale"
+    );
+    assert_eq!(boundary.envelope().reason_code, SemanticReasonCode::DynamicValue);
+
+    // Control: the record that actually is stale still carries the explicit
+    // staleness, and the current declaration keeps Fresh.
+    let stale_fact = result
+        .facts()
+        .iter()
+        .find(|fact| fact.envelope().entity_id == Some(EntityId(30)))
+        .ok_or("the stale declaration must stay in the draft")?;
+    assert_eq!(stale_fact.envelope().freshness, SemanticFreshness::Stale);
+    let current = result
+        .facts()
+        .iter()
+        .find(|fact| fact.envelope().entity_id == Some(EntityId(31)))
+        .ok_or("the current declaration must stay in the draft")?;
+    assert_eq!(current.envelope().freshness, SemanticFreshness::Fresh);
+    Ok(())
+}
+
+#[test]
+fn blocking_outcome_arms_recheck_live_controls_before_building_facts() -> Result<(), Box<dyn Error>>
+{
+    // Each arm below constructs facts only after a second live-control check.
+    // Admission and the post-selection check are clear (two polls); the next
+    // poll happens inside the arm, so a control flipping there must yield the
+    // typed terminal refusal instead of a completed outcome.
+    const FLIP_AT_ARM: usize = 2;
+
+    // Stale arm: record-level staleness under a Current generation binding.
+    let stale_port = CanonicalEnvelopePort::new(
+        &[compiler_envelope(SemanticFreshness::Stale, "document-7")],
+        snapshot(ProviderSnapshotCompleteness::Complete),
+    )?;
+    let stale_query =
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".into()));
+    let cancelled = ScriptedControl::new(FLIP_AT_ARM, usize::MAX);
+    let result = execute_provider_query(&stale_port, &stale_query, &cancelled)?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Cancelled);
+    assert_eq!(result.value_facts().count(), 0);
+
+    let expired = ScriptedControl::new(usize::MAX, FLIP_AT_ARM);
+    let result = execute_provider_query(&stale_port, &stale_query, &expired)?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::DeadlineExceeded);
+    assert_eq!(result.value_facts().count(), 0);
+
+    // Refused arm: an UnsupportedEffect fact refuses without staleness.
+    let mut refused_envelope = compiler_envelope(SemanticFreshness::Fresh, "document-7");
+    refused_envelope.reason_code = SemanticReasonCode::UnsupportedEffect;
+    let refused_port = CanonicalEnvelopePort::new(
+        &[refused_envelope],
+        snapshot(ProviderSnapshotCompleteness::Complete),
+    )?;
+    let refused_query =
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".into()));
+    let cancelled = ScriptedControl::new(FLIP_AT_ARM, usize::MAX);
+    let result = execute_provider_query(&refused_port, &refused_query, &cancelled)?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Cancelled);
+    assert_eq!(result.value_facts().count(), 0);
+
+    // Dynamic arm: a cursor on a dynamic boundary degrades dynamically unless
+    // a control flips during fact construction.
+    let mut dynamic_shard = shard(Provenance::DynamicBoundary, Confidence::Low);
+    dynamic_shard.occurrences[0].kind = OccurrenceKind::DynamicBoundary;
+    let dynamic_port = FileFactShardPort::new(
+        &[dynamic_shard],
+        SemanticProducer::SemanticAnalyzer,
+        ProviderFactSourceKind::DynamicBoundary,
+        snapshot(ProviderSnapshotCompleteness::Complete),
+    )?;
+    let dynamic_query = request(
+        ProviderQueryKind::Declaration,
+        ProviderQuerySubject::Position { file_id: FileId(10), byte_offset: 21 },
+    );
+    let cancelled = ScriptedControl::new(FLIP_AT_ARM, usize::MAX);
+    let result = execute_provider_query(&dynamic_port, &dynamic_query, &cancelled)?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Cancelled);
+    assert_eq!(result.value_facts().count(), 0);
+
+    // Ambiguous arm: two same-symbol candidates block on ambiguity.
+    let mut ambiguous = shard(Provenance::ExactAst, Confidence::High);
+    ambiguous.entities.push(EntityFact {
+        id: EntityId(31),
+        kind: EntityKind::Subroutine,
+        canonical_name: "Other::work".to_string(),
+        anchor_id: Some(AnchorId(21)),
+        scope_id: Some(ScopeId(2)),
+        provenance: Provenance::ExactAst,
+        confidence: Confidence::High,
+    });
+    let ambiguous_port = parser_port(&[ambiguous], ProviderSnapshotCompleteness::Complete)?;
+    let ambiguous_query =
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".into()));
+    let cancelled = ScriptedControl::new(FLIP_AT_ARM, usize::MAX);
+    let result = execute_provider_query(&ambiguous_port, &ambiguous_query, &cancelled)?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Cancelled);
+    assert_eq!(result.value_facts().count(), 0);
+    Ok(())
+}
+
+#[test]
 fn live_controls_are_rechecked_after_adapter_query() -> Result<(), Box<dyn Error>> {
     let port = parser_port(
         &[shard(Provenance::ExactAst, Confidence::High)],
@@ -933,6 +1110,36 @@ fn position_queries_do_not_cross_file_entity_id_collisions() -> Result<(), Box<d
     let reference_values: Vec<_> = references.value_facts().collect();
     assert_eq!(reference_values.len(), 1);
     assert_eq!(reference_values[0].anchor.file_id, FileId(10));
+    Ok(())
+}
+
+#[test]
+fn mixed_exact_provenance_degrades_instead_of_answering_exact() -> Result<(), Box<dyn Error>> {
+    // ExactAst beside DesugaredAst: both facts are exact-grade, but their
+    // provenances differ, so the answer must degrade naming the mixed
+    // provenance instead of claiming exact authority.
+    let mut mixed = shard(Provenance::ExactAst, Confidence::High);
+    mixed.entities.push(EntityFact {
+        id: EntityId(31),
+        kind: EntityKind::Subroutine,
+        canonical_name: "Other::helper".to_string(),
+        anchor_id: Some(AnchorId(21)),
+        scope_id: Some(ScopeId(2)),
+        provenance: Provenance::DesugaredAst,
+        confidence: Confidence::High,
+    });
+    let port = parser_port(&[mixed], ProviderSnapshotCompleteness::Complete)?;
+
+    let result = execute(
+        &port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::File(FileId(10))),
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Degraded);
+    assert_eq!(result.value_facts().count(), 2);
+    assert!(
+        result.evidence().limitations().iter().any(|note| note.contains("mixed_exact_provenance")),
+        "deleting the uniform-exact-provenance guard must turn this test red"
+    );
     Ok(())
 }
 
