@@ -42,6 +42,12 @@ impl LspServer {
                         }
                     }
                 } else {
+                    let was_indexed = self.coordinator().is_some_and(|coordinator| {
+                        self.uri_key_variants(uri)
+                            .iter()
+                            .any(|key| coordinator.index().indexed_generation(key).is_some())
+                    });
+
                     // Reset generation counters so the reopened
                     // document — which starts at generation 0 — is not blocked
                     // by the stale high-water mark from the previous session
@@ -55,7 +61,11 @@ impl LspServer {
                             coordinator.index().clear_file(&key);
                         }
 
-                        if is_perl_source_uri(uri)
+                        // An indexed file is already admitted by workspace discovery,
+                        // including configured and nonstandard extensions. Do not
+                        // narrow the close handoff back to the parser's default URI
+                        // classification (#8041).
+                        if (was_indexed || is_perl_source_uri(uri))
                             && let Some(content) =
                                 crate::runtime::workspace::read_watched_file_content(
                                     uri,

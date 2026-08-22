@@ -2057,79 +2057,27 @@ impl LspServer {
 
                 tracing::debug!("File renamed: {} -> {}", old_uri, new_uri);
 
-                // Update the index for the renamed file
-                // Note: Mutation operation - use coordinator with lifecycle tracking
-                #[cfg(feature = "workspace")]
-                if let Some(coordinator) = self.coordinator() {
-                    coordinator.notify_change(&old_uri);
-                    coordinator.notify_change(&new_uri);
+                let old_document = {
+                    let documents = self.documents_guard();
+                    self.uri_key_variants(&old_uri).iter().find_map(|key| {
+                        self.get_document(&documents, key)
+                            .map(|doc| (doc.current_generation(), doc.text_arc.to_string()))
+                    })
+                };
+                let destination_is_open = {
+                    let documents = self.documents_guard();
+                    self.uri_key_variants(&new_uri)
+                        .iter()
+                        .any(|key| self.get_document(&documents, key).is_some())
+                };
 
-                    let old_document = {
-                        let documents = self.documents_guard();
-                        self.uri_key_variants(&old_uri).iter().find_map(|key| {
-                            self.get_document(&documents, key)
-                                .map(|doc| (doc.current_generation(), doc.text_arc.to_string()))
-                        })
-                    };
-
-                    // Remove both identities before publishing the new one.
-                    // This prevents a late old-path fact or a pre-existing
-                    // destination fact from coexisting with the rename.
-                    for key in self
-                        .uri_key_variants(&old_uri)
-                        .into_iter()
-                        .chain(self.uri_key_variants(&new_uri))
-                    {
-                        coordinator.index().remove_file(&key);
-                    }
-
-                    if let Some((generation, text)) = old_document {
-                        if is_perl_source_uri(&new_uri)
-                            && let Ok(url) = url::Url::parse(&new_uri)
-                        {
-                            if let Err(e) = coordinator
-                                .index()
-                                .index_file_with_generation(url, text, generation)
-                            {
-                                tracing::warn!(
-                                    "Failed to rebind renamed open document {}: {}",
-                                    new_uri,
-                                    e
-                                );
-                                coordinator.index().clear_file(&new_uri);
-                            }
-                        }
-                    } else if is_perl_source_uri(&new_uri) {
-                        match (
-                            url::Url::parse(&new_uri),
-                            read_watched_file_content(&new_uri, "renamed closed file"),
-                        ) {
-                            (Ok(url), Some(content)) => {
-                                if let Err(e) = coordinator.index().index_file(url, content) {
-                                    tracing::warn!(
-                                        "Failed to index renamed file {}: {}",
-                                        new_uri,
-                                        e
-                                    );
-                                    coordinator.index().clear_file(&new_uri);
-                                }
-                            }
-                            (Err(e), _) => {
-                                tracing::warn!("Failed to parse renamed URI {}: {}", new_uri, e)
-                            }
-                            (_, None) => {
-                                tracing::debug!("Rejected renamed-file reread for {}", new_uri)
-                            }
-                        }
-                    }
-
-                    coordinator.notify_parse_complete(&old_uri);
-                    coordinator.notify_parse_complete(&new_uri);
-                }
-
-                // Move the exact open document instance to the client-declared
-                // destination. Its text, version, and generation remain intact.
-                {
+                // The old URI is no longer a live document subject. Move the
+                // exact open instance only when the destination is free; an
+                // already-open destination remains authoritative. Evicting
+                // the old URI cancels its parse token and removes old-URI
+                // session state, so deferred parse/index work cannot publish
+                // under the renamed-away identity.
+                if old_document.is_some() && !destination_is_open {
                     let mut documents = self.documents_guard();
                     let old_key = self
                         .uri_key_variants(&old_uri)
@@ -2139,6 +2087,86 @@ impl LspServer {
                         && let Some(doc) = documents.remove(&old_key)
                     {
                         documents.insert(new_uri.clone(), doc);
+                    }
+                }
+                self.evict_open_document_session_state(&old_uri);
+
+                // Update the index for the renamed file
+                // Note: Mutation operation - use coordinator with lifecycle tracking
+                #[cfg(feature = "workspace")]
+                if let Some(coordinator) = self.coordinator() {
+                    let old_was_indexed = self
+                        .uri_key_variants(&old_uri)
+                        .iter()
+                        .any(|key| coordinator.index().indexed_generation(key).is_some());
+                    let destination_was_indexed = self
+                        .uri_key_variants(&new_uri)
+                        .iter()
+                        .any(|key| coordinator.index().indexed_generation(key).is_some());
+
+                    coordinator.notify_change(&old_uri);
+                    if !destination_is_open {
+                        coordinator.notify_change(&new_uri);
+                    }
+
+                    // Remove the old identity before publishing the new one. A
+                    // closed destination may have stale facts, but an open
+                    // destination must not be discarded as a rename side effect.
+                    for key in self.uri_key_variants(&old_uri) {
+                        coordinator.index().remove_file(&key);
+                    }
+                    if !destination_is_open {
+                        for key in self.uri_key_variants(&new_uri) {
+                            coordinator.index().remove_file(&key);
+                        }
+                    }
+
+                    if !destination_is_open {
+                        if let Some((generation, text)) = old_document {
+                            if (old_was_indexed || is_perl_source_uri(&new_uri))
+                                && let Ok(url) = url::Url::parse(&new_uri)
+                                && let Err(e) = coordinator
+                                    .index()
+                                    .index_file_with_generation(url, text, generation)
+                            {
+                                tracing::warn!(
+                                    "Failed to rebind renamed open document {}: {}",
+                                    new_uri,
+                                    e
+                                );
+                                coordinator.index().clear_file(&new_uri);
+                            }
+                        } else if old_was_indexed
+                            || destination_was_indexed
+                            || is_perl_source_uri(&new_uri)
+                        {
+                            match (
+                                url::Url::parse(&new_uri),
+                                read_watched_file_content(&new_uri, "renamed closed file"),
+                            ) {
+                                (Ok(url), Some(content)) => {
+                                    if let Err(e) = coordinator.index().index_file(url, content) {
+                                        tracing::warn!(
+                                            "Failed to index renamed file {}: {}",
+                                            new_uri,
+                                            e
+                                        );
+                                        coordinator.index().clear_file(&new_uri);
+                                    }
+                                }
+                                (Err(e), _) => {
+                                    tracing::warn!("Failed to parse renamed URI {}: {}", new_uri, e)
+                                }
+                                (_, None) => {
+                                    tracing::debug!("Rejected renamed-file reread for {}", new_uri)
+                                }
+                            }
+                        }
+                    }
+
+                    coordinator.notify_parse_complete(&old_uri);
+                    if !destination_is_open {
+                        coordinator.notify_parse_complete(&new_uri);
                     }
                 }
             }
@@ -3610,6 +3638,150 @@ mod tests {
             assert!(coordinator.index().document_store().get(&raw_uri).is_none());
         }
 
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn did_close_reloads_an_indexed_configured_extension_from_disk()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("configured.tmpl");
+        let disk_source = "package Configured::Disk;
+sub disk_only { 1 }
+1;
+";
+        let buffer_source = "package Configured::Buffer;
+sub buffer_only { 1 }
+1;
+";
+        std::fs::write(&path, disk_source)?;
+        let uri = url::Url::from_file_path(&path).map_err(|_| "invalid file path")?.to_string();
+        let folder_uri = url::Url::from_directory_path(dir.path())
+            .map_err(|_| "invalid folder path")?
+            .to_string();
+        let mut workspace_config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+        workspace_config.discovery_extra_extensions = vec!["tmpl".to_string()];
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(dir.path().to_path_buf())
+                .with_effective_workspace_config(workspace_config),
+        );
+
+        server.did_open(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": buffer_source
+            }
+        }))?;
+        let coordinator = server.coordinator().ok_or("workspace coordinator unavailable")?;
+        coordinator.index().index_file(url::Url::parse(&uri)?, buffer_source.to_string())?;
+        assert!(
+            coordinator
+                .index()
+                .file_symbols(&uri)
+                .iter()
+                .any(|symbol| { symbol.name == "buffer_only" })
+        );
+
+        server.handle_did_close(Some(json!({
+            "textDocument": { "uri": uri }
+        })))?;
+
+        let symbols = coordinator.index().file_symbols(&uri);
+        assert!(symbols.iter().any(|symbol| symbol.name == "disk_only"));
+        assert!(!symbols.iter().any(|symbol| symbol.name == "buffer_only"));
+        assert_eq!(
+            coordinator.index().document_store().get_text(&uri).as_deref(),
+            Some(disk_source)
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn did_rename_preserves_open_destination_and_invalidates_old_uri_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let dir = tempfile::tempdir()?;
+        let old_path = dir.path().join("old.pm");
+        let new_path = dir.path().join("new.pm");
+        let old_source = "package Rename::Old;
+sub old_only { 1 }
+1;
+";
+        let destination_source = "package Rename::Destination;
+sub destination_only { 1 }
+1;
+";
+        std::fs::write(&old_path, old_source)?;
+        std::fs::write(&new_path, destination_source)?;
+        let old_uri =
+            url::Url::from_file_path(&old_path).map_err(|_| "invalid old file path")?.to_string();
+        let new_uri =
+            url::Url::from_file_path(&new_path).map_err(|_| "invalid new file path")?.to_string();
+
+        server.did_open(json!({
+            "textDocument": {
+                "uri": old_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": old_source
+            }
+        }))?;
+        server.did_open(json!({
+            "textDocument": {
+                "uri": new_uri,
+                "languageId": "perl",
+                "version": 4,
+                "text": destination_source
+            }
+        }))?;
+        let old_token = server.new_parse_token(&old_uri);
+        let coordinator = server.coordinator().ok_or("workspace coordinator unavailable")?;
+        coordinator.index().index_file(url::Url::parse(&old_uri)?, old_source.to_string())?;
+        coordinator
+            .index()
+            .index_file(url::Url::parse(&new_uri)?, destination_source.to_string())?;
+
+        server.handle_did_rename_files(Some(json!({
+            "files": [{ "oldUri": old_uri, "newUri": new_uri }]
+        })))?;
+
+        assert!(old_token.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(!server.parse_cancel_flags.lock().contains_key(&old_uri));
+        {
+            let documents = server.documents_guard();
+            assert!(server.get_document(&documents, &old_uri).is_none());
+            let destination = server
+                .get_document(&documents, &new_uri)
+                .ok_or("open destination was discarded")?;
+            assert_eq!(destination.text_str(), destination_source);
+            assert_eq!(destination.version, 4);
+        }
+        assert!(coordinator.index().file_symbols(&old_uri).is_empty());
+        assert!(coordinator.index().document_store().get(&old_uri).is_none());
+        assert!(
+            coordinator
+                .index()
+                .file_symbols(&new_uri)
+                .iter()
+                .any(|symbol| symbol.name == "destination_only")
+        );
+        assert!(
+            !coordinator
+                .index()
+                .file_symbols(&new_uri)
+                .iter()
+                .any(|symbol| symbol.name == "old_only")
+        );
+        assert_eq!(
+            coordinator.index().document_store().get_text(&new_uri).as_deref(),
+            Some(destination_source)
+        );
         Ok(())
     }
 
