@@ -69,24 +69,23 @@ pub fn check_error_nodes(
 
 #[cfg(test)]
 mod tests {
-    use super::check_error_nodes;
+    use super::super::diagnostics::DiagnosticsProvider;
     use perl_parser::Parser;
-    use perl_parser_core::error_classifier::ErrorClassifier;
-    use perl_tdd_support::must;
+    use std::sync::Arc;
 
     #[test]
-    fn recovered_parse_error_is_marked_fixable_at_the_error_node_boundary() {
+    fn malformed_parse_output_reaches_provider_as_fixable_parse_diagnostic() {
         let source = "if () { 1 }";
-        let ast = must(Parser::new(source).parse());
-        let classifier = ErrorClassifier::new();
-        let mut diagnostics = Vec::new();
+        let output = Parser::new(source).parse_with_recovery();
+        let ast = Arc::new(output.ast);
+        let diagnostics =
+            DiagnosticsProvider::new().get_diagnostics(&ast, &output.diagnostics, source, None);
 
-        check_error_nodes(&ast, source, &classifier, &mut diagnostics);
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code.as_deref() == Some("PL001"))
+            .expect("malformed parser output must reach the provider as PL001");
 
-        assert!(
-            !diagnostics.is_empty(),
-            "the malformed condition must reach the ERROR-node producer"
-        );
-        assert!(diagnostics.iter().all(|diagnostic| diagnostic.fixable));
+        assert!(diagnostic.fixable);
     }
 }

@@ -68,16 +68,22 @@ fn antipattern_code(pattern: &AntiPattern) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::detect_heredoc_antipatterns;
+    use super::super::diagnostics::DiagnosticsProvider;
+    use perl_parser::Parser;
+    use std::sync::Arc;
 
     #[test]
-    fn format_heredoc_diagnostic_preserves_non_fixable_producer_boundary() {
+    fn format_heredoc_diagnostic_reaches_provider_as_non_fixable_pl800() {
         let source = "format REPORT =\n<<'END'\nName: @<<<<\n$name\nEND\n.\n";
-        let diagnostics = detect_heredoc_antipatterns(source);
+        let output = Parser::new(source).parse_with_recovery();
+        let ast = Arc::new(output.ast);
+        let diagnostics =
+            DiagnosticsProvider::new().get_diagnostics(&ast, &output.diagnostics, source, None);
 
         let diagnostic = diagnostics
-            .first()
-            .expect("format heredoc must be reported by the production detector");
+            .iter()
+            .find(|diagnostic| diagnostic.code.as_deref() == Some("PL800"))
+            .expect("format heredoc must be reported by the provider as PL800");
         assert_eq!(diagnostic.code.as_deref(), Some("PL800"));
         assert!(!diagnostic.fixable);
     }
