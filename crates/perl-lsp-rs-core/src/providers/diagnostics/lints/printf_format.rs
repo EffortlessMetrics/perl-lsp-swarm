@@ -88,6 +88,7 @@ fn check_format_args(name: &str, args: &[Node], node: &Node, diagnostics: &mut V
                 ),
             }],
             tags: Vec::new(),
+            fixable: false,
             suggestion: Some(format!(
                 "Add {} argument{} to match {} format specifier{}, or adjust the format string",
                 specifier_count,
