@@ -26,19 +26,34 @@ fn workspace_root() -> PathBuf {
 /// quotes an ADR section name (`PLSP-ADR-0006 "Scope boundary"`), so counting quotes
 /// across the whole block over-reports by one per quoted phrase. Strip each line's
 /// comment before reading its entry, and return the names so failures show which
-/// rows drifted instead of only a diverging count.
+/// rows drifted instead of only a diverging count. Any line carrying quotes that is
+/// not exactly one `"crate-name",` entry is rejected loudly, so house-style
+/// deviations (inline arrays, multiple entries per line) cannot silently shift the
+/// count.
 fn published_allowlist_entries(root: &Path) -> io::Result<Vec<String>> {
     let root_toml = fs::read_to_string(root.join("Cargo.toml"))?;
     let section = root_toml.split("[workspace.metadata.publish]").nth(1).unwrap_or("");
     let allow_start = section.find("allow = [").unwrap_or(0);
     let allow = &section[allow_start..];
     let allow_end = allow.find(']').unwrap_or(allow.len());
-    Ok(allow[..allow_end]
-        .lines()
-        .map(|line| line.split('#').next().unwrap_or("").trim())
-        .filter(|code| code.starts_with('"'))
-        .map(|code| code.trim_end_matches(',').trim().trim_matches('"').to_string())
-        .collect())
+    let mut entries = Vec::new();
+    for line in allow[..allow_end].lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if !code.contains('"') {
+            continue;
+        }
+        if code.matches('"').count() != 2 || !code.starts_with('"') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "unparseable publish-allowlist line (expected exactly one \"crate-name\", \
+                     entry per line): {line:?}"
+                ),
+            ));
+        }
+        entries.push(code.trim_end_matches(',').trim().trim_matches('"').to_string());
+    }
+    Ok(entries)
 }
 
 /// Read the published-crate baseline count from `xtask/published-crate-baseline.txt`.
