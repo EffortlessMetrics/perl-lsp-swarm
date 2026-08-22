@@ -114,6 +114,27 @@ jobs:
           count_start = text.index('    count=2,\n)', constructors)
           text = text[:count_start] + '    count=3,\n)' + text[count_start + len('    count=2,\n)'):]
 
+          final_old = '''assert_absent(SCHEMA, '\"enabled\": { \"type\": \"boolean\", \"default\": false }')
+          assert_absent(SCHEMA, '\"provider\": { \"type\": \"string\", \"default\": \"openai_compat\" }')
+          assert_absent(SCHEMA, '\"model\": { \"type\": \"string\", \"default\": \"gpt-4o-mini\" }')
+          '''
+          final_new = '''schema_value = __import__("json").loads(read(SCHEMA))
+          ai_properties = schema_value["properties"]["perl"]["properties"]["aiCompletion"]["properties"]
+          for forbidden in [
+              "enabled",
+              "provider",
+              "model",
+              "endpoint",
+              "apiKeyEnv",
+              "apiKeyHeader",
+              "apiKeyPrefix",
+          ]:
+              if forbidden in ai_properties:
+                  raise RuntimeError(f"{SCHEMA}: generic AI authority returned: {forbidden}")
+          '''
+          assert text.count(final_old) == 1, text.count(final_old)
+          text = text.replace(final_old, final_new)
+
           path.write_text(text, encoding="utf-8")
           PY
 
