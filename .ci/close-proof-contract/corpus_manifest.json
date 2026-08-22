@@ -1,0 +1,66 @@
+{
+  "schema_version": "close_proof_corpus_manifest.v1",
+  "corpus_id": "issue-close-contract-regression-corpus.v1",
+  "fixtures": [
+    {
+      "file": "fixtures/invalid-cohort-slice-5016-6239.json",
+      "sha256": "9546a9e808105f5c9f68b72fb35aa3890144f72d0f91f1b40f1c6e85465d9b7b"
+    },
+    {
+      "file": "fixtures/invalid-completed-authority-4997-5022.json",
+      "sha256": "613ee638c1a22b002eee73ea000c4adcbe4b63bab33b67af9fdfa0938e18447d"
+    },
+    {
+      "file": "fixtures/invalid-controller-fanin-missing.json",
+      "sha256": "cba8d7f165adc065f145f3adecc342ca66c86ab6e0f36a6affa0a813d686349b"
+    },
+    {
+      "file": "fixtures/invalid-phase-terminal-5001-5023.json",
+      "sha256": "2a82b14cbe78830fc38383bb0cc962e52aa9862e8940f5fe9354fa880b8c5389"
+    },
+    {
+      "file": "fixtures/invalid-phases-deny-2333.json",
+      "sha256": "ea2dc1b53375053e3ee38a3a677a236afd46c4516693c843bdc99319e37d93e7"
+    },
+    {
+      "file": "fixtures/invalid-predecessor-successor-5231-5968.json",
+      "sha256": "6c64d29f856721dfa2bbb88ad6dff702c8cba47fb93b8bb8a61475e66c6d3648"
+    },
+    {
+      "file": "fixtures/invalid-proof-level-5901-6282.json",
+      "sha256": "386602313888de40f3f7b9ad775ccb1e7f0408779b671f78e4538afb2db9fa5f"
+    },
+    {
+      "file": "fixtures/invalid-unproven-provenance-4998-5021.json",
+      "sha256": "a087d1d5fe109886312365fa37250ab7129af369c4b6628ad7f2dac8dd3d583e"
+    },
+    {
+      "file": "fixtures/valid-atomic-cohort-3020.json",
+      "sha256": "b12f97cda135ccfc51bfbdf64b9c46f13859431a02764e644cf4da9608536502"
+    },
+    {
+      "file": "fixtures/valid-atomic-minimal-leaf.json",
+      "sha256": "40c3e26cd7668c3dec61e778a0114eb371ebc925cb0f089fb501e8a04400a5e8"
+    },
+    {
+      "file": "fixtures/valid-controller-fanin-present.json",
+      "sha256": "97b88b00f578eb71de196131efebac2c72813077ed8da18a760d6a78f27c2eaf"
+    },
+    {
+      "file": "fixtures/valid-fanin-1929.json",
+      "sha256": "ce88f901fbd968a119e0ad63f9d93066bcef44663ca7c0f37775cd0f91d0144f"
+    },
+    {
+      "file": "fixtures/valid-phase-leaf-2624.json",
+      "sha256": "13f8bc6eb57b3c4a356b9b4044f209cc71c04e4e40c5f781630418af95efe102"
+    },
+    {
+      "file": "fixtures/valid-superseded-transfer.json",
+      "sha256": "8828029e95ba091db72c4e679b7fc18c69b75ac1fcbbbfa2c916dba14eee7c0c"
+    },
+    {
+      "file": "fixtures/valid-true-duplicate.json",
+      "sha256": "426b851a1c45e2135f4cc164b30dfc617d55dfca105b5542b7f76920bd516574"
+    }
+  ]
+}

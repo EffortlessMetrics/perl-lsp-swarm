@@ -1,0 +1,104 @@
+{
+  "schema_version": "close_proof_contract_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts of historical GitHub subjects. The fixture proves schema-level dispositions only; semantic completion evaluation belongs to CP03 (#10382)."
+  },
+  "contract": {
+    "schema_version": "issue_contract.v1",
+    "repository": "effortlessmetrics/perl-lsp-swarm",
+    "issue_number": 9000007,
+    "title": "chore(scaffold): publish the close-proof train scaffolding plan",
+    "kind": "scaffold",
+    "required_proof_level": "representation",
+    "allowed_close_modes": [
+      "completed",
+      "phase_complete_issue_remains_open",
+      "superseded",
+      "true_duplicate",
+      "not_planned"
+    ],
+    "denominator": [
+      {
+        "row_id": "scaffold.plan.published",
+        "statement": "The scaffold plan is published.",
+        "required_proof_level": "representation"
+      },
+      {
+        "row_id": "scaffold.followup.tracked",
+        "statement": "Follow-up work is tracked in an open owner.",
+        "required_proof_level": "representation"
+      }
+    ],
+    "negative_controls": [],
+    "mandatory_children": [],
+    "transfer_policy": {
+      "permitted": true,
+      "conditions": [
+        "destination owns the identical scaffold proposition",
+        "destination contract identity is current at packet generation"
+      ]
+    },
+    "domain_evidence_refs": [],
+    "identity": {
+      "issue_body_digest": "0000000000000000000000000000000000000000000000000000000000895447",
+      "denominator_digest": "b8f3d20dc34bbce48fe613fad8cabefd7d2e05707c18831293a7351ba0c1c8b2",
+      "accepted_ruling": null
+    }
+  },
+  "cases": [
+    {
+      "case_id": "pr-9000107-valid-supersession",
+      "description": "A valid supersession transfers every row to the absorbing open owner.",
+      "packet": {
+        "schema_version": "issue_close_proof.v1",
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9000007,
+        "requested_close_mode": "superseded",
+        "contract_binding": {
+          "contract_issue_body_digest": "0000000000000000000000000000000000000000000000000000000000895447",
+          "contract_denominator_digest": "b8f3d20dc34bbce48fe613fad8cabefd7d2e05707c18831293a7351ba0c1c8b2",
+          "accepted_ruling_digest": null
+        },
+        "candidate_pr": 9000107,
+        "landed_subjects": [],
+        "landing_content_proof": [],
+        "established_claims": [],
+        "explicitly_not_established_claims": [],
+        "row_dispositions": {
+          "scaffold.followup.tracked": {
+            "disposition": "removed_surface_with_proof",
+            "proof": {
+              "producer": "xtask-pr-close-proof",
+              "subject": "0000000000000000000000000000000000015f97",
+              "content_digest": "00000000000000000000000000000000000000000000000000000000000dbbed",
+              "reference": "superseded tracking sheet archived in the superseding plan"
+            }
+          },
+          "scaffold.plan.published": {
+            "disposition": "transferred_to_open_owner",
+            "proposition": "close-proof scaffold plan publication",
+            "destination_repository": "effortlessmetrics/perl-lsp-swarm",
+            "destination_issue": 9000008,
+            "destination_contract_identity": "0000000000000000000000000000000000000000000000000000000000895448",
+            "rationale": "reviewed supersession moves the open proposition to absorbing scaffold issue #9000008."
+          }
+        },
+        "negative_control_dispositions": {},
+        "child_dispositions": [],
+        "duplicate_of": null,
+        "verdict": {
+          "pr_scope": "pass",
+          "issue_close": "valid",
+          "reasons": [
+            "Proposition-level containment in the superseding owner makes this supersession valid."
+          ]
+        }
+      },
+      "expected_pr_scope": "pass",
+      "expected_issue_close": "valid"
+    }
+  ]
+}
