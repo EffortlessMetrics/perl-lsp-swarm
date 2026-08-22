@@ -313,6 +313,61 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
 
     expect(result.args).toEqual([]);
   });
+
+  // Mutation-think: if the guard at the top of createDebugAdapterDescriptor
+  // were removed (or demoted to a warning that still spawns native), each case
+  // below would return a DebugAdapterExecutable instead of undefined and fail
+  // the `toBeUndefined()` assertion; if the typed reason were dropped from the
+  // message, `stringContaining(reason)` would fail even though the descriptor
+  // still refused.
+  test.each([
+    [
+      {
+        externalPeer: '127.0.0.1:13604',
+        debuggerBackend: 'external',
+        externalDebugger: { mode: 'connect', port: 13604 },
+      },
+      'not both',
+    ],
+    [
+      {
+        debuggerBackend: 'external',
+        externalDebugger: { mode: 'connect', control: 'cooperative', port: 13604 },
+      },
+      'Only mirror control',
+    ],
+    [
+      { externalDebugger: { mode: 'connect', port: 13604 } },
+      'requires debuggerBackend="external"',
+    ],
+  ])(
+    'factory refuses an invalid explicit backend selection end-to-end and spawns nothing %#',
+    (configuration, reason) => {
+      const binDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!)!;
+      fs.mkdirSync(binDir, { recursive: true });
+      const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+      fs.writeFileSync(path.join(binDir, dapName), '#!/bin/sh\necho ok');
+
+      const ctx = makeContext(tmpDir);
+      const factory = new PerlDebugAdapterDescriptorFactory(ctx);
+      const vscodeMock = require('vscode');
+      const session = { configuration };
+
+      const result = factory.createDebugAdapterDescriptor(
+        session as unknown as vscode.DebugSession,
+        undefined,
+      );
+
+      expect(result).toBeUndefined();
+      expect(vscodeMock.window.showErrorMessage).toHaveBeenCalledWith(
+        expect.stringContaining('Perl debugger configuration error'),
+        // No action buttons: this refusal is terminal, not an install offer.
+      );
+      const [message] = vscodeMock.window.showErrorMessage.mock.calls.at(-1) as [string];
+      expect(message).toContain(reason as string);
+      expect(message).toContain('Native debugging was not started.');
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

@@ -462,6 +462,14 @@ export function externalDebuggerConfigurationError(
 
   const requestsExternal = hasFlatPeer || backend === 'external';
   if (!requestsExternal) {
+    // A dangling structured selection without an explicit external backend
+    // would otherwise collapse into native debugging while appearing wired up.
+    if (hasOwn(config, 'externalDebugger')) {
+      return (
+        'externalDebugger requires debuggerBackend="external" to take effect; ' +
+        'this configuration would otherwise silently use native debugging'
+      );
+    }
     return undefined;
   }
 

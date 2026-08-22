@@ -69,6 +69,6 @@ fn vscode_keeps_native_as_the_default_debugger_backend() -> Result<(), Box<dyn s
     assert!(manifest.contains("\"default\": \"native\""));
     assert!(manifest.contains("Experimental external live peer"));
     assert!(manifest.contains("stock Devel::ptkdb compatibility is not proven"));
-    assert!(manifest.contains("Perl: ptkdb live peer (experimental mirror)"));
+    assert!(manifest.contains("Perl: External Debugger Peer (experimental)"));
     Ok(())
 }
