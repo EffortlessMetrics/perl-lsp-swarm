@@ -2670,7 +2670,15 @@ fn log_reaches_test_execution(command: &str, log_path: &Path) -> Option<bool> {
     }
     let file = fs::File::open(log_path).ok()?;
     let reader = std::io::BufReader::new(file);
-    Some(reader.lines().map_while(Result::ok).any(|line| is_test_binary_execution_marker(&line)))
+    // filter_map, not map_while: gate logs can contain arbitrary test
+    // subprocess bytes, so an invalid-UTF-8 line must be skipped without
+    // ending the scan before a later libtest marker.
+    Some(
+        reader
+            .lines()
+            .filter_map(|line| line.ok())
+            .any(|line| is_test_binary_execution_marker(&line)),
+    )
 }
 
 /// A single line from cargo test output that proves the libtest binary
@@ -4667,14 +4675,15 @@ gates:
     -> color_eyre::eyre::Result<()> {
         // is_cargo_test_command inspects the last `&&`-separated segment of
         // the command string (`.split("&&").last()`), so we shape the gate as
-        // a printf that emits libtest-style output, then a trailing
-        // `cargo test <bogus>` that never runs. The receipt's claim keys off
-        // that shape without touching the real Cargo toolchain.
+        // a printf that emits libtest-style output and then terminates the
+        // shell before the trailing `cargo test <bogus>` classifier tail is
+        // ever reached. The receipt's claim keys off that shape without
+        // touching the real Cargo toolchain.
         let full_command =
             "printf 'running 2 tests\\ntest inline_completion::mod::stub_a ... ok\\n\
               test inline_completion::mod::stub_b ... ok\\n\\n\
               test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured\\n' \
-              ; true && cargo test --lib --locked"
+              ; exit 0; true && cargo test --lib --locked"
                 .to_string();
         let mut gate = pr_gate("inline-fake", GatePlanningRole::AlwaysOn, &full_command);
         gate.tags.push("test".to_string());
@@ -6450,15 +6459,16 @@ error: aborting due to previous error
                 "Gate '{gate_name}' budget.max_duration_ms={max_ms} must sit in \
                  [{MIN_MAX_DURATION_MS}, {MAX_MAX_DURATION_MS}] (#11797)",
             );
-            // max_duration_ms is an internal soft ceiling and must stay
-            // strictly less than the hard watchdog. A gate whose soft
-            // ceiling meets or exceeds the watchdog gains no visibility
-            // between the two — the watchdog fires first and the soft
-            // ceiling records nothing new.
+            // max_duration_ms is declarative only today (the runner enforces
+            // timeout_seconds; see the budgets NOTE in gate-policy.yaml), so
+            // this ordering assertion is anti-drift configuration shape, not
+            // an enforcement guarantee: it keeps the recorded ceiling below
+            // the enforced hard timeout so a future enforcement change cannot
+            // inherit a policy where the soft budget could never fire first.
             assert!(
                 max_ms < gate.timeout_seconds * 1000,
                 "Gate '{gate_name}' budget.max_duration_ms={max_ms} must stay below \
-                 hard timeout_seconds={} * 1000 so the soft budget is observable before the watchdog",
+                 hard timeout_seconds={} * 1000",
                 gate.timeout_seconds,
             );
             // Retry-once is the compile-overrun remedy from #10023; drop it

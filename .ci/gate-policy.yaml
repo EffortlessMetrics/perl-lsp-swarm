@@ -566,6 +566,10 @@ gates:
   # family, and retry_count: 1 permits a second attempt to reuse artifacts
   # created in the same run. Hosted receipts remain authoritative for whether
   # a current PR reaches the test binary within those bounds.
+  # Enforcement note: like every budgets.max_duration_ms row in this policy,
+  # the soft ceiling is declarative only - the runner enforces
+  # timeout_seconds (see the NOTE near the budgets schema below); hosted CI
+  # receipts and reviewers own any budget observation.
   - name: inline_completion_registration
     tier: pr_fast
     description: "Inline-completion provider registration tests (lsp_inline_completion_registration_tests)"
