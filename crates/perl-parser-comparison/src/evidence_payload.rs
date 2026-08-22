@@ -5,6 +5,7 @@
 //! establish repository candidate, producer, freshness, retention, or
 //! publication authority.
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 
@@ -344,6 +345,7 @@ pub struct SubjectExecutionEvidence {
     subject_disposition: Option<SubjectDisposition>,
     instrument_state: InstrumentState,
     diagnostics: DiagnosticSummary,
+    observations: BTreeMap<ObservationPlane, ObservationDisposition>,
     attachments: Vec<BoundedAttachment>,
     semantic_digest: SemanticDigest,
 }
@@ -367,6 +369,7 @@ impl SubjectExecutionEvidence {
             execution.subject_disposition(),
             execution.instrument_state(),
             execution.diagnostics(),
+            execution.observations(),
         );
         let semantic_digest = digest_value(&semantic_value)?;
         Ok(Self {
@@ -376,6 +379,7 @@ impl SubjectExecutionEvidence {
             subject_disposition: execution.subject_disposition().cloned(),
             instrument_state: execution.instrument_state(),
             diagnostics: *execution.diagnostics(),
+            observations: execution.observations().clone(),
             attachments,
             semantic_digest,
         })
@@ -411,6 +415,16 @@ impl SubjectExecutionEvidence {
         &self.diagnostics
     }
 
+    /// Terminal dispositions for the requested observation planes.
+    pub const fn observations(&self) -> &BTreeMap<ObservationPlane, ObservationDisposition> {
+        &self.observations
+    }
+
+    /// Terminal disposition for one requested observation plane, when present.
+    pub fn observation(&self, plane: &ObservationPlane) -> Option<ObservationDisposition> {
+        self.observations.get(plane).copied()
+    }
+
     /// Non-authoritative bounded attachments.
     pub fn attachments(&self) -> &[BoundedAttachment] {
         &self.attachments
@@ -439,6 +453,7 @@ impl SubjectExecutionEvidence {
             self.subject_disposition.as_ref(),
             self.instrument_state,
             &self.diagnostics,
+            &self.observations,
         ))
     }
 
@@ -452,6 +467,7 @@ impl SubjectExecutionEvidence {
             "subject_disposition": self.subject_disposition.as_ref().map(subject_disposition_name),
             "instrument_state": instrument_state_name(self.instrument_state),
             "diagnostics": diagnostics_value(&self.diagnostics),
+            "observations": observation_entries_value(&self.observations),
             "attachments": attachments_value(&self.attachments),
             "semantic_digest": self.semantic_digest.as_str(),
         }))
@@ -468,6 +484,7 @@ impl SubjectExecutionEvidence {
                 self.subject_disposition.as_ref(),
                 self.instrument_state,
                 &self.diagnostics,
+                &self.observations,
             ),
         )
     }
@@ -499,6 +516,7 @@ impl SubjectObservationEvidence {
     ) -> Result<Self, EvidencePayloadError> {
         validate_observation_payload(
             execution,
+            &observer_manifest,
             disposition,
             fingerprint.as_ref(),
             limitation_reason.as_ref(),
@@ -835,6 +853,12 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
                 "type": "string",
                 "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
             },
+            "semantic_fingerprint": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+            },
             "evidence_ref": object_schema(
                 &["kind", "schema_version", "semantic_id", "semantic_digest"],
                 json!({
@@ -908,6 +932,19 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
                     "error_node_observed": {"type": "boolean"}
                 }),
             ),
+            "observation_entry": object_schema(
+                &["plane", "disposition"],
+                json!({
+                    "plane": registered_or_enum_schema(&[
+                        "structure", "source_geometry", "recovery", "body_ownership",
+                        "incremental_final_state", "query_or_highlight"
+                    ]),
+                    "disposition": {"enum": [
+                        "observed", "observed_with_limitations", "unsupported", "not_applicable",
+                        "not_observable", "not_proven"
+                    ]}
+                }),
+            ),
             "mismatch_detail": object_schema(
                 &["class", "first_divergence"],
                 json!({
@@ -926,7 +963,7 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
             "subject_execution": cross_field_object_schema(
                 &[
                     "schema_version", "source_case", "subject_manifest", "harness",
-                    "subject_disposition", "instrument_state", "diagnostics", "attachments",
+                    "subject_disposition", "instrument_state", "diagnostics", "observations", "attachments",
                     "semantic_digest"
                 ],
                 json!({
@@ -949,6 +986,7 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
                         "complete", "partial", "unavailable", "failed", "truncated", "schema_mismatch"
                     ]},
                     "diagnostics": {"$ref": "#/$defs/diagnostic_summary"},
+                    "observations": {"type": "array", "items": {"$ref": "#/$defs/observation_entry"}},
                     "attachments": {"type": "array", "items": {"$ref": "#/$defs/attachment"}},
                     "semantic_digest": {"$ref": "#/$defs/semantic_digest"}
                 }),
@@ -984,8 +1022,8 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
                         "observed", "observed_with_limitations", "unsupported", "not_applicable",
                         "not_observable", "not_proven"
                     ]},
-                    "fingerprint": {"type": ["string", "null"]},
-                    "limitation_reason": {"type": ["string", "null"]},
+                    "fingerprint": {"oneOf": [{"$ref": "#/$defs/semantic_fingerprint"}, {"type": "null"}]},
+                    "limitation_reason": {"oneOf": [{"$ref": "#/$defs/stable_id"}, {"type": "null"}]},
                     "attachments": {"type": "array", "items": {"$ref": "#/$defs/attachment"}},
                     "semantic_digest": {"$ref": "#/$defs/semantic_digest"}
                 }),
@@ -1022,13 +1060,13 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
                     "outcome": {"enum": [
                         "matches_expected", "mismatch", "unscored", "unknown", "not_proven"
                     ]},
-                    "expected_fingerprint": {"type": ["string", "null"]},
-                    "actual_fingerprint": {"type": ["string", "null"]},
+                    "expected_fingerprint": {"oneOf": [{"$ref": "#/$defs/semantic_fingerprint"}, {"type": "null"}]},
+                    "actual_fingerprint": {"oneOf": [{"$ref": "#/$defs/semantic_fingerprint"}, {"type": "null"}]},
                     "mismatch": {"oneOf": [
                         {"type": "null"},
                         {"$ref": "#/$defs/mismatch_detail"}
                     ]},
-                    "reason": {"type": ["string", "null"]},
+                    "reason": {"oneOf": [{"$ref": "#/$defs/stable_id"}, {"type": "null"}]},
                     "attachments": {"type": "array", "items": {"$ref": "#/$defs/attachment"}},
                     "semantic_digest": {"$ref": "#/$defs/semantic_digest"}
                 }),
@@ -1108,6 +1146,8 @@ pub enum EvidencePayloadError {
     SubjectRoleMismatch,
     /// Observation/result combination is internally contradictory.
     InvalidObservationDisposition,
+    /// An observation payload was created for a plane absent from execution evidence.
+    ObservationPlaneMismatch,
     /// Decisive conformance requires an exactly observed plane.
     ConformanceRequiresObservedPlane,
     /// Obligation and observation use different observer identities or planes.
@@ -1142,6 +1182,9 @@ impl fmt::Display for EvidencePayloadError {
                 .write_str("subject manifest role disagrees with generic subject execution role"),
             Self::InvalidObservationDisposition => formatter.write_str(
                 "observation disposition, fingerprint, limitation, or execution state is invalid",
+            ),
+            Self::ObservationPlaneMismatch => formatter.write_str(
+                "observation plane is absent or has a different terminal disposition in execution evidence",
             ),
             Self::ConformanceRequiresObservedPlane => {
                 formatter.write_str("decisive conformance requires an exactly observed plane")
@@ -1211,15 +1254,21 @@ fn sort_attachments(attachments: &mut [BoundedAttachment]) {
             .cmp(&right.kind)
             .then_with(|| left.privacy.cmp(&right.privacy))
             .then_with(|| left.text.as_str().cmp(right.text.as_str()))
+            .then_with(|| left.text.original_bytes().cmp(&right.text.original_bytes()))
+            .then_with(|| left.text.omitted_bytes().cmp(&right.text.omitted_bytes()))
     });
 }
 
 fn validate_observation_payload(
     execution: &SubjectExecutionEvidence,
+    observer_manifest: &ObserverManifestRef,
     disposition: ObservationDisposition,
     fingerprint: Option<&SemanticFingerprint>,
     limitation_reason: Option<&StableId>,
 ) -> Result<(), EvidencePayloadError> {
+    if execution.observation(observer_manifest.plane()) != Some(disposition) {
+        return Err(EvidencePayloadError::ObservationPlaneMismatch);
+    }
     let execution_completed = execution.harness() == HarnessOutcome::Completed;
     let valid = match disposition {
         ObservationDisposition::Observed => {
@@ -1289,6 +1338,7 @@ fn execution_semantic_value(
     subject_disposition: Option<&SubjectDisposition>,
     instrument_state: InstrumentState,
     diagnostics: &DiagnosticSummary,
+    observations: &BTreeMap<ObservationPlane, ObservationDisposition>,
 ) -> Value {
     json!({
         "schema_version": SUBJECT_EXECUTION_EVIDENCE_SCHEMA_VERSION,
@@ -1298,6 +1348,7 @@ fn execution_semantic_value(
         "subject_disposition": subject_disposition.map(subject_disposition_name),
         "instrument_state": instrument_state_name(instrument_state),
         "diagnostics": diagnostics_value(diagnostics),
+        "observations": observation_entries_value(observations),
     })
 }
 
@@ -1387,6 +1438,22 @@ fn diagnostics_value(summary: &DiagnosticSummary) -> Value {
         "recovery_observed": summary.recovery_observed(),
         "error_node_observed": summary.error_node_observed(),
     })
+}
+
+fn observation_entries_value(
+    observations: &BTreeMap<ObservationPlane, ObservationDisposition>,
+) -> Value {
+    Value::Array(
+        observations
+            .iter()
+            .map(|(plane, disposition)| {
+                json!({
+                    "plane": observation_plane_name(plane),
+                    "disposition": observation_disposition_name(*disposition),
+                })
+            })
+            .collect(),
+    )
 }
 
 fn attachments_value(attachments: &[BoundedAttachment]) -> Value {
@@ -1548,4 +1615,73 @@ fn canonical_json(value: &Value) -> Result<String, EvidencePayloadError> {
 fn canonical_pretty_json(value: &Value) -> Result<String, EvidencePayloadError> {
     serde_json::to_string_pretty(value)
         .map_err(|error| EvidencePayloadError::Serialization(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn schema_enum_contains(schema: &Value, expected: &str) -> bool {
+        if schema
+            .get("enum")
+            .and_then(Value::as_array)
+            .is_some_and(|values| values.iter().any(|value| value.as_str() == Some(expected)))
+        {
+            return true;
+        }
+        schema.as_object().is_some_and(|object| {
+            object.values().any(|value| schema_enum_contains(value, expected))
+        }) || schema
+            .as_array()
+            .is_some_and(|values| values.iter().any(|value| schema_enum_contains(value, expected)))
+    }
+
+    #[test]
+    fn mapper_outputs_remain_in_machine_schema_vocabularies() -> Result<(), Box<dyn Error>> {
+        let schema_text = parser_comparison_evidence_schema_json()?;
+        let schema: Value = serde_json::from_str(&schema_text)?;
+        let custom = StableId::new("custom")?;
+        let finite = [
+            subject_role_name(SubjectRole::CurrentUpstreamTreeSitter).to_owned(),
+            subject_role_name(SubjectRole::HistoricalTreeSitterC).to_owned(),
+            subject_role_name(SubjectRole::ExperimentalPest).to_owned(),
+            subject_role_name(SubjectRole::NativeRecursiveDescent).to_owned(),
+            subject_role_name(SubjectRole::NativeTreeSitterFacade).to_owned(),
+            instrument_state_name(InstrumentState::Complete).to_owned(),
+            instrument_state_name(InstrumentState::Partial).to_owned(),
+            instrument_state_name(InstrumentState::Unavailable).to_owned(),
+            instrument_state_name(InstrumentState::Failed).to_owned(),
+            instrument_state_name(InstrumentState::Truncated).to_owned(),
+            instrument_state_name(InstrumentState::SchemaMismatch).to_owned(),
+            observation_disposition_name(ObservationDisposition::Observed).to_owned(),
+            observation_disposition_name(ObservationDisposition::ObservedWithLimitations)
+                .to_owned(),
+            observation_disposition_name(ObservationDisposition::Unsupported).to_owned(),
+            observation_disposition_name(ObservationDisposition::NotApplicable).to_owned(),
+            observation_disposition_name(ObservationDisposition::NotObservable).to_owned(),
+            observation_disposition_name(ObservationDisposition::NotProven).to_owned(),
+            conformance_outcome_name(ConformanceOutcome::MatchesExpected).to_owned(),
+            conformance_outcome_name(ConformanceOutcome::Mismatch).to_owned(),
+            conformance_outcome_name(ConformanceOutcome::Unscored).to_owned(),
+            conformance_outcome_name(ConformanceOutcome::Unknown).to_owned(),
+            conformance_outcome_name(ConformanceOutcome::NotProven).to_owned(),
+            harness_name(HarnessOutcome::Completed),
+            harness_name(HarnessOutcome::Failed(HarnessFailure::TimedOut)),
+            subject_disposition_name(&SubjectDisposition::AcceptedClean),
+            mismatch_class_name(&MismatchClass::WrongKind),
+            observation_plane_name(&ObservationPlane::Structure),
+        ];
+        for value in finite {
+            assert!(schema_enum_contains(&schema, &value), "mapper output drifted: {value}");
+        }
+
+        for value in [
+            subject_disposition_name(&SubjectDisposition::Registered(custom.clone())),
+            mismatch_class_name(&MismatchClass::Registered(custom.clone())),
+            observation_plane_name(&ObservationPlane::Registered(custom)),
+        ] {
+            assert!(value.starts_with("registered:"));
+        }
+        Ok(())
+    }
 }

@@ -208,6 +208,29 @@ fn bounded_attachments_are_sorted_and_nonsemantic() -> Result<(), Box<dyn Error>
 }
 
 #[test]
+fn attachment_sorting_tiebreaks_truncation_metadata() -> Result<(), Box<dyn Error>> {
+    let execution = generic_execution(InstrumentState::Complete)?;
+    let earlier = BoundedAttachment::new(
+        stable("trace")?,
+        BoundedText::new("same", 4)?,
+        AttachmentPrivacy::Public,
+    );
+    let later = BoundedAttachment::new(
+        stable("trace")?,
+        BoundedText::new("sameX", 4)?,
+        AttachmentPrivacy::Public,
+    );
+    let evidence = execution_evidence(&execution, vec![later, earlier])?;
+    let payload: Value = serde_json::from_str(&evidence.canonical_payload_json()?)?;
+    let attachments = payload["attachments"].as_array().ok_or("attachments array")?;
+    assert_eq!(attachments[0]["original_bytes"], 4);
+    assert_eq!(attachments[0]["omitted_bytes"], 0);
+    assert_eq!(attachments[1]["original_bytes"], 5);
+    assert_eq!(attachments[1]["omitted_bytes"], 1);
+    Ok(())
+}
+
+#[test]
 fn observed_payload_requires_exact_complete_evidence() -> Result<(), Box<dyn Error>> {
     let complete = generic_execution(InstrumentState::Complete)?;
     let execution = execution_evidence(&complete, Vec::new())?;
@@ -235,13 +258,31 @@ fn observed_payload_requires_exact_complete_evidence() -> Result<(), Box<dyn Err
         None,
         Vec::new(),
     );
-    assert_eq!(exact_from_partial, Err(EvidencePayloadError::InvalidObservationDisposition));
+    assert_eq!(exact_from_partial, Err(EvidencePayloadError::ObservationPlaneMismatch));
+
+    let absent_plane = SubjectObservationEvidence::new(
+        &partial_execution,
+        observer_manifest("observer.geometry.v1", ObservationPlane::SourceGeometry)?,
+        stable("exact.fresh.v1")?,
+        ObservationDisposition::Observed,
+        Some(SemanticFingerprint::new("fabricated")?),
+        None,
+        Vec::new(),
+    );
+    assert_eq!(absent_plane, Err(EvidencePayloadError::ObservationPlaneMismatch));
     Ok(())
 }
 
 #[test]
 fn unavailable_observation_requires_a_typed_reason() -> Result<(), Box<dyn Error>> {
-    let execution = generic_execution(InstrumentState::Complete)?;
+    let execution = SubjectExecution::completed(
+        SubjectRole::NativeRecursiveDescent,
+        SubjectDisposition::AcceptedClean,
+        DiagnosticSummary::default(),
+        BTreeMap::from([(ObservationPlane::SourceGeometry, ObservationDisposition::NotObservable)]),
+        None,
+        InstrumentState::Complete,
+    )?;
     let execution = execution_evidence(&execution, Vec::new())?;
     let observer = observer_manifest("observer.geometry.v1", ObservationPlane::SourceGeometry)?;
 
@@ -442,8 +483,17 @@ fn machine_schema_accepts_every_constructor_payload_variant() -> Result<(), Box<
         (ObservationDisposition::NotProven, None, Some(stable("not_proven")?)),
     ];
     for (disposition, fingerprint, reason) in observation_cases {
+        let case_execution = SubjectExecution::completed(
+            SubjectRole::NativeRecursiveDescent,
+            SubjectDisposition::AcceptedClean,
+            DiagnosticSummary::default(),
+            BTreeMap::from([(ObservationPlane::Structure, disposition)]),
+            None,
+            InstrumentState::Complete,
+        )?;
+        let case_evidence = execution_evidence(&case_execution, Vec::new())?;
         let observation = SubjectObservationEvidence::new(
-            &completed_evidence,
+            &case_evidence,
             observer.clone(),
             stable("exact.fresh.v1")?,
             disposition,
@@ -583,6 +633,10 @@ fn schema_rejects_cross_field_false_greens_and_wrong_nested_reference_kinds()
     observed_without_fingerprint["fingerprint"] = Value::Null;
     assert!(validate_value(&observed_without_fingerprint, &schema, &schema).is_err());
 
+    let mut invalid_fingerprint = observation_payload.clone();
+    invalid_fingerprint["fingerprint"] = Value::String(String::new());
+    assert!(validate_value(&invalid_fingerprint, &schema, &schema).is_err());
+
     let mut observed_with_limitation_reason = observation_payload.clone();
     observed_with_limitation_reason["limitation_reason"] =
         Value::String("should_not_be_present".to_owned());
@@ -621,6 +675,14 @@ fn schema_rejects_cross_field_false_greens_and_wrong_nested_reference_kinds()
     non_decisive_with_fingerprints["outcome"] = Value::String("unknown".to_owned());
     non_decisive_with_fingerprints["reason"] = Value::String("not_decisive".to_owned());
     assert!(validate_value(&non_decisive_with_fingerprints, &schema, &schema).is_err());
+
+    let mut invalid_reason = conformance_payload.clone();
+    invalid_reason["outcome"] = Value::String("not_proven".to_owned());
+    invalid_reason["expected_fingerprint"] = Value::Null;
+    invalid_reason["actual_fingerprint"] = Value::Null;
+    invalid_reason["mismatch"] = Value::Null;
+    invalid_reason["reason"] = Value::String("NOT-A-STABLE-ID".to_owned());
+    assert!(validate_value(&invalid_reason, &schema, &schema).is_err());
 
     let mut wrong_source_case_kind = execution_payload.clone();
     wrong_source_case_kind["source_case"]["authority"]["kind"] =
@@ -954,6 +1016,9 @@ fn matches_pattern(value: &str, pattern: &str) -> bool {
                                     || matches!(character, '.' | '_' | '-')))
                     })
             })
+        }
+        "^[^\\u0000-\\u001f\\u007f]*$" => {
+            value.chars().all(|character| !(character.is_control() || character == '\u{007f}'))
         }
         _ => false,
     }
