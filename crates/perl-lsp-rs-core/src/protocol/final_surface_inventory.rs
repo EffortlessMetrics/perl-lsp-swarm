@@ -506,6 +506,12 @@ pub fn coverage_errors(rows: &[SurfaceRow]) -> Vec<String> {
                 }
             }
             SurfaceKind::Suppression => {
+                if row.disposition != Disposition::Unadvertised {
+                    errors.push(format!(
+                        "malformed suppression row {}: disposition must be unadvertised",
+                        row.surface_id
+                    ));
+                }
                 let names_disabled_feature =
                     row.protocol_field.starts_with("initializationOptions.disabledFeatures:");
                 if !names_disabled_feature
@@ -526,6 +532,12 @@ pub fn coverage_errors(rows: &[SurfaceRow]) -> Vec<String> {
                 }
             }
             SurfaceKind::Compatibility => {
+                if row.disposition != Disposition::Unadvertised {
+                    errors.push(format!(
+                        "malformed compatibility row {}: disposition must be unadvertised",
+                        row.surface_id
+                    ));
+                }
                 let Some(boundary) = &row.compatibility else {
                     errors.push(format!(
                         "malformed compatibility row {}: missing boundary",
@@ -567,11 +579,14 @@ pub fn coverage_errors(rows: &[SurfaceRow]) -> Vec<String> {
             SurfaceKind::Registration => {
                 let is_dynamic_registration =
                     row.protocol_field.starts_with("register ") && row.protocol_field.contains('@');
-                let is_unadvertised_finding = row.disposition == Disposition::Unadvertised;
-                if !is_dynamic_registration && !is_unadvertised_finding {
+                if is_dynamic_registration && row.disposition != Disposition::Dynamic {
                     errors.push(format!(
-                        "malformed registration row {}: protocol_field must be \
-                         'register <id>@<method>' or an unadvertised finding",
+                        "malformed registration row {}: dynamic registration disposition must be dynamic",
+                        row.surface_id
+                    ));
+                } else if !is_dynamic_registration && row.disposition != Disposition::Unadvertised {
+                    errors.push(format!(
+                        "malformed registration row {}: unadvertised finding disposition must be unadvertised",
                         row.surface_id
                     ));
                 }
@@ -807,7 +822,7 @@ pub fn render_with_rows(rows: &[SurfaceRow]) -> Result<String, InventoryError> {
                         final_surface_inventory::tests::regenerate_checked_in_artifact --locked -- --ignored",
             check: "cargo test -p perl-lsp-rs-core --lib final_surface_inventory --locked",
             source_packages: &["crates/perl-lsp-rs-core", "crates/perl-lsp-rs"],
-            scope_note: "Migration evidence for the #8032 train, not a second capability catalog. Rows are bijective with the serialized static-builder census plus the runtime mutation/registration surface proven by perl-lsp-rs final-surface census tests.",
+            scope_note: "Migration evidence for the #8032 train, not a second capability catalog. Rows are bijective with the serialized static-builder census plus the runtime mutation/registration surface proven by perl-lsp-rs final-surface census tests. The checked-in JSON is the host-target artifact; wasm32 renders target-scoped rows and uses a dedicated guard instead of equality with this file.",
         },
         census_profiles: vec![
             CensusProfile {

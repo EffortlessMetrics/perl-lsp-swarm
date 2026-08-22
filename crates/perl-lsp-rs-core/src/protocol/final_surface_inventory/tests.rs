@@ -34,6 +34,7 @@ fn render_succeeds_and_is_byte_identical_across_runs() {
     assert!(!first.contains("\r\n"), "artifact must use LF newlines");
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn checked_in_artifact_matches_generated_output() {
     let path = artifact_path();
@@ -52,6 +53,21 @@ fn checked_in_artifact_matches_generated_output() {
         "{} is stale; regenerate via `cargo test -p perl-lsp-rs-core --lib \
          final_surface_inventory::tests::regenerate_checked_in_artifact --locked -- --ignored`",
         path.display()
+    );
+}
+
+#[cfg(target_arch = "wasm32")]
+#[test]
+fn wasm_inventory_is_target_scoped_instead_of_matching_host_artifact() {
+    let generated =
+        render_final_surface_inventory_json().expect("wasm inventory must render successfully");
+    assert!(
+        !generated.contains("cap.executeCommandProvider.commands[]"),
+        "wasm inventory must omit the host-only execute-command capability row"
+    );
+    assert!(
+        !generated.contains("\"kind\": \"command\""),
+        "wasm inventory must omit host-only command rows"
     );
 }
 
@@ -204,6 +220,82 @@ fn negative_control_duplicate_primary_and_additional_pointer_fails_render() {
                 && problem.contains("mut.handle_initialize.workspaceReplacement")
         }),
         "duplicate ownership must name the claimant row, got: {error}"
+    );
+}
+
+#[test]
+fn negative_control_dynamic_registration_with_wrong_disposition_fails_render() {
+    let rows: Vec<SurfaceRow> = final_surface_rows()
+        .into_iter()
+        .map(|row| {
+            if row.surface_id == "reg.perl-didChangeWatchedFiles" {
+                let mut wrong = row.clone();
+                wrong.disposition = Disposition::Unadvertised;
+                wrong
+            } else {
+                row
+            }
+        })
+        .collect();
+    let error = render_with_rows(&rows)
+        .expect_err("dynamic registration rows must retain the dynamic disposition");
+    assert!(
+        error.problems.iter().any(|problem| {
+            problem.contains("malformed registration row reg.perl-didChangeWatchedFiles")
+                && problem.contains("must be dynamic")
+        }),
+        "wrong dynamic-registration disposition must be rejected, got: {error}"
+    );
+}
+
+#[test]
+fn negative_control_suppression_with_wrong_disposition_fails_render() {
+    let rows: Vec<SurfaceRow> = final_surface_rows()
+        .into_iter()
+        .map(|row| {
+            if row.surface_id == "sup.disabledFeature.lsp.completion" {
+                let mut wrong = row.clone();
+                wrong.disposition = Disposition::Static;
+                wrong
+            } else {
+                row
+            }
+        })
+        .collect();
+    let error = render_with_rows(&rows)
+        .expect_err("suppression rows must retain the unadvertised disposition");
+    assert!(
+        error.problems.iter().any(|problem| {
+            problem.contains("malformed suppression row sup.disabledFeature.lsp.completion")
+                && problem.contains("must be unadvertised")
+        }),
+        "wrong suppression disposition must be rejected, got: {error}"
+    );
+}
+
+#[test]
+fn negative_control_compatibility_with_wrong_disposition_fails_render() {
+    let rows: Vec<SurfaceRow> = final_surface_rows()
+        .into_iter()
+        .map(|row| {
+            if row.surface_id == "compat.client.jetbrains.watcherForceDisable" {
+                let mut wrong = row.clone();
+                wrong.disposition = Disposition::Static;
+                wrong
+            } else {
+                row
+            }
+        })
+        .collect();
+    let error = render_with_rows(&rows)
+        .expect_err("compatibility rows must retain the unadvertised disposition");
+    assert!(
+        error.problems.iter().any(|problem| {
+            problem
+                .contains("malformed compatibility row compat.client.jetbrains.watcherForceDisable")
+                && problem.contains("must be unadvertised")
+        }),
+        "wrong compatibility disposition must be rejected, got: {error}"
     );
 }
 

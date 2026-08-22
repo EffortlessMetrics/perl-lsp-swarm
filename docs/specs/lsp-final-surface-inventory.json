@@ -12,7 +12,7 @@
       "crates/perl-lsp-rs-core",
       "crates/perl-lsp-rs"
     ],
-    "scope_note": "Migration evidence for the #8032 train, not a second capability catalog. Rows are bijective with the serialized static-builder census plus the runtime mutation/registration surface proven by perl-lsp-rs final-surface census tests."
+    "scope_note": "Migration evidence for the #8032 train, not a second capability catalog. Rows are bijective with the serialized static-builder census plus the runtime mutation/registration surface proven by perl-lsp-rs final-surface census tests. The checked-in JSON is the host-target artifact; wasm32 renders target-scoped rows and uses a dedicated guard instead of equality with this file."
   },
   "census_profiles": [
     {
