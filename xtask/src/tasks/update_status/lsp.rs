@@ -35,10 +35,11 @@ pub(super) fn update_roadmap(root: &Path, original: &str) -> Result<String> {
     let policy = perl_lsp_rs_core::feature_evidence::GaEvidencePolicy::load(
         &root.join("policy/ga-evidence-policy.toml"),
     )
+    .map_err(color_eyre::Report::msg)
     .with_context("loading GA evidence policy")?;
     let table =
         perl_lsp_rs_core::feature_evidence::render_claim_status_table(&catalog, &policy)
-            .map_err(color_eyre::eyre::eyre)?;
+            .map_err(color_eyre::Report::msg)?;
 
     replace_block(
         original,

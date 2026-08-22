@@ -2,6 +2,7 @@ use color_eyre::eyre::{Context, Result, bail, eyre};
 use perl_lsp_rs_core::feature_catalog::{Catalog, Maturity};
 use perl_lsp_rs_core::governance::{FeatureProfile, catalog_advertised_feature_ids};
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -257,8 +258,9 @@ fn verify_features() -> Result<()> {
     // The declaration-arithmetic percentage is no longer a verification
     // target (#6731): public claims are evidence-derived, and ROADMAP.md's
     // fence carries claim counts from the shared renderer.
+    let advertised_ga_prod = catalog.advertised_trackable_count();
     println!(
-        "📊 Catalog: {} rows ({} advertised GA/production); evidence-backed claims are verified by `cargo xtask catalog-authority check-catalog`",
+        "Catalog: {} rows ({} advertised GA/production); evidence-backed claims are verified by `cargo xtask catalog-authority check-catalog`",
         catalog.feature.len(),
         advertised_ga_prod
     );
