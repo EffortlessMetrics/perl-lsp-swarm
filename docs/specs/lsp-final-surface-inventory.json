@@ -1168,11 +1168,12 @@
       "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_code_action_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
-        "BuildFlags (ga-lock | production | all census profiles)"
+        "BuildFlags.execute_command",
+        "target_arch != wasm32"
       ],
       "disposition": "static",
       "runtime_route_owner": "workspace/executeCommand (see cmd.* rows)",
-      "evidence_owner": "features.toml#lsp.execute_command; SUPPORTED_COMMANDS canonical list",
+      "evidence_owner": "features.toml#lsp.execute_command; SUPPORTED_COMMANDS canonical list; target_arch != wasm32",
       "competing_paths": [],
       "target_issue": "#9665",
       "compatibility": null,
@@ -2440,9 +2441,7 @@
       "competing_paths": [],
       "target_issue": "#9665",
       "compatibility": null,
-      "additional_owned_pointers": [
-        "experimental.perlInlineCompletionStream"
-      ],
+      "additional_owned_pointers": [],
       "rewrites_surface_pointer": null,
       "build_flag_effect": null
     },
@@ -2518,9 +2517,7 @@
       "competing_paths": [],
       "target_issue": "#9665",
       "compatibility": null,
-      "additional_owned_pointers": [
-        "positionEncoding"
-      ],
+      "additional_owned_pointers": [],
       "rewrites_surface_pointer": null,
       "build_flag_effect": null
     },
@@ -2676,6 +2673,23 @@
       "disposition": "dynamic",
       "runtime_route_owner": "crates/perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
       "evidence_owner": "features.toml#lsp.semantic_tokens_refresh",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "ref.workspace/textDocumentContent/refresh",
+      "kind": "refresh-request",
+      "protocol_field": "workspace/textDocumentContent/refresh",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/language/virtual_content.rs request_text_document_content_refresh",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "dynamic",
+      "runtime_route_owner": "crates/perl-lsp-rs/src/runtime/language/virtual_content.rs LspServer::request_text_document_content_refresh",
+      "evidence_owner": "features.toml#lsp.text_document_content_refresh; lsp_text_document_content_tests.rs",
       "competing_paths": [],
       "target_issue": "#9665",
       "compatibility": null,

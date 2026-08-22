@@ -224,6 +224,7 @@ fn suppression(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn command(command_identity: &'static str) -> SurfaceRow {
     SurfaceRow {
         surface_id: command_identity,
@@ -461,6 +462,12 @@ pub fn coverage_errors(rows: &[SurfaceRow]) -> Vec<String> {
     for row in rows {
         match row.kind {
             SurfaceKind::CapabilityField => {
+                if row.disposition != Disposition::Static {
+                    errors.push(format!(
+                        "malformed capability row {}: disposition must be static",
+                        row.surface_id
+                    ));
+                }
                 if !census.contains(row.protocol_field) {
                     errors.push(format!(
                         "stale capability row {}: pointer {} absent from every profile census",
@@ -475,7 +482,15 @@ pub fn coverage_errors(rows: &[SurfaceRow]) -> Vec<String> {
                 }
             }
             SurfaceKind::Mutation => {
-                if row.additional_owned_pointers.is_empty()
+                if row.disposition != Disposition::Static {
+                    errors.push(format!(
+                        "malformed mutation row {}: disposition must be static",
+                        row.surface_id
+                    ));
+                }
+                let owns_primary_pointer = !row.protocol_field.starts_with("(rewrite)");
+                if !owns_primary_pointer
+                    && row.additional_owned_pointers.is_empty()
                     && row.rewrites_surface_pointer.is_none()
                 {
                     errors.push(format!(
@@ -529,6 +544,12 @@ pub fn coverage_errors(rows: &[SurfaceRow]) -> Vec<String> {
                 }
             }
             SurfaceKind::Command => {
+                if row.disposition != Disposition::Static {
+                    errors.push(format!(
+                        "malformed command row {}: disposition must be static",
+                        row.surface_id
+                    ));
+                }
                 let Some(command_id) = row.protocol_field.strip_prefix("cmd.") else {
                     errors.push(format!(
                         "malformed command row {}: protocol_field must be cmd.<id>",
@@ -556,6 +577,12 @@ pub fn coverage_errors(rows: &[SurfaceRow]) -> Vec<String> {
                 }
             }
             SurfaceKind::RefreshRequest => {
+                if row.disposition != Disposition::Dynamic {
+                    errors.push(format!(
+                        "malformed refresh row {}: disposition must be dynamic",
+                        row.surface_id
+                    ));
+                }
                 if !row.protocol_field.starts_with("workspace/")
                     || !row.protocol_field.ends_with("/refresh")
                 {
@@ -575,10 +602,17 @@ pub fn coverage_errors(rows: &[SurfaceRow]) -> Vec<String> {
         .filter(|row| row.kind == SurfaceKind::Command)
         .filter_map(|row| row.protocol_field.strip_prefix("cmd."))
         .collect();
-    for command in SUPPORTED_COMMANDS {
-        if !command_rows.contains(command) {
-            errors.push(format!("unmapped execute-command identity (no row): {command}"));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        for command in SUPPORTED_COMMANDS {
+            if !command_rows.contains(command) {
+                errors.push(format!("unmapped execute-command identity (no row): {command}"));
+            }
         }
+    }
+    #[cfg(target_arch = "wasm32")]
+    if !command_rows.is_empty() {
+        errors.push("wasm32 inventory must not contain execute-command rows".to_string());
     }
 
     // Duplicate surface IDs anywhere in the ledger.
@@ -588,10 +622,12 @@ pub fn coverage_errors(rows: &[SurfaceRow]) -> Vec<String> {
             errors.push(format!("duplicate surface_id: {}", row.surface_id));
         }
     }
-    // Duplicate capability-field claims: two rows owning the same pointer.
+    // Every owned pointer, including a mutation's primary `protocol_field`,
+    // participates in duplicate-claim detection. This deliberately catches
+    // a row that lists the same pointer in both ownership locations.
     let mut pointer_claimants: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for row in rows {
-        if matches!(row.kind, SurfaceKind::CapabilityField) {
+        if matches!(row.kind, SurfaceKind::CapabilityField | SurfaceKind::Mutation) {
             pointer_claimants.entry(row.protocol_field).or_default().push(row.surface_id);
         }
         for pointer in row.additional_owned_pointers {

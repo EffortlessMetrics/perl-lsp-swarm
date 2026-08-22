@@ -23,7 +23,8 @@ pub mod error_inventory;
 mod errors;
 /// Deterministic final-surface capability/registration/mutation ledger
 /// (#9662, #8032 train stage S01).
-pub mod final_surface_inventory;
+#[cfg(test)]
+pub(crate) mod final_surface_inventory;
 mod jsonrpc;
 pub mod methods;
 pub mod resolve_envelope;

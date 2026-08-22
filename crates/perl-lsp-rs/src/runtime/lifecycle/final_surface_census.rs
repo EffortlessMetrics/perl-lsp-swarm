@@ -1,8 +1,8 @@
 //! Final-surface census proof against the exact process-emitted surface
 //! (#9662, #8032 train stage S01).
 //!
-//! The ledger lives in `perl-lsp-rs-core::protocol::
-//! final_surface_inventory`; these tests drive `handle_initialize` for
+//! The checked-in generated artifact is the test-only handoff from the
+//! crate-private core ledger; these tests drive `handle_initialize` for
 //! representative client shapes and enforce that:
 //!
 //! 1. every pointer in every emitted initialize response is covered by a
@@ -26,10 +26,131 @@ use serde_json::{Value, json};
 use super::super::LspServer;
 use super::capabilities::apply_disabled_feature_id;
 use perl_lsp_rs_core::features::flags::BuildFlags;
-use perl_lsp_rs_core::protocol::final_surface_inventory::{
-    SurfaceKind, census_pointer_union, covered_final_surface_pointers, final_surface_rows,
-    flatten_surface_pointers, ids,
-};
+
+const INVENTORY_ARTIFACT: &str =
+    include_str!("../../../../../docs/specs/lsp-final-surface-inventory.json");
+
+fn inventory_artifact() -> Value {
+    serde_json::from_str(INVENTORY_ARTIFACT).expect("checked-in inventory artifact must be JSON")
+}
+
+fn inventory_rows() -> Vec<Value> {
+    inventory_artifact()
+        .get("rows")
+        .and_then(Value::as_array)
+        .expect("inventory artifact must contain rows")
+        .clone()
+}
+
+fn inventory_static_census() -> BTreeSet<String> {
+    let mut pointers = BTreeSet::new();
+    let artifact = inventory_artifact();
+    let profiles = artifact
+        .get("static_surface_census")
+        .and_then(Value::as_object)
+        .expect("inventory artifact must contain static_surface_census");
+    for profile in profiles.values() {
+        for pointer in profile.as_array().expect("census profile must be an array") {
+            pointers.insert(pointer.as_str().expect("census pointer must be a string").to_string());
+        }
+    }
+    pointers
+}
+
+fn inventory_covered_pointers() -> BTreeSet<String> {
+    let mut covered = inventory_static_census();
+    for row in inventory_rows() {
+        let kind = row.get("kind").and_then(Value::as_str);
+        if matches!(kind, Some("capability-field") | Some("mutation")) {
+            if let Some(pointer) = row.get("protocol_field").and_then(Value::as_str) {
+                covered.insert(pointer.to_string());
+            }
+            if let Some(additional) = row.get("additional_owned_pointers").and_then(Value::as_array)
+            {
+                for pointer in additional {
+                    covered.insert(
+                        pointer.as_str().expect("owned pointer must be a string").to_string(),
+                    );
+                }
+            }
+        }
+    }
+    covered
+}
+
+fn inventory_row(surface_id: &str) -> Value {
+    inventory_rows()
+        .into_iter()
+        .find(|row| row.get("surface_id").and_then(Value::as_str) == Some(surface_id))
+        .unwrap_or_else(|| panic!("ledger row {surface_id} missing"))
+}
+
+fn row_string<'a>(row: &'a Value, field: &str) -> &'a str {
+    row.get(field)
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("inventory row is missing string field {field}: {row}"))
+}
+
+fn flatten_surface_pointers(value: &Value) -> BTreeSet<String> {
+    fn walk(prefix: &str, value: &Value, out: &mut BTreeSet<String>) {
+        match value {
+            Value::Object(map) => {
+                if map.is_empty() {
+                    out.insert(prefix.to_string());
+                    return;
+                }
+                for (key, child) in map {
+                    let child_path = format!("{prefix}.{key}");
+                    match child {
+                        Value::Object(inner) if inner.is_empty() => {
+                            out.insert(child_path);
+                        }
+                        Value::Array(items) => {
+                            let array_path = format!("{child_path}[]");
+                            out.insert(array_path.clone());
+                            for item in items {
+                                walk(&array_path, item, out);
+                            }
+                        }
+                        other => walk(&child_path, other, out),
+                    }
+                }
+            }
+            Value::Array(items) => {
+                if items.is_empty() {
+                    out.insert(prefix.to_string());
+                    return;
+                }
+                for item in items {
+                    walk(prefix, item, out);
+                }
+            }
+            _ => {
+                out.insert(prefix.to_string());
+            }
+        }
+    }
+
+    let mut out = BTreeSet::new();
+    if let Value::Object(map) = value {
+        for (key, child) in map {
+            match child {
+                Value::Object(inner) if inner.is_empty() => {
+                    out.insert(key.clone());
+                }
+                Value::Array(items) => {
+                    let array_path = format!("{key}[]");
+                    out.insert(array_path.clone());
+                    for item in items {
+                        walk(&array_path, item, &mut out);
+                    }
+                }
+                other => walk(key, other, &mut out),
+            }
+        }
+    }
+    out
+}
 
 /// Representative initialize-params shapes exercising every runtime branch
 /// relevant to the final surface.
@@ -115,7 +236,7 @@ fn emitted_capabilities(server: &LspServer, shape: &Value) -> Value {
 
 #[test]
 fn every_emitted_surface_pointer_is_ledgered() {
-    let covered = covered_final_surface_pointers();
+    let covered = inventory_covered_pointers();
     for (shape_name, params) in representative_client_shapes() {
         let server = LspServer::new();
         let capabilities = emitted_capabilities(&server, &params);
@@ -131,15 +252,22 @@ fn every_emitted_surface_pointer_is_ledgered() {
 
 #[test]
 fn runtime_added_pointers_are_owned_by_mutation_rows() {
-    let static_census = census_pointer_union();
-    let rows = final_surface_rows();
+    let static_census = inventory_static_census();
+    let rows = inventory_rows();
     let mutation_owned: BTreeSet<String> = rows
         .iter()
-        .filter(|row| row.kind == SurfaceKind::Mutation)
+        .filter(|row| row.get("kind").and_then(Value::as_str) == Some("mutation"))
         .flat_map(|row| {
-            let mut owned = vec![row.protocol_field.to_string()];
-            owned
-                .extend(row.additional_owned_pointers.iter().map(|pointer| (*pointer).to_string()));
+            let mut owned = vec![row_string(row, "protocol_field").to_string()];
+            owned.extend(
+                row.get("additional_owned_pointers")
+                    .and_then(Value::as_array)
+                    .expect("mutation row must list additional pointers")
+                    .iter()
+                    .map(|pointer| {
+                        pointer.as_str().expect("owned pointer must be a string").to_string()
+                    }),
+            );
             owned
         })
         .collect();
@@ -199,7 +327,7 @@ fn inline_completion_tri_state_matches_its_row() {
     assert!(
         static_caps.get("inlineCompletionProvider").is_some(),
         "static-only inline clients must keep the statically advertised provider ({})",
-        ids::CAP_INLINE_COMPLETION_PROVIDER
+        "cap.inlineCompletionProvider"
     );
 
     let dynamic = LspServer::new();
@@ -214,29 +342,21 @@ fn inline_completion_tri_state_matches_its_row() {
     assert!(
         dynamic_caps.get("inlineCompletionProvider").is_none(),
         "dynamically registered inline completion must remove the static provider ({})",
-        ids::MUT_INLINE_COMPLETION_TRI_STATE
+        "mut.handle_initialize.inlineCompletionTriState"
     );
 }
 
 #[test]
 fn registrations_refreshes_and_compat_rows_are_ledgered() {
-    let rows = final_surface_rows();
-    let find = |surface_id: &str| {
-        rows.iter()
-            .find(|row| row.surface_id == surface_id)
-            .unwrap_or_else(|| panic!("ledger row {surface_id} missing"))
-    };
+    let find = inventory_row;
 
-    let watchers = find(ids::REG_DID_CHANGE_WATCHED_FILES);
-    assert!(watchers.protocol_field.contains("workspace/didChangeWatchedFiles"));
-    assert!(watchers.protocol_field.contains("perl-didChangeWatchedFiles"));
-    assert_eq!(
-        watchers.disposition,
-        perl_lsp_rs_core::protocol::final_surface_inventory::Disposition::Dynamic
-    );
+    let watchers = find("reg.perl-didChangeWatchedFiles");
+    assert!(row_string(&watchers, "protocol_field").contains("workspace/didChangeWatchedFiles"));
+    assert!(row_string(&watchers, "protocol_field").contains("perl-didChangeWatchedFiles"));
+    assert_eq!(row_string(&watchers, "disposition"), "dynamic");
 
-    let inline = find(ids::REG_INLINE_COMPLETION);
-    assert!(inline.protocol_field.contains("textDocument/inlineCompletion"));
+    let inline = find("reg.perl-inlineCompletion");
+    assert!(row_string(&inline, "protocol_field").contains("textDocument/inlineCompletion"));
 
     for refresh_method in [
         "workspace/codeLens/refresh",
@@ -245,12 +365,25 @@ fn registrations_refreshes_and_compat_rows_are_ledgered() {
         "workspace/inlineValue/refresh",
         "workspace/diagnostic/refresh",
         "workspace/foldingRange/refresh",
+        "workspace/textDocumentContent/refresh",
     ] {
         assert!(
-            rows.iter().any(|row| row.protocol_field == refresh_method),
+            inventory_rows().iter().any(|row| row_string(row, "protocol_field") == refresh_method),
             "refresh request {refresh_method} has no inventory row"
         );
     }
+
+    let virtual_content_refresh = find("ref.workspace/textDocumentContent/refresh");
+    assert!(
+        virtual_content_refresh
+            .get("client_capability_inputs")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+    );
+    assert!(
+        row_string(&virtual_content_refresh, "builder_mutator_path")
+            .contains("virtual_content.rs request_text_document_content_refresh")
+    );
 
     // Compatibility branches behave exactly as their rows claim.
     let jetbrains = LspServer::new();
@@ -350,13 +483,14 @@ fn suppression_rows_flip_exactly_their_claimed_build_flag() {
     ];
 
     let prefix = "initializationOptions.disabledFeatures:";
-    for row in final_surface_rows() {
-        let Some(effect) = row.build_flag_effect else {
+    for row in inventory_rows() {
+        let Some(effect) = row.get("build_flag_effect") else {
             continue;
         };
-        let Some(feature_id) = row.protocol_field.strip_prefix(prefix) else {
+        let Some(feature_id) = row_string(&row, "protocol_field").strip_prefix(prefix) else {
             continue;
         };
+        let effect_flag = row_string(effect, "flag");
 
         let mut flags = BuildFlags::all();
         apply_disabled_feature_id(&mut flags, feature_id);
@@ -366,13 +500,13 @@ fn suppression_rows_flip_exactly_their_claimed_build_flag() {
         assert!(before_all_true, "BuildFlags::all() baseline changed; update flag list");
 
         for name in ALL_FLAG_NAMES {
-            let expected = if *name == effect.flag { Some(false) } else { Some(true) };
+            let expected = if *name == effect_flag { Some(false) } else { Some(true) };
             assert_eq!(
                 flag_value(&flags, name),
                 expected,
                 "suppression row {} claims flag {} but applying {feature_id} diverged on {name}",
-                row.surface_id,
-                effect.flag
+                row_string(&row, "surface_id"),
+                effect_flag
             );
         }
     }

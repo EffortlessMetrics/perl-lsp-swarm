@@ -165,7 +165,7 @@ pub(super) fn rows() -> Vec<SurfaceRow> {
 // ---------------------------------------------------------------------------
 
 fn capability_rows() -> Vec<SurfaceRow> {
-    vec![
+    let mut rows = vec![
         // -- text document sync (typed static options; overridden at runtime)
         cap(
             "cap.textDocumentSync.openClose",
@@ -517,13 +517,6 @@ fn capability_rows() -> Vec<SurfaceRow> {
                 "features.toml#lsp.code_action_resolve; lifecycle tests code_action documentation/disabled/llm-tag parsing",
             )
         },
-        cap(
-            "cap.executeCommandProvider.commands[]",
-            "executeCommandProvider.commands[]",
-            S_CODE_ACTION,
-            "workspace/executeCommand (see cmd.* rows)",
-            "features.toml#lsp.execute_command; SUPPORTED_COMMANDS canonical list",
-        ),
         // -- misc providers
         cap(
             "cap.documentLinkProvider.resolveProvider",
@@ -629,7 +622,23 @@ fn capability_rows() -> Vec<SurfaceRow> {
         // -- shared WorkDoneProgressOptions empties are not serialized by
         // lsp-types (empirically absent from every profile census), so no
         // family row exists for them.
-    ]
+    ];
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut execute_command = cap(
+            "cap.executeCommandProvider.commands[]",
+            "executeCommandProvider.commands[]",
+            S_CODE_ACTION,
+            "workspace/executeCommand (see cmd.* rows)",
+            "features.toml#lsp.execute_command; SUPPORTED_COMMANDS canonical list; target_arch != wasm32",
+        );
+        execute_command.build_profile_config_tool_inputs =
+            &["BuildFlags.execute_command", "target_arch != wasm32"];
+        rows.push(execute_command);
+    }
+
+    rows
 }
 
 // ---------------------------------------------------------------------------
@@ -653,7 +662,7 @@ fn mutation_rows() -> Vec<SurfaceRow> {
             )
         },
         SurfaceRow {
-            additional_owned_pointers: &["positionEncoding"],
+            additional_owned_pointers: super::NO_POINTERS,
             client_capability_inputs: &[
                 "general.positionEncodings (negotiated, stored, NOT advertised)",
             ],
@@ -734,7 +743,7 @@ fn mutation_rows() -> Vec<SurfaceRow> {
             )
         },
         SurfaceRow {
-            additional_owned_pointers: &["experimental.perlInlineCompletionStream"],
+            additional_owned_pointers: super::NO_POINTERS,
             client_capability_inputs: &["textDocument/inlineCompletion presence"],
             ..mut_row(
                 "mut.handle_initialize.experimentalPerlInlineCompletionStreamMerge",
@@ -874,6 +883,16 @@ fn refresh_rows() -> Vec<SurfaceRow> {
             "crates/perl-lsp-rs/src/runtime/client_requests.rs request_folding_range_refresh",
             "features.toml#lsp.folding_range_refresh",
         ),
+        SurfaceRow {
+            runtime_route_owner: "crates/perl-lsp-rs/src/runtime/language/virtual_content.rs LspServer::request_text_document_content_refresh",
+            ..refresh_request(
+                "ref.workspace/textDocumentContent/refresh",
+                "workspace/textDocumentContent/refresh",
+                NO_CLIENT,
+                "crates/perl-lsp-rs/src/runtime/language/virtual_content.rs request_text_document_content_refresh",
+                "features.toml#lsp.text_document_content_refresh; lsp_text_document_content_tests.rs",
+            )
+        },
     ]
 }
 
@@ -1246,6 +1265,7 @@ fn compatibility_rows() -> Vec<SurfaceRow> {
 // Execute-command identities (#8285)
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 fn command_rows() -> Vec<SurfaceRow> {
     vec![
         command("cmd.perl.runTests"),
@@ -1270,4 +1290,9 @@ fn command_rows() -> Vec<SurfaceRow> {
         command("cmd.perl.previewPackageRename"),
         command("cmd.perl.explainMissingModuleLookup"),
     ]
+}
+
+#[cfg(target_arch = "wasm32")]
+fn command_rows() -> Vec<SurfaceRow> {
+    Vec::new()
 }

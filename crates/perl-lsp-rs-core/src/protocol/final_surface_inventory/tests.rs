@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 
 use super::{
-    INVENTORY_ISSUE, SurfaceKind, SurfaceRow, census_pointer_union, coverage_errors,
+    Disposition, INVENTORY_ISSUE, SurfaceKind, SurfaceRow, census_pointer_union, coverage_errors,
     coverage_errors_with_source_check, final_surface_rows, flatten_surface_pointers,
     owned_surface_pointers, render_final_surface_inventory_json, render_with_rows,
     static_surface_census,
@@ -133,6 +133,81 @@ fn negative_control_stale_capability_row_fails_render() {
 }
 
 #[test]
+fn negative_control_unadvertised_capability_row_fails_render() {
+    let rows: Vec<SurfaceRow> = final_surface_rows()
+        .into_iter()
+        .map(|row| {
+            if row.surface_id == "cap.hoverProvider" {
+                let mut unadvertised = row.clone();
+                unadvertised.disposition = Disposition::Unadvertised;
+                unadvertised
+            } else {
+                row
+            }
+        })
+        .collect();
+    let error = render_with_rows(&rows).expect_err("capability rows must be advertised statically");
+    assert!(
+        error
+            .problems
+            .iter()
+            .any(|problem| problem.contains("malformed capability row cap.hoverProvider")
+                && problem.contains("disposition must be static")),
+        "unadvertised capability row must be rejected, got: {error}"
+    );
+}
+
+#[test]
+fn negative_control_command_kind_must_have_command_identity() {
+    let rows: Vec<SurfaceRow> = final_surface_rows()
+        .into_iter()
+        .map(|row| {
+            if row.surface_id == "cap.hoverProvider" {
+                let mut command = row.clone();
+                command.kind = SurfaceKind::Command;
+                command
+            } else {
+                row
+            }
+        })
+        .collect();
+    let error =
+        render_with_rows(&rows).expect_err("a capability pointer is not a command identity");
+    assert!(
+        error.problems.iter().any(|problem| {
+            problem.contains("malformed command row cap.hoverProvider")
+                && problem.contains("cmd.<id>")
+        }),
+        "command-shaped capability row must be rejected, got: {error}"
+    );
+}
+
+#[test]
+fn negative_control_duplicate_primary_and_additional_pointer_fails_render() {
+    let rows: Vec<SurfaceRow> = final_surface_rows()
+        .into_iter()
+        .map(|row| {
+            if row.surface_id == "mut.handle_initialize.workspaceReplacement" {
+                let mut duplicate = row.clone();
+                duplicate.additional_owned_pointers = &["workspace"];
+                duplicate
+            } else {
+                row
+            }
+        })
+        .collect();
+    let error = render_with_rows(&rows)
+        .expect_err("primary and additional ownership of one pointer must be rejected");
+    assert!(
+        error.problems.iter().any(|problem| {
+            problem.contains("duplicate builder claim for pointer workspace")
+                && problem.contains("mut.handle_initialize.workspaceReplacement")
+        }),
+        "duplicate ownership must name the claimant row, got: {error}"
+    );
+}
+
+#[test]
 fn negative_control_hidden_mutation_must_be_ledgered() {
     // The runtime mutation surface is discriminated end-to-end by the
     // perl-lsp-rs final-surface census tests; here we guarantee the ledger
@@ -154,7 +229,9 @@ fn negative_control_hidden_mutation_must_be_ledgered() {
             .find(|row| row.surface_id == surface_id)
             .unwrap_or_else(|| panic!("mutation row {surface_id} missing from ledger"));
         assert!(
-            !row.additional_owned_pointers.is_empty() || row.rewrites_surface_pointer.is_some(),
+            !row.additional_owned_pointers.is_empty()
+                || row.rewrites_surface_pointer.is_some()
+                || !row.protocol_field.starts_with("(rewrite)"),
             "mutation row {surface_id} owns no pointers"
         );
     }
@@ -171,6 +248,33 @@ fn command_rows_are_parity_with_supported_commands() {
     assert!(
         command_errors.is_empty(),
         "execute-command identities drifted from SUPPORTED_COMMANDS: {command_errors:?}"
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn command_inventory_is_scoped_to_non_wasm_advertisement() {
+    let rows = final_surface_rows();
+    assert!(rows.iter().any(|row| {
+        row.surface_id == "cap.executeCommandProvider.commands[]"
+            && row.build_profile_config_tool_inputs.contains(&"target_arch != wasm32")
+    }));
+    assert_eq!(
+        rows.iter().filter(|row| row.kind == SurfaceKind::Command).count(),
+        crate::protocol::capabilities::SUPPORTED_COMMANDS.len()
+    );
+}
+
+#[cfg(target_arch = "wasm32")]
+#[test]
+fn command_inventory_omits_wasm_advertisement() {
+    let rows = final_surface_rows();
+    assert!(!rows.iter().any(|row| row.kind == SurfaceKind::Command));
+    assert!(!rows.iter().any(|row| row.protocol_field == "executeCommandProvider.commands[]"));
+    assert!(
+        capabilities_json(crate::features::flags::BuildFlags::all())
+            .get("executeCommandProvider")
+            .is_none()
     );
 }
 
