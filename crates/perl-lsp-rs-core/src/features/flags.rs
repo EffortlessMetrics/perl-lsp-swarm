@@ -131,8 +131,6 @@ pub struct BuildFlags {
     pub moniker: bool,
     /// Document color provider compilation flag for color swatches in strings and comments
     pub document_color: bool,
-    /// Source organize imports capability (GA-lock excludes this)
-    pub source_organize_imports: bool,
     /// Document formatting provider compilation flag
     pub formatting: bool,
     /// Range formatting provider compilation flag
@@ -326,7 +324,6 @@ impl BuildFlags {
             notebook_cell_execution: false,
             moniker: true,
             document_color: true,
-            source_organize_imports: true,
             formatting: true,
             range_formatting: true,
             folding_range: true,
@@ -375,7 +372,6 @@ impl BuildFlags {
             notebook_cell_execution: false,
             moniker: true,
             document_color: true,
-            source_organize_imports: true,
             formatting: true,
             range_formatting: true,
             folding_range: true,
@@ -459,7 +455,6 @@ mod tests {
                 notebook_cell_execution: false,
                 moniker: true,
                 document_color: true,
-                source_organize_imports: true,
                 formatting: true,
                 range_formatting: true,
                 folding_range: true,
@@ -516,7 +511,6 @@ mod tests {
         assert!(all.notebook_cell_execution);
         assert!(all.moniker);
         assert!(all.document_color);
-        assert!(all.source_organize_imports);
         assert!(all.formatting);
         assert!(all.range_formatting);
         assert!(all.folding_range);

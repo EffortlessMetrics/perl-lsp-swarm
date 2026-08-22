@@ -7,7 +7,6 @@
   "command.showWorkspaceStatus.title": "Show Perl Workspace Status",
   "command.reinstall.title": "Reinstall Server Binary",
   "command.checkForUpdate.title": "Check for Binary Updates",
-  "command.organizeImports.title": "Organize Use Statements",
   "command.runTests.title": "Run Tests in Current File",
   "command.runPerlCritic.title": "Run Critic",
   "command.setPerlCriticSeverity.title": "Set Critic Severity",

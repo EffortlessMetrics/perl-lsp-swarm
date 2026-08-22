@@ -287,7 +287,8 @@ Quick fixes and refactorings:
 Available actions:
 - Extract variable
 - Extract subroutine
-- Organize imports
+
+(Organize imports is withdrawn — see issue #8305.)
 
 ### Document Symbols
 
@@ -354,7 +355,6 @@ Reference counts and quick actions inline in the editor.
 |--------|---------------|-------|
 | Run Tests | `Shift+Alt+T` | `Shift+Option+T` |
 | Restart Server | `Shift+Alt+R` | `Shift+Option+R` |
-| Organize Imports | `Shift+Alt+O` | `Shift+Option+O` |
 | Extract Variable | `Shift+Alt+V` | `Shift+Option+V` |
 | Extract Method | `Shift+Alt+M` | `Shift+Option+M` |
 

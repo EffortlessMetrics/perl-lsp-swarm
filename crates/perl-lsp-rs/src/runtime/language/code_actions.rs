@@ -840,7 +840,10 @@ impl LspServer {
                         InternalCodeActionKind::RefactorInline => "refactor.inline",
                         InternalCodeActionKind::RefactorRewrite => "refactor.rewrite",
                         InternalCodeActionKind::Source => "source",
-                        InternalCodeActionKind::SourceOrganizeImports => "source.organizeImports",
+                        // `source.organizeImports` is withdrawn (#8305): the
+                        // legacy line-oriented organizer no longer exists, so
+                        // the kind is absent from the internal enum and cannot
+                        // be serialized. Restoration: #8319/#10696.
                         InternalCodeActionKind::SourceFixAll => "source.fixAll",
                         InternalCodeActionKind::SourceModernize => "source.modernize",
                     },
@@ -899,7 +902,8 @@ impl LspServer {
                         InternalCodeActionKind::RefactorInline => "refactor.inline",
                         InternalCodeActionKind::RefactorRewrite => "refactor.rewrite",
                         InternalCodeActionKind::Source => "source",
-                        InternalCodeActionKind::SourceOrganizeImports => "source.organizeImports",
+                        // `source.organizeImports` is withdrawn (#8305); see the
+                        // original-provider mapping above for the restoration path.
                         InternalCodeActionKind::SourceFixAll => "source.fixAll",
                         InternalCodeActionKind::SourceModernize => "source.modernize",
                     },

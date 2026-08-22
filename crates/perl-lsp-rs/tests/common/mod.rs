@@ -7,7 +7,10 @@
 //! - **Response Matching**: Match by ID for request/response pairing
 //! - **Timeouts**: Configurable via env vars, with sensible defaults
 //! - **Quiet Drain**: Wait for server to settle after changes before assertions
-//! - **Portable Spawn**: PERL_LSP_BIN -> canonical perllsp artifact -> PATH -> cargo run fallback
+//! - **Portable Spawn**: PERL_LSP_BIN -> canonical perllsp artifact (pre-built
+//!   on miss, honoring CARGO_TARGET_DIR) -> PATH. Never a compile-at-runtime
+//!   fallback: a cargo invocation inside the handshake deadline is the #11848
+//!   stall family, so resolution ends in a loud failure instead.
 //!
 //! ## Environment Variables
 //!
@@ -216,27 +219,20 @@ pub fn start_lsp_server() -> LspServer {
                 "║  2. Runtime CARGO_BIN_EXE_perllsp: {:?}",
                 std::env::var("CARGO_BIN_EXE_perllsp").ok()
             );
-            if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-                let crate_dir = std::path::Path::new(&manifest_dir);
-                let workspace_root = crate_dir
-                    .ancestors()
-                    .find(|p| p.join("Cargo.lock").exists())
-                    .unwrap_or(crate_dir);
-                let debug_binary = workspace_root.join("target/debug/perllsp");
-                let release_binary = workspace_root.join("target/release/perllsp");
+            for (index, path) in binary_resolution::probed_binary_paths().into_iter().enumerate() {
                 eprintln!(
-                    "║  5. Debug binary exists: {} ({})",
-                    debug_binary.exists(),
-                    debug_binary.display()
-                );
-                eprintln!(
-                    "║  6. Release binary exists: {} ({})",
-                    release_binary.exists(),
-                    release_binary.display()
+                    "║  3. Prebuilt binary [{}]: exists={} {}",
+                    index,
+                    path.exists(),
+                    path.display()
                 );
             }
-            eprintln!("║  5. perllsp in PATH: {:?}", which::which("perllsp").ok());
-            eprintln!("║  6. cargo run -p perllsp fallback");
+            eprintln!(
+                "║     (probe honors CARGO_TARGET_DIR={:?}; failed pre-builds refuse loudly \
+                 per #11848)",
+                std::env::var("CARGO_TARGET_DIR").ok()
+            );
+            eprintln!("║  4. perllsp in PATH: {:?}", which::which("perllsp").ok());
             eprintln!("╠════════════════════════════════════════════════════════════════════╣");
             eprintln!("║ Last error: {:?}", last_err);
             eprintln!("╠════════════════════════════════════════════════════════════════════╣");
@@ -246,7 +242,8 @@ pub fn start_lsp_server() -> LspServer {
             eprintln!("║  • Set PERL_LSP_BIN=/path/to/perllsp for a custom product binary    ║");
             eprintln!("╚════════════════════════════════════════════════════════════════════╝");
             must(Err::<std::process::Child, _>(format!(
-                "Failed to start perl-lsp via any available method: {:?}",
+                "Failed to start perl-lsp via any available method (no compile-at-runtime \
+                 fallback exists; see #11848): {:?}",
                 last_err
             )))
         })
