@@ -26,6 +26,16 @@ fn one_edit(
     EditSpec::new(start_line, start_character, end_line, end_character, new_text)
 }
 
+fn edit_spec(edit: &TextEdit) -> EditSpec {
+    EditSpec::new(
+        edit.range.start.line,
+        edit.range.start.character,
+        edit.range.end.line,
+        edit.range.end.character,
+        edit.new_text.clone(),
+    )
+}
+
 #[test]
 fn empty_and_identity_edits_reproduce_exact_source() -> TestResult {
     assert_eq!(apply_edits_exact("my $x = 1;\n", &[], UTF16)?, "my $x = 1;\n");
@@ -202,7 +212,7 @@ fn production_replace_document_results_apply_equivalently_where_base_geometry_is
     {
         let result = FormatResult::replace_document(source, formatted);
         assert_eq!(result.edits.len(), 1);
-        let specs: Vec<EditSpec> = result.edits.iter().map(EditSpec::from).collect();
+        let specs: Vec<EditSpec> = result.edits.iter().map(edit_spec).collect();
         let applied = apply_edits_exact(source, &specs, UTF16)?;
         assert_eq!(applied, formatted, "produced edit for {source:?} must render exactly");
     }
@@ -225,13 +235,13 @@ fn historical_last_content_line_geometry_is_detectably_wrong_through_the_oracle(
     let defective_range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(0, 4));
     let edit = TextEdit::new(defective_range, formatted.to_string());
 
-    let applied = apply_edits_exact(source, &[EditSpec::from(&edit)], UTF16)?;
+    let applied = apply_edits_exact(source, &[edit_spec(&edit)], UTF16)?;
     assert_eq!(applied, "y = 1;\n\n", "defective geometry must reproduce the doubled terminator");
     assert_ne!(applied, formatted, "oracle must expose the mismatch from rendered bytes");
 
     let true_eof_range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(1, 0));
     let correct = TextEdit::new(true_eof_range, formatted.to_string());
-    let repaired = apply_edits_exact(source, &[EditSpec::from(&correct)], UTF16)?;
+    let repaired = apply_edits_exact(source, &[edit_spec(&correct)], UTF16)?;
     assert_eq!(repaired, formatted, "true-EOF geometry renders the authoritative bytes");
     Ok(())
 }

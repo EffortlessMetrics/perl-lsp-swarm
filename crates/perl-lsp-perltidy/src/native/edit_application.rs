@@ -17,8 +17,6 @@
 //! Authority boundary: no production caller. #10239/#10242 own wiring this
 //! into native/wire plan application; until then it is proof-only surface.
 
-use crate::native::TextEdit;
-
 /// Position encoding declared by the caller for `(line, character)` pairs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PositionEncoding {
@@ -54,18 +52,6 @@ impl EditSpec {
         new_text: impl Into<String>,
     ) -> Self {
         Self { start_line, start_character, end_line, end_character, new_text: new_text.into() }
-    }
-}
-
-impl From<&TextEdit> for EditSpec {
-    fn from(edit: &TextEdit) -> Self {
-        Self {
-            start_line: edit.range.start.line,
-            start_character: edit.range.start.character,
-            end_line: edit.range.end.line,
-            end_character: edit.range.end.character,
-            new_text: edit.new_text.clone(),
-        }
     }
 }
 
