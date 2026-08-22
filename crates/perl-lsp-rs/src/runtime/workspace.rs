@@ -1562,6 +1562,14 @@ impl LspServer {
     /// neither read nor indexed, so cross-file facts can never derive from a
     /// snapshot that contradicts the open buffer. The divergence is recorded
     /// so save/close complete the handoff deterministically.
+    ///
+    /// The check is repeated after the disk read: the debouncer thread can
+    /// race a concurrent `didOpen`, and an openness snapshot taken before a
+    /// blocking file read is stale by the time the mutation would run. A
+    /// false "closed" verdict here would index disk bytes behind a freshly
+    /// installed buffer; skipping instead loses at most one disk refresh for
+    /// a genuinely closed file, which the next watcher event or scan
+    /// recovers.
     fn process_file_watcher_uri_immediate(&self, uri: &str) {
         if self.document_is_open(uri) {
             self.record_backing_file_transition(uri, BackingFileTransition::Changed);
@@ -1590,6 +1598,19 @@ impl LspServer {
                 loaded_content = read_watched_file_content(uri, "re-indexing");
             }
 
+            if self.document_is_open(uri) {
+                self.record_backing_file_transition(uri, BackingFileTransition::Changed);
+                tracing::debug!(
+                    "Document {} opened while watcher content was in flight — \
+                     buffer remains authoritative; disk re-index skipped (#8041)",
+                    uri
+                );
+                if let Some(coordinator) = self.coordinator() {
+                    coordinator.notify_parse_complete(uri);
+                }
+                return;
+            }
+
             let workspace_index = coordinator.index();
             if let Ok(url) = url::Url::parse(uri)
                 && let Some(content) = loaded_content.as_ref()
@@ -1605,9 +1626,9 @@ impl LspServer {
             }
         }
 
-        // Open documents never reach this point: the authority check at the
-        // top of this function returns early, so everything below runs only
-        // for closed (disk-backed) files.
+        // Open documents never reach this point: both authority checks above
+        // return early, so everything below runs only for closed (disk-backed)
+        // files.
 
         // Notify coordinator that file processing is complete
         #[cfg(feature = "workspace")]

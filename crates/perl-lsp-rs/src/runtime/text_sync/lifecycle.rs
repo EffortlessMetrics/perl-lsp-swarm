@@ -156,10 +156,12 @@ impl LspServer {
             // in-memory text. This prevents permanent index lag where no
             // async parse ticket ever catches the index up. (#5111)
             //
-            // #8041: a save also resolves recorded backing-file divergence —
-            // after Deleted the index entry is missing entirely and the
-            // generation-staleness check alone would never fire, so commit
-            // the authoritative buffer snapshot at its current generation.
+            // #8041: a save resolves ANY recorded backing-file transition by
+            // committing the authoritative buffer snapshot at its current
+            // generation. `Changed` means disk moved on while open;
+            // `Deleted` removed the index entry entirely so the generation
+            // check alone would never fire; `RenamedOrMoved` recreates the
+            // original path on save, which must regain its own facts.
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             {
                 // Read both generation and text in a SINGLE lock to avoid TOCTOU.
@@ -172,11 +174,9 @@ impl LspServer {
                     && let Some(coordinator) = self.coordinator()
                 {
                     let index = coordinator.index();
-                    let divergence_recoheres = matches!(
-                        backing_transition,
-                        Some(BackingFileTransition::Changed | BackingFileTransition::Deleted)
-                    );
-                    if divergence_recoheres && let Ok(url) = url::Url::parse(&normalized_uri) {
+                    if backing_transition.is_some()
+                        && let Ok(url) = url::Url::parse(&normalized_uri)
+                    {
                         tracing::debug!(
                             "Re-cohering workspace index from saved buffer for {} (#8041)",
                             normalized_uri

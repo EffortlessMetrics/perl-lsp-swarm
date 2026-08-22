@@ -370,6 +370,65 @@ fn rename_of_open_unsaved_document_indexes_disk_not_buffer() {
 }
 
 #[test]
+fn save_after_rename_restores_original_path_facts_from_authoritative_buffer() {
+    let dir = TempDir::new().expect("tempdir");
+    let old_uri = file_uri(&dir, "saveback_old.pm");
+    let new_uri = file_uri(&dir, "saveback_new.pm");
+    let buffer_text = "package SaveBack;\nsub recreated_by_save { }\n1;\n";
+
+    write_file(&dir, "saveback_old.pm", "package SaveBack;\nsub moved_away { }\n1;\n");
+    write_file(&dir, "saveback_new.pm", "package SaveBack;\nsub moved_away { }\n1;\n");
+    let server = LspServer::new();
+    did_open(&server, &old_uri, buffer_text);
+
+    server
+        .handle_did_rename_files(Some(json!({
+            "files": [{ "oldUri": old_uri, "newUri": new_uri }]
+        })))
+        .expect("didRenameFiles params are valid");
+    wait_for_index_tasks(&server);
+
+    let facts_at = |query: &str, uri_key: String| {
+        index_symbols(&server, query)
+            .into_iter()
+            .filter(|(_, uri)| perl_uri::uri_key(uri) == uri_key)
+            .count()
+    };
+    assert_eq!(
+        facts_at("moved_away", perl_uri::uri_key(&old_uri)),
+        0,
+        "the abandoned old path has no facts after the rename"
+    );
+    assert_eq!(
+        facts_at("moved_away", perl_uri::uri_key(&new_uri)),
+        1,
+        "exactly one successor fact survives at the new path"
+    );
+
+    // The client saves the still-open buffer at its ORIGINAL URI, recreating
+    // the file there; the save must restore that subject's facts from the
+    // authoritative buffer (#8041 review: RenamedOrMoved handoff).
+    write_file(&dir, "saveback_old.pm", buffer_text);
+    let doc_generation = server.document_generation(&old_uri).expect("still open");
+    server
+        .handle_did_save(Some(json!({ "textDocument": { "uri": old_uri } })))
+        .expect("didSave params are valid");
+    wait_for_index_tasks(&server);
+
+    assert_eq!(
+        facts_at("recreated_by_save", perl_uri::uri_key(&old_uri)),
+        1,
+        "the recreated original path regains facts from the saved buffer"
+    );
+    assert_eq!(
+        server.coordinator().and_then(|c| c.index().indexed_generation(&old_uri)),
+        Some(doc_generation),
+        "the restored entry binds to the saved document's generation"
+    );
+    assert_eq!(server.take_backing_file_transition(&old_uri), None);
+}
+
+#[test]
 fn watcher_observed_rename_pair_preserves_open_buffer() {
     let dir = TempDir::new().expect("tempdir");
     let old_uri = file_uri(&dir, "watch_renamed.pm");
