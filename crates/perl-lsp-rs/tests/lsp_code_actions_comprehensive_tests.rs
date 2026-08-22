@@ -369,7 +369,7 @@ fn test_extract_subroutine_refactoring() -> TestResult {
 }
 
 #[test]
-// AC3:codeActions - Import organization refactoring
+// AC3:codeActions - Import organization refactoring stays withdrawn (#8305)
 fn test_organize_imports_refactoring() -> TestResult {
     let (mut harness, workspace) = create_code_actions_server()?;
 
@@ -392,24 +392,21 @@ fn test_organize_imports_refactoring() -> TestResult {
 
     let actions = actions_result.as_array().ok_or("Should return action array")?;
 
-    // Look for organize imports action
-    let organize_imports_action = actions.iter().find(|action| {
-        action["title"]
+    // Non-vacuous: the withdrawn legacy organizer (#8305) must NOT be offered.
+    // The line-oriented sorter replaced the whole first-to-last import interval
+    // and could destroy executable statements in between; restoration requires
+    // #8319/#10696 to land a proven source-preserving cohort.
+    assert!(
+        !actions.iter().any(|action| action["title"]
             .as_str()
             .map(|title| title.contains("Organize") && title.contains("import"))
-            .unwrap_or(false)
-    });
-
-    // Non-vacuous: the organize-imports action MUST be offered (previously an
-    // `if let Some` that passed silently when the action was absent — #3080/#3057).
-    let action = organize_imports_action
-        .ok_or("organize-imports action (source.organizeImports) must be offered")?;
-    assert_eq!(
-        action["kind"].as_str(),
-        Some("source.organizeImports"),
-        "Should have correct action kind"
+            .unwrap_or(false)),
+        "the withdrawn organize-imports action must not be offered; got {actions:?}"
     );
-    assert!(action.get("edit").is_some(), "Should have text edits for import organization");
+    assert!(
+        actions.iter().all(|action| action["kind"].as_str() != Some("source.organizeImports")),
+        "no action may carry the withdrawn source.organizeImports kind; got {actions:?}"
+    );
 
     Ok(())
 }

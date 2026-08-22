@@ -178,12 +178,6 @@ export async function showRefactoringOptionsCommand(): Promise<void> {
         : 'Extract selected code as a named subroutine',
       command: 'perl-lsp.extractMethod',
     },
-    {
-      label: '$(organization) Organize Imports',
-      description: 'Shift+Alt+O',
-      detail: 'Sort and deduplicate use statements',
-      command: 'perl-lsp.organizeImports',
-    },
   ];
 
   const selection = await vscode.window.showQuickPick(items, {

@@ -336,6 +336,14 @@ impl WorkspaceSymbolsProvider {
     /// Match strategy is [`matches_query`]'s: single-character queries match by
     /// exact name or prefix only, longer queries also match by substring and
     /// subsequence. (#5335)
+    ///
+    /// Completeness boundary (#8262): the result is only as complete as the
+    /// candidate set. A non-empty restricted result says nothing about names the
+    /// candidate source missed, so callers must not use this to serve
+    /// workspace/symbol unless the candidate set is a proven superset of every
+    /// canonical match tier. The open-document workspace/symbol path runs
+    /// [`Self::search`] unconditionally and records name-index output as
+    /// measurement only.
     #[must_use]
     pub fn search_with_candidates(
         &self,
@@ -586,6 +594,7 @@ mod tests {
     use super::*;
     use perl_parser_core::Parser;
     use perl_position_tracking::offset_to_utf16_line_col;
+    use perl_symbol::SymbolIndex;
     use perl_tdd_support::must;
     use perl_workspace::semantic_shadow_compare::ShadowCompareVerdict;
 
@@ -1340,6 +1349,191 @@ sub get_log { 3 }
             vec!["alpha", "another"],
             "duplicate candidate names should not duplicate workspace/symbol results"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // #8262 differential harness: name-index acceleration must be
+    // completeness-neutral for workspace/symbol
+    // -----------------------------------------------------------------------
+
+    /// Corpus covering the #8262 matrix: mixed case, camelCase, snake_case,
+    /// package-qualified names, acronyms, prefix-overlapping names that defeat
+    /// case-sensitive acceleration, and duplicate names across documents.
+    fn differential_corpus() -> (WorkspaceSymbolsProvider, HashMap<String, String>, SymbolIndex) {
+        let sources = [
+            ("file:///wssym/mixed.pm", "package Mixed;\nsub FooBar { 1 }\nsub foobar2 { 2 }\n1;\n"),
+            (
+                "file:///wssym/styles.pm",
+                "package Styles;\nsub getLogger { 1 }\nsub get_logger { 2 }\nsub parseHTML { 3 }\nsub diff_utils { 4 }\n1;\n",
+            ),
+            (
+                "file:///wssym/qualified.pm",
+                "package My::Web::Controller;\nsub index_page { 1 }\n1;\n",
+            ),
+            ("file:///wssym/dup_a.pm", "package DupA;\nsub run { 1 }\n1;\n"),
+            ("file:///wssym/dup_b.pm", "package DupB;\nsub run { 2 }\nsub run_helper { 3 }\n1;\n"),
+        ];
+        let mut provider = WorkspaceSymbolsProvider::new();
+        let mut source_map = HashMap::new();
+        let mut name_index = SymbolIndex::new();
+        for (uri, source) in sources {
+            source_map.insert(uri.to_string(), source.to_string());
+            let mut parser = Parser::new(source);
+            let ast = must(parser.parse());
+            provider.index_document(uri, &ast, source);
+        }
+        for symbol in provider.get_all_symbols() {
+            name_index.add_symbol(symbol.name);
+        }
+        (provider, source_map, name_index)
+    }
+
+    /// Historical (#8262 defect) pipeline: restrict the canonical matcher to
+    /// case-sensitive name-index candidates and run the full search only when
+    /// the restricted result is empty. Kept as the mutation oracle for
+    /// [`legacy_candidate_restriction_suppresses_canonical_matches`].
+    fn legacy_candidate_restricted_search(
+        provider: &WorkspaceSymbolsProvider,
+        source_map: &HashMap<String, String>,
+        name_index: &SymbolIndex,
+        query: &str,
+        cap: usize,
+    ) -> Vec<WorkspaceSymbol> {
+        let mut candidates = name_index.search_prefix(query);
+        if candidates.is_empty() && !query.is_empty() {
+            candidates = name_index.search_fuzzy(query);
+        }
+        let mut seen = HashSet::new();
+        candidates.retain(|candidate| seen.insert(candidate.clone()));
+        let mut results = provider.search_with_candidates(query, source_map, &candidates);
+        if results.is_empty() && !query.is_empty() {
+            results = provider.search(query, source_map);
+        }
+        results.truncate(cap);
+        results
+    }
+
+    /// Production open-document answer under #8262: the canonical full matcher
+    /// always runs; name-index output is measurement only and never restricts
+    /// results. The runtime fallback exercises this same provider search.
+    fn canonical_full_search(
+        provider: &WorkspaceSymbolsProvider,
+        source_map: &HashMap<String, String>,
+        query: &str,
+        cap: usize,
+    ) -> Vec<WorkspaceSymbol> {
+        let mut results = provider.search(query, source_map);
+        results.truncate(cap);
+        results
+    }
+
+    fn workspace_symbol_identity_vector(symbols: &[WorkspaceSymbol]) -> Vec<String> {
+        symbols.iter().map(workspace_symbol_identity).collect()
+    }
+
+    #[test]
+    fn historical_candidate_restriction_diverges_from_canonical_across_matrix() {
+        let (provider, source_map, name_index) = differential_corpus();
+        let queries = [
+            "FooBar",  // exact, mixed case
+            "foobar",  // exact, case-insensitive
+            "foo",     // prefix over mixed-case corpus (#8262 counterexample)
+            "get",     // prefix over camelCase/snake_case
+            "logger",  // substring tier
+            "html",    // substring tier over acronym
+            "My::Web", // package-qualified query
+            "glo",     // subsequence tier
+            "ph",      // subsequence tier over acronym
+            "f",       // one-char query: exact/prefix tier only
+            "",        // empty query matches everything
+            "   ",     // whitespace query trims to empty
+        ];
+        let mut divergences = 0;
+        for query in queries {
+            for cap in [usize::MAX, 5, 3, 1] {
+                let historical = legacy_candidate_restricted_search(
+                    &provider,
+                    &source_map,
+                    &name_index,
+                    query,
+                    cap,
+                );
+                let canonical = canonical_full_search(&provider, &source_map, query, cap);
+                if workspace_symbol_identity_vector(&historical)
+                    != workspace_symbol_identity_vector(&canonical)
+                {
+                    divergences += 1;
+                }
+            }
+        }
+        assert!(
+            divergences > 0,
+            "historical candidate restriction must diverge from the canonical production answer"
+        );
+    }
+
+    #[test]
+    fn canonical_matrix_semantics_are_preserved() {
+        let (provider, source_map, _name_index) = differential_corpus();
+        let names = |query: &str| -> Vec<String> {
+            canonical_full_search(&provider, &source_map, query, usize::MAX)
+                .into_iter()
+                .map(|symbol| symbol.name)
+                .collect()
+        };
+
+        assert_eq!(names("foo"), vec!["FooBar".to_string(), "foobar2".to_string()]);
+        assert_eq!(names("FooBar").first(), Some(&"FooBar".to_string()));
+        assert!(names("logger").contains(&"getLogger".to_string()));
+        assert!(names("logger").contains(&"get_logger".to_string()));
+        assert!(names("html").contains(&"parseHTML".to_string()));
+        assert!(names("ph").contains(&"parseHTML".to_string()));
+        assert!(names("My::Web").iter().any(|name| name.contains("Controller")));
+        assert_eq!(names("f"), vec!["FooBar".to_string(), "foobar2".to_string()]);
+
+        let total = names("").len();
+        assert!(total >= 15, "corpus must index at least 15 symbols, got {total}");
+        assert_eq!(names("   ").len(), total, "whitespace queries trim to empty");
+        assert_eq!(names("run").iter().filter(|name| **name == "run").count(), 2);
+
+        let full = canonical_full_search(&provider, &source_map, "", usize::MAX);
+        let capped = canonical_full_search(&provider, &source_map, "", 3);
+        assert_eq!(capped.len(), 3, "cap below total must truncate");
+        assert_eq!(
+            workspace_symbol_identity_vector(&capped),
+            workspace_symbol_identity_vector(&full[..3]),
+            "caps apply after canonical ranking"
+        );
+    }
+
+    /// Mutation guard for #8262: under the historical candidate-restricted
+    /// pipeline this fixture loses `FooBar` (the case-sensitive trie prefix for
+    /// "foo" yields only `foobar2`, so the restricted result is non-empty and
+    /// the full matcher never runs). This test fails by construction on pre-fix
+    /// behavior; if it ever passes because restriction became harmless, the
+    /// differential guard above is void and must be re-discriminated.
+    #[test]
+    fn legacy_candidate_restriction_suppresses_canonical_matches() {
+        let (provider, source_map, name_index) = differential_corpus();
+        let legacy = legacy_candidate_restricted_search(
+            &provider,
+            &source_map,
+            &name_index,
+            "foo",
+            usize::MAX,
+        );
+        let canonical = canonical_full_search(&provider, &source_map, "foo", usize::MAX);
+
+        let legacy_names: Vec<&str> = legacy.iter().map(|symbol| symbol.name.as_str()).collect();
+        let canonical_names: Vec<&str> =
+            canonical.iter().map(|symbol| symbol.name.as_str()).collect();
+
+        assert_eq!(canonical_names, vec!["FooBar", "foobar2"]);
+        assert!(
+            !legacy_names.contains(&"FooBar"),
+            "precondition lost: the restricted pipeline must suppress FooBar for this fixture"
+        );
+        assert_ne!(legacy_names, canonical_names);
     }
 
     #[test]

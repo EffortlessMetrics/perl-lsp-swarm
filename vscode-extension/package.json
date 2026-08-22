@@ -904,12 +904,6 @@
         "icon": "$(sync)"
       },
       {
-        "command": "perl-lsp.organizeImports",
-        "title": "%command.organizeImports.title%",
-        "category": "Perl",
-        "icon": "$(organization)"
-      },
-      {
         "command": "perl-lsp.runTests",
         "title": "%command.runTests.title%",
         "category": "Perl",
@@ -1091,10 +1085,6 @@
           "when": "perl-lsp.activated"
         },
         {
-          "command": "perl-lsp.organizeImports",
-          "when": "editorLangId == perl"
-        },
-        {
           "command": "perl-lsp.runTests",
           "when": "editorLangId == perl && resourceExtname =~ /\\.(t|pl)$/"
         },
@@ -1239,11 +1229,6 @@
       ]
     },
     "keybindings": [
-      {
-        "command": "perl-lsp.organizeImports",
-        "key": "shift+alt+o",
-        "when": "editorTextFocus && editorLangId == perl"
-      },
       {
         "command": "perl-lsp.runTests",
         "key": "shift+alt+t",

@@ -4,7 +4,6 @@ assertion_line: 73
 expression: "&kinds"
 ---
 - quickfix
-- source.organizeImports
 - refactor
 - refactor.extract
 - refactor.rewrite

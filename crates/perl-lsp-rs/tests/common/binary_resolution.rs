@@ -3,9 +3,16 @@
 //! Resolution order (fixed for test reliability):
 //! 1. PERL_LSP_BIN env var (explicit override)
 //! 2. Runtime `CARGO_BIN_EXE_perllsp` (when owned by the product package)
-//! 3. Workspace target directory binaries (DEBUG first, then release)
+//! 3. Workspace target directory binaries (DEBUG first, then release),
+//!    honoring CARGO_TARGET_DIR, with a bounded pre-build on total miss
 //! 4. PATH lookup
-//! 5. `cargo run -p perllsp` fallback
+//!
+//! There is deliberately NO `cargo run` candidate: a cargo invocation inside
+//! the handshake deadline IS the #11848 stall family — it must wait on the
+//! build-directory lock under suite contention and can compile for minutes.
+//! Every non-env candidate is either an existing executable or a pre-build
+//! performed before any deadline starts; when nothing resolves or spawns,
+//! the harness fails loudly instead of silently degrading into cargo.
 
 use perl_tdd_support::must;
 use std::path::Path;
@@ -15,12 +22,11 @@ const BUILD_STDERR_MAX_BYTES: usize = 8 * 1024;
 
 pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
     // Resolution order (fixed for test reliability):
-    // 1. PERL_LSP_BIN env var (explicit override, useful for custom target dirs)
+    // 1. Explicit override via PERL_LSP_BIN
     // 2. Compile-time CARGO_BIN_EXE (guaranteed correct during `cargo test -p perl-lsp-rs`)
     // 3. Runtime CARGO_BIN_EXE_* (fallback for edge cases)
     // 4. Workspace target directory binaries (DEBUG first, then release)
     // 5. PATH lookup
-    // 6. cargo run fallback (slow but always works)
     //
     // IMPORTANT: Debug binary is checked BEFORE release to avoid stale release binaries
     // causing test failures. When you run `cargo test -p perl-lsp-rs`, cargo builds debug.
@@ -40,23 +46,17 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
         v.push(c);
     }
 
-    // 4. Try workspace target directory binaries (using absolute paths)
+    // 3. Try workspace target directory binaries (using absolute paths)
     // IMPORTANT: Debug BEFORE release to avoid stale release binary issues
-    // CARGO_MANIFEST_DIR points to the crate directory, we need the workspace root
-    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-        let crate_dir = std::path::Path::new(&manifest_dir);
-        // Walk up to find workspace root (contains Cargo.toml with [workspace])
-        let workspace_root =
-            crate_dir.ancestors().find(|p| p.join("Cargo.lock").exists()).unwrap_or(crate_dir);
-
+    if let Some(workspace_root) = workspace_root_from_manifest() {
         // Try DEBUG binary first (this is what `cargo test` builds by default).
         // The executable suffix matters: on Windows the file is `perllsp.exe`, so a
         // suffix-less `exists()` check silently skips a perfectly good local binary
-        // and forces the slow `cargo run` fallback below.
+        // and forces falling through to the slower candidates below.
         // Prefer the profile these tests were themselves built with, so a `cargo test
         // --release` run does not silently drive a debug server (or vice versa).
         for profile in active_profile_order() {
-            let binary = target_directory(workspace_root).join(profile).join(perllsp_file_name());
+            let binary = target_directory(&workspace_root).join(profile).join(perllsp_file_name());
             if is_executable_file(&binary) {
                 let mut c = Command::new(&binary);
                 c.arg("--stdio");
@@ -66,10 +66,10 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
 
         // The server binary lives in the `perllsp` package, not in `perl-lsp-rs` where
         // these tests live, so `cargo test -p perl-lsp-rs` never builds it. If nothing
-        // above resolved, build it ONCE here rather than leaving the `cargo run`
-        // fallback to compile inside a per-request timeout it cannot possibly meet.
+        // above resolved, build it ONCE here — before any request deadline starts,
+        // because no cargo invocation may run inside one (#11848).
         if v.is_empty() {
-            match ensure_perllsp_built(workspace_root) {
+            match ensure_perllsp_built(&workspace_root) {
                 Ok(built) => {
                     let mut c = Command::new(built);
                     c.arg("--stdio");
@@ -94,17 +94,12 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
         }
     }
 
-    // 4. Try the public command from PATH.
+    // 4. Try the public command from PATH — the last candidate. An installed
+    //    perllsp is an existing executable, so spawning it is bounded, unlike
+    //    a cargo invocation; there is deliberately no cargo-run tail (#11848).
     {
         let mut c = Command::new("perllsp");
         c.arg("--stdio");
-        v.push(c);
-    }
-    // 5. Fallback: use cargo run with debug profile (matches what tests build)
-    // This is SLOW because it may need to compile, but always works
-    {
-        let mut c = Command::new("cargo");
-        c.args(["run", "-q", "-p", "perllsp", "--", "--stdio"]);
         v.push(c);
     }
 
@@ -114,6 +109,38 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
 /// File name of the server executable, including the platform suffix.
 fn perllsp_file_name() -> String {
     format!("perllsp{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// Workspace root inferred from `CARGO_MANIFEST_DIR` — the nearest ancestor
+/// holding `Cargo.lock`.
+fn workspace_root_from_manifest() -> Option<std::path::PathBuf> {
+    let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR")?;
+    let crate_dir = std::path::Path::new(&manifest_dir);
+    Some(
+        crate_dir
+            .ancestors()
+            .find(|p| p.join("Cargo.lock").exists())
+            .unwrap_or(crate_dir)
+            .to_path_buf(),
+    )
+}
+
+/// Absolute paths the resolver probes for a prebuilt server binary, in
+/// resolution order.
+///
+/// The no-candidate spawn diagnostics print exactly these paths so an
+/// operator sees what the resolver saw — including a custom CARGO_TARGET_DIR,
+/// the exact condition that hid the binary behind the #11848 stalls. Keeping
+/// this as the single authority prevents the diagnostics from drifting back
+/// to hardcoded `workspace/target` paths.
+pub(crate) fn probed_binary_paths() -> Vec<std::path::PathBuf> {
+    let Some(workspace_root) = workspace_root_from_manifest() else {
+        return Vec::new();
+    };
+    active_profile_order()
+        .iter()
+        .map(|profile| target_directory(&workspace_root).join(profile).join(perllsp_file_name()))
+        .collect()
 }
 
 fn target_directory(workspace_root: &std::path::Path) -> std::path::PathBuf {
@@ -247,8 +274,8 @@ fn is_executable_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{built_binary_or_refuse, target_directory_from};
-    use std::ffi::OsString;
+    use super::{built_binary_or_refuse, must, target_directory_from};
+    use std::ffi::{OsStr, OsString};
     use std::path::Path;
 
     #[test]
@@ -271,9 +298,72 @@ mod tests {
         assert!(matches!(result, Err(message) if message.contains("not a regular executable")));
     }
 
+    /// True when the command program names cargo itself, whatever spelling or
+    /// absolute location — classified by executable basename/file-stem so an
+    /// absolute cargo path cannot slip past a string-prefix check (#11848).
+    fn is_cargo_invocation(program: &std::ffi::OsStr) -> bool {
+        Path::new(program).file_stem().is_some_and(|stem| stem.eq_ignore_ascii_case("cargo"))
+    }
+
+    #[test]
+    fn cargo_classifier_uses_the_executable_stem_not_a_string_prefix() {
+        for cargo_spelling in
+            ["cargo", "cargo.exe", "CARGO.EXE", "./cargo", "../bin/cargo", "/usr/local/bin/cargo"]
+        {
+            assert!(
+                is_cargo_invocation(OsStr::new(cargo_spelling)),
+                "`{cargo_spelling}` must classify as cargo"
+            );
+        }
+        for other_program in ["perllsp", "perllsp.exe", "cargocult", "/usr/local/bin/perllsp"] {
+            assert!(
+                !is_cargo_invocation(OsStr::new(other_program)),
+                "`{other_program}` must not classify as cargo"
+            );
+        }
+        #[cfg(windows)]
+        assert!(is_cargo_invocation(OsStr::new(r"C:\Users\x\.cargo\bin\cargo.exe")));
+    }
+
+    /// The #11848 stall family was a `cargo run` candidate compiling inside
+    /// the initialize deadline; its refusal contract only holds if no spawn
+    /// path can ever reach cargo. This guards the structural invariant: every
+    /// yielded candidate is a concrete perllsp executable, never a cargo
+    /// invocation that would take the build-directory lock or compile under
+    /// the handshake timeout. Classification is by executable stem so absolute
+    /// cargo installations are caught too.
+    #[test]
+    fn resolution_never_offers_a_cargo_candidate() {
+        for cmd in super::resolve_perl_lsp_cmds() {
+            let program = cmd.get_program();
+            assert!(
+                !is_cargo_invocation(program),
+                "candidate `{}` would compile or block on the build lock inside the \
+                 initialize deadline (#11848)",
+                program.to_string_lossy()
+            );
+        }
+    }
+
+    /// The probed paths shown in spawn-failure diagnostics must be exactly
+    /// what the resolver probes — including the effective CARGO_TARGET_DIR —
+    /// so the next stall receipt cannot be misled by stale hardcoded paths.
+    #[test]
+    fn probed_paths_carry_the_executable_suffix_and_profile_order() {
+        let paths = super::probed_binary_paths();
+        assert!(!paths.is_empty(), "CARGO_MANIFEST_DIR is set under cargo test");
+        assert!(
+            paths.iter().all(|p| p
+                .to_string_lossy()
+                .ends_with(&format!("perllsp{}", std::env::consts::EXE_SUFFIX))),
+            "every probed path must name the platform-suffixed binary: {paths:?}"
+        );
+        assert_eq!(paths.len(), 2, "debug and release profiles are both probed");
+    }
+
     #[test]
     fn current_executable_is_accepted_as_a_real_binary() {
-        let path = perl_test_must::must(std::env::current_exe());
+        let path = must(std::env::current_exe().map_err(|e| format!("resolve current exe: {e}")));
         assert_eq!(built_binary_or_refuse(path.clone()), Ok(path));
     }
 

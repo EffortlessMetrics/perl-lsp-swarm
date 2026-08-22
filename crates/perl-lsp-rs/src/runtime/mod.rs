@@ -1910,6 +1910,18 @@ model = "gpt-4"
         )?;
 
         let server = LspServer::new();
+        // Configure a fully usable user-level transport (endpoint + resolvable
+        // credential) so the only thing preventing construction is activation
+        // authority. With an empty endpoint this assertion would pass for the
+        // wrong reason (#4997: the oracle must not depend on a missing
+        // destination or missing secret).
+        {
+            let mut config = server.config.lock();
+            config.ai_completion.endpoint =
+                "https://connector.example/v1/chat/completions".to_string();
+            config.ai_completion.model = "custom-code-model".to_string();
+            config.ai_completion.api_key_env = KEY_ENV.to_string();
+        }
         let workspace_uri =
             url::Url::from_directory_path(temp.path()).map_err(|_| "bad folder uri")?.to_string();
         {

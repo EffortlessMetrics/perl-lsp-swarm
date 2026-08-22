@@ -57,6 +57,29 @@ created = "2026-06-01"
 review_after = "2026-07-01"
 expires = "2026-09-30"
 
+# Exact-process organizer-withdrawal receipt: subprocess harness plumbing is not
+# production behavior.
+#
+# The test drives the published `perllsp` binary over stdio and asserts the
+# initialize capability response, filtered and unfiltered code-action results,
+# forged resolve behavior, edit ranges, and clean process shutdown. RIPR's
+# diff-scoped tracer cannot connect the request/response helper plumbing to
+# those assertions and reports 47 reachable-unrevealed seams in this test-only
+# receipt file. Keep the suppression narrow to the four reported plumbing
+# families; the production withdrawal remains covered by the provider,
+# runtime, and exact-process assertions.
+[[suppress]]
+id = "ripr-suppress-organize-imports-withdrawal-process-receipt"
+kind = "test_receipt_surface"
+paths = ["crates/perllsp/tests/lsp_organize_imports_containment_process.rs"]
+classification = ["call_deletion", "error_path", "match_arm", "return_value"]
+owner = "proof-lane"
+issue = "#8305"
+reason = "Issue #8305 adds an exact-process receipt that drives the published perllsp binary over stdio and asserts withdrawal of source.organizeImports from initialize capabilities, filtered and unfiltered code-action responses, forged resolve responses, edit ranges, and process shutdown. RIPR 0.10.0 reports 47 reachable_unrevealed seams in this test-only subprocess harness because it cannot trace request/response helper plumbing into the assertions. The production withdrawal remains covered by provider-level, runtime-level, and exact-process negative assertions. Keep this suppression narrow to the single receipt file and these four reported test-plumbing families; remove when RIPR distinguishes receipt harness plumbing from production behavior."
+created = "2026-08-21"
+review_after = "2026-09-21"
+expires = "2026-10-31"
+
 # -----------------------------------------------------------------------------
 # Inline completion pack contract fixtures: executable receipt matrix, not
 # production behavior. The fixture file added for #1567 records positive and

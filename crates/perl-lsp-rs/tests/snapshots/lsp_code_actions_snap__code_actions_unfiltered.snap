@@ -34,7 +34,3 @@ expression: normalized
   has_edit: true
   kind: source.fixAll
   title: Fix all auto-fixable issues
-- has_command: false
-  has_edit: true
-  kind: source.organizeImports
-  title: Organize imports

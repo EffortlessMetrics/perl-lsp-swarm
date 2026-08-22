@@ -562,9 +562,11 @@ impl ServerConfig {
             // apiKeyHeader, or apiKeyPrefix. A hostile workspace could redirect
             // AI completion requests to an attacker-controlled endpoint and
             // exfiltrate source code, or change the env var name to read an
-            // arbitrary secret. These settings must arrive only via user-level
-            // config (machine-scoped VS Code settings or .perl-lsp.toml at the
-            // workspace root, which is already gated in merge_project_config).
+            // arbitrary secret. No configuration path currently sets them:
+            // `.perl-lsp.toml` does not carry these fields at all (#4955),
+            // no client channel may supply them (#5684), and the primary VS
+            // Code extension exposes no endpoint/credential surface (known
+            // gap documented in docs/reference/AI_COMPLETION.md and #4997).
             if let Some(_endpoint) = ai.get("endpoint").and_then(|v| v.as_str()) {
                 tracing::warn!(
                     target: "perl_lsp::config",

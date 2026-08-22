@@ -1,5 +1,12 @@
 # Import Optimizer Guide
 
+> **Withdrawn from live LSP surface (#8305).** The `source.organizeImports`
+> code action described below is not offered by the language server: its
+> line-oriented implementation could destroy executable statements between
+> import-looking lines. This guide remains for the `perl-refactoring`
+> library API only. The LSP action returns only after issue #10696 lands a
+> proven source-preserving cohort (#8319).
+
 ## Overview
 
 The import optimization system provides comprehensive analysis and optimization of Perl import statements.
