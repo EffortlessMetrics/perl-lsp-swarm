@@ -676,6 +676,37 @@ class GateShardTests(unittest.TestCase):
                 ):
                     shard._read_gate_command_specs(adjacent_policy)
 
+    def test_fallback_parser_rejects_adjacent_double_quoted_scalars_without_pyyaml(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = write_gate_policy(
+                root,
+                '  - name: adjacent_double\n    command: "echo" "outside"\n',
+            )
+            with mock.patch.object(shard, "yaml", None), self.assertRaisesRegex(
+                ValueError, "adjacent quoted"
+            ):
+                shard._read_gate_command_specs(policy)
+
+    def test_gate_policy_preflight_rejects_qualified_unsafe_command_basenames(self) -> None:
+        commands = ("./source", "./eval", "./exec", "./cd", "./alias")
+        for command in commands:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "scripts/ci").mkdir(parents=True)
+                (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+                policy = write_gate_policy(
+                    root,
+                    "  - name: source_commit_api_check\n"
+                    f"    command: {command} scripts/ci/check.py\n",
+                )
+                with self.assertRaisesRegex(ValueError, "unsupported shell command"):
+                    shard.load_gate_commands(
+                        policy,
+                        ["source_commit_api_check"],
+                        root=root,
+                    )
+
     def test_repository_root_derivation_matches_xtask_from_subdirectory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1059,28 +1090,40 @@ class GateShardTests(unittest.TestCase):
 
     def test_gate_policy_preflight_rejects_dynamic_separators_and_constructs(self) -> None:
         commands = (
-            "${GATE_SCRIPT}",
-            "echo ; scripts/ci/missing.py",
-            "echo; scripts/ci/missing.py",
-            "python3 scripts/ci/missing.py ; ${GATE_SCRIPT}",
-            "echo &&",
-            "echo ||",
-            "echo |",
-            "while true; do python3 scripts/ci/missing.py; done",
-            "python3 scripts/ci/missing.py [[ -f scripts/ci/missing.py ]]",
+            ("${GATE_SCRIPT}", "shell brace expansion"),
+            ("echo ; ${GATE_SCRIPT}", "shell brace expansion"),
+            ("echo; ${GATE_SCRIPT}", "shell brace expansion"),
+            (
+                "python3 scripts/ci/check.py ; ${GATE_SCRIPT}",
+                "shell brace expansion",
+            ),
+            ("echo &&", "shell separator"),
+            ("echo ||", "shell separator"),
+            ("echo |", "shell separator"),
+            (
+                "while true; do python3 scripts/ci/check.py; done",
+                "unsupported shell construct",
+            ),
+            (
+                "python3 scripts/ci/check.py [[ -f scripts/ci/check.py ]]",
+                "unsupported shell construct",
+            ),
         )
-        for command in commands:
+        for command, message in commands:
             with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "scripts/ci").mkdir(parents=True)
+                (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
                 policy = write_gate_policy(
-                    Path(tmp),
+                    root,
                     "  - name: source_commit_api_check\n"
                     f"    command: {command}\n",
                 )
-                with self.assertRaises(ValueError):
+                with self.assertRaisesRegex(ValueError, message):
                     shard.load_gate_commands(
                         policy,
                         ["source_commit_api_check"],
-                        root=Path(tmp),
+                        root=root,
                     )
 
     def test_gate_policy_preflight_rejects_assignments_grouping_globs_and_windows_paths(self) -> None:
@@ -1207,66 +1250,70 @@ class GateShardTests(unittest.TestCase):
 
     def test_gate_policy_preflight_rejects_nested_shell_and_unsafe_wrappers(self) -> None:
         commands = (
-            "bash -c 'python3 ../outside.py'",
-            "env -S 'python3 ../outside.py'",
-            "env -- scripts/ci/missing.py",
-            "env NAME=foo.py python3 ../outside.py",
-            "python3 -uscripts/ci/missing.py",
-            "python3 scripts/ci/missing.py > ../outside.log",
-            "python3 scripts/ci/missing.py >../outside.log",
-            "python3 scripts/ci/missing.py >>../outside.log",
-            "python3 scripts/ci/missing.py &> ../outside.log",
-            "python3 scripts/ci/missing.py &>> ../outside.log",
-            "python3 scripts/ci/missing.py >| ../outside.log",
-            "python3 scripts/ci/missing.py `pwd`",
-            "python3 -m missing_module",
-            "python3.exe scripts/ci/missing.py",
-            "cd ../outside && python3 scripts/ci/missing.py",
-            "alias py=python3; py scripts/ci/missing.py",
-            "pwsh -Command 'python3 ../outside.py'",
-            "pwsh -File ../outside.ps1",
-            "powershell.exe -Command 'python3 ../outside.py'",
-            "powershell.exe -File ../outside.ps1",
-            "call python3 ../outside.py",
-            "start python3 ../outside.py",
-            "%ComSpec% /C python3 ../outside.py",
-            "python3 scripts/ci/missing.py ;; echo ok",
-            "python3 scripts/ci/missing.py ;& echo ok",
-            "python3 scripts/ci/missing.py ;;& echo ok",
-            "python3 scripts/ci/missing.py &&& echo ok",
-            "python3 scripts/ci/missing.py ||| echo ok",
-            "python3 scripts/ci/missing.py ;;;; echo ok",
-            "python3 scripts/ci/missing.py &&&& echo ok",
-            "python3 scripts/ci/missing.py |||| echo ok",
-            "python3 scripts/ci/missing.py |& echo ok",
-            "python3 scripts/ci/missing.py <>",
-            "xargs bash -c 'python3 ../outside.py'",
-            "nice python3 ../outside.py",
-            "nohup python3 ../outside.py",
-            "setsid python3 ../outside.py",
-            "parallel python3 ../outside.py",
-            "busybox sh ../outside.sh",
-            "sudo python3 ../outside.py",
-            "chroot ../outside python3 scripts/ci/missing.py",
-            "taskset -c 0 python3 ../outside.py",
-            "stdbuf -oL python3 ../outside.py",
-            "time python3 ../outside.py",
-            "find . -exec bash -c 'python3 ../outside.py' {} +",
-            "command bash -c 'python3 ../outside.py'",
-            "timeout 10s bash -c 'python3 ../outside.py'",
+            ("bash -c 'python3 scripts/ci/check.py'", "nested interpreter command"),
+            ("env -S 'python3 scripts/ci/check.py'", "env -S"),
+            ("env NAME=foo.py python3 ../outside.py", "outside checked-out tree"),
+            ("python3 -uscripts/ci/check.py", "attached interpreter option"),
+            ("python3 scripts/ci/check.py > ../outside.log", "checked-out tree"),
+            ("python3 scripts/ci/check.py >../outside.log", "checked-out tree"),
+            ("python3 scripts/ci/check.py >>../outside.log", "checked-out tree"),
+            ("python3 scripts/ci/check.py &> ../outside.log", "Bash redirection"),
+            ("python3 scripts/ci/check.py &>> ../outside.log", "Bash redirection"),
+            ("python3 scripts/ci/check.py >| ../outside.log", "Bash redirection"),
+            ("python3 scripts/ci/check.py `pwd`", "backtick substitution"),
+            ("python3 -m missing_module", "nested interpreter command"),
+            ("cd scripts/ci && python3 scripts/ci/check.py", "unsupported shell command"),
+            ("alias py=python3; py scripts/ci/check.py", "unsupported shell command"),
+            ("pwsh -Command 'python3 scripts/ci/check.py'", "nested interpreter command"),
+            ("pwsh -File ../outside.ps1", "checked-out tree"),
+            ("powershell.exe -Command 'python3 scripts/ci/check.py'", "nested interpreter command"),
+            ("powershell.exe -File ../outside.ps1", "checked-out tree"),
+            ("call python3 scripts/ci/check.py", "nested-shell wrapper"),
+            ("start python3 scripts/ci/check.py", "nested-shell wrapper"),
+            ('"%ComSpec% /C python3 scripts/ci/check.py"', "dynamic shell expansion"),
+            ("python3 scripts/ci/check.py ;; echo ok", "malformed shell punctuation"),
+            ("python3 scripts/ci/check.py ;& echo ok", "malformed shell punctuation"),
+            ("python3 scripts/ci/check.py ;;& echo ok", "malformed shell punctuation"),
+            ("python3 scripts/ci/check.py &&& echo ok", "malformed shell punctuation"),
+            ("python3 scripts/ci/check.py ||| echo ok", "malformed shell punctuation"),
+            ("python3 scripts/ci/check.py ;;;; echo ok", "malformed shell punctuation"),
+            ("python3 scripts/ci/check.py &&&& echo ok", "malformed shell punctuation"),
+            ("python3 scripts/ci/check.py |||| echo ok", "malformed shell punctuation"),
+            ("python3 scripts/ci/check.py |& echo ok", "malformed shell punctuation"),
+            ("python3 scripts/ci/check.py <>", "malformed shell punctuation"),
+            ("xargs bash -c 'python3 scripts/ci/check.py'", "nested-shell wrapper"),
+            ("nice python3 scripts/ci/check.py", "nested-shell wrapper"),
+            ("nohup python3 scripts/ci/check.py", "nested-shell wrapper"),
+            ("setsid python3 scripts/ci/check.py", "nested-shell wrapper"),
+            ("parallel python3 scripts/ci/check.py", "nested-shell wrapper"),
+            ("busybox sh scripts/ci/check.py", "nested-shell wrapper"),
+            ("sudo python3 scripts/ci/check.py", "nested-shell wrapper"),
+            ("chroot ../outside python3 scripts/ci/check.py", "nested-shell wrapper"),
+            ("taskset -c 0 python3 scripts/ci/check.py", "nested-shell wrapper"),
+            ("stdbuf -oL python3 scripts/ci/check.py", "nested-shell wrapper"),
+            ("time python3 scripts/ci/check.py", "nested-shell wrapper"),
+            (
+                "find . -exec bash -c 'python3 scripts/ci/check.py' {} +",
+                "find -exec",
+            ),
+            ("command bash -c 'python3 scripts/ci/check.py'", "nested-shell wrapper"),
+            ("timeout 10s bash -c 'python3 scripts/ci/check.py'", "nested-shell wrapper"),
         )
-        for command in commands:
+        for command, message in commands:
             with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "scripts/ci").mkdir(parents=True)
+                (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
                 policy = write_gate_policy(
-                    Path(tmp),
+                    root,
                     "  - name: source_commit_api_check\n"
                     f"    command: {command}\n",
                 )
-                with self.assertRaises(ValueError):
+                with self.assertRaisesRegex(ValueError, message):
                     shard.load_gate_commands(
                         policy,
                         ["source_commit_api_check"],
-                        root=Path(tmp),
+                        root=root,
                     )
 
     def test_gate_policy_header_allows_trailing_whitespace(self) -> None:

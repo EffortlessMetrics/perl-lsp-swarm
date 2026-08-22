@@ -215,6 +215,21 @@ def _yaml_scalar(value: str) -> str:
             raise ValueError(f"gate command has adjacent quoted scalars {value!r}")
         return value[1:-1].replace("''", "'")
     if value[0] == '"':
+        cursor = 1
+        escaped = False
+        while cursor < len(value):
+            character = value[cursor]
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                if cursor != len(value) - 1:
+                    raise ValueError(f"gate command has adjacent quoted scalars {value!r}")
+                break
+            cursor += 1
+        else:
+            raise ValueError(f"gate command has invalid quoted scalar {value!r}")
         try:
             decoded = ast.literal_eval(value)
         except (SyntaxError, ValueError) as error:
@@ -631,7 +646,7 @@ def _validate_shell_constructs(tokens: Sequence[str], root: Path) -> None:
             raise ValueError(f"unsupported shell glob expansion in gate policy: {token}")
         if _contains_bracket_glob(token):
             raise ValueError(f"unsupported shell bracket glob expansion in gate policy: {token}")
-        if token in UNSAFE_SHELL_COMMANDS:
+        if token_name in UNSAFE_SHELL_COMMANDS:
             raise ValueError(f"unsupported shell command in gate policy: {token}")
         if token in UNSUPPORTED_SHELL_CONSTRUCTS and not _is_nested_lock_grouping(
             tokens, index
