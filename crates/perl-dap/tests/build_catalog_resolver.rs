@@ -1,6 +1,8 @@
 mod build_script {
     include!("../build.rs");
 
+    use serial_test::serial;
+
     #[test]
     fn missing_explicit_override_does_not_fall_back_to_workspace_catalog() {
         let root =
@@ -24,5 +26,50 @@ mod build_script {
         assert!(workspace_catalog.exists(), "test setup must include a fallback catalog");
         assert!(!missing_override.exists(), "override must remain missing");
         std::fs::remove_dir_all(root).expect("remove test catalog directory");
+    }
+
+    #[test]
+    #[serial]
+    fn generate_catalog_module_propagates_missing_explicit_override() {
+        let root = tempfile::tempdir().expect("create test catalog directory");
+        let workspace_catalog = root.path().join("features.toml");
+        let missing_override = root.path().join("missing-features.toml");
+        let out_dir = root.path().join("out");
+        std::fs::create_dir(&out_dir).expect("create test output directory");
+        std::fs::write(&workspace_catalog, "[feature]\n")
+            .expect("write fallback workspace catalog");
+
+        let previous_manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR");
+        let previous_out_dir = std::env::var_os("OUT_DIR");
+        let previous_override = std::env::var_os("FEATURES_TOML_OVERRIDE");
+        unsafe {
+            std::env::set_var("CARGO_MANIFEST_DIR", root.path());
+            std::env::set_var("OUT_DIR", &out_dir);
+            std::env::set_var("FEATURES_TOML_OVERRIDE", &missing_override);
+        }
+
+        let result = generate_catalog_module();
+
+        unsafe {
+            match previous_manifest_dir {
+                Some(value) => std::env::set_var("CARGO_MANIFEST_DIR", value),
+                None => std::env::remove_var("CARGO_MANIFEST_DIR"),
+            }
+            match previous_out_dir {
+                Some(value) => std::env::set_var("OUT_DIR", value),
+                None => std::env::remove_var("OUT_DIR"),
+            }
+            match previous_override {
+                Some(value) => std::env::set_var("FEATURES_TOML_OVERRIDE", value),
+                None => std::env::remove_var("FEATURES_TOML_OVERRIDE"),
+            }
+        }
+
+        let error = result.expect_err("missing explicit override must fail the entrypoint");
+        assert!(error.to_string().contains("FEATURES_TOML_OVERRIDE path does not exist"));
+        assert!(
+            !out_dir.join("dap_feature_catalog.rs").exists(),
+            "source resolution failure must not emit fallback catalog"
+        );
     }
 }

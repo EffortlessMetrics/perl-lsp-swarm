@@ -81,12 +81,11 @@ fn resolve_catalog_source_with_override(
 }
 
 fn load_catalog_for_build(
-    manifest_dir: &Path,
-) -> Result<(FeatureCatalog, CatalogSource), Box<dyn Error>> {
-    let source = resolve_catalog_source(manifest_dir)?;
+    source: &CatalogSource,
+) -> Result<FeatureCatalog, Box<dyn Error>> {
     let content = fs::read_to_string(&source.path)?;
     let catalog = toml::from_str(&content)?;
-    Ok((catalog, source))
+    Ok(catalog)
 }
 
 fn render_dap_feature_catalog_module(ids: &[String]) -> String {
@@ -122,10 +121,11 @@ fn generate_catalog_module() -> Result<(), Box<dyn Error>> {
 
     println!("cargo:rerun-if-env-changed=FEATURES_TOML_OVERRIDE");
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")?;
+    let source = resolve_catalog_source(Path::new(&manifest_dir))?;
+    println!("cargo:rerun-if-changed={}", source.path.display());
 
-    let code = match load_catalog_for_build(Path::new(&manifest_dir)) {
-        Ok((catalog, source)) => {
-            println!("cargo:rerun-if-changed={}", source.path.display());
+    let code = match load_catalog_for_build(&source) {
+        Ok(catalog) => {
             let mut source_features = catalog
                 .feature
                 .iter()
