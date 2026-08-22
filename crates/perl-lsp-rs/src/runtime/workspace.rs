@@ -1378,11 +1378,14 @@ impl LspServer {
                 {
                     let mut workspace_config = self.workspace_config.lock();
                     let root_path = self.root_path.lock().clone();
+                    // didChangeConfiguration is a generic client channel with no
+                    // external-root authority (#4998).
                     let rejected = workspace_config.update_from_value_with_context(
                         perl,
                         perl_lsp_rs_core::config::WorkspaceConfigUpdateContext {
                             workspace_root: root_path.as_deref(),
-                            apply_external_include_paths: true,
+                            external_include_authority:
+                                perl_lsp_rs_core::config::ExternalIncludePathAuthority::Unauthorized,
                         },
                     );
                     for entry in rejected {
@@ -1433,11 +1436,14 @@ impl LspServer {
                                     .apply_to_workspace_config(&mut effective_config, folder_path);
                             }
                         }
+                        // Generic per-folder application of client settings carries no
+                        // external-root authority (#4998).
                         let rejected = effective_config.update_from_value_with_context(
                             perl,
                             perl_lsp_rs_core::config::WorkspaceConfigUpdateContext {
                                 workspace_root: folder.path.as_deref(),
-                                apply_external_include_paths: true,
+                                external_include_authority:
+                                    perl_lsp_rs_core::config::ExternalIncludePathAuthority::Unauthorized,
                             },
                         );
                         for entry in rejected {

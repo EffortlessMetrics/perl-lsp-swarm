@@ -376,7 +376,7 @@
             "scope": "resource",
             "order": 30,
             "description": "Additional library paths (like use lib) to search for Perl modules. Set this if you see \"Can't locate Foo/Bar.pm\" style module lookup errors. Relative paths resolve from the workspace root.",
-            "markdownDescription": "Additional library paths (like `use lib`) to search for Perl modules. Set this if you see `Can't locate Foo/Bar.pm` style module lookup errors. Relative paths resolve from the workspace root. Absolute external roots belong in `#perl-lsp.externalIncludePaths#`."
+            "markdownDescription": "Additional library paths (like `use lib`) to search for Perl modules. Set this if you see `Can't locate Foo/Bar.pm` style module lookup errors. Relative paths resolve from the workspace root; absolute paths are rejected here."
           },
           "perl-lsp.externalIncludePaths": {
             "type": "array",
@@ -386,8 +386,8 @@
             },
             "scope": "machine",
             "order": 31,
-            "description": "Absolute external library roots for module resolution. User/machine scope only — workspace settings cannot set this key.",
-            "markdownDescription": "Absolute external library roots for module resolution. **User/machine scope only** — committed workspace settings cannot set this key. Use this when your CPAN/local library lives outside the workspace."
+            "description": "Reserved for absolute external library roots (user/machine scope, never workspace-set). Not yet applied by the language server.",
+            "markdownDescription": "Reserved for absolute external library roots (**user/machine scope only**, never workspace-set). **Not yet applied by the language server**; meanwhile use workspace-relative `#perl-lsp.includePaths#`."
           },
           "perl-lsp.enableSemanticTokens": {
             "type": "boolean",

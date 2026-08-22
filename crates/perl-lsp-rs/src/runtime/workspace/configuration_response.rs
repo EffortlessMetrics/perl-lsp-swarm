@@ -1,18 +1,20 @@
 use crate::runtime::workspace_folder::WorkspaceFolderState;
-use perl_lsp_rs_core::config::WorkspaceConfigUpdateContext;
+use perl_lsp_rs_core::config::{ExternalIncludePathAuthority, WorkspaceConfigUpdateContext};
 use serde_json::Value;
 
 fn apply_workspace_config_layer(
     config: &mut perl_lsp_rs_core::config::WorkspaceConfig,
     settings: &Value,
     folder: &WorkspaceFolderState,
-    apply_external_include_paths: bool,
 ) {
+    // Every generic client channel is unauthorized for external roots (#4998):
+    // result-array position, request scope, and client identity are transport
+    // facts, not trusted user/machine provenance.
     let rejected = config.update_from_value_with_context(
         settings,
         WorkspaceConfigUpdateContext {
             workspace_root: folder.path.as_deref(),
-            apply_external_include_paths,
+            external_include_authority: ExternalIncludePathAuthority::Unauthorized,
         },
     );
     for entry in rejected {
@@ -81,11 +83,11 @@ pub(super) fn apply_workspace_configuration_results(
         }
 
         if let Some(global_settings) = global_settings {
-            apply_workspace_config_layer(&mut effective_config, global_settings, folder, true);
+            apply_workspace_config_layer(&mut effective_config, global_settings, folder);
         }
 
         if let Some(perl_settings) = results.get(folder_results_start + idx) {
-            apply_workspace_config_layer(&mut effective_config, perl_settings, folder, false);
+            apply_workspace_config_layer(&mut effective_config, perl_settings, folder);
         } else {
             tracing::warn!(
                 request_id,
@@ -147,6 +149,28 @@ mod tests {
 
         assert_eq!(folders[0].effective_workspace_config.resolution_timeout_ms, 200);
         assert_eq!(folders[1].effective_workspace_config.resolution_timeout_ms, 50);
+    }
+
+    #[test]
+    fn unscoped_configuration_result_cannot_authorize_external_include_paths() {
+        let absolute = if cfg!(windows) { "C:\\hostile\\lib" } else { "/etc/hostile-lib" };
+        let mut folders = vec![WorkspaceFolderState::new("file:///workspace-a".to_string())];
+        let folder_uris = vec!["file:///workspace-a".to_string()];
+        // A generic or hostile client may synthesize the unscoped result from
+        // workspace state or duplicate it into every slot (#4998). Result-array
+        // position is not provenance: no slot may admit external roots.
+        let results = vec![
+            json!({ "workspace": { "externalIncludePaths": [absolute] } }),
+            json!({ "workspace": { "externalIncludePaths": [absolute] } }),
+        ];
+
+        apply_workspace_configuration_results(&mut folders, &folder_uris, true, &results, 45, None);
+
+        assert!(
+            folders[0].effective_workspace_config.external_include_paths.is_empty(),
+            "an unscoped workspace/configuration result must not authorize external roots, got {:?}",
+            folders[0].effective_workspace_config.external_include_paths
+        );
     }
 
     #[test]
