@@ -324,7 +324,7 @@
           {
             "type": "perl",
             "request": "launch",
-            "name": "Perl: ptkdb live peer (experimental mirror)",
+            "name": "Perl: External Debugger Peer (experimental)",
             "program": "${workspaceFolder}/script.pl",
             "debuggerBackend": "external",
             "externalDebugger": {
