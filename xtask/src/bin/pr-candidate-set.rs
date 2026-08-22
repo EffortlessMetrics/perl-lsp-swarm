@@ -648,120 +648,175 @@ fn check_live_state(
         };
         let claims_for_issue: Vec<&Claim> =
             policy.claim.iter().filter(|claim| claim.issue == issue).collect();
-        let candidates: Vec<&Candidate> =
-            claims_for_issue.iter().flat_map(|claim| &claim.candidates).collect();
-        let declared: BTreeSet<u64> = candidates
-            .iter()
-            .filter(|candidate| candidate.observation.state == "open")
-            .map(|candidate| candidate.pr)
-            .collect();
         let observed_prs: BTreeSet<u64> =
             claims_for_issue.iter().flat_map(|claim| claim.observed.iter().map(|o| o.pr)).collect();
-        let discovered_prs: BTreeSet<u64> = discovered.keys().copied().collect();
-        let missing_from_policy: Vec<u64> = discovered_prs
-            .difference(&declared)
-            .copied()
-            .filter(|pr| !observed_prs.contains(pr))
-            .collect();
-        if !missing_from_policy.is_empty() {
-            findings.push(Finding { level: "error", code: "UNASSIGNED_OPEN_CROSS_REFERENCE", claim_id: None, issue: Some(issue), pr: None, message: format!("open cross-references require an explicit policy-owned claim assignment or observed entry: {missing_from_policy:?}") });
-        }
-        for candidate in &candidates {
-            match discovered.get(&candidate.pr) {
-                Some(head) => {
-                    if observation_head_is_stale(candidate, &head.sha) {
-                        findings.push(Finding {
-                            level: "error",
-                            code: "STALE_HEAD_OBSERVATION",
-                            claim_id: None,
-                            issue: Some(issue),
-                            pr: Some(candidate.pr),
-                            message: format!(
-                                "recorded head {} differs from live head {}",
-                                candidate.observation.head_sha, head.sha
-                            ),
-                        });
-                    }
-                    if observation_base_is_stale(candidate, &head.base_ref) {
-                        findings.push(Finding {
-                            level: "error",
-                            code: "STALE_BASE_OBSERVATION",
-                            claim_id: None,
-                            issue: Some(issue),
-                            pr: Some(candidate.pr),
-                            message: format!(
-                                "recorded base {} differs from live base {}",
-                                candidate.observation.base_ref, head.base_ref
-                            ),
-                        });
-                    }
-                    if candidate.observation.state != "open" {
-                        findings.push(Finding {
-                            level: "error",
-                            code: "STATE_OBSERVATION_STALE_CLOSED",
-                            claim_id: None,
-                            issue: Some(issue),
-                            pr: Some(candidate.pr),
-                            message: format!(
-                                "candidate is recorded '{}' but is an open cross-reference",
-                                candidate.observation.state
-                            ),
-                        });
-                    }
+        let (issue_findings, state) =
+            evaluate_live_issue(issue, &claims_for_issue, &observed_prs, &discovered, now);
+        findings.extend(issue_findings);
+        live.push(state);
+    }
+    live
+}
+
+/// Pure per-issue evaluation of recorded observations against discovered live
+/// heads. Drift findings are attributed to every claim observing the PR so
+/// `apply_drift_downgrades` can correlate them.
+fn evaluate_live_issue(
+    issue: u64,
+    claims: &[&Claim],
+    observed_prs: &BTreeSet<u64>,
+    discovered: &BTreeMap<u64, LiveHead>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (Vec<Finding>, LiveClaimState) {
+    let mut findings = Vec::new();
+    let candidates: Vec<&Candidate> = claims.iter().flat_map(|claim| &claim.candidates).collect();
+    let declared: BTreeSet<u64> = candidates
+        .iter()
+        .filter(|candidate| candidate.observation.state == "open")
+        .map(|candidate| candidate.pr)
+        .collect();
+    let discovered_prs: BTreeSet<u64> = discovered.keys().copied().collect();
+    let missing_from_policy: Vec<u64> = discovered_prs
+        .difference(&declared)
+        .copied()
+        .filter(|pr| !observed_prs.contains(pr))
+        .collect();
+    if !missing_from_policy.is_empty() {
+        findings.push(Finding { level: "error", code: "UNASSIGNED_OPEN_CROSS_REFERENCE", claim_id: None, issue: Some(issue), pr: None, message: format!("open cross-references require an explicit policy-owned claim assignment or observed entry: {missing_from_policy:?}") });
+    }
+    for candidate in &candidates {
+        let owners = owner_claim_ids(claims, candidate.pr);
+        match discovered.get(&candidate.pr) {
+            Some(head) => {
+                if observation_head_is_stale(candidate, &head.sha) {
+                    push_attributed_error(
+                        &mut findings,
+                        issue,
+                        candidate.pr,
+                        "STALE_HEAD_OBSERVATION",
+                        &owners,
+                        format!(
+                            "recorded head {} differs from live head {}",
+                            candidate.observation.head_sha, head.sha
+                        ),
+                    );
                 }
-                None => {
-                    if candidate.observation.state == "open" {
-                        findings.push(Finding {
-                            level: "error",
-                            code: "STALE_STATE_OBSERVATION",
-                            claim_id: None,
-                            issue: Some(issue),
-                            pr: Some(candidate.pr),
-                            message:
-                                "candidate is recorded open but is not an open cross-reference"
-                                    .to_string(),
-                        });
-                    }
+                if observation_base_is_stale(candidate, &head.base_ref) {
+                    push_attributed_error(
+                        &mut findings,
+                        issue,
+                        candidate.pr,
+                        "STALE_BASE_OBSERVATION",
+                        &owners,
+                        format!(
+                            "recorded base {} differs from live base {}",
+                            candidate.observation.base_ref, head.base_ref
+                        ),
+                    );
+                }
+                if candidate.observation.state != "open" {
+                    push_attributed_error(
+                        &mut findings,
+                        issue,
+                        candidate.pr,
+                        "STATE_OBSERVATION_STALE_CLOSED",
+                        &owners,
+                        format!(
+                            "candidate is recorded '{}' but is an open cross-reference",
+                            candidate.observation.state
+                        ),
+                    );
                 }
             }
-            if let Some(code) = observation_time_finding(&candidate.observation.observed_at, now) {
+            None => {
+                if candidate.observation.state == "open" {
+                    push_attributed_error(
+                        &mut findings,
+                        issue,
+                        candidate.pr,
+                        "STALE_STATE_OBSERVATION",
+                        &owners,
+                        "candidate is recorded open but is not an open cross-reference".to_string(),
+                    );
+                }
+            }
+        }
+        if let Some(code) = observation_time_finding(&candidate.observation.observed_at, now) {
+            push_attributed_error(
+                &mut findings,
+                issue,
+                candidate.pr,
+                code,
+                &owners,
+                format!(
+                    "observation time '{}' does not provide current evidence (max age {}s)",
+                    candidate.observation.observed_at, OBSERVATION_MAX_AGE_SECONDS
+                ),
+            );
+        }
+    }
+    for claim in claims {
+        for observed in &claim.observed {
+            if !discovered.contains_key(&observed.pr) {
                 findings.push(Finding {
-                    level: "error",
-                    code,
-                    claim_id: None,
+                    level: "warning",
+                    code: "OBSERVED_CROSS_REFERENCE_CLOSED",
+                    claim_id: Some(claim.claim_id.clone()),
                     issue: Some(issue),
-                    pr: Some(candidate.pr),
-                    message: format!(
-                        "observation time '{}' does not provide current evidence (max age {}s)",
-                        candidate.observation.observed_at, OBSERVATION_MAX_AGE_SECONDS
-                    ),
+                    pr: Some(observed.pr),
+                    message: "observed cross-reference is no longer open; prune the entry"
+                        .to_string(),
                 });
             }
         }
-        for claim in &claims_for_issue {
-            for observed in &claim.observed {
-                if !discovered.contains_key(&observed.pr) {
-                    findings.push(Finding {
-                        level: "warning",
-                        code: "OBSERVED_CROSS_REFERENCE_CLOSED",
-                        claim_id: Some(claim.claim_id.clone()),
-                        issue: Some(issue),
-                        pr: Some(observed.pr),
-                        message: "observed cross-reference is no longer open; prune the entry"
-                            .to_string(),
-                    });
-                }
-            }
-        }
-        live.push(LiveClaimState {
-            issue,
-            declared_open_prs: declared.into_iter().collect(),
-            discovered_open_prs: discovered.keys().copied().collect(),
-            missing_from_policy,
-            observed_open_heads: discovered.into_iter().map(|(pr, head)| (pr, head.sha)).collect(),
+    }
+    let state = LiveClaimState {
+        issue,
+        declared_open_prs: declared.into_iter().collect(),
+        discovered_open_prs: discovered.keys().copied().collect(),
+        missing_from_policy,
+        observed_open_heads: discovered.iter().map(|(pr, head)| (*pr, head.sha.clone())).collect(),
+    };
+    (findings, state)
+}
+
+fn owner_claim_ids(claims: &[&Claim], pr: u64) -> Vec<String> {
+    claims
+        .iter()
+        .filter(|claim| claim.candidates.iter().any(|candidate| candidate.pr == pr))
+        .map(|claim| claim.claim_id.clone())
+        .collect()
+}
+
+fn push_attributed_error(
+    findings: &mut Vec<Finding>,
+    issue: u64,
+    pr: u64,
+    code: &'static str,
+    owners: &[String],
+    message: String,
+) {
+    if owners.is_empty() {
+        findings.push(Finding {
+            level: "error",
+            code,
+            claim_id: None,
+            issue: Some(issue),
+            pr: Some(pr),
+            message,
+        });
+        return;
+    }
+    for claim_id in owners {
+        findings.push(Finding {
+            level: "error",
+            code,
+            claim_id: Some(claim_id.clone()),
+            issue: Some(issue),
+            pr: Some(pr),
+            message: message.clone(),
         });
     }
-    live
 }
 
 fn apply_drift_downgrades(claims: &mut [Claim], findings: &[Finding]) {
@@ -1075,23 +1130,74 @@ mod tests {
         let content = fs::read_to_string(&path).unwrap_or_else(|error| {
             panic!("reading workflow contract {}: {error}", path.display())
         });
-        for route in [
-            "opened",
-            "closed",
-            "reopened",
-            "synchronize",
-            "edited",
-            "ready_for_review",
+        let mut declared_types = pull_request_types_block(&content);
+        let mut expected_types = vec![
             "converted_to_draft",
-        ] {
-            assert!(
-                content.contains(route),
-                "workflow must declare pull_request lifecycle type '{route}'"
-            );
-        }
+            "edited",
+            "opened",
+            "ready_for_review",
+            "reopened",
+            "closed",
+            "synchronize",
+        ];
+        // The contract requires exactly these lifecycle routes.
+        expected_types.sort_unstable();
+        declared_types.sort_unstable();
+        assert_eq!(
+            declared_types, expected_types,
+            "workflow must declare exactly the pull_request lifecycle routes"
+        );
         assert!(content.contains("schedule:"), "scheduled reconciliation route required");
         assert!(content.contains("workflow_dispatch"), "manual dispatch route required");
         assert!(content.contains("--live"), "live validation step required on every route");
+    }
+
+    /// Parses the `types:` list under `on.pull_request` so dropped or renamed
+    /// lifecycle entries fail instead of matching unrelated substrings.
+    fn pull_request_types_block(content: &str) -> Vec<String> {
+        let mut lines = content.lines().enumerate();
+        let mut in_pull_request = false;
+        let mut types: Option<Vec<String>> = None;
+        while let Some((_, line)) = lines.next() {
+            if !in_pull_request {
+                if line.trim_end() == "  pull_request:" {
+                    in_pull_request = true;
+                }
+                continue;
+            }
+            let trimmed = line.trim_start();
+            let indented = line.len() - trimmed.len();
+            if trimmed.is_empty() || (indented < 2 && !trimmed.starts_with('#')) {
+                break;
+            }
+            if indented >= 4 && trimmed.starts_with("types:") {
+                let inline: Option<String> = trimmed
+                    .strip_prefix("types:")
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty());
+                let mut collected = match inline {
+                    Some(value) => value
+                        .trim_start_matches('[')
+                        .trim_end_matches(']')
+                        .split(',')
+                        .map(|entry| entry.trim().to_string())
+                        .filter(|entry| !entry.is_empty())
+                        .collect(),
+                    None => Vec::new(),
+                };
+                for (_, entry) in lines.by_ref() {
+                    let item = entry.trim_start();
+                    let item_indent = entry.len() - item.len();
+                    if item_indent < 6 || !item.starts_with("- ") {
+                        break;
+                    }
+                    collected.push(item[2..].trim().to_string());
+                }
+                types = Some(collected);
+                break;
+            }
+        }
+        types.unwrap_or_else(|| panic!("on.pull_request.types block must exist and be a list"))
     }
 
     #[test]
@@ -1230,35 +1336,181 @@ mod tests {
     }
 
     #[test]
-    fn drift_downgrades_claim_state_to_not_proven() {
-        let mut reconciled = claim(
+    fn live_drift_findings_attribute_and_downgrade_the_owning_claim() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-21T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let mut owned = claim(
             ClaimState::Reconciled,
             vec![candidate(10, Relationship::CurrentCandidate, None)],
         );
-        let drift = Finding {
-            level: "error",
-            code: "STALE_BASE_OBSERVATION",
-            claim_id: Some(reconciled.claim_id.clone()),
-            issue: Some(reconciled.issue),
-            pr: Some(10),
-            message: "recorded base main differs from live base release".to_string(),
-        };
-        apply_drift_downgrades(std::slice::from_mut(&mut reconciled), &[drift]);
-        assert_eq!(reconciled.state, ClaimState::NotProven);
+        let mut other = claim(
+            ClaimState::Reconciled,
+            vec![candidate(20, Relationship::CurrentCandidate, None)],
+        );
+        other.claim_id = "test.other_claim".to_string();
+        owned.candidates[0].observation.observed_at = "2026-08-01T00:00:00Z".to_string();
+        other.candidates[0].observation.observed_at = "2026-08-01T00:00:00Z".to_string();
 
-        let mut unaffected = claim(
+        let mut discovered = BTreeMap::new();
+        discovered.insert(10, LiveHead { sha: "f".repeat(40), base_ref: "release".to_string() });
+        // Candidate 20 stays current so only claim "test.claim" drifts.
+        discovered
+            .insert(20, LiveHead { sha: format!("{:040x}", 20), base_ref: "main".to_string() });
+
+        let claims = vec![&owned, &other];
+        let (findings, _) = evaluate_live_issue(1, &claims, &BTreeSet::new(), &discovered, now);
+        drop(claims);
+
+        for code in ["STALE_HEAD_OBSERVATION", "STALE_BASE_OBSERVATION"] {
+            let attributed: Vec<&Finding> =
+                findings.iter().filter(|finding| finding.code == code).collect();
+            assert_eq!(attributed.len(), 1, "{code} must fire exactly once: {findings:?}");
+            assert_eq!(
+                attributed[0].claim_id.as_deref(),
+                Some(owned.claim_id.as_str()),
+                "{code} must carry the owning claim identity"
+            );
+        }
+        assert_eq!(
+            findings.iter().filter(|finding| finding.level == "error").count(),
+            2,
+            "fresh observation must not add expiry noise: {findings:?}"
+        );
+
+        let mut claims_mut = [owned, other];
+        apply_drift_downgrades(&mut claims_mut, &findings);
+        assert_eq!(claims_mut[0].state, ClaimState::NotProven);
+        assert_eq!(claims_mut[1].state, ClaimState::Reconciled);
+    }
+
+    #[test]
+    fn stale_state_and_closed_reappearance_carry_claim_identity() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-21T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let vanished = candidate(11, Relationship::CurrentCandidate, None);
+        let reappeared = candidate(12, Relationship::SalvageSource, None);
+        let mut historical = claim(ClaimState::NotProven, vec![vanished, reappeared]);
+        historical.claim_id = "test.history".to_string();
+        historical.candidates[1].observation.state = "closed".to_string();
+        for candidate in &mut historical.candidates {
+            candidate.observation.observed_at = "2026-08-01T00:00:00Z".to_string();
+        }
+        let claims = vec![&historical];
+
+        let mut discovered = BTreeMap::new();
+        discovered
+            .insert(12, LiveHead { sha: format!("{:040x}", 12), base_ref: "main".to_string() });
+
+        let (findings, _) = evaluate_live_issue(1, &claims, &BTreeSet::new(), &discovered, now);
+        for code in ["STALE_STATE_OBSERVATION", "STATE_OBSERVATION_STALE_CLOSED"] {
+            let attributed: Vec<&Finding> =
+                findings.iter().filter(|finding| finding.code == code).collect();
+            assert_eq!(attributed.len(), 1, "{code} must fire once: {findings:?}");
+            assert_eq!(
+                attributed[0].claim_id.as_deref(),
+                Some(historical.claim_id.as_str()),
+                "{code} must be attributed to the owning claim"
+            );
+            assert!(
+                DRIFT_FINDING_CODES.contains(&code),
+                "{code} must remain a drift code so downgrades keep firing"
+            );
+        }
+        assert!(!DRIFT_FINDING_CODES.contains(&"OBSERVED_CROSS_REFERENCE_CLOSED"));
+    }
+
+    #[test]
+    fn drift_downgrade_ignores_unrelated_error_findings() {
+        let mut reconciled = claim(
             ClaimState::Reconciled,
             vec![candidate(10, Relationship::CurrentCandidate, None)],
         );
         let unrelated = Finding {
             level: "error",
             code: "MISSING_DECISION",
-            claim_id: Some(unaffected.claim_id.clone()),
-            issue: Some(unaffected.issue),
+            claim_id: Some(reconciled.claim_id.clone()),
+            issue: Some(reconciled.issue),
             pr: None,
             message: "decision must explain the current candidate-set conclusion".to_string(),
         };
-        apply_drift_downgrades(std::slice::from_mut(&mut unaffected), &[unrelated]);
-        assert_eq!(unaffected.state, ClaimState::Reconciled);
+        apply_drift_downgrades(std::slice::from_mut(&mut reconciled), &[unrelated]);
+        assert_eq!(reconciled.state, ClaimState::Reconciled);
+    }
+
+    #[test]
+    fn forbidden_target_arms_fire_for_current_distinct_slice_and_not_proven() {
+        let findings = validate_policy(&policy(claim(
+            ClaimState::Reconciled,
+            vec![
+                candidate(10, Relationship::CurrentCandidate, Some(11)),
+                candidate(11, Relationship::DistinctSlice, Some(12)),
+                candidate(12, Relationship::NotProven, Some(10)),
+                candidate(13, Relationship::SalvageSource, None),
+            ],
+        )));
+        let arms: Vec<u64> = findings
+            .iter()
+            .filter(|finding| finding.code == "RELATIONSHIP_FORBIDS_TARGET")
+            .map(|finding| finding.pr.unwrap_or(0))
+            .collect();
+        assert_eq!(arms.len(), 3);
+        for pr in [10, 11, 12] {
+            assert!(arms.contains(&pr), "PR #{pr} must be flagged: {findings:?}");
+        }
+    }
+
+    #[test]
+    fn required_target_relationships_fail_without_a_target() {
+        let findings = validate_policy(&policy(claim(
+            ClaimState::NotProven,
+            vec![
+                candidate(10, Relationship::SalvageSource, None),
+                candidate(11, Relationship::ExplicitStack, None),
+                candidate(12, Relationship::Superseded, None),
+                candidate(13, Relationship::Duplicate, None),
+            ],
+        )));
+        let flagged: Vec<u64> = findings
+            .iter()
+            .filter(|finding| finding.code == "RELATIONSHIP_REQUIRES_TARGET")
+            .map(|finding| finding.pr.unwrap_or(0))
+            .collect();
+        assert_eq!(flagged.len(), 3);
+        for pr in [11, 12, 13] {
+            assert!(flagged.contains(&pr), "PR #{pr} must require target_pr: {findings:?}");
+        }
+    }
+
+    #[test]
+    fn self_target_is_rejected() {
+        let findings = validate_policy(&policy(claim(
+            ClaimState::NotProven,
+            vec![candidate(10, Relationship::Superseded, Some(10))],
+        )));
+        let self_targets = findings
+            .iter()
+            .filter(|finding| finding.code == "SELF_TARGET" && finding.pr == Some(10))
+            .count();
+        assert_eq!(self_targets, 1, "self-target must fire exactly once: {findings:?}");
+    }
+
+    #[test]
+    fn all_six_drift_codes_drive_downgrades() {
+        for code in [
+            "STALE_HEAD_OBSERVATION",
+            "STALE_BASE_OBSERVATION",
+            "STALE_STATE_OBSERVATION",
+            "STATE_OBSERVATION_STALE_CLOSED",
+            "OBSERVATION_EXPIRED",
+            "OBSERVATION_TIME_UNPARSEABLE",
+        ] {
+            assert!(
+                DRIFT_FINDING_CODES.contains(&code),
+                "{code} must remain registered as drift evidence"
+            );
+        }
+        assert!(!DRIFT_FINDING_CODES.contains(&"UNASSIGNED_OPEN_CROSS_REFERENCE"));
     }
 }
