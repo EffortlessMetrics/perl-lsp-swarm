@@ -2874,6 +2874,46 @@ mod tests {
     }
 
     #[test]
+    fn native_compatibility_include_admits_system_producer() {
+        let source = "use strict;\nuse warnings;\nsystem('ls');\n";
+        let ast = parse_source(source);
+        let config = CriticConfig { include: vec!["PL603".to_string()], ..Default::default() };
+        let ctx = CriticContext::new(source, &ast, &config);
+        let registry = NativeCriticRegistry::for_profile_with_config(
+            NativeCriticProfile::Recommended,
+            &config,
+        );
+
+        let findings = registry.check_unfiltered(&ctx);
+
+        assert_eq!(
+            findings.iter().map(|finding| finding.rule_id.as_str()).collect::<Vec<_>>(),
+            vec!["native.security.system_exec"],
+            "PL603 must admit its native producer without running unrelated rules"
+        );
+    }
+
+    #[test]
+    fn native_compatibility_include_admits_shape_specific_backtick_producer() {
+        let source = "use strict;\nuse warnings;\nmy $output = `ls`;\n";
+        let ast = parse_source(source);
+        let config = CriticConfig { include: vec!["PL601".to_string()], ..Default::default() };
+        let ctx = CriticContext::new(source, &ast, &config);
+        let registry = NativeCriticRegistry::for_profile_with_config(
+            NativeCriticProfile::Recommended,
+            &config,
+        );
+
+        let findings = registry.check_unfiltered(&ctx);
+
+        assert_eq!(
+            findings.iter().map(|finding| finding.rule_id.as_str()).collect::<Vec<_>>(),
+            vec!["native.security.backtick_exec"],
+            "PL601 must admit only the native producer for the reviewed backtick shape"
+        );
+    }
+
+    #[test]
     fn native_include_of_unknown_rule_id_leaves_the_profile_roster_alone() {
         // Unknown IDs are reported by config load, not silently resolved to a
         // neighbouring rule here.

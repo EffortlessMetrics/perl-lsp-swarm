@@ -5,7 +5,10 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::super::identity::{CriticFindingShape, NativeCriticIdentityDisposition};
+use super::super::identity::{
+    CriticFindingOrigin, CriticFindingShape, CriticIdentityRegistry,
+    NativeCriticIdentityDisposition,
+};
 use super::super::{CriticConfig, Severity, Violation};
 use super::native_contract::{CriticContext, CriticFinding, CriticRule, PragmaEntries};
 use super::native_suppressions::CriticSuppressionMap;
@@ -457,10 +460,32 @@ impl NativeCriticRegistry {
 /// rather than resolving to nothing.
 fn rule_enabled(rule: &dyn CriticRule, config: &CriticConfig) -> bool {
     let id = rule.id();
-    let included = config.include.is_empty() || config.include.iter().any(|policy| policy == id);
+    let included = config.include.is_empty()
+        || config
+            .include
+            .iter()
+            .any(|policy| policy == id || native_producer_admits_compatibility_alias(id, policy));
     let excluded = config.exclude.iter().any(|policy| policy == id);
 
     included && !excluded
+}
+
+/// Whether a compatibility include names the logical finding produced by a
+/// native rule. Resolve the producer's reviewed shape through the shared
+/// identity registry so combined native rules do not admit an alias belonging
+/// to a different shape (for example, `PL601` is both backtick and `qx`).
+fn native_producer_admits_compatibility_alias(rule_id: &str, policy: &str) -> bool {
+    CriticIdentityRegistry::entries().iter().any(|entry| {
+        entry.aliases().iter().any(|alias| {
+            alias.origin() == CriticFindingOrigin::BuiltInDiagnostic
+                && alias.code() == policy
+                && entry.aliases().iter().any(|producer| {
+                    producer.origin() == CriticFindingOrigin::NativeCritic
+                        && producer.code() == rule_id
+                        && producer.shape() == alias.shape()
+                })
+        })
+    })
 }
 
 fn severity_enabled(severity: Severity, config: &CriticConfig) -> bool {
