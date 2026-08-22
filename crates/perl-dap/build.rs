@@ -80,9 +80,7 @@ fn resolve_catalog_source_with_override(
     Err(format!("features catalog not found for manifest dir: {}", manifest_dir.display()).into())
 }
 
-fn load_catalog_for_build(
-    source: &CatalogSource,
-) -> Result<FeatureCatalog, Box<dyn Error>> {
+fn load_catalog_for_build(source: &CatalogSource) -> Result<FeatureCatalog, Box<dyn Error>> {
     let content = fs::read_to_string(&source.path)?;
     let catalog = toml::from_str(&content)?;
     Ok(catalog)
