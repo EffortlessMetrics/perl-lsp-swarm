@@ -3872,6 +3872,12 @@ fn ast_prediction_match_score(expectation: &AstExpectation, prediction: &AstPred
     {
         score += 1;
     }
+    if expectation.operator.is_some()
+        && prediction.operator.as_ref() == expectation.operator.as_ref()
+        && prediction.parent_operator.as_ref() == expectation.parent_operator.as_ref()
+    {
+        score += 3;
+    }
     score
 }
 
@@ -8085,6 +8091,45 @@ sub dynamic_boundary_case {
 
         assert_eq!(score.operator_precedence_expected_count, 1);
         assert_eq!(score.operator_precedence_correct_count, 0);
+    }
+
+    #[test]
+    fn best_ast_prediction_prefers_later_exact_null_parent_operator_candidate() {
+        let expectation = AstExpectation {
+            id: "match_without_parent_operator".to_string(),
+            kind: "Match".to_string(),
+            line: 1,
+            span_text: "$value =~ /foo/".to_string(),
+            parent_kind: Some("Return".to_string()),
+            depth: Some(4),
+            operator: Some("=~".to_string()),
+            parent_operator: None,
+        };
+        let predictions = vec![
+            AstPrediction {
+                kind: "Match".to_string(),
+                line: 1,
+                span_text: "$value =~ /foo/".to_string(),
+                parent_kind: Some("Return".to_string()),
+                depth: 4,
+                operator: Some("=~".to_string()),
+                parent_operator: Some("&&".to_string()),
+            },
+            AstPrediction {
+                kind: "Match".to_string(),
+                line: 1,
+                span_text: "$value =~ /foo/".to_string(),
+                parent_kind: Some("Return".to_string()),
+                depth: 4,
+                operator: Some("=~".to_string()),
+                parent_operator: None,
+            },
+        ];
+
+        assert_eq!(
+            best_ast_prediction_index(&expectation, &predictions, &BTreeSet::new()),
+            Some(1)
+        );
     }
 
     #[test]
