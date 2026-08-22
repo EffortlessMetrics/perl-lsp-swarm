@@ -3759,6 +3759,9 @@ fn score_ast_expectations(
     let mut matched = BTreeSet::new();
     for expectation in expectations {
         let expected_delimiter_pair = expected_ast_delimiter_pair(expectation);
+        if expectation.operator.is_some() || expectation.parent_operator.is_some() {
+            score.operator_precedence_expected_count += 1;
+        }
         let prediction_index = best_ast_prediction_index(expectation, predictions, &matched);
 
         let Some(prediction_index) = prediction_index else {
@@ -3792,7 +3795,6 @@ fn score_ast_expectations(
             }
         }
         if expectation.operator.is_some() || expectation.parent_operator.is_some() {
-            score.operator_precedence_expected_count += 1;
             let operator_matches = expectation
                 .operator
                 .as_ref()
@@ -8004,6 +8006,56 @@ sub dynamic_boundary_case {
         assert_eq!(score.tree_depth_correct_count, 1);
         assert_eq!(score.operator_precedence_correct_count, 1);
         Ok(())
+    }
+
+    #[test]
+    fn ast_scorer_counts_unmatched_operator_expectations_in_denominator() {
+        let expectations = vec![
+            AstExpectation {
+                id: "matched_multiplication".to_string(),
+                kind: "Binary".to_string(),
+                line: 1,
+                span_text: "2 * 3".to_string(),
+                parent_kind: Some("Binary".to_string()),
+                depth: Some(3),
+                operator: Some("*".to_string()),
+                parent_operator: Some("+".to_string()),
+            },
+            AstExpectation {
+                id: "missing_negated_match".to_string(),
+                kind: "Match".to_string(),
+                line: 2,
+                span_text: "$value !~ /bar/".to_string(),
+                parent_kind: Some("Return".to_string()),
+                depth: Some(4),
+                operator: Some("!~".to_string()),
+                parent_operator: None,
+            },
+        ];
+        let predictions = vec![AstPrediction {
+            kind: "Binary".to_string(),
+            line: 1,
+            span_text: "2 * 3".to_string(),
+            parent_kind: Some("Binary".to_string()),
+            depth: 3,
+            operator: Some("*".to_string()),
+            parent_operator: Some("+".to_string()),
+        }];
+        let mut score = AstScore::default();
+
+        score_ast_expectations(&expectations, &predictions, &mut score);
+
+        assert_eq!(score.operator_precedence_expected_count, 2);
+        assert_eq!(score.operator_precedence_correct_count, 1);
+        let metrics = ast_metrics(&score, Cadence::Pr);
+        assert!(metrics.iter().any(|metric| {
+            matches!(
+                metric,
+                MetricRow::Measured { metric, value, sample_count: 2, .. }
+                    if metric == "ast_operator_precedence_accuracy"
+                        && (*value - 0.5).abs() < f64::EPSILON
+            )
+        }));
     }
 
     #[test]
