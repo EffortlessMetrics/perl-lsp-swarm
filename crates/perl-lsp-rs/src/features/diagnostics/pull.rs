@@ -21,7 +21,7 @@ use perl_diagnostics::codes::DiagnosticCode;
 use perl_lsp_rs_core::config::CriticEngine;
 use perl_lsp_rs_core::providers::diagnostics::{parse_error_code, parse_error_severity};
 use perl_lsp_rs_core::tooling::perl_critic::{
-    CriticConfig, CriticContext, CriticFinding, NativeCriticProfile, NativeCriticRegistry, Severity,
+    CriticConfig, CriticContext, NativeCriticProfile, NativeCriticRegistry, Severity,
 };
 use perl_module::resolution::use_lib::{
     UseLibOperation, extract_use_lib_operations_with_offsets,
@@ -298,7 +298,7 @@ impl PullDiagnosticsProvider {
         uri: &Uri,
         content: &str,
         context: &PullDiagnosticsContext,
-        _doc_state: Option<&DocumentState>,
+        doc_state: Option<&DocumentState>,
     ) -> Vec<LspDiagnostic> {
         let code_text = code_slice(content);
         let mut parser = Parser::new(code_text);
@@ -413,7 +413,19 @@ impl PullDiagnosticsProvider {
 
                 let mut diagnostics = base_diagnostics;
 
-                self.add_policy_critic_diagnostics(uri, &ast, content, context, &mut diagnostics);
+                let critic_generation =
+                    doc_state.map(|state| state.current_generation()).unwrap_or(0);
+                self.add_policy_critic_diagnostics(
+                    uri,
+                    &ast,
+                    content,
+                    context,
+                    perl_lsp_rs_core::tooling::perl_critic::critic_source_identity_for_uri(
+                        &uri.to_string(),
+                        critic_generation,
+                    ),
+                    &mut diagnostics,
+                );
 
                 diagnostics
             }
@@ -538,6 +550,7 @@ impl PullDiagnosticsProvider {
         ast: &std::sync::Arc<perl_parser::ast::Node>,
         content: &str,
         context: &PullDiagnosticsContext,
+        source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         diagnostics: &mut Vec<LspDiagnostic>,
     ) {
         match context.critic_engine {
@@ -545,7 +558,14 @@ impl PullDiagnosticsProvider {
                 self.add_builtin_critic_diagnostics(uri, ast, content, diagnostics);
             }
             CriticEngine::Native => {
-                self.add_native_critic_diagnostics(uri, ast, content, context, diagnostics);
+                self.add_native_critic_diagnostics(
+                    uri,
+                    ast,
+                    content,
+                    context,
+                    source_identity,
+                    diagnostics,
+                );
             }
         }
     }
@@ -596,10 +616,17 @@ impl PullDiagnosticsProvider {
         ast: &std::sync::Arc<perl_parser::ast::Node>,
         content: &str,
         context: &PullDiagnosticsContext,
+        source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         diagnostics: &mut Vec<LspDiagnostic>,
     ) {
+        use perl_lsp_rs_core::tooling::perl_critic::{
+            CriticSuppressionMap, NativeCriticPolicy, native_finding_candidates_with_accounting,
+            normalize_with_native_policy,
+        };
+
+        let severity_threshold = context.perlcritic_severity.clamp(1, 5) as u8;
         let critic_config = CriticConfig {
-            severity: context.perlcritic_severity.clamp(1, 5) as u8,
+            severity: severity_threshold,
             profile: context.perlcritic_profile.clone(),
             include: context.native_critic_include.clone(),
             exclude: context.native_critic_exclude.clone(),
@@ -610,28 +637,46 @@ impl PullDiagnosticsProvider {
             .unwrap_or(NativeCriticProfile::Strict);
         let registry = NativeCriticRegistry::for_profile_with_config(profile, &critic_config);
 
-        for finding in registry.check(&critic_context) {
-            diagnostics.push(self.native_finding_to_lsp_diagnostic(uri, content, finding));
+        // Producer outputs enter the canonical normalized set (#7475): checked
+        // identities at collection, alias merge, then policy applied exactly
+        // once post-merge. Findings without a registered producer-owned
+        // identity are rejected here rather than guessed, and every rejection
+        // is accounted for instead of silently vanishing.
+        let candidates = native_finding_candidates_with_accounting(
+            &uri.to_string(),
+            registry.check_unfiltered(&critic_context),
+            source_identity,
+        );
+        let suppressions = CriticSuppressionMap::from_source(content);
+        let policy = NativeCriticPolicy::new(
+            severity_threshold,
+            &context.native_critic_include,
+            &context.native_critic_exclude,
+            &suppressions,
+        );
+
+        for finding in normalize_with_native_policy(candidates, &policy) {
+            diagnostics.push(self.normalized_finding_to_lsp_diagnostic(uri, content, &finding));
         }
     }
 
-    fn native_finding_to_lsp_diagnostic(
+    fn normalized_finding_to_lsp_diagnostic(
         &self,
         _uri: &Uri,
         text: &str,
-        finding: CriticFinding,
+        finding: &perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding,
     ) -> LspDiagnostic {
-        let range = lsp_range_from_offsets(text, finding.range.start.byte, finding.range.end.byte);
-        let severity = Some(native_critic_severity_to_lsp(finding.severity));
-        let code = Some(NumberOrString::String(finding.rule_id.clone()));
-        let fixable = finding.fix.is_some();
+        let range =
+            lsp_range_from_offsets(text, finding.range().start.byte, finding.range().end.byte);
+        let severity = Some(native_critic_severity_to_lsp(finding.severity()));
+        let code = Some(NumberOrString::String(finding.public_code().to_string()));
         let data = Some(serde_json::json!({
-            "code": finding.rule_id,
-            "category": format!("{:?}", finding.category),
-            "fixable": fixable,
+            "code": finding.public_code(),
+            "category": finding.category().map(|category| format!("{category:?}")).unwrap_or_else(|| "Other".to_string()),
+            "fixable": finding.has_available_fix(),
             "tags": [],
-            "suppressionKey": finding.suppression_key,
-            "explanation": finding.explanation,
+            "suppressionKey": finding.public_code(),
+            "explanation": finding.explanation(),
         }));
 
         LspDiagnostic {
@@ -640,7 +685,7 @@ impl PullDiagnosticsProvider {
             code,
             code_description: None,
             source: Some("perl-lsp".to_string()),
-            message: finding.message,
+            message: finding.message().to_string(),
             related_information: None,
             tags: None,
             data,
@@ -759,6 +804,10 @@ impl PullDiagnosticsProvider {
                 ast,
                 &doc_state.text,
                 context,
+                perl_lsp_rs_core::tooling::perl_critic::critic_source_identity_for_uri(
+                    &uri.to_string(),
+                    doc_state.current_generation(),
+                ),
                 &mut diagnostics,
             );
 
