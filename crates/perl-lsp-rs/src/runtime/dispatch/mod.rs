@@ -379,7 +379,7 @@ mod tests {
             "workspace/applyEdit",
             Some(json!({
                 "edit": {"changes": {
-                    uri: [{
+                    (uri): [{
                         "range": {
                             "start": {"line": 0, "character": 6},
                             "end": {"line": 0, "character": 13}
@@ -419,7 +419,7 @@ mod tests {
         let edit = server.handle_request(notification(
             "workspace/applyEdit",
             Some(json!({
-                "edit": {"changes": {uri: [{"range": {
+                "edit": {"changes": {(uri): [{"range": {
                     "start": {"line": 0, "character": 0},
                     "end": {"line": 0, "character": 6}
                 }, "newText": "warn 'x'"}]}}

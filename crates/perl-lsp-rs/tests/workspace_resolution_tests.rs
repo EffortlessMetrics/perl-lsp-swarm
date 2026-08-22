@@ -380,15 +380,14 @@ fn configuration_returns_resolution_timeout() -> Result<(), Box<dyn std::error::
 fn did_change_configuration_updates_workspace_settings() -> Result<(), Box<dyn std::error::Error>> {
     // Client includePaths entries are fail-closed validated against a
     // canonicalizable workspace root, so this test uses a real temporary
-    // directory instead of a synthetic `file:///workspace` URI.
-    let root = std::env::temp_dir().join(format!("plsp-8896-config-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root)?;
+    // directory instead of a synthetic `file:///workspace` URI. TempDir keeps
+    // cleanup panic-safe.
+    let root = tempfile::TempDir::new()?;
 
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let (server, _buffer) = create_test_server();
-        let root_uri = url::Url::from_file_path(&root)
-            .map_err(|()| format!("temp root {} is not absolute", root.display()))?
+        let root_uri = url::Url::from_file_path(root.path())
+            .map_err(|()| format!("temp root {} is not absolute", root.path().display()))?
             .to_string();
         let doc_uri = format!("{}/test.pl", root_uri.trim_end_matches('/'));
 
@@ -441,7 +440,6 @@ fn did_change_configuration_updates_workspace_settings() -> Result<(), Box<dyn s
         Ok(())
     })();
 
-    let _ = std::fs::remove_dir_all(&root);
     result
 }
 
