@@ -35,16 +35,18 @@ pub fn to_json() -> String {
 
 /// Profile-aware feature catalog JSON.
 ///
-/// The advertised feature list and compliance math are derived from the provided
-/// runtime profile. This is useful for feature flag snapshots in CI and tooling.
+/// The advertised feature list is derived from the provided runtime profile.
+/// Declaration-count compliance percentages are intentionally not serialized:
+/// they are compatibility helpers, not behavior evidence (#6731).
 pub fn to_json_for_profile(profile: FeatureProfile) -> String {
     feature_grid_payload(&[profile], Some(profile)).to_string()
 }
 
 /// BDD-compatible feature catalog JSON for an explicit profile set.
 ///
-/// The top-level advertised feature list and compliance math are scoped to the
-/// union of the provided profiles.
+/// The top-level advertised feature list is scoped to the union of the provided
+/// profiles. Declaration-count compliance percentages are intentionally not
+/// serialized: they are compatibility helpers, not behavior evidence (#6731).
 pub fn to_json_for_profiles(profiles: &[FeatureProfile]) -> String {
     let canonical_profiles = canonicalize_profiles(profiles);
     feature_grid_payload(&canonical_profiles, None).to_string()
@@ -125,33 +127,19 @@ fn feature_grid_payload(
 ) -> Value {
     let profile_summaries: Vec<Value> = profiles.iter().copied().map(profile_summary).collect();
 
-    let (advertised, advertised_trackable_feature_count) = match selected_profile {
+    let advertised = match selected_profile {
         Some(profile) => {
             let advertised = catalog_advertised_feature_ids(profile);
-            let advertised_trackable_feature_count =
-                advertised_trackable_feature_count(&advertised);
-            (advertised, advertised_trackable_feature_count)
+            advertised
         }
         None => {
             let advertised = advertised_for_profiles(profiles);
-            let advertised_trackable_feature_count =
-                advertised_trackable_feature_count(&advertised);
-            (advertised, advertised_trackable_feature_count)
+            advertised
         }
-    };
-    let trackable_feature_count = trackable_feature_count_for_grid();
-    let compliance_percent = if trackable_feature_count == 0 {
-        0.0
-    } else {
-        (advertised_trackable_feature_count as f64 / trackable_feature_count as f64 * 100.0).round()
-            as f32
     };
     let mut payload = json!({
         "version": VERSION,
         "lsp_version": LSP_VERSION,
-        "compliance_percent": compliance_percent,
-        "trackable_feature_count": trackable_feature_count,
-        "advertised_trackable_feature_count": advertised_trackable_feature_count,
         "advertised": advertised,
         "feature_profiles": feature_profile_contracts(),
         "feature_grid": {
@@ -176,21 +164,10 @@ fn feature_grid_payload(
 
 fn profile_summary(profile: FeatureProfile) -> Value {
     let advertised = catalog_advertised_feature_ids(profile);
-    let advertised_trackable_feature_count = advertised_trackable_feature_count(&advertised);
-    let trackable_feature_count = trackable_feature_count_for_grid();
-    let compliance_percent = if trackable_feature_count == 0 {
-        0.0
-    } else {
-        (advertised_trackable_feature_count as f64 / trackable_feature_count as f64 * 100.0).round()
-            as f32
-    };
 
     json!({
         "profile": profile.as_str(),
         "advertised": advertised,
-        "compliance_percent": compliance_percent,
-        "trackable_feature_count": trackable_feature_count,
-        "advertised_trackable_feature_count": advertised_trackable_feature_count,
         "advertised_feature_count": advertised.len(),
     })
 }
@@ -210,7 +187,7 @@ mod tests {
 
         assert!(value.get("version").is_some());
         assert!(value.get("lsp_version").is_some());
-        assert!(value.get("compliance_percent").is_some());
+        assert!(value.get("compliance_percent").is_none());
         assert!(value.get("feature_grid").is_some());
         assert!(value.get("lsp_feature_grid").is_some());
         assert!(value.get("feature_profiles").is_some());
@@ -244,23 +221,16 @@ mod tests {
     fn payload_is_profile_scoped() {
         let all = to_json_for_profile(FeatureProfile::All);
         let ga_lock = to_json_for_profile(FeatureProfile::GaLock);
-        let all_compliance = compliance_percent_for_profile(FeatureProfile::All);
-        let ga_compliance = compliance_percent_for_profile(FeatureProfile::GaLock);
-
         let all_value: serde_json::Value = must(serde_json::from_str(&all));
         let ga_lock_value: serde_json::Value = must(serde_json::from_str(&ga_lock));
 
         assert_eq!(all_value["profile"].as_str(), Some("all"));
         assert_eq!(ga_lock_value["profile"].as_str(), Some("ga-lock"));
 
-        let json_all_compliance = must_some(all_value["compliance_percent"].as_f64());
-        let json_ga_compliance = must_some(ga_lock_value["compliance_percent"].as_f64());
-        assert!((json_all_compliance - all_compliance as f64).abs() < f32::EPSILON as f64);
-        assert!((json_ga_compliance - ga_compliance as f64).abs() < f32::EPSILON as f64);
-
-        let all_count = all_value["advertised_trackable_feature_count"].as_u64().unwrap_or(0);
-        let ga_count = ga_lock_value["advertised_trackable_feature_count"].as_u64().unwrap_or(0);
-        assert!(all_count >= ga_count);
+        assert!(all_value.get("compliance_percent").is_none());
+        assert!(ga_lock_value.get("compliance_percent").is_none());
+        assert!(all_value["advertised"].as_array().is_some_and(|items| !items.is_empty()));
+        assert!(ga_lock_value["advertised"].as_array().is_some_and(|items| !items.is_empty()));
     }
 
     #[test]
@@ -333,15 +303,19 @@ mod tests {
         let payload = super::to_json_for_profiles(&[FeatureProfile::GaLock]);
         let value: serde_json::Value = must(serde_json::from_str(&payload));
 
-        let top_level = must_some(value["advertised_trackable_feature_count"].as_u64());
+        let top_level = must_some(value["advertised"].as_array());
         let summary = must_some(
             value["profiles"]
                 .as_array()
                 .and_then(|profiles| profiles.first())
-                .and_then(|profile| profile["advertised_trackable_feature_count"].as_u64()),
+                .and_then(|profile| profile["advertised"].as_array()),
         );
 
-        assert_eq!(top_level, summary);
+        let mut top_level_ids = top_level.iter().collect::<Vec<_>>();
+        let mut summary_ids = summary.iter().collect::<Vec<_>>();
+        top_level_ids.sort_by_key(|id| id.to_string());
+        summary_ids.sort_by_key(|id| id.to_string());
+        assert_eq!(top_level_ids, summary_ids);
     }
 
     #[test]
@@ -349,9 +323,8 @@ mod tests {
         let payload = super::to_json_for_profiles(&[]);
         let value: serde_json::Value = must(serde_json::from_str(&payload));
 
-        assert_eq!(value["advertised_trackable_feature_count"].as_u64(), Some(0));
         assert_eq!(value["advertised"].as_array().map(Vec::len), Some(0));
-        assert_eq!(value["compliance_percent"].as_f64(), Some(0.0));
+        assert!(value.get("compliance_percent").is_none());
     }
 
     #[test]
@@ -382,11 +355,7 @@ mod tests {
         let unique_value: serde_json::Value = must(serde_json::from_str(&unique_payload));
         let duplicate_value: serde_json::Value = must(serde_json::from_str(&duplicate_payload));
 
-        assert_eq!(
-            unique_value["advertised_trackable_feature_count"],
-            duplicate_value["advertised_trackable_feature_count"]
-        );
-        assert_eq!(unique_value["compliance_percent"], duplicate_value["compliance_percent"]);
+        assert_eq!(unique_value["advertised"], duplicate_value["advertised"]);
     }
 
     // ── Profile summary fields ──────────────────────────────────────
@@ -399,18 +368,7 @@ mod tests {
         for profile_value in profiles {
             assert!(profile_value.get("profile").is_some(), "missing 'profile' key");
             assert!(profile_value.get("advertised").is_some(), "missing 'advertised' key");
-            assert!(
-                profile_value.get("compliance_percent").is_some(),
-                "missing 'compliance_percent'"
-            );
-            assert!(
-                profile_value.get("trackable_feature_count").is_some(),
-                "missing 'trackable_feature_count'"
-            );
-            assert!(
-                profile_value.get("advertised_trackable_feature_count").is_some(),
-                "missing 'advertised_trackable_feature_count'"
-            );
+            assert!(profile_value.get("compliance_percent").is_none());
             assert!(
                 profile_value.get("advertised_feature_count").is_some(),
                 "missing 'advertised_feature_count'"

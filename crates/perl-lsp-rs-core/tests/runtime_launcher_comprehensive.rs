@@ -147,6 +147,21 @@ fn launch_config_features_json_is_valid_json() {
 }
 
 #[test]
+fn production_features_json_has_no_declaration_compliance_claim() {
+    let config = LaunchConfig::new(FeatureProfile::Production);
+    let json = config.features_json();
+    let value: serde_json::Value = must(serde_json::from_str(&json));
+
+    assert_eq!(value["profile"].as_str(), Some("production"));
+    assert!(value["advertised"].as_array().is_some_and(|items| !items.is_empty()));
+    assert!(value["feature_profiles"].as_array().is_some_and(|profiles| !profiles.is_empty()));
+    assert!(
+        !json.contains("compliance_percent"),
+        "production --features-json must not expose declaration compliance: {json}"
+    );
+}
+
+#[test]
 fn launch_config_advertised_feature_ids_nonempty() {
     let config = LaunchConfig::new(FeatureProfile::current());
     let ids = config.advertised_feature_ids();

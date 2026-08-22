@@ -292,6 +292,10 @@ pub enum CatalogError {
     #[error("features catalog not found for manifest dir: {0}")]
     MissingSource(PathBuf),
 
+    /// An explicitly configured override path does not exist.
+    #[error("FEATURES_TOML_OVERRIDE path does not exist: {0}")]
+    MissingOverride(PathBuf),
+
     /// I/O failure while reading the catalog source.
     #[error("failed to read features catalog: {0}")]
     Io(#[from] std::io::Error),
@@ -309,7 +313,9 @@ impl perl_parser_core::ErrorClass for CatalogError {
     fn error_class(&self) -> perl_parser_core::ErrorCategory {
         match self {
             // File system / infrastructure issues.
-            Self::MissingSource(_) | Self::Io(_) => perl_parser_core::ErrorCategory::Infra,
+            Self::MissingSource(_) | Self::MissingOverride(_) | Self::Io(_) => {
+                perl_parser_core::ErrorCategory::Infra
+            }
             // The catalog is our own build artifact — a parse or validation
             // failure means we shipped a broken catalog, which is our bug.
             Self::Parse(_) | Self::Validation(_) => perl_parser_core::ErrorCategory::Bug,
@@ -350,11 +356,21 @@ pub enum CatalogSourceKind {
 
 /// Resolve catalog path using workspace-first lookup and override support.
 pub fn resolve_catalog_source(manifest_dir: &Path) -> Result<CatalogSource, CatalogError> {
-    if let Ok(override_path) = env::var("FEATURES_TOML_OVERRIDE") {
-        let override_path = PathBuf::from(override_path);
-        if override_path.exists() {
-            return Ok(CatalogSource { path: override_path, kind: CatalogSourceKind::Override });
+    resolve_catalog_source_with_override(
+        manifest_dir,
+        env::var_os("FEATURES_TOML_OVERRIDE").map(PathBuf::from),
+    )
+}
+
+fn resolve_catalog_source_with_override(
+    manifest_dir: &Path,
+    override_path: Option<PathBuf>,
+) -> Result<CatalogSource, CatalogError> {
+    if let Some(override_path) = override_path {
+        if !override_path.exists() {
+            return Err(CatalogError::MissingOverride(override_path));
         }
+        return Ok(CatalogSource { path: override_path, kind: CatalogSourceKind::Override });
     }
 
     let local_workspace_candidate = manifest_dir.join("features.toml");
@@ -698,6 +714,21 @@ mod tests {
         let source = must(resolve_catalog_source(&manifest_dir));
         assert!(matches!(source.kind, CatalogSourceKind::Vendored));
         assert_eq!(source.path, vendored);
+    }
+
+    #[test]
+    fn resolve_catalog_source_rejects_missing_explicit_override() {
+        let temp = must(TempDir::new());
+        let manifest_dir = temp.path().join("crates/perl-lsp-rs-core");
+        must(std::fs::create_dir_all(&manifest_dir));
+        let workspace = temp.path().join("features.toml");
+        must(std::fs::write(&workspace, "[meta]\nversion='0.1.0'\nlsp_version='3.18'\n"));
+        let missing_override = temp.path().join("missing-features.toml");
+
+        let error =
+            resolve_catalog_source_with_override(&manifest_dir, Some(missing_override.clone()))
+                .expect_err("missing explicit override must be terminal");
+        assert!(matches!(error, CatalogError::MissingOverride(path) if path == missing_override));
     }
 
     #[test]
