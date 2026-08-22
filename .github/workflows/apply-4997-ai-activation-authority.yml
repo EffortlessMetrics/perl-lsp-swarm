@@ -7,6 +7,7 @@ on:
     paths:
       - scripts/maintenance/apply_4997_ai_activation_authority.py
       - .github/workflows/apply-4997-ai-activation-authority.yml
+      - .spec/4997-ai-activation-authority/last-validation.log
 
 permissions:
   contents: write
@@ -142,24 +143,84 @@ jobs:
         run: python3 scripts/maintenance/apply_4997_ai_activation_authority.py
 
       - name: Format and validate focused contracts
+        id: validate
+        continue-on-error: true
+        shell: bash
         run: |
-          cargo fmt --all
-          python3 -m json.tool schemas/perllsp-settings.schema.json >/dev/null
-          python3 -m json.tool vscode-extension/package.json >/dev/null
-          cargo test -p perl-lsp-rs-core --test ai_activation_authority_contract --locked
-          cargo test -p perl-lsp-rs-core --test perllsp_settings_schema_tests --locked
-          cargo test -p perl-lsp-rs-core --lib ai_completion --locked
-          cargo test -p perl-lsp-rs --features expose_lsp_test_api \
-            --test lsp_ai_inline_completion_tests --locked
-          cargo check -p perl-lsp-rs --all-targets --all-features --locked
-          git diff --check
+          set +e
+          log=/tmp/4997-validation.log
+          : > "$log"
+          status=0
+
+          run_checked() {
+            printf '\n## %q' "$1" >> "$log"
+            shift
+            printf ' %q' "$@" >> "$log"
+            printf '\n' >> "$log"
+            "$@" >> "$log" 2>&1
+            rc=$?
+            printf '\nexit_status=%s\n' "$rc" >> "$log"
+            return "$rc"
+          }
+
+          run_checked "cargo fmt --all" cargo fmt --all || status=$?
+          if [ "$status" -eq 0 ]; then
+            run_checked "validate settings schema JSON" python3 -m json.tool schemas/perllsp-settings.schema.json || status=$?
+          fi
+          if [ "$status" -eq 0 ]; then
+            run_checked "validate VS Code package JSON" python3 -m json.tool vscode-extension/package.json || status=$?
+          fi
+          if [ "$status" -eq 0 ]; then
+            run_checked "AI authority recurrence" cargo test -p perl-lsp-rs-core --test ai_activation_authority_contract --locked || status=$?
+          fi
+          if [ "$status" -eq 0 ]; then
+            run_checked "settings schema behavior" cargo test -p perl-lsp-rs-core --test perllsp_settings_schema_tests --locked || status=$?
+          fi
+          if [ "$status" -eq 0 ]; then
+            run_checked "core AI configuration" cargo test -p perl-lsp-rs-core --lib ai_completion --locked || status=$?
+          fi
+          if [ "$status" -eq 0 ]; then
+            run_checked "inline completion first effect" cargo test -p perl-lsp-rs --features expose_lsp_test_api --test lsp_ai_inline_completion_tests --locked || status=$?
+          fi
+          if [ "$status" -eq 0 ]; then
+            run_checked "all-feature server check" cargo check -p perl-lsp-rs --all-targets --all-features --locked || status=$?
+          fi
+          if [ "$status" -eq 0 ]; then
+            run_checked "diff hygiene" git diff --check || status=$?
+          fi
+
+          cp "$log" .spec/4997-ai-activation-authority/last-validation.log
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Persist bounded failed-validation receipt
+        if: steps.validate.outputs.status != '0'
+        env:
+          BRANCH: agent/4997-ai-activation-authority
+        run: |
+          cp .spec/4997-ai-activation-authority/last-validation.log /tmp/4997-validation.log
+          git reset --hard HEAD
+          mkdir -p .spec/4997-ai-activation-authority
+          cp /tmp/4997-validation.log .spec/4997-ai-activation-authority/last-validation.log
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git add .spec/4997-ai-activation-authority/last-validation.log
+          if git diff --cached --quiet; then
+            echo "Validation receipt is unchanged"
+          else
+            git commit -m 'chore(ai): record #4997 validation failure'
+            git push origin HEAD:"$BRANCH"
+          fi
+          exit 1
 
       - name: Publish implementation commit and remove one-shot machinery
+        if: steps.validate.outputs.status == '0'
         env:
           BRANCH: agent/4997-ai-activation-authority
         run: |
           rm -- scripts/maintenance/apply_4997_ai_activation_authority.py
           rm -- .github/workflows/apply-4997-ai-activation-authority.yml
+          rm -f -- .spec/4997-ai-activation-authority/last-validation.log
           git config user.name EffortlessSteven
           git config user.email git@effortlesssteven.com
           git add -A
