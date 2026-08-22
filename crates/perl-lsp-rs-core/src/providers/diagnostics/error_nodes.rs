@@ -66,3 +66,27 @@ pub fn check_error_nodes(
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::check_error_nodes;
+    use perl_parser::Parser;
+    use perl_parser_core::error_classifier::ErrorClassifier;
+    use perl_tdd_support::must;
+
+    #[test]
+    fn recovered_parse_error_is_marked_fixable_at_the_error_node_boundary() {
+        let source = "if () { 1 }";
+        let ast = must(Parser::new(source).parse());
+        let classifier = ErrorClassifier::new();
+        let mut diagnostics = Vec::new();
+
+        check_error_nodes(&ast, source, &classifier, &mut diagnostics);
+
+        assert!(
+            !diagnostics.is_empty(),
+            "the malformed condition must reach the ERROR-node producer"
+        );
+        assert!(diagnostics.iter().all(|diagnostic| diagnostic.fixable));
+    }
+}

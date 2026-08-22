@@ -65,3 +65,20 @@ fn antipattern_code(pattern: &AntiPattern) -> &'static str {
         AntiPattern::TiedHandleHeredoc { .. } => DiagnosticCode::HeredocTiedHandle.as_str(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::detect_heredoc_antipatterns;
+
+    #[test]
+    fn format_heredoc_diagnostic_preserves_non_fixable_producer_boundary() {
+        let source = "format REPORT =\n<<'END'\nName: @<<<<\n$name\nEND\n.\n";
+        let diagnostics = detect_heredoc_antipatterns(source);
+
+        let diagnostic = diagnostics
+            .first()
+            .expect("format heredoc must be reported by the production detector");
+        assert_eq!(diagnostic.code.as_deref(), Some("PL800"));
+        assert!(!diagnostic.fixable);
+    }
+}
