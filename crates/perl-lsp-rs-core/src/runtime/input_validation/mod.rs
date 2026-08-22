@@ -8,7 +8,9 @@ mod sanitize;
 mod workspace_validation;
 
 pub use file_validation::{validate_file_content, validate_file_path};
-pub use lsp_validation::{validate_document_uri, validate_request_admission};
+pub use lsp_validation::{
+    validate_buffer_line_lengths, validate_document_uri, validate_request_admission,
+};
 pub use sanitize::sanitize_string;
 pub use workspace_validation::validate_workspace_root;
 
@@ -198,9 +200,12 @@ mod tests {
 
     #[test]
     fn test_validate_document_uri_accepts_supported_schemes() {
-        for uri in
-            ["file:///test.pl", "untitled:Untitled-1", "opencode:/workspace/lib/My/Module.pm"]
-        {
+        for uri in [
+            "file:///test.pl",
+            "untitled:Untitled-1",
+            "opencode:/workspace/lib/My/Module.pm",
+            "vscode-notebook-cell://wsl%2bubuntu/home/u/nb.ipynb#C1",
+        ] {
             let result = validate_document_uri(uri);
             assert!(result.is_ok(), "{uri} must be accepted at the sync sink");
         }
@@ -238,6 +243,27 @@ mod tests {
         assert!(
             validate_document_uri(&over_uri).is_err(),
             "URI one byte over MAX_URI_LENGTH must be rejected"
+        );
+    }
+
+    /// Per-line buffer bound (#8895 review): retained at the didOpen sink as
+    /// an explicit parser-robustness resource bound.
+    #[test]
+    fn test_validate_buffer_line_lengths_boundary() {
+        let max_line = "x".repeat(100_000);
+        assert!(validate_buffer_line_lengths(&max_line).is_ok());
+        let multi = format!("print 1;\n{max_line}\nprint 2;");
+        assert!(validate_buffer_line_lengths(&multi).is_ok());
+
+        let over_line = "x".repeat(100_001);
+        assert!(
+            validate_buffer_line_lengths(&over_line).is_err(),
+            "a line over MAX_LINE_LENGTH must be rejected"
+        );
+        let second_long = format!("print 1;\n{over_line}");
+        assert!(
+            validate_buffer_line_lengths(&second_long).is_err(),
+            "a long line on any line must be rejected"
         );
     }
 

@@ -18,7 +18,8 @@
 //! unless a later operation renders them into an active sink (issue #8895).
 
 use crate::runtime::input_validation::constants::{
-    ALLOWED_TEXT_DOCUMENT_URI_SCHEMES, MAX_METHOD_LENGTH, MAX_PARAMS_SIZE, MAX_URI_LENGTH,
+    ALLOWED_TEXT_DOCUMENT_URI_SCHEMES, MAX_LINE_LENGTH, MAX_METHOD_LENGTH, MAX_PARAMS_SIZE,
+    MAX_URI_LENGTH,
 };
 use crate::runtime::limits::max_file_size_bytes as limits_max_file_size_bytes;
 use anyhow::{Result, anyhow};
@@ -96,6 +97,21 @@ pub fn validate_document_uri(uri: &str) -> Result<()> {
 
     if uri.len() > MAX_URI_LENGTH {
         return Err(anyhow!("URI too long: {uri}"));
+    }
+
+    Ok(())
+}
+
+/// Enforce the per-line resource bound on a whole editor buffer.
+///
+/// This is a parser-robustness bound, not content policy: no single line may
+/// exceed [`MAX_LINE_LENGTH`]. It was enforced by generic preflight before
+/// #8895 and is retained at the buffer sink (`textDocument/didOpen`) so the
+/// bound survives the layering — the sink's own size and binary guards cover
+/// the other former `validate_file_content` conditions.
+pub fn validate_buffer_line_lengths(text: &str) -> Result<()> {
+    if text.lines().any(|line| line.chars().count() > MAX_LINE_LENGTH) {
+        return Err(anyhow!("Buffer contains a line longer than {MAX_LINE_LENGTH} characters"));
     }
 
     Ok(())

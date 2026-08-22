@@ -19,5 +19,10 @@ pub(crate) const MAX_LINE_LENGTH: usize = 100_000;
 pub(crate) const ALLOWED_EXTENSIONS: &[&str] = &["pl", "pm", "t", "pod"];
 
 /// Allowed URI schemes for text document synchronization.
+///
+/// `vscode-notebook-cell:` is admitted because notebook synchronization
+/// routes its virtual-document cells through the same `didOpen` sink
+/// (`handle_notebook_did_open` -> `handle_did_open`), which keys the
+/// documents store by the cell URI.
 pub(crate) const ALLOWED_TEXT_DOCUMENT_URI_SCHEMES: &[&str] =
-    &["file://", "untitled:", "opencode:"];
+    &["file://", "untitled:", "opencode:", "vscode-notebook-cell:"];

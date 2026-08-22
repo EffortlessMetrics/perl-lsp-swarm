@@ -9,7 +9,8 @@
 //! - validate_file_path: extension filtering
 
 use perl_lsp_rs_core::runtime::input_validation::{
-    sanitize_string, validate_document_uri, validate_file_content, validate_request_admission,
+    sanitize_string, validate_buffer_line_lengths, validate_document_uri, validate_file_content,
+    validate_request_admission,
 };
 use perl_lsp_rs_core::runtime::limits::max_file_size_bytes;
 use std::path::Path;
@@ -236,11 +237,26 @@ fn arbitrary_params_with_browser_dangerous_substrings_are_accepted() -> anyhow::
 
 #[test]
 fn validate_document_uri_accepts_supported_schemes() -> anyhow::Result<()> {
-    for uri in ["file:///test.pl", "untitled:Untitled-1", "opencode:/w/lib/My.pm"] {
+    for uri in [
+        "file:///test.pl",
+        "untitled:Untitled-1",
+        "opencode:/w/lib/My.pm",
+        "vscode-notebook-cell://wsl%2bubuntu/home/u/nb.ipynb#C1",
+    ] {
         validate_document_uri(uri)
             .map_err(|e| anyhow::anyhow!("{uri} must be accepted at the sync sink: {e}"))?;
     }
     Ok(())
+}
+
+#[test]
+fn validate_buffer_line_lengths_boundary() {
+    let max_line = "x".repeat(100_000);
+    assert!(validate_buffer_line_lengths(&max_line).is_ok());
+    assert!(
+        validate_buffer_line_lengths(&"x".repeat(100_001)).is_err(),
+        "a line over MAX_LINE_LENGTH must be rejected"
+    );
 }
 
 #[test]

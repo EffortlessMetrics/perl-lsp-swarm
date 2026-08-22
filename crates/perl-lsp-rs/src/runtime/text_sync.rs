@@ -106,6 +106,13 @@ impl LspServer {
             // as part of the document text, which shifts all column-0 offsets
             // by one character and produces stray glyph artifacts. (#5207)
             let text = crate::textdoc::strip_utf8_bom(text_raw);
+            // Sink-owned resource bound (#8895 review): retain the former
+            // preflight per-line parser-robustness bound where whole buffer
+            // text enters. The sink's own size and binary guards cover the
+            // remaining buffer conditions.
+            if let Err(err) = crate::security::validate_buffer_line_lengths(text) {
+                return Err(invalid_params(&err.to_string()));
+            }
             let version_i64 =
                 params.pointer("/textDocument/version").and_then(|v| v.as_i64()).unwrap_or(0);
             let version = i32::try_from(version_i64).unwrap_or(0);
