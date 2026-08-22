@@ -787,9 +787,10 @@ gates:
     # `--all-targets -D warnings -A missing_docs`. The cohort is additive: add
     # crates here only after they pass the command below locally.
     # This is a scoped cohort assertion, not an exhaustive workspace clean/dirty
-    # census. The remaining 15 crates carry measured findings (3363 workspace-wide,
-    # dominated by print_*/unwrap/expect in test code) tracked on #11736 pending
-    # the target-kind lint policy decision.
+    # census. The remaining 15 crates carry measured findings tracked on #11736
+    # pending the target-kind lint policy decision (2026-08-19 workspace census
+    # on d0f488dd: 3363 findings across 21 then-dirty crates, dominated by
+    # print_*/unwrap/expect in test code).
     #
     # This gate is executed by the advisory PR Smoke job, like the other pr_fast
     # gates. `required: true` makes the pr_fast runner fail on a violation; it
