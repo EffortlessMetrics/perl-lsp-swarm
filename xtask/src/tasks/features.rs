@@ -118,10 +118,8 @@ fn sync_docs_impl() -> Result<()> {
     println!("📝 Syncing documentation from features.toml...");
 
     let catalog = load_features()?;
-    let area_stats = catalog.area_statistics();
-
     // Update ROADMAP.md
-    update_roadmap(&catalog, &area_stats)?;
+    update_roadmap(&catalog)?;
 
     // Update LSP_ACTUAL_STATUS.md
     update_lsp_status(&catalog)?;
@@ -130,41 +128,14 @@ fn sync_docs_impl() -> Result<()> {
     Ok(())
 }
 
-fn update_roadmap(
-    catalog: &Catalog,
-    area_stats: &BTreeMap<String, perl_lsp_rs_core::feature_catalog::AreaStats>,
-) -> Result<()> {
+fn update_roadmap(catalog: &Catalog) -> Result<()> {
     let roadmap_path = Path::new("ROADMAP.md");
     let mut content = fs::read_to_string(roadmap_path)?;
 
     // Ensure fence markers exist
     ensure_fence(&content, "COMPLIANCE_TABLE")?;
 
-    // Calculate overall compliance
-    let total: usize = area_stats.values().map(|s| s.total).sum();
-    let advertised: usize = area_stats.values().map(|s| s.advertised).sum();
-    let compliance =
-        if total == 0 { 0 } else { (advertised as f64 / total as f64 * 100.0).round() as u32 };
-
-    // Update compliance percentage in header
-    let new_text = format!("partial LSP 3.18 compliance (~{}%)", compliance);
-    let old_pattern = r"partial LSP 3.18 compliance \(~\d+%\)";
-    content = regex::Regex::new(old_pattern)?.replace_all(&content, new_text.as_str()).to_string();
-
-    // Update the compliance table
-    let mut table = String::new();
-    table.push_str("| Area | Implemented | Total | Coverage |\n");
-    table.push_str("|------|-------------|-------|----------|\n");
-
-    for (area, stats) in area_stats {
-        table.push_str(&format!(
-            "| {} | {} | {} | {}% |\n",
-            area.replace('_', " "),
-            stats.advertised,
-            stats.total,
-            stats.coverage_percent()
-        ));
-    }
+    let table = perl_lsp_rs_core::feature_catalog::render_navigation_table(catalog);
 
     // Inject the compliance table into the fenced section
     content = replace_fence(&content, "COMPLIANCE_TABLE", &table)?;
@@ -377,35 +348,6 @@ fn verify_features() -> Result<()> {
         );
     }
 
-    // Verify compliance percentage matches ROADMAP documentation.
-    let computed_compliance = catalog.compliance_percent() as u32;
-    if let Ok(roadmap) = fs::read_to_string("ROADMAP.md") {
-        let regex = regex::Regex::new(r"partial LSP 3\.18 compliance \(~(\d+)%\)")?;
-        if let Some(cap) = regex.captures(&roadmap)
-            && let Some(doc_percent) = cap.get(1).and_then(|m| m.as_str().parse::<u32>().ok())
-            && doc_percent != computed_compliance
-        {
-            if env::var("CI_ALLOW_COMPLIANCE_DRIFT").is_err() {
-                errors.push(format!(
-                    "Compliance percentage drift detected: documented {}% vs computed {}% - run 'cargo xtask features sync-docs' to fix",
-                    doc_percent, computed_compliance
-                ));
-            } else {
-                warnings.push(format!(
-                    "Compliance percentage mismatch (allowed): documented {}% vs computed {}%",
-                    doc_percent, computed_compliance
-                ));
-            }
-        }
-    }
-
-    let non_planned = catalog.trackable_feature_count();
-    let advertised_ga_prod = catalog.advertised_trackable_count();
-    println!(
-        "📊 Computed compliance: {}% ({}/{} non-planned features)",
-        computed_compliance, advertised_ga_prod, non_planned
-    );
-
     if !errors.is_empty() {
         println!("❌ Errors found:");
         for error in &errors {
@@ -426,7 +368,7 @@ fn verify_features() -> Result<()> {
 }
 
 fn generate_report() -> Result<()> {
-    println!("📊 Generating compliance report...");
+    println!("📊 Generating feature declaration report...");
 
     let catalog = load_features()?;
     let area_stats = catalog.area_statistics();
@@ -448,11 +390,9 @@ fn generate_report() -> Result<()> {
     let planned =
         catalog.feature.iter().filter(|f| matches!(f.maturity, Maturity::Planned)).count();
 
-    println!("\n=== LSP Compliance Report ===");
+    println!("\n=== LSP Feature Declaration Report ===");
     println!("Version: {} | LSP: {}", catalog.meta.version, catalog.meta.lsp_version);
-    let overall =
-        if total == 0 { 0 } else { (advertised as f64 / total as f64 * 100.0).round() as usize };
-    println!("\nOverall: {}/{} features ({}%)", advertised, total, overall);
+    println!("\nOverall declaration counts: {}/{} advertised", advertised, total);
     println!("\nBreakdown:");
     println!("  GA:           {} features", ga);
     println!("  Preview:      {} features", preview);
@@ -461,18 +401,7 @@ fn generate_report() -> Result<()> {
 
     println!("\nBy Area:");
     for (area, stats) in area_stats {
-        let coverage = if stats.total == 0 {
-            0
-        } else {
-            (stats.advertised as f64 / stats.total as f64 * 100.0).round() as u32
-        };
-        println!(
-            "  {:20} {}/{} ({}%)",
-            area.replace('_', " "),
-            stats.advertised,
-            stats.total,
-            coverage
-        );
+        println!("  {:20} {}/{} declared", area.replace('_', " "), stats.advertised, stats.total);
     }
 
     Ok(())

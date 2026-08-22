@@ -5,7 +5,7 @@
 use super::{
     context::CompletionContext,
     items::{CompletionItem, CompletionItemKind, InsertTextFormat},
-    workspace::{self, workspace_auto_import_edits},
+    workspace,
 };
 use perl_semantic_analyzer::symbol::{
     Symbol as LocalSymbol, SymbolKind as LocalSymbolKind, SymbolTable,
@@ -327,7 +327,6 @@ fn add_local_package_completions(
 pub fn add_package_completions(
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
-    source: &str,
     symbol_table: &SymbolTable,
     workspace_index: &Option<Arc<WorkspaceIndex>>,
 ) {
@@ -369,16 +368,6 @@ pub fn add_package_completions(
 
         let all_members = method_members.into_iter().chain(direct_members);
 
-        // A qualified member completion (`Foo::bar`, `$Foo::x`, `Foo::CONST`)
-        // implies the user wants `Foo` loaded. Prepare the auto-import once;
-        // it is suppressed for `main`, the current package, and already-imported
-        // modules.
-        let auto_import_edits = workspace_auto_import_edits(
-            source,
-            Some(package_name.as_str()),
-            &context.current_package,
-        );
-
         for symbol in all_members {
             let item_kind = match symbol.kind {
                 WsSymbolKind::Export | WsSymbolKind::Subroutine | WsSymbolKind::Method => {
@@ -415,7 +404,9 @@ pub fn add_package_completions(
                     insert_text: Some(Cow::Owned(qualified_member_name(&package_name, &symbol))),
                     sort_text: Some(Cow::Owned(format!("{}_{}", tier, symbol.name))),
                     filter_text: Some(Cow::Owned(symbol.name.clone())),
-                    additional_edits: auto_import_edits.clone(),
+                    // The insertion is fully qualified, so it remains valid
+                    // without an import. Import edits are withdrawn (#11158).
+                    additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
                     insert_text_format: InsertTextFormat::PlainText,

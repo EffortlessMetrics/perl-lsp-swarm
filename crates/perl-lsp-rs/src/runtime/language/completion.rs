@@ -893,6 +893,13 @@ impl LspServer {
                 let index = coordinator.index();
 
                 let text_before = &doc_text[..offset.min(doc_text.len())];
+                // Method context survives once a method name is partially typed:
+                // `$obj->` and `$obj->co` are both method-completion positions,
+                // while `$x->[0]` or plain identifiers are not.
+                let is_method_completion =
+                    text_before.trim_end().rsplit_once("->").is_some_and(|(_, suffix)| {
+                        suffix.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                    });
                 let prefix = text_before
                     .chars()
                     .rev()
@@ -947,11 +954,39 @@ impl LspServer {
                 let mut seen: HashSet<String> =
                     completions.iter().map(|completion| completion.label.to_string()).collect();
 
+                // The runtime pass has no receiver facts of its own. When the
+                // core provider already attached receiver evidence to this
+                // response, keep its quiet name-only extras; otherwise label
+                // callable candidates honestly instead of emitting an
+                // unlabelled dynamic-boundary insertion (issue #11158).
+                let receiver_evidence_present = completions.iter().any(|completion| {
+                    completion.detail.as_deref().is_some_and(|detail| detail.contains("receiver:"))
+                });
+
                 for symbol in workspace_symbols {
                     if should_continue.is_some_and(|check| !check()) {
                         return;
                     }
                     if seen.contains(&symbol.name) {
+                        continue;
+                    }
+
+                    // The runtime workspace pass is a name-only fallback. It
+                    // has no import/reachability facts for callable and value
+                    // symbols, so emitting these as bare insertions can leave
+                    // an unimported cross-file reference in the document.
+                    // The core provider owns import-aware, current-file, and
+                    // qualified completions for these kinds; retain only the
+                    // module-name kinds here (issue #11158).
+                    if !is_method_completion
+                        && matches!(
+                            symbol.kind,
+                            crate::workspace_index::SymbolKind::Subroutine
+                                | crate::workspace_index::SymbolKind::Method
+                                | crate::workspace_index::SymbolKind::Constant
+                                | crate::workspace_index::SymbolKind::Export
+                        )
+                    {
                         continue;
                     }
 
@@ -997,7 +1032,21 @@ impl LspServer {
 
                     let label = symbol.name.clone();
                     let qualified_name = Self::workspace_symbol_qualified_name(&symbol);
-                    let detail = Some(qualified_name.clone());
+                    let detail = if !receiver_evidence_present
+                        && matches!(
+                            symbol.kind,
+                            crate::workspace_index::SymbolKind::Subroutine
+                                | crate::workspace_index::SymbolKind::Method
+                                | crate::workspace_index::SymbolKind::Constant
+                                | crate::workspace_index::SymbolKind::Export
+                        ) {
+                        // Callable kinds only reach this pass through the
+                        // method-completion gate above, which carries no
+                        // receiver evidence; say so on the item.
+                        Some(format!("{qualified_name} — receiver: unknown, low confidence"))
+                    } else {
+                        Some(qualified_name.clone())
+                    };
                     // Invariant: text_edit_range.is_some() ⟺ insert_text is the
                     // fully-qualified name.  The serializer (completion_item_to_lsp_value)
                     // depends on this to locate the newText from `item["insertText"]`.
@@ -4817,7 +4866,7 @@ mod tests {
     // =========================================================================
 
     /// With two registered workspace folders, add_runtime_workspace_completions
-    /// computes doc_folder_filter = Some(folder-a) and rejects the sub from
+    /// computes doc_folder_filter = Some(folder-a) and rejects the variable from
     /// folder-b via the Strategy-B continue branch.
     ///
     /// Covered changed lines:
@@ -4827,7 +4876,7 @@ mod tests {
     ///   536-543  !workspace_folder_matches_doc_uri -> trace + continue
     #[cfg(feature = "workspace")]
     #[test]
-    fn strategy_b_multi_folder_filters_cross_folder_sub() {
+    fn strategy_b_multi_folder_filters_cross_folder_var() {
         use crate::runtime::routing::IndexAccessMode;
         use crate::runtime::workspace_folder::WorkspaceFolderState;
         use perl_parser::workspace_index::IndexCoordinator;
@@ -4841,17 +4890,17 @@ mod tests {
         }
 
         let coordinator = Arc::new(IndexCoordinator::new());
-        // Add a non-module (Sub) symbol from folder-b — it should be filtered out.
+        // Add a preserved non-callable (Variable) symbol from folder-b — it should be filtered out.
         let _ = coordinator.index().index_file_str(
             "file:///project/folder-b/lib/B.pm",
             "package B;
-sub cross_folder_sub_b { 1 }
+our $cross_folder_var_b;
 1;
 ",
         );
         coordinator.transition_to_ready(1, 1);
 
-        let doc_text = "my $x = cr";
+        let doc_text = "my $x = $cross";
         let doc_uri = "file:///project/folder-a/script.pl";
         let inc_context = RequestIncContext::new(&server, doc_uri, doc_text, doc_text.len());
         let mut completions = Vec::new();
@@ -4864,8 +4913,8 @@ sub cross_folder_sub_b { 1 }
 
         let names: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
         assert!(
-            !names.contains(&"cross_folder_sub_b"),
-            "Strategy-B must reject cross_folder_sub_b from folder-b when doc is in folder-a;              got completions: {names:?}"
+            !names.contains(&"$cross_folder_var_b"),
+            "Strategy-B must reject $cross_folder_var_b from folder-b when doc is in folder-a;              got completions: {names:?}"
         );
     }
 
@@ -4891,17 +4940,20 @@ sub cross_folder_sub_b { 1 }
         }
 
         let coordinator = Arc::new(IndexCoordinator::new());
-        // Symbol at a path outside folder-a — still included because filter is None.
+        // A non-callable symbol at a path outside folder-a — still included
+        // because filter is None.  Subroutine candidates are intentionally
+        // withdrawn by #11158 before Strategy-B, so use an `our` variable to
+        // keep this test focused on the single-folder no-filter branch.
         let _ = coordinator.index().index_file_str(
             "file:///project/folder-b/lib/B.pm",
             "package B;
-sub single_root_sub { 1 }
+our $single_root_var;
 1;
 ",
         );
         coordinator.transition_to_ready(1, 1);
 
-        let doc_text = "single";
+        let doc_text = "$single";
         let doc_uri = "file:///project/folder-a/script.pl";
         let inc_context = RequestIncContext::new(&server, doc_uri, doc_text, doc_text.len());
         let mut completions = Vec::new();
@@ -4914,7 +4966,7 @@ sub single_root_sub { 1 }
 
         let names: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
         assert!(
-            names.contains(&"single_root_sub"),
+            names.contains(&"$single_root_var"),
             "single-folder workspace must not filter by folder (doc_folder_filter = None);              got completions: {names:?}"
         );
     }
