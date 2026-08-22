@@ -247,7 +247,9 @@ fn non_rust_inventory_check_is_wired_to_policy_shard() -> Result<()> {
 
     let workflow = std::fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
     assert!(
-        workflow.contains("docs_build adr_link_check non_rust_inventory_check v2_bundle_sync"),
+        workflow.contains(
+            "docs_build adr_link_check non_rust_inventory_check lint_policy v2_bundle_sync"
+        ),
         "the live policy matrix must execute the inventory scan gate"
     );
     Ok(())
