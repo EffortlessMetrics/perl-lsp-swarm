@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, ensure};
 use serde_yaml_ng::Value;
+use tempfile::tempdir;
 
 #[test]
 fn agent_capability_gate_preserves_trust_and_failure_boundaries() -> Result<()> {
@@ -159,7 +160,15 @@ fn checkout_pins_share_one_full_commit_sha() -> Result<()> {
 
 fn collect_checkout_refs(dir: &Path) -> Result<BTreeSet<String>> {
     let mut refs = BTreeSet::new();
-    collect_checkout_refs_from_dir(dir, &mut refs)?;
+    for relative_dir in ["workflows", "actions"] {
+        let scan_dir = dir.join(relative_dir);
+        ensure!(
+            scan_dir.is_dir(),
+            "checkout pin authority directory is missing: {}",
+            scan_dir.display()
+        );
+        collect_checkout_refs_from_dir(&scan_dir, &mut refs)?;
+    }
     Ok(refs)
 }
 
@@ -284,6 +293,29 @@ fn checkout_ref_scan_ignores_comments_but_rejects_stale_executable_use() -> Resu
     );
 
     Ok(())
+}
+
+#[test]
+fn checkout_ref_scan_excludes_unrelated_github_yaml() -> Result<()> {
+    const PIN: &str = "3d3c42e5aac5ba805825da76410c181273ba90b1";
+    const UNRELATED_PIN: &str = "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0";
+    let temp = tempdir()?;
+    let github = temp.path().join(".github");
+    fs::create_dir_all(github.join("workflows"))?;
+    fs::create_dir_all(github.join("actions"))?;
+
+    let workflow = format!("jobs:\n  build:\n    steps:\n      - uses: actions/checkout@{PIN}\n");
+    fs::write(github.join("workflows/fixture.yml"), workflow)?;
+    let action = format!(
+        "name: fixture\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@{PIN}\n"
+    );
+    fs::write(github.join("actions/fixture.yml"), action)?;
+    let unrelated = format!("steps:\n  - uses: actions/checkout@{UNRELATED_PIN}\n");
+    fs::write(github.join("unrelated.yml"), unrelated)?;
+
+    let refs = collect_checkout_refs(&github)?;
+    assert_eq!(refs, BTreeSet::from([PIN.to_owned()]));
+    validate_checkout_refs(&refs)
 }
 
 fn workflow() -> Result<(String, Value)> {
