@@ -2,6 +2,9 @@ use super::{
     CodeFormatter, FormattingOptions, JsonRpcError, LspServer, Value, invalid_params, json,
     source_path_from_uri,
 };
+use crate::runtime::BackingFileTransition;
+#[cfg(feature = "workspace")]
+use crate::runtime::workspace::read_watched_file_content;
 
 impl LspServer {
     /// Handle didClose notification
@@ -16,6 +19,11 @@ impl LspServer {
                 .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
 
             tracing::debug!("Document closed: {}", uri);
+
+            // Open-buffer authority (#8041): consume any pending backing-file
+            // transition BEFORE eviction so this handoff resolves exactly once
+            // and no stale marker leaks into a successor session.
+            let backing_transition = self.take_backing_file_transition(uri);
 
             // Notify coordinator of pending change to track cleanup work
             #[cfg(feature = "workspace")]
@@ -33,9 +41,19 @@ impl LspServer {
             // For files that do exist on disk, closing the editor buffer leaves the
             // workspace index intact: the file is still part of the project and a
             // workspace scan would re-discover it.
+            //
+            // Exception (#8041): when the open session diverged from disk
+            // (external change observed, or external delete recorded), the
+            // retained snapshot would be pre-divergence bytes. Closed-file
+            // authority is stable CURRENT disk source, so drop the old entry
+            // and re-index from a fresh disk read.
             #[cfg(feature = "workspace")]
             {
                 let file_on_disk = source_path_from_uri(uri).map(|p| p.exists()).unwrap_or(false);
+                let session_diverged = matches!(
+                    backing_transition,
+                    Some(BackingFileTransition::Changed | BackingFileTransition::Deleted)
+                );
                 if !file_on_disk {
                     if let Some(coordinator) = self.coordinator() {
                         for key in self.uri_key_variants(uri) {
@@ -43,6 +61,27 @@ impl LspServer {
                         }
                     }
                 } else {
+                    if session_diverged && let Some(coordinator) = self.coordinator() {
+                        for key in self.uri_key_variants(uri) {
+                            coordinator.index().remove_file(&key);
+                        }
+                        if let Some(content) =
+                            read_watched_file_content(uri, "closed-file authority reload")
+                            && let Ok(url) = url::Url::parse(uri)
+                        {
+                            match coordinator.index().index_file(url, content) {
+                                Ok(()) => {
+                                    tracing::debug!(
+                                        "Re-indexed {} from current disk on close (#8041)",
+                                        uri
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Failed to re-index {} on close: {}", uri, e);
+                                }
+                            }
+                        }
+                    }
                     // File is on disk: retain the index entry (symbols are still
                     // valid) but reset the generation counters so the reopened
                     // document — which starts at generation 0 — is not blocked
@@ -93,6 +132,12 @@ impl LspServer {
             };
             tracing::debug!("Document saved: {}", uri);
 
+            // Open-buffer authority (#8041): a save writes the editor buffer
+            // to disk, re-cohering any recorded divergence (deleted or
+            // externally changed backing file). Consume the marker exactly
+            // once so it cannot leak into a later handoff.
+            let backing_transition = self.take_backing_file_transition(uri);
+
             // When the client sends the full saved text in params.text,
             // reconcile the document's content through the normal full
             // replacement lifecycle (#4963/#5679). This ensures diagnostics
@@ -116,6 +161,13 @@ impl LspServer {
             // lag from coalesced parse jobs), re-index it now from the
             // in-memory text. This prevents permanent index lag where no
             // async parse ticket ever catches the index up. (#5111)
+            //
+            // #8041: a save resolves ANY recorded backing-file transition by
+            // committing the authoritative buffer snapshot at its current
+            // generation. `Changed` means disk moved on while open;
+            // `Deleted` removed the index entry entirely so the generation
+            // check alone would never fire; `RenamedOrMoved` recreates the
+            // original path on save, which must regain its own facts.
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             {
                 // Read both generation and text in a SINGLE lock to avoid TOCTOU.
@@ -128,7 +180,21 @@ impl LspServer {
                     && let Some(coordinator) = self.coordinator()
                 {
                     let index = coordinator.index();
-                    if index.is_index_generation_stale(&normalized_uri, doc_gen_val)
+                    if backing_transition.is_some()
+                        && let Ok(url) = url::Url::parse(&normalized_uri)
+                    {
+                        tracing::debug!(
+                            "Re-cohering workspace index from saved buffer for {} (#8041)",
+                            normalized_uri
+                        );
+                        if let Err(e) = index.index_file_with_generation(url, text, doc_gen_val) {
+                            tracing::warn!(
+                                "Failed to re-cohere index for {}: {}",
+                                normalized_uri,
+                                e
+                            );
+                        }
+                    } else if index.is_index_generation_stale(&normalized_uri, doc_gen_val)
                         && let Ok(url) = url::Url::parse(&normalized_uri)
                     {
                         tracing::debug!(

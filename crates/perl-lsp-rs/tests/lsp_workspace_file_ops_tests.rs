@@ -265,14 +265,16 @@ fn test_did_change_watched_files_deleted() -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-/// Verify that a DELETED event removes the document from the in-memory store.
+/// Verify that a DELETED event does NOT evict an open document (#8041).
 ///
-/// Acceptance criterion: "Deleted files are removed from index and symbol cache."
+/// The editor buffer is the authoritative source while a document is open;
+/// a watched disk deletion may only remove backing-file state, never the
+/// open document or its generation.
 ///
 /// Uses `test_has_document` which requires the `expose_lsp_test_api` feature.
 #[cfg(feature = "expose_lsp_test_api")]
 #[test]
-fn test_did_change_watched_files_deleted_removes_from_store()
+fn test_did_change_watched_files_deleted_preserves_open_document()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -306,11 +308,8 @@ fn test_did_change_watched_files_deleted_removes_from_store()
     assert!(result.is_ok());
     assert_eq!(result?, None, "notification must return None");
 
-    // The document must have been evicted from the store.
-    assert!(
-        !server.test_has_document(uri),
-        "deleted file must be removed from document store after DELETED event"
-    );
+    // The open document must survive the external deletion (#8041).
+    assert!(server.test_has_document(uri), "watched disk deletion must not evict an open document");
     Ok(())
 }
 
@@ -402,13 +401,14 @@ fn test_did_change_watched_files_multiple_mixed_events() -> Result<(), Box<dyn s
     Ok(())
 }
 
-/// Verify that a batch with multiple changes includes correct behavioral outcome
-/// for the DELETED event: the document is removed from the in-memory store.
+/// Verify that a batch with multiple changes keeps every OPEN document alive:
+/// a DELETED event must not evict an open document, and a CHANGED event must
+/// not disturb it (#8041).
 ///
 /// Requires the `expose_lsp_test_api` feature for `test_has_document`.
 #[cfg(feature = "expose_lsp_test_api")]
 #[test]
-fn test_did_change_watched_files_mixed_batch_deleted_removed()
+fn test_did_change_watched_files_mixed_batch_preserves_open_documents()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -447,9 +447,9 @@ fn test_did_change_watched_files_mixed_batch_deleted_removed()
     });
     let _ = make_request(&server, "workspace/didChangeWatchedFiles", Some(params));
 
-    // The deleted document must have been evicted from the store.
-    assert!(!server.test_has_document(deleted_uri), "deleted file must be removed");
-    // The changed document must still be present (it was not deleted).
+    // Both open documents must survive the mixed batch: the watched delete
+    // only drops backing-file authority, never the open buffer (#8041).
+    assert!(server.test_has_document(deleted_uri), "deleted file's open buffer must survive");
     assert!(server.test_has_document(changed_uri), "changed file must still be present");
     Ok(())
 }
