@@ -433,6 +433,7 @@ impl PullDiagnosticsOrchestrator {
             Some(Ok(violations)) => {
                 for v in violations {
                     let internal_severity = critic_severity_to_internal(v.severity);
+                    let fixable = is_fixable_diagnostic(&v.policy);
 
                     let Some((start_byte, end_byte)) = critic_range_to_byte_range(
                         doc_text,
@@ -461,6 +462,7 @@ impl PullDiagnosticsOrchestrator {
                         related_information: Vec::new(),
                         tags: Vec::new(),
                         suggestion: None,
+                        fixable,
                     });
                 }
             }
@@ -880,7 +882,7 @@ impl LspServer {
                         let category = DiagnosticCode::parse_code(code_str)
                             .map(|dc| format!("{:?}", dc.category()))
                             .unwrap_or_else(|| "Other".to_string());
-                        let fixable = is_fixable_diagnostic(code_str);
+                        let fixable = d.fixable;
                         let tag_strings: Vec<String> = d
                             .tags
                             .iter()
@@ -1525,7 +1527,7 @@ impl LspServer {
             let category = DiagnosticCode::parse_code(code_str)
                 .map(|dc| format!("{:?}", dc.category()))
                 .unwrap_or_else(|| "Other".to_string());
-            let fixable = is_fixable_diagnostic(code_str);
+            let fixable = d.fixable;
             let tag_strings: Vec<String> = d
                 .tags
                 .iter()
@@ -1871,7 +1873,7 @@ impl LspServer {
                                     let category = DiagnosticCode::parse_code(code_str)
                                         .map(|dc| format!("{:?}", dc.category()))
                                         .unwrap_or_else(|| "Other".to_string());
-                                    let fixable = is_fixable_diagnostic(code_str);
+                                    let fixable = d.fixable;
                                     let tag_strings: Vec<String> =
                                         d.tags.iter().map(|t| match t {
                                             InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
@@ -1970,7 +1972,7 @@ impl LspServer {
                                 let category = DiagnosticCode::parse_code(code_str)
                                     .map(|dc| format!("{:?}", dc.category()))
                                     .unwrap_or_else(|| "Other".to_string());
-                                let fixable = is_fixable_diagnostic(code_str);
+                                let fixable = d.fixable;
                                 let tag_strings: Vec<String> =
                                     d.tags.iter().map(|t| match t {
                                         InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
@@ -2261,6 +2263,7 @@ impl LspServer {
             Some(Ok(violations)) => {
                 for v in violations {
                     let internal_severity = critic_severity_to_internal(v.severity);
+                    let fixable = is_fixable_diagnostic(&v.policy);
 
                     let Some((start_byte, end_byte)) = critic_range_to_byte_range(
                         doc_text,
@@ -2289,6 +2292,7 @@ impl LspServer {
                         related_information: Vec::new(),
                         tags: Vec::new(),
                         suggestion: None,
+                        fixable,
                     });
                 }
             }
@@ -2397,7 +2401,6 @@ fn is_fixable_perlcritic_policy(code: &str) -> bool {
             | "native.testing.require_use_strict"
             | "native.testing.require_use_warnings"
             | "native.common.undef_comparison"
-            | "native.common.unreachable_code"
             | "native.io.bareword_filehandle"
             | "native.io.two_arg_open"
             | "Variables::ProhibitUnusedVariables"
@@ -2450,6 +2453,7 @@ fn normalized_critic_finding_to_diagnostic(
         related_information: Vec::new(),
         tags: Vec::new(),
         suggestion: None,
+        fixable: finding.has_available_fix(),
     }
 }
 
@@ -2501,6 +2505,7 @@ fn builtin_violation_to_diagnostic(
         related_information: Vec::new(),
         tags: Vec::new(),
         suggestion: None,
+        fixable: is_fixable_diagnostic(&violation.policy),
     }
 }
 
@@ -3337,6 +3342,13 @@ mod tests {
                         == Some("Unreachable code: this statement cannot be executed")
             }),
             "native critic engine should add native unreachable-code finding to workspace diagnostics: {report}"
+        );
+        assert!(
+            diagnostics.iter().any(|diag| {
+                diag["code"].as_str() == Some("native.common.unreachable_code")
+                    && diag["data"]["fixable"] == true
+            }),
+            "push native unreachable-code finding should preserve available remediation: {report}"
         );
         assert!(
             diagnostics.iter().any(|diag| {

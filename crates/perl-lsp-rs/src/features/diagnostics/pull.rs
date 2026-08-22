@@ -603,6 +603,7 @@ impl PullDiagnosticsProvider {
                 related_information: Vec::new(),
                 tags: Vec::new(),
                 suggestion: None,
+                fixable: is_fixable_diagnostic(&violation.policy),
             };
 
             diagnostics.push(self.to_lsp_diagnostic(uri, content, internal_diag));
@@ -932,6 +933,7 @@ impl PullDiagnosticsProvider {
             })
             .collect();
         let tags = to_lsp_tags(&diagnostic.tags);
+        let fixable = diagnostic.fixable;
 
         // Append the context_hint and suggestion to the message so users
         // see actionable remediation inline (#5109). context_hint comes from
@@ -955,7 +957,6 @@ impl PullDiagnosticsProvider {
                 let category = DiagnosticCode::parse_code(code_str)
                     .map(|dc| format!("{:?}", dc.category()))
                     .unwrap_or_else(|| "Other".to_string());
-                let fixable = is_fixable_diagnostic(code_str);
                 serde_json::to_value(DiagnosticData {
                     code: code_str.clone(),
                     category,
@@ -1010,6 +1011,7 @@ impl PullDiagnosticsProvider {
             })
             .collect();
         let tags = to_lsp_tags(&diagnostic.tags);
+        let fixable = diagnostic.fixable;
 
         // Append the suggestion to the message when present so users see it inline
         let message = match diagnostic.suggestion {
@@ -1029,7 +1031,6 @@ impl PullDiagnosticsProvider {
                             "Other".to_string()
                         }
                     });
-                let fixable = is_fixable_diagnostic(code_str);
                 let data_obj = DiagnosticData {
                     code: code_str.clone(),
                     category,

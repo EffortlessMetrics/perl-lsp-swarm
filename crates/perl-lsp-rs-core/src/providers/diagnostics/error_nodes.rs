@@ -61,6 +61,7 @@ pub fn check_error_nodes(
                 related_information: related_info,
                 tags: Vec::new(),
                 suggestion,
+                fixable: false,
             });
         }
     });
