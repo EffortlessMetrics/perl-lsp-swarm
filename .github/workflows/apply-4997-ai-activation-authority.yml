@@ -69,53 +69,46 @@ jobs:
           block = block.replace(provider_old, provider_new)
           text = text[:block_start] + block + text[block_end:]
 
-          assertion_old = '''    '    assert!(server.ai_completion.user_enabled);\\n'
-              '    assert_eq!(server.ai_completion.provider, \\"openai_compat\\");\\n'
-              '    assert_eq!(server.ai_completion.model, \\"fixture-model\\");\\n',
-              '    assert!(!server.ai_completion.user_enabled);\\n'
-              '    assert!(!server.ai_completion.enabled);\\n',
-          '''
-          assertion_new = '''    '    assert_eq!(server.ai_completion.user_enabled, true);\\n'
-              '    assert_eq!(server.ai_completion.model, \\"fixture-model\\");\\n',
-              '    assert_eq!(server.ai_completion.user_enabled, false);\\n'
-              '    assert_eq!(server.ai_completion.enabled, false);\\n'
-              '    assert_eq!(server.ai_completion.model, \\"gpt-4o-mini\\");\\n',
-          '''
-          assert text.count(assertion_old) == 1, text.count(assertion_old)
-          text = text.replace(assertion_old, assertion_new)
+          section = text.index('SCHEMA_TEST = "crates/perl-lsp-rs-core/tests/perllsp_settings_schema_tests.rs"')
+          call_starts = []
+          cursor = section
+          for _ in range(3):
+              start = text.index("replace_exact(\n    SCHEMA_TEST,\n", cursor)
+              call_starts.append(start)
+              cursor = text.index("\n)\n", start) + 3
 
-          sensitive_old = '''replace_exact(
+          assertion_start = call_starts[1]
+          assertion_end = text.index("\n)\n", assertion_start) + 3
+          sensitive_start = call_starts[2]
+          sensitive_end = text.index("\n)\n", sensitive_start) + 3
+
+          assertion_call = r'''replace_exact(
               SCHEMA_TEST,
-              '    for sensitive in [\\"endpoint\\", \\"apiKeyEnv\\", \\"apiKeyHeader\\", \\"apiKeyPrefix\\"] {\\n',
-              '    for sensitive in [\\n'
-              '        \\"enabled\\",\\n'
-              '        \\"provider\\",\\n'
-              '        \\"model\\",\\n'
-              '        \\"endpoint\\",\\n'
-              '        \\"apiKeyEnv\\",\\n'
-              '        \\"apiKeyHeader\\",\\n'
-              '        \\"apiKeyPrefix\\",\\n'
-              '    ] {\\n',
+              '    assert_eq!(server.ai_completion.user_enabled, true);\n'
+              '    assert_eq!(server.ai_completion.model, "fixture-model");\n',
+              '    assert_eq!(server.ai_completion.user_enabled, false);\n'
+              '    assert_eq!(server.ai_completion.enabled, false);\n'
+              '    assert_eq!(server.ai_completion.model, "gpt-4o-mini");\n',
           )
           '''
-          sensitive_new = '''replace_exact(
+          sensitive_call = r'''replace_exact(
               SCHEMA_TEST,
-              '    assert_eq!(ai.get(\\"endpoint\\").is_none(), true);\\n'
-              '    assert_eq!(ai.get(\\"apiKeyEnv\\").is_none(), true);\\n'
-              '    assert_eq!(ai.get(\\"apiKeyHeader\\").is_none(), true);\\n'
-              '    assert_eq!(ai.get(\\"apiKeyPrefix\\").is_none(), true);\\n',
-              '    assert_eq!(ai.get(\\"enabled\\").is_none(), true);\\n'
-              '    assert_eq!(ai.get(\\"provider\\").is_none(), true);\\n'
-              '    assert_eq!(ai.get(\\"model\\").is_none(), true);\\n'
-              '    assert_eq!(ai.get(\\"endpoint\\").is_none(), true);\\n'
-              '    assert_eq!(ai.get(\\"apiKeyEnv\\").is_none(), true);\\n'
-              '    assert_eq!(ai.get(\\"apiKeyHeader\\").is_none(), true);\\n'
-              '    assert_eq!(ai.get(\\"apiKeyPrefix\\").is_none(), true);\\n',
+              '    assert_eq!(ai.get("endpoint").is_none(), true);\n'
+              '    assert_eq!(ai.get("apiKeyEnv").is_none(), true);\n'
+              '    assert_eq!(ai.get("apiKeyHeader").is_none(), true);\n'
+              '    assert_eq!(ai.get("apiKeyPrefix").is_none(), true);\n',
+              '    assert_eq!(ai.get("enabled").is_none(), true);\n'
+              '    assert_eq!(ai.get("provider").is_none(), true);\n'
+              '    assert_eq!(ai.get("model").is_none(), true);\n'
+              '    assert_eq!(ai.get("endpoint").is_none(), true);\n'
+              '    assert_eq!(ai.get("apiKeyEnv").is_none(), true);\n'
+              '    assert_eq!(ai.get("apiKeyHeader").is_none(), true);\n'
+              '    assert_eq!(ai.get("apiKeyPrefix").is_none(), true);\n',
           )
           '''
-          assert text.count(sensitive_old) == 1, text.count(sensitive_old)
-          text = text.replace(sensitive_old, sensitive_new)
 
+          text = text[:sensitive_start] + sensitive_call + text[sensitive_end:]
+          text = text[:assertion_start] + assertion_call + text[assertion_end:]
           path.write_text(text, encoding="utf-8")
           PY
 
