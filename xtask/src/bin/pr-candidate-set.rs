@@ -420,7 +420,8 @@ fn validate_claim(claim: &Claim, global_prs: &mut BTreeSet<u64>, findings: &mut 
         validate_relationship(claim, candidate, &local_prs, findings);
     }
 
-    validate_observed_entries(claim, global_prs, findings);    if let Some(cycle) = find_relationship_cycle(claim) {
+    validate_observed_entries(claim, global_prs, findings);
+    if let Some(cycle) = find_relationship_cycle(claim) {
         let path = cycle.iter().map(|pr| format!("#{pr}")).collect::<Vec<_>>().join(" -> ");
         findings.push(claim_error(
             claim,
