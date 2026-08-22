@@ -31,17 +31,31 @@ jobs:
           ref: agent/4997-ai-activation-authority
           fetch-depth: 0
 
-      - name: Admit current regression signature
+      - name: Admit current regression and schema signatures
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
           path = Path("scripts/maintenance/apply_4997_ai_activation_authority.py")
           text = path.read_text(encoding="utf-8")
-          old = r'fn workspace_ai_completion_ignores_untrusted_endpoint_and_credential_settings\(\) \{'
-          new = r'fn workspace_ai_completion_ignores_untrusted_endpoint_and_credential_settings\(\)(?: -> TestResult)? \{'
-          assert text.count(old) == 1, text.count(old)
-          path.write_text(text.replace(old, new), encoding="utf-8")
+          replacements = [
+              (
+                  r'fn workspace_ai_completion_ignores_untrusted_endpoint_and_credential_settings\(\) \{',
+                  r'fn workspace_ai_completion_ignores_untrusted_endpoint_and_credential_settings\(\)(?: -> TestResult)? \{',
+              ),
+              (
+                  '          "description": "AI-powered inline completion configuration. Sensitive destination/credential fields are intentionally excluded from LSP client settings.",\\n',
+                  '          "description": "Client-controlled AI completion behavior. Endpoint and credential-routing fields are intentionally excluded because workspace-delivered LSP settings may not redirect source/secret-bearing requests.",\\n',
+              ),
+              (
+                  '    \'            "provider": { "type": "string", "default": "openai_compat" },\\n\',\\n',
+                  '    \'            "provider": { "type": "string", "enum": ["openai_compat"], "default": "openai_compat" },\\n\',\\n',
+              ),
+          ]
+          for old, new in replacements:
+              assert text.count(old) == 1, (old, text.count(old))
+              text = text.replace(old, new)
+          path.write_text(text, encoding="utf-8")
           PY
 
       - name: Apply count-checked cutover
