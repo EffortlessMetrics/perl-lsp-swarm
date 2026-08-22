@@ -613,6 +613,14 @@ impl LspServer {
                 let rope_to_string_ms = crate::runtime::timing::elapsed_ms(t_rope_start);
                 tracing::debug!("Document changed: {} (version {})", uri, version);
 
+                // The text-sync sink owns the parser-robustness bound for the
+                // resulting buffer. Check after applying both ranged and full
+                // replacements, before any document state is committed. The
+                // didSave text-reconciliation path reuses this lifecycle.
+                if let Err(err) = crate::security::validate_buffer_line_lengths(&text) {
+                    return Err(invalid_params(&err.to_string()));
+                }
+
                 // Keep template documents that were intentionally skipped on didOpen
                 // in no-parse mode across subsequent didChange notifications.
                 if skip_template_parse {

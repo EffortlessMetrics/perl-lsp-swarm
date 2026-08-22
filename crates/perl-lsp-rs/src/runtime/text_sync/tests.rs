@@ -1524,6 +1524,83 @@ fn test_did_save_text_preserves_client_version() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
+/// The per-line resource bound must be enforced after both forms of didChange
+/// produce their resulting buffer, without committing the rejected text.
+#[test]
+fn test_did_change_rejects_overlong_result_before_commit() -> Result<(), Box<dyn std::error::Error>>
+{
+    let uri = "file:///test_did_change_line_bound.pl";
+    let overlong = "x".repeat(100_001);
+
+    let changes = [
+        json!({
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 5}
+            },
+            "text": overlong.clone()
+        }),
+        json!({"text": overlong.clone()}),
+    ];
+
+    for (case, change) in changes.into_iter().enumerate() {
+        let server = LspServer::new();
+        server.did_open(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "short\n"
+            }
+        }))?;
+
+        let result = server.handle_did_change(Some(json!({
+            "textDocument": {"uri": uri, "version": 2},
+            "contentChanges": [change]
+        })));
+        assert!(result.is_err(), "didChange case {case} must reject an overlong line");
+
+        let document = server
+            .documents
+            .lock()
+            .get(uri)
+            .ok_or("rejected didChange must retain the document")?
+            .clone();
+        assert_eq!(document.text, "short\n", "rejected didChange must not commit case {case}");
+    }
+
+    Ok(())
+}
+
+/// didSave text reconciliation must enforce the same per-line bound before
+/// replacing the already-open document.
+#[test]
+fn test_did_save_rejects_overlong_text_before_commit() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///test_did_save_line_bound.pl";
+    let overlong = "x".repeat(100_001);
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "saved\n"
+        }
+    }))?;
+
+    let result = server.handle_did_save(Some(json!({
+        "textDocument": {"uri": uri, "version": 1},
+        "text": overlong
+    })));
+    assert!(result.is_err(), "didSave must reject an overlong saved line");
+
+    let documents = server.documents.lock();
+    let document = documents.get(uri).ok_or("rejected didSave must retain the document")?;
+    assert_eq!(document.text, "saved\n", "rejected didSave must not commit the text");
+    Ok(())
+}
+
 /// A changed same-version didSave replacement must cancel streams that captured
 /// the previous buffer, including streams using the preserved client version.
 #[test]
