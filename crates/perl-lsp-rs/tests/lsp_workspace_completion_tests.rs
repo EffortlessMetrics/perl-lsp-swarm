@@ -83,13 +83,12 @@ fn await_open_processing(server: &common::LspServer) {
 }
 
 fn is_bare_completion_item(item: &serde_json::Value, bare_name: &str) -> bool {
-    item.get("label").and_then(|label| label.as_str()) == Some(bare_name)
-        || (item.get("label").is_none()
-            && item
-                .get("textEdit")
-                .and_then(|edit| edit.get("newText"))
-                .and_then(|text| text.as_str())
-                == Some(bare_name))
+    item.get("textEdit")
+        .and_then(|edit| edit.get("newText"))
+        .and_then(|text| text.as_str())
+        .or_else(|| item.get("insertText").and_then(|text| text.as_str()))
+        .or_else(|| item.get("label").and_then(|label| label.as_str()))
+        == Some(bare_name)
 }
 
 /// Wait for the workspace index to incorporate a freshly opened module.
