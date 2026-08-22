@@ -806,6 +806,10 @@ gates:
     # code is not covered by local proof and remains observable via the advisory
     # PR Smoke lane.
     #
+    # Re-confirmed on merge head e89cd157e (origin/main 954d6bd6c folded in;
+    # the binary_resolution.rs seam was resolved by adopting #11872's version
+    # wholesale) with the exact command above: clean.
+    #
     # This gate is executed by the advisory PR Smoke job, like the other pr_fast
     # gates. `required: true` makes the pr_fast runner fail on a violation; it
     # is not itself a branch-protection context.
