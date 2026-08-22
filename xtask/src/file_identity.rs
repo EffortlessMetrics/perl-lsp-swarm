@@ -4,7 +4,9 @@
 //! (`windows_by_handle` metadata APIs remain unstable), so the one primitive
 //! here reads it through the already-vendored `winapi` dependency instead.
 
+#[cfg(windows)]
 use color_eyre::eyre::{Result, WrapErr};
+#[cfg(windows)]
 use std::path::Path;
 
 /// The collision-resistant identity returned by Windows `FileIdInfo`.
