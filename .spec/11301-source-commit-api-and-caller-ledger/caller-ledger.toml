@@ -27,11 +27,24 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 #   crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs
 #     109 -> 110 (+1)
 #   crates/perl-lsp-rs/src/runtime/language/completion.rs 2 -> 4 (+2)
-compatibility_baseline = 704
+# Reconciled 704 -> 697 by #11305 (SRC-03): every open/save compatibility call
+# in runtime/text_sync moved to index_live_file with the document-instance/
+# generation currentness guard, and its fixture callers to
+# index_initial_file (-4 index_file_with_generation at text_sync.rs didOpen +
+# shared post-parse seam and lifecycle.rs #8041 re-cohere + stale-index
+# reconciliation; -3 index_file at lifecycle.rs close-handoff reload ->
+# index_initial_file role rename and two tests.rs fixtures).
+compatibility_baseline = 697
+
+# Structural recurrence control (#11305): files under these prefixes must
+# never call compatibility source APIs at all -- live commits go through
+# index_live_file behind the document-instance/generation oracle. Prefix
+# matching fails closed (any file path beginning with the prefix).
+compatibility_banned_prefixes = ["crates/perl-lsp-rs/src/runtime/text_sync"]
 
 # Live identity is the URI argument plus an owner-supplied non-zero NonZeroU32
-# generation; #11305 owns didOpen/didSave migration. Exact source paths are the
-# ledger identity. A new caller must be deliberately
+# generation; didOpen/didSave migrated through #11305. Exact source paths are
+# the ledger identity. A new caller must be deliberately
 # added with an owner, role, successor, and removal condition; broad directory
 # globs are intentionally not accepted by the validator.
 caller_paths = [
@@ -105,11 +118,11 @@ caller_paths = [
 ]
 
 [[owner]]
-prefix = "crates/perl-lsp-rs/src/runtime/text_sync"
-role = "live didOpen/didSave generation path"
-owner = "perl-lsp-rs text synchronization"
-successor = "index_live_file with the #11305 currentness guard"
-removal_condition = "#11305 lands the owner-supplied live commit identity"
+prefix = "crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs"
+role = "#8041 close-handoff disk reload residual"
+owner = "perl-lsp-rs text synchronization / #8041 open-buffer authority"
+successor = "index_live_file when #8041 defines the closed-file source commit identity"
+removal_condition = "#8041 lands its closed-file live commit identity"
 
 [[owner]]
 prefix = "crates/perl-workspace/tests"

@@ -122,6 +122,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 use std::sync::atomic::AtomicU64;
