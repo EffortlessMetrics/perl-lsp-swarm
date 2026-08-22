@@ -4179,14 +4179,21 @@ fn workspace_completion_no_auto_import_for_file_local_symbol()
     Ok(())
 }
 
+// Qualified package-prefix access (`$Foo::xyl`) is served by
+// add_package_completions via the sigil+`::` dispatch path, not the
+// workspace-symbol gate.  Perl allows `$Package::var` without any
+// explicit import, so this path must always work regardless of whether
+// `use Foo` appears in the document.
 #[test]
-fn workspace_variable_completion_preserves_qualified_insertion_without_import()
+fn package_qualified_variable_completion_works_without_explicit_import()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
     index.index_file(
         Url::parse("file:///lib/Foo.pm")?,
         "package Foo;\nour $xylophone = 1;\n1;\n".to_string(),
     )?;
+    // No `use Foo` — the variable is accessed via the fully-qualified
+    // `$Foo::xyl` prefix, which always resolves without an import.
     let code = "use strict;\n$Foo::xyl";
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
@@ -4196,9 +4203,37 @@ fn workspace_variable_completion_preserves_qualified_insertion_without_import()
     let item = completions
         .iter()
         .find(|c| c.label == "$xylophone")
-        .ok_or("expected `$xylophone` workspace variable completion")?;
+        .ok_or("expected `$xylophone` package-qualified variable completion")?;
     assert_eq!(item.kind, CompletionItemKind::Variable);
     assert!(item.additional_edits.is_empty());
+    Ok(())
+}
+
+// `add_workspace_symbol_completions` gates Variable candidates behind
+// `workspace_symbol_visible_without_import`, mirroring the Subroutine /
+// Constant / Export arms.  A variable from an unimported module must not
+// appear as a bare workspace completion candidate (#11937).
+#[test]
+fn workspace_variable_completion_omits_unimported_bare_symbol()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///lib/Foo.pm")?,
+        "package Foo;\nour $xylophone = 1;\n1;\n".to_string(),
+    )?;
+    // The document does not import Foo, so $xylophone must not appear as
+    // a bare workspace completion candidate.  The qualified `$Foo::xyl`
+    // path (tested separately) is not exercised here.
+    let code = "use strict;\n$xyl";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    assert!(
+        !completions.iter().any(|c| c.label == "$xylophone"),
+        "unimported workspace variable must not produce a bare insertion"
+    );
     Ok(())
 }
 

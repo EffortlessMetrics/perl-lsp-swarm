@@ -147,6 +147,22 @@ pub fn add_workspace_symbol_completions(
                 });
             }
             WsSymbolKind::Variable(var_kind) => {
+                // Bare variable insertion is only truthful when the defining
+                // namespace is already visible in the current document.
+                // Qualified completions for `$Pkg::name` are handled by
+                // add_package_completions via the sigil+`::` dispatch path,
+                // not this function, so the gate here is defensive — it
+                // mirrors the Subroutine/Constant/Export guard and closes the
+                // gap if the dispatch flow changes (#11937).
+                if !workspace_symbol_visible_without_import(
+                    &symbol,
+                    context,
+                    import_map,
+                    used_modules,
+                ) {
+                    continue;
+                }
+
                 // Add variable completion with appropriate sigil
                 let sigil = match var_kind {
                     VarKind::Scalar => "$",

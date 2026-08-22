@@ -990,6 +990,20 @@ impl LspServer {
                         continue;
                     }
 
+                    // Variable symbols from unimported modules must not appear
+                    // as bare-name completions; the core provider's import-aware
+                    // path is responsible for those.  Qualified-prefix context
+                    // (`$Pkg::name`) is handled by
+                    // `qualified_variable_workspace_symbols`, whose results are
+                    // exclusively Variable kind and intentionally bypass this
+                    // gate — do not filter them here (#11937).
+                    if !is_method_completion
+                        && !qualified_variable_context
+                        && matches!(symbol.kind, crate::workspace_index::SymbolKind::Variable(_))
+                    {
+                        continue;
+                    }
+
                     // Strategy A: module-kind symbols in `use Module` / `require Module`
                     // context — filter by position-aware @INC reachability so that
                     // `no lib` cancellations are honoured (fixes #8537).
@@ -3958,6 +3972,55 @@ mod tests {
             "qualified workspace variable completion should preserve package qualifier"
         );
 
+        Ok(())
+    }
+
+    // A variable declared in an unimported module must not escape the
+    // visibility gate when the user types a bare sigil prefix (e.g. `$xyl`
+    // without `use Foo`).  The qualified path (`$Foo::`) is handled
+    // separately by `qualified_variable_workspace_symbols` and bypasses
+    // this filter intentionally (#11937).
+    #[test]
+    fn test_completion_unimported_workspace_variable_omitted_from_bare_prefix()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": "file:///workspace/Gadget.pm",
+                "languageId": "perl",
+                "version": 1,
+                "text": "package Gadget;\nour $xylophone_widget = 42;\n1;\n"
+            }
+        })))?;
+
+        // app.pl does NOT `use Gadget` — $xylophone_widget must not appear.
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": "file:///workspace/app.pl",
+                "languageId": "perl",
+                "version": 1,
+                "text": "use strict;\n$xyloph\n"
+            }
+        })))?;
+
+        let response = server
+            .handle_completion_cancellable(
+                Some(json!({
+                    "textDocument": { "uri": "file:///workspace/app.pl" },
+                    "position": { "line": 1, "character": 7 }
+                })),
+                Some(&json!(1)),
+            )?
+            .ok_or("expected completion response")?;
+
+        let items = response["items"].as_array().ok_or("expected completion items")?;
+        assert!(
+            !items.iter().any(|item| item["label"].as_str() == Some("$xylophone_widget")),
+            "unimported workspace variable must not appear as a bare-prefix completion; \
+             got items: {:?}",
+            items.iter().map(|i| i["label"].as_str()).collect::<Vec<_>>()
+        );
         Ok(())
     }
 
