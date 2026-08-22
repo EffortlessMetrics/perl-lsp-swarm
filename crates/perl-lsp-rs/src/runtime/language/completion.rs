@@ -990,6 +990,19 @@ impl LspServer {
                         continue;
                     }
 
+                    // Variables were left out of the withdrawal above, so a
+                    // cross-file value symbol still escaped the same way
+                    // (issue #11937). A file-local `my`/`state` variable has no
+                    // package-visible name at all: it is reachable from another
+                    // document under neither a bare nor a qualified spelling, so
+                    // the name-only fallback must withdraw it outright.
+                    let is_cross_file_variable =
+                        matches!(symbol.kind, crate::workspace_index::SymbolKind::Variable(_))
+                            && symbol.uri.as_str() != doc_uri;
+                    if is_cross_file_variable && symbol.is_lexical {
+                        continue;
+                    }
+
                     // Strategy A: module-kind symbols in `use Module` / `require Module`
                     // context — filter by position-aware @INC reachability so that
                     // `no lib` cancellations are honoured (fixes #8537).
@@ -1050,9 +1063,22 @@ impl LspServer {
                     // Invariant: text_edit_range.is_some() ⟺ insert_text is the
                     // fully-qualified name.  The serializer (completion_item_to_lsp_value)
                     // depends on this to locate the newText from `item["insertText"]`.
-                    let (insert_text, text_edit_range) = if qualified_variable_context
-                        && matches!(symbol.kind, crate::workspace_index::SymbolKind::Variable(_))
-                    {
+                    //
+                    // A package variable owned by another document is only
+                    // truthful as a fully qualified insertion: this pass holds
+                    // no import facts, so it cannot know that a bare spelling
+                    // resolves in the current document, and under `use strict`
+                    // an unimported bare insertion is a compile error. Qualified
+                    // access needs no import, so it is correct whether or not
+                    // the defining module is used here (issue #11937).
+                    let insert_variable_qualified =
+                        is_cross_file_variable && symbol.container_name.is_some();
+                    let (insert_text, text_edit_range) = if insert_variable_qualified
+                        || (qualified_variable_context
+                            && matches!(
+                                symbol.kind,
+                                crate::workspace_index::SymbolKind::Variable(_)
+                            )) {
                         (Some(qualified_name), Some(replace_prefix_range))
                     } else {
                         (Some(label.clone()), None)
@@ -4969,5 +4995,186 @@ our $single_root_var;
             names.contains(&"$single_root_var"),
             "single-folder workspace must not filter by folder (doc_folder_filter = None);              got completions: {names:?}"
         );
+    }
+
+    // =========================================================================
+    // #11937 — the runtime workspace fallback must not present a cross-file
+    // variable as a bare, unimported insertion. `Variable` was omitted from the
+    // #11158 withdrawal, so it escaped the gate its sibling kinds pass through.
+    // =========================================================================
+
+    /// Build a server + index holding one module with an `our` package variable
+    /// and a `my` lexical, then run the workspace fallback over `doc_text`.
+    #[cfg(feature = "workspace")]
+    fn run_workspace_pass_over_secrets_module(
+        doc_uri: &str,
+        doc_text: &str,
+        extra_doc_source: Option<&str>,
+    ) -> Vec<(String, Option<String>, Option<(usize, usize)>)> {
+        use crate::runtime::routing::IndexAccessMode;
+        use crate::runtime::workspace_folder::WorkspaceFolderState;
+        use perl_parser::workspace_index::IndexCoordinator;
+        use std::sync::Arc;
+
+        let server = LspServer::default();
+        server
+            .workspace_folders
+            .lock()
+            .push(WorkspaceFolderState::new("file:///project".to_string()));
+
+        let coordinator = Arc::new(IndexCoordinator::new());
+        let _ = coordinator.index().index_file_str(
+            "file:///project/lib/Secrets.pm",
+            "package Secrets;\nour $api_token = 1;\nmy $private_token = 2;\n1;\n",
+        );
+        if let Some(source) = extra_doc_source {
+            let _ = coordinator.index().index_file_str(doc_uri, source);
+        }
+        coordinator.transition_to_ready(1, 1);
+
+        let inc_context = RequestIncContext::new(&server, doc_uri, doc_text, doc_text.len());
+        let mut completions = Vec::new();
+        server.add_runtime_workspace_completions(
+            &mut completions,
+            &inc_context,
+            &IndexAccessMode::Full(&coordinator),
+            None,
+        );
+        completions
+            .iter()
+            .map(|c| {
+                (
+                    c.label.to_string(),
+                    c.insert_text.as_ref().map(|t| t.to_string()),
+                    c.text_edit_range,
+                )
+            })
+            .collect()
+    }
+
+    /// A package variable owned by an unimported module must be inserted fully
+    /// qualified. Accepting the previous bare `$api_token` in a `use strict`
+    /// document is a compile error: `Global symbol "$api_token" requires
+    /// explicit package name`.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn cross_file_package_variable_is_offered_only_as_a_qualified_insertion() {
+        let items = run_workspace_pass_over_secrets_module(
+            "file:///project/bin/app.pl",
+            "use strict;\n$api",
+            None,
+        );
+
+        let (label, insert_text, text_edit_range) = items
+            .iter()
+            .find(|(label, _, _)| label == "$api_token")
+            .cloned()
+            .unwrap_or_else(|| panic!("expected the `$api_token` candidate; got {items:?}"));
+
+        assert_eq!(label, "$api_token", "the label stays bare so the candidate is still findable");
+        assert_eq!(
+            insert_text.as_deref(),
+            Some("$Secrets::api_token"),
+            "the document never imports Secrets, so only a qualified insertion resolves"
+        );
+        assert!(
+            text_edit_range.is_some(),
+            "a qualified insert_text must carry a replace range \
+             (the serializer's text_edit_range <=> qualified invariant)"
+        );
+    }
+
+    /// The same escape on a non-sigil prefix: `token` matches both variables by
+    /// name, and neither may come back as a bare cross-file insertion.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn cross_file_variable_on_a_bare_word_prefix_is_never_inserted_bare() {
+        let items = run_workspace_pass_over_secrets_module(
+            "file:///project/bin/app.pl",
+            "use strict;\ntoken",
+            None,
+        );
+
+        for (label, insert_text, _) in &items {
+            if !label.starts_with(['$', '@', '%']) {
+                continue;
+            }
+            assert_ne!(
+                insert_text.as_deref(),
+                Some(label.as_str()),
+                "cross-file variable {label} must not be inserted bare; got {items:?}"
+            );
+        }
+    }
+
+    /// A `my` lexical in another file is reachable under no spelling at all —
+    /// not bare, and not qualified either. It must be withdrawn, not requalified.
+    ///
+    /// The `$api_token` assertion is the vacuity guard: it proves the pass ran
+    /// and did find symbols in this module, so the absence below is a decision
+    /// rather than an empty result.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn cross_file_lexical_variable_is_withdrawn_entirely() {
+        let items = run_workspace_pass_over_secrets_module(
+            "file:///project/bin/app.pl",
+            "use strict;\ntoken",
+            None,
+        );
+        let labels: Vec<&str> = items.iter().map(|(label, _, _)| label.as_str()).collect();
+
+        assert!(
+            labels.contains(&"$api_token"),
+            "vacuity guard: the pass must still surface the package variable; got {items:?}"
+        );
+        assert!(
+            !labels.contains(&"$private_token"),
+            "a cross-file `my` lexical has no package-visible name and must be withdrawn; \
+             got {items:?}"
+        );
+    }
+
+    /// Qualification is scoped to *cross-file* variables. A variable the open
+    /// document declares itself is correctly spelled bare, and must stay that way.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn variable_declared_in_the_open_document_stays_bare() {
+        let doc_uri = "file:///project/bin/app.pl";
+        let items = run_workspace_pass_over_secrets_module(
+            doc_uri,
+            "package App;\nour $api_local = 1;\n$api",
+            Some("package App;\nour $api_local = 1;\n"),
+        );
+
+        let (_, insert_text, text_edit_range) =
+            items.iter().find(|(label, _, _)| label == "$api_local").cloned().unwrap_or_else(
+                || panic!("expected the same-document `$api_local`; got {items:?}"),
+            );
+
+        assert_eq!(
+            insert_text.as_deref(),
+            Some("$api_local"),
+            "a variable declared in the open document is already in scope bare"
+        );
+        assert!(text_edit_range.is_none(), "a bare insert_text must carry no replace range");
+    }
+
+    /// The pre-existing qualified-prefix route (`$Secrets::api`) is unchanged.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn qualified_variable_prefix_route_is_unchanged() {
+        let items = run_workspace_pass_over_secrets_module(
+            "file:///project/bin/app.pl",
+            "use strict;\n$Secrets::api",
+            None,
+        );
+
+        let (_, insert_text, text_edit_range) =
+            items.iter().find(|(label, _, _)| label == "$api_token").cloned().unwrap_or_else(
+                || panic!("expected `$api_token` from the qualified route; got {items:?}"),
+            );
+
+        assert_eq!(insert_text.as_deref(), Some("$Secrets::api_token"));
+        assert!(text_edit_range.is_some());
     }
 }

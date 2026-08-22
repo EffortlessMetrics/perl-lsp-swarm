@@ -4182,6 +4182,11 @@ fn workspace_completion_no_auto_import_for_file_local_symbol()
 #[test]
 fn workspace_variable_completion_preserves_qualified_insertion_without_import()
 -> Result<(), Box<dyn std::error::Error>> {
+    // `$Foo::xyl` is served by the sigil path's `::` branch
+    // (`add_package_completions`). The name of this test claims a qualified
+    // insertion, so assert the inserted text — not just the absence of an
+    // import edit, which an untruthful bare insertion would also satisfy
+    // (issue #11937).
     let index = Arc::new(WorkspaceIndex::new());
     index.index_file(
         Url::parse("file:///lib/Foo.pm")?,
@@ -4198,7 +4203,70 @@ fn workspace_variable_completion_preserves_qualified_insertion_without_import()
         .find(|c| c.label == "$xylophone")
         .ok_or("expected `$xylophone` workspace variable completion")?;
     assert_eq!(item.kind, CompletionItemKind::Variable);
+    assert_eq!(
+        item.insert_text.as_deref(),
+        Some("$Foo::xylophone"),
+        "the document never imports Foo, so only a fully qualified insertion resolves"
+    );
     assert!(item.additional_edits.is_empty());
+    Ok(())
+}
+
+/// Pins the interception that makes the `WsSymbolKind::Variable` arm of
+/// `add_workspace_symbol_completions` dead code.
+///
+/// Every workspace variable candidate carries a leading sigil, so only a
+/// sigil-prefixed request could match one — and `complete_sigil_context`
+/// serves every sigil prefix and returns before `complete_general_context`
+/// (the sole caller of the workspace-symbol pass) runs. That is why the arm
+/// was removed rather than gated (issue #11937). If this test fails, the
+/// dispatch order changed and the arm has to come back *gated*, not as the
+/// bare/double-sigil emission it used to be.
+#[test]
+fn sigil_prefixed_requests_never_reach_the_workspace_symbol_pass()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///lib/Foo.pm")?,
+        "package Foo;\nour $xylophone = 1;\n1;\n".to_string(),
+    )?;
+
+    // Guard against vacuity: the same index, reached through the sigil path's
+    // `::` branch, does serve this symbol. So an empty bare-prefix result below
+    // is the dispatch interception, not an unpopulated index.
+    let qualified_code = "use strict;\n$Foo::xyl";
+    let mut qualified_parser = Parser::new(qualified_code);
+    let qualified_ast = must(qualified_parser.parse());
+    let qualified_provider =
+        CompletionProvider::new_with_index(&qualified_ast, Some(index.clone()));
+    let qualified = qualified_provider.get_completions(qualified_code, qualified_code.len());
+    assert!(
+        qualified.iter().any(|c| c.insert_text.as_deref() == Some("$Foo::xylophone")),
+        "index must be populated and findable through the sigil `::` branch; got {:?}",
+        qualified.iter().map(|c| c.label.as_ref()).collect::<Vec<_>>()
+    );
+
+    // A bare sigil prefix is served entirely by the sigil path, which knows
+    // nothing of the workspace index — so no workspace variable appears under
+    // any spelling.
+    for code in ["use strict;\n$", "use strict;\n$xyl", "use strict;\n@xyl", "use strict;\n%xyl"] {
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let provider = CompletionProvider::new_with_index(&ast, Some(index.clone()));
+        let completions = provider.get_completions(code, code.len());
+        let leaked: Vec<_> = completions
+            .iter()
+            .filter(|c| {
+                c.label.contains("xylophone")
+                    || c.insert_text.as_deref().is_some_and(|t| t.contains("xylophone"))
+            })
+            .map(|c| (c.label.to_string(), c.insert_text.as_deref().map(str::to_string)))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "sigil prefix {code:?} must be served by the sigil path alone; got {leaked:?}"
+        );
+    }
     Ok(())
 }
 
