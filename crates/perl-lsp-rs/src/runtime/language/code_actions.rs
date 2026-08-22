@@ -618,7 +618,42 @@ impl LspServer {
                             native_profile,
                             &critic_config,
                         );
-                    for finding in registry.check(&critic_context) {
+                    use perl_lsp_rs_core::tooling::perl_critic::{
+                        CriticSuppressionMap, NativeCriticPolicy, critic_source_identity_for_uri,
+                        native_finding_candidates_with_accounting, normalize_with_native_policy,
+                    };
+
+                    let raw_findings = registry.check_unfiltered(&critic_context);
+                    let candidates = native_finding_candidates_with_accounting(
+                        uri,
+                        raw_findings.iter().cloned(),
+                        critic_source_identity_for_uri(uri, 0),
+                    );
+                    let suppressions = CriticSuppressionMap::from_source(&doc.text);
+                    let policy = NativeCriticPolicy::new(
+                        severity.clamp(1, 5),
+                        &critic_config.include,
+                        &critic_config.exclude,
+                        &suppressions,
+                    );
+
+                    for normalized in normalize_with_native_policy(candidates, &policy) {
+                        // Normalization decides whether this logical finding is
+                        // admitted. The raw producer is retained only for its
+                        // existing safe edit and title; no raw finding can
+                        // bypass alias-aware exclusion or suppression.
+                        let Some(finding) = raw_findings.iter().find(|finding| {
+                            finding.range == normalized.range()
+                                && normalized.contributors().iter().any(|contributor| {
+                                    let identity = contributor.identity();
+                                    identity.origin()
+                                        == perl_lsp_rs_core::tooling::perl_critic::CriticFindingOrigin::NativeCritic
+                                        && identity.code() == finding.rule_id
+                                        && identity.shape() == finding.observed_shape
+                                })
+                        }) else {
+                            continue;
+                        };
                         // Only findings that carry a Safe automatic edit become
                         // quick-fixes. Suggested fixes need user confirmation
                         // (declaration-only renames corrupt references);
