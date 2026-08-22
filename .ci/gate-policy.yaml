@@ -777,7 +777,7 @@ gates:
 
   - name: clippy_tests_kernel
     tier: pr_fast
-    description: "Clippy --all-targets on the known-clean staged cohort (32/47 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
+    description: "Clippy --all-targets on the known-clean staged cohort (32/46 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
     required: true
     # (#11736): The workspace lints in Cargo.toml deny `unwrap_used`, `expect_used`,
     # and `panic` but the existing clippy gates use `--lib` only, so these denials
@@ -787,7 +787,7 @@ gates:
     # `--all-targets -D warnings -A missing_docs`. The cohort is additive: add
     # crates here only after they pass the command below locally.
     # This is a scoped cohort assertion, not an exhaustive workspace clean/dirty
-    # census. The remaining 15 crates carry measured findings tracked on #11736
+    # census. The remaining 14 crates carry measured findings tracked on #11736
     # pending the target-kind lint policy decision (2026-08-19 workspace census
     # on d0f488dd: 3363 findings across 21 then-dirty crates, dominated by
     # print_*/unwrap/expect in test code).
@@ -796,7 +796,10 @@ gates:
     # gates. `required: true` makes the pr_fast runner fail on a violation; it
     # is not itself a branch-protection context.
     #
-    # Cohort confirmed clean on 2026-08-21 against main 34da72a33:
+    # Current-main cohort verification: exact gate rerun on 2026-08-22 against
+    # base dc0e784dcee5aac6d3edebebcf9b71b75079cc59; this is scoped proof for
+    # the 32 selectors below.
+    # Writer proof result: PASS in 23s, within the 480s/400000ms budget.
     #   2026-08-19 batch (post-fix, PR #11742): perl-token, perl-position-tracking,
     #     perl-uri, perl-tdd-support, perl-test-must, perl-ast-v2 (1 clone-on-copy
     #     batch fixed), perl-symbol (1 expect_used fixed)
