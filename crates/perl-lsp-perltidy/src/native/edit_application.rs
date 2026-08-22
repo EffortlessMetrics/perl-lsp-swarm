@@ -9,7 +9,7 @@
 //! test.
 //!
 //! Rejection is the contract: reversed, out-of-bounds/unreachable,
-//! overlapping, and mid-code-point edits are typed errors — never clamped.
+//! overlapping, duplicate, and mid-code-point edits are typed errors — never clamped.
 //! Distinct zero-width edits at one position retain their input order. This
 //! is the explicit contract of this independent oracle; it does not claim to
 //! model the order used by any current LSP or production edit applicator.
@@ -104,6 +104,13 @@ pub enum EditApplicationError {
         /// Index of the later edit overlapping it.
         second_edit_index: usize,
     },
+    /// Two identical zero-width edits would make insertion order ambiguous.
+    DuplicateEdits {
+        /// Index of the first identical edit (by resolved span).
+        first_edit_index: usize,
+        /// Index of the second identical edit.
+        second_edit_index: usize,
+    },
 }
 
 impl std::fmt::Display for EditApplicationError {
@@ -125,6 +132,10 @@ impl std::fmt::Display for EditApplicationError {
             Self::OverlappingEdits { first_edit_index, second_edit_index } => {
                 write!(formatter, "edits {first_edit_index} and {second_edit_index} overlap")
             }
+            Self::DuplicateEdits { first_edit_index, second_edit_index } => write!(
+                formatter,
+                "edits {first_edit_index} and {second_edit_index} are identical zero-width insertions"
+            ),
         }
     }
 }
@@ -174,6 +185,15 @@ pub fn apply_edits_exact(
 
     for window in order.windows(2) {
         let (first, second) = (window[0], window[1]);
+        if first.start_byte == first.end_byte
+            && first.start_byte == second.start_byte
+            && edits[first.original_index].new_text == edits[second.original_index].new_text
+        {
+            return Err(EditApplicationError::DuplicateEdits {
+                first_edit_index: first.original_index,
+                second_edit_index: second.original_index,
+            });
+        }
         if second.start_byte < first.end_byte {
             return Err(EditApplicationError::OverlappingEdits {
                 first_edit_index: first.original_index,

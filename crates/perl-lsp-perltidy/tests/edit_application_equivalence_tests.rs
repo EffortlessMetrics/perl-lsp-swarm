@@ -116,6 +116,15 @@ fn distinct_zero_width_insertions_preserve_oracle_input_order() -> TestResult {
 }
 
 #[test]
+fn duplicate_zero_width_insertions_are_rejected() {
+    let edits = [one_edit(0, 2, 0, 2, "A"), one_edit(0, 2, 0, 2, "A")];
+    assert_eq!(
+        apply_edits_exact("abcd", &edits, UTF16),
+        Err(EditApplicationError::DuplicateEdits { first_edit_index: 0, second_edit_index: 1 })
+    );
+}
+
+#[test]
 fn reversed_ranges_are_rejected_not_clamped() -> TestResult {
     assert_eq!(
         apply_edits_exact("hello world", &[one_edit(0, 5, 0, 1, "X")], UTF16),
