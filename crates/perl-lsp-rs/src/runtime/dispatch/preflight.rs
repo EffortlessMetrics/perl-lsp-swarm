@@ -44,20 +44,28 @@ pub(super) fn prepare_request(
         return PreflightOutcome::NotificationHandled;
     }
 
-    // Input validation runs *before* cancellation registration, deliberately.
+    // Structural admission runs *before* cancellation registration, deliberately.
     //
     // `register_request_cancellation` inserts a token and a cloned cleanup
     // context into the global registry, and the entry is normally removed by
     // `finalize_response` or a handler cleanup guard. Rejecting here returns
-    // early and reaches neither, so validating after registration would leak one
+    // early and reaches neither, so admitting after registration would leak one
     // registry entry — holding its cloned params — per rejected request, letting
     // a client grow server memory without bound by replaying invalid requests
-    // under fresh ids. Nothing in validation needs the registry, so the check
+    // under fresh ids. Nothing in admission needs the registry, so the check
     // simply moves ahead of it.
+    //
+    // Admission is protocol-generic only (issue #8895): method-name length and
+    // serialized-payload resource bounds. It must never inspect parameter
+    // *content* — source, documentation, labels, and extension payloads are
+    // inert data at this boundary. Method-specific policy lives at its sinks:
+    // unknown methods reach routing's -32601, malformed params reach handler
+    // typed decode (-32602), and executeCommand/path/trust/rendering refusals
+    // are typed failures owned by those operations.
     let null = Value::Null;
     let params_ref = request.params.as_ref().unwrap_or(&null);
-    if let Err(err) = crate::security::validate_lsp_request(&request.method, params_ref) {
-        tracing::debug!(method = %request.method, %err, "Rejected request: input validation failed");
+    if let Err(err) = crate::security::validate_request_admission(&request.method, params_ref) {
+        tracing::debug!(method = %request.method, %err, "Rejected request: structural admission failed");
         if !context.should_respond {
             return PreflightOutcome::NotificationHandled;
         }

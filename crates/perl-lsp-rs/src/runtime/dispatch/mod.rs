@@ -214,8 +214,10 @@ mod tests {
 
     /// An invalid *notification* (no `id`) must be dropped silently rather than
     /// answered, because JSON-RPC forbids replying to a notification. This
-    /// covers the `!context.should_respond` branch of the preflight rejection,
-    /// which the request-shaped tests below cannot reach.
+    /// covers the `!context.should_respond` branch of the preflight structural
+    /// rejection, which the request-shaped tests below cannot reach. The
+    /// overlong method name trips the generic length bound without involving
+    /// any content or charset policy (#8895).
     #[test]
     fn invalid_notification_is_dropped_without_a_response() {
         let server = LspServer::new();
@@ -224,7 +226,7 @@ mod tests {
         let notification = JsonRpcRequest {
             _jsonrpc: "2.0".to_string(),
             id: None,
-            method: "textDocument/<script>".to_string(),
+            method: format!("textDocument/{}", "x".repeat(200)),
             params: None,
         };
         assert!(
@@ -233,24 +235,23 @@ mod tests {
         );
     }
 
-    /// Preflight input-validation rejects requests whose method name contains
-    /// characters outside `[a-zA-Z0-9/$-]` with JSON-RPC INVALID_REQUEST (-32600).
-    /// This is the end-to-end wiring test for the `validate_lsp_request` call
-    /// added to `preflight::prepare_request` (issue #5256).
+    /// A valid JSON-RPC method name is never rejected by a punctuation
+    /// allowlist (issue #8895). An unknown punctuated method must reach
+    /// routing and be answered with MethodNotFound (-32601) — proving both
+    /// that admission does not police method charset and the -32600/-32601
+    /// distinction at one boundary.
     #[test]
-    fn invalid_method_charset_returns_32600() -> anyhow::Result<()> {
+    fn punctuated_unknown_method_returns_32601_not_32600() -> anyhow::Result<()> {
         let server = LspServer::new();
-        // Initialize so the server is past the not-initialized gate.
         let _ = server.handle_request(request(1, "initialize", Some(json!({}))));
 
-        // `<` is not in the allowed method charset → INVALID_REQUEST.
         let code = server
-            .handle_request(request(2, "textDocument/<script>", None))
+            .handle_request(request(2, "custom/fmt.v2:preview", None))
             .and_then(|r| r.error)
             .map(|e| e.code);
         anyhow::ensure!(
-            code == Some(-32600),
-            "forbidden method charset must return -32600, got {code:?}"
+            code == Some(-32601),
+            "valid unknown method must return -32601, got {code:?}"
         );
         Ok(())
     }
@@ -272,14 +273,16 @@ mod tests {
         Ok(())
     }
 
-    /// Preflight input-validation rejects requests whose params contain obvious
-    /// script-injection payloads with JSON-RPC INVALID_REQUEST (-32600).
+    /// Parameter content is inert data at the dispatch boundary (issue #8895):
+    /// `<script>` inside params of an unknown custom method must NOT trigger
+    /// the old generic InvalidRequest (-32600) scan rejection. The request is
+    /// structurally valid, so it reaches routing and is answered with
+    /// MethodNotFound (-32601).
     #[test]
-    fn params_with_script_injection_return_32600() -> anyhow::Result<()> {
+    fn script_like_param_content_is_inert_data() -> anyhow::Result<()> {
         let server = LspServer::new();
         let _ = server.handle_request(request(1, "initialize", Some(json!({}))));
 
-        // The `_` branch in validate_lsp_request blocks `<script` in any param value.
         let code = server
             .handle_request(request(
                 2,
@@ -289,8 +292,9 @@ mod tests {
             .and_then(|r| r.error)
             .map(|e| e.code);
         anyhow::ensure!(
-            code == Some(-32600),
-            "script-injection in params must return -32600, got {code:?}"
+            code == Some(-32601),
+            "script-like param text must not cause a generic -32600 rejection; \
+             unknown method should yield -32601, got {code:?}"
         );
         Ok(())
     }

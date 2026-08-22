@@ -1,12 +1,27 @@
-use crate::protocol::capabilities::SUPPORTED_COMMANDS;
+//! Layered request validation for the LSP runtime.
+//!
+//! Protocol-generic admission lives here ([`validate_request_admission`]);
+//! everything method- or application-specific is owned by the operation that
+//! hosts the dangerous sink:
+//!
+//! - document synchronization validates its own URIs through
+//!   [`validate_document_uri`] at the
+//!   `textDocument/didOpen|didChange|didSave` handlers, and enforces its own
+//!   configured buffer-size and binary-content guards where documents are
+//!   stored;
+//! - `workspace/executeCommand` enforces command identity and argument shape in
+//!   the execute-command dispatcher;
+//! - path containment, trust, and rendering policy live with their sinks.
+//!
+//! Generic admission deliberately does not scan parameter *content*: source,
+//! documentation, labels, diagnostics, and extension payloads are inert data
+//! unless a later operation renders them into an active sink (issue #8895).
+
 use crate::runtime::input_validation::constants::{
-    ALLOWED_COMMANDS, ALLOWED_TEXT_DOCUMENT_URI_SCHEMES, MAX_METHOD_LENGTH, MAX_PARAMS_SIZE,
-    MAX_URI_LENGTH,
+    ALLOWED_TEXT_DOCUMENT_URI_SCHEMES, MAX_METHOD_LENGTH, MAX_PARAMS_SIZE, MAX_URI_LENGTH,
 };
-use crate::runtime::input_validation::file_validation::validate_file_content;
 use crate::runtime::limits::max_file_size_bytes as limits_max_file_size_bytes;
 use anyhow::{Result, anyhow};
-use std::path::Path;
 
 /// Methods whose params legitimately carry a whole editor buffer.
 const TEXT_SYNC_METHODS: &[&str] =
@@ -39,14 +54,24 @@ fn max_params_size_for(method: &str) -> usize {
     }
 }
 
-/// Validates LSP request parameters to ensure they're safe.
-pub fn validate_lsp_request(method: &str, params: &serde_json::Value) -> Result<()> {
-    if method.len() > MAX_METHOD_LENGTH
-        || !method
-            .chars()
-            .all(|character| character.is_alphanumeric() || matches!(character, '/' | '$' | '-'))
-    {
-        return Err(anyhow!("Invalid LSP method: {}", method));
+/// Admit a decoded JSON-RPC request on generic protocol grounds alone.
+///
+/// This is the pre-routing structural layer. It proves only that the request is
+/// bounded enough to route safely:
+///
+/// - the method name fits [`MAX_METHOD_LENGTH`] (any JSON-RPC method string is
+///   admissible; punctuation is ordinary naming, not an attack);
+/// - the serialized params fit the resource ceiling for the method.
+///
+/// Rejections here are whole-request refusals (`InvalidRequest`, -32600).
+/// Unknown methods, wrong parameter shapes, and application policy are *not*
+/// this layer's concern: routing answers unknown methods with
+/// `MethodNotFound` (-32601), handlers answer malformed params with
+/// `InvalidParams` (-32602), and sinks answer policy refusals with their own
+/// typed errors.
+pub fn validate_request_admission(method: &str, params: &serde_json::Value) -> Result<()> {
+    if method.len() > MAX_METHOD_LENGTH {
+        return Err(anyhow!("LSP method name too long: {}", method));
     }
 
     let params_str = serde_json::to_string(params)?;
@@ -54,104 +79,23 @@ pub fn validate_lsp_request(method: &str, params: &serde_json::Value) -> Result<
         return Err(anyhow!("LSP parameters too large for method: {}", method));
     }
 
-    match method {
-        "textDocument/didOpen" | "textDocument/didChange" | "textDocument/didSave" => {
-            validate_text_document_params(params)?;
-        }
-        "workspace/executeCommand" => {
-            validate_execute_command_params(params)?;
-        }
-        // Methods whose params are LSP *items* rather than plain scalars. Every
-        // one of them round-trips content this server authored from the user's
-        // own source, so the catch-all scan below would reject legitimate
-        // traffic — the same false-positive class that made the server refuse
-        // every Mason buffer on `didOpen` (issue #5256 follow-up):
-        //
-        // - `textDocument/codeAction` — `context.diagnostics[].message` quotes
-        //   source text verbatim;
-        // - `codeAction/resolve` — the same diagnostics, plus `command.title`
-        //   and `command.arguments`;
-        // - `completionItem/resolve` — `documentation` carries POD;
-        // - `inlayHint/resolve` — `label` and `tooltip`;
-        // - `documentLink/resolve` — `tooltip`;
-        // - `codeLens/resolve` — `command.title` and `command.arguments`.
-        //
-        // The exemption is per-method rather than structural. A structural rule
-        // — scan only primitive params and skip nested item objects — would
-        // cover future `*/resolve` additions automatically, but it is a design
-        // change to the scan itself and is deliberately not attempted here.
-        "textDocument/codeAction"
-        | "codeAction/resolve"
-        | "completionItem/resolve"
-        | "inlayHint/resolve"
-        | "documentLink/resolve"
-        | "codeLens/resolve" => {}
-        _ => {
-            if params_str.contains("javascript:") || params_str.contains("<script") {
-                return Err(anyhow!("Suspicious content in parameters for method: {}", method));
-            }
-        }
-    }
-
     Ok(())
 }
 
-fn validate_text_document_params(params: &serde_json::Value) -> Result<()> {
-    if let Some(uri) = params
-        .get("textDocument")
-        .and_then(|text_document| text_document.get("uri"))
-        .and_then(serde_json::Value::as_str)
-    {
-        if !ALLOWED_TEXT_DOCUMENT_URI_SCHEMES.iter().any(|scheme| uri.starts_with(scheme)) {
-            return Err(anyhow!("Invalid URI scheme: {}", uri));
-        }
-
-        if uri.len() > MAX_URI_LENGTH {
-            return Err(anyhow!("URI too long: {}", uri));
-        }
+/// Validate a document URI at the boundary that turns it into paths.
+///
+/// The server resolves document URIs into workspace-relative file access, so
+/// only schemes it can actually resolve are admitted, and absurdly long URIs
+/// are refused as a resource bound. Document-sync handlers call this on the
+/// *normalized* key, so plain-path inputs the server deliberately accepts are
+/// judged in the form they will actually be stored under.
+pub fn validate_document_uri(uri: &str) -> Result<()> {
+    if !ALLOWED_TEXT_DOCUMENT_URI_SCHEMES.iter().any(|scheme| uri.starts_with(scheme)) {
+        return Err(anyhow!("Invalid URI scheme: {uri}"));
     }
 
-    if let Some(text) = params
-        .get("textDocument")
-        .and_then(|text_document| text_document.get("text"))
-        .and_then(serde_json::Value::as_str)
-    {
-        validate_file_content(text, Path::new("<lsp_input>"))?;
-    }
-
-    Ok(())
-}
-
-/// Returns `true` when `command` is one the server will actually dispatch.
-///
-/// Two sources, deliberately unioned:
-///
-/// - [`SUPPORTED_COMMANDS`] is the set advertised in the `executeCommand`
-///   capability. Rejecting any of these before dispatch would make the server
-///   refuse work it just told the client it could do — with this validator now
-///   reachable from preflight, that would have disabled every `run*`/`debug*`
-///   command plus `goToTest`, `goToImplementation`, and
-///   `explainProviderDecision`.
-/// - [`ALLOWED_COMMANDS`] carries handlers that are dispatchable but not
-///   advertised (for example `perl.extractVariable`, exercised by the
-///   LSP 3.17 workspace and comprehensive e2e suites).
-///
-/// Anything in neither set is still rejected, which is the point of the check.
-fn is_dispatchable_command(command: &str) -> bool {
-    SUPPORTED_COMMANDS.contains(&command) || ALLOWED_COMMANDS.contains(&command)
-}
-
-fn validate_execute_command_params(params: &serde_json::Value) -> Result<()> {
-    if let Some(command) = params.get("command").and_then(serde_json::Value::as_str)
-        && !is_dispatchable_command(command)
-    {
-        return Err(anyhow!("Command not allowed: {}", command));
-    }
-
-    if let Some(arguments) = params.get("arguments")
-        && !arguments.is_array()
-    {
-        return Err(anyhow!("Execute command arguments must be an array when present"));
+    if uri.len() > MAX_URI_LENGTH {
+        return Err(anyhow!("URI too long: {uri}"));
     }
 
     Ok(())

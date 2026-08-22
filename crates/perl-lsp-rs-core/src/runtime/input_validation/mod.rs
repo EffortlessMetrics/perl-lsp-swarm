@@ -8,7 +8,7 @@ mod sanitize;
 mod workspace_validation;
 
 pub use file_validation::{validate_file_content, validate_file_path};
-pub use lsp_validation::validate_lsp_request;
+pub use lsp_validation::{validate_document_uri, validate_request_admission};
 pub use sanitize::sanitize_string;
 pub use workspace_validation::validate_workspace_root;
 
@@ -93,13 +93,15 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// `validate_file_content`'s only production caller is the LSP buffer
-    /// path (`textDocument/didOpen` et al.), where content is the user's own
-    /// source — not an attacker-controlled disk file. Content-pattern
-    /// scanning was removed from this function for that reason (issue #5256
-    /// follow-up: it made the server refuse to open Mason buffers, whose
-    /// component blocks legitimately start with `<%`). This regression guard
-    /// now asserts such content is accepted, not rejected.
+    /// `validate_file_content` no longer has a production caller: it used to
+    /// run on the LSP buffer path (`textDocument/didOpen` et al.) via generic
+    /// preflight, but issue #8895 moved that boundary's policy into the sync
+    /// sink, whose own configured size guard and binary-content guard now
+    /// own those decisions. Content-pattern scanning was removed from this
+    /// function earlier (issue #5256 follow-up: it made the server refuse to
+    /// open Mason buffers, whose component blocks legitimately start with
+    /// `<%`). This regression guard still asserts such content is accepted,
+    /// not rejected, so a pattern scan cannot silently return here.
     #[test]
     fn test_validate_file_content_html_like_substrings_are_accepted() {
         let content = "print q{<ScRiPt>alert('xss')</script>};";
@@ -141,8 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_lsp_request_valid() {
-        let method = "textDocument/didOpen";
+    fn test_validate_request_admission_accepts_known_methods() {
         let params = serde_json::json!({
             "textDocument": {
                 "uri": "file:///test.pl",
@@ -150,255 +151,94 @@ mod tests {
             }
         });
 
-        let result = validate_lsp_request(method, &params);
+        let result = validate_request_admission("textDocument/didOpen", &params);
         assert!(result.is_ok());
     }
 
+    /// Method names are ordinary JSON-RPC strings: any punctuation is
+    /// admissible as long as the name fits the length bound (issue #8895).
     #[test]
-    fn test_validate_lsp_request_valid_opencode_uri() {
-        let method = "textDocument/didOpen";
-        let params = serde_json::json!({
-            "textDocument": {
-                "uri": "opencode:/workspace/lib/My/Module.pm",
-                "text": "package My::Module;\n1;\n"
-            }
-        });
-
-        let result = validate_lsp_request(method, &params);
-        assert!(result.is_ok());
+    fn test_validate_request_admission_accepts_punctuated_method_names() {
+        let params = serde_json::json!({});
+        for method in [
+            "custom/fmt.v2:preview",
+            "$/perl-lsp/clientResponse",
+            "textDocument/<not-a-tag>",
+            "weird method with spaces",
+        ] {
+            let result = validate_request_admission(method, &params);
+            assert!(
+                result.is_ok(),
+                "method `{method}` must pass structural admission, got: {result:?}"
+            );
+        }
     }
 
     #[test]
-    fn test_validate_lsp_request_invalid_uri_scheme() {
-        let method = "textDocument/didOpen";
-        let params = serde_json::json!({
-            "textDocument": {
-                "uri": "https://example.com/test.pl",
-                "text": "print 'Hello';"
-            }
-        });
-
-        let result = validate_lsp_request(method, &params);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_validate_lsp_request_invalid_method() {
-        let method = "invalid<script>alert('xss')</script>";
+    fn test_validate_request_admission_rejects_overlong_method() {
+        let method = "a".repeat(101);
         let params = serde_json::json!({});
 
-        let result = validate_lsp_request(method, &params);
+        let result = validate_request_admission(&method, &params);
         assert!(result.is_err());
     }
 
+    /// Parameter *content* is never scanned by admission: browser-dangerous
+    /// substrings are inert data unless a sink renders them (issue #8895).
     #[test]
-    fn test_validate_lsp_request_invalid_text_document_uri_scheme() {
-        let method = "textDocument/didOpen";
+    fn test_validate_request_admission_does_not_scan_param_content() {
         let params = serde_json::json!({
-            "textDocument": {
-                "uri": "http://example.com/test.pl",
-                "text": "print 'Hello';"
-            }
+            "expression": "<script>alert('xss')</script>",
+            "url": "javascript:void(0)"
         });
 
-        let result = validate_lsp_request(method, &params);
-        assert!(result.is_err());
+        let result = validate_request_admission("custom/eval", &params);
+        assert!(result.is_ok(), "admission must not reject arbitrary param payloads by substring");
     }
 
     #[test]
-    fn test_validate_lsp_request_rejects_script_in_unknown_method_params() {
-        let method = "workspace/symbol";
-        let params = serde_json::json!({
-            "query": "<script>alert('xss')</script>"
-        });
-
-        let result = validate_lsp_request(method, &params);
-        assert!(result.is_err());
+    fn test_validate_document_uri_accepts_supported_schemes() {
+        for uri in
+            ["file:///test.pl", "untitled:Untitled-1", "opencode:/workspace/lib/My/Module.pm"]
+        {
+            let result = validate_document_uri(uri);
+            assert!(result.is_ok(), "{uri} must be accepted at the sync sink");
+        }
     }
 
     #[test]
-    fn test_validate_execute_command_allowed() {
-        let method = "workspace/executeCommand";
-        let params = serde_json::json!({
-            "command": "perl.runCritic",
-            "arguments": []
-        });
-
-        let result = validate_lsp_request(method, &params);
-        assert!(result.is_ok());
+    fn test_validate_document_uri_rejects_unknown_scheme() {
+        for uri in [
+            "https://example.com/test.pl",
+            "http://example.com/test.pl",
+            "ftp://example.com/script.pl",
+        ] {
+            let result = validate_document_uri(uri);
+            assert!(
+                result.is_err(),
+                "schemes the server cannot resolve into paths must be refused"
+            );
+        }
     }
 
     #[test]
-    fn test_validate_execute_command_allows_preview_safe_delete() {
-        let method = "workspace/executeCommand";
-        let params = serde_json::json!({
-            "command": "perl.previewSafeDelete",
-            "arguments": [{
-                "textDocument": {"uri": "file:///workspace/lib/My.pm"},
-                "position": {"line": 0, "character": 0}
-            }]
-        });
-
-        let result = validate_lsp_request(method, &params);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_validate_execute_command_allows_workspace_trust_report() {
-        let method = "workspace/executeCommand";
-        let params = serde_json::json!({
-            "command": "perl.workspaceTrustReport",
-            "arguments": []
-        });
-
-        let result = validate_lsp_request(method, &params);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_validate_execute_command_allows_agent_context() {
-        let method = "workspace/executeCommand";
-        let params = serde_json::json!({
-            "command": "perl.agentContext",
-            "arguments": []
-        });
-
-        let result = validate_lsp_request(method, &params);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_validate_execute_command_allows_omitted_arguments() {
-        let method = "workspace/executeCommand";
-        let params = serde_json::json!({"command": "perl.agentContext"});
-
-        let result = validate_lsp_request(method, &params);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_validate_execute_command_rejects_non_array_arguments() {
-        let method = "workspace/executeCommand";
-        let params = serde_json::json!({
-            "command": "perl.agentContext",
-            "arguments": {}
-        });
-
-        let result = validate_lsp_request(method, &params);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_validate_execute_command_allows_safe_delete_symbol() {
-        let method = "workspace/executeCommand";
-        let params = serde_json::json!({
-            "command": "perl.safeDeleteSymbol",
-            "arguments": [{
-                "textDocument": {"uri": "file:///workspace/lib/My.pm"},
-                "position": {"line": 0, "character": 0}
-            }]
-        });
-
-        let result = validate_lsp_request(method, &params);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_validate_execute_command_allows_preview_package_rename() {
-        let method = "workspace/executeCommand";
-        let params = serde_json::json!({
-            "command": "perl.previewPackageRename",
-            "arguments": [{
-                "textDocument": {"uri": "file:///workspace/lib/My.pm"},
-                "position": {"line": 0, "character": 0},
-                "newName": "Renamed::Package"
-            }]
-        });
-
-        let result = validate_lsp_request(method, &params);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_validate_execute_command_allows_explain_missing_module_lookup() {
-        let method = "workspace/executeCommand";
-        let params = serde_json::json!({
-            "command": "perl.explainMissingModuleLookup",
-            "arguments": [{
-                "module": "Missing::Payload",
-                "textDocument": {"uri": "file:///workspace/script.pl"},
-                "position": {"line": 0, "character": 4}
-            }]
-        });
-
-        let result = validate_lsp_request(method, &params);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_validate_execute_command_blocked() {
-        let method = "workspace/executeCommand";
-        let params = serde_json::json!({
-            "command": "rm -rf /",
-            "arguments": []
-        });
-
-        let result = validate_lsp_request(method, &params);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_validate_lsp_request_does_not_require_command_field() {
-        let method = "workspace/executeCommand";
-        let params = serde_json::json!({ "arguments": [] });
-
-        let result = validate_lsp_request(method, &params);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_validate_lsp_request_rejects_long_uri() {
-        let method = "textDocument/didOpen";
+    fn test_validate_document_uri_rejects_long_uri() {
         let uri = format!("file:///{}", "a".repeat(5000));
-        let params = serde_json::json!({
-            "textDocument": {
-                "uri": uri,
-                "text": "print 'Hello';"
-            }
-        });
 
-        let result = validate_lsp_request(method, &params);
+        let result = validate_document_uri(&uri);
         assert!(result.is_err());
     }
 
-    /// Regression guard: the `untitled:` scheme must still be accepted.
     #[test]
-    fn test_validate_lsp_request_valid_untitled_uri_still_accepted() {
-        let method = "textDocument/didOpen";
-        let params = serde_json::json!({
-            "textDocument": {
-                "uri": "untitled:Untitled-1",
-                "text": "package Scratch;\n1;\n"
-            }
-        });
-
-        let result = validate_lsp_request(method, &params);
-        assert!(result.is_ok(), "untitled: URI must be accepted after scheme allowlist refactor");
-    }
-
-    /// Regression guard: the original `file://` scheme must still be accepted.
-    #[test]
-    fn test_validate_lsp_request_valid_file_uri_still_accepted() {
-        let method = "textDocument/didChange";
-        let params = serde_json::json!({
-            "textDocument": {
-                "uri": "file:///home/user/project/lib/My.pm",
-                "text": "package My;\n1;\n"
-            }
-        });
-
-        let result = validate_lsp_request(method, &params);
-        assert!(result.is_ok(), "file:// URI must be accepted after scheme allowlist refactor");
+    fn test_validate_document_uri_boundary() {
+        let max_uri = format!("file:///{}", "a".repeat(4096 - 8));
+        assert_eq!(max_uri.len(), 4096);
+        assert!(validate_document_uri(&max_uri).is_ok(), "URI of exactly MAX_URI_LENGTH is ok");
+        let over_uri = format!("file:///{}", "a".repeat(4096 - 8 + 1));
+        assert!(
+            validate_document_uri(&over_uri).is_err(),
+            "URI one byte over MAX_URI_LENGTH must be rejected"
+        );
     }
 
     #[test]

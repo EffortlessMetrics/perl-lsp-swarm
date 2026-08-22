@@ -1653,6 +1653,49 @@ fn test_cancelled_open_returns_ok_without_storing_document()
     Ok(())
 }
 
+/// Configured file-limit guard (#8895): a document over `maxFileSizeBytes`
+/// must be stored WITHOUT a parse (Minimal tier, no AST) rather than being
+/// structurally rejected. The sink owns the configured limit precisely;
+/// structural admission deliberately carries only headroom above it.
+#[test]
+fn test_over_limit_document_is_stored_without_parse() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///over_limit.pl";
+    let limit = crate::state::max_file_size_bytes();
+    // Short lines so only the total-size guard is exercised; build exactly
+    // limit+1 bytes so the guard fires on the boundary byte.
+    let line = format!("{}\n", "a".repeat(79));
+    let mut text = line.repeat((limit + 1) / line.len());
+    let remainder = (limit + 1) % line.len();
+    if remainder > 0 {
+        text.push_str(&"a".repeat(remainder));
+    }
+    debug_assert_eq!(text.len(), limit + 1);
+    assert!(text.len() > limit, "test document must exceed the configured limit");
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": text
+        }
+    }))?;
+
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("over-limit document must still be stored")?;
+    assert_eq!(
+        doc.current_parsed().map_or(DegradationTier::Minimal, |p| p.degradation_tier()),
+        DegradationTier::Minimal,
+        "over-limit content should result in Minimal degradation tier"
+    );
+    assert!(
+        doc.current_parsed().is_none_or(|p| p.ast().is_none()),
+        "parser must not run on over-limit documents"
+    );
+    Ok(())
+}
+
 /// Binary content guard — didOpen with null bytes must skip the parser and
 /// store the document with DegradationTier::Minimal and no AST.
 #[test]
