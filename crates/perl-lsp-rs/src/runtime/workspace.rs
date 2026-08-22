@@ -3664,6 +3664,49 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
+    fn rename_open_clean_buffer_preserves_binding_without_disk_facts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let dir = tempfile::tempdir()?;
+        let old_path = dir.path().join("clean_old.pm");
+        let new_path = dir.path().join("clean_new.pm");
+        let disk_v1 = "package CleanRename;\nsub v1_only { 1 }\n1;\n";
+        std::fs::write(&old_path, disk_v1)?;
+        let old_uri = url::Url::from_file_path(&old_path).map_err(|_| "invalid path")?.to_string();
+        let new_uri = url::Url::from_file_path(&new_path).map_err(|_| "invalid path")?.to_string();
+
+        server.did_open(json!({
+            "textDocument": { "uri": old_uri, "languageId": "perl", "version": 1, "text": disk_v1 }
+        }))?;
+        wait_for_pending_index_tasks(&server);
+        let generation_before = server.test_document_generation(&old_uri);
+
+        // Divergent bytes pre-seeded at the new path must never win over the
+        // open (clean) buffer even though their content would be identical
+        // only if the client had no unsaved state.
+        std::fs::write(&new_path, "package CleanRename;\nsub disk_only { 9 }\n1;\n")?;
+
+        server.handle_did_rename_files(Some(json!({
+            "files": [ { "oldUri": old_uri, "newUri": new_uri } ]
+        })))?;
+
+        assert_eq!(server.test_document_generation(&new_uri), generation_before);
+        assert_eq!(
+            server.documents_text_snapshot(),
+            vec![(server.normalize_uri_key(&new_uri), disk_v1.to_string())]
+        );
+        if let Some(coordinator) = server.coordinator() {
+            assert!(index_symbol_names(coordinator.index(), &old_uri).is_empty());
+            let new_names = index_symbol_names(coordinator.index(), &new_uri);
+            assert!(new_names.iter().any(|name| name == "v1_only"), "{new_names:?}");
+            assert!(!new_names.iter().any(|name| name == "disk_only"), "{new_names:?}");
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
     fn did_close_reloads_diverged_disk_under_closed_file_authority()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
