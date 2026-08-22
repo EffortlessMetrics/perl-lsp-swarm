@@ -64,7 +64,7 @@ glob = "0.3.3"
 procfs = "0.18.0"
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3.9", features = ["fileapi", "handleapi", "winbase", "winnt"] }
+winapi = { version = "0.3.9", features = ["fileapi", "handleapi", "minwinbase", "winbase", "winnt"] }
 
 [dev-dependencies]
 assert_cmd = "2.2.2"

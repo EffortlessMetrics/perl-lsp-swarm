@@ -161,12 +161,8 @@ fn validate_output_separation(root: &Path, fixtures: &[PathBuf], output: &Path) 
             bail!("Snapshot output aliases fixture: {}", fixture.display());
         }
 
-        if let Some(output_metadata) = output_metadata.as_ref() {
-            let fixture_metadata = fs::metadata(fixture)
-                .with_context(|| format!("reading fixture metadata {}", fixture.display()))?;
-            if same_file_identity(output_metadata, &fixture_metadata)? {
-                bail!("Snapshot output hard-links fixture: {}", fixture.display());
-            }
+        if output_metadata.is_some() && same_file_identity(output, fixture)? {
+            bail!("Snapshot output hard-links fixture: {}", fixture.display());
         }
     }
 
@@ -227,30 +223,52 @@ fn normalize_output_path(path: &Path, exists: bool) -> Result<PathBuf> {
     }
 }
 
+/// Decide whether two paths denote the same underlying file.
+///
+/// The snapshot guard uses this to reject output paths that alias a fixture
+/// through a hard link, which canonicalized-path comparison cannot see
+/// (symlink and junction aliases are already resolved by `fs::canonicalize`).
+///
+/// Windows limitation: identity comes from the complete `FILE_ID_INFO` kernel
+/// identity (volume serial number plus 128-bit file identifier) read through
+/// the already-vendored `winapi` dependency instead of the unstable
+/// `windows_by_handle` metadata APIs. Filesystems that cannot report that
+/// identity fail this guard loudly rather than guessing equal-or-distinct.
 #[cfg(unix)]
-fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> Result<bool> {
+fn same_file_identity(output: &Path, fixture: &Path) -> Result<bool> {
     use std::os::unix::fs::MetadataExt as _;
 
-    Ok(left.dev() == right.dev() && left.ino() == right.ino())
+    let output_metadata = fs::metadata(output)
+        .with_context(|| format!("reading snapshot output metadata {}", output.display()))?;
+    let fixture_metadata = fs::metadata(fixture)
+        .with_context(|| format!("reading snapshot fixture metadata {}", fixture.display()))?;
+    Ok(output_metadata.dev() == fixture_metadata.dev()
+        && output_metadata.ino() == fixture_metadata.ino())
 }
 
 #[cfg(windows)]
-fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> Result<bool> {
-    use std::os::windows::fs::MetadataExt as _;
+fn same_file_identity(output: &Path, fixture: &Path) -> Result<bool> {
+    Ok(read_windows_file_identity(output, "output")?
+        == read_windows_file_identity(fixture, "fixture")?)
+}
 
-    match (
-        (left.volume_serial_number(), left.file_index()),
-        (right.volume_serial_number(), right.file_index()),
-    ) {
-        ((Some(left_volume), Some(left_index)), (Some(right_volume), Some(right_index))) => {
-            Ok(left_volume == right_volume && left_index == right_index)
-        }
-        _ => bail!("Snapshot output file identity is unavailable on Windows"),
-    }
+#[cfg(windows)]
+fn read_windows_file_identity(
+    path: &Path,
+    operand: &str,
+) -> Result<xtask::file_identity::WindowsFileIdentity> {
+    xtask::file_identity::windows_file_identity(path)
+        .wrap_err_with(|| format!("reading snapshot {operand} file identity {}", path.display()))?
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "Snapshot {operand} file identity is unavailable on Windows: {}",
+                path.display()
+            )
+        })
 }
 
 #[cfg(not(any(unix, windows)))]
-fn same_file_identity(_left: &fs::Metadata, _right: &fs::Metadata) -> Result<bool> {
+fn same_file_identity(_left: &Path, _right: &Path) -> Result<bool> {
     bail!("Snapshot output file identity is unsupported on target {}", std::env::consts::OS)
 }
 
