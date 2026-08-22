@@ -2,12 +2,12 @@ schema_version = 1
 policy = "generated-status-contract"
 
 [[surface]]
-id = "lsp.protocol_compliance"
-kind = "ratio_projection"
+id = "lsp.claim_containment"
+kind = "not_proven_navigation"
 path = "docs/project/status/lsp.md"
-headline_label = "Protocol Compliance"
-table_label = "Overall"
-claim_boundary = "Checks arithmetic and projection consistency for the declared protocol-support population. Behavior-backed GA/compliance maturity remains owned by #6731."
+begin_marker = "<!-- BEGIN: LSP_COVERAGE -->"
+end_marker = "<!-- END: COMPLIANCE_TABLE -->"
+claim_boundary = "Generated LSP status publishes declaration counts as navigation only (#6731). A percentage, passing verdict, or inherited-green cell without an exact current behavior-evidence owner must fail this surface. Behavior-backed GA/compliance maturity remains owned by #6731."
 
 [[surface]]
 id = "tests.tier_a"

@@ -486,6 +486,12 @@ pub struct RuntimePressureSnapshot {
     pub pending_index_tasks: usize,
     /// Number of unique file-watcher URIs waiting in the debounce window.
     pub file_watcher_pending_uris: usize,
+    /// Number of file-watcher URIs currently inside a dispatched batch.
+    ///
+    /// Moving work from pending to active never reports zero total watcher
+    /// pressure (#8064): during a long batch this stays non-zero while
+    /// [`Self::file_watcher_pending_uris`] drains.
+    pub file_watcher_active_subjects: usize,
     /// Number of unique diagnostic URIs waiting in the debounce window.
     pub diagnostic_debounce_pending_uris: usize,
     /// Number of workspace/configuration requests waiting for client replies.
@@ -956,15 +962,19 @@ impl LspServer {
             .lock()
             .as_ref()
             .map_or(0, diagnostic_debounce::DiagnosticDebouncer::pending_uris);
-        let file_watcher_pending_uris = self
+        let watcher_pressure = self
             .file_watcher_debouncer
             .lock()
             .as_ref()
-            .map_or(0, file_watcher_debounce::FileWatcherDebouncer::pending_uris);
+            .map(file_watcher_debounce::FileWatcherDebouncer::pressure);
+        let file_watcher_pending_uris = watcher_pressure.as_ref().map_or(0, |p| p.pending_subjects);
 
         RuntimePressureSnapshot {
             pending_index_tasks: self.pending_index_task_count.load(Ordering::SeqCst),
             file_watcher_pending_uris,
+            file_watcher_active_subjects: watcher_pressure
+                .as_ref()
+                .map_or(0, |p| p.active_subjects),
             diagnostic_debounce_pending_uris,
             pending_workspace_configuration_requests: self
                 .pending_workspace_configuration_requests
@@ -1481,15 +1491,22 @@ impl LspServer {
 
     /// Schedule a file watcher URI for debounced batch processing.
     ///
-    /// Returns `true` if a debouncer is installed (production runtime) and the
-    /// URI was queued, `false` if no debouncer is present (unit-test path).
+    /// Returns `true` only when the URI is genuinely queued for debounced
+    /// processing (accepted, or coalesced into an already-pending subject).
+    /// Returns `false` when no debouncer is installed (unit-test path) or the
+    /// debouncer reports a degraded admission — worker spawn failure,
+    /// saturated pending set, or shutdown — so callers fall back to immediate
+    /// synchronous processing instead of losing events behind false success
+    /// (#8064).
     pub fn schedule_file_watcher_uri(&self, uri: &str) -> bool {
         let guard = self.file_watcher_debouncer.lock();
-        if let Some(ref d) = *guard {
-            d.schedule(uri);
-            true
-        } else {
-            false
+        match guard.as_ref() {
+            None => false,
+            Some(debouncer) => matches!(
+                debouncer.try_schedule(uri),
+                file_watcher_debounce::WatcherAdmission::Accepted
+                    | file_watcher_debounce::WatcherAdmission::Coalesced
+            ),
         }
     }
 }
@@ -1807,6 +1824,44 @@ mod tests {
         assert_eq!(snapshot.pending_workspace_configuration_requests, 1);
         assert_eq!(snapshot.active_stream_sessions, 1);
         Ok(())
+    }
+
+    /// Caller-side half of admission truthfulness (#8064): every degraded
+    /// disposition must surface as `false` from `schedule_file_watcher_uri`
+    /// so the didChangeWatchedFiles handler takes the immediate-processing
+    /// seam (workspace.rs) instead of losing events behind apparent queueing.
+    #[test]
+    fn schedule_file_watcher_uri_falls_back_on_degraded_admissions() {
+        use file_watcher_debounce::FileWatcherDebouncer;
+
+        // Unavailable: worker spawn failure.
+        let server = LspServer::new();
+        server.install_file_watcher_debouncer(FileWatcherDebouncer::unavailable_for_test());
+        assert!(!server.schedule_file_watcher_uri("file:///degraded/unavailable.pl"));
+        assert_eq!(
+            server.runtime_pressure_snapshot().file_watcher_pending_uris,
+            0,
+            "rejected admission must not absorb the event into pending state"
+        );
+
+        // Overflowed: saturated pending set refuses new subjects.
+        let server = LspServer::new();
+        server.install_file_watcher_debouncer(FileWatcherDebouncer::saturated_for_test(|_| {}));
+        assert!(
+            server.schedule_file_watcher_uri("file:///degraded/cap0.pl"),
+            "first subject fits the tiny cap"
+        );
+        assert!(!server.schedule_file_watcher_uri("file:///degraded/overflow.pl"));
+
+        // ShuttingDown: after teardown, late events are refused.
+        {
+            let guard = server.file_watcher_debouncer.lock();
+            assert!(guard.is_some(), "debouncer installed");
+            if let Some(debouncer) = guard.as_ref() {
+                debouncer.shutdown_now();
+            }
+        }
+        assert!(!server.schedule_file_watcher_uri("file:///degraded/late.pl"));
     }
 
     #[test]

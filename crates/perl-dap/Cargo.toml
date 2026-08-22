@@ -15,6 +15,7 @@ categories = ["development-tools::debugging", "command-line-utilities"]
 include = [
   "src/**",
   "build.rs",
+  "build_catalog.rs",
   "features_sot.toml",
   "Cargo.toml",
   "README.md",
@@ -81,6 +82,7 @@ perl-tdd-support = { workspace = true }
 
 # Serial test execution for env-mutating tests (prevents races on PLENV_*, PERLBREW_*, PATH)
 serial_test = "4.0.1"
+toml = "1.1.2"
 
 [build-dependencies]
 # Wave Final PR B: perl-feature-catalog absorbed; build.rs uses inline catalog via include!()

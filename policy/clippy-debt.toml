@@ -1,5 +1,8 @@
-schema = 1
+schema = 2
 
-# clippy::collapsible_if debt entry removed — all 293 violations
-# were fixed across 7 incremental PRs (#6375-#6380). The lint is
-# now enforced workspace-wide with zero exceptions.
+# No lint currently has accepted source-level debt under this ledger.
+#
+# The historical clippy::collapsible_if burn-down removed all 293 recorded
+# findings across #6375-#6380. Its remaining explicit Cargo/ledger ratchet is
+# owned by #6305 and represented as a review-dated deferred_due disposition in
+# policy/clippy-lints.toml; completed history is not current debt.
