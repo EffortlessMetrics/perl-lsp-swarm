@@ -3797,10 +3797,13 @@ fn score_ast_expectations(
                 .operator
                 .as_ref()
                 .is_none_or(|operator| prediction.operator.as_ref() == Some(operator));
-            let parent_operator_matches =
+            let parent_operator_matches = if expectation.operator.is_some() {
+                prediction.parent_operator.as_ref() == expectation.parent_operator.as_ref()
+            } else {
                 expectation.parent_operator.as_ref().is_none_or(|parent_operator| {
                     prediction.parent_operator.as_ref() == Some(parent_operator)
-                });
+                })
+            };
             if operator_matches && parent_operator_matches {
                 score.operator_precedence_correct_count += 1;
             }
@@ -8000,6 +8003,140 @@ sub dynamic_boundary_case {
         assert_eq!(score.parent_child_correct_count, 1);
         assert_eq!(score.tree_depth_correct_count, 1);
         assert_eq!(score.operator_precedence_correct_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn ast_scorer_requires_absent_parent_operator_for_exact_operator_expectations() {
+        let expectations = vec![AstExpectation {
+            id: "match_without_parent_operator".to_string(),
+            kind: "Match".to_string(),
+            line: 1,
+            span_text: "$value =~ /foo/".to_string(),
+            parent_kind: Some("Return".to_string()),
+            depth: Some(4),
+            operator: Some("=~".to_string()),
+            parent_operator: None,
+        }];
+        let predictions = vec![AstPrediction {
+            kind: "Match".to_string(),
+            line: 1,
+            span_text: "$value =~ /foo/".to_string(),
+            parent_kind: Some("Return".to_string()),
+            depth: 4,
+            operator: Some("=~".to_string()),
+            parent_operator: Some("&&".to_string()),
+        }];
+        let mut score = AstScore::default();
+
+        score_ast_expectations(&expectations, &predictions, &mut score);
+
+        assert_eq!(score.operator_precedence_expected_count, 1);
+        assert_eq!(score.operator_precedence_correct_count, 0);
+    }
+
+    #[test]
+    fn ast_scorer_rejects_wrong_parent_operator_for_exact_operator_expectations() {
+        let expectations = vec![AstExpectation {
+            id: "multiplication_under_addition".to_string(),
+            kind: "Binary".to_string(),
+            line: 1,
+            span_text: "2 * 3".to_string(),
+            parent_kind: Some("Binary".to_string()),
+            depth: Some(3),
+            operator: Some("*".to_string()),
+            parent_operator: Some("+".to_string()),
+        }];
+        let predictions = vec![AstPrediction {
+            kind: "Binary".to_string(),
+            line: 1,
+            span_text: "2 * 3".to_string(),
+            parent_kind: Some("Binary".to_string()),
+            depth: 3,
+            operator: Some("*".to_string()),
+            parent_operator: Some("-".to_string()),
+        }];
+        let mut score = AstScore::default();
+
+        score_ast_expectations(&expectations, &predictions, &mut score);
+
+        assert_eq!(score.operator_precedence_expected_count, 1);
+        assert_eq!(score.operator_precedence_correct_count, 0);
+    }
+
+    #[test]
+    fn ast_scorer_preserves_parent_only_operator_wildcard_semantics() {
+        let expectations = vec![AstExpectation {
+            id: "typeglob_parent_operator".to_string(),
+            kind: "Typeglob".to_string(),
+            line: 1,
+            span_text: "*alias".to_string(),
+            parent_kind: Some("Assignment".to_string()),
+            depth: Some(3),
+            operator: None,
+            parent_operator: Some("=".to_string()),
+        }];
+        let predictions = vec![AstPrediction {
+            kind: "Typeglob".to_string(),
+            line: 1,
+            span_text: "*alias".to_string(),
+            parent_kind: Some("Assignment".to_string()),
+            depth: 3,
+            operator: Some("*".to_string()),
+            parent_operator: Some("=".to_string()),
+        }];
+        let mut score = AstScore::default();
+
+        score_ast_expectations(&expectations, &predictions, &mut score);
+
+        assert_eq!(score.operator_precedence_expected_count, 1);
+        assert_eq!(score.operator_precedence_correct_count, 1);
+    }
+
+    #[test]
+    fn ast_scorer_rejects_wrong_typeglob_parent_operator() {
+        let expectations = vec![AstExpectation {
+            id: "typeglob_wrong_parent_operator".to_string(),
+            kind: "Typeglob".to_string(),
+            line: 1,
+            span_text: "*alias".to_string(),
+            parent_kind: Some("Assignment".to_string()),
+            depth: Some(3),
+            operator: None,
+            parent_operator: Some("=".to_string()),
+        }];
+        let predictions = vec![AstPrediction {
+            kind: "Typeglob".to_string(),
+            line: 1,
+            span_text: "*alias".to_string(),
+            parent_kind: Some("Assignment".to_string()),
+            depth: 3,
+            operator: Some("*".to_string()),
+            parent_operator: Some("+".to_string()),
+        }];
+        let mut score = AstScore::default();
+
+        score_ast_expectations(&expectations, &predictions, &mut score);
+
+        assert_eq!(score.operator_precedence_expected_count, 1);
+        assert_eq!(score.operator_precedence_correct_count, 0);
+    }
+
+    #[test]
+    fn ast_predictions_preserve_positive_and_negated_match_operators() -> Result<()> {
+        let predictions =
+            extract_ast_predictions("return $value =~ /foo/;\nreturn $value !~ /bar/;\n");
+        let positive = predictions
+            .iter()
+            .find(|prediction| prediction.kind == "Match" && prediction.line == 1)
+            .ok_or_else(|| eyre!("positive match prediction is missing"))?;
+        let negated = predictions
+            .iter()
+            .find(|prediction| prediction.kind == "Match" && prediction.line == 2)
+            .ok_or_else(|| eyre!("negated match prediction is missing"))?;
+
+        assert_eq!(positive.operator.as_deref(), Some("=~"));
+        assert_eq!(negated.operator.as_deref(), Some("!~"));
         Ok(())
     }
 
