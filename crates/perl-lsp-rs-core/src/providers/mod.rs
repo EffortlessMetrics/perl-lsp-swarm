@@ -14,6 +14,10 @@
 pub mod completion_item;
 pub mod provider_decision;
 pub mod semantic_port;
+/// Shared shadow-compare framework: canonical verdict vocabulary, parameterized
+/// comparison loop, receipt-emission discipline, and PIR receipt adapter
+/// (issue #9085, parent #2440).
+pub mod shadow_framework;
 pub mod symbol_query;
 
 // Group 2 -- consumers of Group 1 helpers
