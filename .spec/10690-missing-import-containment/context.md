@@ -57,6 +57,17 @@ the separate #11158 authority). Deleted outright per the issue's preferred order
 The sibling organize-imports sorter residue (`collect_imports`/`sort_imports`/
 `find_imports_range`) remains owned by #8305's containment guard, not this claim.
 
+## Quarantined helper disposition
+
+`TextEditHelpers::find_import_insert_position`
+(`perl-lsp-rs-core/src/runtime/text_utils/mod.rs`) was Route A's package-blind
+insertion geometry. Its only consumer was deleted with the route, but the public
+declaration is **retained** for the published crate API surface and is pinned by
+`runtime_g2_api_stability.rs`. Disposition: **quarantined** — no production
+caller, and the containment guard rejects any non-declaration invocation under
+`crates/*/src` (qualified or UFCS). Replacement owner: #790; expiry when exact
+candidate planning supersedes it.
+
 ## Withdrawn product claim
 
 Automatic missing-import insertion is not offered on any surface: direct,

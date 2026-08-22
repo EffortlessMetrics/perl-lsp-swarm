@@ -9,7 +9,7 @@
 | MISS-005 | Exact perllsp process returns no affinity-derived edit | `lsp_missing_import_containment_tests.rs`: didOpen package-first `dumper($value)` document, full action-set inspection incl. `newText`; PL109 context-diagnostic request likewise |
 | MISS-006 | No enabled empty/no-op action represents withdrawal | Withdrawal is omission; compat "Add missing imports" empty-edit placeholder deleted; scan forbids `create_add_missing_imports_action` |
 | MISS-007 | Product claims say nothing about automatic missing-import insertion | Guard asserts root `features.toml` `lsp.code_action` description does not advertise it |
-| MISS-008 | Route validator prevents both bypasses and new table reachability | Source-scan guard needles: `guess_module_for_function`, `add_missing_imports`, `find_undefined_functions`, `fix_import_for_bareword_function`, `find_import_insert_position`, `create_add_missing_imports_action` under `crates/*/src` |
+| MISS-008 | Route validator prevents both bypasses and new table reachability | Source-scan guard needles: `guess_module_for_function`, `add_missing_imports`, `find_undefined_functions`, `fix_import_for_bareword_function`, `create_add_missing_imports_action` under `crates/*/src`; `get_known_module_exports` pinned to its single inventoried home; `find_import_insert_position` guarded by invocation-shape detection that exempts only the retained declaration |
 | MISS-009 | #790/#8948 remain sole restoration owners | Recorded here and in PR body; withdrawal comments name them |
 
 ## Mutation contract
@@ -20,4 +20,5 @@ Restoring either route must fail:
   re-creating the symbol anywhere under `crates/*/src`) → scan guard red;
 - restoring the PL109 `fix_import_for_bareword_function` arm → MISS-002 red;
 - reintroducing the preamble import-insertion helper as production authority →
-  scan guard red.
+  invocation-shape guard red (any non-declaration use of
+  `find_import_insert_position` under `crates/*/src`).
