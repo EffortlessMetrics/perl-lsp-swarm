@@ -5174,42 +5174,64 @@ our $single_root_var;
 
     /// Same-document identity is `perl_uri::uri_key`, not raw string equality.
     ///
-    /// A client may spell the open document `file://localhost/...` while the
-    /// index holds `file:///...` (and Windows clients vary drive-letter casing).
-    /// Comparing raw strings would call the document's own variable cross-file
-    /// and qualify it needlessly. The `$api_token` assertion is the vacuity
-    /// guard: the genuinely cross-file variable is still qualified in the very
-    /// same response, so this is a normalization result, not a disabled guard.
+    /// A client may spell the open document differently from the form it was
+    /// indexed under; comparing raw strings would call the document's own
+    /// variable cross-file and qualify it needlessly.
+    ///
+    /// Both spellings below are exercised because they separate the candidate
+    /// comparisons differently, measured against the `url` crate:
+    ///
+    /// | pair | `Url` eq | `uri_key` eq |
+    /// |---|---|---|
+    /// | `file://localhost/p/a.pl` vs `file:///p/a.pl` | true | true |
+    /// | `file:///C:/p/a.pl` vs `file:///c:/p/a.pl` | **false** | true |
+    ///
+    /// The Windows case is therefore the one that also rules out a
+    /// `Url`-equality implementation, not merely the raw-string one. `uri_key`
+    /// additionally folds non-`localhost` loopback authorities (`127.0.0.1`,
+    /// `::1`), which `Url` does not.
+    ///
+    /// The `$api_token` assertion is the vacuity guard: the genuinely
+    /// cross-file variable is still qualified in the very same response, so
+    /// this is a normalization result rather than a disabled guard.
     #[cfg(feature = "workspace")]
     #[test]
     fn same_document_identity_survives_an_equivalent_uri_spelling() {
-        let items = run_workspace_pass_over_secrets_module(
+        for doc_uri in [
             "file://localhost/project/bin/app.pl",
-            "package App;\nour $api_local = 1;\n$api",
-            Some("package App;\nour $api_local = 1;\n"),
-        );
-
-        let (_, insert_text, text_edit_range) =
-            items.iter().find(|(label, _, _)| label == "$api_local").cloned().unwrap_or_else(
-                || panic!("expected the same-document `$api_local`; got {items:?}"),
+            // Differs from its indexed key only by drive-letter case.
+            "file:///C:/project/bin/app.pl",
+        ] {
+            let items = run_workspace_pass_over_secrets_module(
+                doc_uri,
+                "package App;\nour $api_local = 1;\n$api",
+                Some("package App;\nour $api_local = 1;\n"),
             );
-        assert_eq!(
-            insert_text.as_deref(),
-            Some("$api_local"),
-            "`file://localhost/...` and `file:///...` are the same document"
-        );
-        assert!(text_edit_range.is_none());
 
-        let (_, cross_file_insert, _) = items
-            .iter()
-            .find(|(label, _, _)| label == "$api_token")
-            .cloned()
-            .unwrap_or_else(|| panic!("vacuity guard: expected `$api_token`; got {items:?}"));
-        assert_eq!(
-            cross_file_insert.as_deref(),
-            Some("$Secrets::api_token"),
-            "a genuinely cross-file variable is still qualified in the same response"
-        );
+            let (_, insert_text, text_edit_range) = items
+                .iter()
+                .find(|(label, _, _)| label == "$api_local")
+                .cloned()
+                .unwrap_or_else(|| {
+                    panic!("expected the same-document `$api_local` for {doc_uri}; got {items:?}")
+                });
+            assert_eq!(
+                insert_text.as_deref(),
+                Some("$api_local"),
+                "{doc_uri} is the same document as its indexed key"
+            );
+            assert!(text_edit_range.is_none());
+
+            let (_, cross_file_insert, _) =
+                items.iter().find(|(label, _, _)| label == "$api_token").cloned().unwrap_or_else(
+                    || panic!("vacuity guard: expected `$api_token` for {doc_uri}; got {items:?}"),
+                );
+            assert_eq!(
+                cross_file_insert.as_deref(),
+                Some("$Secrets::api_token"),
+                "a genuinely cross-file variable is still qualified in the same response"
+            );
+        }
     }
 
     /// The pre-existing qualified-prefix route (`$Secrets::api`) is unchanged.
