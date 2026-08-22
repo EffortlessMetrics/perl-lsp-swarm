@@ -52,6 +52,9 @@ mod workspace_folder;
 #[cfg(feature = "workspace")]
 mod workspace_progress;
 
+#[cfg(test)]
+mod open_buffer_authority_tests;
+
 // Re-export protocol types for backward compatibility
 // Tests and external code import these from perl_lsp::
 pub use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse};
@@ -311,6 +314,14 @@ pub struct LspServer {
     /// setting the old flag to `true` interrupts the in-progress parse
     /// cooperatively (via `Parser::check_cancelled`).
     pub(crate) parse_cancel_flags: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    /// Explicit backing-file transitions observed for open documents (#8041).
+    ///
+    /// Keyed by normalized URI. An external filesystem event may change what
+    /// backs an open document's path, but it must never replace the open
+    /// buffer as the authoritative source. This map records the transition so
+    /// `didSave`/`didClose` can complete the authority handoff
+    /// deterministically instead of guessing from a fresh `path.exists()`.
+    pub(crate) backing_file_transitions: Arc<Mutex<HashMap<String, BackingFileTransition>>>,
     /// Pull diagnostics orchestrator for coordinating diagnostic operations.
     pub(crate) pull_diagnostics_orchestrator: PullDiagnosticsOrchestrator,
     /// Guard that prevents concurrent workspace indexing scans.
@@ -497,6 +508,31 @@ unsafe impl Sync for LspServer {}
 
 // Note: DocumentState, ServerConfig, and normalize_package_separator are
 // imported from crate::lsp::state::{document, config}
+
+/// Explicit backing-file transition recorded for an open document (#8041).
+///
+/// The authoritative input for an open document is always its editor buffer.
+/// External filesystem events may still change what backs the document's
+/// path; this state records that transition so `didSave` and `didClose` can
+/// complete the authority handoff deterministically:
+///
+/// - [`BackingFileTransition::Changed`] — disk bytes moved on while the
+///   buffer stayed authoritative (watched CHANGED/CREATED was deliberately
+///   not indexed). Close must reload the file from current disk under
+///   closed-file authority; save re-coheres disk with the buffer.
+/// - [`BackingFileTransition::Deleted`] — the backing file is gone. The
+///   buffer keeps authority; save can recreate it, close removes the
+///   remaining subject.
+/// - [`BackingFileTransition::RenamedOrMoved`] — the backing path moved
+///   to `new_uri` via a client file-operation notification. The buffer stays
+///   bound to its original URI until client document lifecycle resolves the
+///   handoff.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BackingFileTransition {
+    Changed,
+    Deleted,
+    RenamedOrMoved { new_uri: String },
+}
 
 // =========================================================================
 // Core accessors and server lifecycle
@@ -744,6 +780,40 @@ impl LspServer {
         uri_keys
     }
 
+    /// Whether a document is currently open for `uri`.
+    ///
+    /// Resolves through normalized URI keys so watcher-supplied spellings
+    /// match how documents are stored.
+    pub(crate) fn document_is_open(&self, uri: &str) -> bool {
+        let documents = self.documents.lock();
+        self.get_document(&documents, uri).is_some()
+    }
+
+    /// Record (or overwrite) the backing-file transition for an open
+    /// document's URI.
+    ///
+    /// Overwriting is deliberate: a later event supersedes earlier ones
+    /// (delete followed by external recreate degrades to ``Changed``,
+    /// whose close-time reload reads whatever currently exists).
+    pub(crate) fn record_backing_file_transition(
+        &self,
+        uri: &str,
+        transition: BackingFileTransition,
+    ) {
+        let key = self.normalize_uri_key(uri);
+        self.backing_file_transitions.lock().insert(key, transition);
+    }
+
+    /// Take the pending backing-file transition for `uri`, if any.
+    ///
+    /// Taking consumes the record: each transition is resolved exactly once
+    /// by `didSave`/`didClose` so stale markers cannot leak into a successor
+    /// session.
+    pub(crate) fn take_backing_file_transition(&self, uri: &str) -> Option<BackingFileTransition> {
+        let key = self.normalize_uri_key(uri);
+        self.backing_file_transitions.lock().remove(&key)
+    }
+
     /// Evict open-document session state for a URI without deleting workspace
     /// index entries for the file on disk.
     ///
@@ -796,6 +866,14 @@ impl LspServer {
     }
 
     /// Evict all state for a file that no longer exists in the workspace.
+    ///
+    /// Open-buffer authority (#8041): when a document is still open for
+    /// `uri`, this removes only backing-file-derived state (workspace index
+    /// entries and path-keyed caches) and records an explicit
+    /// [`BackingFileTransition::Deleted`] so save/close can complete the
+    /// handoff. The open document, its text, client version, generation, and
+    /// session caches stay untouched — a watched disk deletion must not evict
+    /// unsaved editor source.
     pub(crate) fn evict_deleted_file_state(&self, uri: &str) {
         let uri_keys = self.uri_key_variants(uri);
         #[cfg(feature = "workspace")]
@@ -803,6 +881,23 @@ impl LspServer {
             for key in &uri_keys {
                 coordinator.index().remove_file(key);
             }
+        }
+
+        if self.document_is_open(uri) {
+            self.record_backing_file_transition(uri, BackingFileTransition::Deleted);
+            for key in &uri_keys {
+                if let Some(path) = source_path_from_uri(key) {
+                    self.pod_cache.lock().remove(&path);
+
+                    #[cfg(not(target_arch = "wasm32"))]
+                    self.pull_diagnostics_orchestrator.invalidate_file_cache(&path);
+                }
+            }
+            tracing::debug!(
+                uri,
+                "backing file deleted while document open; open buffer remains authoritative (#8041)"
+            );
+            return;
         }
 
         self.evict_open_document_session_state(uri);
