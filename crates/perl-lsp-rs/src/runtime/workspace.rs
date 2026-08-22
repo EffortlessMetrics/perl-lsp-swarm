@@ -1863,6 +1863,23 @@ impl LspServer {
 
                 tracing::debug!("File created: {}", uri);
 
+                // Open-buffer authority (#8041): if this path already has an
+                // open document, the buffer is authoritative — disk bytes from
+                // the create event must not overwrite in-memory content.
+                // Record the transition so the client can react (e.g. on
+                // subsequent save/close), then skip the disk read entirely.
+                // This mirrors the identical guard in
+                // `process_file_watcher_uri_immediate`.
+                if self.document_is_open(uri) {
+                    self.record_backing_file_transition(uri, BackingFileTransition::Changed);
+                    tracing::debug!(
+                        "workspace/didCreateFiles for open document {} — \
+                         buffer remains authoritative; disk re-index skipped (#8041)",
+                        uri
+                    );
+                    continue;
+                }
+
                 // Index the new file if it's a Perl file
                 // Note: Mutation operation - use coordinator with lifecycle tracking
                 #[cfg(feature = "workspace")]
@@ -4336,6 +4353,122 @@ mod tests {
                 .any(|symbol| symbol.get("name").and_then(|name| name.as_str())
                     == Some("stale_symbol")),
             "stale workspace index must not return removed symbol: {stale_symbols:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Discriminating test: workspace/didCreateFiles over a path that already
+    /// has an open document must not overwrite in-memory buffer content with
+    /// disk bytes (#8041 regression via #11893).
+    ///
+    /// Negative control: a didCreateFiles for a *closed* path proceeds to disk
+    /// indexing as usual.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn did_create_files_over_open_document_keeps_buffer_authoritative()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("OpenAuth.pm");
+
+        // Write the original file content to disk.
+        let disk_content = "package OpenAuth;\nsub disk_version { 1 }\n1;\n";
+        std::fs::write(&path, disk_content)?;
+
+        let uri = url::Url::from_file_path(&path).map_err(|_| "invalid file path")?;
+        let uri = uri.to_string();
+
+        // Buffer version differs from disk — simulates in-flight edit.
+        let buffer_content = "package OpenAuth;\nsub buffer_version { 2 }\n1;\n";
+        server.did_open(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": buffer_content
+            }
+        }))?;
+
+        // Seed the index with the buffer content so we can detect if it is
+        // overwritten by the disk bytes arriving via didCreateFiles.
+        if let Some(coordinator) = server.coordinator() {
+            coordinator.index().index_file(url::Url::parse(&uri)?, buffer_content.to_string())?;
+            let symbols = coordinator.index().file_symbols(&uri);
+            assert!(
+                symbols.iter().any(|s| s.name.contains("buffer_version")),
+                "precondition: index holds buffer symbol before didCreateFiles"
+            );
+        }
+
+        // Fire workspace/didCreateFiles for the open document — the guard
+        // must skip the disk read and keep the buffer content authoritative.
+        let result = server.handle_did_create_files(Some(json!({
+            "files": [{ "uri": uri }]
+        })));
+        assert!(result.is_ok(), "handle_did_create_files must succeed: {result:?}");
+
+        // The index must still reflect the buffer content, not the disk bytes.
+        if let Some(coordinator) = server.coordinator() {
+            let symbols = coordinator.index().file_symbols(&uri);
+            assert!(
+                symbols.iter().any(|s| s.name.contains("buffer_version")),
+                "buffer content must remain authoritative after didCreateFiles: {symbols:?}"
+            );
+            assert!(
+                !symbols.iter().any(|s| s.name.contains("disk_version")),
+                "disk bytes must not overwrite open buffer after didCreateFiles: {symbols:?}"
+            );
+        }
+
+        // A BackingFileTransition::Changed must have been recorded so that
+        // downstream consumers (e.g. save/close handlers) know the backing
+        // file changed while the buffer was open.
+        assert_eq!(
+            server.take_backing_file_transition(&uri),
+            Some(BackingFileTransition::Changed),
+            "didCreateFiles over open document must record BackingFileTransition::Changed"
+        );
+
+        Ok(())
+    }
+
+    /// Negative-control companion: workspace/didCreateFiles for a path that is
+    /// NOT open must proceed to disk indexing unchanged.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn did_create_files_over_closed_path_indexes_from_disk()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("ClosedPath.pm");
+        let disk_content = "package ClosedPath;\nsub disk_fn { 1 }\n1;\n";
+        std::fs::write(&path, disk_content)?;
+
+        let uri = url::Url::from_file_path(&path).map_err(|_| "invalid file path")?;
+        let uri = uri.to_string();
+
+        // No did_open — path is not open.
+        let result = server.handle_did_create_files(Some(json!({
+            "files": [{ "uri": uri }]
+        })));
+        assert!(result.is_ok(), "handle_did_create_files must succeed: {result:?}");
+
+        // Disk content should now be in the index.
+        if let Some(coordinator) = server.coordinator() {
+            let symbols = coordinator.index().file_symbols(&uri);
+            assert!(
+                symbols.iter().any(|s| s.name.contains("disk_fn")),
+                "closed-path didCreateFiles must index disk content: {symbols:?}"
+            );
+        }
+
+        // No BackingFileTransition recorded — the open-buffer guard must NOT
+        // have fired.
+        assert_eq!(
+            server.take_backing_file_transition(&uri),
+            None,
+            "closed-path didCreateFiles must not record a BackingFileTransition"
         );
 
         Ok(())

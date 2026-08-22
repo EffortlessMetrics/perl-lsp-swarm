@@ -494,3 +494,69 @@ fn late_watcher_batch_resolves_authority_at_execution_time() {
         "once closed, the watcher path indexes disk truth again"
     );
 }
+
+/// `workspace/didCreateFiles` arriving for a path that is already open must
+/// not overwrite the in-memory buffer with disk bytes (#8041 regression via
+/// #11893).  The authority guard must behave identically to the watcher guard
+/// already proven by `watched_change_on_open_document_never_indexes_disk_over_buffer`.
+#[cfg(feature = "workspace")]
+#[test]
+fn did_create_files_over_open_document_keeps_buffer_authoritative() {
+    let dir = TempDir::new().expect("tempdir");
+    let uri = file_uri(&dir, "create_auth.pm");
+
+    // Disk holds v1; the buffer is edited to v2 before the file-create event
+    // arrives (simulating a save-triggered refresh where the open edit hasn't
+    // been committed to disk yet, or a create-while-editing race).
+    write_file(&dir, "create_auth.pm", "package CreateAuth;\nsub disk_v1 { }\n1;\n");
+    let server = LspServer::new();
+    did_open(&server, &uri, "package CreateAuth;\nsub disk_v1 { }\n1;\n");
+    did_change_full(&server, &uri, 2, "package CreateAuth;\nsub buffer_v2 { }\n1;\n");
+    wait_for_index_tasks(&server);
+
+    assert_eq!(
+        index_symbols(&server, "buffer_v2").len(),
+        1,
+        "buffer_v2 must be in the index after the in-flight edit"
+    );
+    assert!(
+        index_symbols(&server, "disk_v1").is_empty(),
+        "disk_v1 must be absent from the index after the buffer edit"
+    );
+
+    // Fire workspace/didCreateFiles for the same path — the guard must skip
+    // the disk read and preserve buffer_v2 as the authoritative index fact.
+    server
+        .handle_did_create_files(Some(json!({
+            "files": [{ "uri": uri }]
+        })))
+        .expect("didCreateFiles must parse and run without error");
+    wait_for_index_tasks(&server);
+
+    assert!(
+        index_symbols(&server, "disk_v1").is_empty(),
+        "disk bytes must not overwrite the open buffer after workspace/didCreateFiles (#8041)"
+    );
+    assert_eq!(
+        index_symbols(&server, "buffer_v2").len(),
+        1,
+        "buffer content must remain the authoritative index fact after didCreateFiles"
+    );
+
+    // After close the subsequent watcher or create can index disk truth.
+    did_close(&server, &uri);
+    // Overwrite disk with v3 so we can distinguish close-from-create behaviour.
+    write_file(&dir, "create_auth.pm", "package CreateAuth;\nsub disk_v3 { }\n1;\n");
+    server
+        .handle_did_create_files(Some(json!({
+            "files": [{ "uri": uri }]
+        })))
+        .expect("didCreateFiles must parse and run without error");
+    wait_for_index_tasks(&server);
+
+    assert_eq!(
+        index_symbols(&server, "disk_v3").len(),
+        1,
+        "once closed, didCreateFiles must index disk truth"
+    );
+}
