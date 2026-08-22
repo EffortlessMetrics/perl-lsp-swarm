@@ -130,12 +130,8 @@ impl<'a> Parser<'a> {
             let close_brace = self.tokens.next()?; // consume }
             let end = close_brace.end;
 
-            // Destructure first_expr to consume its kind by move, avoiding clones
-            let Node {
-                kind: first_kind,
-                location: first_loc,
-                ..
-            } = first_expr;
+            // Decompose first_expr to consume its kind by move, avoiding clones
+            let (first_kind, first_loc) = first_expr.into_parts();
 
             match first_kind {
                 // Array literal that should be a hash: convert pairs via move

@@ -840,7 +840,10 @@ impl LspServer {
                         InternalCodeActionKind::RefactorInline => "refactor.inline",
                         InternalCodeActionKind::RefactorRewrite => "refactor.rewrite",
                         InternalCodeActionKind::Source => "source",
-                        InternalCodeActionKind::SourceOrganizeImports => "source.organizeImports",
+                        // `source.organizeImports` is withdrawn (#8305): the
+                        // legacy line-oriented organizer no longer exists, so
+                        // the kind is absent from the internal enum and cannot
+                        // be serialized. Restoration: #8319/#10696.
                         InternalCodeActionKind::SourceFixAll => "source.fixAll",
                         InternalCodeActionKind::SourceModernize => "source.modernize",
                     },
@@ -899,7 +902,8 @@ impl LspServer {
                         InternalCodeActionKind::RefactorInline => "refactor.inline",
                         InternalCodeActionKind::RefactorRewrite => "refactor.rewrite",
                         InternalCodeActionKind::Source => "source",
-                        InternalCodeActionKind::SourceOrganizeImports => "source.organizeImports",
+                        // `source.organizeImports` is withdrawn (#8305); see the
+                        // original-provider mapping above for the restoration path.
                         InternalCodeActionKind::SourceFixAll => "source.fixAll",
                         InternalCodeActionKind::SourceModernize => "source.modernize",
                     },
@@ -1674,9 +1678,14 @@ mod tests {
         Ok(())
     }
 
-    /// Build a minimal quickfix action for use in unit tests.  The action has
-    /// exactly one edit on the supplied single-line range and a single
-    /// associated diagnostic so we can verify diagnostic propagation.
+    // Left nested rather than collapsed into a let-chain. Collapsing it
+    // registers a new gap under `enforce-new-ripr` that this PR could not
+    // discharge: focused unit tests, an integration test, and moving this
+    // suppression between the seam and the function were all tried, and
+    // none cleared it. The nested form matches main. The exact gap-identity
+    // rule is NOT established -- see the NOT_PROVEN note on PR #9674 before
+    // assuming one. See #9528.
+    #[allow(clippy::collapsible_if)]
     fn make_quickfix(
         uri: &str,
         line: u64,

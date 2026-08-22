@@ -1,0 +1,181 @@
+name: Sublime native perl-dap
+
+on:
+  pull_request:
+    paths:
+      - "clients/sublime/**"
+      - "scripts/sublime/**"
+      - "crates/perl-dap/**"
+      - "crates/perl-lsp-rs-core/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/sublime-dap-real-host.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sublime-dap-real-host-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  exact-source-runtime-and-host:
+    name: Sublime Debugger + perl-dap / Linux x64
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PERLLSP_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      PERLLSP_DEBUGGER_VERSION: "0.11.6"
+      PERLLSP_DEBUGGER_REF: 58ed02acb8c06759445be62b63aef071462e0349
+      PERLLSP_LSP_REF: cc9f5201d9f053d9ab67aa0ea575b494fd133803
+      PERLLSP_SUBLIME_DAP_FIXTURE: ${{ github.workspace }}/clients/sublime/dap-fixture/debug_current.pl
+      PERLLSP_SUBLIME_DAP_RUNTIME_RECEIPT: ${{ github.workspace }}/target/sublime-dap/runtime.json
+      PERLLSP_SUBLIME_DAP_HOST_RECEIPT: ${{ github.workspace }}/target/sublime-dap/host.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Confirm the Perl runtime
+        run: perl -v
+
+      - name: Build the exact current-source adapter candidate
+        run: cargo build --locked --release -p perl-dap
+
+      - name: Bind the exact adapter binary
+        shell: bash
+        run: |
+          printf 'PERLLSP_SUBLIME_DAP_BINARY=%s\n' \
+            "$GITHUB_WORKSPACE/target/release/perl-dap" >> "$GITHUB_ENV"
+          mkdir -p "$GITHUB_WORKSPACE/target/sublime-dap"
+
+      - name: Prove stdio framing through the binary surface
+        run: cargo test --locked -p perl-dap --test dap_stdio_transport_e2e -- --nocapture
+
+      - name: Prove breakpoint, stack, scopes, variables, continue and termination
+        run: >-
+          cargo test --locked -p perl-dap --test dap_e2e_workflow_tests
+          test_e2e_single_breakpoint_hit_inspect_continue -- --exact --nocapture
+
+      - name: Prove step-over behavior
+        run: >-
+          cargo test --locked -p perl-dap --test dap_e2e_workflow_tests
+          test_e2e_step_over_changes_execution -- --exact --nocapture
+
+      - name: Prove a clean second launch after termination
+        run: >-
+          cargo test --locked -p perl-dap --test dap_e2e_workflow_tests
+          test_e2e_single_breakpoint_hit_inspect_continue -- --exact --nocapture
+
+      - name: Reject an orphaned adapter process after runtime journeys
+        shell: bash
+        run: |
+          if pgrep -f '[p]erl-dap([[:space:]]|$)' >/dev/null; then
+            echo "perl-dap remained alive after the runtime journeys" >&2
+            pgrep -af '[p]erl-dap([[:space:]]|$)' >&2 || true
+            exit 1
+          fi
+
+      - name: Record the exact-source runtime receipt
+        run: |
+          python clients/sublime/write_sublime_dap_runtime_receipt.py \
+            --binary "$PERLLSP_SUBLIME_DAP_BINARY" \
+            --fixture "$PERLLSP_SUBLIME_DAP_FIXTURE" \
+            --source-sha "$PERLLSP_SOURCE_SHA" \
+            --output "$PERLLSP_SUBLIME_DAP_RUNTIME_RECEIPT"
+          python clients/sublime/validate_sublime_dap_receipt.py \
+            "$PERLLSP_SUBLIME_DAP_RUNTIME_RECEIPT"
+
+      - name: Stage the exact helper-package source and DAP-only host test
+        shell: bash
+        run: |
+          rm -rf target/LSP-perllsp-package
+          mkdir -p target/LSP-perllsp-package
+          cp -R clients/sublime/LSP-perllsp/. target/LSP-perllsp-package/
+          cp clients/sublime/dap-unittesting.json \
+            target/LSP-perllsp-package/unittesting.json
+          git -C target/LSP-perllsp-package init -q
+          git -C target/LSP-perllsp-package remote add origin \
+            https://github.com/EffortlessMetrics/perl-lsp-swarm.git
+
+      - name: Install Sublime, exact LSP 2.13.0, and exact Debugger 0.11.6 source
+        uses: SublimeText/UnitTesting/actions/setup@b8abedefd5fbc0f64a8c6082506ebd1e24203164  # master (sublime-journey)
+        with:
+          package-name: LSP-perllsp
+          package-path: target/LSP-perllsp-package
+          sublime-text-version: 4
+          install-package-control: false
+          # The UnitTesting setup action resolves refs against tags/heads
+          # only, so pin the tags whose commits are the exact-source SHAs:
+          # 4070-2.13.0 -> cc9f5201d9f053d9ab67aa0ea575b494fd133803,
+          # 0.11.6 -> 58ed02acb8c06759445be62b63aef071462e0349 (see
+          # PERLLSP_LSP_REF / PERLLSP_DEBUGGER_REF above).
+          extra-packages: |
+            LSP:sublimelsp/LSP@4070-2.13.0
+            Debugger:daveleroy/SublimeDebugger@0.11.6
+            sublime_aio:packagecontrol/sublime_aio@v0.2.3
+
+      - name: Reject sublime_aio tag drift from the pinned commit
+        shell: bash
+        run: |
+          resolved=$(git ls-remote https://github.com/packagecontrol/sublime_aio "refs/tags/v0.2.3^{}" | cut -f1)
+          if [[ -z "$resolved" ]]; then
+            resolved=$(git ls-remote https://github.com/packagecontrol/sublime_aio "refs/tags/v0.2.3" | cut -f1)
+          fi
+          if [[ "$resolved" != "b3d1d559ec223f276c9693e17476768257951266" ]]; then
+            echo "packagecontrol/sublime_aio tag v0.2.3 resolves to ${resolved:-<none>}, but the pinned commit is b3d1d559ec223f276c9693e17476768257951266." >&2
+            exit 1
+          fi
+
+      - name: Vendor the pinned python dependencies for LSP 2.13.0
+        # With Package Control disabled the declared dependencies never
+        # install; the journey leg vendors the same digest/commit-pinned
+        # set the host journey uses (see sublime-real-host.yml).
+        shell: bash
+        run: |
+          set -e
+          vendor="$SUBLIME_TEXT_PACKAGES/typing_extensions"
+          mkdir -p "$vendor"
+          curl -fsSL "https://raw.githubusercontent.com/python/typing_extensions/4.7.1/src/typing_extensions.py" -o "$vendor/__init__.py"
+          printf '%s  %s\n' "ce42d78e130c4a62af2cbaa3f8c0ae9db49c18cbbb90f2d9614b0bba7dfc234d" "$vendor/__init__.py" | sha256sum -c -
+          staging="$(mktemp -d)"
+          git clone --quiet --depth 1 --branch 8.5 https://github.com/facelessuser/wcmatch "$staging/wcmatch"
+          git clone --quiet --depth 1 --branch 2.4 https://github.com/facelessuser/bracex "$staging/bracex"
+          cp -R "$staging/wcmatch/wcmatch" "$SUBLIME_TEXT_PACKAGES/wcmatch"
+          cp -R "$staging/bracex/bracex" "$SUBLIME_TEXT_PACKAGES/bracex"
+          test "$(git -C $staging/wcmatch rev-parse HEAD)" = "ff57d25c4104bc6e7e8d9e962ffec88b293b9bdb"
+          test "$(git -C $staging/bracex rev-parse HEAD)" = "9c9e5465f1a6d6e40763c9a2501b47a039909c30"
+          curl -fsSL "https://github.com/facelessuser/sublime-markdown-popups/releases/download/st3-4.3.5/mdpopups-4.3.5-py3-none-any.whl" -o "$staging/mdpopups.whl"
+          printf '%s  %s\n' "a28858842f758f1b83f519c589ee0d5d859581be4acc98317ad56610793ca927" "$staging/mdpopups.whl" | sha256sum -c -
+          python -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$staging/mdpopups.whl" "$staging/unpacked"
+          cp -R "$staging/unpacked/mdpopups" "$SUBLIME_TEXT_PACKAGES/mdpopups"
+          test -f "$SUBLIME_TEXT_PACKAGES/mdpopups/__init__.py"
+
+      - name: Run the real Sublime Debugger adapter journey
+        # The upstream run-tests action waits 30 s per attempt and restarts
+        # Sublime three times; the deferred DAP journey legitimately needs
+        # minutes, so the self-owned runner polls once with an honest wall.
+        run: python scripts/sublime/run_unit_tests.py LSP-perllsp
+        shell: bash
+
+      - name: Reject an orphaned adapter process after Sublime shutdown
+        shell: bash
+        run: |
+          if pgrep -f '[p]erl-dap([[:space:]]|$)' >/dev/null; then
+            echo "perl-dap remained alive after the Sublime Debugger journey" >&2
+            pgrep -af '[p]erl-dap([[:space:]]|$)' >&2 || true
+            exit 1
+          fi
+
+      - name: Validate the bound host and runtime receipts
+        run: |
+          python clients/sublime/validate_sublime_dap_receipt.py \
+            "$PERLLSP_SUBLIME_DAP_RUNTIME_RECEIPT" \
+            "$PERLLSP_SUBLIME_DAP_HOST_RECEIPT"
+
+      - name: Publish the exact-source DAP receipts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: sublime-native-perl-dap-linux-x64
+          path: target/sublime-dap/*.json
+          if-no-files-found: error
+          retention-days: 30

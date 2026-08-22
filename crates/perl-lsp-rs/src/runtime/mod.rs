@@ -33,6 +33,7 @@ pub(crate) mod parse_worker;
 #[cfg(feature = "workspace")]
 pub(crate) mod readiness;
 mod refresh;
+mod resolve_session;
 /// Routing module for lifecycle-aware index access
 pub mod routing;
 pub(crate) mod scheduler;
@@ -58,7 +59,7 @@ pub use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcRespon
 // Re-export window types for public API
 pub use window::{MessageType, ShowDocumentOptions};
 
-use perl_lsp_rs_core::tooling::performance::{AstCache, SymbolIndex};
+use perl_lsp_rs_core::tooling::performance::SymbolIndex;
 use perl_lsp_rs_core::tooling::perl_critic::BuiltInAnalyzer;
 use perl_parser::{
     Parser,
@@ -161,8 +162,6 @@ pub struct LspServer {
     /// Index coordinator for workspace-wide features with lifecycle management
     #[cfg(feature = "workspace")]
     pub(crate) index_coordinator: Option<Arc<IndexCoordinator>>,
-    /// AST cache for performance
-    ast_cache: Arc<AstCache>,
     /// Symbol index for fast lookups
     symbol_index: Arc<Mutex<SymbolIndex>>,
     /// Server configuration
@@ -242,6 +241,12 @@ pub struct LspServer {
     trace_level: Arc<Mutex<String>>,
     /// Stream session manager for progressive inline completion.
     stream_session_manager: stream_session::StreamSessionManager,
+    /// Session-keyed resolve-envelope authenticator owned by this connection
+    /// (#8342). Constructed at the connection boundary with fresh
+    /// process-random keys; taken and destroyed by the `shutdown` request so
+    /// every old envelope becomes unverifiable. `None` after teardown.
+    pub(crate) resolve_session_authenticator:
+        Mutex<Option<perl_lsp_rs_core::protocol::resolve_envelope::SessionResolveAuthenticator>>,
     /// Runtime feature profile selected by launch arguments or compiled default.
     feature_profile: FeatureProfile,
     /// Runtime workload tuning (e2e mode, diagnostic scope, debounce, indexing gates).
@@ -362,6 +367,10 @@ pub struct LspServer {
     /// `.perlcriticrc` profile path are still resolved at analysis time.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) critic_runtime_override:
+        Mutex<Option<std::sync::Arc<dyn perl_subprocess_runtime::SubprocessRuntime>>>,
+    /// Test-only subprocess runtime override for formatter construction.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub(crate) formatter_runtime_override:
         Mutex<Option<std::sync::Arc<dyn perl_subprocess_runtime::SubprocessRuntime>>>,
     /// When `true`, skip the `command_exists("perlcritic")` guard during
     /// diagnostic collection.  Always present on non-WASM targets but only
@@ -748,7 +757,6 @@ impl LspServer {
 
         for key in &uri_keys {
             self.stream_sessions().cancel_for_uri(key);
-            self.ast_cache.remove(key);
             self.clear_document_symbols(key);
         }
 
@@ -1339,7 +1347,6 @@ impl LspServer {
         };
         let worker = parse_worker::ParseWorker::spawn_with_pending_count_hooks(
             Arc::clone(&self.documents),
-            Arc::clone(&self.ast_cache),
             on_published,
             on_activated,
             on_settled,
@@ -1748,6 +1755,14 @@ mod tests {
     }
 
     #[test]
+    // Left nested rather than collapsed into a let-chain. Collapsing it
+    // registers a new gap under `enforce-new-ripr` that this PR could not
+    // discharge: focused unit tests, an integration test, and moving this
+    // suppression between the seam and the function were all tried, and
+    // none cleared it. The nested form matches main. The exact gap-identity
+    // rule is NOT established -- see the NOT_PROVEN note on PR #9674 before
+    // assuming one. See #9528.
+    #[allow(clippy::collapsible_if)]
     fn code_action_append_uses_document_end() {
         use ropey::Rope;
         use std::sync::Arc;
@@ -1895,6 +1910,18 @@ model = "gpt-4"
         )?;
 
         let server = LspServer::new();
+        // Configure a fully usable user-level transport (endpoint + resolvable
+        // credential) so the only thing preventing construction is activation
+        // authority. With an empty endpoint this assertion would pass for the
+        // wrong reason (#4997: the oracle must not depend on a missing
+        // destination or missing secret).
+        {
+            let mut config = server.config.lock();
+            config.ai_completion.endpoint =
+                "https://connector.example/v1/chat/completions".to_string();
+            config.ai_completion.model = "custom-code-model".to_string();
+            config.ai_completion.api_key_env = KEY_ENV.to_string();
+        }
         let workspace_uri =
             url::Url::from_directory_path(temp.path()).map_err(|_| "bad folder uri")?.to_string();
         {

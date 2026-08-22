@@ -1,0 +1,9 @@
+project: product
+component: Packaging and distribution
+kind: Security
+body: Publishing the VS Code extension now refuses to attach a VSIX when the release tag does not point at the commit the VSIX was built from, so a dispatch naming an older version can no longer overwrite that release's published asset.
+time: 2026-08-15T00:00:00Z
+custom:
+  PR: 9597
+  Slug: publish-extension-release-identity
+  Breaking: "no"

@@ -25,8 +25,25 @@ import {
   WINDOWS_X64_TARGET,
   isTransientManagedInstallError,
   parseLocalVersion,
+  hostManagedCompatibilityKeys,
   __resetManagedInstallSingleflightForTesting,
 } from '../downloader';
+import {
+  legacyManagedBaseDir,
+  managedNamespaceDir,
+  managedUpdateCheckStateKey,
+} from '../managedStorageIdentity';
+
+/**
+ * The compatibility key this test host resolves to. Managed state is namespaced
+ * by it rather than by `process.platform`/`process.arch` (#9847), so tests must
+ * ask for it rather than reconstruct a path shape.
+ */
+const HOST_COMPATIBILITY_KEY = hostManagedCompatibilityKeys()[0]!;
+
+function hostNamespaceDir(storageRoot: string): string {
+  return managedNamespaceDir(storageRoot, HOST_COMPATIBILITY_KEY)!;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers: build a minimal mock ExtensionContext
@@ -107,11 +124,22 @@ describe('BinaryDownloader.getPlatformTarget', () => {
   });
 
   afterEach(() => {
-    process.env.ANDROID_ROOT = androidRootBackup;
-    process.env.ANDROID_DATA = androidDataBackup;
-    process.env.TERMUX_VERSION = termuxVersionBackup;
+    // Assigning `undefined` to a process.env key stores the *string*
+    // "undefined", which is truthy — that leaked a permanent Termux/Android
+    // host into every later test in this file. Unset instead.
+    restoreEnv('ANDROID_ROOT', androidRootBackup);
+    restoreEnv('ANDROID_DATA', androidDataBackup);
+    restoreEnv('TERMUX_VERSION', termuxVersionBackup);
     jest.restoreAllMocks();
   });
+
+  function restoreEnv(name: string, value: string | undefined): void {
+    if (value === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = value;
+    }
+  }
 
   function getPlatformTarget(dl: TestDownloader): string {
     return dl.getPlatformTarget();
@@ -392,13 +420,17 @@ describe('BinaryDownloader internal ARM64 mirror compatibility', () => {
 // Local binary path construction
 // ---------------------------------------------------------------------------
 describe('BinaryDownloader.getLocalBinaryPath', () => {
-  test('binary path includes platform and arch subdirectory', () => {
+  test('binary path is namespaced by the host compatibility key, not platform/arch', () => {
     const ctx = makeContext('/tmp/test-storage');
     const downloader = new BinaryDownloader(ctx, makeOutputChannel()) as unknown as TestDownloader;
     const binaryPath: string = downloader.getLocalBinaryPath();
 
-    expect(binaryPath).toContain(process.platform);
-    expect(binaryPath).toContain(process.arch);
+    expect(binaryPath.startsWith(hostNamespaceDir('/tmp/test-storage'))).toBe(true);
+    // The pre-#9847 key must not be what selects the directory: on Linux it
+    // cannot distinguish GNU from musl.
+    expect(binaryPath).not.toContain(
+      legacyManagedBaseDir('/tmp/test-storage', process.platform, process.arch),
+    );
   });
 
   test('binary name is perllsp (or perllsp.exe on win32)', () => {
@@ -596,7 +628,7 @@ describe('Versioned managed install layout', () => {
     storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-install-test-'));
     const ctx = makeContext(storageRoot);
     downloader = new BinaryDownloader(ctx, makeOutputChannel()) as unknown as TestDownloader;
-    baseDir = path.join(storageRoot, 'bin', `${process.platform}-${process.arch}`);
+    baseDir = hostNamespaceDir(storageRoot);
     fs.mkdirSync(baseDir, { recursive: true });
   });
 
@@ -606,7 +638,7 @@ describe('Versioned managed install layout', () => {
     }
   });
 
-  test('getLocalBinaryPath falls back to flat layout when no pointer exists (legacy users)', () => {
+  test('getLocalBinaryPath falls back to the flat layout when no pointer exists', () => {
     const flat = path.join(baseDir, lspBinaryName);
     fs.writeFileSync(flat, 'fake binary');
 
@@ -740,7 +772,7 @@ describe('Versioned managed install layout', () => {
     expect(fs.existsSync(flatBin)).toBe(true);
   });
 
-  test('legacy migration: install side-by-side with flat layout, pointer activates versioned', () => {
+  test('install lands side-by-side with a flat layout and the pointer activates it', () => {
     // Seed a legacy 0.13.2-style flat binary that a long-running user would have.
     const flatBin = path.join(baseDir, lspBinaryName);
     fs.writeFileSync(flatBin, 'legacy 0.13.2 bytes');
@@ -1300,11 +1332,30 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
   type TestRequest = EventEmitter & {
     destroy: jest.Mock;
   };
-  type TestResponse = EventEmitter;
+  // A real http.IncomingMessage always carries a status, and getLatestRelease
+  // now rejects non-success responses before parsing, so the fixture supplies
+  // one too.
+  type TestResponse = EventEmitter & {
+    statusCode?: number;
+    headers: Record<string, string>;
+    destroy: jest.Mock;
+  };
+  type TestCancellation = {
+    isCancellationRequested: boolean;
+    onCancellationRequested: (listener: () => void) => { dispose: () => void };
+  };
   type DownloaderSeams = {
-    getLatestRelease: (timeoutMs?: number) => Promise<unknown>;
+    getLatestRelease: (timeoutMs?: number, token?: TestCancellation) => Promise<unknown>;
     httpGet: (...args: unknown[]) => TestRequest;
   };
+
+  function makeResponse(statusCode = 200): TestResponse {
+    const response = new EventEmitter() as TestResponse;
+    response.statusCode = statusCode;
+    response.headers = {};
+    response.destroy = jest.fn();
+    return response;
+  }
 
   let downloader: TestDownloader;
 
@@ -1313,6 +1364,11 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
       makeContext(),
       makeOutputChannel(),
     ) as unknown as TestDownloader;
+    // Fixtures name x86_64-unknown-linux-gnu assets; pin the host target so
+    // these controls are independent of the machine running the suite.
+    jest
+      .spyOn(downloader as unknown as { getPlatformTarget: () => string }, 'getPlatformTarget')
+      .mockReturnValue('x86_64-unknown-linux-gnu');
     const vscode = require('vscode');
     vscode.workspace.getConfiguration.mockReturnValue({
       get: jest.fn((key: string, defaultValue?: unknown) => {
@@ -1346,14 +1402,25 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
 
   test('resolves a successful release response and clears the pending timer', async () => {
     const seams = downloader as unknown as DownloaderSeams;
-    const release = { tag_name: 'v1.2.3', assets: [] };
-    const response = new EventEmitter() as TestResponse;
+    const release = {
+      tag_name: 'v1.2.3',
+      prerelease: false,
+      assets: [
+        {
+          name: 'perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+          browser_download_url:
+            'https://example.invalid/perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+        },
+      ],
+    };
+    const response = makeResponse();
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
       (callback as (value: unknown) => void)(response);
       process.nextTick(() => {
-        response.emit('data', JSON.stringify(release));
+        // The latest channel now fetches the release list; the selector picks.
+        response.emit('data', JSON.stringify([release]));
         response.emit('end');
       });
       return request;
@@ -1361,6 +1428,316 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
 
     await expect(seams.getLatestRelease(1000)).resolves.toEqual(release);
     expect(request.destroy).not.toHaveBeenCalled();
+  });
+
+  // The array response is only requested for `channel === 'stable'`. These
+  // three controls pin the fail-closed selection: an explicit `prerelease:
+  // false` is required, and neither a prerelease nor a release that omits the
+  // field may be installed for a user who selected stable.
+  function stableChannelConfig(): void {
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'stable';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+  }
+
+  function respondWithReleaseList(seams: DownloaderSeams, releases: unknown[]): void {
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit('data', JSON.stringify(releases));
+        response.emit('end');
+      });
+      return request;
+    });
+  }
+
+  test('selects the release that explicitly declares prerelease false', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    stableChannelConfig();
+    respondWithReleaseList(seams, [
+      { tag_name: 'v2.0.0-rc.1', prerelease: true, assets: [] },
+      {
+        tag_name: 'v1.9.0',
+        prerelease: false,
+        assets: [
+          {
+            name: 'perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+            browser_download_url:
+              'https://example.invalid/perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+          },
+        ],
+      },
+    ]);
+
+    await expect(seams.getLatestRelease(1000)).resolves.toMatchObject({ tag_name: 'v1.9.0' });
+  });
+
+  test('a historical mistagged release cannot poison the stable route (hosted-smoke regression)', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    stableChannelConfig();
+    // Mirrors the live EffortlessMetrics/perl-lsp release history: v0.13.1
+    // carries prerelease:true on a stable-semver tag.
+    respondWithReleaseList(seams, [
+      {
+        tag_name: 'v1.9.0',
+        prerelease: false,
+        assets: [
+          {
+            name: 'perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+            browser_download_url:
+              'https://example.invalid/perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+          },
+        ],
+      },
+      { tag_name: 'v0.13.1', prerelease: true, assets: [] },
+    ]);
+
+    await expect(seams.getLatestRelease(1000)).resolves.toMatchObject({ tag_name: 'v1.9.0' });
+  });
+
+  test('an explicit tag pin of a mistagged historical release still installs (smoke shape)', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    // The hosted managed-binary smoke pins channel=tag, versionTag=v0.13.1.
+    // The mistag quarantine protects recency channels; an exact pin chooses
+    // one specific artifact and must keep working.
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'tag';
+        }
+        if (key === 'versionTag') {
+          return 'v0.13.1';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit(
+          'data',
+          JSON.stringify({
+            tag_name: 'v0.13.1',
+            prerelease: true,
+            assets: [
+              {
+                name: 'perllsp-0.13.1-x86_64-unknown-linux-gnu.tar.gz',
+                browser_download_url:
+                  'https://example.invalid/perllsp-0.13.1-x86_64-unknown-linux-gnu.tar.gz',
+              },
+            ],
+          }),
+        );
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await expect(seams.getLatestRelease(1000)).resolves.toMatchObject({ tag_name: 'v0.13.1' });
+  });
+
+  test('refuses to install a prerelease when the stable channel has no stable release', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    stableChannelConfig();
+    respondWithReleaseList(seams, [
+      { tag_name: 'v2.0.0-rc.2', prerelease: true, assets: [] },
+      { tag_name: 'v2.0.0-rc.1', prerelease: true, assets: [] },
+    ]);
+
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow('No stable release found');
+  });
+
+  test('does not treat a release that omits prerelease as stable', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    stableChannelConfig();
+    respondWithReleaseList(seams, [{ tag_name: 'v1.9.0', assets: [] }]);
+
+    // The omitted prerelease flag is unresolved metadata: the adapter maps it
+    // fail-closed, the record then disagrees with its parsed semver, and the
+    // selector refuses the whole input rather than guessing.
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow(
+      'Managed release metadata is not proven',
+    );
+  });
+
+  test('reports a missing release when GitHub answers 404', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const response = makeResponse(404);
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit('data', JSON.stringify({ message: 'Not Found' }));
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow('No releases found');
+  });
+
+  test('rejects release metadata that does not match the expected schema', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit('data', JSON.stringify({ tag_name: 'v1.2.3', assets: 'not-an-array' }));
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow(
+      'Release metadata response has an invalid schema',
+    );
+  });
+
+  test('stops an in-flight metadata request when the progress token cancels', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    const listeners = new Set<() => void>();
+    const token: TestCancellation = {
+      isCancellationRequested: false,
+      onCancellationRequested: (listener) => {
+        listeners.add(listener);
+        return { dispose: () => listeners.delete(listener) };
+      },
+    };
+
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      // The body never completes; only cancellation can settle this request.
+      process.nextTick(() => {
+        response.emit('data', '{');
+        token.isCancellationRequested = true;
+        for (const listener of [...listeners]) {
+          listener();
+        }
+      });
+      return request;
+    });
+
+    await expect(seams.getLatestRelease(60000, token)).rejects.toThrow('Release fetch cancelled');
+    expect(request.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  test('encodes a configured release tag before it reaches the API path', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'tag';
+        }
+        if (key === 'versionTag') {
+          return '../../../other-repo/releases/latest?x=1';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+
+    let capturedUrl = '';
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, url, _options, callback) => {
+      capturedUrl = url as string;
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit(
+          'data',
+          JSON.stringify({ tag_name: 'v1.2.3', prerelease: false, assets: [] }),
+        );
+        response.emit('end');
+      });
+      return request;
+    });
+
+    // The selector enforces the exact configured tag: a 200 echo whose
+    // tag_name does not match the configuration is refused, not normalized.
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow(
+      'No compatible managed release found',
+    );
+
+    expect(capturedUrl).toBe(
+      'https://api.github.com/repos/EffortlessMetrics/perl-lsp/releases/tags/' +
+        '..%2F..%2F..%2Fother-repo%2Freleases%2Flatest%3Fx%3D1',
+    );
+  });
+
+  test('hands the progress cancellation token to the metadata request', async () => {
+    const seams = downloader as unknown as DownloaderSeams & {
+      downloadWithProgress: () => Promise<string>;
+    };
+    const vscode = require('vscode');
+    let progressToken: TestCancellation | undefined;
+    vscode.window.withProgress.mockImplementationOnce(
+      async (_options: unknown, task: (progress: unknown, token: unknown) => Promise<unknown>) => {
+        progressToken = {
+          isCancellationRequested: false,
+          onCancellationRequested: jest.fn(() => ({ dispose: jest.fn() })),
+        };
+        return task({ report: jest.fn() }, progressToken);
+      },
+    );
+    const getLatestRelease = jest
+      .spyOn(seams, 'getLatestRelease')
+      .mockRejectedValue(new Error('metadata seam reached'));
+
+    await expect(seams.downloadWithProgress()).rejects.toThrow('metadata seam reached');
+    expect(getLatestRelease).toHaveBeenCalledWith(30000, progressToken);
+  });
+
+  test('rejects a metadata body that exceeds the release envelope', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        // Two chunks of 768 KiB cross the 1 MiB envelope mid-stream.
+        response.emit('data', Buffer.alloc(768 * 1024, 0x61));
+        response.emit('data', Buffer.alloc(768 * 1024, 0x61));
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await expect(seams.getLatestRelease(60000)).rejects.toThrow('exceeded 1048576 bytes');
+    expect(request.destroy).toHaveBeenCalledTimes(1);
   });
 
   test('rejects with the request error before the timeout fires', async () => {
@@ -1379,7 +1756,7 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
 
   test('omits GitHub bearer credentials when proxyStrictSSL is disabled', async () => {
     const seams = downloader as unknown as DownloaderSeams;
-    const response = new EventEmitter() as TestResponse;
+    const response = makeResponse();
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     const priorToken = process.env.GITHUB_TOKEN;
@@ -1407,7 +1784,22 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
       capturedOptions = options as { headers?: Record<string, string> };
       (callback as (value: unknown) => void)(response);
       process.nextTick(() => {
-        response.emit('data', JSON.stringify({ tag_name: 'v1.2.3', assets: [] }));
+        response.emit(
+          'data',
+          JSON.stringify([
+            {
+              tag_name: 'v1.2.3',
+              prerelease: false,
+              assets: [
+                {
+                  name: 'perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                  browser_download_url:
+                    'https://example.invalid/perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                },
+              ],
+            },
+          ]),
+        );
         response.emit('end');
       });
       return request;
@@ -1641,11 +2033,7 @@ describe('checkForUpdateSilent', () => {
     // Place a stub binary in the expected auto-download location so
     // fs.existsSync passes.
     const binaryName = process.platform === 'win32' ? 'perllsp.exe' : 'perllsp';
-    const binDir = path.join(
-      ctx.globalStorageUri.fsPath,
-      'bin',
-      `${process.platform}-${process.arch}`,
-    );
+    const binDir = hostNamespaceDir(ctx.globalStorageUri.fsPath);
     fs.mkdirSync(binDir, { recursive: true });
     tmpBinary = path.join(binDir, binaryName);
     fs.writeFileSync(tmpBinary, '#!/bin/sh\necho "perllsp 0.12.0"');
@@ -1847,7 +2235,7 @@ describe('checkForUpdateSilent', () => {
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
-  test('records lastUpdateCheck timestamp when check runs', async () => {
+  test("records the update-check timestamp under this target's scoped key", async () => {
     mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
     jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
     jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
@@ -1855,17 +2243,51 @@ describe('checkForUpdateSilent', () => {
       assets: [],
     });
 
+    const scopedKey = managedUpdateCheckStateKey(HOST_COMPATIBILITY_KEY)!;
     const before = Date.now();
     await downloader.checkForUpdateSilent();
     const after = Date.now();
 
-    expect(ctx.globalState.update).toHaveBeenCalledWith(
-      'perl-lsp.lastUpdateCheck',
-      expect.any(Number),
-    );
-    const recorded = ctx.globalState._store.get('perl-lsp.lastUpdateCheck') as number;
+    expect(ctx.globalState.update).toHaveBeenCalledWith(scopedKey, expect.any(Number));
+    const recorded = ctx.globalState._store.get(scopedKey) as number;
     expect(recorded).toBeGreaterThanOrEqual(before);
     expect(recorded).toBeLessThanOrEqual(after);
+    // The unscoped pre-#9847 key must not be advanced: it is shared by every
+    // compatibility target sitting in one global state object.
+    expect(ctx.globalState._store.get('perl-lsp.lastUpdateCheck')).toBeUndefined();
+  });
+
+  test("a foreign target's recent check does not suppress this target's check", async () => {
+    // A sibling host — same global state, different compatibility key — checked
+    // for updates a moment ago. That must not silence this host (#9847).
+    const foreignKey = managedUpdateCheckStateKey(
+      HOST_COMPATIBILITY_KEY.endsWith('-musl')
+        ? 'x86_64-unknown-linux-gnu'
+        : 'x86_64-unknown-linux-musl',
+    )!;
+    ctx.globalState._store.set(foreignKey, Date.now());
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    const getLatestSpy = jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.12.0',
+      assets: [],
+    });
+
+    await downloader.checkForUpdateSilent();
+
+    expect(getLatestSpy).toHaveBeenCalled();
+  });
+
+  test('the unscoped pre-#9847 timestamp still suppresses an immediate check', async () => {
+    // Upgrading the extension must not force every installed host to check at
+    // once; the legacy value seeds this target's first scoped decision.
+    ctx.globalState._store.set('perl-lsp.lastUpdateCheck', Date.now());
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
+    const getLatestSpy = jest.spyOn(downloader, 'getLatestRelease');
+
+    await downloader.checkForUpdateSilent();
+
+    expect(getLatestSpy).not.toHaveBeenCalled();
   });
 
   test('strips "v" prefix from remote tag_name before comparison', async () => {

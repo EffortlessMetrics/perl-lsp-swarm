@@ -322,7 +322,7 @@ fn test_enhanced_extract_variable_refactoring() -> Result<(), Box<dyn std::error
 // ======================== AC3: Enhanced Import Organization ========================
 
 #[test]
-// AC3:codeActions - Enhanced organize imports with correct action kind validation
+// AC3:codeActions - Enhanced organize imports stays withdrawn (#8305)
 fn test_enhanced_organize_imports_refactoring() -> Result<(), Box<dyn std::error::Error>> {
     let (mut harness, workspace) = create_enhanced_code_actions_server()?;
     initialize_enhanced_harness(&mut harness, &workspace)?;
@@ -345,7 +345,10 @@ fn test_enhanced_organize_imports_refactoring() -> Result<(), Box<dyn std::error
 
     let actions = actions_result.as_array().ok_or("Should return action array")?;
 
-    // AC3: Look for organize imports action with enhanced validation
+    // AC3: the withdrawn legacy organizer (#8305) must NOT be offered. The
+    // line-oriented sorter replaced the whole first-to-last import interval and
+    // could destroy executable statements in between; restoration requires
+    // #8319/#10696 to land a proven source-preserving cohort.
     let organize_imports_action = actions.iter().find(|action| {
         action["title"]
             .as_str()
@@ -355,20 +358,14 @@ fn test_enhanced_organize_imports_refactoring() -> Result<(), Box<dyn std::error
             })
             .unwrap_or(false)
     });
-
-    // Hard assert: organize imports must be implemented and return a valid action.
-    // Previously this test silently passed when no matching action was found (#3057 fake scoreboard).
-    let action = organize_imports_action
-        .ok_or("Organize imports code action must be returned for a file with missing imports; not yet implemented — see issue #3080")?;
-
-    let action_kind = action["kind"].as_str();
     assert!(
-        action_kind == Some("source.organizeImports"),
-        "Organize imports action should have kind 'source.organizeImports', got: {:?}",
-        action_kind
+        organize_imports_action.is_none(),
+        "the withdrawn organize-imports action must not be offered; got {actions:?}"
     );
-
-    assert!(action.get("edit").is_some(), "Organize imports should have text edits");
+    assert!(
+        actions.iter().all(|action| action["kind"].as_str() != Some("source.organizeImports")),
+        "no action may carry the withdrawn source.organizeImports kind; got {actions:?}"
+    );
 
     Ok(())
 }

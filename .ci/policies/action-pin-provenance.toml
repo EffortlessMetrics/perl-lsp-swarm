@@ -13,10 +13,17 @@ sha = '6323deb102c322ba6fcbdcafc7e3dddab59af2b6'
 kind = 'legacy_debt'
 value = ''
 
+# Verified against upstream on 2026-08-17:
+#   git ls-remote --tags https://github.com/Swatinem/rust-cache v2.9.2
+#   63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7  refs/tags/v2.9.2  (tag object)
+#   -> commit 6323deb102c322ba6fcbdcafc7e3dddab59af2b6 (annotated tag)
+# Promoted from legacy debt: the v2.9.2 projection is correct, so the prior
+# legacy_debt 'v2.9.2' entry is removed (the debt is resolved). The sibling ''
+# entry for this same SHA stays legacy debt (no projection was recorded).
 [[pin]]
 action = 'Swatinem/rust-cache'
 sha = '6323deb102c322ba6fcbdcafc7e3dddab59af2b6'
-kind = 'legacy_debt'
+kind = 'release_tag'
 value = 'v2.9.2'
 
 [[pin]]
@@ -61,10 +68,18 @@ sha = '3d3c42e5aac5ba805825da76410c181273ba90b1'
 kind = 'legacy_debt'
 value = 'v7.0.0'
 
+# Verified against upstream on 2026-08-17:
+#   git ls-remote --tags https://github.com/actions/checkout v7.0.1
+#   3d3c42e5aac5ba805825da76410c181273ba90b1  refs/tags/v7.0.1
+# Promoted from legacy debt: the v7.0.1 projection is correct, so the prior
+# legacy_debt 'v7.0.1' entry is removed (the debt is resolved). The sibling
+# 'v7' and 'v7.0.0' entries for this same SHA stay legacy debt: 'v7' is a
+# floating major projection and 'v7.0.0' is a wrong projection (this commit
+# is v7.0.1), and neither was verified here.
 [[pin]]
 action = 'actions/checkout'
 sha = '3d3c42e5aac5ba805825da76410c181273ba90b1'
-kind = 'legacy_debt'
+kind = 'release_tag'
 value = 'v7.0.1'
 
 [[pin]]
@@ -79,10 +94,17 @@ sha = '9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0'
 kind = 'legacy_debt'
 value = 'v6'
 
+# Verified against upstream on 2026-08-16:
+#   git ls-remote --tags https://github.com/actions/checkout v7.0.0
+#   9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  refs/tags/v7.0.0
+# The projection this entry previously carried as unreviewed debt is correct,
+# so it is promoted rather than re-recorded. The sibling '' and 'v6' entries
+# for this same SHA stay legacy debt: 'v6' is a wrong projection (this commit
+# is v7.0.0) and neither was verified here.
 [[pin]]
 action = 'actions/checkout'
 sha = '9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0'
-kind = 'legacy_debt'
+kind = 'release_tag'
 value = 'v7.0.0'
 
 [[pin]]
@@ -106,7 +128,7 @@ value = 'v8'
 [[pin]]
 action = 'actions/download-artifact'
 sha = '3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'
-kind = 'legacy_debt'
+kind = 'release_tag'
 value = 'v8.0.1'
 
 [[pin]]
@@ -148,9 +170,8 @@ value = 'v7.0.0'
 [[pin]]
 action = 'actions/upload-artifact'
 sha = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
-kind = 'legacy_debt'
+kind = 'release_tag'
 value = 'v7.0.1'
-
 [[pin]]
 action = 'actions/upload-pages-artifact'
 sha = 'fc324d3547104276b827a68afc52ff2a11cc49c9'
@@ -247,6 +268,16 @@ sha = '5595ccaf912efad79be6eef63a5619ff05969be3'
 kind = 'legacy_debt'
 value = 'v4.37.6'
 
+# Verified against upstream on 2026-08-17:
+#   git ls-remote --tags https://github.com/github/codeql-action v4.37.7
+#   faaa5d804fc648d0fdb28822a8e36cf7d0a6132c  refs/tags/v4.37.7  (tag object)
+#   -> commit ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd (annotated tag)
+[[pin]]
+action = 'github/codeql-action/upload-sarif'
+sha = 'ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd'
+kind = 'release_tag'
+value = 'v4.37.7'
+
 [[pin]]
 action = 'mozilla-actions/sccache-action'
 sha = '2e7f9ec7921547d4b46598398ca573513895d0bd'
@@ -282,3 +313,18 @@ action = 'taiki-e/install-action'
 sha = '6c6fd71fe4fb72c3697d269963d0e15df8adedad'
 kind = 'release_tag'
 value = 'v2.85.10'
+
+# Verified against upstream on 2026-08-17:
+#   git ls-remote --tags https://github.com/taiki-e/install-action v2.85.13
+#   82cd3e7658a6f96c86c0234aeeda1748937cb0a1  refs/tags/v2.85.13
+[[pin]]
+action = 'taiki-e/install-action'
+sha = '82cd3e7658a6f96c86c0234aeeda1748937cb0a1'
+kind = 'release_tag'
+value = 'v2.85.13'
+
+[[pin]]
+action = 'SublimeText/UnitTesting/actions/setup'
+sha = 'b8abedefd5fbc0f64a8c6082506ebd1e24203164'
+kind = 'branch_commit'
+value = 'master (sublime-journey)'

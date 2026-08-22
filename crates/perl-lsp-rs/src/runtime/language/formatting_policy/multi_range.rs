@@ -5,10 +5,10 @@
 use serde::Serialize;
 
 use super::super::{
-    CodeFormatter, FormatContext, FormatDisposition, FormatTextEdit, FormattingDecision,
-    JsonRpcError, JsonRpcId, LspServer, RequestCleanupGuard, Snapshot, Surface, Value,
-    WirePosition, WireRange, actual_engine_for_decisions, actual_engine_for_mode,
-    cancellation_token, digest, invalid_params, json, parse_range, sanitized_outcome,
+    FormatContext, FormatDisposition, FormatTextEdit, FormattingDecision, JsonRpcError, JsonRpcId,
+    LspServer, RequestCleanupGuard, Snapshot, Surface, Value, WirePosition, WireRange,
+    actual_engine_for_decisions, actual_engine_for_mode, cancellation_token, digest,
+    invalid_params, json, parse_range, sanitized_outcome,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -544,8 +544,7 @@ pub(super) fn handle(
         return Ok(Some(json!([])));
     }
 
-    let formatter =
-        CodeFormatter::with_config_and_mode(snapshot.config.perltidy.clone(), snapshot.config.mode);
+    let formatter = server.formatter_for(snapshot.config.perltidy.clone(), snapshot.config.mode);
     let context = FormatContext::new(Some(snapshot.uri.clone()), Some(snapshot.generation));
     let mut decisions = Vec::with_capacity(plan.normalized_ranges.len());
     let mut formatter_started = false;
@@ -691,6 +690,9 @@ pub(super) fn handle(
 
 #[cfg(test)]
 mod tests {
+    // Test helpers favor `expect()` with a descriptive message over silent
+    // unwraps; the workspace-wide deny is a production-code rule.
+    #![allow(clippy::expect_used)]
     use super::*;
     use perl_lsp_rs_core::providers::formatting_types::{FormatPosition, FormatRange};
 

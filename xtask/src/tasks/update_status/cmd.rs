@@ -191,6 +191,26 @@ fn merged_output_is_acceptable(observation_failed: bool, status_success: Option<
     !observation_failed && status_success == Some(true)
 }
 
+pub(super) fn run_subsystem<T>(
+    name: &str,
+    repro: &str,
+    action: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    eprintln!("[update-status] starting subsystem: {name}");
+    let result = action();
+    match result {
+        Ok(value) => {
+            eprintln!("[update-status] completed subsystem: {name}");
+            Ok(value)
+        }
+        Err(err) => {
+            eprintln!("[update-status] subsystem failed: {name}");
+            eprintln!("[update-status] repro: {repro}");
+            Err(err)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,25 +271,5 @@ mod tests {
         );
         assert_eq!(output, "");
         assert!(started_at.elapsed() < Duration::from_secs(2));
-    }
-}
-
-pub(super) fn run_subsystem<T>(
-    name: &str,
-    repro: &str,
-    action: impl FnOnce() -> Result<T>,
-) -> Result<T> {
-    eprintln!("[update-status] starting subsystem: {name}");
-    let result = action();
-    match result {
-        Ok(value) => {
-            eprintln!("[update-status] completed subsystem: {name}");
-            Ok(value)
-        }
-        Err(err) => {
-            eprintln!("[update-status] subsystem failed: {name}");
-            eprintln!("[update-status] repro: {repro}");
-            Err(err)
-        }
     }
 }

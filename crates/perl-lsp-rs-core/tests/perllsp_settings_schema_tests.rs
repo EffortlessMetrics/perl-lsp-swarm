@@ -3,6 +3,99 @@ use perl_lsp_rs_core::runtime::LspLimits;
 use serde_json::{Value, json};
 use std::{error::Error, time::Duration};
 
+fn production_source(source: &str) -> String {
+    let lines: Vec<_> = source.lines().collect();
+    let mut production = Vec::with_capacity(lines.len());
+    let mut index = 0;
+
+    while index < lines.len() {
+        if lines[index].trim() == "#[cfg(test)]" {
+            let mut next = index + 1;
+            while next < lines.len() && lines[next].trim().is_empty() {
+                next += 1;
+            }
+
+            // Some runtime modules have cfg(test)-only imports before production code.
+            // The first cfg(test) item that is a function or module starts the fixture tail.
+            if next < lines.len()
+                && (lines[next].trim_start().starts_with("fn ")
+                    || lines[next].trim_start().starts_with("mod "))
+            {
+                break;
+            }
+        }
+
+        production.push(lines[index]);
+        index += 1;
+    }
+
+    production.join("\n")
+}
+
+#[test]
+fn removed_client_test_runner_authority_stays_absent_from_current_surfaces() {
+    let sources = [
+        ("core config", production_source(include_str!("../src/config/mod.rs"))),
+        (
+            "configuration authority model",
+            production_source(include_str!("../src/configuration_authority/mod.rs")),
+        ),
+        (
+            "configuration authority catalog",
+            production_source(include_str!("../src/configuration_authority/catalog.rs")),
+        ),
+        (
+            "settings schema",
+            include_str!("../../../schemas/perllsp-settings.schema.json").to_owned(),
+        ),
+        ("configuration reference", include_str!("../../../docs/reference/CONFIG.md").to_owned()),
+        (
+            "configuration guide",
+            include_str!("../../../docs/reference/CONFIGURATION.md").to_owned(),
+        ),
+        (
+            "configuration schema reference",
+            include_str!("../../../docs/reference/CONFIGURATION_SCHEMA.md").to_owned(),
+        ),
+        (
+            "runtime workspace authority",
+            production_source(include_str!("../../perl-lsp-rs/src/runtime/workspace.rs")),
+        ),
+        (
+            "runtime lifecycle workspace authority",
+            production_source(include_str!("../../perl-lsp-rs/src/runtime/lifecycle/workspace.rs")),
+        ),
+        (
+            "runtime lifecycle capability authority",
+            production_source(include_str!(
+                "../../perl-lsp-rs/src/runtime/lifecycle/capabilities.rs"
+            )),
+        ),
+    ];
+    let forbidden = [
+        "test_runner_command",
+        "test_runner_args",
+        "test_runner_timeout",
+        "test_runner_enabled",
+        "testRunner",
+        "testRunnerEnabled",
+        "testRunner.enabled",
+        "testCommand",
+        "testArgs",
+        "testTimeout",
+        "TestRunner",
+    ];
+
+    for (source_name, source) in sources {
+        for marker in forbidden {
+            assert!(
+                !source.contains(marker),
+                "removed client test-runner authority marker {marker:?} reintroduced in {source_name}"
+            );
+        }
+    }
+}
+
 fn load_schema() -> Result<Value, Box<dyn Error>> {
     match serde_json::from_str(include_str!("../../../schemas/perllsp-settings.schema.json")) {
         Ok(value) => Ok(value),
@@ -14,11 +107,11 @@ fn load_schema() -> Result<Value, Box<dyn Error>> {
 fn generic_settings_schema_is_server_native_and_namespaced() -> Result<(), Box<dyn Error>> {
     let schema = load_schema()?;
     let properties = &schema["properties"]["perl"]["properties"];
+    assert_eq!(properties.get("testRunner"), None);
 
     for section in [
         "workspace",
         "inlayHints",
-        "testRunner",
         "limits",
         "telemetry",
         "nextEdit",
@@ -42,6 +135,14 @@ fn generic_settings_schema_is_server_native_and_namespaced() -> Result<(), Box<d
 }
 
 #[test]
+fn generic_formatter_schema_excludes_external_process_modes() -> Result<(), Box<dyn Error>> {
+    let schema = load_schema()?;
+    let engine = &schema["properties"]["perl"]["properties"]["formatting"]["properties"]["engine"];
+    assert_eq!(engine["enum"], json!(["native", "compat", "off"]));
+    Ok(())
+}
+
+#[test]
 fn generic_schema_fields_are_behavior_backed_by_runtime_config() {
     let settings = json!({
         "workspace": {
@@ -59,12 +160,6 @@ fn generic_schema_fields_are_behavior_backed_by_runtime_config() {
             "typeHints": false,
             "chainedHints": true,
             "maxLength": 48
-        },
-        "testRunner": {
-            "enabled": false,
-            "command": "prove",
-            "args": ["-lr", "t"],
-            "timeout": 90000
         },
         "limits": {
             "workspaceSymbolCap": 321,
@@ -136,10 +231,6 @@ fn generic_schema_fields_are_behavior_backed_by_runtime_config() {
     assert_eq!(server.inlay_hints_type_hints, false);
     assert_eq!(server.inlay_hints_chained_hints, true);
     assert_eq!(server.inlay_hints_max_length, 48);
-    assert_eq!(server.test_runner_enabled, false);
-    assert_eq!(server.test_runner_command, "prove");
-    assert_eq!(server.test_runner_args, ["-lr", "t"]);
-    assert_eq!(server.test_runner_timeout, 90000);
     assert_eq!(server.telemetry_enabled, true);
     assert_eq!(server.next_edit.enabled, true);
     assert_eq!(server.perlcritic_severity, 4);

@@ -4,8 +4,8 @@
 //! so that `mod.rs` is limited to the struct definition and core accessors.
 
 use super::{
-    Arc, AstCache, AtomicBool, AtomicI32, BufReader, ClientCapabilities, FeatureProfile, HashMap,
-    HashSet, IndexCoordinator, LspServer, Mutex, Read, ServerConfig, SymbolIndex, UseLibHirCache,
+    Arc, AtomicBool, AtomicI32, BufReader, ClientCapabilities, FeatureProfile, HashMap, HashSet,
+    IndexCoordinator, LspServer, Mutex, Read, ServerConfig, SymbolIndex, UseLibHirCache,
     WorkspaceConfig, Write, io, notebook, outbound, refresh,
 };
 use perl_lsp_rs_core::runtime::tuning::RuntimeTuning;
@@ -56,8 +56,6 @@ impl LspServer {
             pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             index_coordinator,
-            // Cache up to 100 ASTs with 5 minute TTL
-            ast_cache: Arc::new(AstCache::new(100, 300)),
             symbol_index: Arc::new(Mutex::new(SymbolIndex::new())),
             config: Arc::new(Mutex::new(ServerConfig::default())),
             reader: Arc::new(Mutex::new(Box::new(BufReader::new(io::stdin())))),
@@ -85,6 +83,7 @@ impl LspServer {
             notebook_store: notebook::NotebookStore::new(),
             trace_level: Arc::new(Mutex::new("off".to_string())),
             stream_session_manager: super::stream_session::StreamSessionManager::new(),
+            resolve_session_authenticator: Mutex::new(super::resolve_session::new_session_authenticator()),
             feature_profile,
             runtime_tuning,
             workspace_indexing_invocation_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -119,6 +118,8 @@ impl LspServer {
             critic_analyzer: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             critic_runtime_override: Mutex::new(None),
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            formatter_runtime_override: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             skip_perlcritic_command_check: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
@@ -237,7 +238,6 @@ impl LspServer {
             pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             index_coordinator,
-            ast_cache: Arc::new(AstCache::new(100, 300)),
             symbol_index: Arc::new(Mutex::new(SymbolIndex::new())),
             config: Arc::new(Mutex::new(ServerConfig::default())),
             reader: Arc::new(Mutex::new(Box::new(BufReader::new(reader)))),
@@ -265,6 +265,7 @@ impl LspServer {
             notebook_store: notebook::NotebookStore::new(),
             trace_level: Arc::new(Mutex::new("off".to_string())),
             stream_session_manager: super::stream_session::StreamSessionManager::new(),
+            resolve_session_authenticator: Mutex::new(super::resolve_session::new_session_authenticator()),
             feature_profile,
             runtime_tuning,
             workspace_indexing_invocation_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -299,6 +300,8 @@ impl LspServer {
             critic_analyzer: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             critic_runtime_override: Mutex::new(None),
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            formatter_runtime_override: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             skip_perlcritic_command_check: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
@@ -358,7 +361,6 @@ impl LspServer {
             pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             index_coordinator,
-            ast_cache: Arc::new(AstCache::new(100, 300)),
             symbol_index: Arc::new(Mutex::new(SymbolIndex::new())),
             config: Arc::new(Mutex::new(ServerConfig::default())),
             reader: Arc::new(Mutex::new(Box::new(BufReader::new(io::stdin())))),
@@ -386,6 +388,7 @@ impl LspServer {
             notebook_store: notebook::NotebookStore::new(),
             trace_level: Arc::new(Mutex::new("off".to_string())),
             stream_session_manager: super::stream_session::StreamSessionManager::new(),
+            resolve_session_authenticator: Mutex::new(super::resolve_session::new_session_authenticator()),
             feature_profile,
             runtime_tuning,
             workspace_indexing_invocation_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -420,6 +423,8 @@ impl LspServer {
             critic_analyzer: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             critic_runtime_override: Mutex::new(None),
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            formatter_runtime_override: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             skip_perlcritic_command_check: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]

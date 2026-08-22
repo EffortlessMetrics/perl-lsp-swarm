@@ -264,8 +264,8 @@ pub enum RegexDynamicRegionKind {
     EmbeddedCodeDeferred,
     /// Source interpolation such as `$name`, `${expr}`, or `@values`.
     ///
-    /// Reserved for a follow-up scanner slice; this PR only populates embedded-code
-    /// dynamic regions so hosted ripr stays within the new-gap budget.
+    /// Interpolated text is not knowable from this source alone, so its presence is
+    /// reported as a dynamic boundary rather than folded into a static interpretation.
     Interpolation,
 }
 
@@ -285,7 +285,7 @@ pub struct RegexDynamicRegionFact {
 pub struct RegexFacts {
     /// Embedded executable or runtime-supplied regions in source order.
     pub embedded_code: Vec<EmbeddedCodeFact>,
-    /// Dynamic regions in source order (embedded code in this slice).
+    /// Dynamic regions in source order (embedded code and source interpolation).
     pub dynamic_regions: Vec<RegexDynamicRegionFact>,
     /// Nested-quantifier advisory ranges in source order.
     pub nested_quantifiers: Vec<RegexRange>,

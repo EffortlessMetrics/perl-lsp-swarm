@@ -102,13 +102,30 @@ fn worktree_head_sha(path: &Path) -> Result<String> {
 #[cfg(windows)]
 fn write_gh_stub(dir: &Path, exit_code: i32, stdout: &str) -> Result<PathBuf> {
     let path = dir.join("gh.cmd");
+    let response = write_stub_response_file(dir, "response", stdout)?;
     let mut body = String::from("@echo off\r\n");
     if !stdout.is_empty() {
-        body.push_str(&format!("echo {stdout}\r\n"));
+        // `type` reproduces the response bytes exactly; cmd's `echo`
+        // re-parses its arguments and can strip quote characters from
+        // JSON bodies.
+        body.push_str(&format!(
+            "type \"{}\"
+",
+            response.display()
+        ));
     }
     body.push_str(&format!("exit /b {exit_code}\r\n"));
     fs::write(&path, body)?;
     Ok(path)
+}
+
+/// Writes one stub response body to its own file so the Windows batch
+/// stubs can emit it with `type`, byte-for-byte.
+#[cfg(windows)]
+fn write_stub_response_file(dir: &Path, name: &str, stdout: &str) -> Result<PathBuf> {
+    let response = dir.join(format!("{name}.txt"));
+    fs::write(&response, format!("{stdout}\n"))?;
+    Ok(response)
 }
 
 #[cfg(unix)]
@@ -117,7 +134,9 @@ fn write_gh_stub(dir: &Path, exit_code: i32, stdout: &str) -> Result<PathBuf> {
     let path = dir.join("gh");
     let mut body = String::from("#!/bin/sh\n");
     if !stdout.is_empty() {
-        body.push_str(&format!("echo {stdout}\n"));
+        // Single-quoted echo: the bodies carry no backslashes, and quoting
+        // keeps a POSIX shell from stripping the JSON's inner quotes.
+        body.push_str(&format!("echo '{stdout}'\n"));
     }
     body.push_str(&format!("exit {exit_code}\n"));
     fs::write(&path, body)?;
@@ -134,7 +153,8 @@ fn write_gh_stub(dir: &Path, exit_code: i32, stdout: &str) -> Result<PathBuf> {
 #[cfg(windows)]
 fn write_cwd_probe_gh_stub(dir: &Path, marker: &Path) -> Result<PathBuf> {
     let path = dir.join("gh.cmd");
-    let body = format!("@echo off\r\necho %CD%>\"{}\"\r\nexit /b 0\r\n", marker.display());
+    let body =
+        format!("@echo off\r\necho %CD%>\"{}\"\r\necho []\r\nexit /b 0\r\n", marker.display());
     fs::write(&path, body)?;
     Ok(path)
 }
@@ -143,7 +163,7 @@ fn write_cwd_probe_gh_stub(dir: &Path, marker: &Path) -> Result<PathBuf> {
 fn write_cwd_probe_gh_stub(dir: &Path, marker: &Path) -> Result<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join("gh");
-    let body = format!("#!/bin/sh\npwd > \"{}\"\nexit 0\n", marker.display());
+    let body = format!("#!/bin/sh\npwd > \"{}\"\necho '[]'\nexit 0\n", marker.display());
     fs::write(&path, body)?;
     let mut perms = fs::metadata(&path)?.permissions();
     perms.set_mode(0o755);
@@ -168,15 +188,27 @@ fn write_gh_stub_by_state(dir: &Path, open: (i32, &str), merged: (i32, &str)) ->
     let path = dir.join("gh.cmd");
     let (open_exit, open_stdout) = open;
     let (merged_exit, merged_stdout) = merged;
+    let merged_response = write_stub_response_file(dir, "merged-response", merged_stdout)?;
+    let open_response = write_stub_response_file(dir, "open-response", open_stdout)?;
     let mut body = String::from("@echo off\r\necho %* | findstr /C:\"--state merged\" >nul\r\n");
     body.push_str("if %ERRORLEVEL%==0 (\r\n");
     if !merged_stdout.is_empty() {
-        body.push_str(&format!("  echo {merged_stdout}\r\n"));
+        // `type`, not `echo`: inside a parenthesized batch block cmd's
+        // argument re-parsing can strip quote characters from JSON bodies.
+        body.push_str(&format!(
+            "  type \"{}\"
+",
+            merged_response.display()
+        ));
     }
     body.push_str(&format!("  exit /b {merged_exit}\r\n"));
     body.push_str(") else (\r\n");
     if !open_stdout.is_empty() {
-        body.push_str(&format!("  echo {open_stdout}\r\n"));
+        body.push_str(&format!(
+            "  type \"{}\"
+",
+            open_response.display()
+        ));
     }
     body.push_str(&format!("  exit /b {open_exit}\r\n"));
     body.push_str(")\r\n");
@@ -192,13 +224,13 @@ fn write_gh_stub_by_state(dir: &Path, open: (i32, &str), merged: (i32, &str)) ->
     let (merged_exit, merged_stdout) = merged;
     let mut body = String::from("#!/bin/sh\ncase \"$*\" in\n  *\"--state merged\"*)\n");
     if !merged_stdout.is_empty() {
-        // Double-quoted: the JSON stub text contains `[`/`{` which a POSIX
-        // shell would otherwise be free to glob-expand or word-split.
-        body.push_str(&format!("    echo \"{merged_stdout}\"\n"));
+        // Single-quoted echo: the bodies carry no backslashes, and quoting
+        // keeps a POSIX shell from stripping the JSON's inner quotes.
+        body.push_str(&format!("    echo '{merged_stdout}'\n"));
     }
     body.push_str(&format!("    exit {merged_exit}\n    ;;\n  *)\n"));
     if !open_stdout.is_empty() {
-        body.push_str(&format!("    echo {open_stdout}\n"));
+        body.push_str(&format!("    echo '{open_stdout}'\n"));
     }
     body.push_str(&format!("    exit {open_exit}\n    ;;\nesac\n"));
     fs::write(&path, body)?;
@@ -222,7 +254,7 @@ fn write_gh_stub_by_state(dir: &Path, open: (i32, &str), merged: (i32, &str)) ->
 fn write_slow_decoy_gh_stub(dir: &Path, sleep_secs: u32) -> Result<PathBuf> {
     let path = dir.join("gh.cmd");
     let body = format!(
-        "@echo off\r\necho %* | findstr /C:\"decoy\" >nul\r\nif %ERRORLEVEL%==0 (ping -n {} 127.0.0.1 >nul)\r\nexit /b 0\r\n",
+        "@echo off\r\necho %* | findstr /C:\"decoy\" >nul\r\nif %ERRORLEVEL%==0 (ping -n {} 127.0.0.1 >nul)\r\necho []\r\nexit /b 0\r\n",
         sleep_secs + 1
     );
     fs::write(&path, body)?;
@@ -233,8 +265,9 @@ fn write_slow_decoy_gh_stub(dir: &Path, sleep_secs: u32) -> Result<PathBuf> {
 fn write_slow_decoy_gh_stub(dir: &Path, sleep_secs: u32) -> Result<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join("gh");
-    let body =
-        format!("#!/bin/sh\ncase \"$*\" in\n  *decoy*) sleep {sleep_secs} ;;\nesac\nexit 0\n");
+    let body = format!(
+        "#!/bin/sh\ncase \"$*\" in\n  *decoy*) sleep {sleep_secs} ;;\nesac\necho '[]'\nexit 0\n"
+    );
     fs::write(&path, body)?;
     let mut perms = fs::metadata(&path)?.permissions();
     perms.set_mode(0o755);
@@ -257,6 +290,25 @@ fn spawn_xtask_cleanup(root: &Path, gh_bin: &Path) -> Result<std::process::Child
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     Ok(cmd.spawn()?)
+}
+
+/// The render block for the entry whose header line contains `needle`: the
+/// unindented `CLASSIFICATION path [id]` line plus its indented detail lines.
+///
+/// Assertions must be scoped to one block. `render_human` emits every entry
+/// into one stream, so a whole-output `contains` check is satisfied by any
+/// entry — including the primary worktree, which is always present and always
+/// `KEEP`.
+fn entry_block(output: &str, needle: &str) -> Result<String> {
+    let mut lines =
+        output.lines().skip_while(|line| !(line.contains(needle) && !line.starts_with(' ')));
+    let Some(header) = lines.next() else {
+        bail!("no entry header line containing {needle:?} in:\n{output}");
+    };
+    Ok(std::iter::once(header)
+        .chain(lines.take_while(|line| line.starts_with(' ')))
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
 fn run_xtask_cleanup(root: &Path, force: bool, gh_bin: Option<&Path>) -> Result<(bool, String)> {
@@ -292,17 +344,34 @@ fn dry_run_keeps_dirty_and_flags_clean_for_removal_without_deleting_either() -> 
 
     let gh_stub_dir = tmp.path().join("gh-nopr");
     fs::create_dir_all(&gh_stub_dir)?;
-    let gh_stub = write_gh_stub(&gh_stub_dir, 0, "")?;
+    let gh_stub = write_gh_stub(&gh_stub_dir, 0, "[]")?;
 
     let (ok, output) = run_xtask_cleanup(&repo, false, Some(&gh_stub))?;
     assert!(ok, "dry-run must exit 0: {output}");
+    let dirty_block = entry_block(&output, "wt-dirty")?;
     assert!(
-        output.contains("KEEP") && output.contains("dirty"),
-        "expected dirty worktree to be reported KEEP with a dirty reason: {output}"
+        dirty_block.starts_with("SALVAGE"),
+        "dirty worktree must classify SALVAGE, not merely leave `KEEP` somewhere in the \
+         output (the primary worktree is always KEEP): {dirty_block}"
     );
     assert!(
-        output.contains("REMOVE"),
-        "expected clean worktree to be reported REMOVE-eligible in dry-run: {output}"
+        dirty_block.contains("reasons:") && dirty_block.contains("worktree_dirty"),
+        "dirty worktree must carry the worktree_dirty reason token; matching the bare word \
+         `dirty` also matches its own path: {dirty_block}"
+    );
+    assert!(
+        !dirty_block.contains("proposed:"),
+        "dirty worktree must not be given a proposed action: {dirty_block}"
+    );
+
+    let clean_block = entry_block(&output, "wt-clean")?;
+    assert!(
+        clean_block.starts_with("CACHE_ONLY"),
+        "clean pushed worktree must classify CACHE_ONLY: {clean_block}"
+    );
+    assert!(
+        clean_block.contains("proposed: REMOVE_REGISTERED_WORKTREE"),
+        "clean worktree must be proposed for registered-worktree removal: {clean_block}"
     );
     assert!(dirty_wt.exists(), "dry-run must never delete the dirty worktree");
     assert!(
@@ -322,7 +391,7 @@ fn force_removes_only_the_clean_worktree_and_never_the_dirty_one() -> Result<()>
 
     let gh_stub_dir = tmp.path().join("gh-nopr");
     fs::create_dir_all(&gh_stub_dir)?;
-    let gh_stub = write_gh_stub(&gh_stub_dir, 0, "")?;
+    let gh_stub = write_gh_stub(&gh_stub_dir, 0, "[]")?;
 
     let (ok, output) = run_xtask_cleanup(&repo, true, Some(&gh_stub))?;
     assert!(ok, "--force run must exit 0: {output}");
@@ -358,7 +427,7 @@ fn clean_worktree_with_unpushed_commits_and_no_open_pr_is_kept_not_removed() -> 
 
     let gh_stub_dir = tmp.path().join("gh-nopr-unpushed");
     fs::create_dir_all(&gh_stub_dir)?;
-    let gh_stub = write_gh_stub(&gh_stub_dir, 0, "")?;
+    let gh_stub = write_gh_stub(&gh_stub_dir, 0, "[]")?;
 
     let (dry_ok, dry_output) = run_xtask_cleanup(&repo, false, Some(&gh_stub))?;
     assert!(dry_ok, "dry-run must exit 0: {dry_output}");
@@ -416,8 +485,8 @@ fn squash_merged_branch_at_merged_head_is_removed_despite_ahead_by_ancestry() ->
     // (GitHub still resolves it by head-branch name after the ref is
     // deleted, per `delete_branch_on_merge`) — with `headRefOid` exactly
     // matching the worktree's current HEAD (no commits since the merge).
-    let merged_json = format!(r#"{{"number":99,"headRefOid":"{head_sha}"}}"#);
-    let gh_stub = write_gh_stub_by_state(&gh_stub_dir, (0, ""), (0, &merged_json))?;
+    let merged_json = format!(r#"[{{"number":99,"headRefOid":"{head_sha}"}}]"#);
+    let gh_stub = write_gh_stub_by_state(&gh_stub_dir, (0, "[]"), (0, &merged_json))?;
 
     // Match on the worktree's basename, not its full path: `entry.path`
     // (and thus every printed line) always uses forward slashes (git
@@ -435,7 +504,7 @@ fn squash_merged_branch_at_merged_head_is_removed_despite_ahead_by_ancestry() ->
     let (dry_ok, dry_output) = run_xtask_cleanup(&repo, false, Some(&gh_stub))?;
     assert!(dry_ok, "dry-run must exit 0: {dry_output}");
     assert!(
-        dry_output.contains("REMOVE (dry-run: would remove)") && dry_output.contains(&wt_name),
+        dry_output.contains("REMOVE_REGISTERED_WORKTREE") && dry_output.contains(&wt_name),
         "expected the squash-merged worktree (HEAD == merged PR's headRefOid) to be reported \
          REMOVE-eligible, not KEEP: {dry_output}"
     );
@@ -475,7 +544,7 @@ fn branch_with_merged_pr_but_post_merge_commits_is_kept_not_removed() -> Result<
     fs::create_dir_all(&gh_stub_dir)?;
     // No open PR; PR #99 merged, but at the OLDER commit — stale relative
     // to this worktree's current HEAD.
-    let merged_json = format!(r#"{{"number":99,"headRefOid":"{merged_head_sha}"}}"#);
+    let merged_json = format!(r#"[{{"number":99,"headRefOid":"{merged_head_sha}"}}]"#);
     let gh_stub = write_gh_stub_by_state(&gh_stub_dir, (0, ""), (0, &merged_json))?;
 
     let (dry_ok, dry_output) = run_xtask_cleanup(&repo, false, Some(&gh_stub))?;
@@ -514,7 +583,7 @@ fn merged_pr_query_failure_yields_unknown_status_and_keeps_the_worktree() -> Res
     fs::create_dir_all(&gh_stub_dir)?;
     // --state open: succeeds, no open PR. --state merged: exits non-zero
     // (simulates gh auth/network failure specifically on that query).
-    let gh_stub = write_gh_stub_by_state(&gh_stub_dir, (0, ""), (1, ""))?;
+    let gh_stub = write_gh_stub_by_state(&gh_stub_dir, (0, "[]"), (1, ""))?;
 
     let (dry_ok, dry_output) = run_xtask_cleanup(&repo, false, Some(&gh_stub))?;
     assert!(dry_ok, "dry-run must exit 0: {dry_output}");
@@ -524,7 +593,7 @@ fn merged_pr_query_failure_yields_unknown_status_and_keeps_the_worktree() -> Res
          query succeeded with no open PR: {dry_output}"
     );
     assert!(
-        dry_output.contains("could not be determined") || dry_output.contains("unavailable"),
+        dry_output.contains("merged_pr_not_proven"),
         "expected the merged-PR-status-unknown reason to be reported: {dry_output}"
     );
 
@@ -654,13 +723,16 @@ fn open_pr_worktree_is_never_removed_even_under_force() -> Result<()> {
 
     let gh_stub_dir = tmp.path().join("gh-openpr");
     fs::create_dir_all(&gh_stub_dir)?;
-    // Reports PR #123 open for every `gh pr list --head <branch> ...` call.
-    let gh_stub = write_gh_stub(&gh_stub_dir, 0, "123")?;
+    // Reports PR #123 open for every `gh pr list --head <branch> ...` call,
+    // as the JSON array the typed provider parses (number, headRefOid).
+    let pr_head = worktree_head_sha(&pr_wt)?;
+    let open_pr_json = format!("[{{\"number\":123,\"headRefOid\":\"{pr_head}\"}}]");
+    let gh_stub = write_gh_stub(&gh_stub_dir, 0, &open_pr_json)?;
 
     let (dry_ok, dry_output) = run_xtask_cleanup(&repo, false, Some(&gh_stub))?;
     assert!(dry_ok, "dry-run must exit 0: {dry_output}");
     assert!(
-        dry_output.contains("KEEP") && dry_output.contains("open PR"),
+        dry_output.contains("KEEP") && dry_output.contains("open_pr_present"),
         "expected open-PR worktree to be reported KEEP with an open-PR reason: {dry_output}"
     );
 
@@ -754,7 +826,7 @@ fn locked_worktree_is_never_removed_even_under_force() -> Result<()> {
 
     let gh_stub_dir = tmp.path().join("gh-nopr-locked");
     fs::create_dir_all(&gh_stub_dir)?;
-    let gh_stub = write_gh_stub(&gh_stub_dir, 0, "")?;
+    let gh_stub = write_gh_stub(&gh_stub_dir, 0, "[]")?;
 
     let (ok, output) = run_xtask_cleanup(&repo, true, Some(&gh_stub))?;
     assert!(ok, "--force run must exit 0: {output}");
@@ -799,9 +871,21 @@ fn no_agent_worktrees_reports_nothing_to_clean() -> Result<()> {
 
     let (ok, output) = run_xtask_cleanup(&repo, false, None)?;
     assert!(ok, "dry-run on a repo with no agent worktrees must exit 0: {output}");
+    // Positive: the plan rendered and proposes nothing. `!contains(".claude")`
+    // alone also passes for empty or unrelated output, so it cannot stand as the
+    // whole assertion for a test named `reports_nothing_to_clean`.
     assert!(
-        output.contains("No stale worktrees to clean up"),
-        "expected an explicit nothing-to-clean message: {output}"
+        output.contains("worktree cleanup inspection"),
+        "expected the inspection plan to be rendered: {output}"
     );
+    assert!(
+        output.contains("targetable_actions=0"),
+        "expected the summary to report no targetable actions: {output}"
+    );
+    assert!(
+        output.contains("cache_only=0 salvage=0 review=0 not_proven=0"),
+        "expected every non-primary classification to be empty: {output}"
+    );
+    assert!(!output.contains(".claude"), "expected no agent-worktree entry in the plan: {output}");
     Ok(())
 }

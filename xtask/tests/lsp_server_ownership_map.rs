@@ -356,6 +356,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8386"
     ),
     row!(
+        "resolve_session_authenticator",
+        ClientTransport,
+        "Mutex",
+        "connection shutdown",
+        "connection",
+        false,
+        "#8342"
+    ),
+    row!(
         "stream_session_manager",
         RuntimeServices,
         "owned service",

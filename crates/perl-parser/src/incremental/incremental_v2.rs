@@ -1411,12 +1411,12 @@ mod tests {
         let shifted = parser.clone_with_shifted_positions(&node, 3);
 
         assert_eq!(shifted.location.start, 3);
-        match shifted.kind {
-            NodeKind::If { keyword, else_branch, .. } => {
+        match shifted.into_parts() {
+            (NodeKind::If { keyword, else_branch, .. }, _) => {
                 assert_eq!(keyword.as_deref(), Some("unless"));
                 assert!(else_branch.is_some());
             }
-            other => {
+            (other, _) => {
                 return Err(format!("expected If node, got {}", other.kind_name()).into());
             }
         }

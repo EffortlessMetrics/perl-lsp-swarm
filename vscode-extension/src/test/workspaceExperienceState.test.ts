@@ -145,3 +145,29 @@ describe('workspace experience presentation', () => {
     expect(presentation.text).toBe('$(sync~spin) perl-lsp: Indexing… (200 files) 53%');
   });
 });
+
+describe('countable status-bar labels', () => {
+  test('uses the singular noun for a one-file workspace', () => {
+    const presentation = presentWorkspaceExperience(
+      { lifecycle: 'ready' },
+      { version: '0.18.0', fileCount: 1, errorCount: 1 },
+    );
+
+    expect(presentation.text).toBe('$(check) perl-lsp v0.18.0: 1 file | 1 error');
+  });
+
+  test('uses the plural noun for an empty workspace', () => {
+    const presentation = presentWorkspaceExperience({ lifecycle: 'ready' }, { fileCount: 0 });
+
+    expect(presentation.text).toBe('$(check) perl-lsp: 0 files');
+  });
+
+  test('uses the singular noun while indexing a single file', () => {
+    const presentation = presentWorkspaceExperience(
+      { lifecycle: 'indexing_workspace' },
+      { fileCount: 1 },
+    );
+
+    expect(presentation.text).toBe('$(sync~spin) perl-lsp: Indexing… (1 file)');
+  });
+});

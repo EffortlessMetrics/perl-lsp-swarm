@@ -26,9 +26,9 @@
               "type": "array",
               "items": { "type": "string" },
               "default": [],
-              "description": "Absolute external Perl module roots. This is machine/user authority and is ignored on resource-scoped workspace payloads.",
+              "description": "Absolute external Perl module roots. Reserved for a future server-owned trusted user/operator adapter; no client channel currently carries the required authority (#4998), so entries are rejected and previously accepted values are preserved.",
               "x-perllsp-scope": "machine",
-              "x-perllsp-transports": ["workspace/configuration-global"]
+              "x-perllsp-transports": []
             },
             "discoveryExtensions": {
               "type": "array",
@@ -81,16 +81,6 @@
             "typeHints": { "type": "boolean", "default": true },
             "chainedHints": { "type": "boolean", "default": false },
             "maxLength": { "type": "integer", "minimum": 0, "default": 30 }
-          }
-        },
-        "testRunner": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": { "type": "boolean", "default": true },
-            "command": { "type": "string", "default": "perl" },
-            "args": { "type": "array", "items": { "type": "string" }, "default": [] },
-            "timeout": { "type": "integer", "minimum": 0, "default": 60000 }
           }
         },
         "limits": {
@@ -173,7 +163,7 @@
             "formatOnSave": { "type": "boolean", "default": true },
             "engine": {
               "type": "string",
-              "enum": ["native", "compat", "external-legacy", "off"],
+              "enum": ["native", "compat", "off"],
               "default": "native"
             },
             "maximumLineLength": { "type": "integer", "minimum": 0, "default": 80 },

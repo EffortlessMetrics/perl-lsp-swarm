@@ -26,6 +26,11 @@ contract_role = "advisory-workflow-shape"
 # - policy_role / required: repository merge-policy role
 # - applicability: always, conditional, planned, or not applicable
 # - enforcement: claimed classic-protection/ruleset source
+# - classic_app_id: explicit classic-protection GitHub App binding
+# - ruleset_integration_id: explicit ruleset integration binding
+#
+# Producer and enforcement binding are separate axes. Neither binding is
+# inferred from the workflow, job, producer class, or context name.
 
 [[checks]]
 name = "Perl LSP Rust Small Result"
@@ -33,11 +38,12 @@ producer = "repository-job"
 workflow = ".github/workflows/em-ci-routed-rust.yml"
 job = "rust-small-result"
 workflow_result = "propagate"
-events = ["pull_request", "merge_group"]
+events = ["pull_request", "merge_group", "workflow_dispatch"]
 required = true
 policy_role = "required"
 applicability = "always-or-scoped-noop"
 enforcement = "github-branch-protection"
+classic_app_id = 15368
 reason = "Live main protection requires the routed Rust aggregate before merge."
 
 [[checks]]
@@ -46,11 +52,12 @@ producer = "repository-job"
 workflow = ".github/workflows/ripr.yml"
 job = "ripr"
 workflow_result = "propagate"
-events = ["pull_request", "merge_group"]
+events = ["pull_request", "merge_group", "workflow_dispatch"]
 required = true
 policy_role = "required"
 applicability = "always-or-scoped-noop"
 enforcement = "github-branch-protection"
+classic_app_id = 15368
 reason = "Deterministic RIPR receipts are required; named new gaps in changed production files block, while sensor availability remains advisory."
 
 [[checks]]
@@ -85,7 +92,7 @@ producer = "repository-job"
 workflow = ".github/workflows/pr-title-check.yml"
 job = "validate-title"
 workflow_result = "propagate"
-events = ["pull_request_target"]
+events = ["pull_request_target", "workflow_dispatch"]
 required = true
 policy_role = "required"
 applicability = "always-or-scoped-noop"

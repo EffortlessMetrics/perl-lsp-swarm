@@ -204,20 +204,6 @@ The LSP server itself uses whichever `perl` is on your `PATH`. To use a custom P
 }
 ```
 
-**Test runner** — tell perl-lsp which binary to use for running tests:
-
-```json
-{
-  "perl": {
-    "testRunner": {
-      "command": "/home/you/.perlbrew/perls/perl-5.38.0/bin/perl",
-      "args": [],
-      "timeout": 60000
-    }
-  }
-}
-```
-
 **Shell approach** (recommended for the LSP server itself):
 
 ```bash
@@ -409,7 +395,7 @@ perllsp --check-project . && echo "All files parse clean"
 ```
 
 For a project that also uses critic checks in CI, use the `perl.perlcritic`
-settings together with the test runner. Add `perl.critic.engine = "native"` when
+settings. Add `perl.critic.engine = "native"` when
 the project is ready for native critic diagnostics:
 
 ```json
@@ -417,12 +403,6 @@ the project is ready for native critic diagnostics:
   "perl": {
     "workspace": {
       "useSystemInc": false
-    },
-    "testRunner": {
-      "enabled": true,
-      "command": "prove",
-      "args": ["-l", "-r", "--timer"],
-      "timeout": 300000
     },
     "perlcritic": {
       "enabled": true,
@@ -450,8 +430,8 @@ Every `.perl-lsp.toml` setting has a VSCode `settings.json` counterpart. The tab
 | `[critic] engine = "native"` | `"critic": {"engine": "native"}` | Use `"legacy"` or `"external"` for Perl::Critic shell-out compatibility |
 | `[critic] profile = "recommended"` | `"critic": {"profile": "recommended"}` | Lower-noise native rule bundle |
 | `[formatting] enabled = true` | `"formatting": {"enabled": true}` | |
-| `[formatting] engine = "native"` | `"formatting": {"engine": "native"}` | Use `"external-perltidy"` for legacy shell-out compatibility |
-| `[formatting] perltidy_profile = ".perltidyrc"` | `"formatting": {"profile": ".perltidyrc"}` | LSP key is `profile` |
+| `[formatting] engine = "native"` | `"formatting": {"engine": "native"}` | Generic LSP settings accept native, compat, or off; external-perltidy is project-only |
+| `[formatting] perltidy_profile = ".perltidyrc"` | — | Profile paths and external formatter arguments are project-only |
 | `[features] inlay_hints = true` | `"inlayHints": {"enabled": true}` | TOML is global toggle; LSP has finer-grained control |
 
 **Full VSCode `settings.json` with all settings:**
@@ -471,16 +451,9 @@ Every `.perl-lsp.toml` setting has a VSCode `settings.json` counterpart. The tab
       "chainedHints": false,
       "maxLength": 30
     },
-    "testRunner": {
-      "enabled": true,
-      "command": "prove",
-      "args": ["-l"],
-      "timeout": 60000
-    },
     "formatting": {
       "enabled": true,
       "engine": "native",
-      "profile": "${workspaceFolder}/.perltidyrc",
       "maximumLineLength": 100,
       "indentColumns": 4
     },

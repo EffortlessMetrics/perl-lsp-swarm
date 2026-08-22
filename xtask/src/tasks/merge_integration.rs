@@ -37,6 +37,12 @@ pub struct SyntheticSquashConstruction {
     pub cleanup: SyntheticCleanup,
 }
 
+// Declared public surface of the synthetic-squash primitive: the constructor
+// and its serde report schema. `with_synthetic_squash` is live (integration_proof
+// uses it); these entry points and schema types have no caller yet. Deleting a
+// documented primitive and its wire schema to satisfy dead_code would drop the
+// contract, not dead code.
+#[allow(dead_code)]
 /// Apply the PR's net patch to an isolated integration basis and return the
 /// resulting tree identity.
 ///
@@ -166,12 +172,15 @@ fn apply_patch(worktree: &Path, patch: &[u8]) -> Result<()> {
         .stderr(Stdio::piped())
         .spawn()
         .context("spawning git apply")?;
-    child
+    // Capture the write result without short-circuiting: `git apply` may exit
+    // early on malformed input, closing its stdin pipe before we finish writing.
+    // In that case `write_all` returns a BrokenPipe error, but the authoritative
+    // failure reason comes from the process exit status collected below.
+    let write_result = child
         .stdin
         .take()
         .ok_or_else(|| eyre!("git apply stdin was unavailable"))?
-        .write_all(patch)
-        .context("writing PR net patch to git apply")?;
+        .write_all(patch);
     let output = child.wait_with_output().context("waiting for git apply")?;
     if !output.status.success() {
         return Err(eyre!(
@@ -180,9 +189,13 @@ fn apply_patch(worktree: &Path, patch: &[u8]) -> Result<()> {
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
+    // Surface a write error only when git apply itself succeeded — a BrokenPipe
+    // during a failed apply is expected and already reported above.
+    write_result.context("writing PR net patch to git apply")?;
     Ok(())
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SyntheticSquashInput {
     pub pr_head: String,
@@ -191,6 +204,7 @@ pub struct SyntheticSquashInput {
     pub observation: SyntheticObservation,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SyntheticObservation {
@@ -202,6 +216,7 @@ pub enum SyntheticObservation {
     InstrumentFailure,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SyntheticVerdict {
@@ -210,6 +225,7 @@ pub enum SyntheticVerdict {
     NotProven,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SyntheticSquashReceipt {
     pub schema_version: String,
@@ -221,6 +237,10 @@ pub struct SyntheticSquashReceipt {
     pub findings: Vec<String>,
 }
 
+// Part of the same declared public surface as the items above: the
+// `synthetic-squash.v1` evaluator has no production caller yet (its tests
+// exercise it in-file). Kept with its wire schema rather than deleted.
+#[allow(dead_code)]
 pub fn evaluate_synthetic_squash(input: SyntheticSquashInput) -> SyntheticSquashReceipt {
     let mut findings = Vec::new();
     for (label, identity) in [

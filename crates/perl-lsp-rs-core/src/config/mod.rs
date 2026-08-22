@@ -53,8 +53,8 @@ pub enum CriticEngine {
 
 /// Server configuration
 ///
-/// Runtime configuration for the LSP server features including inlay hints
-/// and test runner integration. Updated dynamically via `didChangeConfiguration`.
+/// Runtime configuration for LSP server features. Updated dynamically via
+/// `didChangeConfiguration`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerConfig {
     /// Whether inlay hints are globally enabled.
@@ -67,15 +67,6 @@ pub struct ServerConfig {
     pub inlay_hints_chained_hints: bool,
     /// Maximum character length for hint labels before truncation.
     pub inlay_hints_max_length: usize,
-
-    /// Whether the integrated test runner is enabled.
-    pub test_runner_enabled: bool,
-    /// Command to execute tests (e.g., "perl", "prove").
-    pub test_runner_command: String,
-    /// Additional arguments passed to the test command.
-    pub test_runner_args: Vec<String>,
-    /// Test execution timeout in milliseconds.
-    pub test_runner_timeout: u64,
 
     /// Whether telemetry events are enabled.
     pub telemetry_enabled: bool,
@@ -347,10 +338,6 @@ impl Default for ServerConfig {
             inlay_hints_type_hints: true,
             inlay_hints_chained_hints: false,
             inlay_hints_max_length: 30,
-            test_runner_enabled: true,
-            test_runner_command: "perl".to_string(),
-            test_runner_args: vec![],
-            test_runner_timeout: 60000,
             telemetry_enabled: false,
             perlcritic_enabled: true,
             perlcritic_severity: 3,
@@ -401,22 +388,6 @@ impl ServerConfig {
             }
             if let Some(max_len) = inlay.get("maxLength").and_then(as_config_u64) {
                 self.inlay_hints_max_length = max_len as usize;
-            }
-        }
-
-        if let Some(test) = settings.get("testRunner") {
-            if let Some(enabled) = test.get("enabled").and_then(|v| v.as_bool()) {
-                self.test_runner_enabled = enabled;
-            }
-            if let Some(cmd) = test.get("command").and_then(|v| v.as_str()) {
-                self.test_runner_command = cmd.to_string();
-            }
-            if let Some(args) = test.get("args").and_then(|v| v.as_array()) {
-                self.test_runner_args =
-                    args.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
-            }
-            if let Some(timeout) = test.get("timeout").and_then(|v| v.as_u64()) {
-                self.test_runner_timeout = timeout;
             }
         }
 
@@ -536,13 +507,13 @@ impl ServerConfig {
                 self.format_on_save = format_on_save;
             }
             if let Some(engine) = formatting.get("engine").and_then(|v| v.as_str()) {
-                match parse_formatter_mode(engine) {
+                match parse_client_formatter_mode(engine) {
                     Some(mode) => self.formatting_engine = mode,
                     None => tracing::warn!(
                         target: "perl_lsp::config",
                         setting = "formatting.engine",
                         value = %engine,
-                        valid = FORMATTER_MODE_VALID_OPTIONS,
+                        valid = CLIENT_FORMATTER_MODE_VALID_OPTIONS,
                         "unrecognized formatting.engine value; keeping current setting",
                     ),
                 }
@@ -591,9 +562,11 @@ impl ServerConfig {
             // apiKeyHeader, or apiKeyPrefix. A hostile workspace could redirect
             // AI completion requests to an attacker-controlled endpoint and
             // exfiltrate source code, or change the env var name to read an
-            // arbitrary secret. These settings must arrive only via user-level
-            // config (machine-scoped VS Code settings or .perl-lsp.toml at the
-            // workspace root, which is already gated in merge_project_config).
+            // arbitrary secret. No configuration path currently sets them:
+            // `.perl-lsp.toml` does not carry these fields at all (#4955),
+            // no client channel may supply them (#5684), and the primary VS
+            // Code extension exposes no endpoint/credential surface (known
+            // gap documented in docs/reference/AI_COMPLETION.md and #4997).
             if let Some(_endpoint) = ai.get("endpoint").and_then(|v| v.as_str()) {
                 tracing::warn!(
                     target: "perl_lsp::config",
@@ -656,7 +629,6 @@ impl ServerConfig {
         warn_on_type_mismatch(settings, "inlayHints", "enabled", "boolean");
         warn_on_type_mismatch(settings, "inlayHints", "parameterHints", "boolean");
         warn_on_type_mismatch(settings, "inlayHints", "typeHints", "boolean");
-        warn_on_type_mismatch(settings, "testRunner", "enabled", "boolean");
         warn_on_type_mismatch(settings, "diagnostics", "enabled", "boolean");
         warn_on_type_mismatch(settings, "critic", "enabled", "boolean");
         warn_on_type_mismatch(settings, "formatting", "enabled", "boolean");
@@ -707,14 +679,16 @@ impl ServerConfig {
         if let Some(formatting) = settings.get("formatting")
             && let Some(engine) = formatting.get("engine")
         {
-            let invalid_engine =
-                engine.as_str().map(|value| parse_formatter_mode(value).is_none()).unwrap_or(true);
+            let invalid_engine = engine
+                .as_str()
+                .map(|value| parse_client_formatter_mode(value).is_none())
+                .unwrap_or(true);
             if invalid_engine {
                 invalid.push(InvalidClientSetting {
                     setting: "formatting.engine",
                     value: client_setting_display_value(engine),
                     value_type: client_setting_value_type(engine),
-                    valid_options: FORMATTER_MODE_VALID_OPTIONS,
+                    valid_options: CLIENT_FORMATTER_MODE_VALID_OPTIONS,
                 });
             }
         }
@@ -789,6 +763,15 @@ fn parse_formatter_mode(value: &str) -> Option<FormatterMode> {
     }
 }
 
+fn parse_client_formatter_mode(value: &str) -> Option<FormatterMode> {
+    match normalize_formatter_mode_value(value).as_str() {
+        "native" => Some(FormatterMode::Native),
+        "compat" | "perltidy-compat" => Some(FormatterMode::Compat),
+        "off" | "disabled" | "none" => Some(FormatterMode::Off),
+        _ => None,
+    }
+}
+
 fn parse_critic_engine(value: &str) -> Option<CriticEngine> {
     match value.trim().to_ascii_lowercase().as_str() {
         "legacy" | "external" | "perlcritic" => Some(CriticEngine::Legacy),
@@ -809,6 +792,11 @@ fn parse_lsp_critic_engine(value: &str) -> Option<CriticEngine> {
 /// Kept in sync with [`parse_formatter_mode`].
 const FORMATTER_MODE_VALID_OPTIONS: &str = "native, compat (perltidy-compat), external-legacy (external-perltidy, perltidy), \
      off (disabled, none)";
+
+/// Human-readable values accepted for `formatting.engine` on the LSP
+/// client-settings channel. External process selection remains project-owned.
+const CLIENT_FORMATTER_MODE_VALID_OPTIONS: &str =
+    "native, compat (perltidy-compat), off (disabled, none)";
 
 /// Human-readable list of accepted `critic.engine` values, used in
 /// `tracing::warn!` messages when a user supplies an unrecognized value.
@@ -1002,6 +990,33 @@ pub enum Perl5LibPrecedence {
     Append,
 }
 
+/// Outcome of a system `@INC` probe.
+///
+/// The outcome is retained separately from the fail-closed path returned
+/// by [`WorkspaceConfig::get_system_inc`], so callers that need to decide
+/// whether a retry is safe do not have to infer process failures from an empty
+/// include-path list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SystemIncProbeOutcome {
+    /// System include probing is disabled for this configuration.
+    Disabled,
+    /// No Perl oracle could be constructed for the requested probe.
+    Unavailable,
+    /// The Perl probe timed out before producing a result.
+    TimedOut,
+    /// The probe process failed at the I/O level — the spawn itself or a
+    /// later `try_wait`/pipe error. The underlying helper reports these
+    /// identically, so the stage is deliberately NOT distinguished here;
+    /// callers must not read this as "spawn-only" (#11840 review).
+    IoFailed,
+    /// The Perl process exited unsuccessfully.
+    NonZeroExit,
+    /// The Perl process succeeded but produced no usable `@INC` paths.
+    SuccessfulEmpty,
+    /// The Perl process succeeded and produced usable `@INC` paths.
+    Paths(Vec<PathBuf>),
+}
+
 /// Workspace configuration for module resolution
 ///
 /// Controls how the LSP server resolves module imports and finds
@@ -1019,8 +1034,12 @@ pub struct WorkspaceConfig {
 
     /// Machine-scoped external include roots (absolute paths).
     ///
-    /// Populated from `perl.workspace.externalIncludePaths`, which VS Code
-    /// exposes as `perl-lsp.externalIncludePaths` with `scope: machine`.
+    /// Admitted only through
+    /// [`ExternalIncludePathAuthority::TrustedUserOperator`] (a future
+    /// server-owned operator adapter; #10817). Every current client channel is
+    /// unauthorized (#4998), so this stays empty in production until that
+    /// adapter lands. The VS Code `perl-lsp.externalIncludePaths` setting
+    /// (`scope: machine`) remains client-side defence in depth only.
     pub external_include_paths: Vec<String>,
 
     /// Additional file extensions accepted during workspace discovery.
@@ -1033,8 +1052,8 @@ pub struct WorkspaceConfig {
     /// Default: false (avoids blocking on network filesystems)
     pub use_system_inc: bool,
 
-    /// Cached system @INC paths (populated lazily when use_system_inc is true)
-    system_inc_cache: Option<Vec<PathBuf>>,
+    /// Cached system @INC probe outcome (populated lazily when use_system_inc is true).
+    system_inc_cache: Option<SystemIncProbeOutcome>,
 
     /// Perl interpreter used for startup `@INC` probing.
     ///
@@ -1089,13 +1108,79 @@ impl Default for WorkspaceConfig {
     }
 }
 
+/// A configuration channel that cannot prove user/machine provenance.
+///
+/// The label only names the channel for diagnostics; it never grants
+/// authority (#4998).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnauthorizedExternalIncludePathSource {
+    /// Client-supplied `initializationOptions`.
+    InitializationOptions,
+    /// `workspace/didChangeConfiguration` notification payload.
+    DidChangeConfiguration,
+    /// The unscoped (first) item of a `workspace/configuration` response.
+    GenericUnscopedConfiguration,
+    /// A per-folder item of a `workspace/configuration` response.
+    FolderConfiguration,
+    /// Project/resource configuration (`.perl-lsp.toml`).
+    ProjectResource,
+    /// Unclassified or unknown channel; fails closed like every other source.
+    Unknown,
+}
+
+impl UnauthorizedExternalIncludePathSource {
+    /// Human-readable channel name for rejection messages and logs.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::InitializationOptions => "initialization options",
+            Self::DidChangeConfiguration => "workspace/didChangeConfiguration",
+            Self::GenericUnscopedConfiguration => "unscoped workspace/configuration",
+            Self::FolderConfiguration => "folder-scoped workspace/configuration",
+            Self::ProjectResource => "project configuration",
+            Self::Unknown => "unclassified",
+        }
+    }
+}
+
+/// Server-owned authority disposition for machine-scoped external include
+/// roots (`workspace.externalIncludePaths`).
+///
+/// Transport position (result-array slot), key spelling, client names, and
+/// client-supplied scope labels confer no authority (#4998): any LSP client
+/// can forge them. No production channel currently carries independently
+/// verified user/machine provenance, so every current call site passes
+/// [`ExternalIncludePathAuthority::Untrusted`] and `externalIncludePaths`
+/// entries are rejected without clearing previously accepted values. The
+/// [`ExternalIncludePathAuthority::TrustedUserOperator`] variant is reserved
+/// for a future server-owned operator adapter and for tests proving the rule
+/// is not "absolute paths are impossible"; constructing it from client input
+/// is a security defect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalIncludePathAuthority {
+    /// The channel cannot prove user/machine provenance.
+    Untrusted(UnauthorizedExternalIncludePathSource),
+    /// An explicitly trusted user/operator adapter. Entries still pass the
+    /// existing absolute-path validation.
+    TrustedUserOperator,
+}
+
+impl Default for ExternalIncludePathAuthority {
+    fn default() -> Self {
+        Self::Untrusted(UnauthorizedExternalIncludePathSource::Unknown)
+    }
+}
+
 /// Context for [`WorkspaceConfig::update_from_value_with_context`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WorkspaceConfigUpdateContext<'a> {
     /// Workspace root used to reject traversal in resource-scoped `includePaths`.
     pub workspace_root: Option<&'a Path>,
-    /// When `false`, ignore `externalIncludePaths` (folder-scoped client payloads).
-    pub apply_external_include_paths: bool,
+    /// Authority disposition for machine-scoped `externalIncludePaths`.
+    ///
+    /// Defaults to [`ExternalIncludePathAuthority::Untrusted`] with an
+    /// unclassified source, so omitted context fails closed.
+    pub external_include_paths: ExternalIncludePathAuthority,
 }
 
 /// A resource-scoped `includePaths` entry rejected during client-settings validation.
@@ -1118,6 +1203,9 @@ pub enum RejectedClientIncludePathReason {
     ExternalRelative,
     /// `externalIncludePaths` entries must not contain null/control characters.
     ExternalInvalidCharacters,
+    /// Machine-scoped external roots arrived on a channel that cannot prove
+    /// user/machine provenance (#4998). The stored value is preserved.
+    ExternalUnauthorized(UnauthorizedExternalIncludePathSource),
 }
 
 impl RejectedClientIncludePath {
@@ -1142,6 +1230,13 @@ impl RejectedClientIncludePath {
             RejectedClientIncludePathReason::ExternalInvalidCharacters => format!(
                 "'{}': contains null bytes or disallowed control characters",
                 escape_for_display(&self.entry)
+            ),
+            RejectedClientIncludePathReason::ExternalUnauthorized(source) => format!(
+                "'{}': `perl.workspace.externalIncludePaths` was ignored because the {} \
+                 channel cannot prove user/machine provenance. External include roots are \
+                 not applied yet; use workspace-relative paths in `includePaths` instead.",
+                self.entry,
+                source.label()
             ),
         }
     }
@@ -1406,29 +1501,26 @@ impl WorkspaceConfig {
 
     /// Update workspace configuration from LSP settings.
     ///
-    /// Fail-closed for `externalIncludePaths`: the default context ignores them.
-    /// Callers on the global / machine configuration channel must use
-    /// [`Self::update_from_value_with_context`] with
-    /// `apply_external_include_paths: true`.
+    /// Fail-closed for `externalIncludePaths`: the default context carries no
+    /// external-root authority, so entries are rejected and the stored value
+    /// is preserved. Callers must name their channel through
+    /// [`Self::update_from_value_with_context`].
     pub fn update_from_value(
         &mut self,
         settings: &serde_json::Value,
     ) -> Vec<RejectedClientIncludePath> {
-        self.update_from_value_with_context(
-            settings,
-            WorkspaceConfigUpdateContext {
-                workspace_root: None,
-                apply_external_include_paths: false,
-            },
-        )
+        self.update_from_value_with_context(settings, WorkspaceConfigUpdateContext::default())
     }
 
     /// Update workspace configuration from LSP settings with validation context.
     ///
     /// Resource-scoped `includePaths` reject absolute entries and any relative
     /// entry that escapes `workspace_root` when provided. `externalIncludePaths`
-    /// are accepted only when `apply_external_include_paths` is true (global /
-    /// machine channel).
+    /// are accepted only from
+    /// [`ExternalIncludePathAuthority::TrustedUserOperator`]; every untrusted
+    /// channel (initialization options, didChangeConfiguration, unscoped and
+    /// folder-scoped configuration results, project config, unknown) gets its
+    /// non-empty entries rejected without clearing previously accepted values.
     pub fn update_from_value_with_context(
         &mut self,
         settings: &serde_json::Value,
@@ -1450,13 +1542,48 @@ impl WorkspaceConfig {
                 }
                 self.include_paths = valid;
             }
-            if context.apply_external_include_paths
-                && let Some(paths) =
-                    workspace.get("externalIncludePaths").and_then(|v| v.as_array())
-            {
-                let (accepted, external_rejected) = parse_external_include_paths(paths);
-                self.external_include_paths = accepted;
-                rejected.extend(external_rejected);
+            if let Some(paths) = workspace.get("externalIncludePaths").and_then(|v| v.as_array()) {
+                match context.external_include_paths {
+                    ExternalIncludePathAuthority::TrustedUserOperator => {
+                        let (accepted, external_rejected) = parse_external_include_paths(paths);
+                        if external_rejected.is_empty() {
+                            self.external_include_paths = accepted;
+                        } else {
+                            // Atomic admission (catalog fallback `RejectSource`):
+                            // a candidate with any invalid entry is rejected as
+                            // a whole, so a malformed or partially valid
+                            // payload never clears or partially replaces the
+                            // previously accepted complete set (INC-AUTH-007).
+                            rejected.extend(external_rejected);
+                        }
+                    }
+                    ExternalIncludePathAuthority::Untrusted(source) => {
+                        // Fail closed (#4998): reject non-empty unauthorized
+                        // arrivals without clearing previously accepted values.
+                        let entries: Vec<&str> = paths
+                            .iter()
+                            .filter_map(|value| value.as_str())
+                            .map(str::trim)
+                            .filter(|entry| !entry.is_empty())
+                            .collect();
+                        if !entries.is_empty() {
+                            tracing::warn!(
+                                target: "perl_lsp::config",
+                                source = source.label(),
+                                count = entries.len(),
+                                "ignored unauthorized externalIncludePaths entries"
+                            );
+                            rejected.extend(entries.into_iter().map(|entry| {
+                                RejectedClientIncludePath {
+                                    entry: entry.to_string(),
+                                    reason: RejectedClientIncludePathReason::ExternalUnauthorized(
+                                        source,
+                                    ),
+                                }
+                            }));
+                        }
+                    }
+                }
             }
             if let Some(extensions) = string_array(workspace.get("discoveryExtensions")) {
                 self.discovery_extra_extensions = extensions;
@@ -1507,14 +1634,43 @@ impl WorkspaceConfig {
         rejected
     }
 
-    /// Get system @INC paths (lazily populated).
+    fn ensure_system_inc_probe(&mut self) {
+        if self.system_inc_cache.is_some() {
+            return;
+        }
+
+        // Snapshot the fields needed by the oracle constructor before the
+        // mutable borrow below.
+        let perl_args = self.perl_args.clone();
+        let result = Self::fetch_perl_inc(self, &perl_args);
+        self.system_inc_cache = Some(result);
+    }
+
+    /// Get the typed system `@INC` probe outcome (lazily populated).
     ///
     /// The probe (`perl -e 'print join("\n", @INC)'`) is bounded by
-    /// `SYSTEM_INC_PROBE_TIMEOUT`. If it times out — common when the
-    /// interpreter is on a slow filesystem, hangs, or is a perlbrew shim
-    /// that takes a long time on first run — an empty vector is cached
-    /// so subsequent requests don't re-probe. The user can re-trigger
-    /// probing by toggling `useSystemInc`, which invalidates the cache.
+    /// `SYSTEM_INC_PROBE_TIMEOUT`. The typed result is cached so callers can
+    /// distinguish a transient timeout from a spawn failure, nonzero exit,
+    /// unavailable oracle, or a successful empty output without changing the
+    /// fail-closed behaviour of [`Self::get_system_inc`].
+    pub fn get_system_inc_probe_outcome(&mut self) -> SystemIncProbeOutcome {
+        if !self.use_system_inc {
+            return SystemIncProbeOutcome::Disabled;
+        }
+
+        self.ensure_system_inc_probe();
+        match self.system_inc_cache.as_ref() {
+            Some(outcome) => outcome.clone(),
+            None => SystemIncProbeOutcome::Unavailable,
+        }
+    }
+
+    /// Get system @INC paths (lazily populated).
+    ///
+    /// Any unavailable or failed probe remains fail-closed as an empty slice;
+    /// use [`Self::get_system_inc_probe_outcome`] when the caller needs to
+    /// distinguish the failure class. The user can re-trigger probing by
+    /// toggling `useSystemInc`, which invalidates the cache.
     ///
     /// The PERL5LIB environment variable is stripped from the probe subprocess
     /// when `use_perl5lib` is false, so interpreter startup `@INC` does not
@@ -1527,22 +1683,25 @@ impl WorkspaceConfig {
             return &[];
         }
 
-        if self.system_inc_cache.is_none() {
-            // Snapshot the fields needed by the oracle constructor before the
-            // mutable borrow below.
-            let perl_args = self.perl_args.clone();
-            let result = Self::fetch_perl_inc(self, &perl_args);
-            self.system_inc_cache = Some(result);
-        }
+        self.ensure_system_inc_probe();
 
-        self.system_inc_cache.as_deref().unwrap_or(&[])
+        match self.system_inc_cache.as_ref() {
+            Some(SystemIncProbeOutcome::Paths(paths)) => paths.as_slice(),
+            _ => &[],
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn fetch_perl_inc(config: &WorkspaceConfig, perl_args: &[String]) -> Vec<PathBuf> {
+    fn fetch_perl_inc(config: &WorkspaceConfig, perl_args: &[String]) -> SystemIncProbeOutcome {
         let oracle = match PerlOracleEnv::for_module_resolution(config) {
             Some(o) => o,
-            None => return Vec::new(),
+            None => {
+                tracing::warn!(
+                    target: "perl_lsp::config::system_inc",
+                    "startup @INC probe unavailable; caching an unavailable outcome"
+                );
+                return SystemIncProbeOutcome::Unavailable;
+            }
         };
         let timeout = oracle.timeout;
         let mut command = oracle.into_command();
@@ -1550,11 +1709,8 @@ impl WorkspaceConfig {
         command.args(["-e", "print join(\"\\n\", @INC)"]);
         let output = output_with_timeout(command, timeout);
 
-        match output {
-            Ok(out) if out.status.success() => {
-                Self::parse_perl_inc_output(&String::from_utf8_lossy(&out.stdout))
-            }
-            Ok(out) => {
+        match &output {
+            Ok(out) if !out.status.success() => {
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 tracing::warn!(
                     target: "perl_lsp::config::system_inc",
@@ -1562,7 +1718,6 @@ impl WorkspaceConfig {
                     stderr = %stderr.trim(),
                     "startup @INC probe exited non-zero; caching empty result"
                 );
-                Vec::new()
             }
             Err(err) if err.kind() == std::io::ErrorKind::TimedOut => {
                 tracing::warn!(
@@ -1572,7 +1727,6 @@ impl WorkspaceConfig {
                      Set perl.workspace.useSystemInc=false to disable probing, \
                      or pin a faster perl interpreter."
                 );
-                Vec::new()
             }
             Err(err) => {
                 tracing::warn!(
@@ -1580,8 +1734,29 @@ impl WorkspaceConfig {
                     error = %err,
                     "startup @INC probe failed to spawn perl; caching empty result"
                 );
-                Vec::new()
             }
+            _ => {}
+        }
+
+        Self::classify_perl_inc_output(output)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn classify_perl_inc_output(output: std::io::Result<Output>) -> SystemIncProbeOutcome {
+        match output {
+            Ok(out) if out.status.success() => {
+                let paths = Self::parse_perl_inc_output(&String::from_utf8_lossy(&out.stdout));
+                if paths.is_empty() {
+                    SystemIncProbeOutcome::SuccessfulEmpty
+                } else {
+                    SystemIncProbeOutcome::Paths(paths)
+                }
+            }
+            Ok(_) => SystemIncProbeOutcome::NonZeroExit,
+            Err(err) if err.kind() == std::io::ErrorKind::TimedOut => {
+                SystemIncProbeOutcome::TimedOut
+            }
+            Err(_) => SystemIncProbeOutcome::IoFailed,
         }
     }
 
@@ -1610,8 +1785,8 @@ impl WorkspaceConfig {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn fetch_perl_inc(_config: &WorkspaceConfig, _perl_args: &[String]) -> Vec<PathBuf> {
-        Vec::new()
+    fn fetch_perl_inc(_config: &WorkspaceConfig, _perl_args: &[String]) -> SystemIncProbeOutcome {
+        SystemIncProbeOutcome::Unavailable
     }
 }
 
@@ -3274,7 +3449,7 @@ profile = "recommended"
     }
 
     #[test]
-    fn server_config_update_from_value_applies_lsp_settings() -> TestResult {
+    fn server_config_update_from_value_ignores_removed_test_runner_authority() -> TestResult {
         let mut config = ServerConfig::default();
 
         config.update_from_value(&serde_json::json!({
@@ -3287,8 +3462,10 @@ profile = "recommended"
             },
             "testRunner": {
                 "enabled": false,
-                "command": "prove",
-                "args": ["-lv", 42, "t/unit.t"],
+                "command": "CANARY-EXECUTABLE",
+                "args": ["CANARY-ARG"],
+                "cwd": "CANARY-CWD",
+                "env": {"CANARY": "CANARY-VALUE"},
                 "timeout": 12_345
             },
             "telemetry": {
@@ -3307,10 +3484,6 @@ profile = "recommended"
         assert!(!config.inlay_hints_type_hints);
         assert!(config.inlay_hints_chained_hints);
         assert_eq!(config.inlay_hints_max_length, 12);
-        assert!(!config.test_runner_enabled);
-        assert_eq!(config.test_runner_command, "prove");
-        assert_eq!(config.test_runner_args, vec!["-lv".to_string(), "t/unit.t".to_string()]);
-        assert_eq!(config.test_runner_timeout, 12_345);
         assert!(config.telemetry_enabled);
         assert!(!config.perlcritic_enabled);
         assert_eq!(config.perlcritic_severity, 5);
@@ -3437,7 +3610,7 @@ profile = "recommended"
     }
 
     #[test]
-    fn server_config_accepts_formatter_engine_aliases() {
+    fn server_config_rejects_external_formatter_engine_from_client_settings() {
         let mut config = ServerConfig::default();
 
         config.update_from_value(&serde_json::json!({
@@ -3445,7 +3618,7 @@ profile = "recommended"
                 "engine": "external-perltidy"
             }
         }));
-        assert_eq!(config.formatting_engine, FormatterMode::ExternalLegacy);
+        assert_eq!(config.formatting_engine, FormatterMode::Native);
 
         config.update_from_value(&serde_json::json!({
             "formatting": {
@@ -3911,7 +4084,7 @@ profile = "recommended"
                     setting: "formatting.engine",
                     value: "perltide".to_string(),
                     value_type: "string",
-                    valid_options: FORMATTER_MODE_VALID_OPTIONS,
+                    valid_options: CLIENT_FORMATTER_MODE_VALID_OPTIONS,
                 },
             ]
         );
@@ -3920,9 +4093,40 @@ profile = "recommended"
             "critic": { "engine": " LEGACY ", "profile": "STRICT" },
             "formatting": { "engine": "external_perltidy" }
         }));
-        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy.len(), 2);
         assert_eq!(legacy[0].setting, "critic.engine");
         assert_eq!(legacy[0].valid_options, CLIENT_CRITIC_ENGINE_VALID_OPTIONS);
+        assert_eq!(legacy[1].setting, "formatting.engine");
+        assert_eq!(legacy[1].valid_options, CLIENT_FORMATTER_MODE_VALID_OPTIONS);
+    }
+
+    #[test]
+    fn client_formatter_external_aliases_are_rejected_but_project_alias_remains_supported() {
+        for value in ["external-legacy", "external_perltidy", "perltidy"] {
+            let mut config = ServerConfig::default();
+            config.update_from_value(&serde_json::json!({
+                "formatting": { "engine": value }
+            }));
+            assert_eq!(config.formatting_engine, FormatterMode::Native, "client value {value}");
+            assert_eq!(
+                ServerConfig::invalid_client_setting_values(&serde_json::json!({
+                    "formatting": { "engine": value }
+                }))[0]
+                    .valid_options,
+                CLIENT_FORMATTER_MODE_VALID_OPTIONS
+            );
+        }
+
+        let mut config = ServerConfig::default();
+        let project = ProjectConfig {
+            formatting: ProjectFormattingConfig {
+                engine: Some("external-legacy".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        project.apply_to_server_config(&mut config);
+        assert_eq!(config.formatting_engine, FormatterMode::ExternalLegacy);
     }
 
     #[test]
@@ -4291,7 +4495,9 @@ profile = "recommended"
             &serde_json::json!({ "workspace": { "includePaths": [absolute, "lib"] } }),
             WorkspaceConfigUpdateContext {
                 workspace_root: Some(temp.path()),
-                apply_external_include_paths: true,
+                external_include_paths: ExternalIncludePathAuthority::Untrusted(
+                    UnauthorizedExternalIncludePathSource::Unknown,
+                ),
             },
         );
 
@@ -4316,7 +4522,9 @@ profile = "recommended"
             &serde_json::json!({ "workspace": { "includePaths": ["../../../../etc", "vendor/lib"] } }),
             WorkspaceConfigUpdateContext {
                 workspace_root: Some(temp.path()),
-                apply_external_include_paths: true,
+                external_include_paths: ExternalIncludePathAuthority::Untrusted(
+                    UnauthorizedExternalIncludePathSource::Unknown,
+                ),
             },
         );
 
@@ -4328,7 +4536,7 @@ profile = "recommended"
     }
 
     #[test]
-    fn update_from_value_accepts_external_include_paths_from_global_channel() {
+    fn update_from_value_accepts_external_include_paths_from_trusted_operator() {
         let mut workspace = WorkspaceConfig::default();
         let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
 
@@ -4341,7 +4549,7 @@ profile = "recommended"
             }),
             WorkspaceConfigUpdateContext {
                 workspace_root: None,
-                apply_external_include_paths: true,
+                external_include_paths: ExternalIncludePathAuthority::TrustedUserOperator,
             },
         );
 
@@ -4355,30 +4563,48 @@ profile = "recommended"
     }
 
     #[test]
-    fn update_from_value_rejects_relative_external_include_paths() {
+    fn trusted_channel_rejects_mixed_external_candidate_atomically() {
         let mut workspace = WorkspaceConfig::default();
         let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
 
+        // Seed an accepted complete set first.
+        workspace
+            .update_from_value_with_context(
+                &serde_json::json!({
+                    "workspace": { "externalIncludePaths": [absolute] }
+                }),
+                WorkspaceConfigUpdateContext {
+                    workspace_root: None,
+                    external_include_paths: ExternalIncludePathAuthority::TrustedUserOperator,
+                },
+            )
+            .into_iter()
+            .for_each(|_| {});
+
+        // A later mixed candidate (one valid, one relative) is rejected as a
+        // whole; the previously accepted complete set survives untouched.
         let rejected = workspace.update_from_value_with_context(
             &serde_json::json!({
-                "workspace": {
-                    "externalIncludePaths": ["lib", absolute, ""]
-                }
+                "workspace": { "externalIncludePaths": ["lib", absolute] }
             }),
             WorkspaceConfigUpdateContext {
                 workspace_root: None,
-                apply_external_include_paths: true,
+                external_include_paths: ExternalIncludePathAuthority::TrustedUserOperator,
             },
         );
 
         assert_eq!(rejected.len(), 1);
         assert_eq!(rejected[0].entry, "lib");
         assert!(matches!(rejected[0].reason, RejectedClientIncludePathReason::ExternalRelative));
-        assert_eq!(workspace.external_include_paths, vec![absolute.to_string()]);
+        assert_eq!(
+            workspace.external_include_paths,
+            vec![absolute.to_string()],
+            "mixed candidate must not partially replace the accepted set"
+        );
     }
 
     #[test]
-    fn update_from_value_default_ignores_external_include_paths() {
+    fn update_from_value_default_rejects_external_include_paths_as_unclassified() {
         let mut workspace = WorkspaceConfig::default();
         let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
 
@@ -4388,12 +4614,24 @@ profile = "recommended"
             }
         }));
 
-        assert!(rejected.is_empty());
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].entry, absolute);
+        assert_eq!(
+            rejected[0].reason,
+            RejectedClientIncludePathReason::ExternalUnauthorized(
+                UnauthorizedExternalIncludePathSource::Unknown
+            )
+        );
+        assert!(
+            rejected[0].render().contains("includePaths"),
+            "rejection message should name the supported alternative: {}",
+            rejected[0].render()
+        );
         assert!(workspace.external_include_paths.is_empty());
     }
 
     #[test]
-    fn update_from_value_ignores_external_include_paths_from_folder_channel() {
+    fn update_from_value_rejects_external_include_paths_from_folder_channel() {
         let mut workspace = WorkspaceConfig::default();
         let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
 
@@ -4405,7 +4643,78 @@ profile = "recommended"
             }),
             WorkspaceConfigUpdateContext {
                 workspace_root: None,
-                apply_external_include_paths: false,
+                external_include_paths: ExternalIncludePathAuthority::Untrusted(
+                    UnauthorizedExternalIncludePathSource::FolderConfiguration,
+                ),
+            },
+        );
+
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(
+            rejected[0].reason,
+            RejectedClientIncludePathReason::ExternalUnauthorized(
+                UnauthorizedExternalIncludePathSource::FolderConfiguration
+            )
+        );
+        assert!(
+            rejected[0].render().contains("folder-scoped"),
+            "rejection should name the channel: {}",
+            rejected[0].render()
+        );
+        assert!(workspace.external_include_paths.is_empty());
+    }
+
+    #[test]
+    fn unauthorized_external_candidate_preserves_accepted_trusted_values() {
+        let mut workspace = WorkspaceConfig::default();
+        let trusted_root = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
+        let hostile_root = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+
+        workspace
+            .update_from_value_with_context(
+                &serde_json::json!({ "workspace": { "externalIncludePaths": [trusted_root] } }),
+                WorkspaceConfigUpdateContext {
+                    workspace_root: None,
+                    external_include_paths: ExternalIncludePathAuthority::TrustedUserOperator,
+                },
+            )
+            .into_iter()
+            .for_each(|_| {});
+
+        // A later unauthorized candidate (hostile or stale) must not clear or
+        // partially replace the previously accepted trusted set.
+        let rejected = workspace.update_from_value_with_context(
+            &serde_json::json!({ "workspace": { "externalIncludePaths": [hostile_root] } }),
+            WorkspaceConfigUpdateContext {
+                workspace_root: None,
+                external_include_paths: ExternalIncludePathAuthority::Untrusted(
+                    UnauthorizedExternalIncludePathSource::DidChangeConfiguration,
+                ),
+            },
+        );
+
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(
+            rejected[0].reason,
+            RejectedClientIncludePathReason::ExternalUnauthorized(
+                UnauthorizedExternalIncludePathSource::DidChangeConfiguration
+            )
+        );
+        assert_eq!(workspace.external_include_paths, vec![trusted_root.to_string()]);
+        assert!(!workspace.effective_include_paths(&[]).iter().any(|p| p == hostile_root));
+    }
+
+    #[test]
+    fn empty_unauthorized_external_include_paths_produce_no_noise() {
+        let mut workspace = WorkspaceConfig::default();
+
+        let rejected = workspace.update_from_value_with_context(
+            &serde_json::json!({ "workspace": { "externalIncludePaths": [] } }),
+            WorkspaceConfigUpdateContext {
+                workspace_root: None,
+                external_include_paths: ExternalIncludePathAuthority::Untrusted(
+                    UnauthorizedExternalIncludePathSource::GenericUnscopedConfiguration,
+                ),
             },
         );
 
@@ -4734,8 +5043,9 @@ profile = "recommended"
 
     /// `get_system_inc` must respect `SYSTEM_INC_PROBE_TIMEOUT` so a hung
     /// interpreter cannot block the LSP request thread. Verifies the full
-    /// path: `use_system_inc=true`, slow `perl_path`, lazy probe times out,
-    /// returned slice is empty, cache holds the empty result.
+    /// path: `use_system_inc=true`, slow `perl_path`, the lazy probe lands
+    /// in a bounded failure outcome, the returned slice is empty, and the
+    /// typed cache holds that outcome for reuse.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn get_system_inc_does_not_stall_on_slow_interpreter() -> TestResult {
@@ -4754,9 +5064,28 @@ profile = "recommended"
         };
 
         let start = Instant::now();
+        let outcome = config.get_system_inc_probe_outcome();
         let paths = config.get_system_inc().to_vec();
         let elapsed = start.elapsed();
 
+        // The contract under test is bounded, empty, and cached — NOT which
+        // failure class the runner's perl produces. The resolved interpreter
+        // varies by environment (msys-vs-Strawberry on Windows, shimmed
+        // perls on CI) and a `-e "sleep 10"` program can exit nonzero or
+        // fail to spawn before the 1s timeout fires; both were observed
+        // (CI red with NonZeroExit where the author saw TimedOut locally).
+        // SuccessfulEmpty/Paths WOULD be failures here: the sleep program
+        // must never produce paths.
+        assert!(
+            matches!(
+                outcome,
+                SystemIncProbeOutcome::TimedOut
+                    | SystemIncProbeOutcome::NonZeroExit
+                    | SystemIncProbeOutcome::IoFailed
+                    | SystemIncProbeOutcome::Unavailable
+            ),
+            "expected a bounded failure outcome, got {outcome:?}"
+        );
         assert!(paths.is_empty(), "expected empty @INC on timeout, got {paths:?}");
         // Generous bound: SYSTEM_INC_PROBE_TIMEOUT (1s) + spawn + poll overhead.
         assert!(
@@ -4776,6 +5105,114 @@ profile = "recommended"
         Ok(())
     }
 
+    /// A second lookup must reuse the first probe result rather than launch a
+    /// new interpreter. The missing path makes a reprobe observably fail with
+    /// `IoFailed`, so a fast second process cannot satisfy this oracle.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn get_system_inc_reuses_cached_probe_without_relaunching() -> TestResult {
+        let perl_path = match resolve_perl_path_with_toolchain() {
+            Ok(path) => path,
+            Err(_) => return Ok(()),
+        };
+        let missing_perl = tempfile::tempdir()?.path().join("missing-perl");
+        let mut config = WorkspaceConfig {
+            use_system_inc: true,
+            perl_path: Some(perl_path.to_string_lossy().into_owned()),
+            // Quote-, space-, and backslash-free program: the sentinel arg
+            // passes through the oracle's env-stripped command, where
+            // embedded double quotes broke arg quoting into a NonZeroExit,
+            // and msys perl on Windows ate the backslash of a qq newline
+            // escape. The trailing semicolon is load-bearing —
+            // `fetch_perl_inc` appends its own `-e` block and perl
+            // concatenates -e programs into ONE script, so without it the
+            // concatenation is a syntax error — and the chr(10) keeps the
+            // sentinel on its own line so it never fuses with the first
+            // @INC entry.
+            perl_args: vec!["-e".into(), "print(qq(cache-sentinel).chr(10));".into()],
+            ..WorkspaceConfig::default()
+        };
+
+        let cached = config.get_system_inc_probe_outcome();
+        let cached_paths = match &cached {
+            SystemIncProbeOutcome::Paths(paths)
+                if paths.iter().any(|path| path == Path::new("cache-sentinel")) =>
+            {
+                paths.clone()
+            }
+            other => {
+                return Err(
+                    format!("expected the sentinel probe to produce Paths, got {other:?}").into()
+                );
+            }
+        };
+
+        // Changing the public probe input after the first lookup is only a
+        // test discriminator; normal settings updates invalidate the cache.
+        config.perl_path = Some(missing_perl.to_string_lossy().into_owned());
+        let reused = config.get_system_inc_probe_outcome();
+        assert_eq!(reused, cached, "second lookup must reuse the cached outcome");
+        assert_eq!(config.get_system_inc().to_vec(), cached_paths);
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn synthetic_exit_status(code: i32) -> std::process::ExitStatus {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            ExitStatusExt::from_raw(code)
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::ExitStatusExt;
+            ExitStatusExt::from_raw(code as u32)
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn synthetic_output(code: i32, stdout: &str) -> std::process::Output {
+        std::process::Output {
+            status: synthetic_exit_status(code),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn system_inc_probe_outcome_preserves_execution_classes() {
+        assert_eq!(
+            WorkspaceConfig::classify_perl_inc_output(Ok(synthetic_output(0, ".\n"))),
+            SystemIncProbeOutcome::SuccessfulEmpty,
+        );
+        assert_eq!(
+            WorkspaceConfig::classify_perl_inc_output(Ok(synthetic_output(0, "lib\n"))),
+            SystemIncProbeOutcome::Paths(vec![PathBuf::from("lib")]),
+        );
+        assert_eq!(
+            WorkspaceConfig::classify_perl_inc_output(Ok(synthetic_output(1, ""))),
+            SystemIncProbeOutcome::NonZeroExit,
+        );
+        assert_eq!(
+            WorkspaceConfig::classify_perl_inc_output(Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "synthetic timeout",
+            ))),
+            SystemIncProbeOutcome::TimedOut,
+        );
+        assert_eq!(
+            WorkspaceConfig::classify_perl_inc_output(Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "synthetic spawn-or-io failure",
+            ))),
+            SystemIncProbeOutcome::IoFailed,
+        );
+
+        let disabled = WorkspaceConfig::default().get_system_inc_probe_outcome();
+        assert_eq!(disabled, SystemIncProbeOutcome::Disabled);
+    }
+
     /// `usePerl5lib` and `useSystemInc` must produce independent startup-`@INC`
     /// caches. When `usePerl5lib` toggles, the cache must be invalidated so the
     /// next `get_system_inc` call re-probes Perl with the correct PERL5LIB
@@ -4786,7 +5223,8 @@ profile = "recommended"
         assert!(config.use_perl5lib, "default usePerl5lib should be true");
 
         // Pre-populate the cache; flipping usePerl5lib must clear it.
-        config.system_inc_cache = Some(vec![PathBuf::from("/sentinel/cached")]);
+        config.system_inc_cache =
+            Some(SystemIncProbeOutcome::Paths(vec![PathBuf::from("/sentinel/cached")]));
         config.update_from_value(&serde_json::json!({
             "workspace": { "usePerl5lib": false }
         }));
@@ -4799,7 +5237,8 @@ profile = "recommended"
         );
 
         // Flip back the other direction.
-        config.system_inc_cache = Some(vec![PathBuf::from("/sentinel/cached2")]);
+        config.system_inc_cache =
+            Some(SystemIncProbeOutcome::Paths(vec![PathBuf::from("/sentinel/cached2")]));
         config.update_from_value(&serde_json::json!({
             "workspace": { "usePerl5lib": true }
         }));
@@ -4813,13 +5252,13 @@ profile = "recommended"
 
         // No-op (same value) must NOT clear the cache.
         let stable = vec![PathBuf::from("/sentinel/stable")];
-        config.system_inc_cache = Some(stable.clone());
+        config.system_inc_cache = Some(SystemIncProbeOutcome::Paths(stable.clone()));
         config.update_from_value(&serde_json::json!({
             "workspace": { "usePerl5lib": true }
         }));
         assert_eq!(
-            config.system_inc_cache.as_deref(),
-            Some(stable.as_slice()),
+            config.system_inc_cache,
+            Some(SystemIncProbeOutcome::Paths(stable)),
             "cache must survive when usePerl5lib value does not change",
         );
     }
@@ -4884,7 +5323,8 @@ profile = "recommended"
         assert!(!config.use_system_inc, "default useSystemInc should be false");
 
         // Pre-populate the cache; enabling useSystemInc must clear it.
-        config.system_inc_cache = Some(vec![PathBuf::from("/sentinel/cached")]);
+        config.system_inc_cache =
+            Some(SystemIncProbeOutcome::Paths(vec![PathBuf::from("/sentinel/cached")]));
         config.update_from_value(&serde_json::json!({
             "workspace": { "useSystemInc": true }
         }));
@@ -4897,7 +5337,8 @@ profile = "recommended"
         );
 
         // Flip back the other direction.
-        config.system_inc_cache = Some(vec![PathBuf::from("/sentinel/cached2")]);
+        config.system_inc_cache =
+            Some(SystemIncProbeOutcome::Paths(vec![PathBuf::from("/sentinel/cached2")]));
         config.update_from_value(&serde_json::json!({
             "workspace": { "useSystemInc": false }
         }));
@@ -4911,13 +5352,13 @@ profile = "recommended"
 
         // No-op (same value) must NOT clear the cache.
         let stable = vec![PathBuf::from("/sentinel/stable")];
-        config.system_inc_cache = Some(stable.clone());
+        config.system_inc_cache = Some(SystemIncProbeOutcome::Paths(stable.clone()));
         config.update_from_value(&serde_json::json!({
             "workspace": { "useSystemInc": false }
         }));
         assert_eq!(
-            config.system_inc_cache.as_deref(),
-            Some(stable.as_slice()),
+            config.system_inc_cache,
+            Some(SystemIncProbeOutcome::Paths(stable)),
             "cache must survive when useSystemInc value does not change",
         );
     }

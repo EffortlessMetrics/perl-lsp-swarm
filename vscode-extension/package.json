@@ -387,7 +387,7 @@
             "scope": "machine",
             "order": 31,
             "description": "Absolute external library roots for module resolution. User/machine scope only — workspace settings cannot set this key.",
-            "markdownDescription": "Absolute external library roots for module resolution. **User/machine scope only** — committed workspace settings cannot set this key. Use this when your CPAN/local library lives outside the workspace."
+            "markdownDescription": "Absolute external library roots for module resolution. **User/machine scope only** — committed workspace settings cannot set this key. Server-side application is pending a trusted configuration transport, so the language server does not apply these roots yet; workspace-relative paths in `#perl-lsp.includePaths#` remain fully supported."
           },
           "perl-lsp.enableSemanticTokens": {
             "type": "boolean",
@@ -904,12 +904,6 @@
         "icon": "$(sync)"
       },
       {
-        "command": "perl-lsp.organizeImports",
-        "title": "%command.organizeImports.title%",
-        "category": "Perl",
-        "icon": "$(organization)"
-      },
-      {
         "command": "perl-lsp.runTests",
         "title": "%command.runTests.title%",
         "category": "Perl",
@@ -1091,10 +1085,6 @@
           "when": "perl-lsp.activated"
         },
         {
-          "command": "perl-lsp.organizeImports",
-          "when": "editorLangId == perl"
-        },
-        {
           "command": "perl-lsp.runTests",
           "when": "editorLangId == perl && resourceExtname =~ /\\.(t|pl)$/"
         },
@@ -1239,11 +1229,6 @@
       ]
     },
     "keybindings": [
-      {
-        "command": "perl-lsp.organizeImports",
-        "key": "shift+alt+o",
-        "when": "editorTextFocus && editorLangId == perl"
-      },
       {
         "command": "perl-lsp.runTests",
         "key": "shift+alt+t",
@@ -1450,13 +1435,14 @@
     "@types/vscode": "~1.125.0",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "3.9.2",
+    "ajv": "^8.20.0",
     "jest": "^30.4.2",
     "mocha": "^11.8.0",
-    "ovsx": "1.0.2",
-    "oxfmt": "0.62.0",
-    "oxlint": "1.77.0",
+    "ovsx": "1.1.1",
+    "oxfmt": "0.63.0",
+    "oxlint": "1.78.0",
     "oxlint-tsgolint": "7.0.2001",
-    "rolldown": "1.2.3",
+    "rolldown": "1.2.4",
     "source-map": "0.8.0",
     "typescript": "^7.0.2",
     "vscode-tmgrammar-test": "^0.1.3"
