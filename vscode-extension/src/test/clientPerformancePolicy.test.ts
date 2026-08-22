@@ -70,6 +70,24 @@ describe('client performance ratchet policy', () => {
     });
   });
 
+  test('rejects negative observed values before absolute or relative evaluation', () => {
+    const negativePrevious = evidence();
+    negativePrevious.previous_public = observation(-1);
+
+    expect(validateClientMetricRatchet(negativePrevious, ratchet())).toContain(
+      'observed previous-public metric must carry a finite non-negative value',
+    );
+    expect(evaluateClientMetricRatchet(negativePrevious, ratchet()).status).toBe('not_proven');
+
+    const negativeCurrent = evidence();
+    negativeCurrent.current_candidate = observation(-1);
+
+    expect(validateClientMetricRatchet(negativeCurrent, ratchet())).toContain(
+      'observed current metric must carry a finite non-negative value',
+    );
+    expect(evaluateClientMetricRatchet(negativeCurrent, ratchet()).status).toBe('not_proven');
+  });
+
   test('refuses to turn noisy evidence into a blocking performance gate', () => {
     const current = evidence();
     current.evidence_quality = 'noisy';
@@ -220,7 +238,29 @@ describe('committed client perf policy record', () => {
     };
 
     expect(validateClientPerfPolicyRecord(record)).toEqual([
-      'extension_host_rss_bytes_delta: current_candidate must be null or {availability, value} with not_proven carrying no value',
+      'extension_host_rss_bytes_delta: current_candidate must be null or {availability, value} with observed values finite/non-negative and not_proven carrying no value',
+    ]);
+  });
+
+  test('rejects negative observed current and previous record values', () => {
+    const negativeCurrent = JSON.parse(JSON.stringify(committed)) as ClientPerfPolicyRecord;
+    seededMetric(negativeCurrent, 'extension_host_rss_bytes_delta').current_candidate = {
+      availability: 'observed',
+      value: -1,
+    };
+
+    expect(validateClientPerfPolicyRecord(negativeCurrent)).toEqual([
+      'extension_host_rss_bytes_delta: current_candidate must be null or {availability, value} with observed values finite/non-negative and not_proven carrying no value',
+    ]);
+
+    const negativePrevious = JSON.parse(JSON.stringify(committed)) as ClientPerfPolicyRecord;
+    seededMetric(negativePrevious, 'extension_host_rss_bytes_delta').previous_public = {
+      availability: 'observed',
+      value: -1,
+    };
+
+    expect(validateClientPerfPolicyRecord(negativePrevious)).toEqual([
+      'extension_host_rss_bytes_delta: previous_public must be null or {availability, value} with observed values finite/non-negative and not_proven carrying no value',
     ]);
   });
 });

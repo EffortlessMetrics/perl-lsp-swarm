@@ -110,11 +110,26 @@ export function validateClientMetricRatchet(
   }
 
   if (
+    evidence.previous_public?.availability === 'observed' &&
+    (evidence.previous_public.value === null ||
+      !Number.isFinite(evidence.previous_public.value) ||
+      evidence.previous_public.value < 0)
+  ) {
+    errors.push('observed previous-public metric must carry a finite non-negative value');
+  }
+  if (
+    evidence.previous_public?.availability === 'not_proven' &&
+    evidence.previous_public.value !== null
+  ) {
+    errors.push('not-proven previous-public metric cannot carry a value');
+  }
+  if (
     evidence.current_candidate.availability === 'observed' &&
     (evidence.current_candidate.value === null ||
-      !Number.isFinite(evidence.current_candidate.value))
+      !Number.isFinite(evidence.current_candidate.value) ||
+      evidence.current_candidate.value < 0)
   ) {
-    errors.push('observed current metric must carry a finite value');
+    errors.push('observed current metric must carry a finite non-negative value');
   }
   if (
     evidence.current_candidate.availability === 'not_proven' &&
@@ -275,7 +290,7 @@ function isObservationRecord(value: unknown): value is ClientPerfPolicyObservati
   if (value.availability === 'not_proven') {
     return value.value === null;
   }
-  return isFiniteNumber(value.value);
+  return isFiniteNumber(value.value) && value.value >= 0;
 }
 
 function observationFromRecord(
@@ -375,13 +390,13 @@ export function validateClientPerfPolicyRecord(record: unknown): string[] {
     const previousValid = previous_public === null || isObservationRecord(previous_public);
     if (!previousValid) {
       errors.push(
-        `${metric_id}: previous_public must be null or {availability, value} with not_proven carrying no value`,
+        `${metric_id}: previous_public must be null or {availability, value} with observed values finite/non-negative and not_proven carrying no value`,
       );
     }
     const currentValid = current_candidate === null || isObservationRecord(current_candidate);
     if (!currentValid) {
       errors.push(
-        `${metric_id}: current_candidate must be null or {availability, value} with not_proven carrying no value`,
+        `${metric_id}: current_candidate must be null or {availability, value} with observed values finite/non-negative and not_proven carrying no value`,
       );
     }
     const statusValid = isEnumMember(status, STATUSES);
