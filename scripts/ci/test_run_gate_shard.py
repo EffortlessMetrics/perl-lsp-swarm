@@ -667,6 +667,32 @@ class GateShardTests(unittest.TestCase):
                         ValueError, "YAML string"
                     ):
                         shard._read_gate_command_specs(tagged_policy)
+                adjacent_policy = write_gate_policy(
+                    root,
+                    "  - name: adjacent\n    command: 'echo' 'outside'\n",
+                )
+                with mock.patch.object(shard, "yaml", None), self.assertRaisesRegex(
+                    ValueError, "adjacent quoted"
+                ):
+                    shard._read_gate_command_specs(adjacent_policy)
+
+    def test_repository_root_derivation_matches_xtask_from_subdirectory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".ci").mkdir()
+            (root / ".ci/gate-policy.yaml").write_text(
+                "schema_version: 1\ngates:\n", encoding="utf-8"
+            )
+            (root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+            (root / "target/debug").mkdir(parents=True)
+            nested = root / "scripts/ci"
+            nested.mkdir(parents=True)
+            derived = shard._repository_root_for_execution(
+                Path("target/debug/xtask"),
+                Path(".ci/gate-policy.yaml"),
+                cwd=nested,
+            )
+        self.assertEqual(root.resolve(), derived)
 
     def test_gate_policy_preflight_rejects_missing_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1031,6 +1057,25 @@ class GateShardTests(unittest.TestCase):
                 )
                 with self.assertRaises(ValueError):
                     shard.load_gate_commands(policy, ["unsafe"], root=root)
+
+    def test_gate_policy_preflight_rejects_command_wrapper_operands_with_existing_fixture(
+        self,
+    ) -> None:
+        for command in (
+            "command scripts/ci/check.py",
+            "command python3 scripts/ci/check.py",
+        ):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "scripts/ci").mkdir(parents=True)
+                (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+                policy = write_gate_policy(
+                    root,
+                    "  - name: wrapper\n"
+                    f"    command: {command}\n",
+                )
+                with self.assertRaisesRegex(ValueError, "nested-shell wrapper"):
+                    shard.load_gate_commands(policy, ["wrapper"], root=root)
 
     def test_gate_policy_preflight_rejects_missing_input_redirect_targets(self) -> None:
         for command, message in (

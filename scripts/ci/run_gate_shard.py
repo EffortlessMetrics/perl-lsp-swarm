@@ -145,6 +145,7 @@ MALFORMED_SHELL_PUNCTUATION = {";;", ";&", ";;&", "&&&", "|||"}
 UNSUPPORTED_WRAPPER_COMMANDS = {
     "busybox",
     "call",
+    "command",
     "cmd",
     "cmd.exe",
     "chroot",
@@ -202,6 +203,15 @@ def _yaml_scalar(value: str) -> str:
     if value[0] == "'":
         if len(value) < 2 or value[-1] != "'":
             raise ValueError(f"gate command has invalid quoted scalar {value!r}")
+        cursor = 1
+        while cursor < len(value) - 1:
+            if value[cursor] != "'":
+                cursor += 1
+                continue
+            if cursor + 1 < len(value) - 1 and value[cursor + 1] == "'":
+                cursor += 2
+                continue
+            raise ValueError(f"gate command has adjacent quoted scalars {value!r}")
         return value[1:-1].replace("''", "'")
     if value[0] == '"':
         try:
@@ -648,9 +658,6 @@ def _validate_shell_constructs(tokens: Sequence[str], root: Path) -> None:
             candidate in {"-exec", "-execdir"} for candidate in tokens[index + 1 :]
         ):
             raise ValueError("unsupported find -exec nested-shell wrapper in gate policy")
-        if token_name == "command" and index + 1 < len(tokens):
-            if _interpreter_name(tokens[index + 1]) is not None:
-                raise ValueError("unsupported command nested-shell wrapper in gate policy")
         if token_name == "timeout" and any(
             _interpreter_name(candidate) is not None for candidate in tokens[index + 1 :]
         ):
@@ -973,6 +980,53 @@ def load_gate_commands(
                 )
         commands[gate] = command
     return commands
+
+
+def _repository_root_for_execution(
+    xtask: Path,
+    gate_policy: Path,
+    *,
+    cwd: Path | None = None,
+) -> Path:
+    """Find the checkout root the xtask gate runner will use.
+
+    Xt task resolves its project root from the compiled workspace rather than
+    the caller's current directory.  The shard mirrors that identity by
+    locating the checkout marker from the policy/xtask ancestry before
+    preflight, so a shard launched from a subdirectory cannot validate paths
+    against the wrong root.
+    """
+    if gate_policy.is_absolute():
+        resolved_policy = gate_policy.resolve()
+        return (
+            resolved_policy.parent.parent
+            if resolved_policy.parent.name == ".ci"
+            else resolved_policy.parent
+        )
+    search_roots: list[Path] = []
+    current = (cwd or Path.cwd()).resolve()
+    search_roots.extend([current, *current.parents])
+    xtask_candidates = (
+        [xtask]
+        if xtask.is_absolute()
+        else [root / xtask for root in search_roots]
+    )
+    for candidate in xtask_candidates:
+        resolved = candidate.resolve()
+        search_roots.extend([resolved.parent, *resolved.parent.parents])
+    seen: set[Path] = set()
+    for candidate in search_roots:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if (
+            (candidate / "Cargo.toml").is_file()
+            and (candidate / ".ci" / "gate-policy.yaml").is_file()
+        ):
+            return candidate
+    raise ValueError(
+        "unable to derive repository root for gate preflight from xtask/policy paths"
+    )
 
 
 def _regular_json_object(path: Path, *, subject: str) -> dict[str, Any]:
@@ -1639,14 +1693,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         validate_args(args)
-        load_gate_commands(args.gate_policy, args.gates, root=Path.cwd())
-        dependency_rules = load_execution_policy(args.execution_policy, args.gates)
-        receipt_contract = load_receipt_contract(args.receipt_schema)
+        repository_root = _repository_root_for_execution(args.xtask, args.gate_policy)
+        gate_policy = (
+            args.gate_policy
+            if args.gate_policy.is_absolute()
+            else repository_root / args.gate_policy
+        )
+        execution_policy = (
+            args.execution_policy
+            if args.execution_policy.is_absolute()
+            else repository_root / args.execution_policy
+        )
+        receipt_schema = (
+            args.receipt_schema
+            if args.receipt_schema.is_absolute()
+            else repository_root / args.receipt_schema
+        )
+        load_gate_commands(gate_policy, args.gates, root=repository_root)
+        dependency_rules = load_execution_policy(execution_policy, args.gates)
+        receipt_contract = load_receipt_contract(receipt_schema)
     except ValueError as error:
         parser.error(str(error))
     runner = ShardRunner(
         xtask=args.xtask,
-        gate_policy=args.gate_policy,
+        gate_policy=gate_policy,
         receipt_dir=args.receipt_dir,
         summary_path=args.summary_path,
         subject_sha=args.subject_sha,
