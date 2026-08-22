@@ -37,7 +37,8 @@ the issue. Sanctioned now, without production authority:
 1. a pure terminal-sequence policy module consuming/returning exact bytes or
    strings without LSP positions;
 2. independent application proof with typed rejection of reversed,
-   out-of-bounds, overlapping, duplicate, and mid-code-point edits;
+   out-of-bounds, overlapping, and mid-code-point edits, with distinct
+   same-position insertions preserving the oracle's input order;
 3. offline fixtures whose old `text.lines()` helper cannot distinguish true
    EOF, plus mutation controls for every historical false-pass path.
 

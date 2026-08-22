@@ -10,8 +10,9 @@
 //!
 //! Rejection is the contract: reversed, out-of-bounds/unreachable,
 //! overlapping, and mid-code-point edits are typed errors — never clamped.
-//! Distinct zero-width edits at one position retain their input order, as
-//! current LSP application does.
+//! Distinct zero-width edits at one position retain their input order. This
+//! is the explicit contract of this independent oracle; it does not claim to
+//! model the order used by any current LSP or production edit applicator.
 //!
 //! Authority boundary: no production caller. #10239/#10242 own wiring this
 //! into native/wire plan application; until then it is proof-only surface.
