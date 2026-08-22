@@ -281,10 +281,13 @@ Controls module resolution and workspace scanning behaviour.
 | Default | `["lib", ".", "local/lib/perl5"]` |
 | Key | `includePaths` |
 
-Directories to search for Perl modules. Relative entries are resolved against
-the workspace root. Absolute entries are honored as provided only when they
-still stay inside the workspace boundary. These paths are searched by
-`perl-lsp` and are not appended to Perl's runtime `@INC`.
+Directories to search for Perl modules. Entries must be relative and resolve
+inside the workspace root; absolute or escaping entries are rejected on the
+client-settings channel. Absolute external roots (`externalIncludePaths`) are
+machine/user authority: until a server-owned trusted adapter lands, the server
+admits them through no generic LSP client channel, so configured values stay
+inert (#4998). These paths are searched by `perl-lsp` and are not appended to
+Perl's runtime `@INC`.
 
 When `perlPath` is unset, the server will try perlbrew/plenv-managed
 interpreters before falling back to `perl` on `PATH` for the system `@INC`

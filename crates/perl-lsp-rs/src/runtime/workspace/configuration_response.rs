@@ -6,13 +6,16 @@ fn apply_workspace_config_layer(
     config: &mut perl_lsp_rs_core::config::WorkspaceConfig,
     settings: &Value,
     folder: &WorkspaceFolderState,
-    apply_external_include_paths: bool,
 ) {
+    // #4998: every `workspace/configuration` result slot is a transport
+    // position, not provenance. The first unscoped result and per-folder
+    // results are generic client channels and carry no external-root
+    // authority.
     let rejected = config.update_from_value_with_context(
         settings,
         WorkspaceConfigUpdateContext {
             workspace_root: folder.path.as_deref(),
-            apply_external_include_paths,
+            ..Default::default()
         },
     );
     for entry in rejected {
@@ -81,11 +84,11 @@ pub(super) fn apply_workspace_configuration_results(
         }
 
         if let Some(global_settings) = global_settings {
-            apply_workspace_config_layer(&mut effective_config, global_settings, folder, true);
+            apply_workspace_config_layer(&mut effective_config, global_settings, folder);
         }
 
         if let Some(perl_settings) = results.get(folder_results_start + idx) {
-            apply_workspace_config_layer(&mut effective_config, perl_settings, folder, false);
+            apply_workspace_config_layer(&mut effective_config, perl_settings, folder);
         } else {
             tracing::warn!(
                 request_id,
@@ -104,6 +107,92 @@ mod tests {
     use super::apply_workspace_configuration_results;
     use crate::runtime::workspace_folder::WorkspaceFolderState;
     use serde_json::json;
+
+    fn hostile_absolute_root() -> String {
+        if cfg!(windows) { "C:\\hostile\\lib".to_string() } else { "/hostile/lib".to_string() }
+    }
+
+    #[test]
+    fn unscoped_global_result_slot_cannot_inject_external_include_paths() {
+        let mut folders = vec![
+            WorkspaceFolderState::new("file:///workspace-a".to_string()),
+            WorkspaceFolderState::new("file:///workspace-b".to_string()),
+        ];
+        let folder_uris =
+            vec!["file:///workspace-a".to_string(), "file:///workspace-b".to_string()];
+        let root = hostile_absolute_root();
+        // A generic client synthesizes an absolute external root in the first
+        // unscoped slot and a benign relative value per folder (#4998).
+        let results = vec![
+            json!({"workspace": {"includePaths": ["t/lib"], "externalIncludePaths": [root]}}),
+            json!({"workspace": {"includePaths": ["lib"]}}),
+            json!({"workspace": {"includePaths": ["vendor/lib"]}}),
+        ];
+
+        apply_workspace_configuration_results(&mut folders, &folder_uris, true, &results, 45, None);
+
+        for folder in &folders {
+            assert!(
+                folder.effective_workspace_config.external_include_paths.is_empty(),
+                "unscoped result slot must not authorize external roots for {}",
+                folder.uri
+            );
+            assert!(
+                !folder
+                    .effective_workspace_config
+                    .effective_include_paths(&[])
+                    .iter()
+                    .any(|path| path == &root),
+                "hostile external root must not reach module resolution in {}",
+                folder.uri
+            );
+        }
+        // Legitimate contained-relative flow is preserved: each folder keeps
+        // its own resolved relative roots (folder layer replaces the global
+        // layer's list, as before), and none contains a rejected entry.
+        assert_eq!(
+            folders[0].effective_workspace_config.include_paths,
+            vec!["lib".to_string()],
+            "folder-relative value survives with the hostile global root dropped"
+        );
+        assert_eq!(
+            folders[1].effective_workspace_config.include_paths,
+            vec!["vendor/lib".to_string()]
+        );
+    }
+
+    #[test]
+    fn hostile_client_repeating_external_root_in_every_slot_is_ignored() {
+        let mut folders = vec![
+            WorkspaceFolderState::new("file:///workspace-a".to_string()),
+            WorkspaceFolderState::new("file:///workspace-b".to_string()),
+        ];
+        let folder_uris =
+            vec!["file:///workspace-a".to_string(), "file:///workspace-b".to_string()];
+        let root = hostile_absolute_root();
+        let results = vec![
+            json!({"workspace": {"externalIncludePaths": [root]}}),
+            json!({"workspace": {"externalIncludePaths": [root], "includePaths": ["lib"]}}),
+            json!({"workspace": {"externalIncludePaths": [root], "includePaths": ["lib"]}}),
+        ];
+
+        apply_workspace_configuration_results(&mut folders, &folder_uris, true, &results, 46, None);
+
+        for folder in &folders {
+            assert!(folder.effective_workspace_config.external_include_paths.is_empty());
+            assert!(
+                !folder
+                    .effective_workspace_config
+                    .effective_include_paths(&[])
+                    .iter()
+                    .any(|path| path == &root)
+            );
+            assert!(
+                folder.effective_workspace_config.include_paths.contains(&"lib".to_string()),
+                "contained relative includePaths keep working"
+            );
+        }
+    }
 
     #[test]
     fn applies_global_and_folder_specific_configuration() {

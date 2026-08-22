@@ -118,10 +118,10 @@ fn send_include_paths(harness: &UxHarness, paths: &[&str]) {
     std::thread::sleep(Duration::from_millis(200));
 }
 
-/// Configure the server to use `externalIncludePaths` for absolute paths
-/// via workspace/didChangeConfiguration. Absolute paths must go through
-/// `externalIncludePaths` (machine scope) rather than `includePaths`
-/// (resource scope), per the client include-path trust boundary.
+/// Configure the server with `externalIncludePaths` via
+/// workspace/didChangeConfiguration. This is a generic client channel:
+/// under the #4998 trust boundary the server fails closed and ignores the
+/// value, so callers must observe the configured roots staying invisible.
 fn send_external_include_paths(harness: &UxHarness, paths: &[&str]) {
     let paths_json: Vec<serde_json::Value> = paths.iter().map(|p| json!(*p)).collect();
     harness
@@ -465,9 +465,12 @@ sub value {\n\
 ";
 
 #[test]
-fn scenario_14_absolute_include_path() -> Result<(), String> {
+fn scenario_14_external_root_via_client_channel_is_not_authorized() -> Result<(), String> {
     if !binary_available() {
-        eprintln!("SKIP scenario_14_absolute_include_path: perl-lsp binary not found");
+        eprintln!(
+            "SKIP scenario_14_external_root_via_client_channel_is_not_authorized: \
+             perl-lsp binary not found"
+        );
         return Ok(());
     }
 
@@ -483,38 +486,45 @@ fn scenario_14_absolute_include_path() -> Result<(), String> {
     .expect("Failed to create UX harness");
 
     let abs_root_string = abs_root.path().to_string_lossy().to_string();
-    // Absolute paths must go through externalIncludePaths (machine scope),
-    // not includePaths (resource scope) per the client include-path trust
-    // boundary. See config/mod.rs validate_resource_include_path_entry.
+    // #4998: didChangeConfiguration is a generic client channel and cannot
+    // authorize an external filesystem-read root. The server must fail
+    // closed: AbsoluteModule stays exactly as invisible as a missing module.
     send_external_include_paths(&harness, &[abs_root_string.as_str()]);
 
     harness.open_file("fixture.pl", ABSOLUTE_INCLUDE_SOURCE).expect("didOpen should succeed");
     std::thread::sleep(Duration::from_millis(500));
 
     let diags = wait_diagnostics(&harness, "fixture.pl");
-    let pl701_absent = !has_pl701(&diags);
+    let pl701_fires = has_pl701(&diags);
 
     // `use AbsoluteModule` at line 2, col 4.
     let defs = harness.definition("fixture.pl", 2, 4).expect("definition must not error");
-    let def_resolves = !defs.is_empty();
+    let def_empty = defs.is_empty();
 
     let hover_result = harness.hover("fixture.pl", 2, 4).expect("hover must not error");
-    let hover_ok = true;
 
-    // Completion check: switch to prefix fixture (server already configured with
-    // the absolute includePath from send_include_paths above).
+    // Completion check (negative): switch to prefix fixture; AbsoluteModule
+    // must NOT be offered through the unauthorized root.
     harness
         .change_file_full("fixture.pl", ABSOLUTE_INCLUDE_COMPLETION_SOURCE)
         .expect("didChange to completion fixture should succeed");
     std::thread::sleep(Duration::from_millis(500));
     let completions = harness.completion("fixture.pl", 2, 7).expect("completion must not error");
-    let completion_ok = completion_has_module(&completions, "AbsoluteModule");
+    // "ok" for negative = module absent from completion
+    let completion_ok = !completion_has_module(&completions, "AbsoluteModule");
 
-    print_conformance("absolute_include_path", pl701_absent, completion_ok, def_resolves, hover_ok);
+    print_conformance(
+        "external_root_client_channel_unauthorized",
+        pl701_fires,
+        completion_ok,
+        def_empty,
+        hover_result.is_none(),
+    );
 
-    if def_resolves && !pl701_absent {
+    if !def_empty && pl701_fires {
         return Err(format!(
-            "Consumer inconsistency (absolute_include_path): goto-def resolved but PL701 fired.\n\
+            "Consumer inconsistency (external_root_client_channel_unauthorized): goto-def \
+             resolved but PL701 fired.\n\
              goto-def: {:?}\n\
              diagnostics: {:?}",
             defs, diags
@@ -522,21 +532,16 @@ fn scenario_14_absolute_include_path() -> Result<(), String> {
     }
 
     assert!(
-        def_resolves,
-        "Expected goto-definition to resolve AbsoluteModule via absolute includePaths, got empty result.\n\
-         diagnostics: {:?}",
-        diags
+        def_empty,
+        "External root sent via didChangeConfiguration must not resolve (#4998), got {:?}",
+        defs
     );
     assert!(
-        pl701_absent,
-        "Expected no PL701 for AbsoluteModule when absolute includePaths is configured.\n\
+        pl701_fires,
+        "Expected PL701 for AbsoluteModule: an unauthorized external root must stay invisible.\n\
          diagnostics: {:?}",
         diags
     );
-
-    if let Some(hover) = hover_result {
-        assert!(hover.get("contents").is_some(), "Hover result must have 'contents': {:?}", hover);
-    }
 
     harness.assert_no_crash();
 

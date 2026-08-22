@@ -386,8 +386,8 @@
             },
             "scope": "machine",
             "order": 31,
-            "description": "Absolute external library roots for module resolution. User/machine scope only — workspace settings cannot set this key.",
-            "markdownDescription": "Absolute external library roots for module resolution. **User/machine scope only** — committed workspace settings cannot set this key. Use this when your CPAN/local library lives outside the workspace."
+            "description": "Absolute external library roots for module resolution. User/machine scope only — workspace settings cannot set this key. Pending a server-side trusted adapter the server does not yet apply these values.",
+            "markdownDescription": "Absolute external library roots for module resolution. **User/machine scope only** — committed workspace settings cannot set this key. Use this when your CPAN/local library lives outside the workspace. Pending a server-side trusted adapter, the server does not yet apply these values (#4998)."
           },
           "perl-lsp.enableSemanticTokens": {
             "type": "boolean",

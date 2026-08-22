@@ -1102,13 +1102,33 @@ impl Default for WorkspaceConfig {
     }
 }
 
+/// Authority a caller claims over external include roots.
+///
+/// Transport position or shape never carries this authority (#4998): the
+/// first unscoped item of a `workspace/configuration` response, a
+/// `workspace/didChangeConfiguration` payload, initialization options, and
+/// folder-scoped results can all be synthesized by a hostile workspace or a
+/// non-cooperating client. External roots are admitted only through an
+/// explicit server-owned trusted user/operator adapter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExternalIncludePathAuthority {
+    /// Generic client channels. `externalIncludePaths` input is ignored
+    /// fail-closed; previously accepted trusted roots are preserved.
+    #[default]
+    Unauthorized,
+    /// A server-owned trusted user/machine operator adapter. No generic LSP
+    /// channel may construct this claim from array position, client name, or
+    /// payload contents.
+    TrustedUserOperator,
+}
+
 /// Context for [`WorkspaceConfig::update_from_value_with_context`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WorkspaceConfigUpdateContext<'a> {
     /// Workspace root used to reject traversal in resource-scoped `includePaths`.
     pub workspace_root: Option<&'a Path>,
-    /// When `false`, ignore `externalIncludePaths` (folder-scoped client payloads).
-    pub apply_external_include_paths: bool,
+    /// Whether external include roots may be admitted on this channel.
+    pub external_include_path_authority: ExternalIncludePathAuthority,
 }
 
 /// A resource-scoped `includePaths` entry rejected during client-settings validation.
@@ -1419,29 +1439,23 @@ impl WorkspaceConfig {
 
     /// Update workspace configuration from LSP settings.
     ///
-    /// Fail-closed for `externalIncludePaths`: the default context ignores them.
-    /// Callers on the global / machine configuration channel must use
-    /// [`Self::update_from_value_with_context`] with
-    /// `apply_external_include_paths: true`.
+    /// Fail-closed for `externalIncludePaths`: the default context is
+    /// [`ExternalIncludePathAuthority::Unauthorized`] and ignores them.
     pub fn update_from_value(
         &mut self,
         settings: &serde_json::Value,
     ) -> Vec<RejectedClientIncludePath> {
-        self.update_from_value_with_context(
-            settings,
-            WorkspaceConfigUpdateContext {
-                workspace_root: None,
-                apply_external_include_paths: false,
-            },
-        )
+        self.update_from_value_with_context(settings, WorkspaceConfigUpdateContext::default())
     }
 
     /// Update workspace configuration from LSP settings with validation context.
     ///
     /// Resource-scoped `includePaths` reject absolute entries and any relative
     /// entry that escapes `workspace_root` when provided. `externalIncludePaths`
-    /// are accepted only when `apply_external_include_paths` is true (global /
-    /// machine channel).
+    /// are admitted only under
+    /// [`ExternalIncludePathAuthority::TrustedUserOperator`]; every generic
+    /// client channel must pass [`ExternalIncludePathAuthority::Unauthorized`]
+    /// (#4998).
     pub fn update_from_value_with_context(
         &mut self,
         settings: &serde_json::Value,
@@ -1463,13 +1477,21 @@ impl WorkspaceConfig {
                 }
                 self.include_paths = valid;
             }
-            if context.apply_external_include_paths
-                && let Some(paths) =
-                    workspace.get("externalIncludePaths").and_then(|v| v.as_array())
-            {
-                let (accepted, external_rejected) = parse_external_include_paths(paths);
-                self.external_include_paths = accepted;
-                rejected.extend(external_rejected);
+            match context.external_include_path_authority {
+                ExternalIncludePathAuthority::TrustedUserOperator => {
+                    if let Some(paths) =
+                        workspace.get("externalIncludePaths").and_then(|v| v.as_array())
+                    {
+                        let (accepted, external_rejected) = parse_external_include_paths(paths);
+                        self.external_include_paths = accepted;
+                        rejected.extend(external_rejected);
+                    }
+                }
+                // Fail closed (#4998): resource/folder/unscoped/unknown client
+                // channels cannot admit external filesystem-read roots, and an
+                // unauthorized candidate must not clear previously accepted
+                // trusted state.
+                ExternalIncludePathAuthority::Unauthorized => {}
             }
             if let Some(extensions) = string_array(workspace.get("discoveryExtensions")) {
                 self.discovery_extra_extensions = extensions;
@@ -4381,7 +4403,7 @@ profile = "recommended"
             &serde_json::json!({ "workspace": { "includePaths": [absolute, "lib"] } }),
             WorkspaceConfigUpdateContext {
                 workspace_root: Some(temp.path()),
-                apply_external_include_paths: true,
+                ..Default::default()
             },
         );
 
@@ -4406,7 +4428,7 @@ profile = "recommended"
             &serde_json::json!({ "workspace": { "includePaths": ["../../../../etc", "vendor/lib"] } }),
             WorkspaceConfigUpdateContext {
                 workspace_root: Some(temp.path()),
-                apply_external_include_paths: true,
+                ..Default::default()
             },
         );
 
@@ -4418,30 +4440,80 @@ profile = "recommended"
     }
 
     #[test]
-    fn update_from_value_accepts_external_include_paths_from_global_channel() {
+    fn update_from_value_admits_external_include_paths_only_through_trusted_authority() {
         let mut workspace = WorkspaceConfig::default();
         let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
+        let payload = serde_json::json!({
+            "workspace": {
+                "includePaths": ["lib"],
+                "externalIncludePaths": [absolute]
+            }
+        });
 
-        let rejected = workspace.update_from_value_with_context(
-            &serde_json::json!({
-                "workspace": {
-                    "includePaths": ["lib"],
-                    "externalIncludePaths": [absolute]
-                }
-            }),
+        // Positive control: an explicitly trusted user/operator adapter may
+        // admit validated absolute external roots. The rule is not
+        // "absolute paths impossible" (#4998 proof item 7).
+        let trusted = workspace.update_from_value_with_context(
+            &payload,
             WorkspaceConfigUpdateContext {
-                workspace_root: None,
-                apply_external_include_paths: true,
+                external_include_path_authority: ExternalIncludePathAuthority::TrustedUserOperator,
+                ..Default::default()
             },
         );
 
-        assert!(rejected.is_empty());
+        assert!(trusted.is_empty());
         assert_eq!(workspace.include_paths, vec!["lib".to_string()]);
         assert_eq!(workspace.external_include_paths, vec![absolute.to_string()]);
         assert_eq!(
             workspace.effective_include_paths(&[]),
             vec!["lib".to_string(), absolute.to_string()]
         );
+
+        // The same payload replayed on a generic client channel must not
+        // clear or replace the previously accepted trusted roots.
+        let unauthorized = workspace.update_from_value_with_context(
+            &serde_json::json!({
+                "workspace": { "externalIncludePaths": ["/hostile/replacement"] }
+            }),
+            WorkspaceConfigUpdateContext::default(),
+        );
+
+        assert!(unauthorized.is_empty());
+        assert_eq!(workspace.external_include_paths, vec![absolute.to_string()]);
+    }
+
+    #[test]
+    fn update_from_value_ignores_external_include_paths_on_generic_channels() {
+        let mut workspace = WorkspaceConfig::default();
+        let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
+
+        // Default context (didChangeConfiguration / unscoped global slot /
+        // folder slot all use this): fail closed.
+        let rejected = workspace.update_from_value(&serde_json::json!({
+            "workspace": {
+                "includePaths": ["lib"],
+                "externalIncludePaths": [absolute]
+            }
+        }));
+
+        assert!(rejected.is_empty());
+        assert_eq!(workspace.include_paths, vec!["lib".to_string()]);
+        assert!(workspace.external_include_paths.is_empty());
+        assert_eq!(workspace.effective_include_paths(&[]), vec!["lib".to_string()]);
+
+        // Explicit Unauthorized behaves identically.
+        let rejected = workspace.update_from_value_with_context(
+            &serde_json::json!({
+                "workspace": { "externalIncludePaths": [absolute] }
+            }),
+            WorkspaceConfigUpdateContext {
+                external_include_path_authority: ExternalIncludePathAuthority::Unauthorized,
+                ..Default::default()
+            },
+        );
+
+        assert!(rejected.is_empty());
+        assert!(workspace.external_include_paths.is_empty());
     }
 
     #[test]
@@ -4456,8 +4528,8 @@ profile = "recommended"
                 }
             }),
             WorkspaceConfigUpdateContext {
-                workspace_root: None,
-                apply_external_include_paths: true,
+                external_include_path_authority: ExternalIncludePathAuthority::TrustedUserOperator,
+                ..Default::default()
             },
         );
 
@@ -4477,27 +4549,6 @@ profile = "recommended"
                 "externalIncludePaths": [absolute]
             }
         }));
-
-        assert!(rejected.is_empty());
-        assert!(workspace.external_include_paths.is_empty());
-    }
-
-    #[test]
-    fn update_from_value_ignores_external_include_paths_from_folder_channel() {
-        let mut workspace = WorkspaceConfig::default();
-        let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
-
-        let rejected = workspace.update_from_value_with_context(
-            &serde_json::json!({
-                "workspace": {
-                    "externalIncludePaths": [absolute]
-                }
-            }),
-            WorkspaceConfigUpdateContext {
-                workspace_root: None,
-                apply_external_include_paths: false,
-            },
-        );
 
         assert!(rejected.is_empty());
         assert!(workspace.external_include_paths.is_empty());

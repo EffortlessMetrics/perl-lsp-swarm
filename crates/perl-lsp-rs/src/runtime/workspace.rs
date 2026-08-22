@@ -1378,11 +1378,13 @@ impl LspServer {
                 {
                     let mut workspace_config = self.workspace_config.lock();
                     let root_path = self.root_path.lock().clone();
+                    // #4998: didChangeConfiguration is a generic client
+                    // channel; it cannot carry external-root authority.
                     let rejected = workspace_config.update_from_value_with_context(
                         perl,
                         perl_lsp_rs_core::config::WorkspaceConfigUpdateContext {
                             workspace_root: root_path.as_deref(),
-                            apply_external_include_paths: true,
+                            ..Default::default()
                         },
                     );
                     for entry in rejected {
@@ -1433,11 +1435,13 @@ impl LspServer {
                                     .apply_to_workspace_config(&mut effective_config, folder_path);
                             }
                         }
+                        // #4998: generic client channel; no external-root
+                        // authority.
                         let rejected = effective_config.update_from_value_with_context(
                             perl,
                             perl_lsp_rs_core::config::WorkspaceConfigUpdateContext {
                                 workspace_root: folder.path.as_deref(),
-                                apply_external_include_paths: true,
+                                ..Default::default()
                             },
                         );
                         for entry in rejected {

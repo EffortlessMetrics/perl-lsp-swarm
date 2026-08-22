@@ -26,9 +26,9 @@
               "type": "array",
               "items": { "type": "string" },
               "default": [],
-              "description": "Absolute external Perl module roots. This is machine/user authority and is ignored on resource-scoped workspace payloads.",
+              "description": "Absolute external Perl module roots. Machine/user authority: the server admits them through no generic LSP client channel pending a server-owned trusted adapter, so configured values stay inert until then (#4998).",
               "x-perllsp-scope": "machine",
-              "x-perllsp-transports": ["workspace/configuration-global"]
+              "x-perllsp-transports": []
             },
             "discoveryExtensions": {
               "type": "array",
