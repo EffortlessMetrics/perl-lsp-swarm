@@ -557,15 +557,28 @@ gates:
   # Replaced with four independent gates so each contract has its own receipt
   # row, timing, result class, and narrow rerun.  The gate runner continues
   # after any single failure, so all four results are always recorded.
+  # inline_completion_registration/core budgets (#11797): PR Smoke uses a
+  # per-run CARGO_TARGET_DIR (`pr-smoke-${run_id}-${run_attempt}`), while the
+  # shared Rust cache covers dependencies rather than reusing target artifacts
+  # across runs. The separate "Warm xtask" step prebuilds xtask only; it is
+  # not a cold-cache acceptance receipt for these package tests. The raised
+  # 240s / 210000ms values are policy bounds informed by the reported timeout
+  # family, and retry_count: 1 permits a second attempt to reuse artifacts
+  # created in the same run. Hosted receipts remain authoritative for whether
+  # a current PR reaches the test binary within those bounds.
+  # Enforcement note: like every budgets.max_duration_ms row in this policy,
+  # the soft ceiling is declarative only - the runner enforces
+  # timeout_seconds (see the NOTE near the budgets schema below); hosted CI
+  # receipts and reviewers own any budget observation.
   - name: inline_completion_registration
     tier: pr_fast
     description: "Inline-completion provider registration tests (lsp_inline_completion_registration_tests)"
     required: true
     command: cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests
-    timeout_seconds: 150
+    timeout_seconds: 240
     retry_count: 1
     budgets:
-      max_duration_ms: 135000
+      max_duration_ms: 210000
     quarantine: false
     tags:
       - test
@@ -625,10 +638,10 @@ gates:
     description: "Core inline-completion provider lib tests (perl-lsp-rs-core::inline_completion)"
     required: true
     command: cargo test -p perl-lsp-rs-core --locked --lib inline_completion
-    timeout_seconds: 150
+    timeout_seconds: 240
     retry_count: 1
     budgets:
-      max_duration_ms: 135000
+      max_duration_ms: 210000
     quarantine: false
     tags:
       - test
@@ -1437,6 +1450,20 @@ gates:
       - policy
       - docs
       - generated
+
+  - name: lint_policy
+    tier: merge_gate
+    description: "Validate the workspace Clippy lint policy against its catalog and ledgers"
+    required: true
+    command: cargo xtask check-lint-policy
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - lint
 
   # Guards the MSRV declared by Cargo.toml, rust-toolchain.toml, this file's
   # global.toolchain.msrv, and the pinned matrix legs below. #6106 exists

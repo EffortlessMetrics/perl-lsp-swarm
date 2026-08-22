@@ -1,0 +1,113 @@
+schema = 1
+
+[[lint]]
+name = "clippy::float_cmp"
+level = "deny"
+status = "tracked"
+class = "numeric"
+reason = "Floating-point comparisons should use explicit tolerance policy."
+
+[[lint]]
+name = "clippy::float_cmp_const"
+level = "deny"
+status = "tracked"
+class = "numeric"
+reason = "Floating-point constant comparisons should use explicit tolerance policy."
+
+[[lint]]
+name = "clippy::float_equality_without_abs"
+level = "deny"
+status = "tracked"
+class = "numeric"
+reason = "Float equality checks should use absolute-difference semantics."
+
+[[lint]]
+name = "clippy::lossy_float_literal"
+level = "deny"
+status = "tracked"
+class = "numeric"
+reason = "Lossy literals should not silently change numeric behavior."
+
+[[lint]]
+name = "clippy::cast_sign_loss"
+level = "deny"
+status = "tracked"
+class = "numeric"
+reason = "Sign-loss casts need explicit checked or saturating intent."
+
+[[lint]]
+name = "clippy::cast_possible_wrap"
+level = "warn"
+status = "tracked"
+class = "numeric"
+reason = "Possible wrapping casts are visible debt while parser numeric surfaces are audited."
+
+[[lint]]
+name = "clippy::cast_possible_truncation"
+level = "warn"
+status = "tracked"
+class = "numeric"
+reason = "Possible truncating casts are visible debt while parser numeric surfaces are audited."
+
+[[lint]]
+name = "clippy::cast_precision_loss"
+level = "warn"
+status = "tracked"
+class = "numeric"
+reason = "Precision-loss casts are visible debt while metrics and parser numeric surfaces are audited."
+
+[[lint]]
+name = "clippy::invalid_upcast_comparisons"
+level = "deny"
+status = "tracked"
+class = "numeric"
+reason = "Invalid upcast comparisons are correctness bugs."
+
+[[lint]]
+name = "clippy::cast_abs_to_unsigned"
+level = "deny"
+status = "tracked"
+class = "numeric"
+reason = "Absolute-value casts must use explicit unsigned helpers."
+
+[[lint]]
+name = "clippy::cast_enum_truncation"
+level = "deny"
+status = "tracked"
+class = "numeric"
+reason = "Enum truncation can corrupt protocol and parser states."
+
+[[lint]]
+name = "clippy::cast_nan_to_int"
+level = "deny"
+status = "tracked"
+class = "numeric"
+reason = "NaN-to-int casts need explicit handling."
+
+[[lint]]
+name = "clippy::manual_midpoint"
+level = "warn"
+status = "tracked"
+class = "numeric"
+reason = "Prefer standard midpoint helpers over overflow-prone formulas."
+
+[[lint]]
+name = "clippy::manual_is_multiple_of"
+level = "warn"
+status = "tracked"
+class = "numeric"
+reason = "Prefer standard divisibility helpers."
+
+[[lint]]
+name = "clippy::manual_div_ceil"
+level = "warn"
+status = "tracked"
+class = "numeric"
+reason = "Prefer standard div_ceil helpers."
+
+[[lint]]
+name = "clippy::arithmetic_side_effects"
+level = "warn"
+status = "tracked"
+class = "numeric"
+reason = "Arithmetic side effects remain visible while parser numeric policies are audited."

@@ -1581,6 +1581,7 @@ dependencies = [
  "perl-test-must",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -1816,6 +1817,7 @@ dependencies = [
  "perl-parser-core",
  "perl-parser-pest",
  "perl-tdd-support",
+ "serde_json",
  "sha2",
  "tree-sitter",
  "tree-sitter-perl-c",

@@ -5,14 +5,12 @@
 //! completion for `->` expressions, and general cross-file symbol completion.
 
 use super::{
-    auto_import,
     context::CompletionContext,
     items::{CompletionItem, CompletionItemKind, InsertTextFormat},
 };
 use crate::providers::completion::module_scan_cache::{ModuleCompletionScanCache, ScanCacheKey};
 use perl_lexer::{PerlLexer, TokenType};
 use perl_module::path::module_name_to_path;
-use perl_parser_core::SourceLocation;
 use perl_semantic_analyzer::{
     Node, NodeKind, Parser,
     receiver_facts::{
@@ -45,43 +43,18 @@ use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-/// Build the `additionalTextEdits` auto-import entry for a workspace symbol
-/// completion.
-///
-/// Inserts `use Module;` when the symbol's defining module is known and is not
-/// already imported in `source`. Returns an empty vector for file-local symbols
-/// (no container module) or for modules already present, mirroring the
-/// auto-import behavior already applied to method completions.
-///
-/// No edit is produced for the implicit `main` package or for symbols defined
-/// in the document's own `current_package`, since those need no `use` line.
-pub(super) fn workspace_auto_import_edits(
-    source: &str,
-    module: Option<&str>,
-    current_package: &str,
-) -> Vec<(SourceLocation, String)> {
-    module
-        .filter(|name| !name.is_empty() && *name != "main" && *name != current_package)
-        .and_then(|name| auto_import::build_auto_import_edit(source, name))
-        .map(|edit| vec![edit])
-        .unwrap_or_default()
-}
-
 /// Add workspace symbol completions for functions and variables
 ///
 /// Queries the workspace index to provide completions for symbols from other files.
 /// Uses the `import_map` to promote imported symbols and downrank explicitly
 /// not-imported symbols for import-aware sort ordering.
 ///
-/// `source` is the current document text, used to generate `additionalTextEdits`
-/// that auto-insert the required `use Module;` statement when completing an
-/// unimported workspace subroutine, variable, or constant.
 pub fn add_workspace_symbol_completions(
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
-    source: &str,
     workspace_index: &Option<Arc<WorkspaceIndex>>,
     import_map: &HashMap<String, HashSet<String>>,
+    used_modules: &HashSet<String>,
 ) {
     // Only proceed if we have a workspace index
     let Some(index) = workspace_index else {
@@ -115,6 +88,16 @@ pub fn add_workspace_symbol_completions(
                 // Determine sort priority and detail based on import map
                 let label = symbol.qualified_name.as_ref().unwrap_or(&symbol.name).clone();
                 let module = symbol.container_name.as_deref().unwrap_or("");
+                // Bare insertion is only truthful when the defining namespace
+                // is already visible. Import synthesis is withdrawn (#11158).
+                if !workspace_symbol_visible_without_import(
+                    &symbol,
+                    context,
+                    import_map,
+                    used_modules,
+                ) {
+                    continue;
+                }
 
                 let (sort_prefix, detail) = match import_map.get(module) {
                     None => {
@@ -156,11 +139,7 @@ pub fn add_workspace_symbol_completions(
                     kind: CompletionItemKind::Function,
                     detail: Some(Cow::Owned(detail)),
                     documentation: symbol.documentation.clone().map(Cow::Owned),
-                    additional_edits: workspace_auto_import_edits(
-                        source,
-                        symbol.container_name.as_deref(),
-                        &context.current_package,
-                    ),
+                    additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
                     insert_text_format: InsertTextFormat::PlainText,
@@ -225,6 +204,14 @@ pub fn add_workspace_symbol_completions(
             }
             WsSymbolKind::Constant => {
                 // Add constant completion — tier 4 (workspace, after core builtins)
+                if !workspace_symbol_visible_without_import(
+                    &symbol,
+                    context,
+                    import_map,
+                    used_modules,
+                ) {
+                    continue;
+                }
                 let name = &symbol.name;
                 completions.push(CompletionItem {
                     label: Cow::Owned(name.clone()),
@@ -238,11 +225,7 @@ pub fn add_workspace_symbol_completions(
                     insert_text: Some(Cow::Owned(name.clone())),
                     sort_text: Some(Cow::Owned(format!("4_{name}"))),
                     filter_text: Some(Cow::Owned(name.clone())),
-                    additional_edits: workspace_auto_import_edits(
-                        source,
-                        symbol.container_name.as_deref(),
-                        &context.current_package,
-                    ),
+                    additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
                     insert_text_format: InsertTextFormat::PlainText,
@@ -250,7 +233,16 @@ pub fn add_workspace_symbol_completions(
                 });
             }
             WsSymbolKind::Export => {
-                // Add exported symbol completion
+                // An export is only safe as a bare insertion when its defining
+                // module is already visible in the current document.
+                if !workspace_symbol_visible_without_import(
+                    &symbol,
+                    context,
+                    import_map,
+                    used_modules,
+                ) {
+                    continue;
+                }
                 let name = &symbol.name;
                 completions.push(CompletionItem {
                     label: Cow::Owned(name.clone()),
@@ -274,6 +266,28 @@ pub fn add_workspace_symbol_completions(
     }
 }
 
+fn workspace_symbol_visible_without_import(
+    symbol: &WorkspaceSymbol,
+    context: &CompletionContext,
+    import_map: &HashMap<String, HashSet<String>>,
+    used_modules: &HashSet<String>,
+) -> bool {
+    let module = symbol
+        .container_name
+        .as_deref()
+        .or_else(|| {
+            symbol.qualified_name.as_deref().and_then(|qualified| {
+                qualified.strip_suffix(&symbol.name).and_then(|prefix| prefix.strip_suffix("::"))
+            })
+        })
+        .unwrap_or("");
+    module.is_empty()
+        || module == "main"
+        || module == context.current_package
+        || (used_modules.contains(module)
+            && import_map.get(module).is_some_and(|symbols| symbols.contains(&symbol.name)))
+}
+
 /// Add live compiler visible-symbol completions for imported/exported symbols.
 ///
 /// This is intentionally narrower than the shadow/cutover proof helpers:
@@ -286,6 +300,8 @@ pub fn add_visible_symbol_completions(
     context: &CompletionContext,
     workspace_index: &Option<Arc<WorkspaceIndex>>,
     filepath: Option<&str>,
+    import_map: &HashMap<String, HashSet<String>>,
+    used_modules: &HashSet<String>,
 ) {
     if context.prefix.is_empty() || context.prefix.starts_with(['$', '@', '%', '&']) {
         return;
@@ -310,6 +326,7 @@ pub fn add_visible_symbol_completions(
     for symbol in visible_symbols
         .into_iter()
         .filter(is_live_visible_completion_candidate)
+        .filter(|symbol| visible_symbol_has_import_authority(symbol, import_map, used_modules))
         .filter(|symbol| symbol.name.starts_with(&context.prefix))
     {
         let source_module = symbol.context.as_ref().and_then(|context| {
@@ -334,6 +351,43 @@ pub fn add_visible_symbol_completions(
             label_details: None,
         });
     }
+}
+
+/// A compiler visibility fact with a module origin is usable as a bare
+/// completion only when the request document makes that module visible.
+///
+/// The semantic query can expose export facts from an indexed module even when
+/// the current file has not imported that module. Qualified workspace
+/// completions remain responsible for that unimported case; this producer must
+/// not promote the same symbol to a bare insertion without import authority.
+fn visible_symbol_has_import_authority(
+    symbol: &VisibleSymbol,
+    import_map: &HashMap<String, HashSet<String>>,
+    used_modules: &HashSet<String>,
+) -> bool {
+    let Some(module) = symbol.context.as_ref().and_then(|context| context.source_module.as_deref())
+    else {
+        return true;
+    };
+
+    if !used_modules.contains(module) {
+        return false;
+    }
+
+    // `visible_symbols_at` emits `DefaultExport` facts only when the request
+    // document's import of this module is a bare `use module;` form and the
+    // symbol is a member of that module's `@EXPORT`, position-gated to the
+    // query point (perl-workspace semantic visibility + ExportSet facts).
+    // That compiler fact already proves default-import visibility, and the
+    // buffer import map deliberately records no row for a bare `use`. An
+    // explicit list (`use module qw(...)`, including `qw()`) replaces those
+    // defaults, so only exact membership from an explicit row can still
+    // authorize.
+    if matches!(symbol.source, VisibleSymbolSource::DefaultExport) {
+        return import_map.get(module).is_none_or(|imported| imported.contains(&symbol.name));
+    }
+
+    import_map.get(module).is_some_and(|symbols| symbols.contains(&symbol.name))
 }
 
 fn is_live_visible_completion_candidate(symbol: &VisibleSymbol) -> bool {
@@ -1834,8 +1888,6 @@ pub fn add_workspace_method_completions(
     // (parents + roles). Child methods take priority.
     let members = collect_all_package_members_with_source(index, &package_name, source);
 
-    // Build an auto-import edit once for all methods from this package.
-    let auto_import_edit = auto_import::build_auto_import_edit(source, &package_name);
     let method_symbols = {
         let existing_labels: HashSet<&str> =
             completions.iter().map(|item| item.label.as_ref()).collect();
@@ -1850,16 +1902,12 @@ pub fn add_workspace_method_completions(
         &package_name,
         method_prefix,
         &method_symbols,
-        auto_import_edit.as_ref(),
         &evidence,
     ) {
         return;
     }
 
     for symbol in method_symbols {
-        let additional_edits =
-            auto_import_edit.as_ref().map(|e| vec![e.clone()]).unwrap_or_default();
-
         // Show which package actually defines the method for inherited completions
         let defining_pkg = symbol.container_name.as_deref().unwrap_or(package_name.as_str());
         let base_detail = if defining_pkg == package_name {
@@ -1894,7 +1942,7 @@ pub fn add_workspace_method_completions(
             insert_text: Some(Cow::Owned(format!("{}()", symbol.name))),
             sort_text: Some(Cow::Owned(format!("{method_tier}_{}", symbol.name))), // tier 2=own, 3=inherited, after local (tier 1)
             filter_text: Some(Cow::Owned(symbol.name.clone())),
-            additional_edits,
+            additional_edits: vec![],
             text_edit_range: Some((context.method_text_edit_start(source), context.position)),
             commit_characters: None,
             insert_text_format: InsertTextFormat::PlainText,
@@ -2004,11 +2052,7 @@ fn add_union_receiver_method_completions(
                 insert_text: Some(Cow::Owned(format!("{}()", symbol.name))),
                 sort_text: Some(Cow::Owned(format!("{sort_tier}_{}", symbol.name))),
                 filter_text: Some(Cow::Owned(symbol.name.clone())),
-                additional_edits: workspace_auto_import_edits(
-                    source,
-                    Some(defining_pkg),
-                    &context.current_package,
-                ),
+                additional_edits: vec![],
                 text_edit_range: Some((context.method_text_edit_start(source), context.position)),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
@@ -2092,11 +2136,7 @@ fn add_unknown_receiver_fallback(
                 // (existing tiers 1–4) and below other tier-5 catch-alls.
                 sort_text: Some(Cow::Owned(format!("6_{}", symbol.name))),
                 filter_text: Some(Cow::Owned(symbol.name.clone())),
-                additional_edits: workspace_auto_import_edits(
-                    source,
-                    Some(defining_pkg),
-                    &context.current_package,
-                ),
+                additional_edits: vec![],
                 text_edit_range: Some((context.method_text_edit_start(source), context.position)),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
@@ -2127,7 +2167,6 @@ fn add_semantic_method_completions(
     package_name: &str,
     method_prefix: &str,
     method_symbols: &[&WorkspaceSymbol],
-    auto_import_edit: Option<&(SourceLocation, String)>,
     evidence: &ReceiverEvidence,
 ) -> bool {
     let legacy_names = method_symbol_names(method_symbols);
@@ -2165,7 +2204,6 @@ fn add_semantic_method_completions(
             continue;
         }
 
-        let additional_edits = auto_import_edit.map(|e| vec![e.clone()]).unwrap_or_default();
         completions.push(CompletionItem {
             label: Cow::Owned(candidate.display_name.clone()),
             kind: CompletionItemKind::Function,
@@ -2181,7 +2219,7 @@ fn add_semantic_method_completions(
                 candidate.display_name
             ))),
             filter_text: Some(Cow::Owned(candidate.display_name.clone())),
-            additional_edits,
+            additional_edits: vec![],
             text_edit_range: Some(method_text_edit_range),
             commit_characters: None,
             insert_text_format: InsertTextFormat::PlainText,
@@ -2429,8 +2467,12 @@ fn semantic_file_id(uri: &str) -> FileId {
 
 #[cfg(test)]
 mod visible_symbol_completion_tests {
-    use super::{VisibleSymbol, VisibleSymbolSource, is_live_visible_completion_candidate};
-    use perl_semantic_facts::{Confidence, EntityId};
+    use super::{
+        VisibleSymbol, VisibleSymbolSource, is_live_visible_completion_candidate,
+        visible_symbol_has_import_authority,
+    };
+    use perl_semantic_facts::{Confidence, EntityId, VisibleSymbolContext};
+    use std::collections::{HashMap, HashSet};
 
     fn visible(source: VisibleSymbolSource, confidence: Confidence) -> VisibleSymbol {
         VisibleSymbol {
@@ -2473,6 +2515,117 @@ mod visible_symbol_completion_tests {
             VisibleSymbolSource::LocalLexical,
             Confidence::High,
         )));
+    }
+
+    #[test]
+    fn explicit_runtime_import_without_use_module_entry_is_not_authority() {
+        let symbol = VisibleSymbol {
+            name: "bar".to_string(),
+            entity_id: Some(EntityId(1)),
+            source: VisibleSymbolSource::ExplicitImport,
+            confidence: Confidence::High,
+            context: Some(VisibleSymbolContext::new(Some("Foo".to_string()), None, None)),
+        };
+        let import_map = HashMap::from([("Foo".to_string(), HashSet::from(["bar".to_string()]))]);
+
+        assert!(!visible_symbol_has_import_authority(&symbol, &import_map, &HashSet::new()));
+    }
+
+    fn default_export_symbol(name: &str) -> VisibleSymbol {
+        VisibleSymbol {
+            name: name.to_string(),
+            entity_id: Some(EntityId(1)),
+            source: VisibleSymbolSource::DefaultExport,
+            confidence: Confidence::High,
+            context: Some(VisibleSymbolContext::new(Some("Foo".to_string()), None, None)),
+        }
+    }
+
+    /// A bare `use Foo;` records no import-map row; the compiler's
+    /// `DefaultExport` fact is the authority for default-import visibility
+    /// (#11158 preservation row).
+    #[test]
+    fn default_export_with_bare_use_is_authorized() {
+        assert!(visible_symbol_has_import_authority(
+            &default_export_symbol("defaulted"),
+            &HashMap::new(),
+            &HashSet::from(["Foo".to_string()]),
+        ));
+    }
+
+    /// `use Foo ();` records an explicit empty-set row that replaces default
+    /// imports; a `DefaultExport` fact must not survive it.
+    #[test]
+    fn default_export_with_explicit_empty_list_is_denied() {
+        let import_map = HashMap::from([("Foo".to_string(), HashSet::new())]);
+
+        assert!(!visible_symbol_has_import_authority(
+            &default_export_symbol("defaulted"),
+            &import_map,
+            &HashSet::from(["Foo".to_string()]),
+        ));
+    }
+
+    /// An explicit list without this symbol replaces default imports.
+    #[test]
+    fn default_export_with_explicit_list_excluding_symbol_is_denied() {
+        let import_map = HashMap::from([("Foo".to_string(), HashSet::from(["other".to_string()]))]);
+
+        assert!(!visible_symbol_has_import_authority(
+            &default_export_symbol("defaulted"),
+            &import_map,
+            &HashSet::from(["Foo".to_string()]),
+        ));
+    }
+
+    /// An explicit list naming this symbol still authorizes it.
+    #[test]
+    fn default_export_with_exact_membership_is_authorized() {
+        let import_map =
+            HashMap::from([("Foo".to_string(), HashSet::from(["defaulted".to_string()]))]);
+
+        assert!(visible_symbol_has_import_authority(
+            &default_export_symbol("defaulted"),
+            &import_map,
+            &HashSet::from(["Foo".to_string()]),
+        ));
+    }
+
+    /// The document must reference the module at all: export facts from an
+    /// indexed but unimported module stay non-authoritative (#11158).
+    #[test]
+    fn default_export_without_module_reference_is_denied() {
+        assert!(!visible_symbol_has_import_authority(
+            &default_export_symbol("defaulted"),
+            &HashMap::new(),
+            &HashSet::new(),
+        ));
+    }
+
+    /// Non-default sources keep exact-row membership as their authority;
+    /// module presence alone never authorizes an arbitrary member (#11158).
+    #[test]
+    fn explicit_import_still_requires_exact_row_membership() {
+        let symbol = VisibleSymbol {
+            name: "imported_fn".to_string(),
+            entity_id: Some(EntityId(2)),
+            source: VisibleSymbolSource::ExplicitImport,
+            confidence: Confidence::High,
+            context: Some(VisibleSymbolContext::new(Some("Foo".to_string()), None, None)),
+        };
+
+        assert!(!visible_symbol_has_import_authority(
+            &symbol,
+            &HashMap::new(),
+            &HashSet::from(["Foo".to_string()]),
+        ));
+        let import_map =
+            HashMap::from([("Foo".to_string(), HashSet::from(["imported_fn".to_string()]))]);
+        assert!(visible_symbol_has_import_authority(
+            &symbol,
+            &import_map,
+            &HashSet::from(["Foo".to_string()]),
+        ));
     }
 }
 
