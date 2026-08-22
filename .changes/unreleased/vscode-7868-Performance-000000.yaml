@@ -1,0 +1,9 @@
+project: vscode
+component: Performance and reliability
+kind: Performance
+body: Added an evidence-backed VS Code client performance policy layer that classifies metrics by evidence quality and policy class, keeps missing instrumentation explicitly not-proven instead of zero, refuses noisy or unattributable evidence as blocking gates, and validates the committed vscode_client_perf_policy.v1 baseline record against those rules.
+time: 2026-08-22T00:00:00Z
+custom:
+  PR: 000000
+  Slug: vscode-client-perf-ratchet-policy
+  Breaking: "no"

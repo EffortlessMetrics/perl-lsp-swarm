@@ -1,0 +1,66 @@
+{
+  "schema_version": "vscode_client_perf_policy.v1",
+  "receipt_kind": "vscode_client_perf_policy",
+  "metrics": [
+    {
+      "metric_id": "pretrigger_network_requests",
+      "kind": "correctness_invariant",
+      "policy": "advisory",
+      "evidence_quality": "not_proven",
+      "subject": {
+        "vscode_version": "current-stable",
+        "platform": "linux",
+        "architecture": "x64",
+        "scenario": "unrelated-workspace-no-activation-trigger",
+        "cold_warm": "cold"
+      },
+      "previous_public": null,
+      "current_candidate": null,
+      "absolute_ceiling": null,
+      "relative_regression_ratio": null,
+      "rationale": "No network request is justified before a supported activation need; instrumentation for this invariant has not been captured on identified v0.17/v0.18 subjects, so the count remains unproven rather than assumed zero.",
+      "intentional_update_procedure": "Capture a deterministic request log on exact identified VSIX/host subjects, review it as a correctness contract, then promote to blocking with an absolute ceiling of zero; any later update requires a reviewed activation/network contract change plus fresh baseline evidence.",
+      "status": "not_proven"
+    },
+    {
+      "metric_id": "activation_to_commit_wall_time_ms",
+      "kind": "stable_performance_metric",
+      "policy": "advisory",
+      "evidence_quality": "not_proven",
+      "subject": {
+        "vscode_version": "current-stable",
+        "platform": "linux",
+        "architecture": "x64",
+        "scenario": "first-perl-document-cold",
+        "cold_warm": "cold"
+      },
+      "previous_public": null,
+      "current_candidate": null,
+      "absolute_ceiling": null,
+      "relative_regression_ratio": null,
+      "rationale": "Activation-to-commit wall time is a high-signal client cost envelope, but no repeatable distribution exists yet for identified previous-public and candidate VSIX subjects, so no threshold may be manufactured.",
+      "intentional_update_procedure": "Record a bounded repeatable distribution across the #7868 scenario matrix on minimum-supported and current-stable hosts; set an advisory relative regression ratio from that distribution and promote to blocking only after noise/repeatability review.",
+      "status": "not_proven"
+    },
+    {
+      "metric_id": "extension_host_rss_bytes_delta",
+      "kind": "informational_metric",
+      "policy": "informational",
+      "evidence_quality": "not_proven",
+      "subject": {
+        "vscode_version": "current-stable",
+        "platform": "linux",
+        "architecture": "x64",
+        "scenario": "extension-reload-reactivate",
+        "cold_warm": "warm"
+      },
+      "previous_public": null,
+      "current_candidate": null,
+      "absolute_ceiling": null,
+      "relative_regression_ratio": null,
+      "rationale": "Extension-host RSS cannot be reliably attributed to this extension inside the shared host process, so it stays informational and must never become a threshold gate; single observations are especially noisy.",
+      "intentional_update_procedure": "Keep informational unless a reviewed attribution mechanism isolates extension-owned memory; reclassification requires new instrument evidence, an owner, and a deliberate policy-class change in this record.",
+      "status": "not_proven"
+    }
+  ]
+}
