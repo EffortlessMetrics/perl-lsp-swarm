@@ -177,6 +177,27 @@ fn evidence_binds_to_the_final_returned_bytes_not_an_intermediate() -> TestResul
 }
 
 #[test]
+fn contradictory_action_and_change_evidence_is_not_consistent() -> TestResult {
+    use perl_lsp_perltidy::native::{TerminalChange, TerminalNewlineEvidence};
+
+    let valid = apply_terminal_sequence_policy("x", INSERT_ONLY, None).evidence;
+    assert!(valid.is_consistent());
+
+    let contradictory = TerminalNewlineEvidence { change: TerminalChange::Unchanged, ..valid };
+    assert!(!contradictory.is_consistent());
+
+    let contradictory_trim = TerminalNewlineEvidence {
+        predecessor: trailing_run("x\n\n"),
+        final_run: trailing_run("x\n"),
+        inserted: None,
+        removed_count: 1,
+        change: TerminalChange::Unchanged,
+    };
+    assert!(!contradictory_trim.is_consistent());
+    Ok(())
+}
+
+#[test]
 fn evidence_reports_change_after_partial_crlf_splitting_and_conversion() -> TestResult {
     use perl_lsp_perltidy::native::{TerminalChange, TerminalNewlineEvidence};
 

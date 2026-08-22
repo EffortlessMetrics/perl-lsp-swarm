@@ -1,7 +1,8 @@
 //! Offline proof for the #8048 independent edit-application oracle.
 //!
-//! The oracle must reject reversed, unreachable, overlapping, duplicate
-//! zero-width, and mid-code-point edits instead of clamping them, and must
+//! The oracle must reject reversed, unreachable, overlapping, and
+//! mid-code-point edits instead of clamping them, preserve the input order of
+//! distinct same-position zero-width edits, and must
 //! apply valid whole-document edits byte-exactly through true EOF. It shares
 //! no geometry code with any production range constructor.
 
@@ -105,15 +106,12 @@ fn adjacent_edits_are_allowed_but_overlap_is_rejected() -> TestResult {
 }
 
 #[test]
-fn duplicate_zero_width_insertion_points_are_rejected() -> TestResult {
+fn distinct_zero_width_insertions_preserve_lsp_order() -> TestResult {
     let edits = [one_edit(0, 2, 0, 2, "A"), one_edit(0, 2, 0, 2, "B")];
-    assert_eq!(
-        apply_edits_exact("abcd", &edits, UTF16),
-        Err(EditApplicationError::DuplicateInsertionPoint {
-            first_edit_index: 0,
-            second_edit_index: 1
-        })
-    );
+    assert_eq!(apply_edits_exact("abcd", &edits, UTF16)?, "abABcd");
+
+    let reversed = [edits[1].clone(), edits[0].clone()];
+    assert_eq!(apply_edits_exact("abcd", &reversed, UTF16)?, "abBAcd");
     Ok(())
 }
 

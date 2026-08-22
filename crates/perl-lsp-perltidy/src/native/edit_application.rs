@@ -9,8 +9,9 @@
 //! test.
 //!
 //! Rejection is the contract: reversed, out-of-bounds/unreachable,
-//! overlapping, duplicate zero-width, and mid-code-point edits are typed
-//! errors — never clamped.
+//! overlapping, and mid-code-point edits are typed errors — never clamped.
+//! Distinct zero-width edits at one position retain their input order, as
+//! current LSP application does.
 //!
 //! Authority boundary: no production caller. #10239/#10242 own wiring this
 //! into native/wire plan application; until then it is proof-only surface.
@@ -102,14 +103,6 @@ pub enum EditApplicationError {
         /// Index of the later edit overlapping it.
         second_edit_index: usize,
     },
-    /// Two zero-width edits target the same insertion point, which has no
-    /// defined order.
-    DuplicateInsertionPoint {
-        /// Index of the first zero-width edit at the point.
-        first_edit_index: usize,
-        /// Index of the second zero-width edit at the same point.
-        second_edit_index: usize,
-    },
 }
 
 impl std::fmt::Display for EditApplicationError {
@@ -131,10 +124,6 @@ impl std::fmt::Display for EditApplicationError {
             Self::OverlappingEdits { first_edit_index, second_edit_index } => {
                 write!(formatter, "edits {first_edit_index} and {second_edit_index} overlap")
             }
-            Self::DuplicateInsertionPoint { first_edit_index, second_edit_index } => write!(
-                formatter,
-                "zero-width edits {first_edit_index} and {second_edit_index} share one insertion point"
-            ),
         }
     }
 }
@@ -186,12 +175,6 @@ pub fn apply_edits_exact(
         let (first, second) = (window[0], window[1]);
         if second.start_byte < first.end_byte {
             return Err(EditApplicationError::OverlappingEdits {
-                first_edit_index: first.original_index,
-                second_edit_index: second.original_index,
-            });
-        }
-        if first.start_byte == second.start_byte && first.end_byte == second.end_byte {
-            return Err(EditApplicationError::DuplicateInsertionPoint {
                 first_edit_index: first.original_index,
                 second_edit_index: second.original_index,
             });

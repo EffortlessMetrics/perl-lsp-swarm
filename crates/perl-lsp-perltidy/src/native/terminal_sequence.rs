@@ -217,6 +217,19 @@ impl TerminalNewlineEvidence {
     /// applied result.
     #[must_use]
     pub fn is_consistent(&self) -> bool {
+        let action_shape_is_consistent = match (self.inserted, self.removed_count, self.change) {
+            (Some(_), 0, TerminalChange::Inserted) => self.predecessor.is_empty(),
+            (None, removed, TerminalChange::Trimmed) => {
+                removed > 0 && removed < self.predecessor.len()
+            }
+            (None, 0, TerminalChange::Unchanged) => !self.predecessor.is_empty(),
+            (None, 0, TerminalChange::LeftUnterminated) => self.predecessor.is_empty(),
+            _ => false,
+        };
+        if !action_shape_is_consistent {
+            return false;
+        }
+
         if self.predecessor.len() < self.removed_count {
             return false;
         }
