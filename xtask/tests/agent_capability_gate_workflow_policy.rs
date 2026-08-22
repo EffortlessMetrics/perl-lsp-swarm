@@ -1,8 +1,12 @@
 //! Contract tests for the M4b agent-capability workflow routing.
 
-use std::{fs, path::PathBuf};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Path, PathBuf},
+};
 
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use serde_yaml_ng::Value;
 
 #[test]
@@ -101,7 +105,10 @@ fn agent_capability_gate_preserves_trust_and_failure_boundaries() -> Result<()> 
         "emit \"github\" \"bot_pr_github_hosted\" \"false\" \"true\"",
         "emit \"github\" \"runner_token_missing\" \"true\" \"true\"",
         "cargo xtask check-agent-capabilities",
-        "uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+        // The exact pin is enforced repo-wide by
+        // `checkout_pins_share_one_full_commit_sha` below; naming the SHA here
+        // broke this contract on every upstream pin bump (issue #11695).
+        "uses: actions/checkout@",
         "uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772",
     ] {
         ensure!(content.contains(required), "workflow contract missing `{required}`");
@@ -132,6 +139,66 @@ fn agent_capability_gate_preserves_trust_and_failure_boundaries() -> Result<()> 
         "router outputs and summaries must preserve fallback evidence"
     );
 
+    Ok(())
+}
+
+/// Every `actions/checkout` use under `.github` must share one pinned ref and
+/// that ref must be a full 40-hex commit SHA.
+///
+/// A hardcoded SHA here broke on every upstream pin bump while partial sweeps
+/// (some files bumped, some not) stayed invisible to every required check
+/// (issue #11695). Asserting the invariant instead of the literal keeps the
+/// contract true across bumps: a bump updates all uses together, and any
+/// mutable tag pin or missed file fails loudly.
+#[test]
+fn checkout_pins_share_one_full_commit_sha() -> Result<()> {
+    let root = repo_root()?;
+    let mut refs = BTreeSet::new();
+    collect_checkout_refs(&root.join(".github"), &mut refs)?;
+
+    ensure!(
+        !refs.is_empty(),
+        "no `actions/checkout@<ref>` found under .github; the pin contract needs a reference"
+    );
+    ensure!(refs.len() == 1, "actions/checkout pins must share exactly one SHA, found {refs:?}");
+
+    let pinned =
+        refs.iter().next().ok_or_else(|| anyhow!("pin set was empty after uniqueness check"))?;
+    ensure!(
+        pinned.len() == 40 && pinned.chars().all(|c| c.is_ascii_hexdigit()),
+        "actions/checkout pin `{pinned}` must be a full 40-character commit SHA, \
+         not a mutable tag or branch"
+    );
+
+    Ok(())
+}
+
+fn collect_checkout_refs(dir: &Path, refs: &mut BTreeSet<String>) -> Result<()> {
+    let entries = fs::read_dir(dir)
+        .with_context(|| format!("reading workflow directory {}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.with_context(|| format!("reading entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_checkout_refs(&path, refs)?;
+            continue;
+        }
+        if path.extension().is_none_or(|ext| ext != "yml" && ext != "yaml") {
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("reading workflow file {}", path.display()))?;
+        for segment in content.split("actions/checkout@").skip(1) {
+            let reference: String =
+                segment.chars().take_while(char::is_ascii_alphanumeric).collect();
+            ensure!(
+                !reference.is_empty(),
+                "`actions/checkout@` in {} has no pinned reference",
+                path.display()
+            );
+            refs.insert(reference);
+        }
+    }
     Ok(())
 }
 
