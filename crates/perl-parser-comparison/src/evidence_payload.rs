@@ -1645,7 +1645,7 @@ fn sorted_json_value(value: &Value) -> Value {
     match value {
         Value::Object(object) => {
             let mut entries = object.iter().collect::<Vec<_>>();
-            entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+            entries.sort_unstable_by_key(|(key, _)| *key);
             let mut sorted = serde_json::Map::new();
             for (key, value) in entries {
                 sorted.insert(key.clone(), sorted_json_value(value));
