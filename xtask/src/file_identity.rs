@@ -21,50 +21,26 @@ use std::path::Path;
 /// reported as errors.
 #[cfg(windows)]
 pub fn windows_file_identity(path: &Path) -> Result<Option<(u32, u32, u32)>> {
-    use std::os::windows::ffi::OsStrExt;
-    use std::ptr::null_mut;
-    use winapi::um::fileapi::{
-        BY_HANDLE_FILE_INFORMATION, CreateFileW, GetFileInformationByHandle, OPEN_EXISTING,
-    };
-    use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
-    use winapi::um::winnt::{
-        FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    };
+    use std::os::windows::io::AsRawHandle;
+    use winapi::um::fileapi::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
+    use winapi::um::winnt::HANDLE;
 
     let display_path = path.display().to_string();
-    let wide_path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let handle = unsafe {
-        CreateFileW(
-            wide_path.as_ptr(),
-            0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            null_mut(),
-            OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
-            null_mut(),
-        )
-    };
-    if handle == INVALID_HANDLE_VALUE {
-        let error = std::io::Error::last_os_error();
-        if error.kind() == std::io::ErrorKind::NotFound {
-            return Ok(None);
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).wrap_err_with(|| format!("opening file identity {display_path}"));
         }
-        return Err(error).wrap_err_with(|| format!("reading file identity {display_path}"));
-    }
+    };
 
-    // SAFETY: `handle` is valid until CloseHandle below and the zeroed
-    // information struct is a plain FFI out-parameter for the duration of
-    // this single call.
+    // SAFETY: `file` owns a valid Windows handle for the duration of this
+    // call, and the zeroed information struct is a plain FFI out-parameter.
     let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-    let result = unsafe { GetFileInformationByHandle(handle, &mut information) };
-    let close_result = unsafe { CloseHandle(handle) };
-    if result == 0 {
+    let handle = file.as_raw_handle() as HANDLE;
+    if unsafe { GetFileInformationByHandle(handle, &mut information) } == 0 {
         return Err(std::io::Error::last_os_error())
             .wrap_err_with(|| format!("reading file identity {display_path}"));
-    }
-    if close_result == 0 {
-        return Err(std::io::Error::last_os_error())
-            .wrap_err_with(|| format!("closing file identity handle {display_path}"));
     }
 
     Ok(Some((
@@ -72,4 +48,45 @@ pub fn windows_file_identity(path: &Path) -> Result<Option<(u32, u32, u32)>> {
         information.nFileIndexHigh,
         information.nFileIndexLow,
     )))
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::windows_file_identity;
+    use color_eyre::eyre::{Result, bail};
+    use std::fs;
+
+    #[test]
+    fn missing_file_identity_is_none() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let missing = directory.path().join("missing.pl");
+
+        if windows_file_identity(&missing)?.is_some() {
+            bail!("missing file unexpectedly had a Windows identity: {}", missing.display());
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn identity_uses_std_extended_length_path_handling() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut nested = directory.path().to_path_buf();
+        while nested.to_string_lossy().chars().count() <= 260 {
+            nested.push("long-path-segment-012345678901234567890123456789");
+        }
+        fs::create_dir_all(&nested)?;
+        let file = nested.join("fixture.pl");
+        fs::write(&file, b"1;\n")?;
+
+        let path_length = file.to_string_lossy().chars().count();
+        if path_length <= 260 {
+            bail!("test path did not exceed MAX_PATH: {path_length}");
+        }
+        if windows_file_identity(&file)?.is_none() {
+            bail!("existing extended-length path had no Windows identity: {}", file.display());
+        }
+
+        Ok(())
+    }
 }
