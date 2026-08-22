@@ -164,7 +164,7 @@ fn validate_output_separation(root: &Path, fixtures: &[PathBuf], output: &Path) 
         if let Some(output_metadata) = output_metadata.as_ref() {
             let fixture_metadata = fs::metadata(fixture)
                 .with_context(|| format!("reading fixture metadata {}", fixture.display()))?;
-            if same_file_identity(output_metadata, &fixture_metadata)? {
+            if same_file(output, output_metadata, fixture, &fixture_metadata)? {
                 bail!("Snapshot output hard-links fixture: {}", fixture.display());
             }
         }
@@ -228,29 +228,49 @@ fn normalize_output_path(path: &Path, exists: bool) -> Result<PathBuf> {
 }
 
 #[cfg(unix)]
-fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> Result<bool> {
+fn same_file(
+    _left_path: &Path,
+    left: &fs::Metadata,
+    _right_path: &Path,
+    right: &fs::Metadata,
+) -> Result<bool> {
     use std::os::unix::fs::MetadataExt as _;
 
     Ok(left.dev() == right.dev() && left.ino() == right.ino())
 }
 
 #[cfg(windows)]
-fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> Result<bool> {
-    use std::os::windows::fs::MetadataExt as _;
-
-    match (
-        (left.volume_serial_number(), left.file_index()),
-        (right.volume_serial_number(), right.file_index()),
-    ) {
-        ((Some(left_volume), Some(left_index)), (Some(right_volume), Some(right_index))) => {
-            Ok(left_volume == right_volume && left_index == right_index)
-        }
-        _ => bail!("Snapshot output file identity is unavailable on Windows"),
+fn same_file(
+    left_path: &Path,
+    left: &fs::Metadata,
+    right_path: &Path,
+    right: &fs::Metadata,
+) -> Result<bool> {
+    // Stable Rust exposes no Windows file identity (`windows_by_handle` metadata
+    // accessors are unstable), so fall back to a conservative content check.
+    // Any hardlink alias of a fixture is necessarily content-identical, so a
+    // size mismatch proves distinct files and an equal-size byte comparison
+    // still rejects every real alias. The failure direction is safe: two
+    // distinct files with identical bytes are also rejected.
+    if left.len() != right.len() {
+        return Ok(false);
     }
+
+    let left_bytes = fs::read(left_path)
+        .with_context(|| format!("reading snapshot output {}", left_path.display()))?;
+    let right_bytes = fs::read(right_path)
+        .with_context(|| format!("reading fixture {}", right_path.display()))?;
+
+    Ok(left_bytes == right_bytes)
 }
 
 #[cfg(not(any(unix, windows)))]
-fn same_file_identity(_left: &fs::Metadata, _right: &fs::Metadata) -> Result<bool> {
+fn same_file(
+    _left_path: &Path,
+    _left: &fs::Metadata,
+    _right_path: &Path,
+    _right: &fs::Metadata,
+) -> Result<bool> {
     bail!("Snapshot output file identity is unsupported on target {}", std::env::consts::OS)
 }
 
