@@ -4,11 +4,13 @@ canonical_initial_api = "index_initial_file"
 canonical_initial_batch_api = "index_initial_files_batch"
 canonical_live_api = "index_live_file"
 compatibility_apis = ["index_file", "index_file_str", "index_file_with_generation", "index_files_batch"]
-compatibility_baseline = 694
+compatibility_baseline = 689
 
 # Live identity is the URI argument plus an owner-supplied non-zero NonZeroU32
-# generation; #11305 owns didOpen/didSave migration. Exact source paths are the
-# ledger identity. A new caller must be deliberately
+# generation. #11305 migrated didOpen/didSave to index_live_file behind the
+# text-sync currentness oracle; its former owner row is removed and the
+# validator now bans compatibility APIs from text-sync handler files outright.
+# Exact source paths are the ledger identity. A new caller must be deliberately
 # added with an owner, role, successor, and removal condition; broad directory
 # globs are intentionally not accepted by the validator.
 caller_paths = [
@@ -80,13 +82,6 @@ caller_paths = [
   "xtask/src/tasks/metrics/parser_accuracy.rs",
   "xtask/src/tasks/semantic_scorecard.rs",
 ]
-
-[[owner]]
-prefix = "crates/perl-lsp-rs/src/runtime/text_sync"
-role = "live didOpen/didSave generation path"
-owner = "perl-lsp-rs text synchronization"
-successor = "index_live_file with the #11305 currentness guard"
-removal_condition = "#11305 lands the owner-supplied live commit identity"
 
 [[owner]]
 prefix = "crates/perl-workspace/tests"

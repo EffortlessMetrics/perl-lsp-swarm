@@ -1155,39 +1155,40 @@ fn stale_side_effects_never_commit_through_the_real_worker_after_a_newer_edit()
     }
     let _release_guard = ReleaseOnDrop(&side_effect_barrier);
 
-    // Edit N (generation 1): arm the side-effect barrier so the worker
-    // pauses immediately after N's publish succeeds, before its side
+    // Edit N (generation 2: didOpen mints the first accepted generation as 1,
+    // so the first edit advances it to 2): arm the side-effect barrier so the
+    // worker pauses immediately after N's publish succeeds, before its side
     // effects (symbol reindex) commit.
-    side_effect_barrier.arm(&normalized_uri, 1);
+    side_effect_barrier.arm(&normalized_uri, 2);
     server.test_apply_did_change(uri, "sub gen1_symbol_must_never_be_indexed { 1 }\n", 2)?;
     side_effect_barrier.wait_until_paused();
 
-    // Publish already landed -- current_parsed() must be generation 1.
+    // Publish already landed -- current_parsed() must be generation 2.
     {
         let docs = server.documents.lock();
         let doc = must_some(docs.get(&normalized_uri));
         let current = must_some(doc.current_parsed());
-        assert_eq!(current.generation(), 1);
+        assert_eq!(current.generation(), 2);
     }
     // But its side effects have not committed -- the symbol index must
     // still be exactly as it was after the initial didOpen.
     assert!(server.symbol_index.lock().search_prefix("gen1_symbol").is_empty());
 
-    // Edit N+1 (generation 2) commits for REAL while N's side effects are
+    // Edit N+1 (generation 3) commits for REAL while N's side effects are
     // still paused. `didChange` applies the text and bumps the generation
     // counter SYNCHRONOUSLY (that part never waits on the worker) and only
     // then enqueues its own parse job -- which, per the per-URI
-    // single-flight design, cannot be dequeued until generation 1's
+    // single-flight design, cannot be dequeued until generation 2's
     // `process_job` call fully returns (i.e. after its side effects
     // resolve, whether they commit or are skipped). So at this point the
-    // TEXT/generation for this URI is already 2, but generation 2's own
+    // TEXT/generation for this URI is already 3, but generation 3's own
     // parse+side-effects have NOT run yet -- this is exactly the coordinator's
-    // race: "the document's generation moved on" without generation 1's
+    // race: "the document's generation moved on" without generation 2's
     // deferred side effects having had a chance to notice yet.
     server.test_apply_did_change(uri, "sub gen2_symbol_is_the_real_current_fact { 1 }\n", 3)?;
     assert_eq!(
         server.test_document_generation(uri),
-        Some(2),
+        Some(3),
         "the text/generation commit for edit N+1 must land immediately, independent of the paused worker"
     );
     assert!(
@@ -1197,29 +1198,29 @@ fn stale_side_effects_never_commit_through_the_real_worker_after_a_newer_edit()
 
     // Release generation 1's paused side effects. Its callback
     // (`run_post_parse_side_effects`) must now detect staleness (the
-    // document is at generation 2, not 1) and skip the reindex entirely --
-    // then, per the per-URI serialization, generation 2's own queued job is
+    // document is at generation 3, not 2) and skip the reindex entirely --
+    // then, per the per-URI serialization, generation 3's own queued job is
     // picked up and runs to completion (publish + side effects) once
-    // generation 1's `process_job` call returns.
+    // generation 2's `process_job` call returns.
     side_effect_barrier.release();
 
     assert!(
         server.test_wait_for_parse_worker_settled(uri, Duration::from_secs(5)),
-        "generation 1's released side-effect callback must finish running"
+        "generation 2's released side-effect callback must finish running"
     );
     assert!(
         server.symbol_index.lock().search_prefix("gen1_symbol").is_empty(),
         "generation 1's side effects must NEVER reach the symbol index once superseded -- \
          this is the publication-validity != side-effect-validity invariant"
     );
-    // The document's real current fact (generation 2) must still be intact.
+    // The document's real current fact (generation 3) must still be intact.
     assert!(
         server
             .symbol_index
             .lock()
             .search_prefix("gen2_symbol")
             .contains(&"gen2_symbol_is_the_real_current_fact".to_string()),
-        "generation 1's rejected side effects must not have clobbered generation 2's index entry"
+        "generation 2's rejected side effects must not have clobbered generation 3's index entry"
     );
 
     Ok(())
@@ -1248,7 +1249,7 @@ fn test_did_close_removes_virtual_file_from_workspace_index()
         }
     }))?;
     if let Some(coordinator) = server.coordinator() {
-        coordinator.index().index_file(url.clone(), source.to_string())?;
+        coordinator.index().index_initial_file(url.clone(), source.to_string())?;
         assert!(
             !coordinator.index().file_symbols(&uri).is_empty(),
             "workspace index must hold symbols while virtual document is open"
@@ -1293,7 +1294,7 @@ fn test_did_close_preserves_workspace_index_for_existing_file()
         }
     }))?;
     if let Some(coordinator) = server.coordinator() {
-        coordinator.index().index_file(url.clone(), source.to_string())?;
+        coordinator.index().index_initial_file(url.clone(), source.to_string())?;
         assert!(
             !coordinator.index().file_symbols(&uri).is_empty(),
             "workspace index setup must hold symbols before close"
@@ -1362,8 +1363,9 @@ fn e2e_did_open_publishes_active_document_ready_after_index_commit()
         "active-document readiness must identify the opened URI; got: {text:?}"
     );
     assert!(
-        text.contains(r#""generation":0"#),
-        "active-document readiness must identify the opened generation; got: {text:?}"
+        text.contains(r#""generation":1"#),
+        "active-document readiness must identify the opened first accepted \
+         generation (never the legacy zero placeholder); got: {text:?}"
     );
     Ok(())
 }
@@ -2329,11 +2331,12 @@ fn panicking_new_lifecycle_job_still_credits_the_pending_parse_settle()
     let coordinator = must_some(server.coordinator());
     let baseline = coordinator.pending_parse_count();
 
-    // Arm the panic injector for generation 1, then apply the edit that
-    // both bumps to generation 1 AND establishes this as a NEW pending-parse
-    // lifecycle (nothing was queued/active for this URI a moment ago, so
-    // `enqueue` returns `true` and `notify_change` fires -- see #3660).
-    server.test_parse_worker_arm_panic(uri, 1);
+    // Arm the panic injector for generation 2 (didOpen mints the first
+    // accepted generation as 1, #11305), then apply the edit that both bumps
+    // to generation 2 AND establishes this as a NEW pending-parse lifecycle
+    // (nothing was queued/active for this URI a moment ago, so `enqueue`
+    // returns `true` and `notify_change` fires -- see #3660).
+    server.test_parse_worker_arm_panic(uri, 2);
     server.test_apply_did_change(uri, "my $aa = 1;\n", 2)?;
     assert!(
         must_some(server.parse_worker())
@@ -2396,13 +2399,14 @@ fn terminal_stale_reject_with_no_successor_still_credits_the_pending_parse_settl
     let coordinator = must_some(server.coordinator());
     let baseline = coordinator.pending_parse_count();
 
-    // Pause generation 1's job immediately before it attempts to publish --
-    // this is the new-lifecycle enqueue, so `notify_change` fires once here.
-    server.test_parse_worker_arm_barrier(uri, 1);
+    // Pause generation 2's job (didOpen mints the first accepted generation
+    // as 1, #11305) immediately before it attempts to publish -- this is the
+    // new-lifecycle enqueue, so `notify_change` fires once here.
+    server.test_parse_worker_arm_barrier(uri, 2);
     server.test_apply_did_change(uri, "my $aa = 1;\n", 2)?;
     server.test_parse_worker_wait_until_paused();
 
-    // Close + reopen while generation 1 is paused: `didOpen` is always
+    // Close + reopen while generation 2 is paused: `didOpen` is always
     // synchronous (never touches the async worker), so nothing gets
     // enqueued behind the paused job -- `pending` stays empty for this URI.
     // The reopened document gets a brand-new `DocumentState` with a fresh
@@ -2410,7 +2414,7 @@ fn terminal_stale_reject_with_no_successor_still_credits_the_pending_parse_settl
     server.handle_did_close(Some(json!({"textDocument": {"uri": uri}})))?;
     server.test_apply_did_open(uri, "my $reopened = 1;\n", 1)?;
 
-    // Release generation 1's paused job: `Arc::ptr_eq` against the fresh
+    // Release generation 2's paused job: `Arc::ptr_eq` against the fresh
     // document's generation handle fails, so `publish_parsed_if_current`'s
     // caller treats it as unpublished -- `jobs_rejected_stale` increments,
     // `on_published` never fires, and (with nothing queued behind it)
@@ -2441,5 +2445,265 @@ fn terminal_stale_reject_with_no_successor_still_credits_the_pending_parse_settl
         coordinator.state()
     );
 
+    Ok(())
+}
+
+// ---- #11305: generation-bound open/save workspace-source commits ----------
+
+/// #11305 falsifier (didOpen generation-zero spy): the first open
+/// workspace-source commit must carry the accepted document instance's
+/// non-zero first generation, never generation zero or an initial-import
+/// role.
+#[cfg(feature = "workspace")]
+#[test]
+fn did_open_commits_workspace_source_with_first_accepted_generation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///open_live_commit_first_generation.pl";
+
+    server.test_apply_did_open(uri, "package Open::Live;\nsub open_live_symbol { 1 }\n1;\n", 1)?;
+
+    assert_eq!(
+        server.test_document_generation(uri),
+        Some(1),
+        "didOpen must mint a non-zero first accepted document generation"
+    );
+    let coordinator = server.coordinator().ok_or("coordinator must be installed")?;
+    assert_eq!(
+        coordinator.index().indexed_generation(uri),
+        Some(1),
+        "the first open workspace commit must land at the accepted non-zero \
+         generation, never zero"
+    );
+    assert!(
+        !coordinator.index().file_symbols(uri).is_empty(),
+        "the opened buffer's symbols must be committed to the workspace index"
+    );
+    Ok(())
+}
+
+/// #11305 falsifier (reopen ABA): an open's deferred workspace-source commit
+/// released after a close/reopen of the same URI must change nothing, even
+/// when the reopened instance sits at the SAME numeric generation -- exact
+/// instance identity, not URI or numeric equality, is the currentness
+/// authority.
+#[cfg(feature = "workspace")]
+#[test]
+fn held_did_open_workspace_commit_is_inert_after_close_reopen_aba()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_tdd_support::must_some;
+
+    let server = LspServer::new();
+    let uri = "file:///aba_held_open_commit.pl";
+    let normalized_uri = server.normalize_uri_key(uri);
+    let text_a = "package Aba::Stale;\nsub stale_open_symbol { 1 }\n1;\n";
+    let text_b = "package Aba::Fresh;\nsub fresh_reopen_symbol { 2 }\n1;\n";
+
+    // Session 1 opens; in unit tests its background commit runs inline and
+    // settles for text A at generation 1.
+    server.test_apply_did_open(uri, text_a, 1)?;
+    // Capture exactly what session 1's deferred workspace commit carries:
+    // the instance Arc, accepted generation, bytes, and every dependency the
+    // production background task holds.
+    let accepted_generation = 1u32;
+    let instance_a = {
+        let docs = server.documents.lock();
+        StdArc::clone(&must_some(docs.get(&normalized_uri)).generation)
+    };
+
+    // Close + reopen the SAME URI with different bytes: a brand-new document
+    // instance at the SAME numeric generation (both are 1).
+    server.handle_did_close(Some(json!({"textDocument": {"uri": uri}})))?;
+    server.test_apply_did_open(uri, text_b, 1)?;
+    let coordinator = must_some(server.coordinator());
+    let index = coordinator.index();
+    assert_eq!(
+        index.indexed_generation(uri),
+        Some(1),
+        "the reopened session must have committed its own bytes first"
+    );
+
+    // Release session 1's held open work through the PRODUCTION commit path.
+    let held_task = DidOpenSourceCommitTask {
+        documents: crate::runtime::parse_worker::DocumentsHandle(StdArc::clone(&server.documents)),
+        workspace_index: StdArc::clone(index),
+        coordinator: StdArc::clone(coordinator),
+        outbound: server.outbound.clone(),
+        // The counter is owned by the production spawn path; this direct
+        // release does not touch it.
+        task_counter: StdArc::new(std::sync::atomic::AtomicUsize::new(0)),
+    };
+    held_task.run(
+        uri.to_string(),
+        normalized_uri.clone(),
+        text_a.to_string(),
+        instance_a,
+        accepted_generation,
+        url::Url::parse(uri)?,
+        SourceCommit::new(must_some(std::num::NonZeroU32::new(accepted_generation))),
+    );
+
+    // The numeric generations match but the instance Arc does not: the
+    // oracle must reject the held work and the reopened facts must stand.
+    assert!(
+        index.find_definition("stale_open_symbol").is_none(),
+        "held open work from the closed instance must never reach the workspace index"
+    );
+    assert!(
+        index.find_definition("fresh_reopen_symbol").is_some(),
+        "the reopened instance's committed facts must survive the released stale work"
+    );
+    assert_eq!(index.indexed_generation(uri), Some(1));
+    Ok(())
+}
+
+/// #11305 falsifier (save versus newer edit): save reconciliation work held
+/// before source commit cannot alter accepted workspace source/facts once a
+/// newer `didChange` generation has won.
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+#[test]
+fn held_did_save_reconcile_cannot_override_newer_edit() -> Result<(), Box<dyn std::error::Error>> {
+    use perl_tdd_support::must_some;
+
+    let server = LspServer::new();
+    let uri = "file:///save_vs_newer_edit.pl";
+    let normalized_uri = server.normalize_uri_key(uri);
+
+    server.test_apply_did_open(uri, "my $a = 1;\n", 1)?;
+    // Model the async-parse lag window (#5111): the document advanced while
+    // no workspace-index update has landed yet.
+    server.test_replace_document_without_index(uri, "my $b = 2;\n", 2)?;
+
+    // Hold the save's reconciliation work for generation 2...
+    let candidate = must_some(server.capture_did_save_index_reconcile(&normalized_uri));
+    // ...while a newer edit wins the document AND the index.
+    server.test_apply_did_change(uri, "my $c = 3;\n", 3)?;
+    let coordinator = must_some(server.coordinator());
+    assert_eq!(
+        coordinator.index().indexed_generation(uri),
+        Some(3),
+        "the newer edit's own live commit must have landed"
+    );
+
+    // Release the held save work through the production commit step.
+    let outcome = server.commit_did_save_index_reconcile(candidate);
+    assert!(
+        outcome.is_none(),
+        "a save superseded by a newer accepted edit must go inert, got {outcome:?}"
+    );
+    assert_eq!(
+        coordinator.index().indexed_generation(uri),
+        Some(3),
+        "the released stale save must not move the indexed generation backwards"
+    );
+    assert!(
+        must_some(coordinator.index().document_store().get(uri)).text().contains("$c"),
+        "accepted workspace source must remain the newer edit's bytes"
+    );
+    Ok(())
+}
+
+/// Positive control for the held-save machinery: the same capture/commit pair
+/// commits through the live API when the captured generation is still
+/// current, proving the inertness above is real discrimination rather than a
+/// vacuously broken commit path.
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+#[test]
+fn held_did_save_reconcile_commits_when_captured_generation_is_current()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_parser::workspace_index::SourceCommitOutcome;
+    use perl_tdd_support::must_some;
+
+    let server = LspServer::new();
+    let uri = "file:///held_save_still_current.pl";
+    let normalized_uri = server.normalize_uri_key(uri);
+
+    server.test_apply_did_open(uri, "my $a = 1;\n", 1)?;
+    server.test_replace_document_without_index(uri, "my $b = 2;\n", 2)?;
+    let candidate = must_some(server.capture_did_save_index_reconcile(&normalized_uri));
+
+    assert_eq!(
+        server.commit_did_save_index_reconcile(candidate),
+        Some(SourceCommitOutcome::Accepted),
+        "a save whose captured generation is still current must commit as Accepted"
+    );
+    let coordinator = must_some(server.coordinator());
+    assert_eq!(
+        coordinator.index().indexed_generation(uri),
+        Some(2),
+        "the live save commit must advance the indexed generation to the accepted one"
+    );
+    assert!(
+        must_some(coordinator.index().document_store().get(uri)).text().contains("$b"),
+        "the live save commit must publish the saved buffer bytes"
+    );
+    Ok(())
+}
+
+/// #11305 falsifier (save-with-text binding): a save carrying text reconciles
+/// through the generation-bound lifecycle -- it advances the accepted
+/// document generation exactly once and lands as a live workspace commit at
+/// that generation -- and an identical-content re-save stays a proved no-op
+/// under the SAME generation.
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+#[test]
+fn did_save_with_text_commits_live_and_identical_resave_is_noop()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_tdd_support::must_some;
+
+    let server = LspServer::new();
+    let uri = "file:///save_with_text_live.pl";
+
+    server.test_apply_did_open(
+        uri,
+        "package SaveText::Before;\nsub before_save_symbol { 1 }\n1;\n",
+        1,
+    )?;
+
+    server.handle_did_save(Some(json!({
+        "textDocument": { "uri": uri },
+        "text": "package SaveText::After;\nsub after_save_symbol { 2 }\n1;\n",
+    })))?;
+
+    assert_eq!(
+        server.test_document_generation(uri),
+        Some(2),
+        "a differing didSave.text must advance the accepted generation exactly once"
+    );
+    let coordinator = must_some(server.coordinator());
+    assert_eq!(
+        coordinator.index().indexed_generation(uri),
+        Some(2),
+        "the save-with-text workspace commit must bind to the new accepted generation"
+    );
+    assert!(
+        coordinator.index().find_definition("after_save_symbol").is_some(),
+        "the saved buffer's symbols must replace the pre-save ones in the index"
+    );
+    assert!(
+        coordinator.index().find_definition("before_save_symbol").is_none(),
+        "pre-save symbols must not survive the bound save commit"
+    );
+
+    // An identical-content save under the SAME generation must stay a no-op:
+    // no generation movement, no index rewrite.
+    server.handle_did_save(Some(json!({
+        "textDocument": { "uri": uri },
+        "text": "package SaveText::After;\nsub after_save_symbol { 2 }\n1;\n",
+    })))?;
+    assert_eq!(
+        server.test_document_generation(uri),
+        Some(2),
+        "an identical-content save must not mint a new generation"
+    );
+    assert_eq!(
+        coordinator.index().indexed_generation(uri),
+        Some(2),
+        "an identical-content save must not move the indexed generation"
+    );
+    assert!(
+        coordinator.index().find_definition("after_save_symbol").is_some(),
+        "identical-content no-op must leave committed facts intact"
+    );
     Ok(())
 }

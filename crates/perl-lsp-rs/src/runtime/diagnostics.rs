@@ -2798,10 +2798,11 @@ mod tests {
             generation.fetch_add(1, Ordering::SeqCst);
         }));
 
+        let generation_before_publish = generation_after_publish.load(Ordering::SeqCst);
         server.publish_diagnostics(uri);
         assert_eq!(
             generation_after_publish.load(Ordering::SeqCst),
-            1,
+            generation_before_publish + 1,
             "test hook must advance generation after the diagnostics snapshot"
         );
         drop(server);

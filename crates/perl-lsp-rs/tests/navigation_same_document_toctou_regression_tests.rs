@@ -122,8 +122,8 @@ fn type_definition_fallback_pins_captured_generation_under_racing_didchange() ->
     };
 
     // Block (no sleep) until the handler has captured ast/doc_text from
-    // generation 0 and reached the gap right before it re-reads
-    // `documents_text_snapshot()` for the fallback.
+    // the opened generation (1, per #11305) and reached the gap right before
+    // it re-reads `documents_text_snapshot()` for the fallback.
     // Bounded, not a bare `.recv()`: a regression in the handler that never
     // reaches the gap must fail this test promptly instead of hanging the
     // suite forever.
@@ -136,7 +136,7 @@ fn type_definition_fallback_pins_captured_generation_under_racing_didchange() ->
     server.test_apply_did_change(uri, &after, 2)?;
     assert_eq!(
         server.test_document_generation(uri),
-        Some(1),
+        Some(2),
         "the racing didChange must actually advance the document generation"
     );
 
@@ -311,7 +311,7 @@ fn implementation_fallback_pins_captured_generation_under_racing_didchange() -> 
     server.test_apply_did_change(uri, &after, 2)?;
     assert_eq!(
         server.test_document_generation(uri),
-        Some(1),
+        Some(2),
         "the racing didChange must actually advance the document generation"
     );
 

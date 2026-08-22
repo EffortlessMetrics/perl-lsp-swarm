@@ -18,7 +18,9 @@ use super::{
 use crate::protocol::invalid_params;
 use crate::state::{DegradationTier, ParsedSnapshot};
 #[cfg(feature = "workspace")]
-use perl_parser::workspace_index::{IndexPhase, IndexState};
+use perl_parser::workspace_index::{
+    IndexCoordinator, IndexPhase, IndexState, SourceCommit, SourceCommitOutcome, WorkspaceIndex,
+};
 use perl_parser_core::source_file::is_binary_content;
 
 mod document_state;
@@ -29,6 +31,92 @@ use document_state::{empty_state, minimal_state, minimal_state_from_rope};
 #[cfg(feature = "incremental")]
 use srp_helpers::build_incremental_edit_set;
 use srp_helpers::{is_embedded_template_uri, is_perl_language_id};
+
+/// Deferred didOpen workspace-source commit (#11305): everything one open's
+/// background commit task needs, captured at notification time so the work
+/// can run (or be held by a deterministic test) far later.
+#[cfg(feature = "workspace")]
+struct DidOpenSourceCommitTask {
+    documents: crate::runtime::parse_worker::DocumentsHandle,
+    workspace_index: Arc<WorkspaceIndex>,
+    coordinator: Arc<IndexCoordinator>,
+    outbound: super::outbound::OutboundSender,
+    task_counter: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg(feature = "workspace")]
+impl DidOpenSourceCommitTask {
+    /// Commit one opened document's workspace source through the typed live
+    /// API behind the sanctioned final-currentness oracle.
+    ///
+    /// The commit lands only while `instance` is still the live document at
+    /// `normalized_uri` with the SAME `accepted_generation` -- a newer edit
+    /// bumps past it and a close/reopen swaps the instance Arc; each makes
+    /// this open's workspace work inert instead of able to clobber newer
+    /// facts. The write goes through [`WorkspaceIndex::index_live_file`] with
+    /// the owner-checked non-zero [`SourceCommit`]; the generation-less /
+    /// initial-import compatibility surface is structurally unreachable from
+    /// here. Runs this task's pending-index counter decrement on every path.
+    fn run(
+        self,
+        uri: String,
+        normalized_uri: String,
+        text: String,
+        instance: Arc<AtomicU32>,
+        accepted_generation: u32,
+        url: url::Url,
+        source_commit: SourceCommit,
+    ) {
+        let Self { documents, workspace_index, coordinator, outbound, task_counter } = self;
+        let committed = commit_parse_effect_if_current(
+            &documents,
+            &normalized_uri,
+            accepted_generation,
+            &instance,
+            || workspace_index.index_live_file(url, text, source_commit),
+        );
+        match committed {
+            Some(SourceCommitOutcome::Accepted | SourceCommitOutcome::NoOp) => {
+                workspace_progress::send_active_document_ready_notification(
+                    &outbound,
+                    &uri,
+                    u64::from(accepted_generation),
+                );
+                if matches!(
+                    coordinator.state(),
+                    IndexState::Building { phase: IndexPhase::Idle, .. }
+                ) {
+                    let symbol_count = workspace_index.symbol_count();
+                    let file_count = workspace_index.file_count();
+                    coordinator.transition_to_ready(file_count, symbol_count);
+                    tracing::info!(
+                        "Index transitioned to Ready after first file (symbols: {})",
+                        symbol_count
+                    );
+                }
+            }
+            Some(SourceCommitOutcome::RejectedStale) => {
+                tracing::debug!(
+                    uri = %uri,
+                    "Skipping stale didOpen workspace-source commit after \
+                     newer document state won"
+                );
+            }
+            Some(SourceCommitOutcome::Failed(e)) => {
+                tracing::warn!("Failed to index file {}: {}", uri, e);
+            }
+            None => {
+                tracing::debug!(
+                    uri = %uri,
+                    "Skipping stale didOpen workspace-source commit after \
+                     document close/change"
+                );
+            }
+        }
+        coordinator.notify_parse_complete(&uri);
+        task_counter.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 /// Last path segment of a document URI (bounded to 64 chars), used as the
 /// `detail` field of a `PERL_LSP_TIMING` span. Never allocates on the hot path
@@ -232,9 +320,17 @@ impl LspServer {
 
             let rope = ropey::Rope::from_str(text);
 
-            // Store document state with normalized URI
+            // Store document state with normalized URI.
+            //
+            // A freshly opened document instance accepts its FIRST document
+            // generation as 1 (#11305): every workspace-source commit must
+            // carry an owner-checked non-zero accepted generation
+            // (`SourceCommit` makes zero structurally unrepresentable), so
+            // didOpen mints a real identity instead of the legacy
+            // generation-zero placeholder. Later edits keep bumping this same
+            // counter; close/reopen swaps the whole instance Arc.
             let normalized_uri = self.normalize_uri_key(uri);
-            let generation = Arc::new(AtomicU32::new(0));
+            let generation = Arc::new(AtomicU32::new(1));
 
             // Initialize the incremental parsing state from the already-parsed
             // text (didOpen). Off by default (#3396): the committed AST that
@@ -285,8 +381,8 @@ impl LspServer {
             // separately -- see `state::ParsedSnapshot`. `from_parse_result`
             // derives content_hash/parent_map/degradation_tier internally so
             // they can never disagree with `ast_arc`/`errors`/`text`. didOpen
-            // always starts at generation 0 (freshly created above), so this
-            // publication always succeeds synchronously.
+            // publishes for the just-minted first accepted generation (1), so
+            // this publication always succeeds synchronously.
             let doc_generation = doc_state.current_generation();
             let snapshot = Arc::new(ParsedSnapshot::from_parse_result(
                 doc_generation,
@@ -308,52 +404,50 @@ impl LspServer {
                 if let Some(coordinator) = self.coordinator()
                     && let Ok(url) = url::Url::parse(uri)
                 {
-                    let workspace_index = Arc::clone(coordinator.index());
-                    let coordinator_clone = Arc::clone(coordinator);
-                    let text_owned = text.to_string();
+                    let accepted_generation = generation.load(Ordering::SeqCst);
+                    // Owner-checked non-zero live identity for the first open
+                    // commit (#11305). The mint above guarantees non-zero; a
+                    // refusal here keeps the bookkeeping balanced instead of
+                    // panicking.
+                    let Some(source_commit) =
+                        std::num::NonZeroU32::new(accepted_generation).map(SourceCommit::new)
+                    else {
+                        tracing::error!(
+                            uri = %uri,
+                            "didOpen accepted generation was zero; refusing \
+                             generation-less workspace-source commit"
+                        );
+                        coordinator.notify_parse_complete(uri);
+                        self.publish_parse_errors_fast(uri);
+                        self.publish_diagnostics_debounced(uri);
+                        return Ok(());
+                    };
                     let uri_owned = uri.to_string();
+                    let normalized_uri_owned = normalized_uri.clone();
+                    let text_owned = text.to_string();
                     let generation = Arc::clone(&generation);
-                    let outbound = self.outbound.clone();
                     let task_counter = Arc::clone(&self.pending_index_task_count);
                     task_counter.fetch_add(1, Ordering::SeqCst);
 
+                    let task = DidOpenSourceCommitTask {
+                        documents: crate::runtime::parse_worker::DocumentsHandle(Arc::clone(
+                            &self.documents,
+                        )),
+                        workspace_index: Arc::clone(coordinator.index()),
+                        coordinator: Arc::clone(coordinator),
+                        outbound: self.outbound.clone(),
+                        task_counter,
+                    };
                     let task = move || {
-                        if generation.load(Ordering::Acquire) != 0 {
-                            tracing::debug!(
-                                uri = %uri_owned,
-                                "Skipping stale background index task after document close/change"
-                            );
-                            coordinator_clone.notify_parse_complete(&uri_owned);
-                            task_counter.fetch_sub(1, Ordering::SeqCst);
-                            return;
-                        }
-                        match workspace_index.index_file_with_generation(url, text_owned, 0) {
-                            Ok(()) => {
-                                if generation.load(Ordering::Acquire) == 0 {
-                                    workspace_progress::send_active_document_ready_notification(
-                                        &outbound, &uri_owned, 0,
-                                    );
-                                }
-                                if matches!(
-                                    coordinator_clone.state(),
-                                    IndexState::Building { phase: IndexPhase::Idle, .. }
-                                ) {
-                                    let symbol_count = workspace_index.symbol_count();
-                                    let file_count = workspace_index.file_count();
-                                    coordinator_clone.transition_to_ready(file_count, symbol_count);
-                                    tracing::info!(
-                                        "Index transitioned to Ready after first file \
-                                             (symbols: {})",
-                                        symbol_count
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!("Failed to index file {}: {}", uri_owned, e);
-                            }
-                        }
-                        coordinator_clone.notify_parse_complete(&uri_owned);
-                        task_counter.fetch_sub(1, Ordering::SeqCst);
+                        task.run(
+                            uri_owned,
+                            normalized_uri_owned,
+                            text_owned,
+                            generation,
+                            accepted_generation,
+                            url,
+                            source_commit,
+                        )
                     };
 
                     // Spawn on the tokio blocking pool when a runtime is available
@@ -1166,9 +1260,31 @@ impl LspServer {
                 let document_instance = Arc::clone(&ticket.document_instance);
                 let task_counter = Arc::clone(&self.pending_index_task_count);
                 let settle_notified_by_worker = ticket.settle_notified_by_worker;
+                // Owner-checked non-zero live identity for the deferred
+                // commit (#11305). The publish gate guarantees a bumped
+                // generation; the `Option` only keeps this construction total
+                // without a panic surface.
+                let live_commit =
+                    std::num::NonZeroU32::new(expected_generation).map(SourceCommit::new);
                 task_counter.fetch_add(1, Ordering::SeqCst);
 
                 let task = move || {
+                    // Zero identity is structurally unreachable on this path;
+                    // refuse loudly rather than touch the index through any
+                    // compatibility surface.
+                    let Some(live_commit) = live_commit else {
+                        tracing::error!(
+                            uri = %uri_owned,
+                            "post-parse workspace-source commit carried a zero \
+                             generation; refusing the generation-less \
+                             compatibility surface"
+                        );
+                        if !settle_notified_by_worker {
+                            coordinator_clone.notify_parse_complete(&uri_owned);
+                        }
+                        task_counter.fetch_sub(1, Ordering::SeqCst);
+                        return;
+                    };
                     // The SAME sanctioned oracle, called at THIS task's
                     // own (much later) commit boundary -- see
                     // `commit_parse_effect_if_current`.
@@ -1177,22 +1293,25 @@ impl LspServer {
                         &normalized_uri_owned,
                         expected_generation,
                         &document_instance,
-                        || {
-                            if let Err(e) = workspace_index.index_file_with_generation(
-                                url,
-                                doc_content,
-                                expected_generation,
-                            ) {
-                                tracing::warn!("Failed to index file {}: {}", uri_owned, e);
-                            }
-                        },
+                        // Live source commit through the canonical typed API
+                        // (#11301/#11305).
+                        || workspace_index.index_live_file(url, doc_content, live_commit),
                     );
-                    if indexed.is_none() {
-                        tracing::debug!(
-                            uri = %uri_owned,
-                            expected_generation,
-                            "Skipping stale background index task after document close/change"
-                        );
+                    match indexed {
+                        Some(SourceCommitOutcome::Failed(e)) => {
+                            tracing::warn!("Failed to index file {}: {}", uri_owned, e);
+                        }
+                        Some(SourceCommitOutcome::RejectedStale) => {
+                            tracing::debug!(
+                                uri = %uri_owned,
+                                expected_generation,
+                                "post-parse workspace-source commit rejected stale by \
+                                 the live generation high-water mark"
+                            );
+                        }
+                        // Accepted/NoOp need no log; `None` means the oracle
+                        // found a newer document state.
+                        Some(SourceCommitOutcome::Accepted | SourceCommitOutcome::NoOp) | None => {}
                     }
                     // See `PublishedParseTicket` and #3660: the async
                     // worker's settle hook already owns this

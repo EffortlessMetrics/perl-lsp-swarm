@@ -1712,7 +1712,8 @@ mod tests {
             RequestPriority::Hover,
         ));
         assert_eq!(f.uri, "file:///x.pl");
-        assert_eq!(f.document_generation, Some(0));
+        // didOpen mints the first accepted document generation as 1 (#11305).
+        assert_eq!(f.document_generation, Some(1));
         assert_eq!(f.document_version, Some(1));
         Ok(())
     }
@@ -1917,14 +1918,15 @@ mod tests {
         let server = crate::LspServer::new();
         let uri = "file:///reason.pl";
         server.test_apply_did_open(uri, "my $a;\n", 1)?;
-        let freshness = make_freshness(uri, Some(0), Some(1));
+        // didOpen mints the first accepted generation as 1 (#11305).
+        let freshness = make_freshness(uri, Some(1), Some(1));
 
         assert_eq!(Scheduler::stale_read_reason(&server, Some(&freshness)), None);
 
         server.test_apply_did_change(uri, "my $aa;\n", 2)?;
         assert_eq!(
             Scheduler::stale_read_reason(&server, Some(&freshness)),
-            Some(StaleReason::DocumentGenerationAdvanced { captured: 0, current: 1 })
+            Some(StaleReason::DocumentGenerationAdvanced { captured: 1, current: 2 })
         );
         Ok(())
     }
@@ -2011,7 +2013,7 @@ mod tests {
                     error: None,
                 },
             ),
-            Some(StaleReason::DocumentGenerationAdvanced { captured: 1, current: 2 })
+            Some(StaleReason::DocumentGenerationAdvanced { captured: 2, current: 3 })
         );
         let output = String::from_utf8_lossy(&output.lock().clone()).to_string();
         assert!(
@@ -2287,10 +2289,10 @@ mod tests {
             RequestPriority::Hover,
         ));
         // Before fix: None (raw uppercase key misses normalized lowercase entry)
-        // After fix: Some(0)
+        // After fix: Some(1) — didOpen mints the first accepted generation (#11305)
         assert_eq!(
             f.document_generation,
-            Some(0),
+            Some(1),
             "mixed-case URI must resolve to open document generation"
         );
         Ok(())

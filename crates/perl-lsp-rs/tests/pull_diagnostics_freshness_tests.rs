@@ -406,7 +406,7 @@ fn pull_document_diagnostic_stays_fresh_during_pending_parse_gap() -> TestResult
     server.test_apply_text_change_without_reparse(uri, "my $x =;\n", 2)?;
     assert_eq!(
         server.test_document_generation(uri),
-        Some(1),
+        Some(2),
         "helper must bump the generation without republishing"
     );
 
@@ -455,7 +455,7 @@ fn pull_document_diagnostic_does_not_report_a_fixed_syntax_error_as_current_duri
     server.test_apply_text_change_without_reparse(uri, "my $x = 1;\n", 2)?;
     assert_eq!(
         server.test_document_generation(uri),
-        Some(1),
+        Some(2),
         "helper must bump the generation without republishing"
     );
 
@@ -515,7 +515,7 @@ fn pull_workspace_diagnostic_omits_gapped_doc_from_items() -> TestResult {
     // Open the pending-parse gap without changing the text's parse-error
     // content, so a leaked stale/empty report would be observably wrong.
     server.test_apply_text_change_without_reparse(uri, "my $x =;\n", 2)?;
-    assert_eq!(server.test_document_generation(uri), Some(1));
+    assert_eq!(server.test_document_generation(uri), Some(2));
 
     let resp = server.test_handle_workspace_diagnostic(Some(json!({
         "previousResultIds": [ { "uri": uri, "value": prev_result_id } ]

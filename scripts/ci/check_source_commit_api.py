@@ -26,6 +26,15 @@ except ModuleNotFoundError:
 ROOT = Path(__file__).resolve().parents[2]
 LEDGER = ROOT / ".spec/11301-source-commit-api-and-caller-ledger/caller-ledger.toml"
 
+# #11305: the didOpen/didSave text-sync handlers own live source commits and
+# must never reach the generation-less/initial-import compatibility surface.
+# Only canonical initial APIs (test fixtures) or index_live_file are allowed
+# under this production seam.
+TEXT_SYNC_HANDLER_PREFIXES = (
+    "crates/perl-lsp-rs/src/runtime/text_sync/",
+    "crates/perl-lsp-rs/src/runtime/text_sync.rs",
+)
+
 
 def normalized_source(path: Path) -> str:
     source = path.read_text(encoding="utf-8")
@@ -98,6 +107,15 @@ def main() -> int:
         raise SystemExit("stale ledger identity: " + ", ".join(stale))
 
     for path in sorted(actual_paths):
+        if path.startswith(TEXT_SYNC_HANDLER_PREFIXES):
+            banned = sorted({method for method in actual[path] if method in compatible})
+            if banned:
+                raise SystemExit(
+                    "text-sync handler compatibility regression in "
+                    + path
+                    + " (didOpen/didSave must use index_live_file): "
+                    + ", ".join(banned)
+                )
         matches = [
             row
             for row in owners

@@ -3,6 +3,20 @@ use super::{
     source_path_from_uri,
 };
 
+/// One held didSave stale-index reconciliation candidate.
+///
+/// Captured under a single `documents` lock: the EXACT document instance
+/// Arc, its accepted generation, and the buffer text the save would commit.
+/// The commit step re-validates both identity components at its own
+/// boundary (#11305).
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+pub(crate) struct DidSaveIndexReconcile {
+    url: url::Url,
+    instance: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    generation: u32,
+    text: String,
+}
+
 impl LspServer {
     /// Handle didClose notification
     ///
@@ -110,29 +124,14 @@ impl LspServer {
             // lag from coalesced parse jobs), re-index it now from the
             // in-memory text. This prevents permanent index lag where no
             // async parse ticket ever catches the index up. (#5111)
+            //
+            // Capture and commit are separate steps so deterministic tests
+            // can hold a save's reconciliation across a newer edit; the
+            // commit re-validates the exact captured instance/generation at
+            // its own boundary (#11305).
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-            {
-                // Read both generation and text in a SINGLE lock to avoid TOCTOU.
-                let doc_info = {
-                    let documents = self.documents.lock();
-                    self.get_document(&documents, &normalized_uri)
-                        .map(|d| (d.current_generation(), d.text_str().to_string()))
-                };
-                if let Some((doc_gen_val, text)) = doc_info
-                    && let Some(coordinator) = self.coordinator()
-                {
-                    let index = coordinator.index();
-                    if index.is_index_generation_stale(&normalized_uri, doc_gen_val)
-                        && let Ok(url) = url::Url::parse(&normalized_uri)
-                    {
-                        tracing::debug!(
-                            "Reconciling stale index for {} (doc gen {} > indexed gen)",
-                            normalized_uri,
-                            doc_gen_val
-                        );
-                        let _ = index.index_file(url, text);
-                    }
-                }
+            if let Some(candidate) = self.capture_did_save_index_reconcile(&normalized_uri) {
+                self.commit_did_save_index_reconcile(candidate);
             }
 
             // Refresh through the generation-aware, canonical diagnostics path
@@ -152,6 +151,103 @@ impl LspServer {
         }
 
         Ok(())
+    }
+
+    /// One held didSave stale-index reconciliation candidate.
+    ///
+    /// Captured under a single `documents` lock: the EXACT document instance
+    /// Arc, its accepted generation, and the buffer text the save would
+    /// commit. The commit step re-validates both identity components at its
+    /// own boundary (#11305).
+    #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+    pub(crate) fn capture_did_save_index_reconcile(
+        &self,
+        normalized_uri: &str,
+    ) -> Option<DidSaveIndexReconcile> {
+        let captured = {
+            let documents = self.documents.lock();
+            self.get_document(&documents, normalized_uri).map(|d| {
+                (
+                    std::sync::Arc::clone(&d.generation),
+                    d.current_generation(),
+                    d.text_str().to_string(),
+                )
+            })
+        };
+        let (instance, generation, text) = captured?;
+        let coordinator = self.coordinator()?;
+        let index = coordinator.index();
+        if !index.is_index_generation_stale(normalized_uri, generation) {
+            return None;
+        }
+        let url = url::Url::parse(normalized_uri).ok()?;
+        Some(DidSaveIndexReconcile { url, instance, generation, text })
+    }
+
+    /// Commit one held didSave reconciliation as a typed live source
+    /// commit behind the sanctioned final-currentness oracle (#11305).
+    ///
+    /// Returns `None` when the document moved on between capture and
+    /// commit -- a newer edit bumped the generation, or close/reopen
+    /// swapped the instance Arc -- leaving accepted workspace source and
+    /// facts untouched. `Some(outcome)` reports the live API's typed
+    /// accepted/no-op/stale/failed disposition.
+    #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+    pub(crate) fn commit_did_save_index_reconcile(
+        &self,
+        candidate: DidSaveIndexReconcile,
+    ) -> Option<perl_parser::workspace_index::SourceCommitOutcome> {
+        use perl_parser::workspace_index::{SourceCommit, SourceCommitOutcome};
+
+        let normalized_uri = self.normalize_uri_key(candidate.url.as_str());
+        tracing::debug!(
+            uri = %normalized_uri,
+            generation = candidate.generation,
+            "Committing held didSave stale-index reconciliation"
+        );
+        let index = self.coordinator()?.index();
+        // Zero identity cannot occur for a parseable open document (didOpen
+        // mints generation 1 and edits only bump); refuse loudly rather than
+        // touch the index through any compatibility surface.
+        let Some(commit_gen) = std::num::NonZeroU32::new(candidate.generation) else {
+            tracing::error!(
+                uri = %normalized_uri,
+                "didSave reconciliation carried a zero document generation; \
+                 refusing the generation-less compatibility surface"
+            );
+            return None;
+        };
+        let outcome = super::commit_parse_effect_if_current(
+            &self.documents,
+            &normalized_uri,
+            candidate.generation,
+            &candidate.instance,
+            || index.index_live_file(candidate.url, candidate.text, SourceCommit::new(commit_gen)),
+        );
+        match &outcome {
+            Some(SourceCommitOutcome::Failed(e)) => {
+                tracing::warn!(
+                    uri = %normalized_uri,
+                    "didSave stale-index reconciliation failed: {}",
+                    e
+                );
+            }
+            Some(outcome) => {
+                tracing::debug!(
+                    uri = %normalized_uri,
+                    outcome = ?outcome,
+                    "didSave stale-index reconciliation settled"
+                );
+            }
+            None => {
+                tracing::debug!(
+                    uri = %normalized_uri,
+                    "didSave stale-index reconciliation skipped: \
+                     document changed before the live commit"
+                );
+            }
+        }
+        outcome
     }
 
     /// Handle willSave notification
