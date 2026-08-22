@@ -160,6 +160,7 @@ UNSUPPORTED_WRAPPER_COMMANDS = {
     "time",
     "xargs",
 }
+UNSUPPORTED_EXE_WRAPPER_ALIASES = {"command", "env", "timeout", "xargs"}
 SHELL_PUNCTUATION = set(";|&<>")
 SUPPORTED_SHELL_PUNCTUATION = SHELL_OPERATORS | {"<", ">", "<<", ">>", ">&", "<&"}
 
@@ -561,6 +562,12 @@ def _interpreter_name(token: str) -> str | None:
     return INTERPRETER_ALIASES.get(token_name)
 
 
+def _wrapper_name(token: str) -> str:
+    """Normalize executable wrapper aliases without broadening interpreters."""
+    token_name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return token_name.removesuffix(".exe")
+
+
 def _is_env_assignment(token: str) -> bool:
     return ENV_ASSIGNMENT.match(token) is not None
 
@@ -604,6 +611,7 @@ def _validate_shell_constructs(tokens: Sequence[str], root: Path) -> None:
     """Reject shell forms whose nested paths cannot be proven statically."""
     for index, token in enumerate(tokens):
         token_name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        wrapper_name = _wrapper_name(token)
         if _is_env_assignment(token) and (
             index == 0
             or tokens[index - 1] in SHELL_OPERATORS
@@ -652,13 +660,16 @@ def _validate_shell_constructs(tokens: Sequence[str], root: Path) -> None:
             next_token = tokens[index + 1]
             if next_token == "-S" or next_token.startswith("-S"):
                 raise ValueError("unsupported env -S shell-string execution")
-        if token_name in UNSUPPORTED_WRAPPER_COMMANDS:
+        if (
+            token_name.endswith(".exe")
+            and wrapper_name in UNSUPPORTED_EXE_WRAPPER_ALIASES
+        ) or wrapper_name in UNSUPPORTED_WRAPPER_COMMANDS:
             raise ValueError(f"unsupported nested-shell wrapper in gate policy: {token}")
-        if token_name == "find" and any(
+        if wrapper_name == "find" and any(
             candidate in {"-exec", "-execdir"} for candidate in tokens[index + 1 :]
         ):
             raise ValueError("unsupported find -exec nested-shell wrapper in gate policy")
-        if token_name == "timeout" and any(
+        if wrapper_name == "timeout" and any(
             _interpreter_name(candidate) is not None for candidate in tokens[index + 1 :]
         ):
             raise ValueError("unsupported timeout nested-shell wrapper in gate policy")
@@ -1027,6 +1038,11 @@ def _repository_root_for_execution(
     raise ValueError(
         "unable to derive repository root for gate preflight from xtask/policy paths"
     )
+
+
+def _path_from_repository_root(path: Path, root: Path) -> Path:
+    """Resolve shard process/output paths exactly as the checkout-root runner does."""
+    return path if path.is_absolute() else root / path
 
 
 def _regular_json_object(path: Path, *, subject: str) -> dict[str, Any]:
@@ -1694,6 +1710,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         validate_args(args)
         repository_root = _repository_root_for_execution(args.xtask, args.gate_policy)
+        xtask = _path_from_repository_root(args.xtask, repository_root)
+        receipt_dir = _path_from_repository_root(args.receipt_dir, repository_root)
+        summary_path = _path_from_repository_root(args.summary_path, repository_root)
         gate_policy = (
             args.gate_policy
             if args.gate_policy.is_absolute()
@@ -1715,10 +1734,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError as error:
         parser.error(str(error))
     runner = ShardRunner(
-        xtask=args.xtask,
+        xtask=xtask,
         gate_policy=gate_policy,
-        receipt_dir=args.receipt_dir,
-        summary_path=args.summary_path,
+        receipt_dir=receipt_dir,
+        summary_path=summary_path,
         subject_sha=args.subject_sha,
         gates=args.gates,
         dependency_rules=dependency_rules,

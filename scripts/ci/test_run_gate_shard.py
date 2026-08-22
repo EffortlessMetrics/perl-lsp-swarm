@@ -693,6 +693,14 @@ class GateShardTests(unittest.TestCase):
                 cwd=nested,
             )
         self.assertEqual(root.resolve(), derived)
+        self.assertEqual(
+            root / "target/debug/xtask",
+            shard._path_from_repository_root(Path("target/debug/xtask"), root),
+        )
+        self.assertEqual(
+            root / "receipts",
+            shard._path_from_repository_root(Path("receipts"), root),
+        )
 
     def test_gate_policy_preflight_rejects_missing_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1064,6 +1072,27 @@ class GateShardTests(unittest.TestCase):
         for command in (
             "command scripts/ci/check.py",
             "command python3 scripts/ci/check.py",
+        ):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "scripts/ci").mkdir(parents=True)
+                (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+                policy = write_gate_policy(
+                    root,
+                    "  - name: wrapper\n"
+                    f"    command: {command}\n",
+                )
+                with self.assertRaisesRegex(ValueError, "nested-shell wrapper"):
+                    shard.load_gate_commands(policy, ["wrapper"], root=root)
+
+    def test_gate_policy_preflight_rejects_exe_wrapper_aliases_with_existing_fixture(
+        self,
+    ) -> None:
+        for command in (
+            "command.exe scripts/ci/check.py",
+            "env.exe -- scripts/ci/check.py",
+            "timeout.exe 1 python3 scripts/ci/check.py",
+            "xargs.exe python3 scripts/ci/check.py",
         ):
             with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
