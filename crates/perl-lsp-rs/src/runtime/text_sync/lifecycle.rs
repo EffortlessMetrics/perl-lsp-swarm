@@ -59,26 +59,47 @@ impl LspServer {
                             coordinator.index().reset_generation_for_close(&key);
                         }
 
-                        if is_perl_source_uri(uri)
-                            && let Some(content) =
-                                crate::runtime::workspace::read_watched_file_content(
-                                    uri,
-                                    "didClose closed-authority reload",
-                                )
-                            && let Ok(url) = url::Url::parse(uri)
+                        let disk_content = is_perl_source_uri(uri).then(|| {
+                            crate::runtime::workspace::read_watched_file_content(
+                                uri,
+                                "didClose closed-authority reload",
+                            )
+                        });
+
+                        match disk_content
+                            .flatten()
+                            .and_then(|content| url::Url::parse(uri).ok().map(|url| (url, content)))
                         {
-                            match coordinator.index().index_file(url, content) {
-                                Ok(()) => {
+                            Some((url, content)) => {
+                                if let Err(e) = coordinator.index().index_file(url, content) {
+                                    tracing::warn!(
+                                        "Failed to reload closed file {} from disk: {}",
+                                        uri,
+                                        e
+                                    );
+                                    for key in self.uri_key_variants(uri) {
+                                        coordinator.index().remove_file(&key);
+                                    }
+                                } else {
                                     tracing::debug!(
                                         "Reloaded closed file under disk authority: {}",
                                         uri
-                                    )
+                                    );
                                 }
-                                Err(e) => tracing::warn!(
-                                    "Failed to reload closed file {} from disk: {}",
-                                    uri,
-                                    e
-                                ),
+                            }
+                            None => {
+                                // A rejected disk read must not leave the old
+                                // buffer-derived facts looking current after
+                                // the authority handoff. Fail closed until a
+                                // valid disk read or a fresh didOpen rebuilds
+                                // the source subject.
+                                tracing::debug!(
+                                    "Clearing closed file {} because no safe disk source was available",
+                                    uri
+                                );
+                                for key in self.uri_key_variants(uri) {
+                                    coordinator.index().remove_file(&key);
+                                }
                             }
                         }
                     }

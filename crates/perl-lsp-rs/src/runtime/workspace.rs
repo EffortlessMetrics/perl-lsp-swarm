@@ -120,6 +120,18 @@ pub(crate) fn read_watched_file_content(uri: &str, purpose: &str) -> Option<Stri
             return None;
         }
     };
+    let initial_modified = match metadata.modified() {
+        Ok(modified) => modified,
+        Err(e) => {
+            tracing::debug!(
+                "Failed to read modification time for {} ({}): {}",
+                purpose,
+                path.display(),
+                e
+            );
+            return None;
+        }
+    };
     if metadata.len() > size_limit as u64 {
         tracing::debug!(
             "Skipping file for {} ({} is {} bytes, over the {} byte limit)",
@@ -154,6 +166,34 @@ pub(crate) fn read_watched_file_content(uri: &str, purpose: &str) -> Option<Stri
             purpose,
             path.display(),
             size_limit
+        );
+        return None;
+    }
+
+    let final_metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(e) => {
+            tracing::debug!("Failed to restat file for {} ({}): {}", purpose, path.display(), e);
+            return None;
+        }
+    };
+    let final_modified = match final_metadata.modified() {
+        Ok(modified) => modified,
+        Err(e) => {
+            tracing::debug!(
+                "Failed to read final modification time for {} ({}): {}",
+                purpose,
+                path.display(),
+                e
+            );
+            return None;
+        }
+    };
+    if final_metadata.len() != metadata.len() || final_modified != initial_modified {
+        tracing::debug!(
+            "Skipping unstable file for {} ({} changed during read)",
+            purpose,
+            path.display()
         );
         return None;
     }
@@ -1625,6 +1665,23 @@ impl LspServer {
                     // DELETED must be processed immediately — the file is gone and
                     // stale index data should not linger.
                     #[cfg(feature = "workspace")]
+                    let document_is_open = {
+                        let documents = self.documents_guard();
+                        self.uri_key_variants(&uri)
+                            .iter()
+                            .any(|key| self.get_document(&documents, key).is_some())
+                    };
+
+                    #[cfg(feature = "workspace")]
+                    if document_is_open {
+                        tracing::debug!(
+                            uri,
+                            "Watched delete for open document — backing absence does not evict buffer authority (#8041)"
+                        );
+                        continue;
+                    }
+
+                    #[cfg(feature = "workspace")]
                     if let Some(coordinator) = self.coordinator() {
                         coordinator.notify_change(&uri);
                     }
@@ -1752,6 +1809,23 @@ impl LspServer {
                 };
 
                 tracing::debug!(uri, "File deleted");
+
+                #[cfg(feature = "workspace")]
+                let document_is_open = {
+                    let documents = self.documents_guard();
+                    self.uri_key_variants(uri)
+                        .iter()
+                        .any(|key| self.get_document(&documents, key).is_some())
+                };
+
+                #[cfg(feature = "workspace")]
+                if document_is_open {
+                    tracing::debug!(
+                        uri,
+                        "Explicit delete for open document — backing absence does not evict buffer authority (#8041)"
+                    );
+                    continue;
+                }
 
                 #[cfg(feature = "workspace")]
                 if let Some(coordinator) = self.coordinator() {
@@ -1916,9 +1990,6 @@ impl LspServer {
                         "File created for open document {} — open buffer remains authoritative (#8041)",
                         uri
                     );
-                    if let Some(coordinator) = self.coordinator() {
-                        coordinator.notify_parse_complete(uri);
-                    }
                     continue;
                 }
 
@@ -3901,9 +3972,30 @@ mod tests {
         wait_for_pending_index_tasks(&server);
         let generation_before = server.test_document_generation(&uri);
 
+        let pending_before_delete =
+            server.coordinator().map(|coordinator| coordinator.pending_parse_count());
         std::fs::remove_file(&path)?;
         server.handle_did_delete_files(Some(json!({ "files": [{ "uri": uri }] })))?;
+
+        assert_eq!(server.test_document_generation(&uri), generation_before);
+        assert_eq!(
+            server.documents_text_snapshot(),
+            vec![(server.normalize_uri_key(&uri), buffer_v2.to_string())]
+        );
+        if let Some(coordinator) = server.coordinator() {
+            let names = index_symbol_names(coordinator.index(), &uri);
+            assert!(names.iter().any(|name| name == "v2_only"), "{names:?}");
+            assert!(coordinator.index().document_store().get(&uri).is_some());
+            assert_eq!(
+                coordinator.pending_parse_count(),
+                pending_before_delete.unwrap_or_default(),
+                "open explicit delete must not create an unmatched coordinator lifecycle"
+            );
+        }
+
         std::fs::write(&path, "package Recreated;\nsub v3_only { 3 }\n1;\n")?;
+        let pending_before_create =
+            server.coordinator().map(|coordinator| coordinator.pending_parse_count());
         server.handle_did_create_files(Some(json!({ "files": [{ "uri": uri }] })))?;
 
         assert_eq!(server.test_document_generation(&uri), generation_before);
@@ -3916,6 +4008,36 @@ mod tests {
             assert!(names.iter().any(|name| name == "v2_only"), "{names:?}");
             assert!(!names.iter().any(|name| name == "v3_only"), "{names:?}");
             assert!(coordinator.index().document_store().get(&uri).is_some());
+            assert_eq!(
+                coordinator.pending_parse_count(),
+                pending_before_create.unwrap_or_default(),
+                "open explicit create must not create an unmatched coordinator lifecycle"
+            );
+        }
+
+        // Closed-file control: explicit delete removes the old disk facts, and
+        // an explicit create indexes the recreated disk source normally.
+        let closed_path = dir.path().join("closed_recreated.pm");
+        let closed_v1 = "package ClosedRecreated;\nsub old_only { 1 }\n1;\n";
+        let closed_v2 = "package ClosedRecreated;\nsub new_only { 2 }\n1;\n";
+        std::fs::write(&closed_path, closed_v1)?;
+        let closed_uri = url::Url::from_file_path(&closed_path)
+            .map_err(|_| "invalid closed file path")?
+            .to_string();
+        if let Some(coordinator) = server.coordinator() {
+            coordinator.index().index_file(url::Url::parse(&closed_uri)?, closed_v1.to_string())?;
+        }
+        server.handle_did_delete_files(Some(json!({ "files": [{ "uri": closed_uri }] })))?;
+        if let Some(coordinator) = server.coordinator() {
+            assert!(index_symbol_names(coordinator.index(), &closed_uri).is_empty());
+            assert!(coordinator.index().document_store().get(&closed_uri).is_none());
+        }
+        std::fs::write(&closed_path, closed_v2)?;
+        server.handle_did_create_files(Some(json!({ "files": [{ "uri": closed_uri }] })))?;
+        if let Some(coordinator) = server.coordinator() {
+            let names = index_symbol_names(coordinator.index(), &closed_uri);
+            assert!(names.iter().any(|name| name == "new_only"), "{names:?}");
+            assert!(!names.iter().any(|name| name == "old_only"), "{names:?}");
         }
 
         Ok(())
@@ -4113,7 +4235,23 @@ mod tests {
 
         if let Some(coordinator) = server.coordinator() {
             let names = index_symbol_names(coordinator.index(), &uri);
-            assert!(names.iter().any(|name| name == "v2_only"), "{names:?}");
+            assert!(names.is_empty(), "rejected oversized disk source must fail closed: {names:?}");
+            assert!(!names.iter().any(|name| name == "oversized_only"), "{names:?}");
+            assert!(coordinator.index().document_store().get(&uri).is_none());
+        }
+        assert_eq!(server.memory_state_snapshot().documents, 0);
+
+        // A later reopen/reindex can establish fresh authority after the
+        // rejected closed-file observation has been cleared.
+        let recovered = "package CloseOversized;\nsub recovered_only { 4 }\n1;\n";
+        std::fs::write(&path, recovered)?;
+        server.did_open(json!({
+            "textDocument": { "uri": uri, "languageId": "perl", "version": 3, "text": recovered }
+        }))?;
+        wait_for_pending_index_tasks(&server);
+        if let Some(coordinator) = server.coordinator() {
+            let names = index_symbol_names(coordinator.index(), &uri);
+            assert!(names.iter().any(|name| name == "recovered_only"), "{names:?}");
             assert!(!names.iter().any(|name| name == "oversized_only"), "{names:?}");
         }
 
@@ -4147,9 +4285,11 @@ mod tests {
 
         if let Some(coordinator) = server.coordinator() {
             let names = index_symbol_names(coordinator.index(), &uri);
-            assert!(names.iter().any(|name| name == "v2_only"), "{names:?}");
+            assert!(names.is_empty(), "rejected binary disk source must fail closed: {names:?}");
             assert!(!names.iter().any(|name| name == "binary_only"), "{names:?}");
+            assert!(coordinator.index().document_store().get(&uri).is_none());
         }
+        assert_eq!(server.memory_state_snapshot().documents, 0);
 
         Ok(())
     }
