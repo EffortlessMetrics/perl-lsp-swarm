@@ -31,7 +31,7 @@ jobs:
           ref: agent/4997-ai-activation-authority
           fetch-depth: 0
 
-      - name: Admit current regression, schema, and schema-test signatures
+      - name: Admit current regression, schema, schema-test, and constructor signatures
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -109,6 +109,11 @@ jobs:
 
           text = text[:sensitive_start] + sensitive_call + text[sensitive_end:]
           text = text[:assertion_start] + assertion_call + text[assertion_end:]
+
+          constructors = text.index('CONSTRUCTORS = "crates/perl-lsp-rs/src/runtime/constructors.rs"')
+          count_start = text.index('    count=2,\n)', constructors)
+          text = text[:count_start] + '    count=3,\n)' + text[count_start + len('    count=2,\n)'):]
+
           path.write_text(text, encoding="utf-8")
           PY
 
