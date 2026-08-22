@@ -191,7 +191,6 @@ fn next_minor_version(version: &str) -> Result<String> {
 
 fn sync_readme(content: &str, surface: &ReleaseSurface) -> Result<String> {
     let mut release_track_seen = false;
-    let mut published_surface_seen = false;
     let mut verified_install_seen = false;
 
     let mut lines: Vec<String> = Vec::new();
@@ -204,7 +203,6 @@ fn sync_readme(content: &str, surface: &ReleaseSurface) -> Result<String> {
                 "| Published crate surface | {} crates in `[workspace.metadata.publish.allow]` |",
                 surface.published_crate_count
             ));
-            published_surface_seen = true;
         } else if line.starts_with("The verified GitHub `v") {
             lines.push(format!(
                 "The verified GitHub `v{}` release assets are public beta. Other distribution",
@@ -216,9 +214,10 @@ fn sync_readme(content: &str, surface: &ReleaseSurface) -> Result<String> {
         }
     }
 
-    if !published_surface_seen {
-        bail!("README.md: published crate surface row not found");
-    }
+    // The front-door README intentionally stopped restating the crate-count
+    // receipt (#5450); its absence is current intent, not drift. A row is still
+    // refreshed in place when present. The count remains owned by
+    // CURRENT_STATUS.md, status/index.md, and status/release.md.
     if !release_track_seen && !verified_install_seen {
         bail!("README.md: release posture line not found");
     }
@@ -869,13 +868,21 @@ channels remain independently versioned and must be verified before editor use.\
     }
 
     #[test]
-    fn sync_readme_fails_when_published_surface_row_is_missing() -> Result<()> {
-        let input = r#"| Release track | `v0.16.0` public alpha |
-The verified GitHub `v0.16.0` release assets are public alpha. Other distribution
-channels remain independently versioned and must be verified before editor use.
-"#;
+    fn sync_readme_accepts_missing_published_surface_row_without_insertion() -> Result<()> {
+        let input = "| Release track | `v0.16.0` public alpha |\n\
+The verified GitHub `v0.16.0` release assets are public alpha. Other distribution\n\
+channels remain independently versioned and must be verified before editor use.\n";
+        let expected = "| Release track | `v0.17.0` public beta |\n\
+The verified GitHub `v0.17.0` release assets are public beta. Other distribution\n\
+channels remain independently versioned and must be verified before editor use.\n";
 
-        assert!(sync_readme(input, &release_surface()).is_err());
+        let synced = sync_readme(input, &release_surface())?;
+        if synced != expected {
+            bail!("README sync did not refresh posture without inserting a crate-count row");
+        }
+        if synced.contains("| Published crate surface |") {
+            bail!("README sync must not reinsert the removed crate-count row");
+        }
         Ok(())
     }
 

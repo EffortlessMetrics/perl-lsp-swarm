@@ -24,7 +24,7 @@ in [features.toml](../../features.toml).
 
 - Workspace version line: `v0.17.0`
 - Current release train: `v0.17.0` shipped public beta; channel receipts remain independently verified
-- Published crate surface target: 33 crates from `[workspace.metadata.publish.allow]`
+- Published crate surface target: 34 crates from `[workspace.metadata.publish.allow]`
 Publication discipline: `v0.17.0` uses a normal SemVer package version while the human-facing product posture remains public beta, not stable/GA. See [RELEASE_HISTORY.md](../../RELEASE_HISTORY.md) for independently verified channel receipts.
 
 
@@ -169,7 +169,7 @@ The release train is complete only when each criterion has an evidence link in t
 | Area | Exit criterion | Evidence source |
 | --- | --- | --- |
 | Version surface | Workspace package version, `features.toml` metadata, extension packaging, release notes, and changelog align with the current `v0.17.0` train | [`../../Cargo.toml`](../../Cargo.toml), [`../../features.toml`](../../features.toml), [docs/releases/v0.17.0.md](../releases/v0.17.0.md) |
-| Publish surface | The 33-crate allowlist has dry-run or publish receipts, and deferred items have successor issues rather than silent drops | [`[workspace.metadata.publish.allow]`](../../Cargo.toml), [docs/releases/v0.17.0.md](../releases/v0.17.0.md) |
+| Publish surface | The 34-crate allowlist has dry-run or publish receipts, and deferred items have successor issues rather than silent drops | [`[workspace.metadata.publish.allow]`](../../Cargo.toml), [docs/releases/v0.17.0.md](../releases/v0.17.0.md) |
 | Install channels | GitHub assets, crates.io, Docker, VS Code Marketplace, Open VSX, and Homebrew each have an install/smoke receipt or an explicit pending/deferred state | [status/release.md](status/release.md), [CURRENT_STATUS.md](CURRENT_STATUS.md), [docs/releases/v0.17.0.md](../releases/v0.17.0.md) |
 | Local gate | The canonical merge receipt is fresh for the branch being released or the post-release closeout branch | [protocols/verification.md](protocols/verification.md) |
 | Public wording | User-facing docs call the release public beta and avoid stable/GA promises | [docs/releases/v0.17.0.md](../releases/v0.17.0.md), [CURRENT_STATUS.md](CURRENT_STATUS.md) |
