@@ -68,7 +68,7 @@
         "schema_version": "issue_close_proof.v1",
         "repository": "effortlessmetrics/perl-lsp-swarm",
         "issue_number": 9000011,
-        "requested_close_mode": "controller_complete",
+        "requested_close_mode": "completed",
         "contract_binding": {
           "contract_issue_body_digest": "000000000000000000000000000000000000000000000000000000000089544b",
           "contract_denominator_digest": "460847ca55f2db66fe5a685564129497c6ef53434115f4f1b68fc30ebb78c5cc",

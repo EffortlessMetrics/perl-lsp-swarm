@@ -6,7 +6,7 @@
 //! must verify end to end.
 
 use super::contract::IssueContract;
-use super::corpus::{ManifestEntry, load_corpus_manifest, verify_corpus_at};
+use super::corpus::{FixtureDocument, ManifestEntry, load_corpus_manifest, verify_corpus_at};
 use super::model::{
     ChildDispositionRecord, ChildState, ClaimStatement, CloseMode, ClosePacket, ControlOutcome,
     DenominatorRow, PacketBinding, ProofLevel, RowDispositionValue,
@@ -246,6 +246,30 @@ fn current_packet_validates_against_its_contract() -> Result<(), CloseProofError
     let contract = leaf_contract()?;
     let doc_packet = passing_packet(&contract)?;
     validate_packet_against_contract(&doc_packet, &contract)?;
+    Ok(())
+}
+
+#[test]
+fn unauthorized_close_mode_is_rejected() -> Result<(), CloseProofError> {
+    let fixture = FixtureDocument::from_json_str(include_str!(
+        "../../../.ci/close-proof-contract/fixtures/invalid-controller-fanin-missing.json"
+    ))?;
+    let case = fixture
+        .cases
+        .iter()
+        .find(|case| case.case_id == "pr-9001011-child-count-only")
+        .ok_or_else(|| CloseProofError::Corpus {
+            message: "controller fan-in regression case is missing".to_string(),
+        })?;
+    assert!(!fixture.contract.allowed_close_modes.contains(&CloseMode::ControllerComplete));
+
+    let mut unauthorized = case.packet.clone();
+    unauthorized.requested_close_mode = CloseMode::ControllerComplete;
+    assert!(matches!(
+        validate_packet_against_contract(&unauthorized, &fixture.contract),
+        Err(CloseProofError::Coverage { message })
+            if message.contains("requested close mode") && message.contains("not allowed")
+    ));
     Ok(())
 }
 

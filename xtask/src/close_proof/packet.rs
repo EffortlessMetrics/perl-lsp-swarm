@@ -321,6 +321,15 @@ pub fn validate_packet_against_contract(
     contract.validate()?;
     packet.validate_shape()?;
 
+    if !contract.allowed_close_modes.contains(&packet.requested_close_mode) {
+        return Err(CloseProofError::Coverage {
+            message: format!(
+                "requested close mode {:?} is not allowed by contract",
+                packet.requested_close_mode
+            ),
+        });
+    }
+
     if packet.repository != contract.repository || packet.issue_number != contract.issue_number {
         return Err(CloseProofError::Identity {
             message: format!(

@@ -12,7 +12,7 @@
     },
     {
       "file": "fixtures/invalid-controller-fanin-missing.json",
-      "sha256": "cba8d7f165adc065f145f3adecc342ca66c86ab6e0f36a6affa0a813d686349b"
+      "sha256": "ff01b269d2a8f79fea44514aa8d3f7307a8536575f38107bc2405e5430879485"
     },
     {
       "file": "fixtures/invalid-phase-terminal-5001-5023.json",
