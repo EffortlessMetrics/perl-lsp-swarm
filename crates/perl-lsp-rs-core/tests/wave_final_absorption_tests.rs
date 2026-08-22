@@ -35,14 +35,19 @@ fn published_allowlist_entries(root: &Path) -> io::Result<Vec<String>> {
     let section = root_toml.split("[workspace.metadata.publish]").nth(1).unwrap_or("");
     let allow_start = section.find("allow = [").unwrap_or(0);
     let allow = &section[allow_start..];
-    let allow_end = allow.find(']').unwrap_or(allow.len());
+    let code_only = allow
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let allow_end = code_only.find(']').unwrap_or(code_only.len());
     let mut entries = Vec::new();
-    for line in allow[..allow_end].lines() {
-        let code = line.split('#').next().unwrap_or("").trim();
-        if !code.contains('"') {
+    for line in code_only[..allow_end].lines() {
+        let entry_line = line.trim();
+        if !entry_line.contains('"') {
             continue;
         }
-        if code.matches('"').count() != 2 || !code.starts_with('"') {
+        if entry_line.matches('"').count() != 2 || !entry_line.starts_with('"') {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
@@ -51,7 +56,7 @@ fn published_allowlist_entries(root: &Path) -> io::Result<Vec<String>> {
                 ),
             ));
         }
-        entries.push(code.trim_end_matches(',').trim().trim_matches('"').to_string());
+        entries.push(entry_line.trim_end_matches(',').trim().trim_matches('"').to_string());
     }
     Ok(entries)
 }
@@ -437,10 +442,16 @@ fn test_dap_build_uses_package_local_catalog() -> TestResult {
     let dap_build = root.join("crates/perl-dap/build.rs");
     let content = fs::read_to_string(&dap_build)?;
 
-    // The build.rs should keep catalog loading package-local, not reference absorbed crates or repo paths.
+    // The build script should keep catalog loading package-local, not reference absorbed crates
+    // or repo paths. Since #11888 the loader lives in the package-local build_catalog.rs,
+    // included into an inline `mod catalog` by build.rs.
     assert!(
-        content.contains("fn load_catalog_for_build"),
+        content.contains("mod catalog"),
         "perl-dap/build.rs must keep package-local catalog loading"
+    );
+    assert!(
+        content.contains("build_catalog.rs"),
+        "perl-dap/build.rs must load the catalog from the package-local build_catalog.rs"
     );
 
     assert!(

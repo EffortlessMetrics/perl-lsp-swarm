@@ -35,14 +35,19 @@ fn published_allowlist_entries(root: &std::path::Path) -> std::io::Result<Vec<St
     let section = root_toml.split("[workspace.metadata.publish]").nth(1).unwrap_or("");
     let allow_start = section.find("allow = [").unwrap_or(0);
     let allow = &section[allow_start..];
-    let allow_end = allow.find(']').unwrap_or(allow.len());
+    let code_only = allow
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let allow_end = code_only.find(']').unwrap_or(code_only.len());
     let mut entries = Vec::new();
-    for line in allow[..allow_end].lines() {
-        let code = line.split('#').next().unwrap_or("").trim();
-        if !code.contains('"') {
+    for line in code_only[..allow_end].lines() {
+        let entry_line = line.trim();
+        if !entry_line.contains('"') {
             continue;
         }
-        if code.matches('"').count() != 2 || !code.starts_with('"') {
+        if entry_line.matches('"').count() != 2 || !entry_line.starts_with('"') {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
@@ -51,7 +56,7 @@ fn published_allowlist_entries(root: &std::path::Path) -> std::io::Result<Vec<St
                 ),
             ));
         }
-        entries.push(code.trim_end_matches(',').trim().trim_matches('"').to_string());
+        entries.push(entry_line.trim_end_matches(',').trim().trim_matches('"').to_string());
     }
     Ok(entries)
 }
