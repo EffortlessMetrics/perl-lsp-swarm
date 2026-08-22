@@ -31,7 +31,7 @@ jobs:
           ref: agent/4997-ai-activation-authority
           fetch-depth: 0
 
-      - name: Admit current regression and schema signatures
+      - name: Admit current regression, schema, and schema-test signatures
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -68,6 +68,53 @@ jobs:
           assert block.count(provider_old) == 1, block.count(provider_old)
           block = block.replace(provider_old, provider_new)
           text = text[:block_start] + block + text[block_end:]
+
+          assertion_old = '''    '    assert!(server.ai_completion.user_enabled);\\n'
+              '    assert_eq!(server.ai_completion.provider, \\"openai_compat\\");\\n'
+              '    assert_eq!(server.ai_completion.model, \\"fixture-model\\");\\n',
+              '    assert!(!server.ai_completion.user_enabled);\\n'
+              '    assert!(!server.ai_completion.enabled);\\n',
+          '''
+          assertion_new = '''    '    assert_eq!(server.ai_completion.user_enabled, true);\\n'
+              '    assert_eq!(server.ai_completion.model, \\"fixture-model\\");\\n',
+              '    assert_eq!(server.ai_completion.user_enabled, false);\\n'
+              '    assert_eq!(server.ai_completion.enabled, false);\\n'
+              '    assert_eq!(server.ai_completion.model, \\"gpt-4o-mini\\");\\n',
+          '''
+          assert text.count(assertion_old) == 1, text.count(assertion_old)
+          text = text.replace(assertion_old, assertion_new)
+
+          sensitive_old = '''replace_exact(
+              SCHEMA_TEST,
+              '    for sensitive in [\\"endpoint\\", \\"apiKeyEnv\\", \\"apiKeyHeader\\", \\"apiKeyPrefix\\"] {\\n',
+              '    for sensitive in [\\n'
+              '        \\"enabled\\",\\n'
+              '        \\"provider\\",\\n'
+              '        \\"model\\",\\n'
+              '        \\"endpoint\\",\\n'
+              '        \\"apiKeyEnv\\",\\n'
+              '        \\"apiKeyHeader\\",\\n'
+              '        \\"apiKeyPrefix\\",\\n'
+              '    ] {\\n',
+          )
+          '''
+          sensitive_new = '''replace_exact(
+              SCHEMA_TEST,
+              '    assert_eq!(ai.get(\\"endpoint\\").is_none(), true);\\n'
+              '    assert_eq!(ai.get(\\"apiKeyEnv\\").is_none(), true);\\n'
+              '    assert_eq!(ai.get(\\"apiKeyHeader\\").is_none(), true);\\n'
+              '    assert_eq!(ai.get(\\"apiKeyPrefix\\").is_none(), true);\\n',
+              '    assert_eq!(ai.get(\\"enabled\\").is_none(), true);\\n'
+              '    assert_eq!(ai.get(\\"provider\\").is_none(), true);\\n'
+              '    assert_eq!(ai.get(\\"model\\").is_none(), true);\\n'
+              '    assert_eq!(ai.get(\\"endpoint\\").is_none(), true);\\n'
+              '    assert_eq!(ai.get(\\"apiKeyEnv\\").is_none(), true);\\n'
+              '    assert_eq!(ai.get(\\"apiKeyHeader\\").is_none(), true);\\n'
+              '    assert_eq!(ai.get(\\"apiKeyPrefix\\").is_none(), true);\\n',
+          )
+          '''
+          assert text.count(sensitive_old) == 1, text.count(sensitive_old)
+          text = text.replace(sensitive_old, sensitive_new)
 
           path.write_text(text, encoding="utf-8")
           PY
