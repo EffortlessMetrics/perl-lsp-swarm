@@ -209,7 +209,7 @@ fn suppression(
         surface_id,
         kind: SurfaceKind::Suppression,
         protocol_field: disabled_feature_id,
-        builder_mutator_path: "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+        builder_mutator_path: "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
         client_capability_inputs: NO_INPUTS,
         build_profile_config_tool_inputs: &["initializationOptions.disabledFeatures"],
         disposition: Disposition::Unadvertised,
@@ -229,7 +229,7 @@ fn command(command_identity: &'static str) -> SurfaceRow {
         surface_id: command_identity,
         kind: SurfaceKind::Command,
         protocol_field: command_identity,
-        builder_mutator_path: "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+        builder_mutator_path: "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
         client_capability_inputs: NO_INPUTS,
         build_profile_config_tool_inputs: &["BuildFlags.execute_command"],
         disposition: Disposition::Static,
@@ -543,7 +543,29 @@ pub fn coverage_errors(rows: &[SurfaceRow]) -> Vec<String> {
                     ));
                 }
             }
-            SurfaceKind::Registration | SurfaceKind::RefreshRequest => {}
+            SurfaceKind::Registration => {
+                let is_dynamic_registration =
+                    row.protocol_field.starts_with("register ") && row.protocol_field.contains('@');
+                let is_unadvertised_finding = row.disposition == Disposition::Unadvertised;
+                if !is_dynamic_registration && !is_unadvertised_finding {
+                    errors.push(format!(
+                        "malformed registration row {}: protocol_field must be \
+                         'register <id>@<method>' or an unadvertised finding",
+                        row.surface_id
+                    ));
+                }
+            }
+            SurfaceKind::RefreshRequest => {
+                if !row.protocol_field.starts_with("workspace/")
+                    || !row.protocol_field.ends_with("/refresh")
+                {
+                    errors.push(format!(
+                        "malformed refresh row {}: protocol_field must be a \
+                         workspace/*/refresh request method",
+                        row.surface_id
+                    ));
+                }
+            }
         }
     }
 
@@ -585,6 +607,37 @@ pub fn coverage_errors(rows: &[SurfaceRow]) -> Vec<String> {
         }
     }
 
+    errors.sort();
+    errors.dedup();
+    errors
+}
+
+/// [`coverage_errors`] plus existence validation of every row's cited
+/// builder/mutator path against the workspace `source_root`.
+///
+/// The first space-delimited token of `builder_mutator_path` is treated as a
+/// repository-relative path and must exist on disk; rows citing no path
+/// (`builder_mutator_path` starting with `none`) are skipped. This keeps
+/// Registration/RefreshRequest citations — and every other kind — honest
+/// after refactors move or delete files. Opt-in because it performs
+/// filesystem IO.
+pub fn coverage_errors_with_source_check(
+    rows: &[SurfaceRow],
+    source_root: &std::path::Path,
+) -> Vec<String> {
+    let mut errors = coverage_errors(rows);
+    for row in rows {
+        let cited = row.builder_mutator_path.split(' ').next().unwrap_or("");
+        if cited.is_empty() || cited == "none" {
+            continue;
+        }
+        if !source_root.join(cited).exists() {
+            errors.push(format!(
+                "stale citation in row {}: path {cited} does not exist under the workspace root",
+                row.surface_id
+            ));
+        }
+    }
     errors.sort();
     errors.dedup();
     errors

@@ -184,7 +184,6 @@
       "codeActionProvider": {
         "codeActionKinds": [
           "quickfix",
-          "source.organizeImports",
           "refactor",
           "refactor.extract",
           "refactor.rewrite",
@@ -379,7 +378,6 @@
       "codeActionProvider": {
         "codeActionKinds": [
           "quickfix",
-          "source.organizeImports",
           "refactor",
           "refactor.extract",
           "refactor.rewrite",
@@ -560,7 +558,6 @@
       "codeActionProvider": {
         "codeActionKinds": [
           "quickfix",
-          "source.organizeImports",
           "refactor",
           "refactor.extract",
           "refactor.rewrite",
@@ -743,7 +740,7 @@
       "surface_id": "cap.callHierarchyProvider",
       "kind": "capability-field",
       "protocol_field": "callHierarchyProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -762,14 +759,14 @@
       "surface_id": "cap.codeActionProvider.codeActionKinds[]",
       "kind": "capability-field",
       "protocol_field": "codeActionProvider.codeActionKinds[]",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_code_action_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_code_action_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
       ],
       "disposition": "static",
       "runtime_route_owner": "textDocument/codeAction kind filter",
-      "evidence_owner": "features.toml#lsp.refactoring; lifecycle test code_action_kinds_include_exact_advertised_set",
+      "evidence_owner": "features.toml#lsp.refactoring; lifecycle test code_action_kinds_include_exact_advertised_set; source.organizeImports withdrawn from this list (#8305), see sys.withdrawal.sourceOrganizeImports",
       "competing_paths": [],
       "target_issue": "#9665",
       "compatibility": null,
@@ -781,7 +778,7 @@
       "surface_id": "cap.codeActionProvider.resolveProvider",
       "kind": "capability-field",
       "protocol_field": "codeActionProvider.resolveProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_code_action_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_code_action_features",
       "client_capability_inputs": [
         "textDocument.codeAction.resolveSupport",
         "textDocument.codeAction.disabledSupport (consumed downstream)",
@@ -804,7 +801,7 @@
       "surface_id": "cap.codeLensProvider.resolveProvider",
       "kind": "capability-field",
       "protocol_field": "codeLensProvider.resolveProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
       "client_capability_inputs": [
         "textDocument.codeLens.resolveSupport.properties"
       ],
@@ -825,7 +822,7 @@
       "surface_id": "cap.colorProvider",
       "kind": "capability-field",
       "protocol_field": "colorProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -844,7 +841,7 @@
       "surface_id": "cap.completionProvider.completionItem.insertTextModes[]",
       "kind": "capability-field",
       "protocol_field": "completionProvider.completionItem.insertTextModes[]",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
       "client_capability_inputs": [
         "textDocument.completion.completionItem.insertTextMode (advertised modes [1,2] = PlainText, Snippet)"
       ],
@@ -865,7 +862,7 @@
       "surface_id": "cap.completionProvider.completionItem.labelDetailsSupport",
       "kind": "capability-field",
       "protocol_field": "completionProvider.completionItem.labelDetailsSupport",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
       "client_capability_inputs": [
         "textDocument.completion.completionItem.labelDetailsSupport"
       ],
@@ -886,7 +883,7 @@
       "surface_id": "cap.completionProvider.resolveProvider",
       "kind": "capability-field",
       "protocol_field": "completionProvider.resolveProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
       "client_capability_inputs": [
         "textDocument.completion.completionItem.resolveSupport.properties"
       ],
@@ -907,7 +904,7 @@
       "surface_id": "cap.completionProvider.triggerCharacters[]",
       "kind": "capability-field",
       "protocol_field": "completionProvider.triggerCharacters[]",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
       "client_capability_inputs": [
         "textDocument.completion.completionItem.commitCharactersSupport"
       ],
@@ -928,7 +925,7 @@
       "surface_id": "cap.declarationProvider",
       "kind": "capability-field",
       "protocol_field": "declarationProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -938,7 +935,7 @@
       "evidence_owner": "features.toml#lsp.declaration",
       "competing_paths": [
         {
-          "path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+          "path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
           "delta": "runtime unconditionally re-sets declarationProvider=true when AdvertisedFeatures.declaration is on (same value, second writer; see mut.handle_initialize.declarationProviderRewrite)"
         }
       ],
@@ -952,7 +949,7 @@
       "surface_id": "cap.definitionProvider",
       "kind": "capability-field",
       "protocol_field": "definitionProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -971,7 +968,7 @@
       "surface_id": "cap.diagnosticProvider.identifier",
       "kind": "capability-field",
       "protocol_field": "diagnosticProvider.identifier",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
       "client_capability_inputs": [
         "textDocument.diagnostic.markupMessageSupport"
       ],
@@ -992,7 +989,7 @@
       "surface_id": "cap.diagnosticProvider.interFileDependencies",
       "kind": "capability-field",
       "protocol_field": "diagnosticProvider.interFileDependencies",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1011,7 +1008,7 @@
       "surface_id": "cap.diagnosticProvider.workspaceDiagnostics",
       "kind": "capability-field",
       "protocol_field": "diagnosticProvider.workspaceDiagnostics",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1030,7 +1027,7 @@
       "surface_id": "cap.documentFormattingProvider",
       "kind": "capability-field",
       "protocol_field": "documentFormattingProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1049,7 +1046,7 @@
       "surface_id": "cap.documentHighlightProvider",
       "kind": "capability-field",
       "protocol_field": "documentHighlightProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1068,7 +1065,7 @@
       "surface_id": "cap.documentLinkProvider.resolveProvider",
       "kind": "capability-field",
       "protocol_field": "documentLinkProvider.resolveProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1087,7 +1084,7 @@
       "surface_id": "cap.documentOnTypeFormattingProvider.firstTriggerCharacter",
       "kind": "capability-field",
       "protocol_field": "documentOnTypeFormattingProvider.firstTriggerCharacter",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1106,7 +1103,7 @@
       "surface_id": "cap.documentOnTypeFormattingProvider.moreTriggerCharacter[]",
       "kind": "capability-field",
       "protocol_field": "documentOnTypeFormattingProvider.moreTriggerCharacter[]",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1125,7 +1122,7 @@
       "surface_id": "cap.documentRangeFormattingProvider.rangesSupport",
       "kind": "capability-field",
       "protocol_field": "documentRangeFormattingProvider.rangesSupport",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1135,7 +1132,7 @@
       "evidence_owner": "features.toml#lsp.ranges_formatting; lifecycle tests ranges_formatting_*",
       "competing_paths": [
         {
-          "path": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+          "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
           "delta": "capabilities_for() emits boolean true (OneOf::Left) but capabilities_json() replaces the whole value with {rangesSupport:true} when range_formatting is enabled (LSP 3.18 rangesSupport absent from lsp-types 0.97)"
         }
       ],
@@ -1149,7 +1146,7 @@
       "surface_id": "cap.documentSymbolProvider",
       "kind": "capability-field",
       "protocol_field": "documentSymbolProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1168,7 +1165,7 @@
       "surface_id": "cap.executeCommandProvider.commands[]",
       "kind": "capability-field",
       "protocol_field": "executeCommandProvider.commands[]",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_code_action_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_code_action_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1187,7 +1184,7 @@
       "surface_id": "cap.experimental.typeHierarchyProvider",
       "kind": "capability-field",
       "protocol_field": "experimental.typeHierarchyProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/experimental.rs apply_experimental_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/experimental.rs apply_experimental_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1197,7 +1194,7 @@
       "evidence_owner": "features.toml#lsp.type_hierarchy; feature_ids_from_caps detection contract",
       "competing_paths": [
         {
-          "path": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+          "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
           "delta": "capabilities_json() additionally injects top-level typeHierarchyProvider {workDoneProgressOptions:{}} for LSP compatibility while apply_experimental_features() advertises experimental.typeHierarchyProvider boolean for feature_ids_from_caps detection - the same variant advertised twice through two paths"
         }
       ],
@@ -1211,7 +1208,7 @@
       "surface_id": "cap.foldingRangeProvider",
       "kind": "capability-field",
       "protocol_field": "foldingRangeProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1230,7 +1227,7 @@
       "surface_id": "cap.hoverProvider",
       "kind": "capability-field",
       "protocol_field": "hoverProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1249,7 +1246,7 @@
       "surface_id": "cap.implementationProvider",
       "kind": "capability-field",
       "protocol_field": "implementationProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1268,7 +1265,7 @@
       "surface_id": "cap.inlayHintProvider.resolveProvider",
       "kind": "capability-field",
       "protocol_field": "inlayHintProvider.resolveProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
       "client_capability_inputs": [
         "textDocument.inlayHint.resolveSupport.properties"
       ],
@@ -1289,7 +1286,7 @@
       "surface_id": "cap.inlineCompletionProvider",
       "kind": "capability-field",
       "protocol_field": "inlineCompletionProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.inline_completion"
@@ -1299,7 +1296,7 @@
       "evidence_owner": "features.toml#lsp.inline_completion; lifecycle tests inline_completion_*",
       "competing_paths": [
         {
-          "path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+          "path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
           "delta": "initialize-time tri-state removes or re-inserts inlineCompletionProvider depending on (feature, client static support, client dynamicRegistration): dynamic-registration clients get the provider removed here and registered post-initialized instead (see mut.handle_initialize.inlineCompletionTriState)"
         }
       ],
@@ -1313,7 +1310,7 @@
       "surface_id": "cap.inlineValueProvider",
       "kind": "capability-field",
       "protocol_field": "inlineValueProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1332,7 +1329,7 @@
       "surface_id": "cap.linkedEditingRangeProvider",
       "kind": "capability-field",
       "protocol_field": "linkedEditingRangeProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1351,7 +1348,7 @@
       "surface_id": "cap.monikerProvider",
       "kind": "capability-field",
       "protocol_field": "monikerProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1370,7 +1367,7 @@
       "surface_id": "cap.notebookDocumentSync.notebookSelector[].cells[].language",
       "kind": "capability-field",
       "protocol_field": "notebookDocumentSync.notebookSelector[].cells[].language",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1392,7 +1389,7 @@
       "surface_id": "cap.notebookDocumentSync.notebookSelector[].notebook",
       "kind": "capability-field",
       "protocol_field": "notebookDocumentSync.notebookSelector[].notebook",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1411,7 +1408,7 @@
       "surface_id": "cap.notebookDocumentSync.save",
       "kind": "capability-field",
       "protocol_field": "notebookDocumentSync.save",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1430,7 +1427,7 @@
       "surface_id": "cap.referencesProvider",
       "kind": "capability-field",
       "protocol_field": "referencesProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1449,7 +1446,7 @@
       "surface_id": "cap.renameProvider.prepareProvider",
       "kind": "capability-field",
       "protocol_field": "renameProvider.prepareProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
       "client_capability_inputs": [
         "textDocument.rename.prepareSupport",
         "textDocument.rename.prepareSupportDefaultBehavior"
@@ -1471,7 +1468,7 @@
       "surface_id": "cap.selectionRangeProvider",
       "kind": "capability-field",
       "protocol_field": "selectionRangeProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1490,7 +1487,7 @@
       "surface_id": "cap.semanticTokensProvider.full.delta",
       "kind": "capability-field",
       "protocol_field": "semanticTokensProvider.full.delta",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1509,7 +1506,7 @@
       "surface_id": "cap.semanticTokensProvider.legend.tokenModifiers[]",
       "kind": "capability-field",
       "protocol_field": "semanticTokensProvider.legend.tokenModifiers[]",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1528,7 +1525,7 @@
       "surface_id": "cap.semanticTokensProvider.legend.tokenTypes[]",
       "kind": "capability-field",
       "protocol_field": "semanticTokensProvider.legend.tokenTypes[]",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1547,7 +1544,7 @@
       "surface_id": "cap.semanticTokensProvider.range",
       "kind": "capability-field",
       "protocol_field": "semanticTokensProvider.range",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1566,7 +1563,7 @@
       "surface_id": "cap.signatureHelpProvider.retriggerCharacters[]",
       "kind": "capability-field",
       "protocol_field": "signatureHelpProvider.retriggerCharacters[]",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1585,7 +1582,7 @@
       "surface_id": "cap.signatureHelpProvider.triggerCharacters[]",
       "kind": "capability-field",
       "protocol_field": "signatureHelpProvider.triggerCharacters[]",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1604,7 +1601,7 @@
       "surface_id": "cap.textDocumentSync.change",
       "kind": "capability-field",
       "protocol_field": "textDocumentSync.change",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_document_sync",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_document_sync",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1623,7 +1620,7 @@
       "surface_id": "cap.textDocumentSync.openClose",
       "kind": "capability-field",
       "protocol_field": "textDocumentSync.openClose",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_document_sync",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_document_sync",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1642,7 +1639,7 @@
       "surface_id": "cap.textDocumentSync.save",
       "kind": "capability-field",
       "protocol_field": "textDocumentSync.save",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_document_sync",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_document_sync",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1652,7 +1649,7 @@
       "evidence_owner": "features.toml#lsp.did_save; lifecycle test text_document_sync_advertises_did_save_support",
       "competing_paths": [
         {
-          "path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+          "path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
           "delta": "runtime replaces the whole textDocumentSync value after initialize parsing: adds willSave=true, willSaveWaitUntil=true and turns save from boolean true into {includeText:true} (see mut.handle_initialize.textDocumentSyncOverride)"
         }
       ],
@@ -1666,7 +1663,7 @@
       "surface_id": "cap.typeDefinitionProvider",
       "kind": "capability-field",
       "protocol_field": "typeDefinitionProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1685,7 +1682,7 @@
       "surface_id": "cap.typeHierarchyProvider.workDoneProgressOptions",
       "kind": "capability-field",
       "protocol_field": "typeHierarchyProvider.workDoneProgressOptions",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1695,7 +1692,7 @@
       "evidence_owner": "manual patch: lsp-types 0.97 lacks type_hierarchy_provider on ServerCapabilities",
       "competing_paths": [
         {
-          "path": "perl-lsp-rs-core/src/protocol/capabilities/experimental.rs apply_experimental_features",
+          "path": "crates/perl-lsp-rs-core/src/protocol/capabilities/experimental.rs apply_experimental_features",
           "delta": "experimental.typeHierarchyProvider boolean duplicates this top-level advertisement for typed-caps consumers that cannot see the JSON patch"
         }
       ],
@@ -1709,7 +1706,7 @@
       "surface_id": "cap.workspaceSymbolProvider.resolveProvider",
       "kind": "capability-field",
       "protocol_field": "workspaceSymbolProvider.resolveProvider",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
@@ -1719,7 +1716,7 @@
       "evidence_owner": "features.toml#lsp.workspace_symbol_resolve; lifecycle test workspace_symbol_provider_advertises_resolve_when_enabled",
       "competing_paths": [
         {
-          "path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features (workspace_symbol arm)",
+          "path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features (workspace_symbol arm)",
           "delta": "workspace_symbol=true claims OneOf::Left(true); the later workspace_symbol_resolve arm overwrites the same provider with OneOf::Right({resolveProvider:true}) when both flags are set - two writers inside one function claim the same variant"
         }
       ],
@@ -1733,7 +1730,7 @@
       "surface_id": "cmd.perl.agentContext",
       "kind": "command",
       "protocol_field": "cmd.perl.agentContext",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -1752,7 +1749,7 @@
       "surface_id": "cmd.perl.debugFile",
       "kind": "command",
       "protocol_field": "cmd.perl.debugFile",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -1771,7 +1768,7 @@
       "surface_id": "cmd.perl.debugTest",
       "kind": "command",
       "protocol_field": "cmd.perl.debugTest",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -1790,7 +1787,7 @@
       "surface_id": "cmd.perl.debugTestFile",
       "kind": "command",
       "protocol_field": "cmd.perl.debugTestFile",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -1809,7 +1806,7 @@
       "surface_id": "cmd.perl.debugTests",
       "kind": "command",
       "protocol_field": "cmd.perl.debugTests",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -1828,7 +1825,7 @@
       "surface_id": "cmd.perl.explainMissingModuleLookup",
       "kind": "command",
       "protocol_field": "cmd.perl.explainMissingModuleLookup",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -1847,7 +1844,7 @@
       "surface_id": "cmd.perl.explainProviderDecision",
       "kind": "command",
       "protocol_field": "cmd.perl.explainProviderDecision",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -1866,7 +1863,7 @@
       "surface_id": "cmd.perl.goToImplementation",
       "kind": "command",
       "protocol_field": "cmd.perl.goToImplementation",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -1885,7 +1882,7 @@
       "surface_id": "cmd.perl.goToTest",
       "kind": "command",
       "protocol_field": "cmd.perl.goToTest",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -1904,7 +1901,7 @@
       "surface_id": "cmd.perl.previewPackageRename",
       "kind": "command",
       "protocol_field": "cmd.perl.previewPackageRename",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -1923,7 +1920,7 @@
       "surface_id": "cmd.perl.previewSafeDelete",
       "kind": "command",
       "protocol_field": "cmd.perl.previewSafeDelete",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -1942,7 +1939,7 @@
       "surface_id": "cmd.perl.runCritic",
       "kind": "command",
       "protocol_field": "cmd.perl.runCritic",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -1961,7 +1958,7 @@
       "surface_id": "cmd.perl.runFile",
       "kind": "command",
       "protocol_field": "cmd.perl.runFile",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -1980,7 +1977,7 @@
       "surface_id": "cmd.perl.runScript",
       "kind": "command",
       "protocol_field": "cmd.perl.runScript",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -1999,7 +1996,7 @@
       "surface_id": "cmd.perl.runSubtest",
       "kind": "command",
       "protocol_field": "cmd.perl.runSubtest",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -2018,7 +2015,7 @@
       "surface_id": "cmd.perl.runTest",
       "kind": "command",
       "protocol_field": "cmd.perl.runTest",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -2037,7 +2034,7 @@
       "surface_id": "cmd.perl.runTestFile",
       "kind": "command",
       "protocol_field": "cmd.perl.runTestFile",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -2056,7 +2053,7 @@
       "surface_id": "cmd.perl.runTestSub",
       "kind": "command",
       "protocol_field": "cmd.perl.runTestSub",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -2075,7 +2072,7 @@
       "surface_id": "cmd.perl.runTests",
       "kind": "command",
       "protocol_field": "cmd.perl.runTests",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -2094,7 +2091,7 @@
       "surface_id": "cmd.perl.safeDeleteSymbol",
       "kind": "command",
       "protocol_field": "cmd.perl.safeDeleteSymbol",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -2113,7 +2110,7 @@
       "surface_id": "cmd.perl.workspaceTrustReport",
       "kind": "command",
       "protocol_field": "cmd.perl.workspaceTrustReport",
-      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.execute_command"
@@ -2132,7 +2129,7 @@
       "surface_id": "compat.client.jetbrains.watcherForceDisable",
       "kind": "compatibility",
       "protocol_field": "clientInfo.name =~ /(jetbrains|intellij|idea)/i",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [
         "workspace.didChangeWatchedFiles.dynamicRegistration (claimed but overridden)"
       ],
@@ -2155,7 +2152,7 @@
       "surface_id": "compat.client.opencode.pushDiagnosticsRetention",
       "kind": "compatibility",
       "protocol_field": "clientInfo.name =~ /opencode/i && textDocument.diagnostic advertised",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [
         "textDocument/diagnostic presence"
       ],
@@ -2178,7 +2175,7 @@
       "surface_id": "compat.initialize.cwdFallback",
       "kind": "compatibility",
       "protocol_field": "process current directory used when no root signal exists (e.g. Aider)",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [],
       "disposition": "unadvertised",
@@ -2199,7 +2196,7 @@
       "surface_id": "compat.initialize.initOptionsRootFallbackChain",
       "kind": "compatibility",
       "protocol_field": "initializationOptions.{workspaceFolders|rootUri|rootPath} (+perl-lsp/perl_lsp namespaces)",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [],
       "disposition": "unadvertised",
@@ -2220,7 +2217,7 @@
       "surface_id": "compat.initialize.legacyRootPath",
       "kind": "compatibility",
       "protocol_field": "initialize params rootPath (deprecated since LSP 3.0)",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [],
       "disposition": "unadvertised",
@@ -2241,7 +2238,7 @@
       "surface_id": "compat.negotiated.clientInputsWithoutAdvertisementSeam",
       "kind": "compatibility",
       "protocol_field": "parsed-but-unadvertised client negotiation inputs: workspace.workspaceEdit.{documentChanges|snippetEditSupport|metadataSupport}; completion.completionList.{itemDefaults(data)|applyKindSupport}; textDocument.codeAction.{disabledSupport|tagSupport.valueSet(1=LLMGenerated)|dataSupport}; declaration/definition/typeDefinition/implementation.linkSupport; window.showDocument.support; window.workDoneProgress; diagnostic.markupMessageSupport; textDocument.diagnostic.relatedDocuments (not parsed on current main)",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [
         "workspace.workspaceEdit.documentChanges",
         "workspace.workspaceEdit.snippetEditSupport",
@@ -2274,7 +2271,7 @@
       "surface_id": "compat.protocol.completionItemFlattenedShape",
       "kind": "compatibility",
       "protocol_field": "snippetSupport/commitCharactersSupport flattened onto textDocument.completion accepted beside completionItem.* shape",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [
         "textDocument.completion.completionItem.snippetSupport (flattened alternative)"
       ],
@@ -2297,7 +2294,7 @@
       "surface_id": "compat.protocol.diagnosticRefreshSingularKey",
       "kind": "compatibility",
       "protocol_field": "workspace.diagnostic.refreshSupport (singular) accepted beside spec workspace.diagnostics.refreshSupport",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [
         "workspace.diagnostics.refreshSupport",
         "workspace.diagnostic.refreshSupport"
@@ -2321,7 +2318,7 @@
       "surface_id": "compat.protocol.markdownContentFormatFallback",
       "kind": "compatibility",
       "protocol_field": "general.markup.contentFormat -> textDocument.hover.contentFormat legacy fallback -> default markdown=true",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [
         "general.markup.contentFormat",
         "textDocument.hover.contentFormat"
@@ -2345,7 +2342,7 @@
       "surface_id": "compat.protocol.positionEncodingUtf16Pin",
       "kind": "compatibility",
       "protocol_field": "positionEncoding always advertised utf-16 despite general.positionEncodings negotiation",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [
         "general.positionEncodings"
       ],
@@ -2368,7 +2365,7 @@
       "surface_id": "mut.handle_initialize.codeActionDocumentationInsert",
       "kind": "mutation",
       "protocol_field": "codeActionProvider.documentation[]",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [
         "textDocument.codeAction.documentationSupport"
       ],
@@ -2395,7 +2392,7 @@
       "surface_id": "mut.handle_initialize.declarationProviderRewrite",
       "kind": "mutation",
       "protocol_field": "(rewrite) declarationProvider",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [],
       "disposition": "static",
@@ -2412,7 +2409,7 @@
       "surface_id": "mut.handle_initialize.envelopeAssembly",
       "kind": "mutation",
       "protocol_field": "envelope.protocolVersion=3.18",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [],
       "disposition": "static",
@@ -2432,7 +2429,7 @@
       "surface_id": "mut.handle_initialize.experimentalPerlInlineCompletionStreamMerge",
       "kind": "mutation",
       "protocol_field": "experimental.perlInlineCompletionStream",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [
         "textDocument/inlineCompletion presence"
       ],
@@ -2453,7 +2450,7 @@
       "surface_id": "mut.handle_initialize.fileOperationsIntersection",
       "kind": "mutation",
       "protocol_field": "workspace.fileOperations",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [
         "workspace.fileOperations.willCreate",
         "workspace.fileOperations.didCreate",
@@ -2490,7 +2487,7 @@
       "surface_id": "mut.handle_initialize.inlineCompletionTriState",
       "kind": "mutation",
       "protocol_field": "(rewrite) inlineCompletionProvider",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [
         "textDocument/inlineCompletion presence",
         "textDocument/inlineCompletion/dynamicRegistration"
@@ -2510,7 +2507,7 @@
       "surface_id": "mut.handle_initialize.positionEncodingPin",
       "kind": "mutation",
       "protocol_field": "positionEncoding",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [
         "general.positionEncodings (negotiated, stored, NOT advertised)"
       ],
@@ -2531,7 +2528,7 @@
       "surface_id": "mut.handle_initialize.textDocumentSyncOverride",
       "kind": "mutation",
       "protocol_field": "textDocumentSync",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [],
       "disposition": "static",
@@ -2552,7 +2549,7 @@
       "surface_id": "mut.handle_initialize.workspaceReplacement",
       "kind": "mutation",
       "protocol_field": "workspace",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [
         "workspace.workspaceFolders"
       ],
@@ -2575,13 +2572,13 @@
       "surface_id": "ref.workspace/codeLens/refresh",
       "kind": "refresh-request",
       "protocol_field": "workspace/codeLens/refresh",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/client_requests.rs request_code_lens_refresh",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/client_requests.rs request_code_lens_refresh",
       "client_capability_inputs": [
         "workspace.codeLens.refreshSupport"
       ],
       "build_profile_config_tool_inputs": [],
       "disposition": "dynamic",
-      "runtime_route_owner": "perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
+      "runtime_route_owner": "crates/perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
       "evidence_owner": "features.toml#lsp.code_lens_refresh",
       "competing_paths": [],
       "target_issue": "#9665",
@@ -2594,14 +2591,14 @@
       "surface_id": "ref.workspace/diagnostic/refresh",
       "kind": "refresh-request",
       "protocol_field": "workspace/diagnostic/refresh",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/client_requests.rs request_diagnostic_refresh",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/client_requests.rs request_diagnostic_refresh",
       "client_capability_inputs": [
         "workspace.diagnostics.refreshSupport (spec plural key)",
         "workspace.diagnostic.refreshSupport (client-deviation singular)"
       ],
       "build_profile_config_tool_inputs": [],
       "disposition": "dynamic",
-      "runtime_route_owner": "perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
+      "runtime_route_owner": "crates/perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
       "evidence_owner": "features.toml#lsp.diagnostic_refresh; #9592 dual-spelling deviation",
       "competing_paths": [],
       "target_issue": "#9665",
@@ -2614,13 +2611,13 @@
       "surface_id": "ref.workspace/foldingRange/refresh",
       "kind": "refresh-request",
       "protocol_field": "workspace/foldingRange/refresh",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/client_requests.rs request_folding_range_refresh",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/client_requests.rs request_folding_range_refresh",
       "client_capability_inputs": [
         "workspace.foldingRange.refreshSupport"
       ],
       "build_profile_config_tool_inputs": [],
       "disposition": "dynamic",
-      "runtime_route_owner": "perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
+      "runtime_route_owner": "crates/perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
       "evidence_owner": "features.toml#lsp.folding_range_refresh",
       "competing_paths": [],
       "target_issue": "#9665",
@@ -2633,13 +2630,13 @@
       "surface_id": "ref.workspace/inlayHint/refresh",
       "kind": "refresh-request",
       "protocol_field": "workspace/inlayHint/refresh",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/client_requests.rs request_inlay_hint_refresh",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/client_requests.rs request_inlay_hint_refresh",
       "client_capability_inputs": [
         "workspace.inlayHint.refreshSupport"
       ],
       "build_profile_config_tool_inputs": [],
       "disposition": "dynamic",
-      "runtime_route_owner": "perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
+      "runtime_route_owner": "crates/perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
       "evidence_owner": "features.toml#lsp.inlay_hint_refresh",
       "competing_paths": [],
       "target_issue": "#9665",
@@ -2652,13 +2649,13 @@
       "surface_id": "ref.workspace/inlineValue/refresh",
       "kind": "refresh-request",
       "protocol_field": "workspace/inlineValue/refresh",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/client_requests.rs request_inline_value_refresh",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/client_requests.rs request_inline_value_refresh",
       "client_capability_inputs": [
         "workspace.inlineValue.refreshSupport"
       ],
       "build_profile_config_tool_inputs": [],
       "disposition": "dynamic",
-      "runtime_route_owner": "perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
+      "runtime_route_owner": "crates/perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
       "evidence_owner": "features.toml#lsp.inline_value_refresh",
       "competing_paths": [],
       "target_issue": "#9665",
@@ -2671,13 +2668,13 @@
       "surface_id": "ref.workspace/semanticTokens/refresh",
       "kind": "refresh-request",
       "protocol_field": "workspace/semanticTokens/refresh",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/client_requests.rs request_semantic_tokens_refresh",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/client_requests.rs request_semantic_tokens_refresh",
       "client_capability_inputs": [
         "workspace.semanticTokens.refreshSupport"
       ],
       "build_profile_config_tool_inputs": [],
       "disposition": "dynamic",
-      "runtime_route_owner": "perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
+      "runtime_route_owner": "crates/perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
       "evidence_owner": "features.toml#lsp.semantic_tokens_refresh",
       "competing_paths": [],
       "target_issue": "#9665",
@@ -2707,7 +2704,7 @@
       "surface_id": "reg.perl-didChangeWatchedFiles",
       "kind": "registration",
       "protocol_field": "register perl-didChangeWatchedFiles@workspace/didChangeWatchedFiles",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/watchers.rs register_file_watchers_if_needed",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/watchers.rs register_file_watchers_if_needed",
       "client_capability_inputs": [
         "workspace.didChangeWatchedFiles.dynamicRegistration",
         "workspace.didChangeWatchedFiles.relativePatternSupport"
@@ -2730,7 +2727,7 @@
       "surface_id": "reg.perl-inlineCompletion",
       "kind": "registration",
       "protocol_field": "register perl-inlineCompletion@textDocument/inlineCompletion",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/watchers.rs register_inline_completion_if_needed",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/watchers.rs register_inline_completion_if_needed",
       "client_capability_inputs": [
         "textDocument/inlineCompletion.dynamicRegistration"
       ],
@@ -2751,7 +2748,7 @@
       "surface_id": "sup.disabledFeature.lsp.call_hierarchy",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.call_hierarchy",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -2772,7 +2769,7 @@
       "surface_id": "sup.disabledFeature.lsp.code_action",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.code_action",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -2793,7 +2790,7 @@
       "surface_id": "sup.disabledFeature.lsp.code_lens",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.code_lens",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -2814,7 +2811,7 @@
       "surface_id": "sup.disabledFeature.lsp.completion",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.completion",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -2835,7 +2832,7 @@
       "surface_id": "sup.disabledFeature.lsp.declaration",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.declaration",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -2856,7 +2853,7 @@
       "surface_id": "sup.disabledFeature.lsp.definition",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.definition",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -2877,7 +2874,7 @@
       "surface_id": "sup.disabledFeature.lsp.document_color",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.document_color",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -2898,7 +2895,7 @@
       "surface_id": "sup.disabledFeature.lsp.document_highlight",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.document_highlight",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -2919,7 +2916,7 @@
       "surface_id": "sup.disabledFeature.lsp.document_link",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.document_link",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -2940,7 +2937,7 @@
       "surface_id": "sup.disabledFeature.lsp.document_symbol",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.document_symbol",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -2961,7 +2958,7 @@
       "surface_id": "sup.disabledFeature.lsp.execute_command",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.execute_command",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -2982,7 +2979,7 @@
       "surface_id": "sup.disabledFeature.lsp.folding_range",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.folding_range",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3003,7 +3000,7 @@
       "surface_id": "sup.disabledFeature.lsp.formatting",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.formatting",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3024,7 +3021,7 @@
       "surface_id": "sup.disabledFeature.lsp.hover",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.hover",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3045,7 +3042,7 @@
       "surface_id": "sup.disabledFeature.lsp.implementation",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.implementation",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3066,7 +3063,7 @@
       "surface_id": "sup.disabledFeature.lsp.inlay_hint",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.inlay_hint",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3087,7 +3084,7 @@
       "surface_id": "sup.disabledFeature.lsp.inline_completion",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.inline_completion",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3108,7 +3105,7 @@
       "surface_id": "sup.disabledFeature.lsp.inline_value",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.inline_value",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3129,7 +3126,7 @@
       "surface_id": "sup.disabledFeature.lsp.linked_editing_range",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.linked_editing_range",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3150,7 +3147,7 @@
       "surface_id": "sup.disabledFeature.lsp.moniker",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.moniker",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3171,7 +3168,7 @@
       "surface_id": "sup.disabledFeature.lsp.notebook_cell_execution",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.notebook_cell_execution",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3192,7 +3189,7 @@
       "surface_id": "sup.disabledFeature.lsp.notebook_document_sync",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.notebook_document_sync",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3213,7 +3210,7 @@
       "surface_id": "sup.disabledFeature.lsp.on_type_formatting",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.on_type_formatting",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3234,7 +3231,7 @@
       "surface_id": "sup.disabledFeature.lsp.pull_diagnostics",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.pull_diagnostics",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3255,7 +3252,7 @@
       "surface_id": "sup.disabledFeature.lsp.range_formatting",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.range_formatting",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3276,7 +3273,7 @@
       "surface_id": "sup.disabledFeature.lsp.ranges_formatting",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.ranges_formatting",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3297,7 +3294,7 @@
       "surface_id": "sup.disabledFeature.lsp.references",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.references",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3318,7 +3315,7 @@
       "surface_id": "sup.disabledFeature.lsp.rename",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.rename",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3339,7 +3336,7 @@
       "surface_id": "sup.disabledFeature.lsp.selection_range",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.selection_range",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3360,7 +3357,7 @@
       "surface_id": "sup.disabledFeature.lsp.semantic_tokens",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.semantic_tokens",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3381,7 +3378,7 @@
       "surface_id": "sup.disabledFeature.lsp.signature_help",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.signature_help",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3402,7 +3399,7 @@
       "surface_id": "sup.disabledFeature.lsp.type_definition",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.type_definition",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3423,7 +3420,7 @@
       "surface_id": "sup.disabledFeature.lsp.type_hierarchy",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.type_hierarchy",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3444,7 +3441,7 @@
       "surface_id": "sup.disabledFeature.lsp.workspace_symbol",
       "kind": "suppression",
       "protocol_field": "initializationOptions.disabledFeatures:lsp.workspace_symbol",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "initializationOptions.disabledFeatures"
@@ -3465,13 +3462,13 @@
       "surface_id": "sys.config.runtimeTuning.fileWatchers",
       "kind": "suppression",
       "protocol_field": "config:runtime_tuning.file_watchers=false blocks reg.perl-didChangeWatchedFiles",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/watchers.rs register_file_watchers_if_needed early return",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/watchers.rs register_file_watchers_if_needed early return",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "config:runtime_tuning.file_watchers=false blocks reg.perl-didChangeWatchedFiles"
       ],
       "disposition": "unadvertised",
-      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "runtime_route_owner": "crates/perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
       "evidence_owner": "features.toml catalog; perl-lsp-rs lifecycle tests",
       "competing_paths": [],
       "target_issue": "#9665",
@@ -3484,13 +3481,13 @@
       "surface_id": "sys.dispatch.advertisedFeaturesGating",
       "kind": "suppression",
       "protocol_field": "config:AdvertisedFeatures false => -32601 method_not_advertised",
-      "builder_mutator_path": "perl-lsp-rs/src/runtime/dispatch preflight/handlers gate on advertised_features",
+      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/dispatch preflight/handlers gate on advertised_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "config:AdvertisedFeatures false => -32601 method_not_advertised"
       ],
       "disposition": "unadvertised",
-      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "runtime_route_owner": "crates/perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
       "evidence_owner": "features.toml catalog; perl-lsp-rs lifecycle tests",
       "competing_paths": [],
       "target_issue": "#9665",
@@ -3503,13 +3500,13 @@
       "surface_id": "sys.profile.gaLock.inlineValues",
       "kind": "suppression",
       "protocol_field": "profile:lsp-ga-lock:inline_values=false",
-      "builder_mutator_path": "perl-lsp-rs-core/src/features/flags.rs BuildFlags::ga_lock",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/features/flags.rs BuildFlags::ga_lock",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "profile:lsp-ga-lock:inline_values=false"
       ],
       "disposition": "unadvertised",
-      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "runtime_route_owner": "crates/perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
       "evidence_owner": "features.toml catalog; perl-lsp-rs lifecycle tests",
       "competing_paths": [],
       "target_issue": "#9665",
@@ -3524,13 +3521,13 @@
       "surface_id": "sys.profile.preview.notebookCellExecution",
       "kind": "suppression",
       "protocol_field": "profile:not-all:notebook_cell_execution=false",
-      "builder_mutator_path": "perl-lsp-rs-core/src/features/flags.rs BuildFlags::production/all",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/features/flags.rs BuildFlags::production/all",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "profile:not-all:notebook_cell_execution=false"
       ],
       "disposition": "unadvertised",
-      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "runtime_route_owner": "crates/perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
       "evidence_owner": "features.toml catalog; perl-lsp-rs lifecycle tests",
       "competing_paths": [],
       "target_issue": "#9665",
@@ -3545,13 +3542,13 @@
       "surface_id": "sys.profile.preview.notebookSync",
       "kind": "suppression",
       "protocol_field": "profile:not-all:notebook_document_sync=false",
-      "builder_mutator_path": "perl-lsp-rs-core/src/features/flags.rs BuildFlags::production/all",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/features/flags.rs BuildFlags::production/all",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "profile:not-all:notebook_document_sync=false"
       ],
       "disposition": "unadvertised",
-      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "runtime_route_owner": "crates/perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
       "evidence_owner": "features.toml catalog; perl-lsp-rs lifecycle tests",
       "competing_paths": [],
       "target_issue": "#9665",
@@ -3566,16 +3563,35 @@
       "surface_id": "sys.tool.perltidy.runtimeFlags",
       "kind": "suppression",
       "protocol_field": "tool:perltidy availability:FeatureProfile.runtime_flags",
-      "builder_mutator_path": "perl-lsp-rs-core FeatureProfile::runtime_flags consumed in handle_initialize",
+      "builder_mutator_path": "crates/perl-lsp-rs-core FeatureProfile::runtime_flags consumed in handle_initialize",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "tool:perltidy availability:FeatureProfile.runtime_flags"
       ],
       "disposition": "unadvertised",
-      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "runtime_route_owner": "crates/perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
       "evidence_owner": "features.toml catalog; perl-lsp-rs lifecycle tests",
       "competing_paths": [],
       "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "sys.withdrawal.sourceOrganizeImports",
+      "kind": "suppression",
+      "protocol_field": "profile:source.organizeImports withdrawn from advertisement and every request path",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs code_action_kinds",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.source_organize_imports field removed (#8305)"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "withdrawn from providers/code_actions enhanced import management; no route admits it today",
+      "evidence_owner": "#8305 withdrawal; restoration path #8319 (bounded cohort) + #10696 (proven cutover); organize_imports_containment_tests.rs",
+      "competing_paths": [],
+      "target_issue": "#8305",
       "compatibility": null,
       "additional_owned_pointers": [],
       "rewrites_surface_pointer": null,
@@ -3586,10 +3602,10 @@
     {
       "surface_id": "cap.declarationProvider",
       "protocol_field": "declarationProvider",
-      "primary_builder": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
+      "primary_builder": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
       "competitors": [
         {
-          "path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+          "path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
           "delta": "runtime unconditionally re-sets declarationProvider=true when AdvertisedFeatures.declaration is on (same value, second writer; see mut.handle_initialize.declarationProviderRewrite)"
         }
       ],
@@ -3598,10 +3614,10 @@
     {
       "surface_id": "cap.documentRangeFormattingProvider.rangesSupport",
       "protocol_field": "documentRangeFormattingProvider.rangesSupport",
-      "primary_builder": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+      "primary_builder": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
       "competitors": [
         {
-          "path": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+          "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
           "delta": "capabilities_for() emits boolean true (OneOf::Left) but capabilities_json() replaces the whole value with {rangesSupport:true} when range_formatting is enabled (LSP 3.18 rangesSupport absent from lsp-types 0.97)"
         }
       ],
@@ -3610,10 +3626,10 @@
     {
       "surface_id": "cap.experimental.typeHierarchyProvider",
       "protocol_field": "experimental.typeHierarchyProvider",
-      "primary_builder": "perl-lsp-rs-core/src/protocol/capabilities/experimental.rs apply_experimental_features",
+      "primary_builder": "crates/perl-lsp-rs-core/src/protocol/capabilities/experimental.rs apply_experimental_features",
       "competitors": [
         {
-          "path": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+          "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
           "delta": "capabilities_json() additionally injects top-level typeHierarchyProvider {workDoneProgressOptions:{}} for LSP compatibility while apply_experimental_features() advertises experimental.typeHierarchyProvider boolean for feature_ids_from_caps detection - the same variant advertised twice through two paths"
         }
       ],
@@ -3622,10 +3638,10 @@
     {
       "surface_id": "cap.inlineCompletionProvider",
       "protocol_field": "inlineCompletionProvider",
-      "primary_builder": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+      "primary_builder": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
       "competitors": [
         {
-          "path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+          "path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
           "delta": "initialize-time tri-state removes or re-inserts inlineCompletionProvider depending on (feature, client static support, client dynamicRegistration): dynamic-registration clients get the provider removed here and registered post-initialized instead (see mut.handle_initialize.inlineCompletionTriState)"
         }
       ],
@@ -3634,10 +3650,10 @@
     {
       "surface_id": "cap.textDocumentSync.save",
       "protocol_field": "textDocumentSync.save",
-      "primary_builder": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_document_sync",
+      "primary_builder": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_document_sync",
       "competitors": [
         {
-          "path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+          "path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
           "delta": "runtime replaces the whole textDocumentSync value after initialize parsing: adds willSave=true, willSaveWaitUntil=true and turns save from boolean true into {includeText:true} (see mut.handle_initialize.textDocumentSyncOverride)"
         }
       ],
@@ -3646,10 +3662,10 @@
     {
       "surface_id": "cap.typeHierarchyProvider.workDoneProgressOptions",
       "protocol_field": "typeHierarchyProvider.workDoneProgressOptions",
-      "primary_builder": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+      "primary_builder": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
       "competitors": [
         {
-          "path": "perl-lsp-rs-core/src/protocol/capabilities/experimental.rs apply_experimental_features",
+          "path": "crates/perl-lsp-rs-core/src/protocol/capabilities/experimental.rs apply_experimental_features",
           "delta": "experimental.typeHierarchyProvider boolean duplicates this top-level advertisement for typed-caps consumers that cannot see the JSON patch"
         }
       ],
@@ -3658,10 +3674,10 @@
     {
       "surface_id": "cap.workspaceSymbolProvider.resolveProvider",
       "protocol_field": "workspaceSymbolProvider.resolveProvider",
-      "primary_builder": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features",
+      "primary_builder": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features",
       "competitors": [
         {
-          "path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features (workspace_symbol arm)",
+          "path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features (workspace_symbol arm)",
           "delta": "workspace_symbol=true claims OneOf::Left(true); the later workspace_symbol_resolve arm overwrites the same provider with OneOf::Right({resolveProvider:true}) when both flags are set - two writers inside one function claim the same variant"
         }
       ],

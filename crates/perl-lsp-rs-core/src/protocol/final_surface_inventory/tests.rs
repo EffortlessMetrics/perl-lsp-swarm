@@ -9,14 +9,20 @@
 use std::path::PathBuf;
 
 use super::{
-    INVENTORY_ISSUE, SurfaceKind, SurfaceRow, coverage_errors, final_surface_rows,
-    flatten_surface_pointers, owned_surface_pointers, render_final_surface_inventory_json,
-    render_with_rows, static_surface_census,
+    INVENTORY_ISSUE, SurfaceKind, SurfaceRow, census_pointer_union, coverage_errors,
+    coverage_errors_with_source_check, final_surface_rows, flatten_surface_pointers,
+    owned_surface_pointers, render_final_surface_inventory_json, render_with_rows,
+    static_surface_census,
 };
+use crate::protocol::capabilities::capabilities_json;
 
 fn artifact_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../docs/specs/lsp-final-surface-inventory.json")
+}
+
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 #[test]
@@ -272,10 +278,54 @@ fn competing_builder_diff_preserves_known_dual_writers() {
 }
 
 #[test]
-fn ownership_is_bijective_with_census_right_now() {
+fn ownership_is_bijective_with_census_and_citations_right_now() {
     let rows = final_surface_rows();
-    let errors = coverage_errors(&rows);
-    assert!(errors.is_empty(), "ledger/census bijection broken:\n{}", errors.join("\n"));
+    let errors = coverage_errors_with_source_check(&rows, &repo_root());
+    assert!(errors.is_empty(), "ledger/census/citation bijection broken:\n{}", errors.join("\n"));
+}
+
+#[test]
+fn negative_control_stale_citation_fails_source_check() {
+    let rows: Vec<SurfaceRow> = final_surface_rows()
+        .into_iter()
+        .map(|row| {
+            if row.surface_id == "reg.perl-inlineCompletion" {
+                let mut moved = row.clone();
+                moved.builder_mutator_path =
+                    "crates/perl-lsp-rs/src/runtime/lifecycle/deleted_watchers.rs register_inline_completion_if_needed";
+                moved
+            } else {
+                row
+            }
+        })
+        .collect();
+    let errors = coverage_errors_with_source_check(&rows, &repo_root());
+    assert!(
+        errors
+            .iter()
+            .any(|problem| problem.contains("stale citation")
+                && problem.contains("deleted_watchers.rs")),
+        "moved citation must fail the source check, got: {errors:?}"
+    );
+}
+
+/// Review question (c): a new `FeatureProfile` kind (or a widened existing
+/// one) must fail the inventory instead of silently shipping surface no
+/// census profile covers.
+#[test]
+fn new_profile_kinds_cannot_silently_widen_surface() {
+    use crate::features::policy::{FeatureProfile, flags_for_profile};
+
+    let census = census_pointer_union();
+    for profile in FeatureProfile::all() {
+        let pointers = flatten_surface_pointers(&capabilities_json(flags_for_profile(*profile)));
+        let widened: Vec<&String> =
+            pointers.iter().filter(|pointer| !census.contains(*pointer)).collect();
+        assert!(
+            widened.is_empty(),
+            "profile {profile:?} widens the final surface beyond the censused profiles: {widened:?}"
+        );
+    }
 }
 
 #[test]

@@ -15,22 +15,22 @@ use super::{
 // ---------------------------------------------------------------------------
 
 const S_DOC_SYNC: &str =
-    "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_document_sync";
+    "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_document_sync";
 const S_NAV: &str =
-    "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features";
+    "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features";
 const S_EDIT: &str =
-    "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features";
-const S_SYM: &str =
-    "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features";
+    "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features";
+const S_SYM: &str = "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features";
 const S_ANALYSIS: &str =
-    "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features";
+    "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features";
 const S_CODE_ACTION: &str =
-    "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_code_action_features";
-const S_MISC: &str = "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features";
+    "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_code_action_features";
+const S_MISC: &str =
+    "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features";
 const S_EXP: &str =
-    "perl-lsp-rs-core/src/protocol/capabilities/experimental.rs apply_experimental_features";
-const S_JSON: &str = "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json";
-const RT_INIT: &str = "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize";
+    "crates/perl-lsp-rs-core/src/protocol/capabilities/experimental.rs apply_experimental_features";
+const S_JSON: &str = "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json";
+const RT_INIT: &str = "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize";
 
 /// Target issue absorbing this surface on the #8032 train.
 const TARGET_S02: &str = "#9665";
@@ -110,7 +110,7 @@ fn refresh_request(
         client_capability_inputs: client_input,
         build_profile_config_tool_inputs: NO_INPUTS,
         disposition: Disposition::Dynamic,
-        runtime_route_owner: "perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
+        runtime_route_owner: "crates/perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
         evidence_owner: evidence,
         competing_paths: Vec::new(),
         target_issue: TARGET_S02,
@@ -136,7 +136,7 @@ fn systemic_suppression(
         client_capability_inputs: NO_CLIENT,
         build_profile_config_tool_inputs: inputs,
         disposition: Disposition::Unadvertised,
-        runtime_route_owner: "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+        runtime_route_owner: "crates/perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
         evidence_owner: "features.toml catalog; perl-lsp-rs lifecycle tests",
         competing_paths: Vec::new(),
         target_issue: TARGET_S02,
@@ -385,7 +385,7 @@ fn capability_rows() -> Vec<SurfaceRow> {
         ),
         SurfaceRow {
             competing_paths: vec![CompetingPath {
-                path: "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features (workspace_symbol arm)",
+                path: "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features (workspace_symbol arm)",
                 delta: "workspace_symbol=true claims OneOf::Left(true); the later \
                         workspace_symbol_resolve arm overwrites the same provider with \
                         OneOf::Right({resolveProvider:true}) when both flags are set - two \
@@ -501,7 +501,7 @@ fn capability_rows() -> Vec<SurfaceRow> {
             "codeActionProvider.codeActionKinds[]",
             S_CODE_ACTION,
             "textDocument/codeAction kind filter",
-            "features.toml#lsp.refactoring; lifecycle test code_action_kinds_include_exact_advertised_set",
+            "features.toml#lsp.refactoring; lifecycle test code_action_kinds_include_exact_advertised_set; source.organizeImports withdrawn from this list (#8305), see sys.withdrawal.sourceOrganizeImports",
         ),
         SurfaceRow {
             client_capability_inputs: &[
@@ -793,7 +793,7 @@ fn registration_rows() -> Vec<SurfaceRow> {
         registration(
             "reg.perl-didChangeWatchedFiles",
             "register perl-didChangeWatchedFiles@workspace/didChangeWatchedFiles",
-            "perl-lsp-rs/src/runtime/lifecycle/watchers.rs register_file_watchers_if_needed",
+            "crates/perl-lsp-rs/src/runtime/lifecycle/watchers.rs register_file_watchers_if_needed",
             &[
                 "workspace.didChangeWatchedFiles.dynamicRegistration",
                 "workspace.didChangeWatchedFiles.relativePatternSupport",
@@ -805,7 +805,7 @@ fn registration_rows() -> Vec<SurfaceRow> {
         registration(
             "reg.perl-inlineCompletion",
             "register perl-inlineCompletion@textDocument/inlineCompletion",
-            "perl-lsp-rs/src/runtime/lifecycle/watchers.rs register_inline_completion_if_needed",
+            "crates/perl-lsp-rs/src/runtime/lifecycle/watchers.rs register_inline_completion_if_needed",
             &["textDocument/inlineCompletion.dynamicRegistration"],
             &["AdvertisedFeatures.inline_completion"],
             Disposition::Dynamic,
@@ -833,28 +833,28 @@ fn refresh_rows() -> Vec<SurfaceRow> {
             "ref.workspace/codeLens/refresh",
             "workspace/codeLens/refresh",
             &["workspace.codeLens.refreshSupport"],
-            "perl-lsp-rs/src/runtime/client_requests.rs request_code_lens_refresh",
+            "crates/perl-lsp-rs/src/runtime/client_requests.rs request_code_lens_refresh",
             "features.toml#lsp.code_lens_refresh",
         ),
         refresh_request(
             "ref.workspace/semanticTokens/refresh",
             "workspace/semanticTokens/refresh",
             &["workspace.semanticTokens.refreshSupport"],
-            "perl-lsp-rs/src/runtime/client_requests.rs request_semantic_tokens_refresh",
+            "crates/perl-lsp-rs/src/runtime/client_requests.rs request_semantic_tokens_refresh",
             "features.toml#lsp.semantic_tokens_refresh",
         ),
         refresh_request(
             "ref.workspace/inlayHint/refresh",
             "workspace/inlayHint/refresh",
             &["workspace.inlayHint.refreshSupport"],
-            "perl-lsp-rs/src/runtime/client_requests.rs request_inlay_hint_refresh",
+            "crates/perl-lsp-rs/src/runtime/client_requests.rs request_inlay_hint_refresh",
             "features.toml#lsp.inlay_hint_refresh",
         ),
         refresh_request(
             "ref.workspace/inlineValue/refresh",
             "workspace/inlineValue/refresh",
             &["workspace.inlineValue.refreshSupport"],
-            "perl-lsp-rs/src/runtime/client_requests.rs request_inline_value_refresh",
+            "crates/perl-lsp-rs/src/runtime/client_requests.rs request_inline_value_refresh",
             "features.toml#lsp.inline_value_refresh",
         ),
         refresh_request(
@@ -864,14 +864,14 @@ fn refresh_rows() -> Vec<SurfaceRow> {
                 "workspace.diagnostics.refreshSupport (spec plural key)",
                 "workspace.diagnostic.refreshSupport (client-deviation singular)",
             ],
-            "perl-lsp-rs/src/runtime/client_requests.rs request_diagnostic_refresh",
+            "crates/perl-lsp-rs/src/runtime/client_requests.rs request_diagnostic_refresh",
             "features.toml#lsp.diagnostic_refresh; #9592 dual-spelling deviation",
         ),
         refresh_request(
             "ref.workspace/foldingRange/refresh",
             "workspace/foldingRange/refresh",
             &["workspace.foldingRange.refreshSupport"],
-            "perl-lsp-rs/src/runtime/client_requests.rs request_folding_range_refresh",
+            "crates/perl-lsp-rs/src/runtime/client_requests.rs request_folding_range_refresh",
             "features.toml#lsp.folding_range_refresh",
         ),
     ]
@@ -1062,39 +1062,62 @@ fn suppression_rows() -> Vec<SurfaceRow> {
     rows.push(systemic_suppression(
         "sys.profile.gaLock.inlineValues",
         &["profile:lsp-ga-lock:inline_values=false"],
-        "perl-lsp-rs-core/src/features/flags.rs BuildFlags::ga_lock",
+        "crates/perl-lsp-rs-core/src/features/flags.rs BuildFlags::ga_lock",
         Some("inline_values"),
     ));
     rows.push(systemic_suppression(
         "sys.profile.preview.notebookSync",
         &["profile:not-all:notebook_document_sync=false"],
-        "perl-lsp-rs-core/src/features/flags.rs BuildFlags::production/all",
+        "crates/perl-lsp-rs-core/src/features/flags.rs BuildFlags::production/all",
         Some("notebook_document_sync"),
     ));
     rows.push(systemic_suppression(
         "sys.profile.preview.notebookCellExecution",
         &["profile:not-all:notebook_cell_execution=false"],
-        "perl-lsp-rs-core/src/features/flags.rs BuildFlags::production/all",
+        "crates/perl-lsp-rs-core/src/features/flags.rs BuildFlags::production/all",
         Some("notebook_cell_execution"),
     ));
     rows.push(systemic_suppression(
         "sys.tool.perltidy.runtimeFlags",
         &["tool:perltidy availability:FeatureProfile.runtime_flags"],
-        "perl-lsp-rs-core FeatureProfile::runtime_flags consumed in handle_initialize",
+        "crates/perl-lsp-rs-core FeatureProfile::runtime_flags consumed in handle_initialize",
         None,
     ));
     rows.push(systemic_suppression(
         "sys.config.runtimeTuning.fileWatchers",
         &["config:runtime_tuning.file_watchers=false blocks reg.perl-didChangeWatchedFiles"],
-        "perl-lsp-rs/src/runtime/lifecycle/watchers.rs register_file_watchers_if_needed early return",
+        "crates/perl-lsp-rs/src/runtime/lifecycle/watchers.rs register_file_watchers_if_needed early return",
         None,
     ));
     rows.push(systemic_suppression(
         "sys.dispatch.advertisedFeaturesGating",
         &["config:AdvertisedFeatures false => -32601 method_not_advertised"],
-        "perl-lsp-rs/src/runtime/dispatch preflight/handlers gate on advertised_features",
+        "crates/perl-lsp-rs/src/runtime/dispatch preflight/handlers gate on advertised_features",
         None,
     ));
+    // Withdrawn-capability disposition, recorded rather than silently
+    // deleted so the ledger explains why source.organizeImports vanished
+    // from codeActionProvider.codeActionKinds[] (#8305).
+    rows.push(SurfaceRow {
+        surface_id: "sys.withdrawal.sourceOrganizeImports",
+        kind: SurfaceKind::Suppression,
+        protocol_field: "profile:source.organizeImports withdrawn from advertisement and every request path",
+        builder_mutator_path:
+            "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs code_action_kinds",
+        client_capability_inputs: NO_CLIENT,
+        build_profile_config_tool_inputs: &["BuildFlags.source_organize_imports field removed (#8305)"],
+        disposition: Disposition::Unadvertised,
+        runtime_route_owner:
+            "withdrawn from providers/code_actions enhanced import management; no route admits it today",
+        evidence_owner:
+            "#8305 withdrawal; restoration path #8319 (bounded cohort) + #10696 (proven cutover); organize_imports_containment_tests.rs",
+        competing_paths: Vec::new(),
+        target_issue: "#8305",
+        compatibility: None,
+        additional_owned_pointers: super::NO_POINTERS,
+        rewrites_surface_pointer: None,
+        build_flag_effect: None,
+    });
     rows
 }
 
