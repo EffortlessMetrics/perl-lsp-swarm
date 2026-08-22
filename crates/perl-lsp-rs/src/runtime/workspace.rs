@@ -1772,16 +1772,29 @@ impl LspServer {
             let loaded_content = read_watched_file_content(uri, "re-indexing");
 
             let workspace_index = coordinator.index();
-            if let Ok(url) = url::Url::parse(uri)
-                && let Some(content) = loaded_content.as_ref()
-            {
-                // Clear old index data before re-indexing
-                workspace_index.clear_file(uri);
-                match workspace_index.index_file(url, content.clone()) {
-                    Ok(()) => tracing::debug!("Re-indexed file: {}", uri),
-                    Err(e) => {
-                        tracing::warn!("Failed to re-index file {}: {}", uri, e);
+            match loaded_content {
+                Some(content) => match url::Url::parse(uri) {
+                    Ok(url) => {
+                        // Clear old index data before re-indexing.
+                        workspace_index.clear_file(uri);
+                        match workspace_index.index_file(url, content) {
+                            Ok(()) => tracing::debug!("Re-indexed file: {}", uri),
+                            Err(e) => {
+                                tracing::warn!("Failed to re-index file {}: {}", uri, e);
+                                workspace_index.clear_file(uri);
+                            }
+                        }
                     }
+                    Err(e) => {
+                        tracing::warn!("Failed to parse file URI {}: {}", uri, e);
+                        workspace_index.clear_file(uri);
+                    }
+                },
+                None => {
+                    // A rejected bounded reread must not leave stale
+                    // closed-file facts presented as current disk authority.
+                    workspace_index.clear_file(uri);
+                    tracing::debug!("Cleared closed file after unsafe or unstable reread: {}", uri);
                 }
             }
         }
@@ -3946,6 +3959,55 @@ mod tests {
             server.documents_text_snapshot(),
             vec![(server.normalize_uri_key(&uri), buffer_v2.to_string())]
         );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn watched_unsafe_reread_clears_closed_state_and_balances_accounting()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("unsafe_reread.pm");
+        let source_v1 = "package UnsafeReread;\nsub stale_only { 1 }\n1;\n";
+        std::fs::write(&path, source_v1)?;
+        let uri = url::Url::from_file_path(&path).map_err(|_| "invalid file path")?.to_string();
+
+        let coordinator = server.coordinator().ok_or("expected workspace coordinator")?;
+        coordinator.index().index_file(url::Url::parse(&uri)?, source_v1.to_string())?;
+        assert!(coordinator.index().file_symbols(&uri).iter().any(|s| s.name == "stale_only"));
+        let pending_before_unsafe = coordinator.pending_parse_count();
+
+        // The bounded reread rejects binary content. The stale closed-file
+        // subject must be cleared rather than presented as current.
+        let mut unsafe_source = b"package UnsafeReread;\nsub unsafe_only { 2 }\n".to_vec();
+        unsafe_source.extend(std::iter::repeat_n(0, 128));
+        std::fs::write(&path, unsafe_source)?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": uri, "type": 2 }]
+        })))?;
+
+        assert!(coordinator.index().file_symbols(&uri).is_empty());
+        assert!(coordinator.index().document_store().get(&uri).is_none());
+        assert_eq!(
+            coordinator.pending_parse_count(),
+            pending_before_unsafe,
+            "unsafe reread must settle its coordinator lifecycle"
+        );
+
+        // A later valid closed-file reread can establish fresh disk authority.
+        let source_v2 = "package UnsafeReread;\nsub recovered_only { 3 }\n1;\n";
+        std::fs::write(&path, source_v2)?;
+        let pending_before_valid = coordinator.pending_parse_count();
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": uri, "type": 2 }]
+        })))?;
+
+        let names = index_symbol_names(coordinator.index(), &uri);
+        assert!(names.iter().any(|name| name == "recovered_only"), "{names:?}");
+        assert!(!names.iter().any(|name| name == "stale_only"), "{names:?}");
+        assert_eq!(coordinator.pending_parse_count(), pending_before_valid);
 
         Ok(())
     }
