@@ -944,6 +944,14 @@ impl LspServer {
                     }
                 };
 
+                // URI identity in this repository is `perl_uri::uri_key`, not raw
+                // string equality: a client may spell the open document
+                // `file://localhost/...`, or with different Windows drive-letter
+                // casing, than the form it was indexed under. Comparing raw
+                // strings would classify the document's own variables as
+                // cross-file and needlessly qualify them.
+                let doc_uri_key = self.normalize_uri_key(doc_uri);
+
                 let qualified_variable_symbols =
                     Self::qualified_variable_workspace_symbols(index, &prefix);
                 let replace_prefix_range = (offset.saturating_sub(prefix.len()), offset);
@@ -996,9 +1004,12 @@ impl LspServer {
                     // package-visible name at all: it is reachable from another
                     // document under neither a bare nor a qualified spelling, so
                     // the name-only fallback must withdraw it outright.
+                    // Raw equality first so the common same-spelling case costs
+                    // no normalization; equal raw strings always share a key.
                     let is_cross_file_variable =
                         matches!(symbol.kind, crate::workspace_index::SymbolKind::Variable(_))
-                            && symbol.uri.as_str() != doc_uri;
+                            && symbol.uri.as_str() != doc_uri
+                            && self.normalize_uri_key(&symbol.uri) != doc_uri_key;
                     if is_cross_file_variable && symbol.is_lexical {
                         continue;
                     }
@@ -5028,7 +5039,9 @@ our $single_root_var;
             "package Secrets;\nour $api_token = 1;\nmy $private_token = 2;\n1;\n",
         );
         if let Some(source) = extra_doc_source {
-            let _ = coordinator.index().index_file_str(doc_uri, source);
+            // Index under the canonical key so a caller can pass an equivalent
+            // but differently spelled `doc_uri` and still be the same document.
+            let _ = coordinator.index().index_file_str(&perl_uri::uri_key(doc_uri), source);
         }
         coordinator.transition_to_ready(1, 1);
 
@@ -5157,6 +5170,46 @@ our $single_root_var;
             "a variable declared in the open document is already in scope bare"
         );
         assert!(text_edit_range.is_none(), "a bare insert_text must carry no replace range");
+    }
+
+    /// Same-document identity is `perl_uri::uri_key`, not raw string equality.
+    ///
+    /// A client may spell the open document `file://localhost/...` while the
+    /// index holds `file:///...` (and Windows clients vary drive-letter casing).
+    /// Comparing raw strings would call the document's own variable cross-file
+    /// and qualify it needlessly. The `$api_token` assertion is the vacuity
+    /// guard: the genuinely cross-file variable is still qualified in the very
+    /// same response, so this is a normalization result, not a disabled guard.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn same_document_identity_survives_an_equivalent_uri_spelling() {
+        let items = run_workspace_pass_over_secrets_module(
+            "file://localhost/project/bin/app.pl",
+            "package App;\nour $api_local = 1;\n$api",
+            Some("package App;\nour $api_local = 1;\n"),
+        );
+
+        let (_, insert_text, text_edit_range) =
+            items.iter().find(|(label, _, _)| label == "$api_local").cloned().unwrap_or_else(
+                || panic!("expected the same-document `$api_local`; got {items:?}"),
+            );
+        assert_eq!(
+            insert_text.as_deref(),
+            Some("$api_local"),
+            "`file://localhost/...` and `file:///...` are the same document"
+        );
+        assert!(text_edit_range.is_none());
+
+        let (_, cross_file_insert, _) = items
+            .iter()
+            .find(|(label, _, _)| label == "$api_token")
+            .cloned()
+            .unwrap_or_else(|| panic!("vacuity guard: expected `$api_token`; got {items:?}"));
+        assert_eq!(
+            cross_file_insert.as_deref(),
+            Some("$Secrets::api_token"),
+            "a genuinely cross-file variable is still qualified in the same response"
+        );
     }
 
     /// The pre-existing qualified-prefix route (`$Secrets::api`) is unchanged.
