@@ -235,26 +235,31 @@ fn normalize_output_path(path: &Path, exists: bool) -> Result<PathBuf> {
 /// APIs. Filesystems that cannot report those identities fail this guard
 /// loudly rather than guessing equal-or-distinct.
 #[cfg(unix)]
-fn same_file_identity(left: &Path, right: &Path) -> Result<bool> {
+fn same_file_identity(output: &Path, fixture: &Path) -> Result<bool> {
     use std::os::unix::fs::MetadataExt as _;
 
-    let left_metadata = fs::metadata(left)
-        .with_context(|| format!("reading fixture metadata {}", left.display()))?;
-    let right_metadata = fs::metadata(right)
-        .with_context(|| format!("reading fixture metadata {}", right.display()))?;
-    Ok(left_metadata.dev() == right_metadata.dev() && left_metadata.ino() == right_metadata.ino())
+    let output_metadata = fs::metadata(output)
+        .with_context(|| format!("reading snapshot output metadata {}", output.display()))?;
+    let fixture_metadata = fs::metadata(fixture)
+        .with_context(|| format!("reading snapshot fixture metadata {}", fixture.display()))?;
+    Ok(output_metadata.dev() == fixture_metadata.dev()
+        && output_metadata.ino() == fixture_metadata.ino())
 }
 
 #[cfg(windows)]
-fn same_file_identity(left: &Path, right: &Path) -> Result<bool> {
-    Ok(read_windows_file_identity(left)? == read_windows_file_identity(right)?)
+fn same_file_identity(output: &Path, fixture: &Path) -> Result<bool> {
+    Ok(read_windows_file_identity(output, "output")?
+        == read_windows_file_identity(fixture, "fixture")?)
 }
 
 #[cfg(windows)]
-fn read_windows_file_identity(path: &Path) -> Result<(u32, u32, u32)> {
+fn read_windows_file_identity(
+    path: &Path,
+    operand: &str,
+) -> Result<xtask::file_identity::WindowsFileIdentity> {
     xtask::file_identity::windows_file_identity(path)?.ok_or_else(|| {
         color_eyre::eyre::eyre!(
-            "Snapshot output file identity is unavailable on Windows: {}",
+            "Snapshot {operand} file identity is unavailable on Windows: {}",
             path.display()
         )
     })

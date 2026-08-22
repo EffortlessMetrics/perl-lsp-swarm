@@ -191,8 +191,14 @@ fn same_file_identity(output: &Path, source: &Path) -> Result<bool> {
 
 #[cfg(windows)]
 fn same_file_identity(output: &Path, source: &Path) -> Result<bool> {
-    let output_identity = crate::file_identity::windows_file_identity(output)?;
-    let source_identity = crate::file_identity::windows_file_identity(source)?;
+    let output_identity =
+        crate::file_identity::windows_file_identity(output).wrap_err_with(|| {
+            format!("reading publication drift output identity {}", output.display())
+        })?;
+    let source_identity =
+        crate::file_identity::windows_file_identity(source).wrap_err_with(|| {
+            format!("reading protected evidence source identity {}", source.display())
+        })?;
     Ok(output_identity.is_some() && output_identity == source_identity)
 }
 
