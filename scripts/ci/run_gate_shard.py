@@ -237,7 +237,7 @@ def _yaml_command_scalar(value: str) -> str:
     """Accept only YAML strings for scalar command declarations."""
     stripped = value.strip()
     if not stripped:
-        return ""
+        raise ValueError("gate command must be a YAML string")
     candidate = _yaml_inline_comment(stripped)
     if candidate and candidate[0] in {"'", '"'}:
         return _yaml_scalar(candidate)
@@ -252,11 +252,11 @@ def _yaml_command_scalar(value: str) -> str:
         flags=re.IGNORECASE,
     ):
         raise ValueError("gate command must be a YAML string")
-    if candidate.startswith(("&", "*", "[", "{")):
+    if candidate.startswith(("&", "*", "!", "[", "{")):
         raise ValueError("gate command must be a YAML string")
     if candidate.startswith((">", "|")):
         raise ValueError("unsupported YAML block scalar indicator")
-    return stripped
+    return candidate
 
 
 def _read_gate_command_specs(path: Path) -> dict[str, str]:
@@ -276,6 +276,57 @@ def _read_gate_command_specs(path: Path) -> dict[str, str]:
     if yaml is not None:
         return _read_gate_command_specs_with_yaml(text, path)
     return _read_gate_command_specs_fallback(text, path)
+
+
+def _yaml_block_scalar(
+    lines: Sequence[str], line_number: int, header: str
+) -> tuple[str, int]:
+    """Decode the supported YAML literal/folded scalar subset."""
+    continuation: list[str] = []
+    cursor = line_number + 1
+    while cursor < len(lines):
+        candidate = lines[cursor]
+        if candidate.strip() and not candidate.startswith("      "):
+            break
+        continuation.append(candidate)
+        cursor += 1
+    nonempty = [line for line in continuation if line.strip()]
+    if not nonempty:
+        value = ""
+    else:
+        base_indent = min(len(line) - len(line.lstrip(" ")) for line in nonempty)
+        entries = [
+            (
+                line[base_indent:] if line.strip() else "",
+                len(line) - len(line.lstrip(" ")),
+            )
+            for line in continuation
+        ]
+        if header.startswith("|"):
+            value = "\n".join(text for text, _ in entries)
+        else:
+            parts = [entries[0][0]]
+            for previous, current in zip(entries, entries[1:]):
+                previous_text, previous_indent = previous
+                current_text, current_indent = current
+                if (
+                    not previous_text
+                    or not current_text
+                    or previous_indent > base_indent
+                    or current_indent > base_indent
+                ):
+                    separator = "\n"
+                else:
+                    separator = " "
+                parts.append(separator + current_text)
+            value = "".join(parts)
+    if not value.endswith("\n"):
+        value += "\n"
+    if header.endswith("-"):
+        value = value.rstrip("\n")
+    elif not header.endswith("+"):
+        value = value.rstrip("\n") + "\n"
+    return value, cursor
 
 
 def _read_gate_command_specs_with_yaml(text: str, path: Path) -> dict[str, str]:
@@ -354,26 +405,14 @@ def _read_gate_command_specs_fallback(text: str, path: Path) -> dict[str, str]:
         block_header = re.fullmatch(r"(?P<header>[>|][+-]?)(?:\s+#.*)?", value)
         if block_header is not None:
             value = block_header.group("header")
-        if value in {">", ">-", ">+", "|", "|-", "|+"}:
-            folded = value.startswith(">")
-            continuation: list[str] = []
-            cursor = line_number + 1
-            while cursor < len(lines):
-                next_raw = lines[cursor]
-                if next_raw.strip() and not next_raw.startswith("      "):
-                    break
-                continuation.append(next_raw.strip())
-                cursor += 1
-            if folded:
-                command = " ".join(part for part in continuation if part)
-            else:
-                command = "\n".join(continuation)
-            if value.endswith("-"):
-                command = command.rstrip(" \n")
-            specs[current] = command
-            line_number = cursor
+        if value.startswith((">", "|")):
+            if value not in {">", ">-", ">+", "|", "|-", "|+"}:
+                raise ValueError("unsupported YAML block scalar indicator")
+            specs[current], line_number = _yaml_block_scalar(lines, line_number, value)
             continue
 
+        if not value:
+            raise ValueError(f"gate {current!r} command must be a YAML string")
         specs[current] = _yaml_command_scalar(value)
         line_number += 1
     if not in_gates:
@@ -410,6 +449,11 @@ def _contains_dynamic_shell_expansion(token: str) -> bool:
         or re.search(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]+\}|[?*@#0-9])", token)
         or re.search(r"%[^%\r\n]+%", token) is not None
     )
+
+
+def _contains_bracket_glob(token: str) -> bool:
+    """Reject pathname character-class globs whose expansion is dynamic."""
+    return re.search(r"\[[^\]\r\n]*\]", token) is not None
 
 
 def _contains_windows_path_syntax(command: str) -> bool:
@@ -551,7 +595,9 @@ def _validate_shell_constructs(tokens: Sequence[str], root: Path) -> None:
     for index, token in enumerate(tokens):
         token_name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
         if _is_env_assignment(token) and (
-            index == 0 or tokens[index - 1] in SHELL_OPERATORS
+            index == 0
+            or tokens[index - 1] in SHELL_OPERATORS
+            or tokens[index - 1] in SUPPORTED_SHELL_KEYWORDS
         ):
             raise ValueError(f"unsupported shell prefix assignment in gate policy: {token}")
         if (
@@ -565,6 +611,8 @@ def _validate_shell_constructs(tokens: Sequence[str], root: Path) -> None:
             and not _is_determinism_filter(tokens, index)
         ):
             raise ValueError(f"unsupported shell glob expansion in gate policy: {token}")
+        if _contains_bracket_glob(token):
+            raise ValueError(f"unsupported shell bracket glob expansion in gate policy: {token}")
         if token in UNSAFE_SHELL_COMMANDS:
             raise ValueError(f"unsupported shell command in gate policy: {token}")
         if token in UNSUPPORTED_SHELL_CONSTRUCTS and not _is_nested_lock_grouping(

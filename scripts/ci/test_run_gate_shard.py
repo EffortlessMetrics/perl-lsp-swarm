@@ -632,6 +632,42 @@ class GateShardTests(unittest.TestCase):
         actual = shard._read_gate_command_specs(policy)
         self.assertEqual(expected, {name: actual[name] for name in expected})
 
+    def test_fallback_parser_matches_multiline_commands_and_rejects_yaml_extensions(self) -> None:
+        yaml_spec = importlib.util.find_spec("yaml")
+        if yaml_spec is None:
+            self.skipTest("PyYAML is unavailable for the fallback parity oracle")
+        import yaml
+
+        policy = REPO_ROOT / ".ci/gate-policy.yaml"
+        document = yaml.safe_load(policy.read_text(encoding="utf-8"))
+        expected = {
+            row["name"]: row["command"]
+            for row in document["gates"]
+            if row["name"] in {"nested_lock_check", "determinism_check"}
+        }
+        with mock.patch.object(shard, "yaml", None):
+            fallback = shard._read_gate_command_specs(policy)
+            self.assertEqual(expected, {name: fallback[name] for name in expected})
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                comment_policy = write_gate_policy(
+                    root,
+                    "  - name: comment\n    command: echo # inline comment\n",
+                )
+                self.assertEqual(
+                    "echo",
+                    shard._read_gate_command_specs(comment_policy)["comment"],
+                )
+                for scalar in ("!!str echo", "&command echo"):
+                    tagged_policy = write_gate_policy(
+                        root,
+                        "  - name: tagged\n    command: " + scalar + "\n",
+                    )
+                    with self.subTest(scalar=scalar), self.assertRaisesRegex(
+                        ValueError, "YAML string"
+                    ):
+                        shard._read_gate_command_specs(tagged_policy)
+
     def test_gate_policy_preflight_rejects_missing_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             policy = write_gate_policy(
@@ -970,9 +1006,14 @@ class GateShardTests(unittest.TestCase):
     def test_gate_policy_preflight_rejects_assignments_grouping_globs_and_windows_paths(self) -> None:
         commands = (
             "FOO=bar python3 scripts/ci/check.py",
+            "if FOO=bar; then python3 scripts/ci/check.py; fi",
+            "then FOO=bar python3 scripts/ci/check.py",
+            "for FOO=bar in one; do python3 scripts/ci/check.py; done",
+            "else FOO=bar python3 scripts/ci/check.py",
             "echo ( python3 scripts/ci/check.py )",
-            "python3 scripts/{missing,other}.py",
-            "python3 scripts/*.py",
+            "python3 scripts/ci/check.py {one,two}",
+            "python3 scripts/ci/check.py *.py",
+            "python3 scripts/ci/check.py [abc]",
             "python3 scripts\\ci\\check.py",
             "python3 C:\\outside.py",
             "python3 scripts/ci/check.py --output-path ..\\outside.log",
