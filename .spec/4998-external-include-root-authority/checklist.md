@@ -1,7 +1,17 @@
 # #4998 - External include-root authority checklist
 
 Proof executed on candidate branch `fix/4998-includepaths-client-channel`
-(worktree `plsw-lane-4998`, base `origin/main@16fef8db1`).
+(worktree `plsw-lane-4998`, rebased onto `origin/main` after `34da72a33`
+moved the packaging base; PR base SHA frozen at `34da72a33` by GitHub).
+
+## Packaging gate
+
+- [x] `vsix-inventory-baseline.json` regenerated for the one-line
+      package.json claim change (58170 -> 58306 bytes)
+- [x] `vsix-inventory-transition.json` declared with owner_issue 4998; base
+      digests match the exact bytes at the PR base SHA (verified against the
+      CI transition receipt); local simulation through the repo's
+      `evaluateTransition` returns `transition_candidate/passed=true`
 
 ## Production changes
 

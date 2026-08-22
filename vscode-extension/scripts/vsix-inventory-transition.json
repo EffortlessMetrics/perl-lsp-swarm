@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 7041,
-  "reason": "The transition instrument measures the produced VSIX archive: vsce normalizes the three metadata names (README.md→readme.md, LICENSE→LICENSE.txt, CHANGELOG.md→changelog.md) and its ChangelogProcessor rewrites relative links and issue references during packaging, so the baseline adopts archive naming and packaged bytes. PR #11859 removes the withdrawn organize-imports contributions, shrinking package.json, package.nls.json, out/extension.js, and the packaged readme.md. The candidate baseline adopts the exact current-source archive inventory; platform bundle entries stay outside this baseline and are ignored by the instrument in current-source mode.",
-  "base_baseline_file_sha256": "f0878ed4a946e4dbe0edc5c9e488a0b9a25d0dbff96afcd8c7a22e99b85d94a4",
-  "candidate_baseline_file_sha256": "5fd137d8d989b9ae457d765ce001ea77dc5bfeec6161b4b814e60e9c5d71e517",
-  "base_inventory_sha256": "7b76e6f3fd1b9ef84bfb828897805940087541cf89e7514d7e1a9316b8ab7ac2",
-  "candidate_inventory_sha256": "86bdbcda8099542244f4ab88121dd7c913bb4d06b6de6c733e0a0756daa0a227"
+  "owner_issue": 4998,
+  "reason": "#4998 fail-closed external include roots: one actionable sentence added to the perl-lsp.externalIncludePaths markdownDescription stating that server-side application is pending a trusted configuration transport. Only package.json grows (58170 -> 58306 bytes); every other packaged entry is byte-identical.",
+  "base_baseline_file_sha256": "5fd137d8d989b9ae457d765ce001ea77dc5bfeec6161b4b814e60e9c5d71e517",
+  "candidate_baseline_file_sha256": "7d24b2a9cc9653790b955a84124949a15d0f1cfa2e1994964f8e0c818d76f71c",
+  "base_inventory_sha256": "86bdbcda8099542244f4ab88121dd7c913bb4d06b6de6c733e0a0756daa0a227",
+  "candidate_inventory_sha256": "a18d9dc92dec8337e1885300530d30f3b179044e648da7c9b7df3cc24f2a8a13"
 }
