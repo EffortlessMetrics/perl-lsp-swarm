@@ -75,11 +75,21 @@ struct Candidate {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct CandidateObservation {
     head_sha: String,
+    /// Base branch recorded with the observation; live mode fails on drift.
+    base_ref: String,
     state: String,
     observed_at: String,
     #[serde(default)]
     acceptance_evidence: Vec<String>,
     review_state: String,
+}
+
+/// An open cross-reference that is deliberately not enrolled as a candidate.
+/// Membership evidence only; never auto-enrolment.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct ObservedCrossReference {
+    pr: u64,
+    reason: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -94,6 +104,8 @@ struct Claim {
     close_or_retarget: Vec<String>,
     #[serde(default)]
     candidates: Vec<Candidate>,
+    #[serde(default)]
+    observed: Vec<ObservedCrossReference>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -122,6 +134,26 @@ struct LiveClaimState {
     missing_from_policy: Vec<u64>,
     observed_open_heads: BTreeMap<u64, String>,
 }
+
+/// A live PR head observation bound to both commit identity and base branch.
+#[derive(Clone, Debug)]
+struct LiveHead {
+    sha: String,
+    base_ref: String,
+}
+
+/// Observation age beyond which live evidence is treated as drifted.
+const OBSERVATION_MAX_AGE_SECONDS: i64 = 30 * 24 * 60 * 60;
+
+/// Finding codes that make recorded dispositions untrustworthy for a claim.
+const DRIFT_FINDING_CODES: [&str; 6] = [
+    "STALE_HEAD_OBSERVATION",
+    "STALE_BASE_OBSERVATION",
+    "STALE_STATE_OBSERVATION",
+    "STATE_OBSERVATION_STALE_CLOSED",
+    "OBSERVATION_EXPIRED",
+    "OBSERVATION_TIME_UNPARSEABLE",
+];
 
 #[derive(Debug, Serialize)]
 struct Receipt {
@@ -155,9 +187,11 @@ fn main() -> Result<()> {
 
     let policy_sha256 =
         Sha256::digest(content.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect();
-    let observed_at = chrono::Utc::now().to_rfc3339();
+    let now = chrono::Utc::now();
+    let observed_at = now.to_rfc3339();
     let mut findings = validate_policy(&policy);
-    let live = if args.live { check_live_state(&policy, &mut findings) } else { Vec::new() };
+    let live = if args.live { check_live_state(&policy, now, &mut findings) } else { Vec::new() };
+    apply_drift_downgrades(&mut policy.claim, &findings);
     findings.sort_by(|left, right| {
         (left.level, &left.claim_id, left.issue, left.pr, left.code, &left.message).cmp(&(
             right.level,
@@ -374,8 +408,110 @@ fn validate_claim(claim: &Claim, global_prs: &mut BTreeSet<u64>, findings: &mut 
                 "observation must record time, acceptance evidence, and review state".to_string(),
             ));
         }
+        if candidate.observation.base_ref.trim().is_empty() {
+            findings.push(candidate_error(
+                claim,
+                candidate,
+                "INVALID_OBSERVED_BASE",
+                "observation.base_ref must record the base branch seen at observation time"
+                    .to_string(),
+            ));
+        }
         validate_relationship(claim, candidate, &local_prs, findings);
     }
+
+    validate_observed_entries(claim, global_prs, findings);    if let Some(cycle) = find_relationship_cycle(claim) {
+        let path = cycle.iter().map(|pr| format!("#{pr}")).collect::<Vec<_>>().join(" -> ");
+        findings.push(claim_error(
+            claim,
+            "CYCLIC_RELATIONSHIP_GRAPH",
+            format!("relationship targets form a cycle: {path}"),
+        ));
+    }
+}
+
+fn validate_observed_entries(
+    claim: &Claim,
+    global_candidate_prs: &BTreeSet<u64>,
+    findings: &mut Vec<Finding>,
+) {
+    for observed in &claim.observed {
+        if observed.reason.trim().is_empty() {
+            findings.push(claim_error(
+                claim,
+                "INVALID_OBSERVED_ENTRY",
+                format!(
+                    "observed cross-reference #{} must record why it is not a candidate",
+                    observed.pr
+                ),
+            ));
+        }
+        // Observations are membership evidence and may repeat across issues;
+        // they only conflict when the PR is dispositioned as a candidate.
+        if global_candidate_prs.contains(&observed.pr) {
+            findings.push(claim_error(
+                claim,
+                "OBSERVED_PR_CONFLICT",
+                format!(
+                    "PR #{} cannot be both a dispositioned candidate and an observed cross-reference",
+                    observed.pr
+                ),
+            ));
+        }
+    }
+}
+
+/// Follows explicit_stack/superseded/duplicate targets and returns the first
+/// target cycle found, as the ordered PR path entering the cycle.
+fn find_relationship_cycle(claim: &Claim) -> Option<Vec<u64>> {
+    const UNVISITED: u8 = 0;
+    const IN_STACK: u8 = 1;
+    const DONE: u8 = 2;
+    let local_prs: BTreeSet<u64> = claim.candidates.iter().map(|candidate| candidate.pr).collect();
+    let edges: BTreeMap<u64, u64> = claim
+        .candidates
+        .iter()
+        .filter(|candidate| {
+            matches!(
+                candidate.relationship,
+                Relationship::ExplicitStack | Relationship::Superseded | Relationship::Duplicate
+            )
+        })
+        .filter_map(|candidate| {
+            candidate
+                .target_pr
+                .filter(|target| *target != candidate.pr && local_prs.contains(target))
+                .map(|target| (candidate.pr, target))
+        })
+        .collect();
+    let mut state: BTreeMap<u64, u8> = BTreeMap::new();
+    for start in edges.keys().copied().collect::<BTreeSet<_>>() {
+        if state.get(&start).copied().unwrap_or(UNVISITED) == DONE {
+            continue;
+        }
+        let mut path: Vec<u64> = Vec::new();
+        let mut node = start;
+        loop {
+            match state.get(&node).copied().unwrap_or(UNVISITED) {
+                IN_STACK => {
+                    let offset = path.iter().position(|pr| *pr == node)?;
+                    return Some(path[offset..].to_vec());
+                }
+                DONE => break,
+                _ => {}
+            }
+            state.insert(node, IN_STACK);
+            path.push(node);
+            match edges.get(&node) {
+                Some(next) => node = *next,
+                None => break,
+            }
+        }
+        for pr in path {
+            state.insert(pr, DONE);
+        }
+    }
+    None
 }
 
 fn validate_relationship(
@@ -398,7 +534,11 @@ fn validate_relationship(
     }
     if matches!(
         candidate.relationship,
-        Relationship::CurrentCandidate | Relationship::DistinctSlice | Relationship::NotProven
+        Relationship::CurrentCandidate
+            | Relationship::DistinctSlice
+            | Relationship::NotProven
+            | Relationship::SalvageSource
+            | Relationship::Abandoned
     ) && candidate.target_pr.is_some()
     {
         findings.push(candidate_error(
@@ -423,11 +563,67 @@ fn validate_relationship(
                 "UNKNOWN_TARGET",
                 format!("target PR #{target} is not present in this claim"),
             ));
+        } else if let Some(target_candidate) =
+            claim.candidates.iter().find(|other| other.pr == target)
+        {
+            validate_target_relationship(claim, candidate, target_candidate, findings);
         }
     }
 }
 
-fn check_live_state(policy: &Policy, findings: &mut Vec<Finding>) -> Vec<LiveClaimState> {
+/// Sink/order rules per relationship kind. Superseded chains are allowed and
+/// bounded by cycle detection; duplicates must point at a retained candidate
+/// and stacks must point at a mergeable parent.
+fn validate_target_relationship(
+    claim: &Claim,
+    candidate: &Candidate,
+    target: &Candidate,
+    findings: &mut Vec<Finding>,
+) {
+    match candidate.relationship {
+        Relationship::Duplicate => {
+            if !matches!(
+                target.relationship,
+                Relationship::CurrentCandidate
+                    | Relationship::DistinctSlice
+                    | Relationship::SalvageSource
+            ) {
+                findings.push(candidate_error(
+                    claim,
+                    candidate,
+                    "DUPLICATE_TARGET_INVALID",
+                    format!(
+                        "duplicate must target the retained candidate, not another {:?}",
+                        target.relationship
+                    ),
+                ));
+            }
+        }
+        Relationship::ExplicitStack => {
+            if !matches!(
+                target.relationship,
+                Relationship::CurrentCandidate | Relationship::DistinctSlice
+            ) {
+                findings.push(candidate_error(
+                    claim,
+                    candidate,
+                    "STACK_TARGET_INVALID",
+                    format!(
+                        "explicit_stack must target a mergeable current or distinct-slice parent, not {:?}",
+                        target.relationship
+                    ),
+                ));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn check_live_state(
+    policy: &Policy,
+    now: chrono::DateTime<chrono::Utc>,
+    findings: &mut Vec<Finding>,
+) -> Vec<LiveClaimState> {
     if let Err(error) = ensure_gh_available() {
         findings.push(global_error("LIVE_SOURCE_UNAVAILABLE", error.to_string()));
         return Vec::new();
@@ -449,47 +645,111 @@ fn check_live_state(policy: &Policy, findings: &mut Vec<Finding>) -> Vec<LiveCla
                 continue;
             }
         };
-        let candidates: Vec<&Candidate> = policy
-            .claim
-            .iter()
-            .filter(|claim| claim.issue == issue)
-            .flat_map(|claim| &claim.candidates)
-            .collect();
+        let claims_for_issue: Vec<&Claim> =
+            policy.claim.iter().filter(|claim| claim.issue == issue).collect();
+        let candidates: Vec<&Candidate> =
+            claims_for_issue.iter().flat_map(|claim| &claim.candidates).collect();
         let declared: BTreeSet<u64> = candidates
             .iter()
             .filter(|candidate| candidate.observation.state == "open")
             .map(|candidate| candidate.pr)
             .collect();
+        let observed_prs: BTreeSet<u64> =
+            claims_for_issue.iter().flat_map(|claim| claim.observed.iter().map(|o| o.pr)).collect();
         let discovered_prs: BTreeSet<u64> = discovered.keys().copied().collect();
-        let missing_from_policy: Vec<u64> = discovered_prs.difference(&declared).copied().collect();
+        let missing_from_policy: Vec<u64> = discovered_prs
+            .difference(&declared)
+            .copied()
+            .filter(|pr| !observed_prs.contains(pr))
+            .collect();
         if !missing_from_policy.is_empty() {
-            findings.push(Finding { level: "error", code: "UNASSIGNED_OPEN_CROSS_REFERENCE", claim_id: None, issue: Some(issue), pr: None, message: format!("open cross-references require an explicit policy-owned claim assignment: {missing_from_policy:?}") });
+            findings.push(Finding { level: "error", code: "UNASSIGNED_OPEN_CROSS_REFERENCE", claim_id: None, issue: Some(issue), pr: None, message: format!("open cross-references require an explicit policy-owned claim assignment or observed entry: {missing_from_policy:?}") });
         }
-        for candidate in candidates {
-            if let Some(head) = discovered.get(&candidate.pr) {
-                if observation_head_is_stale(candidate, head) {
-                    findings.push(Finding {
-                        level: "error",
-                        code: "STALE_HEAD_OBSERVATION",
-                        claim_id: None,
-                        issue: Some(issue),
-                        pr: Some(candidate.pr),
-                        message: format!(
-                            "recorded head {} differs from live head {head}",
-                            candidate.observation.head_sha
-                        ),
-                    });
+        for candidate in &candidates {
+            match discovered.get(&candidate.pr) {
+                Some(head) => {
+                    if observation_head_is_stale(candidate, &head.sha) {
+                        findings.push(Finding {
+                            level: "error",
+                            code: "STALE_HEAD_OBSERVATION",
+                            claim_id: None,
+                            issue: Some(issue),
+                            pr: Some(candidate.pr),
+                            message: format!(
+                                "recorded head {} differs from live head {}",
+                                candidate.observation.head_sha, head.sha
+                            ),
+                        });
+                    }
+                    if observation_base_is_stale(candidate, &head.base_ref) {
+                        findings.push(Finding {
+                            level: "error",
+                            code: "STALE_BASE_OBSERVATION",
+                            claim_id: None,
+                            issue: Some(issue),
+                            pr: Some(candidate.pr),
+                            message: format!(
+                                "recorded base {} differs from live base {}",
+                                candidate.observation.base_ref, head.base_ref
+                            ),
+                        });
+                    }
+                    if candidate.observation.state != "open" {
+                        findings.push(Finding {
+                            level: "error",
+                            code: "STATE_OBSERVATION_STALE_CLOSED",
+                            claim_id: None,
+                            issue: Some(issue),
+                            pr: Some(candidate.pr),
+                            message: format!(
+                                "candidate is recorded '{}' but is an open cross-reference",
+                                candidate.observation.state
+                            ),
+                        });
+                    }
                 }
-            } else if candidate.observation.state == "open" {
+                None => {
+                    if candidate.observation.state == "open" {
+                        findings.push(Finding {
+                            level: "error",
+                            code: "STALE_STATE_OBSERVATION",
+                            claim_id: None,
+                            issue: Some(issue),
+                            pr: Some(candidate.pr),
+                            message:
+                                "candidate is recorded open but is not an open cross-reference"
+                                    .to_string(),
+                        });
+                    }
+                }
+            }
+            if let Some(code) = observation_time_finding(&candidate.observation.observed_at, now) {
                 findings.push(Finding {
                     level: "error",
-                    code: "STALE_STATE_OBSERVATION",
+                    code,
                     claim_id: None,
                     issue: Some(issue),
                     pr: Some(candidate.pr),
-                    message: "candidate is recorded open but is not an open cross-reference"
-                        .to_string(),
+                    message: format!(
+                        "observation time '{}' does not provide current evidence (max age {}s)",
+                        candidate.observation.observed_at, OBSERVATION_MAX_AGE_SECONDS
+                    ),
                 });
+            }
+        }
+        for claim in &claims_for_issue {
+            for observed in &claim.observed {
+                if !discovered.contains_key(&observed.pr) {
+                    findings.push(Finding {
+                        level: "warning",
+                        code: "OBSERVED_CROSS_REFERENCE_CLOSED",
+                        claim_id: Some(claim.claim_id.clone()),
+                        issue: Some(issue),
+                        pr: Some(observed.pr),
+                        message: "observed cross-reference is no longer open; prune the entry"
+                            .to_string(),
+                    });
+                }
             }
         }
         live.push(LiveClaimState {
@@ -497,14 +757,45 @@ fn check_live_state(policy: &Policy, findings: &mut Vec<Finding>) -> Vec<LiveCla
             declared_open_prs: declared.into_iter().collect(),
             discovered_open_prs: discovered.keys().copied().collect(),
             missing_from_policy,
-            observed_open_heads: discovered,
+            observed_open_heads: discovered.into_iter().map(|(pr, head)| (pr, head.sha)).collect(),
         });
     }
     live
 }
 
+fn apply_drift_downgrades(claims: &mut [Claim], findings: &[Finding]) {
+    for claim in claims {
+        let drifted = findings.iter().any(|finding| {
+            finding.level == "error"
+                && DRIFT_FINDING_CODES.contains(&finding.code)
+                && finding.claim_id.as_deref() == Some(claim.claim_id.as_str())
+        });
+        if drifted && claim.state != ClaimState::NotProven {
+            claim.state = ClaimState::NotProven;
+        }
+    }
+}
+
 fn observation_head_is_stale(candidate: &Candidate, live_head: &str) -> bool {
     candidate.observation.head_sha != live_head
+}
+
+fn observation_base_is_stale(candidate: &Candidate, live_base: &str) -> bool {
+    candidate.observation.base_ref != live_base
+}
+
+/// Returns the drift finding for an observation timestamp, if any.
+fn observation_time_finding(
+    observed_at: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<&'static str> {
+    match chrono::DateTime::parse_from_rfc3339(observed_at) {
+        Ok(parsed) => {
+            let age = now.timestamp().saturating_sub(parsed.timestamp());
+            (age > OBSERVATION_MAX_AGE_SECONDS).then_some("OBSERVATION_EXPIRED")
+        }
+        Err(_) => Some("OBSERVATION_TIME_UNPARSEABLE"),
+    }
 }
 
 fn ensure_gh_available() -> Result<()> {
@@ -521,7 +812,7 @@ fn ensure_gh_available() -> Result<()> {
     Ok(())
 }
 
-fn discover_open_cross_references(repository: &str, issue: u64) -> Result<BTreeMap<u64, String>> {
+fn discover_open_cross_references(repository: &str, issue: u64) -> Result<BTreeMap<u64, LiveHead>> {
     let endpoint = format!("repos/{repository}/issues/{issue}/timeline?per_page=100");
     let output = Command::new("gh")
         .args([
@@ -581,8 +872,13 @@ fn discover_open_cross_references(repository: &str, issue: u64) -> Result<BTreeM
                 }
                 let detail: Value = serde_json::from_slice(&detail.stdout)
                     .with_context(|| format!("decoding live PR #{number}"))?;
-                if let Some(sha) = detail.pointer("/head/sha").and_then(Value::as_str) {
-                    prs.insert(number, sha.to_string());
+                let sha = detail.pointer("/head/sha").and_then(Value::as_str);
+                let base_ref = detail.pointer("/base/ref").and_then(Value::as_str);
+                if let (Some(sha), Some(base_ref)) = (sha, base_ref) {
+                    prs.insert(
+                        number,
+                        LiveHead { sha: sha.to_string(), base_ref: base_ref.to_string() },
+                    );
                 }
             }
         }
@@ -649,6 +945,7 @@ mod tests {
                 head_sha: format!("{pr:040x}"),
                 state: "open".to_string(),
                 observed_at: "2026-01-01T00:00:00Z".to_string(),
+                base_ref: "main".to_string(),
                 acceptance_evidence: vec!["reviewed proof".to_string()],
                 review_state: "reviewed".to_string(),
             },
@@ -664,6 +961,7 @@ mod tests {
             required_harvest: vec!["harvest reviewed delta".to_string()],
             close_or_retarget: vec!["close superseded candidates".to_string()],
             candidates,
+            observed: Vec::new(),
         }
     }
 
@@ -765,5 +1063,201 @@ mod tests {
     fn changed_live_head_makes_the_observation_stale() {
         let candidate = candidate(10, Relationship::CurrentCandidate, None);
         assert!(observation_head_is_stale(&candidate, "ffffffffffffffffffffffffffffffffffffffff"));
+        assert!(!observation_base_is_stale(&candidate, "main"));
+        assert!(observation_base_is_stale(&candidate, "release"));
+    }
+
+    #[test]
+    fn workflow_declares_pull_request_lifecycle_routes_and_live_step() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../.github/workflows/pr-candidate-set.yml");
+        let content = fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!("reading workflow contract {}: {error}", path.display())
+        });
+        for route in [
+            "opened",
+            "closed",
+            "reopened",
+            "synchronize",
+            "edited",
+            "ready_for_review",
+            "converted_to_draft",
+        ] {
+            assert!(
+                content.contains(route),
+                "workflow must declare pull_request lifecycle type '{route}'"
+            );
+        }
+        assert!(content.contains("schedule:"), "scheduled reconciliation route required");
+        assert!(content.contains("workflow_dispatch"), "manual dispatch route required");
+        assert!(content.contains("--live"), "live validation step required on every route");
+    }
+
+    #[test]
+    fn mutual_superseded_pair_is_rejected_as_cycle() {
+        let findings = validate_policy(&policy(claim(
+            ClaimState::Reconciled,
+            vec![
+                candidate(10, Relationship::Superseded, Some(11)),
+                candidate(11, Relationship::Superseded, Some(10)),
+            ],
+        )));
+        assert!(
+            findings.iter().any(|finding| finding.code == "CYCLIC_RELATIONSHIP_GRAPH"),
+            "mutual supersession must fail: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn three_way_duplicate_cycle_is_rejected() {
+        let findings = validate_policy(&policy(claim(
+            ClaimState::NotProven,
+            vec![
+                candidate(10, Relationship::Duplicate, Some(11)),
+                candidate(11, Relationship::Duplicate, Some(12)),
+                candidate(12, Relationship::Duplicate, Some(10)),
+            ],
+        )));
+        assert!(
+            findings.iter().any(|finding| finding.code == "CYCLIC_RELATIONSHIP_GRAPH")
+                && findings.iter().any(|finding| finding.code == "DUPLICATE_TARGET_INVALID")
+        );
+    }
+
+    #[test]
+    fn valid_stack_and_supersession_chains_are_accepted() {
+        let findings = validate_policy(&policy(claim(
+            ClaimState::Reconciled,
+            vec![
+                candidate(10, Relationship::CurrentCandidate, None),
+                candidate(11, Relationship::ExplicitStack, Some(10)),
+                candidate(12, Relationship::Superseded, Some(11)),
+                candidate(13, Relationship::Duplicate, Some(10)),
+            ],
+        )));
+        assert!(findings.is_empty(), "legal chains must pass: {findings:?}");
+    }
+
+    #[test]
+    fn duplicate_targeting_duplicate_is_rejected() {
+        let findings = validate_policy(&policy(claim(
+            ClaimState::NotProven,
+            vec![
+                candidate(10, Relationship::SalvageSource, None),
+                candidate(11, Relationship::Duplicate, Some(10)),
+                candidate(12, Relationship::Duplicate, Some(11)),
+            ],
+        )));
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.code == "DUPLICATE_TARGET_INVALID"
+                    && finding.pr == Some(12)),
+            "duplicate of a duplicate must fail: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn stack_targeting_non_mergeable_parent_is_rejected() {
+        let findings = validate_policy(&policy(claim(
+            ClaimState::NotProven,
+            vec![
+                candidate(10, Relationship::SalvageSource, None),
+                candidate(11, Relationship::ExplicitStack, Some(10)),
+            ],
+        )));
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.code == "STACK_TARGET_INVALID" && finding.pr == Some(11)),
+            "stacking onto a salvage source must fail: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn terminal_relationships_must_not_declare_targets() {
+        let findings = validate_policy(&policy(claim(
+            ClaimState::Reconciled,
+            vec![
+                candidate(10, Relationship::CurrentCandidate, None),
+                candidate(11, Relationship::Abandoned, Some(10)),
+                {
+                    let mut salvage = candidate(12, Relationship::SalvageSource, None);
+                    salvage.target_pr = Some(10);
+                    salvage
+                },
+            ],
+        )));
+        assert_eq!(
+            findings
+                .iter()
+                .filter(|finding| finding.code == "RELATIONSHIP_FORBIDS_TARGET")
+                .map(|finding| finding.pr)
+                .collect::<Vec<_>>(),
+            vec![Some(11), Some(12)]
+        );
+    }
+
+    #[test]
+    fn observed_entries_require_reasons_and_may_not_shadow_candidates() {
+        let mut base = policy(claim(
+            ClaimState::NotProven,
+            vec![candidate(10, Relationship::SalvageSource, None)],
+        ));
+        base.claim[0].observed.push(ObservedCrossReference { pr: 6930, reason: String::new() });
+        base.claim[0].observed.push(ObservedCrossReference { pr: 10, reason: "shadow".into() });
+        let codes: Vec<&str> = validate_policy(&base).iter().map(|finding| finding.code).collect();
+        assert!(
+            codes.contains(&"INVALID_OBSERVED_ENTRY") && codes.contains(&"OBSERVED_PR_CONFLICT")
+        );
+    }
+
+    #[test]
+    fn expired_or_unparseable_observation_times_are_drift() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-21T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(
+            observation_time_finding("2026-07-01T00:00:00Z", now),
+            Some("OBSERVATION_EXPIRED")
+        );
+        assert_eq!(observation_time_finding("2026-08-20T23:59:00Z", now), None);
+        assert_eq!(
+            observation_time_finding("not-a-timestamp", now),
+            Some("OBSERVATION_TIME_UNPARSEABLE")
+        );
+    }
+
+    #[test]
+    fn drift_downgrades_claim_state_to_not_proven() {
+        let mut reconciled = claim(
+            ClaimState::Reconciled,
+            vec![candidate(10, Relationship::CurrentCandidate, None)],
+        );
+        let drift = Finding {
+            level: "error",
+            code: "STALE_BASE_OBSERVATION",
+            claim_id: Some(reconciled.claim_id.clone()),
+            issue: Some(reconciled.issue),
+            pr: Some(10),
+            message: "recorded base main differs from live base release".to_string(),
+        };
+        apply_drift_downgrades(std::slice::from_mut(&mut reconciled), &[drift]);
+        assert_eq!(reconciled.state, ClaimState::NotProven);
+
+        let mut unaffected = claim(
+            ClaimState::Reconciled,
+            vec![candidate(10, Relationship::CurrentCandidate, None)],
+        );
+        let unrelated = Finding {
+            level: "error",
+            code: "MISSING_DECISION",
+            claim_id: Some(unaffected.claim_id.clone()),
+            issue: Some(unaffected.issue),
+            pr: None,
+            message: "decision must explain the current candidate-set conclusion".to_string(),
+        };
+        apply_drift_downgrades(std::slice::from_mut(&mut unaffected), &[unrelated]);
+        assert_eq!(unaffected.state, ClaimState::Reconciled);
     }
 }

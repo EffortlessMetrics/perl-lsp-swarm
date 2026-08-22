@@ -5,15 +5,14 @@ repository = "EffortlessMetrics/perl-lsp-swarm"
 issue = 6491
 claim_id = "parser.ordinary_call_and_unclosed_qw_expectations"
 state = "not_proven"
-decision = "No current implementation candidate is accepted: every open variant replaces the named non-parenthesized call path with parenthesized syntax and changes the unclosed-qw recovery contract without an accepted semantic transition."
+decision = "All four recorded candidates are resolved: #6609 merged its clarified ordinary-call and recovery expectations, while #6585, #6605, and #6610 closed unmerged as the planned salvage/duplicate variants. The rebuild named by this disposition landed under #6908 through merged PR #6933. Final acceptance adjudication of that rebuild against this claim's criteria remains open, so the claim stays not_proven."
 required_harvest = [
-  "Preserve one safe ExpressionStatement-unwrapping helper without changing the source syntax under test.",
-  "Preserve the Result-returning no-panic test shape where it improves diagnostics without redefining behavior.",
-  "Rebuild the claim under #6908 with path evidence and an accepted recovery contract."
+  "The #6908 rebuild (merged as #6933) must carry the safe wrapper-handling and Result-returning assertion shapes harvested from this set.",
+  "Any residual unique delta from #6585, #6605, or #6610 must be explicitly ported or rejected before this record closes."
 ]
 close_or_retarget = [
-  "After the #6908 replacement candidate exists, close #6605, #6609, and #6610 as duplicate implementation variants.",
-  "Retain #6585 only as the primary salvage source until its useful helper delta is harvested."
+  "Treat #6585, #6605, #6609, and #6610 observations as completed history; do not reopen them.",
+  "Adjudicate merged #6933 against this claim's acceptance criteria, or retarget the claim to #6908 ownership."
 ]
 
 [[claim.candidates]]
@@ -27,13 +26,13 @@ open_findings = [
   "Parenthesized source bypasses the unknown-lowercase non-parenthesized call decision named by the test.",
   "Two-declaration qw expectation changes recovery semantics without governing-contract evidence."
 ]
-disposition = "Harvest the wrapper-handling mechanics into a new #6908-owned candidate; do not merge the current behavior definitions."
-
+disposition = "Closed unmerged after wrapper-handling mechanics were harvested into the #6908 rebuild; retain as salvage history only."
 
 [claim.candidates.observation]
 head_sha = "dc07c9dc13497d58d2832fcef7922d7f25d18a60"
+base_ref = "main"
 state = "closed"
-observed_at = "2026-08-12T03:00:00Z"
+observed_at = "2026-08-22T00:03:50Z"
 acceptance_evidence = ["Candidate delta and open findings recorded in this policy observation."]
 review_state = "blocking_findings_recorded"
 
@@ -47,13 +46,13 @@ unique_delta = [
 open_findings = [
   "Shares the same syntax substitution and unreviewed recovery expectation as #6585."
 ]
-disposition = "Harvest the Result-returning assertion shape if useful, then close as duplicate of the replacement work sourced from #6585."
-
+disposition = "Closed unmerged; the Result-returning assertion shape was considered during the #6908 rebuild."
 
 [claim.candidates.observation]
 head_sha = "e8049336db240fd5523b7e4c8392ba3c978497ae"
+base_ref = "main"
 state = "closed"
-observed_at = "2026-08-12T03:00:00Z"
+observed_at = "2026-08-22T00:03:50Z"
 acceptance_evidence = ["Candidate delta and open findings recorded in this policy observation."]
 review_state = "blocking_findings_recorded"
 
@@ -65,17 +64,17 @@ unique_delta = [
   "Moves ExpressionStatement unwrapping into the shared first_statement helper."
 ]
 open_findings = [
-  "Shares the same syntax substitution and unreviewed recovery expectation as #6585."
+  "Merged variant of the clarified ordinary-call and unclosed-qw expectations."
 ]
-disposition = "Compare the helper placement during salvage, then close as duplicate."
-
+disposition = "Merged on 2026-08 after review; its clarified expectations are now the landed reference for this claim."
 
 [claim.candidates.observation]
-head_sha = "163ebd8e5f5ff691bb0d45466825bbbf2a9596b9"
-state = "open"
-observed_at = "2026-08-12T03:00:00Z"
-acceptance_evidence = ["Candidate delta and open findings recorded in this policy observation."]
-review_state = "blocking_findings_recorded"
+head_sha = "532cbd12cf7d0631456087ab27b292ab8d7063cd"
+base_ref = "main"
+state = "merged"
+observed_at = "2026-08-22T00:03:50Z"
+acceptance_evidence = ["Merge state verified against live GitHub pulls/6609 at observation time."]
+review_state = "merged_after_review"
 
 [[claim.candidates]]
 pr = 6610
@@ -87,51 +86,54 @@ unique_delta = [
 open_findings = [
   "Shares the same syntax substitution and unreviewed recovery expectation as #6585."
 ]
-disposition = "No independent semantic claim; close after wrapper-handling salvage is complete."
-
+disposition = "Closed unmerged as a duplicate implementation variant with no unique retained value."
 
 [claim.candidates.observation]
 head_sha = "5d0d62a3a3a232e9550e2cf923b0fa6a2e8b1ed3"
+base_ref = "main"
 state = "closed"
-observed_at = "2026-08-12T03:00:00Z"
+observed_at = "2026-08-22T00:03:50Z"
 acceptance_evidence = ["Candidate delta and open findings recorded in this policy observation."]
 review_state = "blocking_findings_recorded"
+
+[[claim.observed]]
+pr = 6930
+reason = "This reconciliation-policy change itself cross-references the governing issues; membership observation only, not a semantic candidate."
 
 [[claim]]
 issue = 6534
 claim_id = "parser.four_hollow_e2e_fixtures_and_negative_shapes"
-state = "reconciled"
-decision = "PR #6612 is the current owner because it contains the four-fixture measurement claim plus the only negative-shape schema. It must be narrowed before merge; the broad unrelated manifest labeling is not part of this claim."
+state = "not_proven"
+decision = "None of the three candidates merged. The previously recorded owner #6612 is closed unmerged, and the supersession direction is contested: this policy recorded #6620/#6623 as superseded by #6612, while #6623's own description declares it supersedes #6612 (and #6626 repeats that declaration). With no landed winner and contradictory direction evidence, no current implementation owner exists."
 required_harvest = [
-  "Retain the focused expectations for heredoc_basic, regex_match, quote_like, and post_error_package_sub_recovery.",
-  "Retain the line-scoped forbidden_nodes model and its discriminating negative controls.",
-  "Remove or transfer unrelated dormant-fixture gold and denominator movement before publication."
+  "Preserve #6612's line-scoped forbidden_nodes model and position-bounded negative-shape controls for any future attempt.",
+  "Confirm no unique four-fixture measurement exists only inside closed #6620/#6623 before treating them as value-free."
 ]
 close_or_retarget = [
-  "Use #6612 as the only current implementation branch after narrowing.",
-  "Close #6620 and #6623 after confirming they contain no unique four-fixture or negative-shape proof absent from #6612."
+  "Require a fresh reconciliation packet, anchored to current main, before any new candidate claims this outcome.",
+  "Resolve the #6612/#6623 supersession direction from branch history and review records when that packet is built."
 ]
 
 [[claim.candidates]]
 pr = 6612
-relationship = "current_candidate"
+relationship = "salvage_source"
 unique_delta = [
   "Adds a line-scoped forbidden_nodes expectation model.",
   "Documents why negative shape assertions must be position-bounded.",
   "Combines positive measurement for the four hollow fixtures with two-sided disambiguation proof."
 ]
 open_findings = [
-  "The current diff also labels unrelated dormant fixtures and materially widens the metrics authority beyond #6534.",
-  "The branch must be narrowed to one rollback-coherent claim before merge."
+  "The diff also labels unrelated dormant fixtures and materially widens the metrics authority beyond #6534.",
+  "Recorded as current_candidate before closure; closure without merge leaves no landed owner for this claim."
 ]
-disposition = "Keep as current owner, remove unrelated gold, rerun generated parser status, and refresh focused review."
-
+disposition = "Retain the line-scoped negative-shape model for harvest into any future #6534 candidate; do not reopen this branch as owner."
 
 [claim.candidates.observation]
 head_sha = "cb3ec7044dab5d81417ca0f967329c9b3912fcef"
-state = "open"
-observed_at = "2026-08-12T03:00:00Z"
-acceptance_evidence = ["Candidate delta and open findings recorded in this policy observation."]
+base_ref = "main"
+state = "closed"
+observed_at = "2026-08-22T00:03:50Z"
+acceptance_evidence = ["Closure state verified against live GitHub pulls/6612 at observation time."]
 review_state = "blocking_findings_recorded"
 
 [[claim.candidates]]
@@ -145,14 +147,14 @@ open_findings = [
   "Does not supply the focused negative-shape authority that distinguishes #6612.",
   "Includes unrelated manifest rewrites and removes/reshapes existing entries."
 ]
-disposition = "Do not merge as #6534 implementation; inspect only for any missing four-fixture expectation, then close."
-
+disposition = "Closed unmerged; inspect only if a future candidate needs the manifest-labeling delta."
 
 [claim.candidates.observation]
 head_sha = "f2caad80d057f968af64d0aa2c92f5ca3f482aad"
-state = "open"
-observed_at = "2026-08-12T03:00:00Z"
-acceptance_evidence = ["Candidate delta and open findings recorded in this policy observation."]
+base_ref = "main"
+state = "closed"
+observed_at = "2026-08-22T00:03:50Z"
+acceptance_evidence = ["Closure state verified against live GitHub pulls/6620 at observation time."]
 review_state = "blocking_findings_recorded"
 
 [[claim.candidates]]
@@ -164,13 +166,18 @@ unique_delta = [
 ]
 open_findings = [
   "Widens the parser-accuracy denominator beyond the controlling issue.",
-  "Does not provide the line-scoped forbidden-node proof owned by #6612."
+  "Its own description declares it supersedes #6612, contradicting this record's direction; unresolved by direct inspection."
 ]
-disposition = "Transfer any genuinely unique four-fixture expectation to #6612 after review; otherwise close as superseded."
+disposition = "Closed unmerged with contested supersession direction recorded; resolve from branch history in the next reconciliation packet."
 
 [claim.candidates.observation]
 head_sha = "896368e1aa0dc89f5a3c08bbd6d2e0bbd16a0574"
-state = "open"
-observed_at = "2026-08-12T03:00:00Z"
-acceptance_evidence = ["Candidate delta and open findings recorded in this policy observation."]
+base_ref = "main"
+state = "closed"
+observed_at = "2026-08-22T00:03:50Z"
+acceptance_evidence = ["Closure state verified against live GitHub pulls/6623 at observation time."]
 review_state = "blocking_findings_recorded"
+
+[[claim.observed]]
+pr = 6930
+reason = "This reconciliation-policy change itself cross-references the governing issues; membership observation only, not a semantic candidate."
