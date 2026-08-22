@@ -401,7 +401,7 @@ fn generate_report() -> Result<()> {
 
     println!("\nBy Area:");
     for (area, stats) in area_stats {
-        println!("  {:20} {}/{} declared", area.replace('_', " "), stats.advertised, stats.total,);
+        println!("  {:20} {}/{} declared", area.replace('_', " "), stats.advertised, stats.total);
     }
 
     Ok(())

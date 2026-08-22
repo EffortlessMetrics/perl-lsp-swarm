@@ -83,6 +83,28 @@ impl Catalog {
         ids
     }
 
+    /// Trackable feature count for BDD/compliance grids.
+    /// Excludes entries explicitly marked `counts_in_coverage = false`.
+    pub fn trackable_feature_count_for_grid(&self) -> usize {
+        self.feature
+            .iter()
+            .filter(|feature| feature.maturity != Maturity::Planned && feature.counts_in_coverage)
+            .count()
+    }
+
+    /// Advertised trackable count for BDD/compliance grids.
+    /// Excludes entries explicitly marked `counts_in_coverage = false`.
+    pub fn advertised_trackable_count_for_grid(&self) -> usize {
+        self.feature
+            .iter()
+            .filter(|feature| {
+                feature.advertised
+                    && feature.maturity.is_advertised()
+                    && feature.counts_in_coverage
+            })
+            .count()
+    }
+
     /// Compatibility-only alias for the grid-oriented trackable count.
     /// This is not a compliance, status, or reporting authority.
     #[deprecated(note = "compatibility-only; use trackable_feature_count_for_grid")]
@@ -107,11 +129,11 @@ impl Catalog {
     /// This is not a compliance, status, or reporting authority.
     #[deprecated(note = "compatibility-only; use compliance_percent_for_grid")]
     pub fn compliance_percent(&self) -> f32 {
-        let trackable = self.trackable_feature_count();
+        let trackable = self.trackable_feature_count_for_grid();
         if trackable == 0 {
             return 0.0;
         }
-        let advertised = self.advertised_trackable_count();
+        let advertised = self.advertised_trackable_count_for_grid();
         (advertised as f64 / trackable as f64 * 100.0).round() as f32
     }
 
