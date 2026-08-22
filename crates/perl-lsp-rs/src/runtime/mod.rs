@@ -798,6 +798,30 @@ impl LspServer {
     /// Evict all state for a file that no longer exists in the workspace.
     pub(crate) fn evict_deleted_file_state(&self, uri: &str) {
         let uri_keys = self.uri_key_variants(uri);
+
+        // A backing-file deletion does not end an open document's authority.
+        // Leave its document, generation, and buffer-derived index facts in
+        // place until didClose completes the open-to-closed handoff.
+        let open_key = {
+            let documents = self.documents_guard();
+            uri_keys.iter().find(|key| documents.contains_key(*key)).cloned()
+        };
+        if let Some(open_key) = open_key {
+            tracing::debug!(
+                uri = %open_key,
+                "Deleted backing file for open document; retaining buffer authority"
+            );
+            for key in &uri_keys {
+                if let Some(path) = source_path_from_uri(key) {
+                    self.pod_cache.lock().remove(&path);
+
+                    #[cfg(not(target_arch = "wasm32"))]
+                    self.pull_diagnostics_orchestrator.invalidate_file_cache(&path);
+                }
+            }
+            return;
+        }
+
         #[cfg(feature = "workspace")]
         if let Some(coordinator) = self.coordinator() {
             for key in &uri_keys {

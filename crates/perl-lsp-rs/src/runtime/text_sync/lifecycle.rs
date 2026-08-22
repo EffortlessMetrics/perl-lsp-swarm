@@ -2,6 +2,8 @@ use super::{
     CodeFormatter, FormattingOptions, JsonRpcError, LspServer, Value, invalid_params, json,
     source_path_from_uri,
 };
+#[cfg(feature = "workspace")]
+use perl_parser_core::source_file::is_perl_source_uri;
 
 impl LspServer {
     /// Handle didClose notification
@@ -25,14 +27,11 @@ impl LspServer {
 
             self.evict_open_document_session_state(uri);
 
-            // If the closed document has no backing file on disk it existed only in
-            // the editor buffer (e.g. a new unsaved file or a test virtual document).
-            // Remove it from the workspace index so `workspace/symbol` does not
-            // return stale entries after close.
-            //
-            // For files that do exist on disk, closing the editor buffer leaves the
-            // workspace index intact: the file is still part of the project and a
-            // workspace scan would re-discover it.
+            // Complete the open-to-closed authority handoff. An absent backing
+            // file has no closed source subject; an existing file must be
+            // reread under the bounded/stable disk guard before its facts are
+            // retained. Rejected rereads fail closed instead of preserving
+            // open-buffer facts as closed-file authority.
             #[cfg(feature = "workspace")]
             {
                 let file_on_disk = source_path_from_uri(uri).map(|p| p.exists()).unwrap_or(false);
@@ -43,14 +42,37 @@ impl LspServer {
                         }
                     }
                 } else {
-                    // File is on disk: retain the index entry (symbols are still
-                    // valid) but reset the generation counters so the reopened
+                    // Reset generation counters so the reopened
                     // document — which starts at generation 0 — is not blocked
                     // by the stale high-water mark from the previous session
                     // (#5438).
                     if let Some(coordinator) = self.coordinator() {
                         for key in self.uri_key_variants(uri) {
                             coordinator.index().reset_generation_for_close(&key);
+                        }
+
+                        for key in self.uri_key_variants(uri) {
+                            coordinator.index().clear_file(&key);
+                        }
+
+                        if is_perl_source_uri(uri)
+                            && let Some(content) =
+                                crate::runtime::workspace::read_watched_file_content(
+                                    uri,
+                                    "didClose closed-authority reload",
+                                )
+                            && let Ok(url) = url::Url::parse(uri)
+                        {
+                            if let Err(e) = coordinator.index().index_file(url, content) {
+                                tracing::warn!(
+                                    "Failed to reload closed file {} from disk: {}",
+                                    uri,
+                                    e
+                                );
+                                coordinator.index().clear_file(uri);
+                            }
+                        } else {
+                            tracing::debug!("Rejected closed-file reread for {}", uri);
                         }
                     }
                 }

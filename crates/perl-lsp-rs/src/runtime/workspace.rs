@@ -52,6 +52,8 @@ fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
     serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
 }
 #[cfg(feature = "workspace")]
+use std::io::Read;
+#[cfg(feature = "workspace")]
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -107,14 +109,107 @@ use crate::util::read_text_file_with_encoding;
 use perl_workspace::monitoring::{IndexingPhase, WorkspaceIndexingReceipt};
 
 #[cfg(feature = "workspace")]
-fn read_watched_file_content(uri: &str, purpose: &str) -> Option<String> {
-    uri_to_fs_path(uri).and_then(|path| match read_text_file_with_encoding(&path) {
-        Ok(content) => Some(content),
+pub(crate) fn read_watched_file_content(uri: &str, purpose: &str) -> Option<String> {
+    let path = uri_to_fs_path(uri)?;
+    let size_limit = crate::state::max_file_size_bytes();
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
         Err(e) => {
-            tracing::debug!("Failed to read file for {} ({}): {}", purpose, path.display(), e);
-            None
+            tracing::debug!("Failed to stat file for {} ({}): {}", purpose, path.display(), e);
+            return None;
         }
-    })
+    };
+    let initial_modified = match metadata.modified() {
+        Ok(modified) => modified,
+        Err(e) => {
+            tracing::debug!(
+                "Failed to read modification time for {} ({}): {}",
+                purpose,
+                path.display(),
+                e
+            );
+            return None;
+        }
+    };
+    if metadata.len() > size_limit as u64 {
+        tracing::debug!(
+            "Skipping file for {} ({} is {} bytes, over the {} byte limit)",
+            purpose,
+            path.display(),
+            metadata.len(),
+            size_limit
+        );
+        return None;
+    }
+
+    let mut file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(e) => {
+            tracing::debug!("Failed to open file for {} ({}): {}", purpose, path.display(), e);
+            return None;
+        }
+    };
+    let mut bytes = Vec::new();
+    if let Err(e) =
+        file.by_ref().take((size_limit as u64).saturating_add(1)).read_to_end(&mut bytes)
+    {
+        tracing::debug!("Failed to read file for {} ({}): {}", purpose, path.display(), e);
+        return None;
+    }
+    if bytes.len() > size_limit {
+        tracing::debug!(
+            "Skipping file for {} ({} exceeded the {} byte limit while reading)",
+            purpose,
+            path.display(),
+            size_limit
+        );
+        return None;
+    }
+
+    let final_metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(e) => {
+            tracing::debug!("Failed to restat file for {} ({}): {}", purpose, path.display(), e);
+            return None;
+        }
+    };
+    let final_modified = match final_metadata.modified() {
+        Ok(modified) => modified,
+        Err(e) => {
+            tracing::debug!(
+                "Failed to read final modification time for {} ({}): {}",
+                purpose,
+                path.display(),
+                e
+            );
+            return None;
+        }
+    };
+    if final_metadata.len() != metadata.len() || final_modified != initial_modified {
+        tracing::debug!(
+            "Skipping unstable file for {} ({} changed during read)",
+            purpose,
+            path.display()
+        );
+        return None;
+    }
+
+    let content = crate::util::decode_text_bytes(&bytes);
+    if content.len() > size_limit {
+        tracing::debug!(
+            "Skipping file for {} (decoded {} exceeds the {} byte limit)",
+            purpose,
+            path.display(),
+            size_limit
+        );
+        return None;
+    }
+    if perl_parser_core::source_file::is_binary_content(&content) {
+        tracing::debug!("Skipping binary file for {} ({})", purpose, path.display());
+        return None;
+    }
+
+    Some(content)
 }
 
 /// RAII guard that clears the `indexing_in_progress` flag on drop.
@@ -1566,6 +1661,23 @@ impl LspServer {
                     // DELETED must be processed immediately — the file is gone and
                     // stale index data should not linger.
                     #[cfg(feature = "workspace")]
+                    let document_is_open = {
+                        let documents = self.documents_guard();
+                        self.uri_key_variants(&uri)
+                            .iter()
+                            .any(|key| self.get_document(&documents, key).is_some())
+                    };
+
+                    #[cfg(feature = "workspace")]
+                    if document_is_open {
+                        tracing::debug!(
+                            uri,
+                            "Watched delete for open document; retaining buffer authority"
+                        );
+                        continue;
+                    }
+
+                    #[cfg(feature = "workspace")]
                     if let Some(coordinator) = self.coordinator() {
                         coordinator.notify_change(&uri);
                     }
@@ -1615,35 +1727,45 @@ impl LspServer {
     /// Shared implementation used by both the debounced batch path and the
     /// immediate fall-through path when no debouncer is installed.
     fn process_file_watcher_uri_immediate(&self, uri: &str) {
-        // Notify coordinator of pending change
+        #[cfg(feature = "workspace")]
+        let document_is_open = {
+            let documents = self.documents_guard();
+            self.uri_key_variants(uri)
+                .iter()
+                .any(|key| self.get_document(&documents, key).is_some())
+        };
+
+        #[cfg(feature = "workspace")]
+        if document_is_open {
+            tracing::debug!(uri, "Watched change for open document; skipping disk reread");
+            return;
+        }
+
+        // Notify coordinator only for a closed-file disk transition. The
+        // matching completion below keeps pressure accounting balanced.
         #[cfg(feature = "workspace")]
         if let Some(coordinator) = self.coordinator() {
             coordinator.notify_change(uri);
         }
 
-        let mut loaded_content: Option<String> = None;
-
-        // Re-index the file if it is a Perl source file.
+        // Re-index the file if it is a Perl source file. A rejected or
+        // unstable reread clears the old subject so stale disk facts cannot
+        // be presented as current closed-file authority.
         #[cfg(feature = "workspace")]
         if let Some(coordinator) = self.coordinator()
             && is_perl_source_uri(uri)
         {
-            if loaded_content.is_none() {
-                loaded_content = read_watched_file_content(uri, "re-indexing");
-            }
-
             let workspace_index = coordinator.index();
-            if let Ok(url) = url::Url::parse(uri)
-                && let Some(content) = loaded_content.as_ref()
-            {
-                // Clear old index data before re-indexing
-                workspace_index.clear_file(uri);
-                match workspace_index.index_file(url, content.clone()) {
-                    Ok(()) => tracing::debug!("Re-indexed file: {}", uri),
-                    Err(e) => {
+            workspace_index.clear_file(uri);
+            match (url::Url::parse(uri), read_watched_file_content(uri, "re-indexing")) {
+                (Ok(url), Some(content)) => {
+                    if let Err(e) = workspace_index.index_file(url, content) {
                         tracing::warn!("Failed to re-index file {}: {}", uri, e);
+                        workspace_index.clear_file(uri);
                     }
                 }
+                (Err(e), _) => tracing::warn!("Failed to parse watched URI {}: {}", uri, e),
+                (_, None) => tracing::debug!("Rejected watched reread for {}", uri),
             }
         }
 
@@ -1693,6 +1815,23 @@ impl LspServer {
                 };
 
                 tracing::debug!(uri, "File deleted");
+
+                #[cfg(feature = "workspace")]
+                let document_is_open = {
+                    let documents = self.documents_guard();
+                    self.uri_key_variants(uri)
+                        .iter()
+                        .any(|key| self.get_document(&documents, key).is_some())
+                };
+
+                #[cfg(feature = "workspace")]
+                if document_is_open {
+                    tracing::debug!(
+                        uri,
+                        "Explicit delete for open document; retaining buffer authority"
+                    );
+                    continue;
+                }
 
                 #[cfg(feature = "workspace")]
                 if let Some(coordinator) = self.coordinator() {
@@ -1841,36 +1980,45 @@ impl LspServer {
 
                 tracing::debug!("File created: {}", uri);
 
+                #[cfg(feature = "workspace")]
+                let document_is_open = {
+                    let documents = self.documents_guard();
+                    self.uri_key_variants(uri)
+                        .iter()
+                        .any(|key| self.get_document(&documents, key).is_some())
+                };
+
+                #[cfg(feature = "workspace")]
+                if document_is_open {
+                    tracing::debug!(
+                        uri,
+                        "Explicit create for open document; retaining buffer authority"
+                    );
+                    continue;
+                }
+
                 // Index the new file if it's a Perl file
                 // Note: Mutation operation - use coordinator with lifecycle tracking
                 #[cfg(feature = "workspace")]
                 if let Some(coordinator) = self.coordinator()
                     && is_perl_source_uri(uri)
-                    && let Some(path) = uri_to_fs_path(uri)
                 {
-                    match read_text_file_with_encoding(&path) {
-                        Ok(content) => {
-                            coordinator.notify_change(uri);
-                            if let Ok(url) = url::Url::parse(uri) {
-                                match coordinator.index().index_file(url, content) {
-                                    Ok(()) => {
-                                        tracing::debug!("Indexed new file: {}", uri)
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("Failed to index new file {}: {}", uri, e)
-                                    }
-                                }
+                    coordinator.notify_change(uri);
+                    coordinator.index().clear_file(uri);
+                    match (url::Url::parse(uri), read_watched_file_content(uri, "explicit create"))
+                    {
+                        (Ok(url), Some(content)) => {
+                            if let Err(e) = coordinator.index().index_file(url, content) {
+                                tracing::warn!("Failed to index new file {}: {}", uri, e);
+                                coordinator.index().clear_file(uri);
                             }
-                            coordinator.notify_parse_complete(uri);
                         }
-                        Err(e) => {
-                            tracing::debug!(
-                                "Failed to read new file for indexing ({}): {}",
-                                path.display(),
-                                e
-                            );
+                        (Err(e), _) => {
+                            tracing::warn!("Failed to parse created URI {}: {}", uri, e)
                         }
+                        (_, None) => tracing::debug!("Rejected created-file reread for {}", uri),
                     }
+                    coordinator.notify_parse_complete(uri);
                 }
             }
 
@@ -1916,34 +2064,61 @@ impl LspServer {
                     coordinator.notify_change(&old_uri);
                     coordinator.notify_change(&new_uri);
 
-                    // Remove old file from index
-                    coordinator.index().remove_file(&old_uri);
+                    let old_document = {
+                        let documents = self.documents_guard();
+                        self.uri_key_variants(&old_uri).iter().find_map(|key| {
+                            self.get_document(&documents, key)
+                                .map(|doc| (doc.current_generation(), doc.text_arc.to_string()))
+                        })
+                    };
 
-                    // Index new file if it's a Perl file
-                    if is_perl_source_uri(&new_uri)
-                        && let Some(path) = uri_to_fs_path(&new_uri)
+                    // Remove both identities before publishing the new one.
+                    // This prevents a late old-path fact or a pre-existing
+                    // destination fact from coexisting with the rename.
+                    for key in self
+                        .uri_key_variants(&old_uri)
+                        .into_iter()
+                        .chain(self.uri_key_variants(&new_uri))
                     {
-                        match read_text_file_with_encoding(&path) {
-                            Ok(content) => {
-                                if let Ok(url) = url::Url::parse(&new_uri) {
-                                    match coordinator.index().index_file(url, content) {
-                                        Ok(()) => {
-                                            tracing::debug!("Indexed renamed file: {}", new_uri)
-                                        }
-                                        Err(e) => tracing::warn!(
-                                            "Failed to index renamed file {}: {}",
-                                            new_uri,
-                                            e
-                                        ),
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::debug!(
-                                    "Failed to read renamed file for indexing ({}): {}",
-                                    path.display(),
+                        coordinator.index().remove_file(&key);
+                    }
+
+                    if let Some((generation, text)) = old_document {
+                        if is_perl_source_uri(&new_uri)
+                            && let Ok(url) = url::Url::parse(&new_uri)
+                        {
+                            if let Err(e) = coordinator
+                                .index()
+                                .index_file_with_generation(url, text, generation)
+                            {
+                                tracing::warn!(
+                                    "Failed to rebind renamed open document {}: {}",
+                                    new_uri,
                                     e
                                 );
+                                coordinator.index().clear_file(&new_uri);
+                            }
+                        }
+                    } else if is_perl_source_uri(&new_uri) {
+                        match (
+                            url::Url::parse(&new_uri),
+                            read_watched_file_content(&new_uri, "renamed closed file"),
+                        ) {
+                            (Ok(url), Some(content)) => {
+                                if let Err(e) = coordinator.index().index_file(url, content) {
+                                    tracing::warn!(
+                                        "Failed to index renamed file {}: {}",
+                                        new_uri,
+                                        e
+                                    );
+                                    coordinator.index().clear_file(&new_uri);
+                                }
+                            }
+                            (Err(e), _) => {
+                                tracing::warn!("Failed to parse renamed URI {}: {}", new_uri, e)
+                            }
+                            (_, None) => {
+                                tracing::debug!("Rejected renamed-file reread for {}", new_uri)
                             }
                         }
                     }
@@ -1952,10 +2127,17 @@ impl LspServer {
                     coordinator.notify_parse_complete(&new_uri);
                 }
 
-                // Update document store
+                // Move the exact open document instance to the client-declared
+                // destination. Its text, version, and generation remain intact.
                 {
-                    let mut documents = self.documents.lock();
-                    if let Some(doc) = documents.remove(&old_uri) {
+                    let mut documents = self.documents_guard();
+                    let old_key = self
+                        .uri_key_variants(&old_uri)
+                        .into_iter()
+                        .find(|key| documents.contains_key(key));
+                    if let Some(old_key) = old_key
+                        && let Some(doc) = documents.remove(&old_key)
+                    {
                         documents.insert(new_uri.clone(), doc);
                     }
                 }
@@ -3390,18 +3572,37 @@ mod tests {
             assert!(coordinator.index().document_store().get(&normalized_uri).is_some());
         }
 
+        std::fs::remove_file(&path)?;
+
         server.handle_did_change_watched_files(Some(json!({
             "changes": [
                 { "uri": raw_uri, "type": 3 }
             ]
         })))?;
 
-        assert!(in_flight_token.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(!in_flight_token.load(std::sync::atomic::Ordering::Relaxed));
         let after = server.memory_state_snapshot();
-        assert_eq!(after.documents, 0);
-        assert_eq!(after.open_text_bytes, 0);
-        assert_eq!(after.parse_cancel_flags, 0);
-        assert_eq!(after.stream_sessions, 0);
+        assert_eq!(after.documents, 1);
+        assert!(after.open_text_bytes > 0);
+        assert_eq!(after.parse_cancel_flags, 1);
+        assert_eq!(after.stream_sessions, 1);
+        if let Some(coordinator) = server.coordinator() {
+            assert!(!coordinator.index().file_symbols(&normalized_uri).is_empty());
+            assert!(!coordinator.index().file_symbols(&raw_uri).is_empty());
+            assert!(coordinator.index().document_store().get(&normalized_uri).is_some());
+            assert!(coordinator.index().document_store().get(&raw_uri).is_some());
+        }
+
+        server.handle_did_close(Some(json!({
+            "textDocument": { "uri": normalized_uri }
+        })))?;
+
+        assert!(in_flight_token.load(std::sync::atomic::Ordering::Relaxed));
+        let after_close = server.memory_state_snapshot();
+        assert_eq!(after_close.documents, 0);
+        assert_eq!(after_close.open_text_bytes, 0);
+        assert_eq!(after_close.parse_cancel_flags, 0);
+        assert_eq!(after_close.stream_sessions, 0);
         if let Some(coordinator) = server.coordinator() {
             assert!(coordinator.index().file_symbols(&normalized_uri).is_empty());
             assert!(coordinator.index().file_symbols(&raw_uri).is_empty());
@@ -3504,6 +3705,18 @@ mod tests {
         }
         let deletes = uris.iter().map(|uri| json!({ "uri": uri, "type": 3 })).collect::<Vec<_>>();
         server.handle_did_change_watched_files(Some(json!({ "changes": deletes })))?;
+
+        let after_delete = server.memory_state_snapshot();
+        assert_eq!(after_delete.documents, uris.len());
+        assert!(after_delete.open_text_bytes > 0);
+        assert_eq!(after_delete.parse_cancel_flags, uris.len());
+        assert_eq!(after_delete.stream_sessions, uris.len());
+
+        for uri in &uris {
+            server.handle_did_close(Some(json!({
+                "textDocument": { "uri": uri }
+            })))?;
+        }
 
         for _ in 0..100 {
             let pressure = server.runtime_pressure_snapshot();
