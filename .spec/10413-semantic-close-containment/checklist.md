@@ -40,10 +40,10 @@
 - [x] `cargo clippy -p xtask --bin semantic-close-containment --locked -- -D warnings`
 - [x] `cargo fmt -p xtask -- --check` (workspace-wide `--all` hits a Windows command-length limit; no Rust files changed in the enforcement follow-up)
 - [x] `cargo xtask check-file-policy`
-- [x] `cargo xtask workflow-trigger-lint`
+- [x] `cargo xtask workflow-trigger-lint` (workflow trigger shape only; it does not independently validate the advisory event inventory under `[[checks]]`)
 - [x] `cargo xtask workflow-policy-lint --check-lane-whitelist`
 - [x] `git diff --check`
-- [x] Follow-up adds the base-owned trusted-base enforcement workflow with exact-base execution: `pull_request` + explicit `${{ github.event.pull_request.base.sha }}` checkout, verified against the event base SHA before any evaluation. The packet's literal `pull_request_target` wording is superseded by the repo's own `UNTRUSTED_PR_SECRETS` policy lint, which forbids token consumption inside any `pull_request_target` job containing shell steps while the validator performs its own authenticated `gh api` lookups; an explicit base-SHA `pull_request` checkout keeps execution trusted-base-only with read-only, fork-safe credentials. Live verification evidence: the check ran green on this introducing PR (runs 32592095147, 32594110506, 32594657803). Residual advisory-tier boundary: the workflow definition itself is selected from the PR merge ref, so a PR editing this file runs its edited copy — an advisory-only self-affecting signal; a base-owned definition shape is prerequisite to any required promotion under #10168.
+- [x] The base-owned `pull_request_target` shape is statically proven: checkout remains pinned to the event base SHA, the PR head is fetched only as an inert Git object and is never checked out, and evaluation runs from the trusted base. The required-checks event mapping was manually checked against the workflow. Live execution starts after this workflow lands. The workflow remains advisory and has no merge authority; any required-promotion decision stays under #10168.
 
 ## Review
 

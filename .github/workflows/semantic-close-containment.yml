@@ -13,13 +13,8 @@
 # 3 = NOT_PROVEN/instrument failure (the check fails; it never passes on
 # missing or broken evidence).
 #
-# Trigger note: this deliberately uses `pull_request` with an explicit
-# base-SHA checkout instead of `pull_request_target`. The repo workflow policy
-# lint (`UNTRUSTED_PR_SECRETS`) forbids token consumption inside any
-# `pull_request_target` job that also contains shell steps, and the validator
-# performs its own authenticated `gh api` issue lookups. An explicit base-SHA
-# `pull_request` checkout provides the same trusted-base execution property
-# with read-only, fork-safe credentials.
+# Trigger note: `pull_request_target` lets the base-owned workflow execute the
+# validator after the workflow is present on the base.
 #
 # Advisory / non-required: intentionally absent from
 # `.ci/policies/required-checks.toml`; any required-promotion decision is
@@ -27,16 +22,14 @@
 # preflight is mapped per rule inside the validator and documented under
 # `.spec/10413-semantic-close-containment/`.
 #
-# Known advisory-tier boundary: for `pull_request` events GitHub selects this
-# workflow definition from the PR merge ref, so a PR that edits this file runs
-# its own edited copy. That can only affect an advisory signal with no merge
-# authority; moving this check into a base-owned execution shape is a
-# prerequisite of any future required promotion under #10168.
+# Known advisory-tier boundary: this workflow remains advisory and has no merge
+# authority; any required-promotion decision is reviewed separately under
+# #10168.
 
 name: Semantic Close Containment (CP00)
 
 on:
-  pull_request:
+  pull_request_target:
     # Automatic closing keywords only act when a PR merges into the default
     # branch, so other targets are not applicable by construction.
     branches: [main]
@@ -50,7 +43,7 @@ permissions:
 
 concurrency:
   group: semantic-close-containment-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' && github.event.action == 'synchronize' }}
 
 jobs:
   containment:
@@ -66,10 +59,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha || github.ref }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Prove exact base execution
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request_target'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
@@ -82,6 +76,29 @@ jobs:
           if [ "$resolved" != "$BASE_SHA" ]; then
             printf '::error::Checked-out base %s does not match event base %s\n' \
               "$resolved" "$BASE_SHA"
+            exit 1
+          fi
+
+      - name: Prove inert PR head identity
+        if: github.event_name == 'pull_request_target'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid PR head SHA identity"
+            exit 1
+          fi
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Invalid PR number identity"
+            exit 1
+          fi
+          git fetch --no-tags --depth=1 origin "refs/pull/${PR_NUMBER}/head"
+          fetched="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          if [ "$fetched" != "$HEAD_SHA" ]; then
+            printf '::error::Fetched PR head %s does not match event head %s\n' \
+              "$fetched" "$HEAD_SHA"
             exit 1
           fi
 
@@ -123,7 +140,7 @@ jobs:
           fi
 
       - name: Evaluate terminal relations (untrusted PR text stays data)
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request_target'
         env:
           GH_TOKEN: ${{ github.token }}
         run: target/debug/semantic-close-containment
