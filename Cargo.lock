@@ -1816,6 +1816,7 @@ dependencies = [
  "perl-parser-core",
  "perl-parser-pest",
  "perl-tdd-support",
+ "serde_json",
  "sha2",
  "tree-sitter",
  "tree-sitter-perl-c",
