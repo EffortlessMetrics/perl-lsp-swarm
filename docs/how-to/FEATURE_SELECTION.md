@@ -26,7 +26,7 @@ The canonical source of truth for all features is `features.toml` at the root of
 
 - `id` - Stable identifier (e.g., `lsp.completion`)
 - `area` - Grouping (`text_document`, `workspace`, `window`, `debug`, `protocol`)
-- `maturity` - Readiness level (currently all `ga` = generally available)
+- `maturity` - Readiness level; entries may be planned, preview, ga, or production
 - `advertised` - Whether the server announces the capability during `initialize`
 
 Profile selection happens at **startup**. The server announces its capabilities to the editor during the LSP `initialize` handshake, so the profile cannot be changed while the server is running.
