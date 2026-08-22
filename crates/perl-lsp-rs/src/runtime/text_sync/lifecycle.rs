@@ -2,6 +2,7 @@ use super::{
     CodeFormatter, FormattingOptions, JsonRpcError, LspServer, Value, invalid_params, json,
     source_path_from_uri,
 };
+#[cfg(feature = "workspace")]
 use perl_parser_core::source_file::is_perl_source_uri;
 
 impl LspServer {

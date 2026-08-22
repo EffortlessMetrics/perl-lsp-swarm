@@ -52,6 +52,8 @@ fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
     serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
 }
 #[cfg(feature = "workspace")]
+use std::io::Read;
+#[cfg(feature = "workspace")]
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -108,13 +110,70 @@ use perl_workspace::monitoring::{IndexingPhase, WorkspaceIndexingReceipt};
 
 #[cfg(feature = "workspace")]
 pub(crate) fn read_watched_file_content(uri: &str, purpose: &str) -> Option<String> {
-    uri_to_fs_path(uri).and_then(|path| match read_text_file_with_encoding(&path) {
-        Ok(content) => Some(content),
+    let path = uri_to_fs_path(uri)?;
+    let size_limit = crate::state::max_file_size_bytes();
+
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
         Err(e) => {
-            tracing::debug!("Failed to read file for {} ({}): {}", purpose, path.display(), e);
-            None
+            tracing::debug!("Failed to stat file for {} ({}): {}", purpose, path.display(), e);
+            return None;
         }
-    })
+    };
+    if metadata.len() > size_limit as u64 {
+        tracing::debug!(
+            "Skipping file for {} ({} is {} bytes, over the {} byte limit)",
+            purpose,
+            path.display(),
+            metadata.len(),
+            size_limit
+        );
+        return None;
+    }
+
+    // Bound the read as well as the metadata check: a file can grow between
+    // stat and open, and a close-time reload must not introduce an unbounded
+    // synchronous read/index path.
+    let mut file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(e) => {
+            tracing::debug!("Failed to open file for {} ({}): {}", purpose, path.display(), e);
+            return None;
+        }
+    };
+    let mut bytes = Vec::new();
+    if let Err(e) =
+        file.by_ref().take((size_limit as u64).saturating_add(1)).read_to_end(&mut bytes)
+    {
+        tracing::debug!("Failed to read file for {} ({}): {}", purpose, path.display(), e);
+        return None;
+    }
+    if bytes.len() > size_limit {
+        tracing::debug!(
+            "Skipping file for {} ({} exceeded the {} byte limit while reading)",
+            purpose,
+            path.display(),
+            size_limit
+        );
+        return None;
+    }
+
+    let content = crate::util::decode_text_bytes(&bytes);
+    if content.len() > size_limit {
+        tracing::debug!(
+            "Skipping file for {} (decoded {} exceeds the {} byte limit)",
+            purpose,
+            path.display(),
+            size_limit
+        );
+        return None;
+    }
+    if perl_parser_core::source_file::is_binary_content(&content) {
+        tracing::debug!("Skipping binary file for {} ({})", purpose, path.display());
+        return None;
+    }
+
+    Some(content)
 }
 
 /// RAII guard that clears the `indexing_in_progress` flag on drop.
@@ -1841,6 +1900,28 @@ impl LspServer {
 
                 tracing::debug!("File created: {}", uri);
 
+                #[cfg(feature = "workspace")]
+                let document_is_open = {
+                    let documents = self.documents_guard();
+                    self.get_document(&documents, uri).is_some()
+                };
+
+                #[cfg(feature = "workspace")]
+                if document_is_open {
+                    // An explicit create notification can follow delete/recreate
+                    // on disk while the editor still owns this document. Keep
+                    // the existing buffer text, instance, generation, and
+                    // buffer-derived facts authoritative (#8041).
+                    tracing::debug!(
+                        "File created for open document {} — open buffer remains authoritative (#8041)",
+                        uri
+                    );
+                    if let Some(coordinator) = self.coordinator() {
+                        coordinator.notify_parse_complete(uri);
+                    }
+                    continue;
+                }
+
                 // Index the new file if it's a Perl file
                 // Note: Mutation operation - use coordinator with lifecycle tracking
                 #[cfg(feature = "workspace")]
@@ -1915,8 +1996,9 @@ impl LspServer {
                 // the exact document instance (text, version, generation Arc)
                 // to the new URI and re-binds workspace facts to the buffer
                 // text — never to disk bytes read behind the buffer's back.
+                #[cfg(feature = "workspace")]
                 let old_doc_open = {
-                    let documents = self.documents.lock();
+                    let documents = self.documents_guard();
                     self.get_document(&documents, &old_uri).is_some()
                 };
 
@@ -3799,6 +3881,48 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
+    fn explicit_create_after_delete_recreate_preserves_open_buffer_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("recreated.pm");
+        let disk_v1 = "package Recreated;\nsub v1_only { 1 }\n1;\n";
+        std::fs::write(&path, disk_v1)?;
+        let uri = url::Url::from_file_path(&path).map_err(|_| "invalid file path")?.to_string();
+
+        server.did_open(json!({
+            "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": disk_v1 }
+        }))?;
+        let buffer_v2 = "package Recreated;\nsub v2_only { 2 }\n1;\n";
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{ "text": buffer_v2 }]
+        })))?;
+        wait_for_pending_index_tasks(&server);
+        let generation_before = server.test_document_generation(&uri);
+
+        std::fs::remove_file(&path)?;
+        server.handle_did_delete_files(Some(json!({ "files": [{ "uri": uri }] })))?;
+        std::fs::write(&path, "package Recreated;\nsub v3_only { 3 }\n1;\n")?;
+        server.handle_did_create_files(Some(json!({ "files": [{ "uri": uri }] })))?;
+
+        assert_eq!(server.test_document_generation(&uri), generation_before);
+        assert_eq!(
+            server.documents_text_snapshot(),
+            vec![(server.normalize_uri_key(&uri), buffer_v2.to_string())]
+        );
+        if let Some(coordinator) = server.coordinator() {
+            let names = index_symbol_names(coordinator.index(), &uri);
+            assert!(names.iter().any(|name| name == "v2_only"), "{names:?}");
+            assert!(!names.iter().any(|name| name == "v3_only"), "{names:?}");
+            assert!(coordinator.index().document_store().get(&uri).is_some());
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
     fn rename_moves_open_binding_generation_bound_and_never_duplicates_identities()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
@@ -3954,6 +4078,77 @@ mod tests {
                 !names.iter().any(|name| name == "v2_only"),
                 "open-buffer facts must not survive as closed-file authority: {names:?}"
             );
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn did_close_does_not_reload_oversized_disk_source() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("close_oversized.pm");
+        let disk_v1 = "package CloseOversized;\nsub v1_only { 1 }\n1;\n";
+        std::fs::write(&path, disk_v1)?;
+        let uri = url::Url::from_file_path(&path).map_err(|_| "invalid file path")?.to_string();
+
+        server.did_open(json!({
+            "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": disk_v1 }
+        }))?;
+        let buffer_v2 = "package CloseOversized;\nsub v2_only { 2 }\n1;\n";
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{ "text": buffer_v2 }]
+        })))?;
+        wait_for_pending_index_tasks(&server);
+
+        let oversized = format!(
+            "package CloseOversized;\nsub oversized_only {{ 3 }}\n{}",
+            "x".repeat(crate::state::max_file_size_bytes())
+        );
+        assert!(oversized.len() > crate::state::max_file_size_bytes());
+        std::fs::write(&path, oversized)?;
+        server.handle_did_close(Some(json!({ "textDocument": { "uri": uri } })))?;
+
+        if let Some(coordinator) = server.coordinator() {
+            let names = index_symbol_names(coordinator.index(), &uri);
+            assert!(names.iter().any(|name| name == "v2_only"), "{names:?}");
+            assert!(!names.iter().any(|name| name == "oversized_only"), "{names:?}");
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn did_close_does_not_reload_binary_disk_source() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("close_binary.pm");
+        let disk_v1 = "package CloseBinary;\nsub v1_only { 1 }\n1;\n";
+        std::fs::write(&path, disk_v1)?;
+        let uri = url::Url::from_file_path(&path).map_err(|_| "invalid file path")?.to_string();
+
+        server.did_open(json!({
+            "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": disk_v1 }
+        }))?;
+        let buffer_v2 = "package CloseBinary;\nsub v2_only { 2 }\n1;\n";
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{ "text": buffer_v2 }]
+        })))?;
+        wait_for_pending_index_tasks(&server);
+
+        let mut binary = b"package CloseBinary;\nsub binary_only { 3 }\n".to_vec();
+        binary.extend(std::iter::repeat_n(0, 128));
+        std::fs::write(&path, binary)?;
+        server.handle_did_close(Some(json!({ "textDocument": { "uri": uri } })))?;
+
+        if let Some(coordinator) = server.coordinator() {
+            let names = index_symbol_names(coordinator.index(), &uri);
+            assert!(names.iter().any(|name| name == "v2_only"), "{names:?}");
+            assert!(!names.iter().any(|name| name == "binary_only"), "{names:?}");
         }
 
         Ok(())
