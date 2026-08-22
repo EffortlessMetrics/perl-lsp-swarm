@@ -771,6 +771,7 @@ impl LspServer {
             self.collect_policy_critic_diagnostics(
                 ast,
                 &text,
+                uri,
                 critic_source_identity,
                 &mut diagnostics,
             );
@@ -1748,6 +1749,7 @@ impl LspServer {
                 self.collect_native_critic_diagnostics(
                     ast,
                     &doc.text,
+                    uri_str,
                     critic_source_identity,
                     &mut diagnostics,
                 );
@@ -2007,6 +2009,7 @@ impl LspServer {
         &self,
         ast: &std::sync::Arc<perl_parser::ast::Node>,
         doc_text: &str,
+        subject: &str,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         diagnostics: &mut Vec<InternalDiagnostic>,
     ) {
@@ -2018,7 +2021,13 @@ impl LspServer {
                 diagnostics.extend(violations.iter().map(builtin_violation_to_diagnostic));
             }
             perl_lsp_rs_core::config::CriticEngine::Native => {
-                self.collect_native_critic_diagnostics(ast, doc_text, source_identity, diagnostics);
+                self.collect_native_critic_diagnostics(
+                    ast,
+                    doc_text,
+                    subject,
+                    source_identity,
+                    diagnostics,
+                );
             }
         }
     }
@@ -2027,11 +2036,13 @@ impl LspServer {
         &self,
         ast: &std::sync::Arc<perl_parser::ast::Node>,
         doc_text: &str,
+        subject: &str,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         diagnostics: &mut Vec<InternalDiagnostic>,
     ) {
         use perl_lsp_rs_core::tooling::perl_critic::{
-            NativeCriticPolicy, native_finding_candidates, normalize_with_native_policy,
+            NativeCriticPolicy, account_unresolved_native_identities, native_finding_candidates,
+            normalize_with_native_policy,
         };
 
         let (critic_engine, severity, profile, native_profile, native_include, native_exclude) = {
@@ -2069,9 +2080,11 @@ impl LspServer {
         // Producer outputs enter the canonical normalized set (#7475): checked
         // identities at collection, alias merge, then policy applied exactly
         // once post-merge. Findings without a registered producer-owned
-        // identity are rejected here rather than guessed.
-        let (candidates, _unresolved) =
+        // identity are rejected here rather than guessed, and every rejection
+        // is accounted for instead of silently vanishing.
+        let (candidates, unresolved) =
             native_finding_candidates(registry.check_unfiltered(&critic_context), source_identity);
+        account_unresolved_native_identities(subject, &unresolved);
         let suppressions =
             perl_lsp_rs_core::tooling::perl_critic::CriticSuppressionMap::from_source(doc_text);
         let policy = NativeCriticPolicy::new(

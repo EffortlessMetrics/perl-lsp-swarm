@@ -3006,7 +3006,7 @@ mod tests {
             Box::new(RequireUseWarningsRule),
         ]);
 
-        // Plain `use Test2::V0;` turns strict + warnings on â€” no findings.
+        // Plain `use Test2::V0;` turns strict + warnings on - no findings.
         let v0 = CriticContext::new("use Test2::V0;\nok(1);\ndone_testing;\n", &ast, &config);
         assert!(
             registry.check(&v0).is_empty(),
@@ -3027,7 +3027,7 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, "native.testing.require_use_warnings");
 
-        // `-no_pragmas` disables both â€” both findings return.
+        // `-no_pragmas` disables both - both findings return.
         let no_pragmas = CriticContext::new("use Test2::V0 -no_pragmas;\nok(1);\n", &ast, &config);
         assert_eq!(registry.check(&no_pragmas).len(), 2);
 

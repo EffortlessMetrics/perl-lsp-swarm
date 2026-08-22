@@ -164,11 +164,36 @@ pub fn native_finding_candidates(
     (candidates, unresolved)
 }
 
+/// Account for native findings rejected at one production subject because
+/// their emitted `(rule_id, observed_shape)` pair has no registered producer
+/// disposition.
+///
+/// Production callers must route every rejection through this accounting
+/// instead of discarding the list: a future undeclared emission shape must
+/// surface as a diagnosable condition, never silently vanish from the product
+/// normalized set. Returns the number of rejected findings so callers can
+/// assert or aggregate it.
+pub fn account_unresolved_native_identities(
+    subject: &str,
+    unresolved: &[UnresolvedNativeFindingIdentity],
+) -> usize {
+    for failure in unresolved {
+        tracing::warn!(
+            subject = %subject,
+            rule_id = %failure.rule_id(),
+            shape = ?failure.shape(),
+            "native critic finding rejected: emitted shape has no registered producer disposition (#7475)"
+        );
+    }
+    unresolved.len()
+}
+
 /// Normalize candidates and apply native policy exactly once post-merge.
 ///
-/// Order: canonical alias merge â†’ severity threshold â†’ include/exclude over
-/// approved aliases â†’ scoped suppression. Deterministic output order is owned
-/// entirely by [`normalize_critic_findings`]. Filtering here, on merged rows,
+/// Order: canonical alias merge, then severity threshold, then
+/// include/exclude over approved aliases, then scoped suppression.
+/// Deterministic output order is owned entirely by
+/// [`normalize_critic_findings`]. Filtering here, on merged rows,
 /// is what makes "exclude/suppress one spelling" unable to leave a registered
 /// sibling spelling behind.
 #[must_use]
@@ -186,7 +211,7 @@ pub fn normalize_with_native_policy(
 
 /// Whether one normalized row survives the configured severity threshold.
 ///
-/// Severities are perlcritic threshold values (1â€“5, higher is stricter); a
+/// Severities are perlcritic threshold values (1-5, higher is stricter); a
 /// row survives when its merged severity meets or exceeds the threshold.
 fn severity_passes_threshold(severity: Severity, threshold: u8) -> bool {
     severity as u8 >= threshold
@@ -347,6 +372,33 @@ mod tests {
         assert_eq!(unresolved[0].rule_id(), "native.does.not_exist");
         assert_eq!(unresolved[0].shape(), CriticFindingShape::General);
         assert_eq!(unresolved[1].shape(), CriticFindingShape::PotentiallyUndefComparison);
+    }
+
+    #[test]
+    fn undeclared_emission_shapes_surface_through_accounting_not_vanish() {
+        // An emission whose shape the producer never declared must reach
+        // production accounting as a countable, attributable condition; a
+        // future rule regression may not silently shrink the diagnostic set.
+        let (_, unresolved) = native_finding_candidates(
+            [
+                native_finding(
+                    "native.security.system_exec",
+                    CriticFindingShape::General,
+                    Severity::Stern,
+                ),
+                native_finding(
+                    "native.security.qx_readpipe",
+                    CriticFindingShape::Qx,
+                    Severity::Harsh,
+                ),
+            ],
+            subject(),
+        );
+
+        let accounted =
+            super::account_unresolved_native_identities("file:///subject.pm", &unresolved);
+        assert_eq!(accounted, 1, "exactly the undeclared rejection is accounted");
+        assert_eq!(accounted, unresolved.len());
     }
 
     #[test]
