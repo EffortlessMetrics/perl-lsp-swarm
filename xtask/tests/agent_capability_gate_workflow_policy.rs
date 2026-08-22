@@ -178,7 +178,13 @@ fn collect_checkout_refs_from_dir(dir: &Path, refs: &mut BTreeSet<String>) -> Re
     for entry in entries {
         let entry = entry.with_context(|| format!("reading entry in {}", dir.display()))?;
         let path = entry.path();
-        if path.is_dir() {
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("reading file type for {}", path.display()))?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             collect_checkout_refs_from_dir(&path, refs)?;
             continue;
         }
@@ -312,6 +318,28 @@ fn checkout_ref_scan_excludes_unrelated_github_yaml() -> Result<()> {
     fs::write(github.join("actions/fixture.yml"), action)?;
     let unrelated = format!("steps:\n  - uses: actions/checkout@{UNRELATED_PIN}\n");
     fs::write(github.join("unrelated.yml"), unrelated)?;
+
+    let refs = collect_checkout_refs(&github)?;
+    assert_eq!(refs, BTreeSet::from([PIN.to_owned()]));
+    validate_checkout_refs(&refs)
+}
+
+#[cfg(unix)]
+#[test]
+fn checkout_ref_scan_does_not_follow_directory_symlink() -> Result<()> {
+    use std::os::unix::fs::symlink;
+
+    const PIN: &str = "3d3c42e5aac5ba805825da76410c181273ba90b1";
+    let temp = tempdir()?;
+    let github = temp.path().join(".github");
+    let workflows = github.join("workflows");
+    fs::create_dir_all(&workflows)?;
+    fs::create_dir_all(github.join("actions"))?;
+    fs::write(
+        workflows.join("fixture.yml"),
+        format!("jobs:\n  build:\n    steps:\n      - uses: actions/checkout@{PIN}\n"),
+    )?;
+    symlink(".", workflows.join("loop"))?;
 
     let refs = collect_checkout_refs(&github)?;
     assert_eq!(refs, BTreeSet::from([PIN.to_owned()]));
