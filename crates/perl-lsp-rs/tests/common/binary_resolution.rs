@@ -3,8 +3,9 @@
 //! Resolution order (fixed for test reliability):
 //! 1. PERL_LSP_BIN env var (explicit override)
 //! 2. Runtime `CARGO_BIN_EXE_perllsp` (when owned by the product package)
-//! 3. Workspace target directory binaries (DEBUG first, then release),
-//!    honoring CARGO_TARGET_DIR, with a bounded pre-build on total miss
+//! 3. Workspace target directory: ONLY the active profile's artifact,
+//!    honoring CARGO_TARGET_DIR, with a bounded pre-build on miss; an
+//!    opposite-profile leftover is refused, never silently reused
 //! 4. PATH lookup
 //!
 //! There is deliberately NO `cargo run` candidate: a cargo invocation inside
@@ -13,6 +14,12 @@
 //! Every non-env candidate is either an existing executable or a pre-build
 //! performed before any deadline starts; when nothing resolves or spawns,
 //! the harness fails loudly instead of silently degrading into cargo.
+//!
+//! Freshness is part of the contract (P2 review on #11905): only the ACTIVE
+//! profile's artifact describes this source tree. An executable left behind
+//! by the opposite profile — e.g. a stale `target/release/perllsp` beside a
+//! missing debug one — predates the reviewed source, so accepting it would
+//! skip the pre-build and make these tests silently exercise stale code.
 
 use perl_tdd_support::must;
 use std::path::Path;
@@ -25,70 +32,54 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
     // 1. Explicit override via PERL_LSP_BIN
     // 2. Compile-time CARGO_BIN_EXE (guaranteed correct during `cargo test -p perl-lsp-rs`)
     // 3. Runtime CARGO_BIN_EXE_* (fallback for edge cases)
-    // 4. Workspace target directory binaries (DEBUG first, then release)
+    // 4. Workspace target directory: ACTIVE-profile artifact only
     // 5. PATH lookup
     //
-    // IMPORTANT: Debug binary is checked BEFORE release to avoid stale release binaries
-    // causing test failures. When you run `cargo test -p perl-lsp-rs`, cargo builds debug.
+    // IMPORTANT: only the active profile's binary is acceptable here. An
+    // opposite-profile executable may predate the reviewed source; reusing it
+    // would silently test stale code (P2 review on #11905).
     let mut v: Vec<Command> = Vec::new();
 
-    // 1. Explicit override via PERL_LSP_BIN
-    if let Ok(p) = std::env::var("PERL_LSP_BIN") {
-        let mut c = Command::new(p);
-        c.arg("--stdio");
-        v.push(c);
+    // Explicit candidates are authoritative when they point to an existing
+    // executable. Returning here is important: probing the target directory
+    // can pre-build the product even though the caller already supplied a
+    // usable binary, recreating the #11848 deadline risk.
+    if let Some(explicit) = resolve_explicit_candidates(
+        std::env::var_os("PERL_LSP_BIN"),
+        std::env::var_os("CARGO_BIN_EXE_perllsp"),
+    ) {
+        return explicit.into_iter();
     }
 
-    // 2. Runtime Cargo product-binary path.
-    if let Ok(p) = std::env::var("CARGO_BIN_EXE_perllsp") {
-        let mut c = Command::new(p);
-        c.arg("--stdio");
-        v.push(c);
-    }
-
-    // 3. Try workspace target directory binaries (using absolute paths)
-    // IMPORTANT: Debug BEFORE release to avoid stale release binary issues
+    // 3. Workspace target directory (using absolute paths) — active profile
+    //    only, per the freshness contract above.
     if let Some(workspace_root) = workspace_root_from_manifest() {
-        // Try DEBUG binary first (this is what `cargo test` builds by default).
-        // The executable suffix matters: on Windows the file is `perllsp.exe`, so a
-        // suffix-less `exists()` check silently skips a perfectly good local binary
-        // and forces falling through to the slower candidates below.
-        // Prefer the profile these tests were themselves built with, so a `cargo test
-        // --release` run does not silently drive a debug server (or vice versa).
-        for profile in active_profile_order() {
-            let binary = target_directory(&workspace_root).join(profile).join(perllsp_file_name());
-            if is_executable_file(&binary) {
-                let mut c = Command::new(&binary);
+        match probe_target_artifacts(&workspace_root) {
+            TargetArtifactProbe::ReuseActiveProfile(binary) => {
+                let mut c = Command::new(binary);
                 c.arg("--stdio");
                 v.push(c);
             }
-        }
-
-        // The server binary lives in the `perllsp` package, not in `perl-lsp-rs` where
-        // these tests live, so `cargo test -p perl-lsp-rs` never builds it. If nothing
-        // above resolved, build it ONCE here — before any request deadline starts,
-        // because no cargo invocation may run inside one (#11848).
-        if v.is_empty() {
-            match ensure_perllsp_built(&workspace_root) {
-                Ok(built) => {
-                    let mut c = Command::new(built);
-                    c.arg("--stdio");
-                    v.push(c);
-                }
-                // A FAILED pre-build (e.g. the linker-crash family) must fail
-                // LOUDLY: falling through would silently compile inside the
-                // initialize deadline and resurface as an unexplained
-                // handshake stall (#11848 — the captured stderr of one such
-                // stall was nothing but rustc warnings from that inline
-                // compile). The message carries the build's own error lines
-                // because inherited stderr is not captured per-test by
-                // libtest.
-                Err(build_errors) => {
-                    must(Err::<Command, _>(format!(
-                        "pre-building the perllsp binary failed:\n{build_errors}\nrefusing the \
-                         cargo-run fallback because it would compile inside the initialize \
-                         deadline and stall the handshake (#11848)",
-                    )));
+            TargetArtifactProbe::MustBuild { found_opposite } => {
+                // The server binary lives in the `perllsp` package, not in
+                // `perl-lsp-rs` where these tests live, so `cargo test -p
+                // perl-lsp-rs` never builds it. Build it ONCE here — before any
+                // request deadline starts, because no cargo invocation may run
+                // inside one (#11848). A failed build refuses loudly, naming
+                // any opposite-profile artifact that was found and why it was
+                // refused instead of reused.
+                match ensure_perllsp_built(&workspace_root) {
+                    Ok(built) => {
+                        let mut c = Command::new(built);
+                        c.arg("--stdio");
+                        v.push(c);
+                    }
+                    Err(build_errors) => {
+                        must(Err::<Command, _>(refuse_after_failed_build(
+                            &build_errors,
+                            found_opposite.as_deref(),
+                        )));
+                    }
                 }
             }
         }
@@ -104,6 +95,88 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
     }
 
     v.into_iter()
+}
+
+fn resolve_explicit_candidates(
+    perl_lsp_bin: Option<std::ffi::OsString>,
+    cargo_bin_exe: Option<std::ffi::OsString>,
+) -> Option<Vec<Command>> {
+    [("PERL_LSP_BIN", perl_lsp_bin), ("CARGO_BIN_EXE_perllsp", cargo_bin_exe)].into_iter().find_map(
+        |(source, path)| {
+            path.and_then(|path| {
+                existing_candidate_command(path, source).map(|command| vec![command])
+            })
+        },
+    )
+}
+
+fn existing_candidate_command(path: std::ffi::OsString, source: &str) -> Option<Command> {
+    let path = std::path::PathBuf::from(path);
+    if !is_executable_file(&path) {
+        eprintln!(
+            "skipping {source} candidate {}: path must exist and name a regular executable",
+            path.display()
+        );
+        return None;
+    }
+    let mut command = Command::new(path);
+    command.arg("--stdio");
+    Some(command)
+}
+
+/// What probing the workspace target directory may contribute to the suite.
+///
+/// The freshness boundary from the P2 review on #11905: only the ACTIVE
+/// profile's artifact (debug for a normal test build) describes this source
+/// tree. An opposite-profile executable left by an earlier checkout would
+/// otherwise be accepted while the required pre-build was skipped, and the
+/// suite would silently exercise stale code.
+#[derive(Debug)]
+enum TargetArtifactProbe {
+    /// Executable present for the active profile; safe to reuse.
+    ReuseActiveProfile(std::path::PathBuf),
+    /// No active-profile artifact. The suite must pre-build one before any
+    /// request deadline (#11848); `found_opposite` carries an executable
+    /// opposite-profile leftover purely as refusal-diagnostics context —
+    /// it is never a spawn candidate.
+    MustBuild { found_opposite: Option<std::path::PathBuf> },
+}
+
+fn probe_target_artifacts(workspace_root: &std::path::Path) -> TargetArtifactProbe {
+    probe_target_artifacts_at(&target_directory(workspace_root))
+}
+
+fn probe_target_artifacts_at(target_dir: &std::path::Path) -> TargetArtifactProbe {
+    let [active, opposite] = active_profile_order();
+    let active_binary = target_dir.join(active).join(perllsp_file_name());
+    if is_executable_file(&active_binary) {
+        return TargetArtifactProbe::ReuseActiveProfile(active_binary);
+    }
+    let opposite_binary = target_dir.join(opposite).join(perllsp_file_name());
+    let found_opposite = is_executable_file(&opposite_binary).then_some(opposite_binary);
+    TargetArtifactProbe::MustBuild { found_opposite }
+}
+
+/// Refusal text after a failed pre-build. Keeps the #11848 cargo-run
+/// refusal and, when an opposite-profile artifact exists, names that exact
+/// path plus why reusing it would lie about what these tests exercise.
+fn refuse_after_failed_build(
+    build_errors: &str,
+    refused_opposite: Option<&std::path::Path>,
+) -> String {
+    let opposite_note = match refused_opposite {
+        Some(path) => format!(
+            "\nan executable opposite-profile artifact was found at {} but refused: it was \
+             built from different source, and running it would silently test stale code",
+            path.display()
+        ),
+        None => String::new(),
+    };
+    format!(
+        "pre-building the perllsp binary failed:\n{build_errors}{opposite_note}\nrefusing the \
+         cargo-run fallback because it would compile inside the initialize deadline and stall \
+         the handshake (#11848)",
+    )
 }
 
 /// File name of the server executable, including the platform suffix.
@@ -274,7 +347,7 @@ fn is_executable_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{built_binary_or_refuse, must, target_directory_from};
+    use super::{built_binary_or_refuse, must, resolve_explicit_candidates, target_directory_from};
     use std::ffi::{OsStr, OsString};
     use std::path::Path;
 
@@ -365,6 +438,195 @@ mod tests {
     fn current_executable_is_accepted_as_a_real_binary() {
         let path = must(std::env::current_exe().map_err(|e| format!("resolve current exe: {e}")));
         assert_eq!(built_binary_or_refuse(path.clone()), Ok(path));
+    }
+
+    #[test]
+    fn valid_explicit_candidate_short_circuits_lower_priority_resolution() {
+        let root = planted_artifact_workspace("explicit-short-circuit");
+        let explicit = plant_fake_perllsp(&root, "explicit");
+
+        let candidates = resolve_explicit_candidates(
+            Some(explicit.clone().into_os_string()),
+            Some(OsString::from("missing-cargo-candidate")),
+        )
+        .expect("valid explicit candidate must resolve");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].get_program(), explicit.as_os_str());
+
+        must(
+            std::fs::remove_dir_all(&root)
+                .map_err(|e| format!("remove synthetic workspace {}: {e}", root.display())),
+        );
+    }
+
+    #[test]
+    fn invalid_explicit_candidate_is_skipped_for_a_valid_lower_priority_candidate() {
+        let root = planted_artifact_workspace("invalid-explicit-fallback");
+        let fallback = plant_fake_perllsp(&root, "fallback");
+
+        let candidates = resolve_explicit_candidates(
+            Some(root.join("missing-explicit").into_os_string()),
+            Some(fallback.clone().into_os_string()),
+        )
+        .expect("valid lower-priority candidate must resolve");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].get_program(), fallback.as_os_str());
+
+        must(
+            std::fs::remove_dir_all(&root)
+                .map_err(|e| format!("remove synthetic workspace {}: {e}", root.display())),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_executable_explicit_candidate_is_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = planted_artifact_workspace("non-executable-explicit");
+        let path = root.join("perllsp");
+        std::fs::write(&path, b"not executable").expect("write explicit candidate");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("make explicit candidate non-executable");
+
+        assert!(resolve_explicit_candidates(Some(path.into_os_string()), None).is_none());
+
+        must(
+            std::fs::remove_dir_all(&root)
+                .map_err(|e| format!("remove synthetic workspace {}: {e}", root.display())),
+        );
+    }
+
+    #[test]
+    fn missing_relative_explicit_candidate_is_rejected() {
+        assert!(resolve_explicit_candidates(
+            Some(OsString::from("./definitely-missing-perllsp")),
+            None,
+        )
+        .is_none());
+    }
+
+    /// Synthetic workspace root for target-directory probes: isolated under
+    /// the temp dir so tests never read or mutate the real build products.
+    fn planted_artifact_workspace(test_name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir()
+            .join(format!("perl-lsp-rs-target-probe-{}-{test_name}", std::process::id()));
+        must(
+            std::fs::create_dir_all(&root)
+                .map_err(|e| format!("create synthetic workspace root {}: {e}", root.display())),
+        );
+        root
+    }
+
+    /// Plant a fake executable server binary at
+    /// `<root>/target/<profile>/perllsp<suffix>` and return its path. The
+    /// bytes are irrelevant: acceptance checks executability, and on this
+    /// platform that is regular-file-ness — exactly what let stale leftovers
+    /// slip through before the #11905 repair.
+    fn plant_fake_perllsp(target_dir: &Path, profile: &str) -> std::path::PathBuf {
+        let profile_dir = target_dir.join(profile);
+        must(
+            std::fs::create_dir_all(&profile_dir)
+                .map_err(|e| format!("create {}: {e}", profile_dir.display())),
+        );
+        let binary = profile_dir.join(super::perllsp_file_name());
+        must(
+            std::fs::write(&binary, b"leftover from an earlier checkout")
+                .map_err(|e| format!("write fake perllsp artifact {}: {e}", binary.display())),
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            must(
+                std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).map_err(
+                    |e| format!("make fake perllsp artifact executable {}: {e}", binary.display()),
+                ),
+            );
+        }
+        binary
+    }
+
+    /// The #11905 P2 regression: a normal debug run whose target directory
+    /// retains only an opposite-profile (release) executable must NOT reuse
+    /// it. The probe demands a pre-build instead, keeping the leftover purely
+    /// as context for a loud, truthful refusal if that build fails.
+    #[test]
+    fn stale_opposite_profile_artifact_is_refused_not_reused() {
+        let root = planted_artifact_workspace("stale-opposite-refused");
+        let target_dir = root.join("target");
+        let stale = plant_fake_perllsp(&target_dir, super::active_profile_order()[1]);
+
+        let leftover = match super::probe_target_artifacts_at(&target_dir) {
+            super::TargetArtifactProbe::MustBuild { found_opposite } => found_opposite,
+            super::TargetArtifactProbe::ReuseActiveProfile(path) => {
+                must(Err::<Option<std::path::PathBuf>, _>(format!(
+                    "opposite-profile leftover {} must never be reused as a candidate",
+                    path.display()
+                )))
+            }
+        };
+        assert_eq!(leftover.as_deref(), Some(stale.as_path()));
+        let refusal = super::refuse_after_failed_build("linker failed", leftover.as_deref());
+        assert!(refusal.contains(&stale.display().to_string()), "{refusal}");
+        assert!(refusal.contains("silently test stale code"), "{refusal}");
+        assert!(refusal.contains("#11848"), "{refusal}");
+
+        must(
+            std::fs::remove_dir_all(&root)
+                .map_err(|e| format!("remove synthetic workspace {}: {e}", root.display())),
+        );
+    }
+
+    /// When the active profile's own artifact exists, it wins regardless of
+    /// any opposite-profile leftover; the probe never consults the latter.
+    #[test]
+    fn active_profile_artifact_is_preferred_over_an_opposite_profile_leftover() {
+        let root = planted_artifact_workspace("active-preferred");
+        let target_dir = root.join("target");
+        let active = plant_fake_perllsp(&target_dir, super::active_profile_order()[0]);
+        plant_fake_perllsp(&target_dir, super::active_profile_order()[1]);
+
+        let reused = match super::probe_target_artifacts_at(&target_dir) {
+            super::TargetArtifactProbe::ReuseActiveProfile(path) => path,
+            super::TargetArtifactProbe::MustBuild { .. } => must(Err::<std::path::PathBuf, _>(
+                "an existing active-profile artifact must not trigger a rebuild".to_string(),
+            )),
+        };
+        assert_eq!(reused, active);
+
+        must(
+            std::fs::remove_dir_all(&root)
+                .map_err(|e| format!("remove synthetic workspace {}: {e}", root.display())),
+        );
+    }
+
+    /// A bare target directory demands a build, and the refusal text carries
+    /// no opposite-profile clause when there is nothing to refuse.
+    #[test]
+    fn empty_target_directory_requires_a_build_without_opposite_context() {
+        let root = planted_artifact_workspace("empty-requires-build");
+        let target_dir = root.join("target");
+
+        let found_opposite = match super::probe_target_artifacts_at(&target_dir) {
+            super::TargetArtifactProbe::MustBuild { found_opposite } => found_opposite,
+            super::TargetArtifactProbe::ReuseActiveProfile(path) => {
+                must(Err::<Option<std::path::PathBuf>, _>(format!(
+                    "empty target directory must require a clean build, got reuse of {}",
+                    path.display()
+                )))
+            }
+        };
+        assert_eq!(found_opposite, None);
+        let refusal = super::refuse_after_failed_build("boom", None);
+        assert!(refusal.contains("#11848"), "{refusal}");
+        assert!(!refusal.contains("opposite-profile artifact"), "{refusal}");
+
+        must(
+            std::fs::remove_dir_all(&root)
+                .map_err(|e| format!("remove synthetic workspace {}: {e}", root.display())),
+        );
     }
 
     #[cfg(unix)]

@@ -3,21 +3,11 @@
 //!
 //! This crate intentionally focuses on a single responsibility:
 //! collecting, classifying, and rewriting `use`/`require` statements.
-
-/// Guess a module name for a common function.
-#[must_use]
-pub fn guess_module_for_function(func: &str) -> Option<String> {
-    match func {
-        "dumper" => Some("Data::Dumper"),
-        "encode" | "decode" => Some("Encode"),
-        "basename" | "dirname" => Some("File::Basename"),
-        "mkpath" | "rmtree" => Some("File::Path"),
-        "slurp" => Some("File::Slurp"),
-        "decode_json" | "encode_json" => Some("JSON"),
-        _ => None,
-    }
-    .map(str::to_string)
-}
+//!
+//! The former hard-coded function-to-module spelling table is withdrawn
+//! (#10690): name affinity is not candidate identity and not import edit
+//! authorization. Restoration requires #790/#8948 to land exact
+//! unresolved-subject selection and insertion planning.
 
 /// Collect import statements (`use` and `require`) from source lines.
 #[must_use]

@@ -109,8 +109,11 @@ fn quick_fixes_for_diagnostic(
         // PL109: Unquoted bareword
         c if c == DiagnosticCode::UnquotedBareword.as_str() => {
             actions.extend(quick_fixes::fix_bareword(source, &qf_diag));
-            // Also offer an import action when the bareword resolves to a known module.
-            actions.extend(quick_fixes::fix_import_for_bareword_function(source, &qf_diag));
+            // The name-affinity import fix is withdrawn (#10690): a PL109
+            // presentation does not prove an importable callable, and the
+            // hard-coded spelling table is not edit authorization. Quote and
+            // filehandle fixes above keep their own contracts; restoration
+            // requires #790/#8948.
         }
         // PL001: General parse error (stable code)
         // PL002: Syntax error — same quick-fix routing as PL001
@@ -255,6 +258,7 @@ mod tests {
             related_information: Vec::new(),
             tags: Vec::new(),
             suggestion: None,
+            fixable: false,
         }
     }
 

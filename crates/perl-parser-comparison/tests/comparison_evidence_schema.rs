@@ -1008,15 +1008,15 @@ fn validate_value(value: &Value, schema: &Value, root: &Value) -> Result<(), Str
             return Err(format!("oneOf matched {matches} branches"));
         }
     }
-    if let Some(expected) = schema.get("const") {
-        if value != expected {
-            return Err("const mismatch".to_owned());
-        }
+    if let Some(expected) = schema.get("const")
+        && value != expected
+    {
+        return Err("const mismatch".to_owned());
     }
-    if let Some(allowed) = schema.get("enum").and_then(Value::as_array) {
-        if !allowed.contains(value) {
-            return Err("enum mismatch".to_owned());
-        }
+    if let Some(allowed) = schema.get("enum").and_then(Value::as_array)
+        && !allowed.contains(value)
+    {
+        return Err("enum mismatch".to_owned());
     }
     if let Some(kind) = schema.get("type") {
         let valid = match kind {
@@ -1031,10 +1031,10 @@ fn validate_value(value: &Value, schema: &Value, root: &Value) -> Result<(), Str
         }
     }
     if let Some(object) = value.as_object() {
-        if let Some(required) = schema.get("required").and_then(Value::as_array) {
-            if required.iter().filter_map(Value::as_str).any(|key| !object.contains_key(key)) {
-                return Err("required property missing".to_owned());
-            }
+        if let Some(required) = schema.get("required").and_then(Value::as_array)
+            && required.iter().filter_map(Value::as_str).any(|key| !object.contains_key(key))
+        {
+            return Err("required property missing".to_owned());
         }
         if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
             if schema.get("additionalProperties") == Some(&Value::Bool(false))
@@ -1049,34 +1049,34 @@ fn validate_value(value: &Value, schema: &Value, root: &Value) -> Result<(), Str
             }
         }
     }
-    if let Some(items) = schema.get("items") {
-        if let Some(array) = value.as_array() {
-            for item in array {
-                validate_value(item, items, root)?;
-            }
+    if let Some(items) = schema.get("items")
+        && let Some(array) = value.as_array()
+    {
+        for item in array {
+            validate_value(item, items, root)?;
         }
     }
     if let Some(string) = value.as_str() {
-        if let Some(minimum) = schema.get("minLength").and_then(Value::as_u64) {
-            if string.chars().count() < minimum as usize {
-                return Err("minimum string length mismatch".to_owned());
-            }
+        if let Some(minimum) = schema.get("minLength").and_then(Value::as_u64)
+            && string.chars().count() < minimum as usize
+        {
+            return Err("minimum string length mismatch".to_owned());
         }
-        if let Some(maximum) = schema.get("maxLength").and_then(Value::as_u64) {
-            if string.chars().count() > maximum as usize {
-                return Err("maximum string length mismatch".to_owned());
-            }
+        if let Some(maximum) = schema.get("maxLength").and_then(Value::as_u64)
+            && string.chars().count() > maximum as usize
+        {
+            return Err("maximum string length mismatch".to_owned());
         }
-        if let Some(pattern) = schema.get("pattern").and_then(Value::as_str) {
-            if !matches_pattern(string, pattern) {
-                return Err("pattern mismatch".to_owned());
-            }
+        if let Some(pattern) = schema.get("pattern").and_then(Value::as_str)
+            && !matches_pattern(string, pattern)
+        {
+            return Err("pattern mismatch".to_owned());
         }
     }
-    if let Some(minimum) = schema.get("minimum").and_then(Value::as_f64) {
-        if value.as_f64().is_some_and(|number| number < minimum) {
-            return Err("minimum mismatch".to_owned());
-        }
+    if let Some(minimum) = schema.get("minimum").and_then(Value::as_f64)
+        && value.as_f64().is_some_and(|number| number < minimum)
+    {
+        return Err("minimum mismatch".to_owned());
     }
     Ok(())
 }

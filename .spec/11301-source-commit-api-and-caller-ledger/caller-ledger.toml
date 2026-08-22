@@ -15,7 +15,12 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # Structural gap: PR CI validates the PR head tree, so a green PR can push
 # post-merge main over this baseline; combined-tree evaluation is tracked on
 # #11916.
-compatibility_baseline = 702
+# Burndown 702 -> 701 by #11938 (#8896 containment leaf): removing the
+# reversed-direction `handle_configuration` application arm deleted its
+# `.index_file(url, ...)` re-index call in
+# crates/perl-lsp-rs/src/runtime/workspace.rs (checker-equivalent count on the
+# combined tree, base #11916-era = 702).
+compatibility_baseline = 701
 
 # Live identity is the URI argument plus an owner-supplied non-zero NonZeroU32
 # generation; #11305 owns didOpen/didSave migration. Exact source paths are the

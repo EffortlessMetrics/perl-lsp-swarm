@@ -11,6 +11,7 @@ mod normalized;
 mod quick_fix;
 mod remediation;
 mod result_identity;
+mod semantic;
 mod types;
 
 pub use analyzer::{CriticAnalyzer, hash_content};
@@ -40,6 +41,11 @@ pub use result_identity::{
     CriticPolicyIdentity, CriticPolicyIdentityError, DIAGNOSTIC_RESULT_IDENTITY_SCHEMA_VERSION,
     DiagnosticFactIdentity, DiagnosticResultIdentity, DiagnosticResultIdentityInput,
     DiagnosticResultSchemaVersions, DiagnosticSourceIdentity,
+};
+pub use semantic::{
+    NativeCriticPolicy, UnresolvedNativeFindingIdentity, account_unresolved_native_identities,
+    critic_source_identity_for_uri, native_finding_candidates,
+    native_finding_candidates_with_accounting, normalize_with_native_policy,
 };
 pub use types::{CriticConfig, Severity, Violation};
 

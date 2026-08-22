@@ -13,21 +13,52 @@ fn workspace_root() -> PathBuf {
     PathBuf::from(manifest_dir).join("..").join("..")
 }
 
-/// Count the entries in the root `[workspace.metadata.publish.allow]` array.
+/// Extract the crate names in the root `[workspace.metadata.publish.allow]` array.
 ///
-/// This is the live published-crate count and the single source of truth for it,
+/// This is the live published set and the single source of truth for its size,
 /// alongside `xtask/published-crate-baseline.txt` which must agree with it. Tests
 /// derive the count from here rather than hard-coding a literal, so an intentional
 /// change to the published set (add/remove a crate) only touches Cargo.toml and the
 /// baseline file — never these guards.
-fn published_allowlist_count(root: &Path) -> io::Result<usize> {
+///
+/// The allowlist is densely commented: most entries sit beside a `#` note recording
+/// where an absorbed crate went. Those comments are not entries, and one of them
+/// quotes an ADR section name (`PLSP-ADR-0006 "Scope boundary"`), so counting quotes
+/// across the whole block over-reports by one per quoted phrase. Strip each line's
+/// comment before reading its entry, and return the names so failures show which
+/// rows drifted instead of only a diverging count. Any line carrying quotes that is
+/// not exactly one `"crate-name",` entry is rejected loudly, so house-style
+/// deviations (inline arrays, multiple entries per line) cannot silently shift the
+/// count.
+fn published_allowlist_entries(root: &Path) -> io::Result<Vec<String>> {
     let root_toml = fs::read_to_string(root.join("Cargo.toml"))?;
     let section = root_toml.split("[workspace.metadata.publish]").nth(1).unwrap_or("");
     let allow_start = section.find("allow = [").unwrap_or(0);
     let allow = &section[allow_start..];
-    let allow_end = allow.find(']').unwrap_or(allow.len());
-    // Crate names are double-quoted; two quotes per entry.
-    Ok(allow[..allow_end].matches('"').count() / 2)
+    let code_only = allow
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let allow_end = code_only.find(']').unwrap_or(code_only.len());
+    let mut entries = Vec::new();
+    for line in code_only[..allow_end].lines() {
+        let entry_line = line.trim();
+        if !entry_line.contains('"') {
+            continue;
+        }
+        if entry_line.matches('"').count() != 2 || !entry_line.starts_with('"') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "unparseable publish-allowlist line (expected exactly one \"crate-name\", \
+                     entry per line): {line:?}"
+                ),
+            ));
+        }
+        entries.push(entry_line.trim_end_matches(',').trim().trim_matches('"').to_string());
+    }
+    Ok(entries)
 }
 
 /// Read the published-crate baseline count from `xtask/published-crate-baseline.txt`.
@@ -315,12 +346,14 @@ fn test_g3_content_length_framing_stays_deleted() {
 fn test_baseline_matches_allowlist() -> TestResult {
     let root = workspace_root();
     let baseline = published_baseline_count(&root)?;
-    let allowlist = published_allowlist_count(&root)?;
+    let entries = published_allowlist_entries(&root)?;
+    let allowlist = entries.len();
 
     assert_eq!(
         baseline, allowlist,
         "xtask/published-crate-baseline.txt ({baseline}) must match the \
-         [workspace.metadata.publish.allow] entry count ({allowlist})"
+         [workspace.metadata.publish.allow] entry count ({allowlist}) — \
+         parsed allowlist entries: {entries:?}"
     );
 
     Ok(())
@@ -344,14 +377,20 @@ fn test_adr_0041_has_amendment_9() -> TestResult {
 #[test]
 fn test_publish_allowlist_matches_baseline() -> TestResult {
     let root = workspace_root();
-    let allowlist = published_allowlist_count(&root)?;
+    let entries = published_allowlist_entries(&root)?;
+    let allowlist = entries.len();
     let baseline = published_baseline_count(&root)?;
 
     assert!(allowlist > 0, "publish allowlist parsed to 0 entries — parser or Cargo.toml broke");
+    assert!(
+        entries.iter().all(|name| !name.trim().is_empty()),
+        "publish allowlist parsed an empty entry name — parser or Cargo.toml broke: {entries:?}"
+    );
     assert_eq!(
         allowlist, baseline,
         "[workspace.metadata.publish.allow] entry count ({allowlist}) must match \
-         xtask/published-crate-baseline.txt ({baseline})"
+         xtask/published-crate-baseline.txt ({baseline}) — \
+         parsed allowlist entries: {entries:?}"
     );
 
     Ok(())
@@ -403,10 +442,16 @@ fn test_dap_build_uses_package_local_catalog() -> TestResult {
     let dap_build = root.join("crates/perl-dap/build.rs");
     let content = fs::read_to_string(&dap_build)?;
 
-    // The build.rs should keep catalog loading package-local, not reference absorbed crates or repo paths.
+    // The build script should keep catalog loading package-local, not reference absorbed crates
+    // or repo paths. Since #11888 the loader lives in the package-local build_catalog.rs,
+    // included into an inline `mod catalog` by build.rs.
     assert!(
-        content.contains("fn load_catalog_for_build"),
+        content.contains("mod catalog"),
         "perl-dap/build.rs must keep package-local catalog loading"
+    );
+    assert!(
+        content.contains("build_catalog.rs"),
+        "perl-dap/build.rs must load the catalog from the package-local build_catalog.rs"
     );
 
     assert!(
