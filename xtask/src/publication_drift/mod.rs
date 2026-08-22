@@ -191,61 +191,9 @@ fn same_file_identity(output: &Path, source: &Path) -> Result<bool> {
 
 #[cfg(windows)]
 fn same_file_identity(output: &Path, source: &Path) -> Result<bool> {
-    let output_identity = windows_file_identity(output)?;
-    let source_identity = windows_file_identity(source)?;
+    let output_identity = crate::file_identity::windows_file_identity(output)?;
+    let source_identity = crate::file_identity::windows_file_identity(source)?;
     Ok(output_identity.is_some() && output_identity == source_identity)
-}
-
-#[cfg(windows)]
-fn windows_file_identity(path: &Path) -> Result<Option<(u32, u32, u32)>> {
-    use std::os::windows::ffi::OsStrExt;
-    use std::ptr::null_mut;
-    use winapi::um::fileapi::{
-        BY_HANDLE_FILE_INFORMATION, CreateFileW, GetFileInformationByHandle, OPEN_EXISTING,
-    };
-    use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
-    use winapi::um::winnt::{
-        FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    };
-
-    let display_path = path.display().to_string();
-    let wide_path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let handle = unsafe {
-        CreateFileW(
-            wide_path.as_ptr(),
-            0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            null_mut(),
-            OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
-            null_mut(),
-        )
-    };
-    if handle == INVALID_HANDLE_VALUE {
-        let error = std::io::Error::last_os_error();
-        if error.kind() == std::io::ErrorKind::NotFound {
-            return Ok(None);
-        }
-        return Err(error).wrap_err_with(|| format!("reading file identity {display_path}"));
-    }
-
-    let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-    let result = unsafe { GetFileInformationByHandle(handle, &mut information) };
-    let close_result = unsafe { CloseHandle(handle) };
-    if result == 0 {
-        return Err(std::io::Error::last_os_error())
-            .wrap_err_with(|| format!("reading file identity {display_path}"));
-    }
-    if close_result == 0 {
-        return Err(std::io::Error::last_os_error())
-            .wrap_err_with(|| format!("closing file identity handle {display_path}"));
-    }
-
-    Ok(Some((
-        information.dwVolumeSerialNumber,
-        information.nFileIndexHigh,
-        information.nFileIndexLow,
-    )))
 }
 
 #[cfg(not(any(unix, windows)))]
