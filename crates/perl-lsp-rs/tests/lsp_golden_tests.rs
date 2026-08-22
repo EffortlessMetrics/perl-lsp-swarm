@@ -2,6 +2,7 @@
 //!
 //! These tests use fixture files to ensure consistent behavior across releases
 
+mod common;
 mod support;
 
 use serde_json::{Value, json};
@@ -32,49 +33,53 @@ struct TestContext {
 static REQUEST_ID: AtomicI32 = AtomicI32::new(1);
 
 impl TestContext {
-    /// Find the perl-lsp binary using multiple resolution strategies
-    fn find_perl_lsp_binary() -> std::process::Command {
-        // Resolution order:
-        // Prefer an explicit candidate, then the canonical workspace product.
-        if let Ok(bin_path) = std::env::var("PERL_LSP_BIN")
-            && std::path::Path::new(&bin_path).exists()
-        {
-            let mut cmd = std::process::Command::new(bin_path);
-            cmd.arg("--stdio");
-            return cmd;
-        }
-
-        // Try workspace target directory
-        if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-            let crate_dir = std::path::Path::new(&manifest_dir);
-            if let Some(workspace_root) =
-                crate_dir.ancestors().find(|p| p.join("Cargo.lock").exists())
+    fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        // Resolve the server through the shared #11848-safe resolver: every
+        // candidate is an existing perllsp executable (or a pre-build completed
+        // before this function runs), and a total resolution failure is loud.
+        // There is deliberately no cargo-run tail here: a cargo invocation that
+        // compiles or blocks on the build-directory lock inside the initialize
+        // deadline IS the #11848 stall family.
+        let mut last_err: Option<std::io::Error> = None;
+        let mut spawned: Option<std::process::Child> = None;
+        for mut cmd in common::binary_resolution::resolve_perl_lsp_cmds() {
+            match cmd
+                .env("LSP_TEST_MODE", "1") // Enable test optimizations
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
             {
-                let debug_binary = workspace_root.join("target/debug/perllsp");
-                if debug_binary.exists() {
-                    let mut cmd = std::process::Command::new(&debug_binary);
-                    cmd.arg("--stdio");
-                    return cmd;
+                Ok(child) => {
+                    spawned = Some(child);
+                    break;
+                }
+                Err(err) => {
+                    last_err = Some(err);
                 }
             }
         }
 
-        // Fallback to cargo run (slow)
-        let mut cmd = std::process::Command::new("cargo");
-        cmd.args(["run", "-q", "-p", "perllsp", "--", "--stdio"]);
-        cmd
-    }
-
-    fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        // Start LSP server using optimized binary resolution
-        let mut cmd = Self::find_perl_lsp_binary();
-        let mut server = cmd
-            .env("LSP_TEST_MODE", "1") // Enable test optimizations
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| format!("Failed to start LSP server: {}", e))?;
+        // Name exactly what was searched — including the effective
+        // CARGO_TARGET_DIR — so a missing-binary failure cannot be misread as
+        // an environment mismatch (#11848).
+        let Some(mut server) = spawned else {
+            let mut probed = String::new();
+            for path in common::binary_resolution::probed_binary_paths() {
+                probed.push_str(&format!("\n  {} (exists={})", path.display(), path.exists()));
+            }
+            return Err(format!(
+                "Failed to start LSP server via any resolved candidate; there is deliberately \
+                 no compile-at-runtime fallback because it would compile inside the initialize \
+                 deadline (#11848). PERL_LSP_BIN={:?}, CARGO_BIN_EXE_perllsp={:?}, \
+                 CARGO_TARGET_DIR={:?}; probed prebuilt binaries:{probed}; `perllsp` on PATH was \
+                 also attempted. Last spawn error: {last_err:?}",
+                std::env::var("PERL_LSP_BIN").ok(),
+                std::env::var("CARGO_BIN_EXE_perllsp").ok(),
+                std::env::var("CARGO_TARGET_DIR").ok(),
+            )
+            .into());
+        };
 
         let reader =
             std::io::BufReader::new(server.stdout.take().ok_or("Failed to capture server stdout")?);
