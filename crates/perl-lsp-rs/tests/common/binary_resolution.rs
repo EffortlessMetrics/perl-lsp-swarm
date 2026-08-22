@@ -40,18 +40,15 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
     // would silently test stale code (P2 review on #11905).
     let mut v: Vec<Command> = Vec::new();
 
-    // 1. Explicit override via PERL_LSP_BIN
-    if let Ok(p) = std::env::var("PERL_LSP_BIN") {
-        let mut c = Command::new(p);
-        c.arg("--stdio");
-        v.push(c);
-    }
-
-    // 2. Runtime Cargo product-binary path.
-    if let Ok(p) = std::env::var("CARGO_BIN_EXE_perllsp") {
-        let mut c = Command::new(p);
-        c.arg("--stdio");
-        v.push(c);
+    // Explicit candidates are authoritative when they point to an existing
+    // executable. Returning here is important: probing the target directory
+    // can pre-build the product even though the caller already supplied a
+    // usable binary, recreating the #11848 deadline risk.
+    if let Some(explicit) = resolve_explicit_candidates(
+        std::env::var_os("PERL_LSP_BIN"),
+        std::env::var_os("CARGO_BIN_EXE_perllsp"),
+    ) {
+        return explicit.into_iter();
     }
 
     // 3. Workspace target directory (using absolute paths) — active profile
@@ -98,6 +95,33 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
     }
 
     v.into_iter()
+}
+
+fn resolve_explicit_candidates(
+    perl_lsp_bin: Option<std::ffi::OsString>,
+    cargo_bin_exe: Option<std::ffi::OsString>,
+) -> Option<Vec<Command>> {
+    [("PERL_LSP_BIN", perl_lsp_bin), ("CARGO_BIN_EXE_perllsp", cargo_bin_exe)].into_iter().find_map(
+        |(source, path)| {
+            path.and_then(|path| {
+                existing_candidate_command(path, source).map(|command| vec![command])
+            })
+        },
+    )
+}
+
+fn existing_candidate_command(path: std::ffi::OsString, source: &str) -> Option<Command> {
+    let path = std::path::PathBuf::from(path);
+    if !is_executable_file(&path) {
+        eprintln!(
+            "skipping {source} candidate {}: path must exist and name a regular executable",
+            path.display()
+        );
+        return None;
+    }
+    let mut command = Command::new(path);
+    command.arg("--stdio");
+    Some(command)
 }
 
 /// What probing the workspace target directory may contribute to the suite.
@@ -323,7 +347,7 @@ fn is_executable_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{built_binary_or_refuse, must, target_directory_from};
+    use super::{built_binary_or_refuse, must, resolve_explicit_candidates, target_directory_from};
     use std::ffi::{OsStr, OsString};
     use std::path::Path;
 
@@ -414,6 +438,74 @@ mod tests {
     fn current_executable_is_accepted_as_a_real_binary() {
         let path = must(std::env::current_exe().map_err(|e| format!("resolve current exe: {e}")));
         assert_eq!(built_binary_or_refuse(path.clone()), Ok(path));
+    }
+
+    #[test]
+    fn valid_explicit_candidate_short_circuits_lower_priority_resolution() {
+        let root = planted_artifact_workspace("explicit-short-circuit");
+        let explicit = plant_fake_perllsp(&root, "explicit");
+
+        let candidates = resolve_explicit_candidates(
+            Some(explicit.clone().into_os_string()),
+            Some(OsString::from("missing-cargo-candidate")),
+        )
+        .expect("valid explicit candidate must resolve");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].get_program(), explicit.as_os_str());
+
+        must(
+            std::fs::remove_dir_all(&root)
+                .map_err(|e| format!("remove synthetic workspace {}: {e}", root.display())),
+        );
+    }
+
+    #[test]
+    fn invalid_explicit_candidate_is_skipped_for_a_valid_lower_priority_candidate() {
+        let root = planted_artifact_workspace("invalid-explicit-fallback");
+        let fallback = plant_fake_perllsp(&root, "fallback");
+
+        let candidates = resolve_explicit_candidates(
+            Some(root.join("missing-explicit").into_os_string()),
+            Some(fallback.clone().into_os_string()),
+        )
+        .expect("valid lower-priority candidate must resolve");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].get_program(), fallback.as_os_str());
+
+        must(
+            std::fs::remove_dir_all(&root)
+                .map_err(|e| format!("remove synthetic workspace {}: {e}", root.display())),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_executable_explicit_candidate_is_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = planted_artifact_workspace("non-executable-explicit");
+        let path = root.join("perllsp");
+        std::fs::write(&path, b"not executable").expect("write explicit candidate");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("make explicit candidate non-executable");
+
+        assert!(resolve_explicit_candidates(Some(path.into_os_string()), None).is_none());
+
+        must(
+            std::fs::remove_dir_all(&root)
+                .map_err(|e| format!("remove synthetic workspace {}: {e}", root.display())),
+        );
+    }
+
+    #[test]
+    fn missing_relative_explicit_candidate_is_rejected() {
+        assert!(resolve_explicit_candidates(
+            Some(OsString::from("./definitely-missing-perllsp")),
+            None,
+        )
+        .is_none());
     }
 
     /// Synthetic workspace root for target-directory probes: isolated under
