@@ -243,14 +243,15 @@ fn compared_drift_is_recomputed_from_the_observed_matrix() -> Result<()> {
 }
 
 #[test]
-fn pinned_inventory_rejects_silent_row_omission() -> Result<()> {
+fn matrix_validation_rejects_duplicate_target_id_rows() -> Result<()> {
     let mut matrix = read_matrix(&repo_file(".ci/perl-core-harness/upstream-targets-5.42.2.v1"))?;
-    matrix.targets.retain(|entry| entry.contract.target_id != "component_class");
-    let error = match matrix.validate() {
-        Ok(()) => return Err(color_eyre::eyre::eyre!("missing target was accepted")),
-        Err(error) => error,
-    };
-    assert!(error.contains("component_class"));
+    matrix.targets.push(matrix.targets[0].clone());
+    matrix.targets.sort_by(|left, right| left.contract.target_id.cmp(&right.contract.target_id));
+
+    let error = matrix
+        .validate()
+        .expect_err("duplicate target ID row was accepted by structural validation");
+    assert_eq!(error, "target matrix rows must be strictly sorted by target ID");
     Ok(())
 }
 

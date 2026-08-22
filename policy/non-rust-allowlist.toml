@@ -2469,7 +2469,7 @@ language = "json"
 surface = "compiler"
 classification = "config"
 owner = "compiler"
-reason = "Published JSON Schema mirror for the perl_core_harness_target_matrix.v1 upstream target authority (#6660); the checked-in matrix is validated and fingerprint-ratcheted by the Rust serde/model contract test family."
+reason = "Published JSON Schema mirror for the perl_core_harness_target_matrix.v1 recorded target-matrix contract/claim (#6660); the checked-in matrix is validated and fingerprint-ratcheted by the Rust serde/model contract test family."
 covered_by = [
   "cargo test -p perl-core-harness --locked checked_in_target_matrix_is_valid_and_stable",
 ]

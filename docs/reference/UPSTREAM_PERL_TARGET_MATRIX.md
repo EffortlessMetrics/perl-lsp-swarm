@@ -2,7 +2,7 @@
 
 The compiler harness treats an upstream test target as a versioned selection and invocation contract, not as a display name or a convenient list of directories.
 
-The pinned Perl 5.42.2 authority is stored under:
+The recorded offline Perl 5.42.2 target-matrix claim is stored under:
 
 ```text
 .ci/perl-core-harness/upstream-targets-5.42.2.v1/
@@ -10,7 +10,7 @@ The pinned Perl 5.42.2 authority is stored under:
 
 `index.json` records the Perl commit, the claimed `Makefile.SH`, `t/TEST`, and `t/harness` blob identities, and the ordered target-part files. The validator assembles those parts into one canonical typed matrix before fingerprinting it. File partitioning is review structure, not denominator identity. This offline contract does not resolve or hash an upstream checkout, so the recorded source identities and target membership remain claims awaiting an independently generated source-bound receipt.
 
-## Validate the authority
+## Validate the recorded matrix claim
 
 ```bash
 cargo run -p perl-core-harness --bin perl-core-harness-targets -- \

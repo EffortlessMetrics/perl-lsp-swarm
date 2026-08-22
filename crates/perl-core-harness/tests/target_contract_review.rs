@@ -171,7 +171,7 @@ fn legacy_composites_are_partitioned_by_runner() -> TestResult {
 }
 
 #[test]
-fn read_matrix_rejects_changed_part_without_index_change() -> TestResult {
+fn read_matrix_rejects_changed_target_id_in_part() -> TestResult {
     let source = repo_file(".ci/perl-core-harness/upstream-targets-5.42.2.v1");
     let temporary = tempfile::tempdir()?;
     for entry in fs::read_dir(&source)? {
@@ -185,7 +185,8 @@ fn read_matrix_rejects_changed_part_without_index_change() -> TestResult {
         serde_json::Value::String("component_class".to_string());
     fs::write(&part_path, serde_json::to_vec_pretty(&part)?)?;
 
-    let error = io::read_matrix(temporary.path()).expect_err("changed matrix part was accepted");
+    let error = io::read_matrix(temporary.path())
+        .expect_err("duplicate target ID in changed matrix part was accepted");
     assert!(error.to_string().contains("target matrix"));
     Ok(())
 }
