@@ -973,11 +973,12 @@ impl LspServer {
 
                     // The runtime workspace pass is a name-only fallback. It
                     // has no import/reachability facts for callable and value
-                    // symbols, so emitting these as bare insertions can leave
-                    // an unimported cross-file reference in the document.
-                    // The core provider owns import-aware, current-file, and
-                    // qualified completions for these kinds; retain only the
-                    // module-name kinds here (issue #11158).
+                    // symbols (including variables), so emitting these as bare
+                    // insertions can leave an unimported cross-file reference
+                    // in the document. The core provider owns import-aware,
+                    // current-file, and qualified completions for these kinds;
+                    // retain only the module-name kinds here (issue #11158,
+                    // variable residual #11937).
                     if !is_method_completion
                         && matches!(
                             symbol.kind,
@@ -985,6 +986,7 @@ impl LspServer {
                                 | crate::workspace_index::SymbolKind::Method
                                 | crate::workspace_index::SymbolKind::Constant
                                 | crate::workspace_index::SymbolKind::Export
+                                | crate::workspace_index::SymbolKind::Variable(_)
                         )
                     {
                         continue;
@@ -1032,6 +1034,9 @@ impl LspServer {
 
                     let label = symbol.name.clone();
                     let qualified_name = Self::workspace_symbol_qualified_name(&symbol);
+                    // The method-completion gate is the only route that still
+                    // admits callable kinds into this pass, and it carries no
+                    // receiver evidence; say so on the item.
                     let detail = if !receiver_evidence_present
                         && matches!(
                             symbol.kind,
@@ -1040,9 +1045,6 @@ impl LspServer {
                                 | crate::workspace_index::SymbolKind::Constant
                                 | crate::workspace_index::SymbolKind::Export
                         ) {
-                        // Callable kinds only reach this pass through the
-                        // method-completion gate above, which carries no
-                        // receiver evidence; say so on the item.
                         Some(format!("{qualified_name} — receiver: unknown, low confidence"))
                     } else {
                         Some(qualified_name.clone())
@@ -4866,7 +4868,7 @@ mod tests {
     // =========================================================================
 
     /// With two registered workspace folders, add_runtime_workspace_completions
-    /// computes doc_folder_filter = Some(folder-a) and rejects the variable from
+    /// computes doc_folder_filter = Some(folder-a) and rejects the callable from
     /// folder-b via the Strategy-B continue branch.
     ///
     /// Covered changed lines:
@@ -4874,6 +4876,10 @@ mod tests {
     ///   534      if !is_module_kind
     ///   535      if let Some(ref folder) = doc_folder_filter
     ///   536-543  !workspace_folder_matches_doc_uri -> trace + continue
+    ///
+    /// Plain-prefix callable/value candidates are withdrawn by #11158/#11937
+    /// before Strategy-B, so the probe goes through the method-completion
+    /// route (`$probe->ba`), which still admits subroutines into this pass.
     #[cfg(feature = "workspace")]
     #[test]
     fn strategy_b_multi_folder_filters_cross_folder_var() {
@@ -4890,17 +4896,18 @@ mod tests {
         }
 
         let coordinator = Arc::new(IndexCoordinator::new());
-        // Add a preserved non-callable (Variable) symbol from folder-b — it should be filtered out.
+        // A callable at a path under folder-b — rejected because the document
+        // is owned by folder-a.
         let _ = coordinator.index().index_file_str(
             "file:///project/folder-b/lib/B.pm",
             "package B;
-our $cross_folder_var_b;
+sub barker { }
 1;
 ",
         );
         coordinator.transition_to_ready(1, 1);
 
-        let doc_text = "my $x = $cross";
+        let doc_text = "$probe->ba";
         let doc_uri = "file:///project/folder-a/script.pl";
         let inc_context = RequestIncContext::new(&server, doc_uri, doc_text, doc_text.len());
         let mut completions = Vec::new();
@@ -4913,8 +4920,8 @@ our $cross_folder_var_b;
 
         let names: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
         assert!(
-            !names.contains(&"$cross_folder_var_b"),
-            "Strategy-B must reject $cross_folder_var_b from folder-b when doc is in folder-a;              got completions: {names:?}"
+            !names.contains(&"barker"),
+            "Strategy-B must reject folder-b `barker` when doc is in folder-a;              got completions: {names:?}"
         );
     }
 
@@ -4924,6 +4931,10 @@ our $cross_folder_var_b;
     /// Covered changed lines:
     ///   479  folders.len() > 1 -> false
     ///   482-484  else { None }   (doc_folder_filter = None -> Strategy-B skipped)
+    ///
+    /// Plain-prefix callable/value candidates are withdrawn by #11158/#11937
+    /// before Strategy-B, so the probe goes through the method-completion
+    /// route (`$probe->ba`), which still admits subroutines into this pass.
     #[cfg(feature = "workspace")]
     #[test]
     fn strategy_b_single_folder_skips_filter_includes_symbol() {
@@ -4940,20 +4951,18 @@ our $cross_folder_var_b;
         }
 
         let coordinator = Arc::new(IndexCoordinator::new());
-        // A non-callable symbol at a path outside folder-a — still included
-        // because filter is None.  Subroutine candidates are intentionally
-        // withdrawn by #11158 before Strategy-B, so use an `our` variable to
-        // keep this test focused on the single-folder no-filter branch.
+        // A callable at a path outside folder-a — still included because the
+        // filter is None under a single registered folder.
         let _ = coordinator.index().index_file_str(
             "file:///project/folder-b/lib/B.pm",
             "package B;
-our $single_root_var;
+sub barker { }
 1;
 ",
         );
         coordinator.transition_to_ready(1, 1);
 
-        let doc_text = "$single";
+        let doc_text = "$probe->ba";
         let doc_uri = "file:///project/folder-a/script.pl";
         let inc_context = RequestIncContext::new(&server, doc_uri, doc_text, doc_text.len());
         let mut completions = Vec::new();
@@ -4966,8 +4975,49 @@ our $single_root_var;
 
         let names: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
         assert!(
-            names.contains(&"$single_root_var"),
+            names.contains(&"barker"),
             "single-folder workspace must not filter by folder (doc_folder_filter = None);              got completions: {names:?}"
+        );
+    }
+
+    /// Unimported cross-file variables must not survive the runtime fallback as
+    /// bare insertions (#11937 residual of #11158): the runtime pass has no
+    /// import facts, so an unimported module variable is skipped entirely
+    /// instead of being inserted as an undefined bare name.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn workspace_completion_skips_unimported_variable_fallback() {
+        use crate::runtime::routing::IndexAccessMode;
+        use perl_parser::workspace_index::IndexCoordinator;
+        use std::sync::Arc;
+
+        let server = LspServer::default();
+        let coordinator = Arc::new(IndexCoordinator::new());
+        let _ = coordinator.index().index_file_str(
+            "file:///project/lib/Foo.pm",
+            "package Foo;
+our $xylophone = 1;
+1;
+",
+        );
+        coordinator.transition_to_ready(1, 1);
+
+        let doc_text = "$xyl";
+        let doc_uri = "file:///project/script.pl";
+        let inc_context = RequestIncContext::new(&server, doc_uri, doc_text, doc_text.len());
+        let mut completions = Vec::new();
+        server.add_runtime_workspace_completions(
+            &mut completions,
+            &inc_context,
+            &IndexAccessMode::Full(&coordinator),
+            None,
+        );
+
+        let names: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
+        assert!(
+            !names.iter().any(|name| name.contains("xylophone")),
+            "unimported module variable must not be offered by the runtime \
+             fallback without import authority; got completions: {names:?}"
         );
     }
 }

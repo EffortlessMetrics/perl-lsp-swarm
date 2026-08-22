@@ -4180,8 +4180,13 @@ fn workspace_completion_no_auto_import_for_file_local_symbol()
 }
 
 #[test]
-fn workspace_variable_completion_preserves_qualified_insertion_without_import()
+fn qualified_variable_completion_preserves_qualified_insertion_without_import()
 -> Result<(), Box<dyn std::error::Error>> {
+    // Qualified `$Foo::member` completions are served by add_package_completions
+    // (the `::` path), not add_workspace_symbol_completions. Observe that this
+    // path inserts the fully qualified member spelling, which stays valid
+    // without any import (#11158); the bare-label item is the qualified path's,
+    // not evidence of an ungated workspace candidate.
     let index = Arc::new(WorkspaceIndex::new());
     index.index_file(
         Url::parse("file:///lib/Foo.pm")?,
@@ -4196,8 +4201,9 @@ fn workspace_variable_completion_preserves_qualified_insertion_without_import()
     let item = completions
         .iter()
         .find(|c| c.label == "$xylophone")
-        .ok_or("expected `$xylophone` workspace variable completion")?;
+        .ok_or("expected `$xylophone` package-member variable completion")?;
     assert_eq!(item.kind, CompletionItemKind::Variable);
+    assert_eq!(item.insert_text.as_deref(), Some("$Foo::xylophone"));
     assert!(item.additional_edits.is_empty());
     Ok(())
 }

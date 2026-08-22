@@ -542,6 +542,8 @@ fn complete_general_context(
         return CompletionFlow::Cancelled;
     }
 
+    // `used_modules` feeds the shared visibility gate for all value/callable
+    // workspace kinds, including variables (#11158, variable residual #11937).
     workspace::add_workspace_symbol_completions(
         completions,
         context,

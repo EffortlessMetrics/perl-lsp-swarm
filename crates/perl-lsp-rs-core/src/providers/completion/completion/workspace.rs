@@ -147,6 +147,17 @@ pub fn add_workspace_symbol_completions(
                 });
             }
             WsSymbolKind::Variable(var_kind) => {
+                // Bare insertion is only truthful when the defining namespace
+                // is already visible. Import synthesis is withdrawn (#11158);
+                // variables were gated late (#11937).
+                if !workspace_symbol_visible_without_import(
+                    &symbol,
+                    context,
+                    import_map,
+                    used_modules,
+                ) {
+                    continue;
+                }
                 // Add variable completion with appropriate sigil
                 let sigil = match var_kind {
                     VarKind::Scalar => "$",
@@ -2625,6 +2636,103 @@ mod visible_symbol_completion_tests {
             &symbol,
             &import_map,
             &HashSet::from(["Foo".to_string()]),
+        ));
+    }
+}
+
+#[cfg(test)]
+mod workspace_visibility_gate_tests {
+    //! Direct coverage for the shared bare-candidate visibility gate, including
+    //! the variable arm that joined late (#11937 residual of #11158).
+
+    use super::{
+        CompletionContext, SymbolTable, VarKind, WorkspaceSymbol, WsSymbolKind,
+        workspace_symbol_visible_without_import,
+    };
+    use perl_parser_core::SourceLocation;
+    use std::collections::{HashMap, HashSet};
+
+    fn context(current_package: &str) -> CompletionContext {
+        let st = SymbolTable::default();
+        CompletionContext::new(
+            &st,
+            current_package.len(),
+            None,
+            false,
+            false,
+            false,
+            String::new(),
+            0,
+        )
+    }
+
+    fn variable_symbol(container: Option<&str>, qualified: Option<&str>) -> WorkspaceSymbol {
+        WorkspaceSymbol {
+            name: "$xylophone".to_string(),
+            kind: WsSymbolKind::Variable(VarKind::Scalar),
+            uri: "file:///lib/Foo.pm".to_string(),
+            range: SourceLocation { start: 0, end: 14 }.into(),
+            qualified_name: qualified.map(str::to_string),
+            documentation: None,
+            container_name: container.map(str::to_string),
+            has_body: true,
+            workspace_folder_uri: None,
+            is_lexical: false,
+        }
+    }
+
+    #[test]
+    fn gate_denies_unimported_module_variable() {
+        let symbol = variable_symbol(Some("Foo"), Some("Foo::xylophone"));
+        let empty: HashMap<String, HashSet<String>> = HashMap::new();
+
+        // Module never mentioned in the document.
+        assert!(!workspace_symbol_visible_without_import(
+            &symbol,
+            &context("main"),
+            &empty,
+            &HashSet::new(),
+        ));
+        // `use Foo;` present but no exact membership row for the variable.
+        let broad_import = HashMap::from([("Foo".to_string(), HashSet::new())]);
+        assert!(!workspace_symbol_visible_without_import(
+            &symbol,
+            &context("main"),
+            &broad_import,
+            &HashSet::from(["Foo".to_string()]),
+        ));
+    }
+
+    #[test]
+    fn gate_allows_variable_with_exact_explicit_import() {
+        let symbol = variable_symbol(Some("Foo"), Some("Foo::xylophone"));
+        let import_map =
+            HashMap::from([("Foo".to_string(), HashSet::from(["$xylophone".to_string()]))]);
+
+        assert!(workspace_symbol_visible_without_import(
+            &symbol,
+            &context("main"),
+            &import_map,
+            &HashSet::from(["Foo".to_string()]),
+        ));
+    }
+
+    #[test]
+    fn gate_allows_current_package_and_containerless_variables() {
+        // Same-package variables need no import (the empty symbol table pins
+        // the completion context to package `main`).
+        assert!(workspace_symbol_visible_without_import(
+            &variable_symbol(Some("main"), None),
+            &context("main"),
+            &HashMap::new(),
+            &HashSet::new(),
+        ));
+        // Containerless symbols stay file-local by sibling semantics.
+        assert!(workspace_symbol_visible_without_import(
+            &variable_symbol(None, None),
+            &context("main"),
+            &HashMap::new(),
+            &HashSet::new(),
         ));
     }
 }

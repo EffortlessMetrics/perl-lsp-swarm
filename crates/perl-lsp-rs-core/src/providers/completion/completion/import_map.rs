@@ -192,6 +192,26 @@ mod tests {
         );
     }
 
+    /// #11937: the workspace visibility gate admits an explicitly imported
+    /// variable only if its sigil'd spelling is captured verbatim.
+    #[test]
+    fn sigiled_variable_import_is_captured_verbatim() {
+        let code = "use Foo qw($xylophone @bells);\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let map = extract_import_map(&ast);
+
+        let symbols = must_some(map.get("Foo"));
+        assert!(
+            symbols.contains("$xylophone"),
+            "sigil'd variable import must be captured verbatim; got: {symbols:?}"
+        );
+        assert!(
+            symbols.contains("@bells"),
+            "sigil'd array import must be captured verbatim; got: {symbols:?}"
+        );
+    }
+
     #[test]
     fn importable_module_without_args_is_skipped() {
         let code = "use Module::Thing;\n";
