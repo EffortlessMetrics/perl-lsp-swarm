@@ -1,0 +1,120 @@
+# Semantic Close Containment (CP00) — advisory trusted-base guard for
+# internally contradictory terminal closing relations (#10413).
+#
+# Executes ONLY trusted base-branch validator code: the checkout is pinned to
+# the pull request's exact base SHA and PR-head code is never checked out or
+# executed. PR/issue text is consumed as bounded data by the validator
+# (`cargo`-built `xtask/src/bin/semantic-close-containment.rs`, merged via
+# #11847), which enforces relation/section/byte bounds and exits before any
+# issue lookup when a PR carries no automatic closing keyword.
+#
+# Exit contract: 0 = pass (containment level only), 2 = high-confidence
+# contradiction (the check fails with the suggested non-terminal relation),
+# 3 = NOT_PROVEN/instrument failure (the check fails; it never passes on
+# missing or broken evidence).
+#
+# Trigger note: this deliberately uses `pull_request` with an explicit
+# base-SHA checkout instead of `pull_request_target`. The repo workflow policy
+# lint (`UNTRUSTED_PR_SECRETS`) forbids token consumption inside any
+# `pull_request_target` job that also contains shell steps, and the validator
+# performs its own authenticated `gh api` issue lookups. An explicit base-SHA
+# `pull_request` checkout provides the same trusted-base execution property
+# with read-only, fork-safe credentials.
+#
+# Advisory / non-required: intentionally absent from
+# `.ci/policies/required-checks.toml`; any required-promotion decision is
+# reviewed separately under #10168. Retirement into the CP03+ semantic
+# preflight is mapped per rule inside the validator and documented under
+# `.spec/10413-semantic-close-containment/`.
+
+name: Semantic Close Containment (CP00)
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: semantic-close-containment-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
+
+jobs:
+  containment:
+    name: Semantic close containment (advisory)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Checkout exact trusted base authority
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.ref }}
+          persist-credentials: false
+
+      - name: Prove exact base execution
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid base SHA identity"
+            exit 1
+          fi
+          resolved="$(git rev-parse 'HEAD^{commit}')"
+          if [ "$resolved" != "$BASE_SHA" ]; then
+            printf '::error::Checked-out base %s does not match event base %s\n' \
+              "$resolved" "$BASE_SHA"
+            exit 1
+          fi
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+
+      - name: Build trusted-base validator
+        run: cargo build --locked -p xtask --bin semantic-close-containment
+
+      - name: Replay immutable CP00 fixtures (instrument self-test)
+        # Expected-contradiction fixtures legitimately exit 2; anything else
+        # non-zero (3 = NOT_PROVEN/instrument failure, crashes, expectation
+        # mismatches surfaced as 3) fails this step, so broken evidence can
+        # never masquerade as a pass.
+        run: |
+          set -u
+          bin="target/debug/semantic-close-containment"
+          count=0
+          failures=0
+          for fixture in .ci/semantic-close-containment/fixtures/*.json; do
+            rc=0
+            "$bin" --fixture "$fixture" --format json > /dev/null || rc=$?
+            case "$rc" in
+              0|2)
+                count=$((count + 1))
+                ;;
+              *)
+                printf '::error::CP00 fixture %s exited %s\n' "$fixture" "$rc"
+                failures=$((failures + 1))
+                ;;
+            esac
+          done
+          echo "Replayed ${count} immutable CP00 fixtures."
+          if [ "${failures}" -ne 0 ] || [ "${count}" -lt 12 ]; then
+            echo "::error::instrument self-test failed"
+            exit 1
+          fi
+
+      - name: Evaluate terminal relations (untrusted PR text stays data)
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: target/debug/semantic-close-containment

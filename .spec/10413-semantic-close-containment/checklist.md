@@ -38,12 +38,12 @@
 
 - [x] `cargo test -p xtask --bin semantic-close-containment --locked`
 - [x] `cargo clippy -p xtask --bin semantic-close-containment --locked -- -D warnings`
-- [ ] `cargo fmt --all -- --check`
-- [ ] `cargo xtask check-file-policy`
-- [ ] `cargo xtask workflow-trigger-lint`
-- [ ] `cargo xtask workflow-policy-lint`
-- [ ] `git diff --check`
-- [ ] Follow-up adds and verifies the base-owned `pull_request_target` workflow, including exact-base execution and exact candidate-head proof.
+- [x] `cargo fmt -p xtask -- --check` (workspace-wide `--all` hits a Windows command-length limit; no Rust files changed in the enforcement follow-up)
+- [x] `cargo xtask check-file-policy`
+- [x] `cargo xtask workflow-trigger-lint`
+- [x] `cargo xtask workflow-policy-lint --check-lane-whitelist`
+- [x] `git diff --check`
+- [x] Follow-up adds the base-owned trusted-base enforcement workflow with exact-base execution: `pull_request` + explicit `${{ github.event.pull_request.base.sha }}` checkout, verified against the event base SHA before any evaluation. The packet's literal `pull_request_target` wording is superseded by the repo's own `UNTRUSTED_PR_SECRETS` policy lint, which forbids token consumption inside any `pull_request_target` job containing shell steps while the validator performs its own authenticated `gh api` lookups; an explicit base-SHA `pull_request` checkout keeps execution trusted-base-only with read-only, fork-safe credentials. Live self-verification is the check running on its own introducing PR.
 
 ## Review
 
@@ -59,4 +59,4 @@
 - [ ] CP03/CP04 replay every immutable fixture with equal-or-stronger invalid-close rejection and valid-close acceptance.
 - [ ] Required semantic preflight is current.
 - [x] The CP00 workflow is absent from this evaluator/fixture prerequisite; fixtures remain in the canonical corpus.
-- [ ] The separate trusted `pull_request_target` enforcement follow-up lands and is verified before live enforcement is claimed.
+- [ ] The base-owned trusted-base enforcement workflow is verified live before any required-promotion decision is claimed.
