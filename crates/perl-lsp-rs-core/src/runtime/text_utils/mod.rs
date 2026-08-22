@@ -93,6 +93,34 @@ impl<'a> TextEditHelpers<'a> {
         0
     }
 
+    /// Find where imports would be inserted after leading pragmas and imports.
+    ///
+    /// This public helper is retained for API compatibility, but no production
+    /// missing-import route uses it. Import edits remain withdrawn until they
+    /// have exact candidate planning and package-aware authorization.
+    #[must_use]
+    pub fn find_import_insert_position(&self) -> usize {
+        let mut pos = self.find_pragma_insert_position();
+        let mut cursor = pos;
+
+        while let Some((line_start, line_end)) = self.next_line_bounds(cursor) {
+            let line = &self.source[line_start..line_end];
+            if line.starts_with("use ") || line.starts_with("require ") {
+                pos = self.skip_line_ending(line_end);
+            } else if !line.is_empty() && !line.starts_with('#') {
+                break;
+            }
+
+            let next_cursor = self.skip_line_ending(line_end);
+            if next_cursor == cursor {
+                break;
+            }
+            cursor = next_cursor;
+        }
+
+        pos
+    }
+
     /// Get leading indentation at the line containing `pos`.
     #[must_use]
     pub fn get_indent_at(&self, pos: usize) -> String {

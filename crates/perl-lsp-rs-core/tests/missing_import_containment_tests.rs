@@ -234,8 +234,8 @@ const WITHDRAWN_IMPORT_AUTHORITY_PATTERNS: &[(&str, &str)] = &[
     ),
     ("fix_import_for_bareword_function", "references the withdrawn PL109 diagnostic import fix"),
     (
-        "find_import_insert_position",
-        "references the withdrawn package-blind preamble insertion helper as production authority",
+        ".find_import_insert_position(",
+        "invokes the retained package-blind insertion helper as production authority",
     ),
     (
         "create_add_missing_imports_action",

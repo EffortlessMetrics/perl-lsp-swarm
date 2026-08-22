@@ -195,6 +195,7 @@ fn test_api_limit_accessor_functions_public() -> Result<(), Box<dyn std::error::
 fn test_api_text_edit_helpers_methods_public() -> Result<(), Box<dyn std::error::Error>> {
     let helper = TextEditHelpers::new("test code", &[]);
     let _start = helper.find_statement_start(5);
+    let _import_pos = helper.find_import_insert_position();
     let _pragma_pos = helper.find_pragma_insert_position();
     let _sub_pos = helper.find_subroutine_insert_position(10);
     Ok(())
