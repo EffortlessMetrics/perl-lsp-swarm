@@ -797,9 +797,9 @@ gates:
     # is not itself a branch-protection context.
     #
     # Current-main cohort verification: exact gate rerun on 2026-08-22 against
-    # base dc0e784dcee5aac6d3edebebcf9b71b75079cc59; this is scoped proof for
+    # base b38568b082a733dfac7b3da76eb626b77f8a9616; this is scoped proof for
     # the 32 selectors below.
-    # Writer proof result: PASS in 23s, within the 480s/400000ms budget.
+    # Writer proof result: PASS in 4s, within the 480s/400000ms budget.
     #   2026-08-19 batch (post-fix, PR #11742): perl-token, perl-position-tracking,
     #     perl-uri, perl-tdd-support, perl-test-must, perl-ast-v2 (1 clone-on-copy
     #     batch fixed), perl-symbol (1 expect_used fixed)
