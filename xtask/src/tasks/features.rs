@@ -118,10 +118,8 @@ fn sync_docs_impl() -> Result<()> {
     println!("📝 Syncing documentation from features.toml...");
 
     let catalog = load_features()?;
-    let area_stats = catalog.area_statistics();
-
     // Update ROADMAP.md
-    update_roadmap(&catalog, &area_stats)?;
+    update_roadmap(&catalog)?;
 
     // Update LSP_ACTUAL_STATUS.md
     update_lsp_status(&catalog)?;
@@ -130,33 +128,14 @@ fn sync_docs_impl() -> Result<()> {
     Ok(())
 }
 
-fn update_roadmap(
-    catalog: &Catalog,
-    area_stats: &BTreeMap<String, perl_lsp_rs_core::feature_catalog::AreaStats>,
-) -> Result<()> {
+fn update_roadmap(catalog: &Catalog) -> Result<()> {
     let roadmap_path = Path::new("ROADMAP.md");
     let mut content = fs::read_to_string(roadmap_path)?;
 
     // Ensure fence markers exist
     ensure_fence(&content, "COMPLIANCE_TABLE")?;
 
-    // Update declaration counts only. Catalog declarations are not behavior evidence.
-    let mut table = String::new();
-    table.push_str("| Area | Declared ga/preview rows | Total rows |\n");
-    table.push_str("|------|---------------------------|------------|\n");
-
-    for (area, stats) in area_stats {
-        table.push_str(&format!(
-            "| {} | {} | {} |\n",
-            area.replace('_', " "),
-            stats.advertised,
-            stats.total,
-        ));
-    }
-    let declared: usize = area_stats.values().map(|s| s.advertised).sum();
-    let total: usize = area_stats.values().map(|s| s.total).sum();
-    table.push_str(&format!("| **Overall** | **{}** | **{}** |\n", declared, total));
-    table.push_str("\nCounts are navigation only (#6731): maturity labels are declarations without per-row behavior-evidence ownership.\n");
+    let table = perl_lsp_rs_core::feature_catalog::render_navigation_table(catalog);
 
     // Inject the compliance table into the fenced section
     content = replace_fence(&content, "COMPLIANCE_TABLE", &table)?;

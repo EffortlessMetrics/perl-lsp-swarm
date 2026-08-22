@@ -1,9 +1,8 @@
 //! LSP subsystem status generator.
 //!
-//! Owns LSP coverage counts, protocol compliance table, lsp.md generation,
+//! Owns LSP catalog counts, protocol-surface table, lsp.md generation,
 //! and ROADMAP.md compliance table sync.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use color_eyre::eyre::{Context, Result};
@@ -48,7 +47,7 @@ pub(super) fn count_lsp_coverage(root: &Path) -> Result<LspCoverage> {
         })
         .collect();
 
-    // Protocol Compliance: every catalog feature, regardless of
+    // Protocol surface labels: every catalog feature, regardless of
     // `counts_in_coverage` and regardless of maturity.
     //
     // `Planned` features stay in this denominator on purpose. They are protocol
@@ -56,7 +55,7 @@ pub(super) fn count_lsp_coverage(root: &Path) -> Result<LspCoverage> {
     // them would let the headline reach 100% by planning the gap away — and it
     // would disagree with `compute_compliance_table`, which counts every
     // feature. That disagreement is the #6909 defect: two denominators for one
-    // "Protocol Compliance" claim rendered into the same document, where the
+    // protocol-surface claim rendered into the same document, where the
     // headline reported `123/123 — 100%` beside a table reporting
     // `123/125 — 98%`. One denominator, shared with the table, is the fix.
     let protocol_trackable: Vec<_> = catalog.feature.iter().collect();
@@ -90,46 +89,7 @@ pub(super) fn compute_compliance_table(root: &Path) -> Result<String> {
     let catalog = perl_lsp_rs_core::feature_catalog::read_catalog(&features_path)
         .with_context(|| format!("loading {}", features_path.display()))?;
 
-    let mut by_area: BTreeMap<String, (usize, usize)> = BTreeMap::new(); // (declared ga/production/preview, total)
-
-    for f in &catalog.feature {
-        let entry = by_area.entry(f.area.clone()).or_insert((0, 0));
-        entry.1 += 1;
-        if matches!(
-            f.maturity,
-            perl_lsp_rs_core::feature_catalog::Maturity::Ga
-                | perl_lsp_rs_core::feature_catalog::Maturity::Production
-                | perl_lsp_rs_core::feature_catalog::Maturity::Preview
-        ) {
-            entry.0 += 1;
-        }
-    }
-
-    // #6731 containment: these are declaration counts from catalog maturity
-    // labels, not behavior evidence. The table publishes raw counts as
-    // navigation data only — no percentage column and no coverage claim.
-    let mut lines: Vec<String> = Vec::new();
-    lines.push("| Area | Declared ga/preview rows | Total rows |".to_string());
-    lines.push("|------|---------------------------|------------|".to_string());
-
-    let mut total_impl: usize = 0;
-    let mut total_all: usize = 0;
-
-    for (area, (impl_count, total)) in &by_area {
-        lines.push(format!("| {area} | {impl_count} | {total} |"));
-        total_impl += impl_count;
-        total_all += total;
-    }
-
-    lines.push(format!("| **Overall** | **{total_impl}** | **{total_all}** |"));
-    lines.push(String::new());
-    lines.push(
-        "Counts are navigation only (#6731): maturity labels are declarations without per-row \
-         behavior-evidence ownership."
-            .to_string(),
-    );
-
-    Ok(lines.join("\n"))
+    Ok(perl_lsp_rs_core::feature_catalog::render_navigation_table(&catalog))
 }
 
 // ---------------------------------------------------------------------------
@@ -146,12 +106,12 @@ pub(super) fn generate_lsp_status(
     // behavior-evidence owner, this projection must refuse to publish an
     // aggregate percentage or a passing verdict. Derived counts remain as
     // navigation data only; the evidence state renders `not_proven`.
-    let coverage_row = "| **LSP Coverage** | not_proven — no exact current behavior-evidence \
-                        owner (#6731); catalog counts below are navigation only |"
+    let coverage_row = "| **LSP Catalog** | not_proven — no exact current behavior-evidence \
+                        owner (#6731); catalog rows below are navigation only |"
         .to_string();
 
     let lsp_coverage_bullet = format!(
-        "- **Advertised ga/production rows**: {} of {} coverage-tracked advertised rows declare \
+        "- **Advertised ga/production rows**: {} of {} catalog-tracked advertised rows declare \
          ga/production (navigation count from `features.toml`)",
         cov.ux_implemented, cov.ux_total
     );
@@ -203,13 +163,12 @@ pub(super) fn generate_lsp_status(
 // ROADMAP.md update (keeps compliance table in sync)
 // ---------------------------------------------------------------------------
 
-pub(super) fn update_roadmap(root: &Path, original: &str) -> Result<String> {
-    let compliance_table = compute_compliance_table(root)?;
+pub(super) fn update_roadmap(original: &str, catalog_table: &str) -> Result<String> {
     replace_block(
         original,
         "<!-- BEGIN: COMPLIANCE_TABLE -->",
         "<!-- END: COMPLIANCE_TABLE -->",
-        &compliance_table,
+        catalog_table,
     )
 }
 
@@ -232,7 +191,7 @@ mod tests {
         Ok(())
     }
 
-    /// The advertised-rows bullet and the compliance-table Overall row make the
+    /// The advertised-rows bullet and the catalog-table Overall row make the
     /// same declaration-count claim, so they must be computed from the same
     /// numerator and denominator.
     ///
@@ -247,7 +206,7 @@ mod tests {
         let overall = table
             .lines()
             .find(|line| line.contains("**Overall**"))
-            .ok_or_else(|| eyre!("compliance table is missing its Overall row"))?;
+            .ok_or_else(|| eyre!("catalog table is missing its Overall row"))?;
         let cells: Vec<usize> = overall
             .split('|')
             .filter_map(|cell| cell.trim().trim_matches('*').parse().ok())
@@ -342,7 +301,7 @@ mod tests {
             protocol_implemented: 125,
             protocol_total: 125,
         };
-        let table = "| Area | Declared ga/preview rows | Total rows |\n\
+        let table = "| Area | Declared ga/production/preview rows | Total rows |\n\
                      |------|---------------------------|------------|\n\
                      | **Overall** | **125** | **125** |";
         let original = "<!-- BEGIN: LSP_COVERAGE -->\nold\n<!-- END: LSP_COVERAGE -->\n\

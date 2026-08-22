@@ -637,7 +637,16 @@ fn check_not_proven_navigation(surface: &SurfaceRow, text: &str) -> Result<()> {
             surface.id
         )
     })?;
-    let region = text[start..].split(end_marker).next().unwrap_or(&text[start..]);
+    let end = text[start + begin_marker.len()..]
+        .find(end_marker)
+        .map(|offset| start + begin_marker.len() + offset)
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "surface {}: selected begin marker has no matching end marker; incomplete containment must fail closed",
+                surface.id
+            )
+        })?;
+    let region = &text[start..end];
 
     if !region.contains("not_proven") {
         bail!(
@@ -647,6 +656,15 @@ fn check_not_proven_navigation(surface: &SurfaceRow, text: &str) -> Result<()> {
         );
     }
     for line in region.lines() {
+        if !line.contains("<!--") {
+            let lowered = line.to_ascii_lowercase();
+            if lowered.contains("coverage") || lowered.contains("compliance") {
+                bail!(
+                    "surface {}: CONTRADICTORY — generated navigation row reintroduced coverage/compliance status wording (#6731)",
+                    surface.id
+                );
+            }
+        }
         if line.contains("PASS") {
             bail!(
                 "surface {}: CONTRADICTORY — a passing verdict reappeared; declarations are \
@@ -1050,13 +1068,13 @@ no data yet
     // ── not_proven_navigation (#6731 containment) ─────────────────
 
     const CONTAINED_LSP: &str = "<!-- BEGIN: LSP_COVERAGE -->
-| **LSP Coverage** | not_proven — no exact current behavior-evidence owner (#6731); catalog counts below are navigation only |
+| **LSP Catalog** | not_proven — no exact current behavior-evidence owner (#6731); catalog rows below are navigation only |
 <!-- END: LSP_COVERAGE -->
 
 ## Computed Metrics
 
 <!-- BEGIN: COMPLIANCE_TABLE -->
-| Area | Declared ga/preview rows | Total rows |
+| Area | Declared ga/production/preview rows | Total rows |
 |------|---------------------------|------------|
 | **Overall** | **123** | **125** |
 
@@ -1096,8 +1114,8 @@ claim_boundary = "fixture"
     fn reintroduced_passing_verdict_fails_closed() {
         // Mutation control: reattaching PASS to the coverage row must fail.
         let content = CONTAINED_LSP.replace(
-            "catalog counts below are navigation only |",
-            "catalog counts below are navigation only | PASS |",
+            "catalog rows below are navigation only |",
+            "catalog rows below are navigation only | PASS |",
         );
         assert!(content.contains("PASS"));
         let (dir, contract) = containment_fixture(&content);
@@ -1121,8 +1139,8 @@ claim_boundary = "fixture"
         // Mutation control: dropping the not_proven marker so unowned cells
         // inherit a green-looking presentation must fail.
         let content = CONTAINED_LSP.replace(
-            "| **LSP Coverage** | not_proven — no exact current behavior-evidence owner (#6731); catalog counts below are navigation only |",
-            "| **LSP Coverage** | counts below are informational |",
+            "| **LSP Catalog** | not_proven — no exact current behavior-evidence owner (#6731); catalog rows below are navigation only |",
+            "| **LSP Catalog** | catalog rows below are informational |",
         );
         assert!(!content.contains("not_proven"));
         let (dir, contract) = containment_fixture(&content);
@@ -1136,6 +1154,30 @@ claim_boundary = "fixture"
         let (dir, contract) = containment_fixture(content);
         let error = check_surfaces(dir.path(), &contract).unwrap_err();
         assert!(format!("{error:#}").contains("containment markers are gone"));
+    }
+
+    #[test]
+    fn missing_selected_end_marker_fails_closed() {
+        let content = CONTAINED_LSP.replace("<!-- END: COMPLIANCE_TABLE -->", "");
+        let (dir, contract) = containment_fixture(&content);
+        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        assert!(format!("{error:#}").contains("no matching end marker"));
+    }
+
+    #[test]
+    fn navigation_row_is_accepted_but_reintroduced_status_wording_is_not() {
+        let (dir, contract) = containment_fixture(CONTAINED_LSP);
+        check_surfaces(dir.path(), &contract).unwrap();
+
+        for forbidden in ["coverage", "compliance"] {
+            let content = CONTAINED_LSP.replace("catalog rows below", forbidden);
+            let (dir, contract) = containment_fixture(&content);
+            let error = check_surfaces(dir.path(), &contract).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("status wording"),
+                "reintroduced {forbidden} wording must fail closed"
+            );
+        }
     }
 
     #[test]

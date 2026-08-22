@@ -141,9 +141,16 @@ pub struct BddFeatureRow {
     pub tests: &'static [&'static str],
 }
 
-pub use catalog::{
-    Feature, LSP_VERSION, VERSION, advertised_features, compliance_percent, has_feature,
-};
+pub use catalog::{Feature, LSP_VERSION, VERSION, advertised_features, has_feature};
+
+/// Compatibility accessor backed by the feature-grid calculation.
+///
+/// The build-generated catalog intentionally publishes no declaration-derived
+/// compliance constant or accessor; this compatibility surface is not a status
+/// or behavior-evidence authority.
+pub fn compliance_percent() -> f32 {
+    compliance_percent_for_grid()
+}
 
 /// All discovered LSP features in canonical declaration order.
 pub fn all_features() -> &'static [Feature] {

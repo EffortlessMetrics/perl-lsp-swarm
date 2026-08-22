@@ -154,12 +154,12 @@ without runtime TOML parsing.
 
 Historical declaration tooling used the following aggregate:
 
-```
+```text
 compliance % = advertised_trackable_features / trackable_features * 100
 ```
 
 Where "trackable" means `maturity != planned` and `counts_in_coverage == true`.
-That aggregate is retained only as historical/declaration context. It must not
+That historical aggregate is retained only as non-authoritative declaration context. It must not
 be presented as current compliance, used to rewrite roadmap/report claims, or
 treated as a substitute for the evidence model owned by #6731.
 Features like protocol lifecycle methods (`lsp.initialize`, `lsp.shutdown`) and

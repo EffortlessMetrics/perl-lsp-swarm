@@ -38,9 +38,8 @@ are owned by #6731's evidence model.
 Key terms:
 
 - `declared ga/production`: Features with `maturity in (ga, production)`
-- `coverage-tracked`: Features where `advertised = true`, `maturity != planned`, and `counts_in_coverage != false`
 - `declared ga/production/preview`: Features with `maturity in (ga, production, preview)` (protocol-surface denominator includes every catalog row)
-- `counts_in_coverage = false`: Protocol plumbing excluded from navigation counts
+- `counts_in_coverage = false`: Rows excluded from compatibility-grid accounting; protocol-surface navigation still includes every catalog row
 
 **Other Metrics**:
 

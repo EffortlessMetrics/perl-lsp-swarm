@@ -511,10 +511,10 @@ is open on `master` readiness tracking.
 
 ## LSP Feature Implementation
 
-The LSP compliance table is auto-generated from `features.toml`.
+The LSP declared-catalog table is auto-generated from `features.toml`.
 
 <!-- BEGIN: COMPLIANCE_TABLE -->
-| Area | Declared ga/preview rows | Total rows |
+| Area | Declared ga/production/preview rows | Total rows |
 |------|---------------------------|------------|
 | debug | 22 | 24 |
 | notebook | 2 | 2 |

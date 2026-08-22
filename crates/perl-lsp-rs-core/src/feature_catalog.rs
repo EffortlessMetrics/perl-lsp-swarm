@@ -52,7 +52,7 @@ impl Maturity {
         matches!(self, Self::Ga | Self::Production)
     }
 
-    /// Returns `true` when the feature should be considered in compliance math.
+    /// Returns `true` when the feature participates in the compatibility grid.
     pub const fn is_trackable(self) -> bool {
         !matches!(self, Self::Planned)
     }
@@ -139,19 +139,6 @@ impl Catalog {
         ids
     }
 
-    /// Trackable feature count (`maturity != planned`).
-    pub fn trackable_feature_count(&self) -> usize {
-        self.feature.iter().filter(|feature| feature.maturity.is_trackable()).count()
-    }
-
-    /// Advertised trackable count.
-    pub fn advertised_trackable_count(&self) -> usize {
-        self.feature
-            .iter()
-            .filter(|feature| feature.advertised && feature.maturity.is_advertised())
-            .count()
-    }
-
     /// Trackable feature count for BDD/compliance grids.
     /// Excludes entries explicitly marked `counts_in_coverage = false`.
     pub fn trackable_feature_count_for_grid(&self) -> usize {
@@ -179,16 +166,6 @@ impl Catalog {
             return 0.0;
         }
         let advertised = self.advertised_trackable_count_for_grid();
-        (advertised as f64 / trackable as f64 * 100.0).round() as f32
-    }
-
-    /// Compliance percentage calculated as advertised(trackable) / trackable.
-    pub fn compliance_percent(&self) -> f32 {
-        let trackable = self.trackable_feature_count();
-        if trackable == 0 {
-            return 0.0;
-        }
-        let advertised = self.advertised_trackable_count();
         (advertised as f64 / trackable as f64 * 100.0).round() as f32
     }
 
@@ -430,12 +407,6 @@ pub fn render_lsp_feature_catalog_module(catalog: &Catalog, source_comment: &str
     code.push_str(&format!("pub const VERSION: &str = {:?};\n", catalog.meta.version));
     code.push_str("/// LSP protocol version supported by this parser implementation\n");
     code.push_str(&format!("pub const LSP_VERSION: &str = {:?};\n", catalog.meta.lsp_version));
-    code.push_str("/// Compliance percentage of advertised GA features vs trackable features\n");
-    code.push_str(&format!(
-        "pub const COMPLIANCE_PERCENT: f32 = {:.2};\n\n",
-        catalog.compliance_percent()
-    ));
-
     code.push_str(
         "/// Represents a single LSP feature with its metadata and implementation status\n",
     );
@@ -496,12 +467,40 @@ pub fn render_lsp_feature_catalog_module(catalog: &Catalog, source_comment: &str
     code.push_str("    ADVERTISED_LSP_FEATURES.contains(&id)\n");
     code.push_str("}\n\n");
 
-    code.push_str("/// Returns the current LSP compliance percentage as a float.\n");
-    code.push_str("pub fn compliance_percent() -> f32 {\n");
-    code.push_str("    COMPLIANCE_PERCENT\n");
-    code.push_str("}\n");
-
     code
+}
+
+/// Render the catalog's declaration-only navigation table.
+pub fn render_navigation_table(catalog: &Catalog) -> String {
+    let mut by_area: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+
+    for feature in &catalog.feature {
+        let entry = by_area.entry(feature.area.as_str()).or_default();
+        entry.1 += 1;
+        if matches!(feature.maturity, Maturity::Ga | Maturity::Production | Maturity::Preview) {
+            entry.0 += 1;
+        }
+    }
+
+    let mut lines = vec![
+        "| Area | Declared ga/production/preview rows | Total rows |".to_string(),
+        "|------|---------------------------|------------|".to_string(),
+    ];
+    let mut declared = 0;
+    let mut total = 0;
+    for (area, (area_declared, area_total)) in by_area {
+        lines.push(format!("| {area} | {area_declared} | {area_total} |"));
+        declared += area_declared;
+        total += area_total;
+    }
+    lines.push(format!("| **Overall** | **{declared}** | **{total}** |"));
+    lines.push(String::new());
+    lines.push(
+        "Counts are navigation only (#6731): maturity labels are declarations without per-row \
+         behavior-evidence ownership."
+            .to_string(),
+    );
+    lines.join("\n")
 }
 
 /// Render DAP runtime module source.
@@ -598,9 +597,6 @@ mod tests {
     #[test]
     fn compliance_math_uses_trackable_features_only() {
         let catalog = sample_catalog();
-        assert_eq!(catalog.trackable_feature_count(), 3);
-        assert_eq!(catalog.advertised_trackable_count(), 2);
-        assert_eq!(catalog.compliance_percent(), 67.0);
         assert_eq!(catalog.trackable_feature_count_for_grid(), 3);
         assert_eq!(catalog.advertised_trackable_count_for_grid(), 2);
         assert_eq!(catalog.compliance_percent_for_grid(), 67.0);
@@ -738,7 +734,8 @@ mod tests {
 
         assert!(rendered.contains("pub const VERSION: &str = \"0.42.0\";"));
         assert!(rendered.contains("pub const LSP_VERSION: &str = \"3.18\";"));
-        assert!(rendered.contains("pub const COMPLIANCE_PERCENT: f32 = 67.00;"));
+        assert!(!rendered.contains("COMPLIANCE_PERCENT"));
+        assert!(!rendered.contains("compliance_percent()"));
         assert!(
             rendered.contains("pub const ADVERTISED_LSP_FEATURES: &[&str] = &[\n    \"lsp.completion\",\n    \"lsp.references\",\n];")
         );
