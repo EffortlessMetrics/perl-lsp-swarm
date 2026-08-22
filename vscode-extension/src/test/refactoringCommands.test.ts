@@ -148,10 +148,14 @@ describe('refactoring command implementations', () => {
       expect.arrayContaining([
         expect.objectContaining({ command: 'perl-lsp.extractVariable' }),
         expect.objectContaining({ command: 'perl-lsp.extractMethod' }),
-        expect.objectContaining({ command: 'perl-lsp.organizeImports' }),
       ]),
       { placeHolder: 'Perl Refactoring Options' },
     );
+    // The organize-imports entry is withdrawn (#8305) and must stay absent.
+    const items = (vscode.window.showQuickPick as jest.Mock).mock.calls[0][0] as Array<{
+      command?: string;
+    }>;
+    expect(items.find((item) => item.command === 'perl-lsp.organizeImports')).toBeUndefined();
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
       'perl-lsp.extractMethod',
       'from-picker',

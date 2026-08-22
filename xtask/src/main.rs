@@ -2041,6 +2041,10 @@ enum Commands {
         #[arg(long, short, value_enum, default_value = "merge-gate")]
         tier: GateTier,
 
+        /// Gate policy file used for this invocation
+        #[arg(long, default_value = ".ci/gate-policy.yaml")]
+        gate_policy: PathBuf,
+
         /// Run a specific gate by name
         #[arg(long, short)]
         gate: Option<String>,
@@ -5101,6 +5105,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Commands::Gates {
             tier,
+            gate_policy,
             gate,
             base,
             list,
@@ -5114,6 +5119,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             staged,
         } => gates::run(gates::GateRunnerConfig {
             tier,
+            gate_policy: Some(gate_policy),
             gate_filter: gate,
             base_ref: base,
             output_format: format,

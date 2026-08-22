@@ -321,7 +321,8 @@ mod tests {
             let uri = format!("perldoc://{module}");
             let error = server
                 .handle_text_document_content(Some(json!({ "uri": uri })))
-                .expect_err("unavailable perldoc output must not become a document response");
+                .err()
+                .ok_or("unavailable perldoc output must not become a document response")?;
             assert!(
                 error.message.contains("content not found"),
                 "unexpected unavailable response for {module}: {}",
@@ -401,16 +402,19 @@ mod tests {
     }
 
     #[test]
-    fn text_document_content_invalid_params_name_method_and_field() {
+    fn text_document_content_invalid_params_name_method_and_field()
+    -> Result<(), Box<dyn std::error::Error>> {
         let err = LspServer::new()
             .handle_text_document_content(None)
-            .expect_err("missing virtual document params must be rejected");
+            .err()
+            .ok_or("missing virtual document params must be rejected")?;
 
         assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
         assert_eq!(
             err.message,
             "workspace/textDocumentContent: missing required parameter 'params'"
         );
+        Ok(())
     }
 
     #[test]

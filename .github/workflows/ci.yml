@@ -547,6 +547,7 @@ jobs:
           timeout --signal=TERM --kill-after=30s 1200s \
             python3 scripts/ci/run_gate_shard.py \
               --xtask target/debug/xtask \
+              --gate-policy .ci/gate-policy.yaml \
               --receipt-dir target/receipts/shards \
               --summary "target/receipts/shard-summaries/${SHARD_NAME}.json" \
               --subject-sha "$subject_sha" \

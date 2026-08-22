@@ -7,6 +7,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -55,6 +56,12 @@ def write_policy(
         ),
         encoding="utf-8",
     )
+    return path
+
+
+def write_gate_policy(root: Path, rows: str) -> Path:
+    path = root / "gate-policy.yaml"
+    path.write_text(f"schema_version: 1\ngates:\n{rows}", encoding="utf-8")
     return path
 
 
@@ -252,6 +259,7 @@ def run_direct(
     contract = shard.load_receipt_contract(receipt_schema)
     runner = shard.ShardRunner(
         xtask=Path("target/debug/xtask"),
+        gate_policy=policy,
         receipt_dir=root / "receipts",
         summary_path=root / "summary.json",
         subject_sha=SUBJECT,
@@ -450,6 +458,7 @@ class GateShardTests(unittest.TestCase):
             contract = shard.load_receipt_contract(receipt_schema)
             runner = shard.ShardRunner(
                 xtask=Path("target/debug/xtask"),
+                gate_policy=policy,
                 receipt_dir=root / "receipts",
                 summary_path=root / "summary.json",
                 subject_sha=SUBJECT,
@@ -520,6 +529,830 @@ class GateShardTests(unittest.TestCase):
         self.assertEqual(8073, payload["owner_issue"])
         self.assertEqual(4787, payload["migration_owner_issue"])
 
+    def test_every_current_workflow_gate_preflights_against_exact_policy(self) -> None:
+        workflow = REPO_ROOT / ".github/workflows/ci.yml"
+        policy = REPO_ROOT / ".ci/gate-policy.yaml"
+        text = workflow.read_text(encoding="utf-8")
+        start = text.index("  merge-gate-shards:\n")
+        end = text.index("    permissions:\n", start)
+        selected: set[str] = set()
+        for line in text[start:end].splitlines():
+            stripped = line.strip()
+            if stripped.startswith("gates: "):
+                selected.update(stripped.removeprefix("gates: ").split())
+        commands = shard.load_gate_commands(policy, sorted(selected), root=REPO_ROOT)
+        self.assertEqual(selected, set(commands))
+        self.assertTrue(all(commands.values()))
+
+    def test_shard_command_propagates_exact_gate_policy_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = write_policy(root, {"alpha": []})
+            receipt_schema = write_receipt_schema(root)
+            runner = shard.ShardRunner(
+                xtask=Path("target/debug/xtask"),
+                gate_policy=policy,
+                receipt_dir=root / "receipts",
+                summary_path=root / "summary.json",
+                subject_sha=SUBJECT,
+                gates=["alpha"],
+                dependency_rules=shard.load_execution_policy(policy, ["alpha"]),
+                receipt_contract=shard.load_receipt_contract(receipt_schema),
+            )
+            command = runner._command("alpha")
+        self.assertEqual(str(policy), command[command.index("--gate-policy") + 1])
+
+    def test_current_tree_source_commit_api_gate_has_executable_policy_command(self) -> None:
+        policy = REPO_ROOT / ".ci/gate-policy.yaml"
+        commands = shard.load_gate_commands(
+            policy,
+            ["source_commit_api_check"],
+            root=REPO_ROOT,
+        )
+        self.assertEqual(
+            "python3 scripts/ci/check_source_commit_api.py",
+            commands["source_commit_api_check"],
+        )
+        self.assertTrue((REPO_ROOT / "scripts/ci/check_source_commit_api.py").is_file())
+        policy_text = policy.read_text(encoding="utf-8")
+        policy_row = re.search(
+            r"(?ms)^  - name: source_commit_api_check\n(?P<body>.*?)(?=^  - name:|\Z)",
+            policy_text,
+        )
+        self.assertIsNotNone(policy_row)
+        assert policy_row is not None
+        self.assertIn("    tier: pr_fast\n", policy_row.group("body"))
+        self.assertIn(
+            "    command: python3 scripts/ci/check_source_commit_api.py\n",
+            policy_row.group("body"),
+        )
+        execution = json.loads(
+            (REPO_ROOT / ".ci/gate-shard-execution.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            {"requires": [], "on_dependency_failure": "blocked_not_proven"},
+            execution["gates"]["source_commit_api_check"],
+        )
+        workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        start = workflow.index("  merge-gate-shards:\n")
+        end = workflow.index("    permissions:\n", start)
+        lane: str | None = None
+        lanes: dict[str, set[str]] = {}
+        for line in workflow[start:end].splitlines():
+            stripped = line.strip()
+            if stripped.startswith("- name: "):
+                lane = stripped.removeprefix("- name: ")
+            elif lane is not None and stripped.startswith("gates: "):
+                lanes[lane] = set(stripped.removeprefix("gates: ").split())
+        self.assertEqual(
+            ["meta"],
+            [name for name, gates in lanes.items() if "source_commit_api_check" in gates],
+        )
+        run_start = workflow.index("      - name: Run merge-gate shard with receipts")
+        run_end = workflow.index("      - name:", run_start + 1)
+        runner_step = workflow[run_start:run_end]
+        invocation_start = runner_step.index("python3 scripts/ci/run_gate_shard.py")
+        invocation_end = runner_step.index("          status=$?", invocation_start)
+        runner_invocation = runner_step[invocation_start:invocation_end]
+        self.assertIn("--gate-policy .ci/gate-policy.yaml", runner_invocation)
+
+    def test_multiline_commands_match_actual_yaml_loader(self) -> None:
+        yaml_spec = importlib.util.find_spec("yaml")
+        if yaml_spec is None:
+            self.skipTest("PyYAML is unavailable for the parser recurrence oracle")
+        import yaml
+
+        policy = REPO_ROOT / ".ci/gate-policy.yaml"
+        document = yaml.safe_load(policy.read_text(encoding="utf-8"))
+        expected = {
+            row["name"]: row["command"]
+            for row in document["gates"]
+            if row["name"] in {"nested_lock_check", "determinism_check"}
+        }
+        actual = shard._read_gate_command_specs(policy)
+        self.assertEqual(expected, {name: actual[name] for name in expected})
+
+    def test_fallback_parser_matches_multiline_commands_and_rejects_yaml_extensions(self) -> None:
+        yaml_spec = importlib.util.find_spec("yaml")
+        if yaml_spec is None:
+            self.skipTest("PyYAML is unavailable for the fallback parity oracle")
+        import yaml
+
+        policy = REPO_ROOT / ".ci/gate-policy.yaml"
+        document = yaml.safe_load(policy.read_text(encoding="utf-8"))
+        expected = {
+            row["name"]: row["command"]
+            for row in document["gates"]
+            if row["name"] in {"nested_lock_check", "determinism_check"}
+        }
+        with mock.patch.object(shard, "yaml", None):
+            fallback = shard._read_gate_command_specs(policy)
+            self.assertEqual(expected, {name: fallback[name] for name in expected})
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                comment_policy = write_gate_policy(
+                    root,
+                    "  - name: comment\n    command: echo # inline comment\n",
+                )
+                self.assertEqual(
+                    "echo",
+                    shard._read_gate_command_specs(comment_policy)["comment"],
+                )
+                for scalar in ("!!str echo", "&command echo"):
+                    tagged_policy = write_gate_policy(
+                        root,
+                        "  - name: tagged\n    command: " + scalar + "\n",
+                    )
+                    with self.subTest(scalar=scalar), self.assertRaisesRegex(
+                        ValueError, "YAML string"
+                    ):
+                        shard._read_gate_command_specs(tagged_policy)
+                adjacent_policy = write_gate_policy(
+                    root,
+                    "  - name: adjacent\n    command: 'echo' 'outside'\n",
+                )
+                with mock.patch.object(shard, "yaml", None), self.assertRaisesRegex(
+                    ValueError, "adjacent quoted"
+                ):
+                    shard._read_gate_command_specs(adjacent_policy)
+
+    def test_fallback_parser_rejects_adjacent_double_quoted_scalars_without_pyyaml(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = write_gate_policy(
+                root,
+                '  - name: adjacent_double\n    command: "echo" "outside"\n',
+            )
+            with mock.patch.object(shard, "yaml", None), self.assertRaisesRegex(
+                ValueError, "adjacent quoted"
+            ):
+                shard._read_gate_command_specs(policy)
+
+    def test_gate_policy_preflight_rejects_qualified_unsafe_command_basenames(self) -> None:
+        commands = ("./source", "./eval", "./exec", "./cd", "./alias")
+        for command in commands:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "scripts/ci").mkdir(parents=True)
+                (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+                policy = write_gate_policy(
+                    root,
+                    "  - name: source_commit_api_check\n"
+                    f"    command: {command} scripts/ci/check.py\n",
+                )
+                with self.assertRaisesRegex(ValueError, "unsupported shell command"):
+                    shard.load_gate_commands(
+                        policy,
+                        ["source_commit_api_check"],
+                        root=root,
+                    )
+
+    def test_repository_root_derivation_matches_xtask_from_subdirectory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".ci").mkdir()
+            (root / ".ci/gate-policy.yaml").write_text(
+                "schema_version: 1\ngates:\n", encoding="utf-8"
+            )
+            (root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+            (root / "target/debug").mkdir(parents=True)
+            nested = root / "scripts/ci"
+            nested.mkdir(parents=True)
+            derived = shard._repository_root_for_execution(
+                Path("target/debug/xtask"),
+                Path(".ci/gate-policy.yaml"),
+                cwd=nested,
+            )
+        self.assertEqual(root.resolve(), derived)
+        self.assertEqual(
+            root / "target/debug/xtask",
+            shard._path_from_repository_root(Path("target/debug/xtask"), root),
+        )
+        self.assertEqual(
+            root / "receipts",
+            shard._path_from_repository_root(Path("receipts"), root),
+        )
+
+    def test_main_rebases_relative_launch_paths_from_subdirectory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".ci").mkdir()
+            (root / ".ci/gate-policy.yaml").write_text(
+                "schema_version: 1\ngates:\n"
+                "  - name: alpha\n"
+                "    command: echo alpha\n",
+                encoding="utf-8",
+            )
+            (root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+            execution_policy = write_policy(root, {"alpha": []})
+            receipt_schema = write_receipt_schema(root)
+            nested = root / "scripts/ci"
+            nested.mkdir(parents=True)
+            runner_type = mock.Mock()
+            runner_type.return_value.run.return_value = 0
+            with (
+                mock.patch.object(shard.Path, "cwd", return_value=nested),
+                mock.patch.object(shard, "ShardRunner", runner_type),
+                mock.patch.object(shard.signal, "signal"),
+            ):
+                status = shard.main(
+                    [
+                        "--xtask",
+                        "target/debug/xtask",
+                        "--receipt-dir",
+                        "receipts",
+                        "--summary",
+                        "summary.json",
+                        "--execution-policy",
+                        str(execution_policy.relative_to(root)),
+                        "--receipt-schema",
+                        str(receipt_schema.relative_to(root)),
+                        "--gate-policy",
+                        ".ci/gate-policy.yaml",
+                        "alpha",
+                    ]
+                )
+            self.assertEqual(0, status)
+            kwargs = runner_type.call_args.kwargs
+        self.assertEqual(root / "target/debug/xtask", kwargs["xtask"])
+        self.assertEqual(root / "receipts", kwargs["receipt_dir"])
+        self.assertEqual(root / "summary.json", kwargs["summary_path"])
+        self.assertEqual(root / ".ci/gate-policy.yaml", kwargs["gate_policy"])
+
+    def test_gate_policy_preflight_rejects_missing_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            policy = write_gate_policy(
+                Path(tmp),
+                "  - name: other\n    command: echo\n",
+            )
+            with self.assertRaisesRegex(ValueError, "no gate-policy row"):
+                shard.load_gate_commands(policy, ["source_commit_api_check"], root=Path(tmp))
+
+    def test_gate_policy_preflight_rejects_missing_command(self) -> None:
+        for rows, message in (
+            ("  - name: source_commit_api_check\n", "no executable command"),
+            ("  - name: source_commit_api_check\n    command:\n", "YAML string"),
+        ):
+            with self.subTest(rows=rows), tempfile.TemporaryDirectory() as tmp:
+                policy = write_gate_policy(Path(tmp), rows)
+                with self.assertRaisesRegex(ValueError, message):
+                    shard.load_gate_commands(
+                        policy,
+                        ["source_commit_api_check"],
+                        root=Path(tmp),
+                    )
+
+    def test_gate_policy_preflight_rejects_non_string_command_types(self) -> None:
+        for scalar in (
+            "true",
+            "null",
+            "42",
+            "0x10",
+            "0x10_00",
+            "1_000",
+            ".inf",
+            "2026-08-21",
+            "2026-08-21T12:34:56Z",
+            "2026-08-21 12:34:56+00:00",
+            "1:20",
+            "1:20:30",
+            "&command_anchor python3 scripts/check.py",
+            "*command_anchor",
+            "true # inline comment",
+            "0x10 # inline comment",
+            "[]",
+            "{}",
+        ):
+            with self.subTest(scalar=scalar), tempfile.TemporaryDirectory() as tmp:
+                policy = write_gate_policy(
+                    Path(tmp),
+                    "  - name: source_commit_api_check\n"
+                    f"    command: {scalar}\n",
+                )
+                with self.assertRaisesRegex(ValueError, "YAML string"):
+                    shard.load_gate_commands(
+                        policy,
+                        ["source_commit_api_check"],
+                        root=Path(tmp),
+                    )
+
+    def test_gate_policy_preflight_rejects_yaml_block_scalar_indicators(self) -> None:
+        for indicator in ("|2", ">-2", ">+4"):
+            with self.subTest(indicator=indicator), tempfile.TemporaryDirectory() as tmp:
+                policy = write_gate_policy(
+                    Path(tmp),
+                    "  - name: source_commit_api_check\n"
+                    f"    command: {indicator}\n",
+                )
+                with self.assertRaisesRegex(ValueError, "YAML block scalar"):
+                    shard.load_gate_commands(
+                        policy,
+                        ["source_commit_api_check"],
+                        root=Path(tmp),
+                    )
+
+    def test_gate_policy_preflight_rejects_missing_referenced_command_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            policy = write_gate_policy(
+                Path(tmp),
+                "  - name: source_commit_api_check\n"
+                "    command: python3 scripts/ci/missing.py\n",
+            )
+            with self.assertRaisesRegex(ValueError, "missing command path"):
+                shard.load_gate_commands(
+                    policy,
+                    ["source_commit_api_check"],
+                    root=Path(tmp),
+                )
+
+    def test_gate_policy_preflight_rejects_missing_path_after_interpreter_option(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            policy = write_gate_policy(
+                Path(tmp),
+                "  - name: source_commit_api_check\n"
+                "    command: python3 -u scripts/ci/missing.py\n",
+            )
+            with self.assertRaisesRegex(ValueError, "missing command path"):
+                shard.load_gate_commands(
+                    policy,
+                    ["source_commit_api_check"],
+                    root=Path(tmp),
+                )
+
+    def test_gate_policy_preflight_rejects_missing_explicit_input_path(self) -> None:
+        for command, message in (
+            ("cargo run --manifest .ci/missing-manifest.txt", "missing command path"),
+            ("cargo run --manifest", "missing its value"),
+        ):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                policy = write_gate_policy(
+                    Path(tmp),
+                    "  - name: source_commit_api_check\n"
+                    f"    command: {command}\n",
+                )
+                with self.assertRaisesRegex(ValueError, message):
+                    shard.load_gate_commands(
+                        policy,
+                        ["source_commit_api_check"],
+                        root=Path(tmp),
+                    )
+
+    def test_gate_policy_preflight_confines_output_option_paths(self) -> None:
+        flags = (
+            "--artifact-dir",
+            "--json-out",
+            "--log-path",
+            "--output",
+            "--receipt-dir",
+            "--receipt-path",
+            "--report",
+            "--summary",
+            "--output-path",
+        )
+        for flag in flags:
+            for form in ("separate", "equals"):
+                with self.subTest(flag=flag, form=form), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "scripts/ci").mkdir(parents=True)
+                    (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+                    value = "../outside.log"
+                    option = f"{flag} {value}" if form == "separate" else f"{flag}={value}"
+                    policy = write_gate_policy(
+                        root,
+                        "  - name: output_path\n"
+                        f"    command: python3 scripts/ci/check.py {option}\n",
+                    )
+                    with self.assertRaisesRegex(ValueError, "checked-out tree"):
+                        shard.load_gate_commands(policy, ["output_path"], root=root)
+
+    def test_gate_policy_preflight_confines_optional_receipt_paths(self) -> None:
+        for command in (
+            "python3 scripts/ci/check.py --receipt ../outside.json",
+            "python3 scripts/ci/check.py --receipt=../outside.json",
+        ):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "scripts/ci").mkdir(parents=True)
+                (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+                policy = write_gate_policy(
+                    root,
+                    "  - name: receipt_path\n"
+                    f"    command: {command}\n",
+                )
+                with self.assertRaisesRegex(ValueError, "checked-out tree"):
+                    shard.load_gate_commands(policy, ["receipt_path"], root=root)
+
+    def test_gate_policy_preflight_rejects_windows_nested_cmd_wrappers(self) -> None:
+        for command in (
+            "cmd /C python3 ../outside.py",
+            "cmd.exe /C python3 ../outside.py",
+            "cmd.exe /c scripts/ci/missing.py",
+        ):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                policy = write_gate_policy(
+                    Path(tmp),
+                    "  - name: source_commit_api_check\n"
+                    f"    command: {command}\n",
+                )
+                with self.assertRaisesRegex(ValueError, "nested-shell wrapper"):
+                    shard.load_gate_commands(
+                        policy,
+                        ["source_commit_api_check"],
+                        root=Path(tmp),
+                    )
+
+    def test_gate_policy_preflight_rejects_extensionless_and_incomplete_paths(self) -> None:
+        for command, message in (
+            ("python3 missing_script", "missing command path"),
+            ("python3", "missing its script path"),
+            ("python3 -W", "missing its value"),
+            ("cargo --output", "missing its value"),
+            ("cargo --receipt-path", "missing its value"),
+            ("cargo --output --manifest", "missing its value"),
+        ):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                policy = write_gate_policy(
+                    Path(tmp),
+                    "  - name: source_commit_api_check\n"
+                    f"    command: {command}\n",
+                )
+                with self.assertRaisesRegex(ValueError, message):
+                    shard.load_gate_commands(
+                        policy,
+                        ["source_commit_api_check"],
+                        root=Path(tmp),
+                    )
+
+    def test_gate_policy_preflight_supports_shell_wrappers_and_comments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "scripts/ci").mkdir(parents=True)
+            (root / "scripts/ci/first.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            (root / "scripts/ci/second.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            policy = write_gate_policy(
+                root,
+                "  - name: first\n"
+                "    command: bash -u scripts/ci/first.sh # inline comment\n"
+                "# A top-level YAML comment must not end the gates sequence.\n"
+                "  - name: second\n"
+                "    command: sh ./scripts/ci/second.sh\n",
+            )
+            commands = shard.load_gate_commands(policy, ["first", "second"], root=root)
+            self.assertEqual(
+                "bash -u scripts/ci/first.sh",
+                commands["first"],
+            )
+            self.assertEqual("sh ./scripts/ci/second.sh", commands["second"])
+
+    def test_gate_policy_preflight_decodes_yaml_single_quote_escaping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = write_gate_policy(
+                root,
+                "  - name: quoted\n"
+                "    command: 'echo ''ok'''\n",
+            )
+            commands = shard.load_gate_commands(policy, ["quoted"], root=root)
+            self.assertEqual("echo 'ok'", commands["quoted"])
+
+    def test_gate_policy_preflight_rejects_path_outside_checked_out_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            root = parent / "repo"
+            root.mkdir()
+            (parent / "outside.py").write_text("# outside\n", encoding="utf-8")
+            policy = write_gate_policy(
+                root,
+                "  - name: source_commit_api_check\n"
+                "    command: python3 ../outside.py\n",
+            )
+            with self.assertRaisesRegex(ValueError, "outside checked-out tree"):
+                shard.load_gate_commands(
+                    policy,
+                    ["source_commit_api_check"],
+                    root=root,
+                )
+
+    def test_gate_policy_preflight_rejects_unresolvable_shell_expansion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            policy = write_gate_policy(
+                Path(tmp),
+                "  - name: source_commit_api_check\n"
+                "    command: python3 $SCRIPT\n",
+            )
+            with self.assertRaisesRegex(ValueError, "shell expansion"):
+                shard.load_gate_commands(
+                    policy,
+                    ["source_commit_api_check"],
+                    root=Path(tmp),
+                )
+
+    def test_gate_policy_preflight_rejects_ambiguous_hash_and_windows_expansion(self) -> None:
+        commands = (
+            "python3 scripts/ci/check.py#comment; echo outside",
+            "python3 scripts/ci/check.py;#comment; echo outside",
+            "python3 %SCRIPT%",
+            "%ComSpec% /C python3 ../outside.py",
+        )
+        for command in commands:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "scripts/ci").mkdir(parents=True)
+                (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+                policy = write_gate_policy(
+                    root,
+                    "  - name: source_commit_api_check\n"
+                    f"    command: {command}\n",
+                )
+                with self.assertRaises(ValueError):
+                    shard.load_gate_commands(
+                        policy,
+                        ["source_commit_api_check"],
+                        root=root,
+                    )
+
+    def test_gate_policy_preflight_only_allows_structured_determinism_log(self) -> None:
+        for command in (
+            "python3 scripts/ci/check.py --output run_${i}.log",
+            "echo run_${i}.log",
+        ):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "scripts/ci").mkdir(parents=True)
+                (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+                policy = write_gate_policy(
+                    root,
+                    "  - name: dynamic_output\n"
+                    f"    command: {command}\n",
+                )
+                with self.assertRaisesRegex(ValueError, "expansion"):
+                    shard.load_gate_commands(policy, ["dynamic_output"], root=root)
+
+    def test_gate_policy_preflight_rejects_dynamic_separators_and_constructs(self) -> None:
+        commands = (
+            ("${GATE_SCRIPT}", "shell brace expansion"),
+            ("echo ; ${GATE_SCRIPT}", "shell brace expansion"),
+            ("echo; ${GATE_SCRIPT}", "shell brace expansion"),
+            (
+                "python3 scripts/ci/check.py ; ${GATE_SCRIPT}",
+                "shell brace expansion",
+            ),
+            ("echo &&", "shell separator"),
+            ("echo ||", "shell separator"),
+            ("echo |", "shell separator"),
+            (
+                "while true; do python3 scripts/ci/check.py; done",
+                "unsupported shell construct",
+            ),
+            (
+                "python3 scripts/ci/check.py [[ -f scripts/ci/check.py ]]",
+                "unsupported shell construct",
+            ),
+        )
+        for command, message in commands:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "scripts/ci").mkdir(parents=True)
+                (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+                policy = write_gate_policy(
+                    root,
+                    "  - name: source_commit_api_check\n"
+                    f"    command: {command}\n",
+                )
+                with self.assertRaisesRegex(ValueError, message):
+                    shard.load_gate_commands(
+                        policy,
+                        ["source_commit_api_check"],
+                        root=root,
+                    )
+
+    def test_gate_policy_preflight_rejects_assignments_grouping_globs_and_windows_paths(self) -> None:
+        commands = (
+            "FOO=bar python3 scripts/ci/check.py",
+            "if FOO=bar; then python3 scripts/ci/check.py; fi",
+            "then FOO=bar python3 scripts/ci/check.py",
+            "for FOO=bar in one; do python3 scripts/ci/check.py; done",
+            "else FOO=bar python3 scripts/ci/check.py",
+            "echo ( python3 scripts/ci/check.py )",
+            "python3 scripts/ci/check.py {one,two}",
+            "python3 scripts/ci/check.py *.py",
+            "python3 scripts/ci/check.py [abc]",
+            "python3 scripts\\ci\\check.py",
+            "python3 C:\\outside.py",
+            "python3 scripts/ci/check.py --output-path ..\\outside.log",
+            "!!str python3 scripts/ci/check.py",
+        )
+        for command in commands:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "scripts/ci").mkdir(parents=True)
+                (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+                policy = write_gate_policy(
+                    root,
+                    "  - name: unsafe\n"
+                    f"    command: {command}\n",
+                )
+                with self.assertRaises(ValueError):
+                    shard.load_gate_commands(policy, ["unsafe"], root=root)
+
+    def test_gate_policy_preflight_rejects_command_wrapper_operands_with_existing_fixture(
+        self,
+    ) -> None:
+        for command in (
+            "command scripts/ci/check.py",
+            "command python3 scripts/ci/check.py",
+        ):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "scripts/ci").mkdir(parents=True)
+                (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+                policy = write_gate_policy(
+                    root,
+                    "  - name: wrapper\n"
+                    f"    command: {command}\n",
+                )
+                with self.assertRaisesRegex(ValueError, "nested-shell wrapper"):
+                    shard.load_gate_commands(policy, ["wrapper"], root=root)
+
+    def test_gate_policy_preflight_rejects_exe_wrapper_aliases_with_existing_fixture(
+        self,
+    ) -> None:
+        for command in (
+            "command.exe scripts/ci/check.py",
+            "env.exe -- scripts/ci/check.py",
+            "timeout.exe 1 python3 scripts/ci/check.py",
+            "xargs.exe python3 scripts/ci/check.py",
+        ):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "scripts/ci").mkdir(parents=True)
+                (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+                policy = write_gate_policy(
+                    root,
+                    "  - name: wrapper\n"
+                    f"    command: {command}\n",
+                )
+                with self.assertRaisesRegex(ValueError, "nested-shell wrapper"):
+                    shard.load_gate_commands(policy, ["wrapper"], root=root)
+
+    def test_gate_policy_preflight_rejects_missing_input_redirect_targets(self) -> None:
+        for command, message in (
+            ("python3 scripts/ci/check.py < scripts/ci/missing.txt", "missing input path"),
+            ("python3 scripts/ci/check.py <../outside.txt", "checked-out tree"),
+            ("python3 scripts/ci/check.py <", "missing its target"),
+            ("python3 scripts/ci/check.py <~/outside.txt", "tilde expansion"),
+            ("python3 scripts/ci/check.py >~/outside.log", "tilde expansion"),
+        ):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                parent = Path(tmp)
+                root = parent / "repo"
+                root.mkdir()
+                (root / "scripts/ci").mkdir(parents=True)
+                (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+                (parent / "outside.txt").write_text("outside\n", encoding="utf-8")
+                policy = write_gate_policy(
+                    root,
+                    "  - name: source_commit_api_check\n"
+                    f"    command: {command}\n",
+                )
+                with self.assertRaisesRegex(ValueError, message):
+                    shard.load_gate_commands(
+                        policy,
+                        ["source_commit_api_check"],
+                        root=root,
+                    )
+
+    def test_gate_policy_preflight_tracks_env_assignment_wrappers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "scripts/ci").mkdir(parents=True)
+            (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+            policy = write_gate_policy(
+                root,
+                "  - name: normal\n"
+                "    command: env NAME=foo.py python3 scripts/ci/check.py\n"
+                "  - name: after_options\n"
+                "    command: env -- NAME=foo.py python3 scripts/ci/check.py\n",
+            )
+            commands = shard.load_gate_commands(
+                policy,
+                ["normal", "after_options"],
+                root=root,
+            )
+            self.assertEqual(
+                "env NAME=foo.py python3 scripts/ci/check.py",
+                commands["normal"],
+            )
+            self.assertEqual(
+                "env -- NAME=foo.py python3 scripts/ci/check.py",
+                commands["after_options"],
+            )
+
+    def test_gate_policy_preflight_rejects_nested_shell_and_unsafe_wrappers(self) -> None:
+        commands = (
+            ("bash -c 'python3 scripts/ci/check.py'", "nested interpreter command"),
+            ("env -S 'python3 scripts/ci/check.py'", "env -S"),
+            ("env NAME=foo.py python3 ../outside.py", "outside checked-out tree"),
+            ("python3 -uscripts/ci/check.py", "attached interpreter option"),
+            ("python3 scripts/ci/check.py > ../outside.log", "checked-out tree"),
+            ("python3 scripts/ci/check.py >../outside.log", "checked-out tree"),
+            ("python3 scripts/ci/check.py >>../outside.log", "checked-out tree"),
+            ("python3 scripts/ci/check.py &> ../outside.log", "Bash redirection"),
+            ("python3 scripts/ci/check.py &>> ../outside.log", "Bash redirection"),
+            ("python3 scripts/ci/check.py >| ../outside.log", "Bash redirection"),
+            ("python3 scripts/ci/check.py `pwd`", "backtick substitution"),
+            ("python3 -m missing_module", "nested interpreter command"),
+            ("cd scripts/ci && python3 scripts/ci/check.py", "unsupported shell command"),
+            ("alias py=python3; py scripts/ci/check.py", "unsupported shell command"),
+            ("pwsh -Command 'python3 scripts/ci/check.py'", "nested interpreter command"),
+            ("pwsh -File ../outside.ps1", "checked-out tree"),
+            ("powershell.exe -Command 'python3 scripts/ci/check.py'", "nested interpreter command"),
+            ("powershell.exe -File ../outside.ps1", "checked-out tree"),
+            ("call python3 scripts/ci/check.py", "nested-shell wrapper"),
+            ("start python3 scripts/ci/check.py", "nested-shell wrapper"),
+            ('"%ComSpec% /C python3 scripts/ci/check.py"', "dynamic shell expansion"),
+            ("python3 scripts/ci/check.py ;; echo ok", "malformed shell punctuation"),
+            ("python3 scripts/ci/check.py ;& echo ok", "malformed shell punctuation"),
+            ("python3 scripts/ci/check.py ;;& echo ok", "malformed shell punctuation"),
+            ("python3 scripts/ci/check.py &&& echo ok", "malformed shell punctuation"),
+            ("python3 scripts/ci/check.py ||| echo ok", "malformed shell punctuation"),
+            ("python3 scripts/ci/check.py ;;;; echo ok", "malformed shell punctuation"),
+            ("python3 scripts/ci/check.py &&&& echo ok", "malformed shell punctuation"),
+            ("python3 scripts/ci/check.py |||| echo ok", "malformed shell punctuation"),
+            ("python3 scripts/ci/check.py |& echo ok", "malformed shell punctuation"),
+            ("python3 scripts/ci/check.py <>", "malformed shell punctuation"),
+            ("xargs bash -c 'python3 scripts/ci/check.py'", "nested-shell wrapper"),
+            ("nice python3 scripts/ci/check.py", "nested-shell wrapper"),
+            ("nohup python3 scripts/ci/check.py", "nested-shell wrapper"),
+            ("setsid python3 scripts/ci/check.py", "nested-shell wrapper"),
+            ("parallel python3 scripts/ci/check.py", "nested-shell wrapper"),
+            ("busybox sh scripts/ci/check.py", "nested-shell wrapper"),
+            ("sudo python3 scripts/ci/check.py", "nested-shell wrapper"),
+            ("chroot ../outside python3 scripts/ci/check.py", "nested-shell wrapper"),
+            ("taskset -c 0 python3 scripts/ci/check.py", "nested-shell wrapper"),
+            ("stdbuf -oL python3 scripts/ci/check.py", "nested-shell wrapper"),
+            ("time python3 scripts/ci/check.py", "nested-shell wrapper"),
+            (
+                "find . -exec bash -c 'python3 scripts/ci/check.py' {} +",
+                "find -exec",
+            ),
+            ("command bash -c 'python3 scripts/ci/check.py'", "nested-shell wrapper"),
+            ("timeout 10s bash -c 'python3 scripts/ci/check.py'", "nested-shell wrapper"),
+        )
+        for command, message in commands:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "scripts/ci").mkdir(parents=True)
+                (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+                policy = write_gate_policy(
+                    root,
+                    "  - name: source_commit_api_check\n"
+                    f"    command: {command}\n",
+                )
+                with self.assertRaisesRegex(ValueError, message):
+                    shard.load_gate_commands(
+                        policy,
+                        ["source_commit_api_check"],
+                        root=root,
+                    )
+
+    def test_gate_policy_header_allows_trailing_whitespace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "scripts").mkdir()
+            (root / "scripts/check.py").write_text("# check\n", encoding="utf-8")
+            policy = root / "gate-policy.yaml"
+            policy.write_text(
+                "schema_version: 1\n"
+                "gates:   \n"
+                "  - name: source_commit_api_check\n"
+                "    command: python3 scripts/check.py\n",
+                encoding="utf-8",
+            )
+            commands = shard.load_gate_commands(
+                policy,
+                ["source_commit_api_check"],
+                root=root,
+            )
+            self.assertEqual("python3 scripts/check.py", commands["source_commit_api_check"])
+
+    def test_gate_policy_block_scalar_header_comment_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "scripts").mkdir()
+            (root / "scripts/check.py").write_text("# check\n", encoding="utf-8")
+            policy = root / "gate-policy.yaml"
+            policy.write_text(
+                "schema_version: 1\n"
+                "gates:\n"
+                "  - name: source_commit_api_check\n"
+                "    command: >- # header comment\n"
+                "      python3 scripts/check.py\n",
+                encoding="utf-8",
+            )
+            commands = shard.load_gate_commands(policy, ["source_commit_api_check"], root=root)
+            self.assertEqual("python3 scripts/check.py", commands["source_commit_api_check"])
+
     def test_canonical_receipt_schema_is_loadable(self) -> None:
         contract = shard.load_receipt_contract(
             REPO_ROOT / ".ci/receipt.schema.json"
@@ -580,6 +1413,13 @@ class GateShardTests(unittest.TestCase):
             marker = root / "slow.pid"
             xtask = fake_sleeping_xtask(root, marker)
             policy = write_policy(root, {"slow": [], "later": []})
+            gate_policy = write_gate_policy(
+                root,
+                "  - name: slow\n"
+                "    command: echo slow\n"
+                "  - name: later\n"
+                "    command: echo later\n",
+            )
             receipt_schema = write_receipt_schema(root)
             process = subprocess.Popen(
                 [
@@ -593,6 +1433,8 @@ class GateShardTests(unittest.TestCase):
                     str(root / "summary.json"),
                     "--execution-policy",
                     str(policy),
+                    "--gate-policy",
+                    str(gate_policy),
                     "--receipt-schema",
                     str(receipt_schema),
                     "--subject-sha",
@@ -600,6 +1442,7 @@ class GateShardTests(unittest.TestCase):
                     "slow",
                     "later",
                 ],
+                cwd=root,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )

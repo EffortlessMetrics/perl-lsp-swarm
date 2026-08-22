@@ -11,6 +11,13 @@ const CARMEL_INCLUDE_PATH: &str = "vendor/lib/perl5";
 /// `cpanfile.snapshot`. Carmel is identified by `cpanfile` plus an existing
 /// `vendor/lib/perl5` directory. The returned paths are workspace-relative
 /// and ordered with Carton before Carmel when both markers are present.
+///
+/// These are runtime-derived roots (#4998): their safety class is "bounded,
+/// hard-coded, workspace-relative literals" and must stay that way. They are
+/// appended to the effective include-path projection only after
+/// resource-scope validation conventions; a future metadata-derived absolute
+/// root must enter through an explicitly classified source instead
+/// (configuration observation train, #10817).
 #[must_use]
 pub fn detect_dependency_include_paths(workspace_root: &Path) -> Vec<String> {
     let has_cpanfile = workspace_root.join("cpanfile").is_file();
@@ -94,6 +101,34 @@ mod tests {
 
         std::fs::create_dir_all(workspace.path().join("vendor/lib/perl5"))?;
         assert_eq!(detect_dependency_include_paths(workspace.path()), vec!["vendor/lib/perl5"]);
+        Ok(())
+    }
+
+    /// Recurrence gate (#4998): runtime-derived dependency roots must stay
+    /// relative workspace-contained literals. If a future change makes this
+    /// detector return absolute or traversal-capable paths from project
+    /// metadata, they would inherit resource-scope validation by convention;
+    /// that writer must instead be explicitly classified first.
+    #[test]
+    fn detected_roots_stay_relative_and_workspace_contained()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workspace = tempfile::tempdir()?;
+        std::fs::write(workspace.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::write(workspace.path().join("carton.lock"), "snapshot\n")?;
+        std::fs::create_dir_all(workspace.path().join("vendor/lib/perl5"))?;
+
+        for path in detect_dependency_include_paths(workspace.path()) {
+            let candidate = std::path::Path::new(&path);
+            assert!(!candidate.is_absolute(), "runtime-derived root must not be absolute: {path}");
+            assert!(
+                !candidate.components().any(|c| c == std::path::Component::ParentDir),
+                "runtime-derived root must not traverse: {path}"
+            );
+            assert!(
+                workspace.path().join(&path).starts_with(workspace.path()),
+                "runtime-derived root must stay inside the workspace: {path}"
+            );
+        }
         Ok(())
     }
 }

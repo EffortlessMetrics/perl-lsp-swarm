@@ -6,7 +6,6 @@ callHierarchyProvider: true
 codeActionProvider:
   codeActionKinds:
     - quickfix
-    - source.organizeImports
     - refactor
     - refactor.extract
     - refactor.rewrite
