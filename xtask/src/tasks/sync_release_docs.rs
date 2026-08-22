@@ -203,6 +203,10 @@ fn sync_readme(content: &str, surface: &ReleaseSurface) -> Result<String> {
                 "| Published crate surface | {} crates in `[workspace.metadata.publish.allow]` |",
                 surface.published_crate_count
             ));
+        } else if let Some(updated) =
+            sync_readme_published_surface_prose(line, surface.published_crate_count)
+        {
+            lines.push(updated);
         } else if line.starts_with("The verified GitHub `v") {
             lines.push(format!(
                 "The verified GitHub `v{}` release assets are public beta. Other distribution",
@@ -222,6 +226,19 @@ fn sync_readme(content: &str, surface: &ReleaseSurface) -> Result<String> {
         bail!("README.md: release posture line not found");
     }
     Ok(restore_trailing_newline(content, &lines))
+}
+
+fn sync_readme_published_surface_prose(line: &str, published_crate_count: usize) -> Option<String> {
+    let marker = "The published surface is ";
+    let marker_start = line.find(marker)?;
+    let count_start = marker_start + marker.len();
+    let remainder = &line[count_start..];
+    let (count, suffix) = remainder.split_once(" crates")?;
+    if count.is_empty() || !count.chars().all(|character| character.is_ascii_digit()) {
+        return None;
+    }
+
+    Some(format!("{}{}{} crates{}", &line[..marker_start], marker, published_crate_count, suffix))
 }
 
 fn sync_current_status(content: &str, surface: &ReleaseSurface) -> Result<String> {
@@ -883,6 +900,30 @@ channels remain independently versioned and must be verified before editor use.\
         if synced.contains("| Published crate surface |") {
             bail!("README sync must not reinsert the removed crate-count row");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_readme_refreshes_published_surface_prose() -> Result<()> {
+        let input = "The published surface is 33 crates, listed in `[workspace.metadata.publish.allow]` in [`Cargo.toml`](Cargo.toml).\n\
+The verified GitHub `v0.16.0` release assets are public alpha. Other distribution\n\
+channels remain independently versioned and must be verified before editor use.\n";
+        let expected = "The published surface is 32 crates, listed in `[workspace.metadata.publish.allow]` in [`Cargo.toml`](Cargo.toml).\n\
+The verified GitHub `v0.17.0` release assets are public beta. Other distribution\n\
+channels remain independently versioned and must be verified before editor use.\n";
+
+        assert_eq!(sync_readme(input, &release_surface())?, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn sync_readme_published_surface_prose_is_idempotent() -> Result<()> {
+        let input = "The published surface is 33 crates, listed in `[workspace.metadata.publish.allow]` in [`Cargo.toml`](Cargo.toml).\n\
+The verified GitHub `v0.16.0` release assets are public alpha. Other distribution\n\
+channels remain independently versioned and must be verified before editor use.\n";
+
+        let first = sync_readme(input, &release_surface())?;
+        assert_eq!(sync_readme(&first, &release_surface())?, first);
         Ok(())
     }
 

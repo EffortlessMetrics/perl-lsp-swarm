@@ -141,7 +141,7 @@ Do not install `perl-lsp` from crates.io; that is a different project.
 
 ## Crate surface
 
-The current architecture collapsed the old microcrate graph into a smaller published surface. Most implementation detail now lives in modules behind focused public crates. The published surface is 33 crates, listed in `[workspace.metadata.publish.allow]` in [`Cargo.toml`](Cargo.toml).
+The current architecture collapsed the old microcrate graph into a smaller published surface. Most implementation detail now lives in modules behind focused public crates. The published surface is 34 crates, listed in `[workspace.metadata.publish.allow]` in [`Cargo.toml`](Cargo.toml).
 
 | Need | Crate |
 |---|---|
