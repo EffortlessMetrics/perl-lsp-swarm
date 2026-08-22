@@ -1731,6 +1731,44 @@ mod tests {
         Ok(())
     }
 
+    /// Caller-side half of admission truthfulness (#8064): every degraded
+    /// disposition must surface as `false` from `schedule_file_watcher_uri`
+    /// so the didChangeWatchedFiles handler takes the immediate-processing
+    /// seam (workspace.rs) instead of losing events behind apparent queueing.
+    #[test]
+    fn schedule_file_watcher_uri_falls_back_on_degraded_admissions() {
+        use file_watcher_debounce::FileWatcherDebouncer;
+
+        // Unavailable: worker spawn failure.
+        let server = LspServer::new();
+        server.install_file_watcher_debouncer(FileWatcherDebouncer::unavailable_for_test());
+        assert!(!server.schedule_file_watcher_uri("file:///degraded/unavailable.pl"));
+        assert_eq!(
+            server.runtime_pressure_snapshot().file_watcher_pending_uris,
+            0,
+            "rejected admission must not absorb the event into pending state"
+        );
+
+        // Overflowed: saturated pending set refuses new subjects.
+        let server = LspServer::new();
+        server.install_file_watcher_debouncer(FileWatcherDebouncer::saturated_for_test(|_| {}));
+        assert!(
+            server.schedule_file_watcher_uri("file:///degraded/cap0.pl"),
+            "first subject fits the tiny cap"
+        );
+        assert!(!server.schedule_file_watcher_uri("file:///degraded/overflow.pl"));
+
+        // ShuttingDown: after teardown, late events are refused.
+        {
+            let guard = server.file_watcher_debouncer.lock();
+            assert!(guard.is_some(), "debouncer installed");
+            if let Some(debouncer) = guard.as_ref() {
+                debouncer.shutdown_now();
+            }
+        }
+        assert!(!server.schedule_file_watcher_uri("file:///degraded/late.pl"));
+    }
+
     #[test]
     fn source_path_from_uri_accepts_absolute_filesystem_paths()
     -> Result<(), Box<dyn std::error::Error>> {

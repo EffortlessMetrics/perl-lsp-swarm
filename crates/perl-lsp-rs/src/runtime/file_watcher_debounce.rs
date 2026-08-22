@@ -19,16 +19,27 @@
 //! - quiet plus maximum latency: repeated schedules extend only the quiet
 //!   deadline; a subject fires at most [`MAX_LATENCY_INTERVALS`] windows after
 //!   first admission, so churn cannot starve publication;
-//! - truthful pressure: pending, outboxed, active (batch currently inside the
-//!   sink), and high-water counts stay observable — moving work from pending to
-//!   active never reports zero total work;
-//! - joinable shutdown: both workers stop, one final sorted size-bounded flush
-//!   is delivered while the sink is alive, and both threads are joined before
-//!   teardown completes;
+//! - truthful pressure: pending and active (batch currently inside the
+//!   callback) counts stay observable through the runtime snapshot — moving
+//!   work from pending to active never reports zero total watcher work;
+//! - joinable shutdown: both workers stop, pending subjects drain as chunked
+//!   sorted batches delivered only while the callback closure still upgrades,
+//!   and both threads join before teardown completes. In the production
+//!   wiring the sole closure weakly captures the dropping `LspServer`, so
+//!   teardown discards pending work instead of publishing post-shutdown;
+//! - degraded dispatcher: if the callback closure panics mid-dispatch,
+//!   admissions immediately route to [`WatcherAdmission::Unavailable`] rather
+//!   than stranding queued subjects behind apparent success;
 //! - no semantic authority: this queue never reads files, parses, indexes, or
 //!   mutates workspace state. Fired batches re-enter exactly the server entry
 //!   point the runtime used before, keeping the #7893/#7088 cutover a sink
 //!   swap rather than a redesign.
+//!
+//! Complexity note: rescheduled subjects leave stale heap entries behind.
+//! They are purged lazily at the heap head on each earliest-due evaluation,
+//! so amortized intake stays linearithmic; the stale population has no hard
+//! structural cap — it is bounded in practice by admissions (each schedule
+//! pushes one entry) and drained by the same evaluations that fire work.
 //!
 //! Terminal create/remove/rename evidence, canonical duplicate-transport
 //! equivalence, and root/config/trust/watch generation binding remain owned by
@@ -37,7 +48,7 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -163,7 +174,16 @@ struct IntakeState {
 
 impl IntakeState {
     /// Purge stale heap heads and report the earliest live effective deadline.
+    ///
+    /// This is the SOLE deadline oracle for the intake worker: any earliest-due
+    /// computation must come through here, and every entry touched during the
+    /// computation increments `heap_operations` (one per call also bumps
+    /// `earliest_due_evaluations`). A regression reimplementing base-style
+    /// full scans over the pending set therefore inflates entry touches past
+    /// the quadratic-intake test budget — the oracle is mutation-sensitive by
+    /// construction, not by convention.
     fn peek_live_deadline(&mut self, stats: &CoalescerStats) -> Option<u64> {
+        stats.earliest_due_evaluations.fetch_add(1, Ordering::Relaxed);
         loop {
             let head = match self.heap.peek() {
                 Some(Reverse((deadline, seq, uri))) => (*deadline, *seq, uri.clone()),
@@ -211,6 +231,7 @@ struct CoalescerStats {
     rejected_after_shutdown_total: AtomicU64,
     batches_dispatched: AtomicU64,
     heap_operations: AtomicU64,
+    earliest_due_evaluations: AtomicU64,
 }
 
 struct Shared {
@@ -220,6 +241,10 @@ struct Shared {
     /// Coordinates intake (batch produced / outbox space freed) with the
     /// dispatcher. Both condvars wait on the same state mutex.
     handoff_cv: Condvar,
+    /// Set when the callback closure panicked mid-dispatch. Admissions then
+    /// report [`WatcherAdmission::Unavailable`] instead of pretending work is
+    /// still queueable behind a dead dispatcher.
+    sink_panic: AtomicBool,
     clock: Arc<dyn DebounceClock>,
     interval_ms: u64,
     max_latency_ms: u64,
@@ -234,18 +259,42 @@ struct WorkerHandles {
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
+#[derive(Default)]
 pub(crate) struct WatcherPressureSnapshot {
+    /// Subjects waiting for their deadline; consumed by the runtime snapshot.
     pub(crate) pending_subjects: usize,
+    /// Subjects currently inside the callback; consumed by the runtime
+    /// snapshot so pending→active transitions never report zero total work.
     pub(crate) active_subjects: usize,
+    /// Batches queued for dispatch. Test instrumentation only.
+    #[cfg(test)]
     pub(crate) outboxed_batches: usize,
+    /// Peak pending-subject count. Test instrumentation only.
+    #[cfg(test)]
     pub(crate) high_water_subjects: usize,
+    /// Lifetime admission counters. Test instrumentation only.
+    #[cfg(test)]
     pub(crate) admitted_total: u64,
+    #[cfg(test)]
     pub(crate) coalesced_total: u64,
+    #[cfg(test)]
     pub(crate) overflowed_total: u64,
+    #[cfg(test)]
     pub(crate) unavailable_total: u64,
+    #[cfg(test)]
     pub(crate) rejected_after_shutdown_total: u64,
+    #[cfg(test)]
     pub(crate) batches_dispatched: u64,
+    /// Heap entries inspected while computing earliest-due or draining due
+    /// subjects. Test instrumentation only — this is the quadratic-intake
+    /// oracle (see `peek_live_deadline`).
+    #[cfg(test)]
     pub(crate) heap_operations: u64,
+    /// Number of distinct earliest-due computations. Test instrumentation
+    /// only; paired with `heap_operations` so a full-scan regression inside
+    /// the sole deadline oracle inflates entry touches past the test budget.
+    #[cfg(test)]
+    pub(crate) earliest_due_evaluations: u64,
 }
 
 /// Debouncer for file watcher change notifications.
@@ -264,7 +313,7 @@ impl FileWatcherDebouncer {
     /// Create a new debouncer with the default window (500ms).
     pub fn new<F>(publish_fn: F) -> Self
     where
-        F: Fn(Vec<String>) + Send + Sync + 'static,
+        F: Fn(Vec<String>) + Send + 'static,
     {
         Self::with_interval(Duration::from_millis(DEFAULT_DEBOUNCE_MS), publish_fn)
     }
@@ -275,7 +324,7 @@ impl FileWatcherDebouncer {
     /// continuously rescheduled subject still fires within it.
     pub fn with_interval<F>(interval: Duration, publish_fn: F) -> Self
     where
-        F: Fn(Vec<String>) + Send + Sync + 'static,
+        F: Fn(Vec<String>) + Send + 'static,
     {
         Self::build(
             interval,
@@ -294,26 +343,36 @@ impl FileWatcherDebouncer {
         max_batch_subjects: usize,
     ) -> Self
     where
-        F: Fn(Vec<String>) + Send + Sync + 'static,
+        F: Fn(Vec<String>) + Send + 'static,
     {
         let interval_ms = u64::try_from(interval.as_millis()).unwrap_or(DEFAULT_DEBOUNCE_MS);
         let shared = make_shared(clock, interval_ms, max_pending_subjects, max_batch_subjects);
 
-        // One worker owns scheduling (never touches the sink); one owns
-        // dispatch (the only place the callback runs), so a long batch can
-        // never block observation of newer events.
+        // One worker owns scheduling (never touches the callback); one owns
+        // dispatch (the only place the callback runs, moved in by value so a
+        // plain `Send` closure bound suffices), so a long batch can never
+        // block observation of newer events.
         let intake_shared = Arc::clone(&shared);
         let intake_handle = thread::Builder::new()
             .name("file-watcher-intake".into())
             .spawn(move || intake_loop(intake_shared));
 
         let dispatch_shared = Arc::clone(&shared);
-        let dispatch_sink = Arc::new(publish_fn);
         let dispatch_handle = thread::Builder::new()
             .name("file-watcher-dispatch".into())
-            .spawn(move || dispatch_loop(dispatch_shared, dispatch_sink));
+            .spawn(move || dispatch_loop(dispatch_shared, publish_fn));
 
-        let workers = match (intake_handle, dispatch_handle) {
+        Self::assemble(shared, intake_handle, dispatch_handle)
+    }
+
+    /// Common assembly for both fully-spawned and degraded starts so the real
+    /// partial-spawn branch (one worker up, one failed) is exercised by tests.
+    fn assemble(
+        shared: Arc<Shared>,
+        intake: std::io::Result<JoinHandle<()>>,
+        dispatcher: std::io::Result<JoinHandle<()>>,
+    ) -> Self {
+        let workers = match (intake, dispatcher) {
             (Ok(intake), Ok(dispatcher)) => Some(WorkerHandles { intake, dispatcher }),
             (intake, dispatcher) => {
                 tracing::error!(
@@ -331,16 +390,77 @@ impl FileWatcherDebouncer {
 
     #[cfg(test)]
     fn failed_start_for_test(clock: Arc<dyn DebounceClock>) -> Self {
-        let shared =
-            make_shared(clock, DEFAULT_DEBOUNCE_MS, MAX_PENDING_SUBJECTS, MAX_BATCH_SUBJECTS);
-        Self { shared, workers: Mutex::new(None), operational: false }
+        let injected = Err(std::io::Error::other("injected worker spawn failure"));
+        Self::assemble(
+            make_shared(clock, DEFAULT_DEBOUNCE_MS, MAX_PENDING_SUBJECTS, MAX_BATCH_SUBJECTS),
+            injected,
+            Err(std::io::Error::other("injected worker spawn failure")),
+        )
     }
 
-    /// Whether both worker threads started successfully. A debouncer that
-    /// failed to start reports [`WatcherAdmission::Unavailable`] for every
-    /// attempt instead of silently absorbing events.
+    /// Exercise the real partial-spawn branch: whichever worker is requested
+    /// actually spawns; the other side fails, forcing `assemble` through
+    /// `halt_workers` to join the survivor.
+    #[cfg(test)]
+    fn partially_spawned_for_test(spawn_intake: bool, spawn_dispatcher: bool) -> Self {
+        const NAME: &str = "file-watcher-partial-test";
+        let shared = make_shared(
+            Arc::new(SystemClock::new()),
+            5_000,
+            MAX_PENDING_SUBJECTS,
+            MAX_BATCH_SUBJECTS,
+        );
+        let injected = || Err::<JoinHandle<()>, _>(std::io::Error::other("injected"));
+        let intake = if spawn_intake {
+            thread::Builder::new().name(NAME.into()).spawn({
+                let shared = Arc::clone(&shared);
+                move || intake_loop(shared)
+            })
+        } else {
+            injected()
+        };
+        let dispatcher = if spawn_dispatcher {
+            thread::Builder::new().name(NAME.into()).spawn({
+                let shared = Arc::clone(&shared);
+                move || dispatch_loop(shared, |_uris: Vec<String>| {})
+            })
+        } else {
+            injected()
+        };
+        Self::assemble(shared, intake, dispatcher)
+    }
+
+    /// Unavailable-state debouncer for caller-side admission tests: exercises
+    /// the real spawn-failure disposition without exposing private types.
+    #[cfg(test)]
+    pub(crate) fn unavailable_for_test() -> Self {
+        Self::failed_start_for_test(Arc::new(SystemClock::new()))
+    }
+
+    /// Real-clock debouncer with a tiny pending cap, for caller-side tests of
+    /// the [`WatcherAdmission::Overflowed`] disposition.
+    #[cfg(test)]
+    pub(crate) fn saturated_for_test<F>(publish_fn: F) -> Self
+    where
+        F: Fn(Vec<String>) + Send + 'static,
+    {
+        Self::build(
+            // Non-integral minutes keeps the duration-suboptimal-units lint
+            // quiet; the window only needs to outlive the test.
+            Duration::from_secs(90),
+            publish_fn,
+            Arc::new(SystemClock::new()),
+            1,
+            MAX_BATCH_SUBJECTS,
+        )
+    }
+
+    /// Whether the coalescer can currently accept and deliver work. False
+    /// after worker-spawn failure or after the callback closure panicked
+    /// mid-dispatch; admissions report [`WatcherAdmission::Unavailable`]
+    /// instead of silently absorbing events.
     pub fn is_operational(&self) -> bool {
-        self.operational
+        self.operational && !self.shared.sink_panic.load(Ordering::SeqCst)
     }
 
     /// Schedule a URI and observe the typed admission outcome.
@@ -349,7 +469,7 @@ impl FileWatcherDebouncer {
     /// the maximum-latency deadline fixed at first admission is preserved so
     /// continuous rescheduling cannot starve publication.
     pub fn try_schedule(&self, uri: &str) -> WatcherAdmission {
-        if !self.operational {
+        if !self.is_operational() {
             self.shared.stats.unavailable_total.fetch_add(1, Ordering::Relaxed);
             return WatcherAdmission::Unavailable;
         }
@@ -414,9 +534,11 @@ impl FileWatcherDebouncer {
 
     /// Schedule a URI for debounced batch delivery.
     ///
-    /// Fire-and-forget convenience over [`Self::try_schedule`]; non-admitted
-    /// outcomes degrade to debug logs here. Callers that must distinguish
-    /// queued work from degraded modes should use [`Self::try_schedule`].
+    /// Fire-and-forget convenience over [`Self::try_schedule`] for in-crate
+    /// tests: non-admitted outcomes degrade to debug logs here, which is why
+    /// this shim is test-only — production callers must observe admission
+    /// through [`Self::try_schedule`].
+    #[cfg(test)]
     pub fn schedule(&self, uri: &str) {
         match self.try_schedule(uri) {
             WatcherAdmission::Accepted | WatcherAdmission::Coalesced => {}
@@ -440,29 +562,42 @@ impl FileWatcherDebouncer {
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) fn pressure(&self) -> WatcherPressureSnapshot {
         let stats = &self.shared.stats;
-        let outboxed_batches = self.shared.state.lock().outbox.len();
-        WatcherPressureSnapshot {
+        let mut snapshot = WatcherPressureSnapshot {
             pending_subjects: stats.pending_subjects.load(Ordering::SeqCst),
             active_subjects: stats.active_subjects.load(Ordering::SeqCst),
-            outboxed_batches,
-            high_water_subjects: stats.high_water_subjects.load(Ordering::SeqCst),
-            admitted_total: stats.admitted_total.load(Ordering::Relaxed),
-            coalesced_total: stats.coalesced_total.load(Ordering::Relaxed),
-            overflowed_total: stats.overflowed_total.load(Ordering::Relaxed),
-            unavailable_total: stats.unavailable_total.load(Ordering::Relaxed),
-            rejected_after_shutdown_total: stats
-                .rejected_after_shutdown_total
-                .load(Ordering::Relaxed),
-            batches_dispatched: stats.batches_dispatched.load(Ordering::Relaxed),
-            heap_operations: stats.heap_operations.load(Ordering::Relaxed),
+            ..WatcherPressureSnapshot::default()
+        };
+        #[cfg(test)]
+        {
+            snapshot.outboxed_batches = self.shared.state.lock().outbox.len();
+            snapshot.high_water_subjects = stats.high_water_subjects.load(Ordering::SeqCst);
+            snapshot.admitted_total = stats.admitted_total.load(Ordering::Relaxed);
+            snapshot.coalesced_total = stats.coalesced_total.load(Ordering::Relaxed);
+            snapshot.overflowed_total = stats.overflowed_total.load(Ordering::Relaxed);
+            snapshot.unavailable_total = stats.unavailable_total.load(Ordering::Relaxed);
+            snapshot.rejected_after_shutdown_total =
+                stats.rejected_after_shutdown_total.load(Ordering::Relaxed);
+            snapshot.batches_dispatched = stats.batches_dispatched.load(Ordering::Relaxed);
+            snapshot.heap_operations = stats.heap_operations.load(Ordering::Relaxed);
+            snapshot.earliest_due_evaluations =
+                stats.earliest_due_evaluations.load(Ordering::Relaxed);
         }
+        snapshot
     }
 
-    /// Stop intake, deliver one final sorted bounded flush while the sink is
-    /// alive, and join both workers. Idempotent; invoked from `Drop`.
+    /// Stop intake and join both workers. Idempotent; invoked from `Drop`.
     ///
-    /// The final flush bypasses the outbox cap because total retained work is
-    /// already bounded by the pending-subject cap, so memory stays bounded.
+    /// Actual teardown policy: intake stops first; whatever is still pending
+    /// is chunked into sorted batches of at most [`MAX_BATCH_SUBJECTS`]
+    /// subjects (so a large backlog drains as multiple batch deliveries, not
+    /// one) and handed to the dispatcher, which delivers only while the
+    /// callback closure still upgrades — i.e. only while something independent
+    /// of this queue keeps the closure's captured state alive. In the
+    /// production wiring the sole closure weakly captures the dropping
+    /// `LspServer`, so at server teardown the upgrade fails and pending work
+    /// is discarded: nothing publishes after shutdown. The flush bypasses the
+    /// outbox cap because total retained work is already bounded by the
+    /// pending-subject cap, so memory stays bounded.
     pub(crate) fn shutdown_now(&self) {
         let handles = {
             let mut workers = self.workers.lock();
@@ -514,6 +649,7 @@ fn make_shared(
         }),
         intake_cv: Condvar::new(),
         handoff_cv: Condvar::new(),
+        sink_panic: AtomicBool::new(false),
         clock,
         interval_ms,
         max_latency_ms,
@@ -530,6 +666,7 @@ fn make_shared(
             rejected_after_shutdown_total: AtomicU64::new(0),
             batches_dispatched: AtomicU64::new(0),
             heap_operations: AtomicU64::new(0),
+            earliest_due_evaluations: AtomicU64::new(0),
         },
     })
 }
@@ -564,6 +701,12 @@ fn intake_loop(shared: Arc<Shared>) {
         if guard.shutting_down {
             return;
         }
+        if shared.sink_panic.load(Ordering::SeqCst) {
+            // The dispatcher died on a panicking callback; admissions already
+            // report Unavailable. Park until shutdown reclaims this worker.
+            shared.handoff_cv.wait(&mut guard);
+            continue;
+        }
         if let Some(deadline) = guard.peek_live_deadline(&shared.stats) {
             let now = clock.now_millis();
             if deadline <= now {
@@ -588,9 +731,9 @@ fn intake_loop(shared: Arc<Shared>) {
     }
 }
 
-fn dispatch_loop<F>(shared: Arc<Shared>, sink: Arc<F>)
+fn dispatch_loop<F>(shared: Arc<Shared>, sink: F)
 where
-    F: Fn(Vec<String>) + Send + Sync + 'static,
+    F: Fn(Vec<String>) + Send + 'static,
 {
     let mut guard = shared.state.lock();
     loop {
@@ -599,9 +742,25 @@ where
                 drop(guard);
                 let batch_len = batch.len();
                 shared.stats.active_subjects.fetch_add(batch_len, Ordering::SeqCst);
-                sink(batch);
+                // A panicking callback must not masquerade as delivered work:
+                // mark the coalescer degraded so admissions route to the
+                // unavailable disposition instead of apparent success.
+                let outcome =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(batch)));
                 shared.stats.active_subjects.fetch_sub(batch_len, Ordering::SeqCst);
                 shared.stats.batches_dispatched.fetch_add(1, Ordering::Relaxed);
+                if outcome.is_err() {
+                    tracing::error!(
+                        "file watcher debounce callback panicked; \
+                        scheduling reports unavailable until restart"
+                    );
+                    shared.sink_panic.store(true, Ordering::SeqCst);
+                    {
+                        let _relock = shared.state.lock();
+                        shared.handoff_cv.notify_all();
+                    }
+                    return;
+                }
                 guard = shared.state.lock();
                 shared.handoff_cv.notify_all();
             }
@@ -628,14 +787,14 @@ mod tests {
     impl Harness {
         fn with_sink<F>(sink: F) -> Self
         where
-            F: Fn(Vec<String>) + Send + Sync + 'static,
+            F: Fn(Vec<String>) + Send + 'static,
         {
             Self::with_caps(sink, MAX_PENDING_SUBJECTS, MAX_BATCH_SUBJECTS)
         }
 
         fn with_caps<F>(sink: F, max_pending_subjects: usize, max_batch_subjects: usize) -> Self
         where
-            F: Fn(Vec<String>) + Send + Sync + 'static,
+            F: Fn(Vec<String>) + Send + 'static,
         {
             let clock = Arc::new(ManualClock::new());
             let debouncer = FileWatcherDebouncer::build(
@@ -665,6 +824,12 @@ mod tests {
 
         fn workers_joined(&self) -> bool {
             self.debouncer.workers.lock().is_none()
+        }
+    }
+
+    impl FileWatcherDebouncer {
+        fn workers_lock_is_empty(&self) -> bool {
+            self.workers.lock().is_none()
         }
     }
 
@@ -698,12 +863,26 @@ mod tests {
         harness.advance(101);
         harness.wait_for(|| harness.debouncer.pressure().pending_subjects == 0, "full burst drain");
 
-        // Quadratic intake inspects ~M^2/2 ≈ 4.5M entries across the burst;
-        // lazy-deletion heap intake stays linearithmic even counting wakeup
-        // re-peeks. Generous slack still falsifies per-arrival rescans.
-        let ops = harness.debouncer.pressure().heap_operations;
-        assert!(ops < 3000 * 60, "heap operations {ops} suggest quadratic intake");
-        assert_eq!(harness.debouncer.pressure().overflowed_total, 0);
+        // Quadratic intake inspects ~M^2/2 ≈ 4.5M entries across the burst.
+        // The oracle counts entry touches inside the SOLE deadline oracle
+        // (`peek_live_deadline`), so a regression reimplementing base-style
+        // full scans over the pending set — which must still route its
+        // earliest-due computation through that oracle — inflates the count
+        // past this budget. Linearithmic heap behavior plus per-admission
+        // notify wakeups stays far below even this generous slack.
+        let pressure = harness.debouncer.pressure();
+        assert!(
+            pressure.heap_operations < 3000 * 60,
+            "heap operations {} suggest quadratic intake",
+            pressure.heap_operations
+        );
+        assert!(
+            pressure.earliest_due_evaluations <= pressure.heap_operations,
+            "evaluations {} exceed touched entries {}; oracle inconsistency",
+            pressure.earliest_due_evaluations,
+            pressure.heap_operations
+        );
+        assert_eq!(pressure.overflowed_total, 0);
     }
 
     #[test]
@@ -893,6 +1072,9 @@ mod tests {
         drop(batches);
 
         assert_eq!(harness.debouncer.pending_uris(), 0);
+        let pressure = harness.debouncer.pressure();
+        assert_eq!(pressure.outboxed_batches, 0, "outbox drains to empty before join");
+        assert!(pressure.batches_dispatched >= 1);
         assert!(harness.workers_joined());
         assert_eq!(
             harness.debouncer.try_schedule("file:///late.pl"),
@@ -900,6 +1082,74 @@ mod tests {
         );
         assert_eq!(harness.debouncer.pressure().rejected_after_shutdown_total, 1);
         assert_eq!(delivered.lock().len(), 1, "no publication after shutdown");
+    }
+
+    #[test]
+    fn file_watcher_debouncer_panicking_sink_degrades_admissions_truthfully() {
+        let panic_gate: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+        let trip = Arc::clone(&panic_gate);
+        let harness = Harness::with_sink(move |uris: Vec<String>| {
+            if *trip.lock() {
+                // Force an out-of-bounds access so the dispatcher's
+                // catch_unwind observes a genuine unwind. Explicit panic!
+                // macros and panic_any are denied even in cfg(test) code by
+                // the crate's clippy configuration.
+                let boom: [u8; 0] = [];
+                let _ = boom[uris.len()];
+            }
+        });
+
+        // First batch delivers normally.
+        harness.debouncer.try_schedule("file:///ok.pl");
+        harness.advance(101);
+        harness.wait_for(
+            || harness.debouncer.pressure().batches_dispatched == 1,
+            "pre-panic delivery",
+        );
+        assert!(harness.debouncer.is_operational());
+
+        // Trip the callback; the in-flight batch panics inside the dispatcher.
+        *panic_gate.lock() = true;
+        harness.debouncer.try_schedule("file:///boom.pl");
+        harness.advance(101);
+        harness.wait_for(
+            || !harness.debouncer.is_operational(),
+            "degraded flag after panicking dispatch",
+        );
+
+        assert_eq!(
+            harness.debouncer.try_schedule("file:///after.pl"),
+            WatcherAdmission::Unavailable,
+            "degraded queue must refuse admissions instead of apparent success"
+        );
+        let pressure = harness.debouncer.pressure();
+        assert!(pressure.unavailable_total >= 1);
+
+        // Shutdown still reclaims both workers promptly (the panicked
+        // dispatcher already exited; intake parks until the shutdown notify).
+        harness.debouncer.shutdown_now();
+        assert!(harness.workers_joined());
+        assert_eq!(harness.debouncer.pending_uris(), 0);
+    }
+
+    #[test]
+    fn file_watcher_debouncer_partial_spawn_joins_survivor_and_reports_unavailable() {
+        for (spawn_intake, spawn_dispatcher) in [(true, false), (false, true), (false, false)] {
+            let debouncer =
+                FileWatcherDebouncer::partially_spawned_for_test(spawn_intake, spawn_dispatcher);
+            assert!(
+                !debouncer.is_operational(),
+                "intake={spawn_intake} dispatcher={spawn_dispatcher}"
+            );
+            assert_eq!(
+                debouncer.try_schedule("file:///x.pl"),
+                WatcherAdmission::Unavailable,
+                "intake={spawn_intake} dispatcher={spawn_dispatcher}"
+            );
+            // Joins whichever worker survived; must not hang or leak threads.
+            debouncer.shutdown_now();
+            assert!(debouncer.workers_lock_is_empty());
+        }
     }
 
     #[test]
@@ -917,8 +1167,9 @@ mod tests {
         harness.advance(101);
         harness.debouncer.shutdown_now();
 
-        // The final flush dispatched against a dead sink: the run is counted,
-        // but the dead weak upgrade means nothing observable was published.
+        // The final flush dispatched against a closure whose captured state
+        // is gone: the run is counted, but the failed weak upgrade means
+        // nothing observable was published.
         let pressure = harness.debouncer.pressure();
         assert_eq!(pressure.batches_dispatched, 1);
         assert_eq!(pressure.pending_subjects, 0);
