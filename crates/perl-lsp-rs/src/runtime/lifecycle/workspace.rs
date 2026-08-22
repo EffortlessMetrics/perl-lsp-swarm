@@ -1574,4 +1574,60 @@ include_paths = ["stale_lib"]
             "valid sibling field in the same malformed batch still applies"
         );
     }
+
+    #[test]
+    fn malformed_batch_folder_generation_falls_back_to_lower_layers_not_previous_client_values()
+    -> anyhow::Result<()> {
+        // Folder effective configs are reassembled per generation
+        // (defaults < initializationOptions < project < current payload), so a
+        // wrong-typed or absent client field falls back to its LOWER LAYER value,
+        // never to the previous generation's accepted client value and never to a
+        // partial mix of the two consumer classes.
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let uri = push_folder_with_project_config(&server, &temp, "zeta")?;
+        *server.initialization_options_perl_settings.lock() =
+            Some(serde_json::json!({ "workspace": { "resolutionTimeout": 111 } }));
+
+        server.handle_did_change_configuration(Some(serde_json::json!({
+            "settings": { "perl": { "workspace": {
+                "includePaths": ["good_lib"],
+                "resolutionTimeout": 123,
+                "useSystemInc": true
+            } } }
+        })));
+
+        server.handle_did_change_configuration(Some(serde_json::json!({
+            "settings": { "perl": { "workspace": {
+                "includePaths": "good_lib",
+                "resolutionTimeout": "soon",
+                "discoveryExtensions": ["tmpl"]
+            } } }
+        })));
+
+        let folders = server.workspace_folders.lock();
+        let state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        assert_eq!(
+            state.effective_workspace_config.resolution_timeout_ms, 111,
+            "wrong-typed resolutionTimeout falls back to the initializationOptions layer, \
+             not to the previous batch's 123"
+        );
+        assert_eq!(
+            state.effective_workspace_config.include_paths,
+            vec!["zeta_project_lib".to_string()],
+            "wrong-typed includePaths falls back to the project-config layer, \
+             not to the previous batch's good_lib"
+        );
+        assert!(
+            !state.effective_workspace_config.use_system_inc,
+            "absent-from-batch useSystemInc falls back to the default, \
+             not to the previous batch's true"
+        );
+        assert_eq!(
+            state.effective_workspace_config.discovery_extra_extensions,
+            vec!["tmpl".to_string()],
+            "the valid sibling field of the malformed batch still applies over the project layer"
+        );
+        Ok(())
+    }
 }
