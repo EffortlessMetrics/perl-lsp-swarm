@@ -44,7 +44,7 @@
     },
     {
       "file": "fixtures/valid-controller-fanin-present.json",
-      "sha256": "97b88b00f578eb71de196131efebac2c72813077ed8da18a760d6a78f27c2eaf"
+      "sha256": "6b4b35f39b0dc8907ee485b50d8028b4d51059daa9c9e7e9fee345c4af870dd6"
     },
     {
       "file": "fixtures/valid-fanin-1929.json",

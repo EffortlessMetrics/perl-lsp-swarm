@@ -121,6 +121,14 @@ fn validate_binding(binding: &PacketBinding) -> Result<(), CloseProofError> {
                 .to_string(),
         });
     }
+    if let Some(identity) = &binding.accepted_ruling_identity
+        && identity.trim().is_empty()
+    {
+        return Err(CloseProofError::Schema {
+            field: "contract_binding.accepted_ruling_identity".to_string(),
+            message: "accepted ruling identity must not be empty".to_string(),
+        });
+    }
     match &binding.accepted_ruling_digest {
         Some(digest) if !is_digest_hex(digest) => Err(CloseProofError::Digest {
             message: "contract_binding.accepted_ruling_digest is not 64 lowercase hex".to_string(),
@@ -335,9 +343,14 @@ pub fn validate_packet_against_contract(
                 .to_string(),
         });
     }
-    match (&packet.contract_binding.accepted_ruling_digest, &identity.accepted_ruling) {
-        (Some(packet_digest), Some(ruling)) if packet_digest == &ruling.digest => {}
-        (None, None) => {}
+    match (
+        &packet.contract_binding.accepted_ruling_identity,
+        &packet.contract_binding.accepted_ruling_digest,
+        &identity.accepted_ruling,
+    ) {
+        (Some(packet_identity), Some(packet_digest), Some(ruling))
+            if packet_identity == &ruling.identity && packet_digest == &ruling.digest => {}
+        (None, None, None) => {}
         _ => {
             return Err(CloseProofError::Identity {
                 message:
@@ -396,6 +409,18 @@ pub fn validate_packet_against_contract(
         });
     }
 
+    let mut seen_child_dispositions = BTreeSet::new();
+    for record in &packet.child_dispositions {
+        let identity = (record.child.repository.as_str(), record.child.number);
+        if !seen_child_dispositions.insert(identity) {
+            return Err(CloseProofError::Coverage {
+                message: format!(
+                    "duplicate mandatory child disposition `{}/#{}`",
+                    record.child.repository, record.child.number
+                ),
+            });
+        }
+    }
     let expected_children: BTreeSet<(&str, u64)> =
         contract.mandatory_children.iter().map(|c| (c.repository.as_str(), c.number)).collect();
     let packet_children: BTreeSet<(&str, u64)> = packet

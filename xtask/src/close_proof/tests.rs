@@ -38,6 +38,7 @@ fn current_binding(contract: &IssueContract) -> PacketBinding {
     PacketBinding {
         contract_issue_body_digest: contract.identity.issue_body_digest.clone(),
         contract_denominator_digest: contract.identity.denominator_digest.clone(),
+        accepted_ruling_identity: None,
         accepted_ruling_digest: None,
     }
 }
@@ -285,8 +286,36 @@ fn matching_ruling_keeps_packet_current() -> Result<(), CloseProofError> {
         digest: leaf_digest(4242),
     });
     let mut doc_packet = passing_packet(&contract)?;
+    doc_packet.contract_binding.accepted_ruling_identity = Some(
+        "https://github.com/effortlessmetrics/perl-lsp-swarm/issues/9000300#ruling".to_string(),
+    );
     doc_packet.contract_binding.accepted_ruling_digest = Some(leaf_digest(4242));
     validate_packet_against_contract(&doc_packet, &contract)?;
+    Ok(())
+}
+
+#[test]
+fn moved_ruling_identity_invalidates_packet_even_with_matching_digest()
+-> Result<(), CloseProofError> {
+    let mut contract = leaf_contract()?;
+    let ruling_identity =
+        "https://github.com/effortlessmetrics/perl-lsp-swarm/issues/9000300#ruling";
+    contract.identity.accepted_ruling = Some(super::RulingIdentity {
+        identity: ruling_identity.to_string(),
+        digest: leaf_digest(4242),
+    });
+    let mut doc_packet = passing_packet(&contract)?;
+    doc_packet.contract_binding.accepted_ruling_identity = Some(ruling_identity.to_string());
+    doc_packet.contract_binding.accepted_ruling_digest = Some(leaf_digest(4242));
+    contract.identity.accepted_ruling = Some(super::RulingIdentity {
+        identity: "https://github.com/effortlessmetrics/perl-lsp-swarm/issues/9000300#replacement"
+            .to_string(),
+        digest: leaf_digest(4242),
+    });
+    assert!(matches!(
+        validate_packet_against_contract(&doc_packet, &contract),
+        Err(CloseProofError::Identity { message }) if message.contains("accepted ruling moved")
+    ));
     Ok(())
 }
 
@@ -347,6 +376,32 @@ fn covered_child_satisfies_controller_shape() -> Result<(), CloseProofError> {
     }];
     complete.validate_shape()?;
     validate_packet_against_contract(&complete, &contract)?;
+    Ok(())
+}
+
+#[test]
+fn conflicting_duplicate_child_dispositions_are_rejected() -> Result<(), CloseProofError> {
+    let mut contract = leaf_contract()?;
+    contract.kind = IssueKind::Controller;
+    contract.mandatory_children =
+        vec![super::IssueRef { repository: contract.repository.clone(), number: 9000301 }];
+    contract.validate()?;
+    let mut duplicate = passing_packet(&contract)?;
+    duplicate.child_dispositions = vec![
+        ChildDispositionRecord {
+            child: super::IssueRef { repository: contract.repository.clone(), number: 9000301 },
+            state: ChildState::ClosedByPacket { packet_subject: "PR #9000401".to_string() },
+        },
+        ChildDispositionRecord {
+            child: super::IssueRef { repository: contract.repository.clone(), number: 9000301 },
+            state: ChildState::StillOpen,
+        },
+    ];
+    assert!(matches!(
+        validate_packet_against_contract(&duplicate, &contract),
+        Err(CloseProofError::Coverage { message })
+            if message.contains("duplicate mandatory child disposition")
+    ));
     Ok(())
 }
 

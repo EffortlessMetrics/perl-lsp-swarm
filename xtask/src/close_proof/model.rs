@@ -264,6 +264,8 @@ pub struct ClaimStatement {
 pub struct PacketBinding {
     pub contract_issue_body_digest: String,
     pub contract_denominator_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_ruling_identity: Option<String>,
     pub accepted_ruling_digest: Option<String>,
 }
 

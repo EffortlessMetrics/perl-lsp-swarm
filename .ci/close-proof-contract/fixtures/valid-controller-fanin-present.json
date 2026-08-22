@@ -16,6 +16,7 @@
     "allowed_close_modes": [
       "completed",
       "phase_complete_issue_remains_open",
+      "controller_complete",
       "superseded",
       "true_duplicate",
       "not_planned"
