@@ -26,11 +26,20 @@
 # reviewed separately under #10168. Retirement into the CP03+ semantic
 # preflight is mapped per rule inside the validator and documented under
 # `.spec/10413-semantic-close-containment/`.
+#
+# Known advisory-tier boundary: for `pull_request` events GitHub selects this
+# workflow definition from the PR merge ref, so a PR that edits this file runs
+# its own edited copy. That can only affect an advisory signal with no merge
+# authority; moving this check into a base-owned execution shape is a
+# prerequisite of any future required promotion under #10168.
 
 name: Semantic Close Containment (CP00)
 
 on:
   pull_request:
+    # Automatic closing keywords only act when a PR merges into the default
+    # branch, so other targets are not applicable by construction.
+    branches: [main]
     types: [opened, edited, reopened, synchronize]
   workflow_dispatch: {}
 
