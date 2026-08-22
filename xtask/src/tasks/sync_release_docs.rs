@@ -191,7 +191,6 @@ fn next_minor_version(version: &str) -> Result<String> {
 
 fn sync_readme(content: &str, surface: &ReleaseSurface) -> Result<String> {
     let mut release_track_seen = false;
-    let mut published_surface_seen = false;
     let mut verified_install_seen = false;
 
     let mut lines: Vec<String> = Vec::new();
@@ -204,7 +203,10 @@ fn sync_readme(content: &str, surface: &ReleaseSurface) -> Result<String> {
                 "| Published crate surface | {} crates in `[workspace.metadata.publish.allow]` |",
                 surface.published_crate_count
             ));
-            published_surface_seen = true;
+        } else if let Some(updated) =
+            sync_readme_published_surface_prose(line, surface.published_crate_count)
+        {
+            lines.push(updated);
         } else if line.starts_with("The verified GitHub `v") {
             lines.push(format!(
                 "The verified GitHub `v{}` release assets are public beta. Other distribution",
@@ -216,13 +218,27 @@ fn sync_readme(content: &str, surface: &ReleaseSurface) -> Result<String> {
         }
     }
 
-    if !published_surface_seen {
-        bail!("README.md: published crate surface row not found");
-    }
+    // The front-door README intentionally stopped restating the crate-count
+    // receipt (#5450); its absence is current intent, not drift. A row is still
+    // refreshed in place when present. The count remains owned by
+    // CURRENT_STATUS.md, status/index.md, and status/release.md.
     if !release_track_seen && !verified_install_seen {
         bail!("README.md: release posture line not found");
     }
     Ok(restore_trailing_newline(content, &lines))
+}
+
+fn sync_readme_published_surface_prose(line: &str, published_crate_count: usize) -> Option<String> {
+    let marker = "The published surface is ";
+    let marker_start = line.find(marker)?;
+    let count_start = marker_start + marker.len();
+    let remainder = &line[count_start..];
+    let (count, suffix) = remainder.split_once(" crates")?;
+    if count.is_empty() || !count.chars().all(|character| character.is_ascii_digit()) {
+        return None;
+    }
+
+    Some(format!("{}{}{} crates{}", &line[..marker_start], marker, published_crate_count, suffix))
 }
 
 fn sync_current_status(content: &str, surface: &ReleaseSurface) -> Result<String> {
@@ -869,13 +885,46 @@ channels remain independently versioned and must be verified before editor use.\
     }
 
     #[test]
-    fn sync_readme_fails_when_published_surface_row_is_missing() -> Result<()> {
-        let input = r#"| Release track | `v0.16.0` public alpha |
-The verified GitHub `v0.16.0` release assets are public alpha. Other distribution
-channels remain independently versioned and must be verified before editor use.
-"#;
+    fn sync_readme_accepts_missing_published_surface_row_without_insertion() -> Result<()> {
+        let input = "| Release track | `v0.16.0` public alpha |\n\
+The verified GitHub `v0.16.0` release assets are public alpha. Other distribution\n\
+channels remain independently versioned and must be verified before editor use.\n";
+        let expected = "| Release track | `v0.17.0` public beta |\n\
+The verified GitHub `v0.17.0` release assets are public beta. Other distribution\n\
+channels remain independently versioned and must be verified before editor use.\n";
 
-        assert!(sync_readme(input, &release_surface()).is_err());
+        let synced = sync_readme(input, &release_surface())?;
+        if synced != expected {
+            bail!("README sync did not refresh posture without inserting a crate-count row");
+        }
+        if synced.contains("| Published crate surface |") {
+            bail!("README sync must not reinsert the removed crate-count row");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_readme_refreshes_published_surface_prose() -> Result<()> {
+        let surface = ReleaseSurface { published_crate_count: 34, ..release_surface() };
+        let input = "The published surface is 33 crates, listed in `[workspace.metadata.publish.allow]` in [`Cargo.toml`](Cargo.toml).\n\
+The verified GitHub `v0.16.0` release assets are public alpha. Other distribution\n\
+channels remain independently versioned and must be verified before editor use.\n";
+        let expected = "The published surface is 34 crates, listed in `[workspace.metadata.publish.allow]` in [`Cargo.toml`](Cargo.toml).\n\
+The verified GitHub `v0.17.0` release assets are public beta. Other distribution\n\
+channels remain independently versioned and must be verified before editor use.\n";
+
+        assert_eq!(sync_readme(input, &surface)?, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn sync_readme_published_surface_prose_is_idempotent() -> Result<()> {
+        let input = "The published surface is 33 crates, listed in `[workspace.metadata.publish.allow]` in [`Cargo.toml`](Cargo.toml).\n\
+The verified GitHub `v0.16.0` release assets are public alpha. Other distribution\n\
+channels remain independently versioned and must be verified before editor use.\n";
+
+        let first = sync_readme(input, &release_surface())?;
+        assert_eq!(sync_readme(&first, &release_surface())?, first);
         Ok(())
     }
 

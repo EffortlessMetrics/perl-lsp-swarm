@@ -1664,7 +1664,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deterministic_json_sorts_independently_constructed_nested_objects() {
+    fn deterministic_json_sorts_independently_constructed_nested_objects()
+    -> Result<(), Box<dyn Error>> {
         let first = json!({
             "z": {"b": 2, "a": [{"d": 4, "c": 3}]},
             "a": 1,
@@ -1674,18 +1675,10 @@ mod tests {
             "z": {"a": [{"c": 3, "d": 4}], "b": 2},
         });
 
-        assert_eq!(
-            canonical_json(&first).expect("first JSON should serialize"),
-            canonical_json(&second).expect("second JSON should serialize")
-        );
-        assert_eq!(
-            canonical_pretty_json(&first).expect("first pretty JSON should serialize"),
-            canonical_pretty_json(&second).expect("second pretty JSON should serialize")
-        );
-        assert_eq!(
-            canonical_json(&first).expect("JSON should serialize"),
-            r#"{"a":1,"z":{"a":[{"c":3,"d":4}],"b":2}}"#
-        );
+        assert_eq!(canonical_json(&first)?, canonical_json(&second)?);
+        assert_eq!(canonical_pretty_json(&first)?, canonical_pretty_json(&second)?);
+        assert_eq!(canonical_json(&first)?, r#"{"a":1,"z":{"a":[{"c":3,"d":4}],"b":2}}"#);
+        Ok(())
     }
 
     fn schema_enum_contains(schema: &Value, expected: &str) -> bool {

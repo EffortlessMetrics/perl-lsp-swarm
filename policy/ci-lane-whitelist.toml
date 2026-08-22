@@ -989,6 +989,27 @@ review_after = "2026-06-28"
 expires = "2026-11-28"
 
 [[lane]]
+id = "semantic_close_containment"
+workflow = ".github/workflows/semantic-close-containment.yml"
+job = "containment"
+tier = "frontdoor"
+kind = "hygiene"
+blocking = false
+default_pr = true
+runner = "ubuntu_24_04"
+base_lem = 3
+owner = "ci"
+intent = "Reject internally contradictory terminal close relations on every PR before semantic evaluation, executing only trusted base-branch validator code (#10413 CP00)."
+failure_mode = "A PR whose own stable boundary contradicts its Closes/Fixes/Resolves relation merges and terminally closes a controlling issue that still owns required work."
+proof_obligation = "Replay immutable CP00 fixtures as an instrument self-test, then evaluate the live PR event payload with bounded relations/bytes/API calls; contradiction and NOT_PROVEN exits fail the advisory check."
+evidence = ["job output"]
+allowed_triggers = ["pull_request_target", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2027-01-22"
+expires = "2027-08-22"
+
+[[lane]]
 id = "policy_validators"
 workflow = ".github/workflows/policy-validators.yml"
 job = "validate"
