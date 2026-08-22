@@ -623,6 +623,8 @@ struct RiprSuppression {
     #[serde(default)]
     paths: Vec<String>,
     #[serde(default)]
+    classification: Vec<String>,
+    #[serde(default)]
     reason: String,
 }
 
@@ -630,6 +632,7 @@ struct RiprSuppression {
 struct RiprSuppressionRules {
     display_patterns: Vec<String>,
     path_patterns: Vec<Pattern>,
+    classification_patterns: Vec<Vec<String>>,
     invalid_patterns: Vec<String>,
     suppression_reasons: Vec<Value>,
 }
@@ -661,6 +664,7 @@ fn read_ripr_suppression_rules(repo: &Path, path: &Path) -> Result<RiprSuppressi
                 Ok(pattern) => {
                     rules.display_patterns.push(path_pattern);
                     rules.path_patterns.push(pattern);
+                    rules.classification_patterns.push(suppression.classification.clone());
                 }
                 Err(_) => rules.invalid_patterns.push(path_pattern),
             }
@@ -906,9 +910,36 @@ fn suppression_matches_finding(rules: &RiprSuppressionRules, finding: &Value) ->
         return false;
     };
     let path = normalize_suppression_match_path(&path);
-    rules.path_patterns.iter().zip(rules.display_patterns.iter()).any(|(pattern, pattern_text)| {
-        pattern.matches(&path) || suppression_directory_pattern_matches(pattern_text, &path)
-    })
+    let raw_classification = finding
+        .get("classification")
+        .and_then(Value::as_str)
+        .or_else(|| finding.get("grip_class").and_then(Value::as_str));
+    rules
+        .path_patterns
+        .iter()
+        .zip(rules.display_patterns.iter())
+        .zip(rules.classification_patterns.iter())
+        .any(|((pattern, pattern_text), allowed_classifications)| {
+            let path_matches = pattern.matches(&path)
+                || suppression_directory_pattern_matches(pattern_text, &path);
+            path_matches
+                && (allowed_classifications.is_empty()
+                    || raw_classification.is_some_and(|classification| {
+                        allowed_classifications.iter().any(|allowed| {
+                            canonical_suppression_classification(classification)
+                                == canonical_suppression_classification(allowed)
+                        })
+                    }))
+        })
+}
+
+fn canonical_suppression_classification(classification: &str) -> &str {
+    match classification {
+        // ripr 0.9.x renamed this class while the repository policy retains the
+        // stable semantic name used by older receipts.
+        "weakly_gripped" => "reachable_unrevealed",
+        other => other,
+    }
 }
 
 fn suppression_directory_pattern_matches(pattern: &str, path: &str) -> bool {
@@ -2996,6 +3027,7 @@ mod tests {
                 Pattern::new("archive/**")?,
                 Pattern::new("docs/project/status/**")?,
             ],
+            classification_patterns: vec![Vec::new(), Vec::new()],
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         };
@@ -3032,6 +3064,7 @@ mod tests {
         let suppressions = RiprSuppressionRules {
             display_patterns: vec!["archive/**".to_string()],
             path_patterns: Vec::new(),
+            classification_patterns: Vec::new(),
             invalid_patterns: vec!["archive/[".to_string()],
             suppression_reasons: vec![json!({
                 "id": "ripr-suppress-archive",
@@ -3383,6 +3416,29 @@ paths = ["archive/["]
     }
 
     #[test]
+    fn parser_comparison_suppression_requires_an_admissible_classification() -> Result<()> {
+        let rules =
+            read_ripr_suppression_rules(&repo_root()?, Path::new("policy/ripr-suppressions.toml"))?;
+        let path = "crates/perl-parser-comparison/src/evidence_payload.rs";
+
+        for classification in ["no_static_path", "weakly_exposed"] {
+            assert!(suppression_matches_finding(
+                &rules,
+                &json!({"classification": classification, "probe": {"file": path}})
+            ));
+        }
+        assert!(!suppression_matches_finding(
+            &rules,
+            &json!({"classification": "reachable_unrevealed", "probe": {"file": path}})
+        ));
+        assert!(!suppression_matches_finding(
+            &rules,
+            &json!({"grip_class": "weakly_gripped", "seam": {"file": path}})
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn mutation_label_routes_targeted() {
         let decision = routing_decision(&["mutation".to_string()], false);
         assert!(decision.requires_targeted_mutation);
@@ -3508,6 +3564,7 @@ paths = ["archive/["]
         let suppressions = RiprSuppressionRules {
             display_patterns: vec!["crates/perl-lsp-ux-tests/tests/**".to_string()],
             path_patterns: vec![Pattern::new("crates/perl-lsp-ux-tests/tests/**")?],
+            classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         };
@@ -3546,6 +3603,7 @@ paths = ["archive/["]
                 Pattern::new("crates/perl-lsp-ux-tests/tests/*")?,
                 Pattern::new("crates/perl-lsp-ux-tests/tests/**")?,
             ],
+            classification_patterns: vec![Vec::new(), Vec::new()],
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         };
@@ -3565,6 +3623,7 @@ paths = ["archive/["]
         let rules = RiprSuppressionRules {
             display_patterns: vec!["crates/perl-lsp-ux-tests/tests/**".to_string()],
             path_patterns: vec![Pattern::new("crates/perl-lsp-ux-tests/tests/**")?],
+            classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         };
@@ -3627,6 +3686,7 @@ paths = ["archive/["]
         let suppressions = RiprSuppressionRules {
             display_patterns: vec!["crates/perl-dap/src/debug_adapter/execution.rs".to_string()],
             path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/execution.rs")?],
+            classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         };
@@ -3691,6 +3751,7 @@ paths = ["archive/["]
         let suppressions = RiprSuppressionRules {
             display_patterns: vec!["crates/perl-dap/src/debug_adapter/execution.rs".to_string()],
             path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/execution.rs")?],
+            classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         };
@@ -3717,6 +3778,7 @@ paths = ["archive/["]
         RiprSuppressionRules {
             display_patterns: Vec::new(),
             path_patterns: Vec::new(),
+            classification_patterns: Vec::new(),
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         }
@@ -3894,6 +3956,7 @@ paths = ["archive/["]
         let suppressions = RiprSuppressionRules {
             display_patterns: vec!["archive/**".to_string()],
             path_patterns: vec![Pattern::new("archive/**")?],
+            classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         };
@@ -5308,6 +5371,7 @@ esac
         let suppressions = RiprSuppressionRules {
             display_patterns: vec!["crates/perl-dap/src/debug_adapter/variables.rs".to_string()],
             path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/variables.rs")?],
+            classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         };
@@ -5376,6 +5440,7 @@ esac
         let suppressions = RiprSuppressionRules {
             display_patterns: vec!["crates/perl-dap/src/debug_adapter/variables.rs".to_string()],
             path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/variables.rs")?],
+            classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         };
@@ -5450,6 +5515,7 @@ esac
         let suppressions = RiprSuppressionRules {
             display_patterns: vec!["crates/perl-dap/src/debug_adapter/variables.rs".to_string()],
             path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/variables.rs")?],
+            classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         };

@@ -838,7 +838,8 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/parser-comparison-evidence-v1",
         "title": "Parser comparison exact terminal evidence",
-        "description": "Finite vocabularies, advertised terminal-state contradictions, and nested evidence-reference roles are constrained here. Constructor validation remains authoritative for producer identity, freshness, digest recomputation, observer/obligation binding, and terminal rules not expressible in this bounded JSON projection. Generic referenced schema versions remain bounded stable IDs because this domain cell does not own their producer-specific version registry.",
+        "description": "Finite vocabularies, advertised terminal-state contradictions, and nested evidence-reference roles are constrained here. This document uses the Draft 2020-12 dialect marker but claims only the repository-supported validation subset; it is not independent full-specification interoperability proof. Constructor validation remains authoritative for producer identity, freshness, digest recomputation, observer/obligation binding, and terminal rules not expressible in this bounded JSON projection. Generic referenced schema versions remain bounded stable IDs because this domain cell does not own their producer-specific version registry.",
+        "x-perl-lsp-validation-profile": "draft-2020-12-supported-subset-v1",
         "oneOf": [
             {"$ref": "#/$defs/subject_execution"},
             {"$ref": "#/$defs/subject_observation"},

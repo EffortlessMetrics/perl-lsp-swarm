@@ -882,11 +882,22 @@ fn harness_terminal_execution_reaches_durable_schema_evidence() -> Result<(), Bo
 }
 
 /// Validate the generated schema with the repository-supported JSON-Schema
-/// subset. The generated contract intentionally uses only these Draft 2020-12
-/// keywords, keeping this proof independent of outer run authority.
+/// subset. The generated contract intentionally uses only this declared
+/// Draft 2020-12 subset; this proof does not claim independent full-spec
+/// interoperability.
 fn validate_schema(payload_json: &str, schema: &Value) -> Result<(), Box<dyn Error>> {
     let payload: Value = serde_json::from_str(payload_json)?;
     validate_value(&payload, schema, schema).map_err(io::Error::other)?;
+    Ok(())
+}
+
+#[test]
+fn generated_schema_declares_the_supported_validation_profile() -> Result<(), Box<dyn Error>> {
+    let schema: Value = serde_json::from_str(&parser_comparison_evidence_schema_json()?)?;
+    assert_eq!(schema["x-perl-lsp-validation-profile"], "draft-2020-12-supported-subset-v1");
+    assert!(schema["description"].as_str().is_some_and(|description| {
+        description.contains("not independent full-specification interoperability proof")
+    }));
     Ok(())
 }
 

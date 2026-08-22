@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Differential parser evidence for exact current, historical, native, and
 //! experimental Perl parser subjects.
 //!
