@@ -7,29 +7,44 @@
 //!
 //! Contract owned here (#8064, prepared-queue stage):
 //!
-//! - bounded intake: distinct pending subjects are capped; admission beyond the
-//!   cap resolves to [`WatcherAdmission::Overflowed`] instead of growing memory
-//!   or dropping silently;
+//! - bounded intake: distinct pending subjects are capped, and retained heap
+//!   entries are capped at twice that (a notification storm against
+//!   still-pending subjects during a slow-callback stall cannot grow the heap
+//!   without bound); admission beyond either cap resolves to
+//!   [`WatcherAdmission::Overflowed`] instead of growing memory or dropping
+//!   silently;
 //! - typed admission: every attempt resolves to [`WatcherAdmission`] — accepted,
 //!   coalesced, overflowed, worker-unavailable, or shut-down. Spawn failure and
 //!   saturation are therefore visible to callers instead of masquerading as
 //!   successful queueing behind a log line;
-//! - deterministic order: due subjects are emitted sorted by URI regardless of
-//!   arrival interleaving or hash iteration order;
+//! - deterministic order and membership: due subjects are emitted sorted by
+//!   (deadline, URI) regardless of arrival interleaving or hash iteration
+//!   order; when more subjects share a deadline than fit in one batch,
+//!   truncation happens after the full sort, so batch membership is also
+//!   interleaving-independent;
 //! - quiet plus maximum latency: repeated schedules extend only the quiet
 //!   deadline; a subject fires at most [`MAX_LATENCY_INTERVALS`] windows after
 //!   first admission, so churn cannot starve publication;
-//! - truthful pressure: pending and active (batch currently inside the
-//!   callback) counts stay observable through the runtime snapshot — moving
-//!   work from pending to active never reports zero total watcher work;
+//! - truthful pressure: pending and active counts stay observable through the
+//!   runtime snapshot — a batch is counted active AT HANDOFF (atomically with
+//!   leaving pending), so pending→active never reports zero total watcher
+//!   work while batches wait for the dispatcher;
 //! - joinable shutdown: both workers stop, pending subjects drain as chunked
 //!   sorted batches delivered only while the callback closure still upgrades,
-//!   and both threads join before teardown completes. In the production
-//!   wiring the sole closure weakly captures the dropping `LspServer`, so
-//!   teardown discards pending work instead of publishing post-shutdown;
+//!   and both threads join before teardown completes — except a worker whose
+//!   own thread triggered the teardown (last-owner Drop from inside the
+//!   callback), which detaches instead of self-joining and finishes
+//!   naturally. In the production wiring the sole closure weakly captures the
+//!   dropping `LspServer`, so teardown discards pending work instead of
+//!   publishing post-shutdown;
 //! - degraded dispatcher: if the callback closure panics mid-dispatch,
-//!   admissions immediately route to [`WatcherAdmission::Unavailable`] rather
-//!   than stranding queued subjects behind apparent success;
+//!   admissions immediately route to [`WatcherAdmission::Unavailable`], all
+//!   previously accepted-but-unprocessed work (in-flight batch, queued
+//!   batches, parked subjects) is dropped AND COUNTED in `panic_dropped`
+//!   instrumentation rather than silently retained behind phantom pressure,
+//!   and pressure reports true zeros. Recovery/delivery-after-recovery
+//!   requires the future coordinator (#7893) and worker-ownership train
+//!   (#10024); this queue deliberately does not rebuild it;
 //! - no semantic authority: this queue never reads files, parses, indexes, or
 //!   mutates workspace state. Fired batches re-enter exactly the server entry
 //!   point the runtime used before, keeping the #7893/#7088 cutover a sink
@@ -37,9 +52,10 @@
 //!
 //! Complexity note: rescheduled subjects leave stale heap entries behind.
 //! They are purged lazily at the heap head on each earliest-due evaluation,
-//! so amortized intake stays linearithmic; the stale population has no hard
-//! structural cap — it is bounded in practice by admissions (each schedule
-//! pushes one entry) and drained by the same evaluations that fire work.
+//! and the total retained population (live plus not-yet-purged stale) is
+//! additionally hard-capped at twice the subject cap — an admission that
+//! would push past the cap purges first and is refused if that still binds.
+//! Amortized intake stays linearithmic.
 //!
 //! Terminal create/remove/rename evidence, canonical duplicate-transport
 //! equivalence, and root/config/trust/watch generation binding remain owned by
@@ -198,25 +214,58 @@ impl IntakeState {
         }
     }
 
-    /// Remove up to `limit` due subjects in deterministic URI order. Subjects
-    /// beyond the limit remain pending for the next pass.
+    /// Remove up to `limit` due subjects in deterministic order.
+    ///
+    /// Ordering is (deadline, uri): deadline-first so earlier windows drain
+    /// first, URI as tiebreak so batch MEMBERSHIP is independent of arrival
+    /// interleaving even when more than `limit` subjects share a deadline
+    /// (#8064 — seq is deliberately not a sort key because it encodes
+    /// interleaving). Truncation happens only AFTER the full sort, and
+    /// non-emitted dues are restored to pending untouched.
     fn take_due_up_to(&mut self, now: u64, limit: usize, stats: &CoalescerStats) -> Vec<String> {
-        let mut due = Vec::new();
-        while due.len() < limit {
-            let Some(deadline) = self.peek_live_deadline(stats) else {
-                break;
-            };
+        let mut due: Vec<(u64, u64, String)> = Vec::new();
+        while let Some(deadline) = self.peek_live_deadline(stats) {
             if deadline > now {
                 break;
             }
-            if let Some(Reverse((_, _, uri))) = self.heap.pop() {
+            // Pop the heap entry but keep the subject mapped until we know it
+            // is emitted — non-selected dues must survive this pass intact.
+            if let Some(entry) = self.heap.pop() {
                 stats.heap_operations.fetch_add(1, Ordering::Relaxed);
-                self.subjects.remove(&uri);
-                due.push(uri);
+                due.push(entry.0);
             }
         }
-        due.sort_unstable();
-        due
+        due.sort_unstable_by(|a, b| (a.0, &a.2).cmp(&(b.0, &b.2)));
+        let mut out = Vec::with_capacity(limit.min(due.len()));
+        for (index, (deadline, _seq, uri)) in due.into_iter().enumerate() {
+            if index < limit {
+                self.subjects.remove(&uri);
+                out.push(uri);
+            } else {
+                // Restore: subject is still mapped, so re-arm its original
+                // entry (same deadline and seq) for the next pass.
+                if let Some(d) = self.subjects.get(&uri) {
+                    self.heap.push(Reverse((deadline, d.seq, uri)));
+                }
+            }
+        }
+        out
+    }
+
+    /// Drop heap entries whose seq no longer matches their subject's current
+    /// registration. Called when the retained-entry cap is reached before an
+    /// admission would push past it; returns nothing — callers re-check the
+    /// resulting length.
+    fn purge_stale_entries(&mut self, stats: &CoalescerStats) {
+        let retained: Vec<Reverse<(u64, u64, String)>> = std::mem::take(&mut self.heap)
+            .into_vec()
+            .into_iter()
+            .filter(|Reverse((_, seq, uri))| {
+                stats.heap_operations.fetch_add(1, Ordering::Relaxed);
+                self.subjects.get(uri).is_some_and(|d| d.seq == *seq)
+            })
+            .collect();
+        self.heap = retained.into();
     }
 }
 
@@ -232,6 +281,9 @@ struct CoalescerStats {
     batches_dispatched: AtomicU64,
     heap_operations: AtomicU64,
     earliest_due_evaluations: AtomicU64,
+    /// Subjects dropped (not delivered) when the callback panicked: in-flight
+    /// batch plus anything queued or parked at degradation time.
+    panic_dropped_total: AtomicU64,
 }
 
 struct Shared {
@@ -250,6 +302,11 @@ struct Shared {
     max_latency_ms: u64,
     max_pending_subjects: usize,
     max_batch_subjects: usize,
+    /// Hard ceiling on retained heap entries; admissions that would push past
+    /// it trigger a stale-entry purge first and are refused as
+    /// [`WatcherAdmission::Overflowed`] if the cap still binds. Production
+    /// value is twice [`MAX_PENDING_SUBJECTS`] (8192); tests may tighten it.
+    max_heap_entries: AtomicUsize,
     stats: CoalescerStats,
 }
 
@@ -295,6 +352,14 @@ pub(crate) struct WatcherPressureSnapshot {
     /// the sole deadline oracle inflates entry touches past the test budget.
     #[cfg(test)]
     pub(crate) earliest_due_evaluations: u64,
+    /// Subjects dropped-and-counted when the callback panicked. Test
+    /// instrumentation only.
+    #[cfg(test)]
+    pub(crate) panic_dropped_total: u64,
+    /// Retained (live + stale) heap entries. Test instrumentation only; the
+    /// bound is asserted by the notification-storm negative control.
+    #[cfg(test)]
+    pub(crate) retained_heap_entries: usize,
 }
 
 /// Debouncer for file watcher change notifications.
@@ -483,6 +548,18 @@ impl FileWatcherDebouncer {
             return WatcherAdmission::ShuttingDown;
         }
 
+        // Both arms below push exactly one heap entry. Enforce the retained-
+        // entry cap BEFORE any deadline/seq mutation: rejecting a coalesce
+        // after mutating seq would orphan the subject's older entries and
+        // silently prevent it from ever firing.
+        if guard.heap.len() >= shared.max_heap_entries.load(Ordering::Relaxed) {
+            guard.purge_stale_entries(&shared.stats);
+            if guard.heap.len() >= shared.max_heap_entries.load(Ordering::Relaxed) {
+                shared.stats.overflowed_total.fetch_add(1, Ordering::Relaxed);
+                return WatcherAdmission::Overflowed;
+            }
+        }
+
         guard.next_seq = guard.next_seq.wrapping_add(1);
         let seq = guard.next_seq;
         let quiet = now.saturating_add(shared.interval_ms);
@@ -569,7 +646,10 @@ impl FileWatcherDebouncer {
         };
         #[cfg(test)]
         {
-            snapshot.outboxed_batches = self.shared.state.lock().outbox.len();
+            let state = self.shared.state.lock();
+            snapshot.outboxed_batches = state.outbox.len();
+            snapshot.retained_heap_entries = state.heap.len();
+            drop(state);
             snapshot.high_water_subjects = stats.high_water_subjects.load(Ordering::SeqCst);
             snapshot.admitted_total = stats.admitted_total.load(Ordering::Relaxed);
             snapshot.coalesced_total = stats.coalesced_total.load(Ordering::Relaxed);
@@ -581,6 +661,7 @@ impl FileWatcherDebouncer {
             snapshot.heap_operations = stats.heap_operations.load(Ordering::Relaxed);
             snapshot.earliest_due_evaluations =
                 stats.earliest_due_evaluations.load(Ordering::Relaxed);
+            snapshot.panic_dropped_total = stats.panic_dropped_total.load(Ordering::Relaxed);
         }
         snapshot
     }
@@ -621,8 +702,8 @@ impl FileWatcherDebouncer {
             }
             handles
         };
-        let _ = handles.intake.join();
-        let _ = handles.dispatcher.join();
+        join_worker(handles.intake);
+        join_worker(handles.dispatcher);
     }
 }
 
@@ -655,6 +736,7 @@ fn make_shared(
         max_latency_ms,
         max_pending_subjects,
         max_batch_subjects,
+        max_heap_entries: AtomicUsize::new(max_pending_subjects.saturating_mul(2)),
         stats: CoalescerStats {
             pending_subjects: AtomicUsize::new(0),
             active_subjects: AtomicUsize::new(0),
@@ -667,12 +749,26 @@ fn make_shared(
             batches_dispatched: AtomicU64::new(0),
             heap_operations: AtomicU64::new(0),
             earliest_due_evaluations: AtomicU64::new(0),
+            panic_dropped_total: AtomicU64::new(0),
         },
     })
 }
 
 fn push_heap_entry(guard: &mut IntakeState, uri: String, effective_deadline: u64, seq: u64) {
     guard.heap.push(Reverse((effective_deadline, seq, uri)));
+}
+
+fn join_worker(handle: JoinHandle<()>) {
+    if handle.thread().id() == thread::current().id() {
+        // Self-join would panic ("a thread cannot join itself"). This happens
+        // when the callback's upgraded state is the last strong owner of the
+        // queue: its Drop runs shutdown_now ON the dispatcher thread. Dropping
+        // the handle detaches; this worker simply finishes naturally once its
+        // own call stack returns.
+        drop(handle);
+        return;
+    }
+    let _ = handle.join();
 }
 
 fn halt_workers(
@@ -687,10 +783,10 @@ fn halt_workers(
         shared.handoff_cv.notify_all();
     }
     if let Some(handle) = intake {
-        let _ = handle.join();
+        join_worker(handle);
     }
     if let Some(handle) = dispatcher {
-        let _ = handle.join();
+        join_worker(handle);
     }
 }
 
@@ -718,6 +814,11 @@ fn intake_loop(shared: Arc<Shared>) {
                 }
                 let due = guard.take_due_up_to(now, shared.max_batch_subjects, &shared.stats);
                 if !due.is_empty() {
+                    // Active accounting moves AT THE HANDOFF (issue req. 9):
+                    // incrementing before the pending store means a queued
+                    // batch is never invisible — pending→active never reports
+                    // zero total work while a batch waits for the dispatcher.
+                    shared.stats.active_subjects.fetch_add(due.len(), Ordering::SeqCst);
                     guard.outbox.push_back(due);
                     shared.stats.pending_subjects.store(guard.subjects.len(), Ordering::SeqCst);
                     shared.handoff_cv.notify_one();
@@ -739,9 +840,11 @@ where
     loop {
         match guard.outbox.pop_front() {
             Some(batch) => {
+                // Active was already counted at handoff (intake side); popping
+                // changes no accounting. Decrement happens after the sink
+                // completes, success or failure.
                 drop(guard);
                 let batch_len = batch.len();
-                shared.stats.active_subjects.fetch_add(batch_len, Ordering::SeqCst);
                 // A panicking callback must not masquerade as delivered work:
                 // mark the coalescer degraded so admissions route to the
                 // unavailable disposition instead of apparent success.
@@ -752,9 +855,32 @@ where
                 if outcome.is_err() {
                     tracing::error!(
                         "file watcher debounce callback panicked; \
-                        scheduling reports unavailable until restart"
+                         scheduling reports unavailable until restart"
                     );
+                    // Flag FIRST: intake checks it at loop top and stops
+                    // firing, so the accounting drain below races nothing.
                     shared.sink_panic.store(true, Ordering::SeqCst);
+                    // Truthful degradation (#8064): accepted-but-unprocessed
+                    // work is dropped and COUNTED, never silently retained.
+                    // The in-flight batch left this loop via pop_front, so its
+                    // subjects are neither pending nor delivered — count them
+                    // here alongside anything queued or still parked.
+                    let mut dropped = batch_len;
+                    {
+                        let mut state_guard = shared.state.lock();
+                        for queued in state_guard.outbox.drain(..) {
+                            dropped += queued.len();
+                        }
+                        dropped += state_guard.subjects.len();
+                        state_guard.subjects.clear();
+                        state_guard.heap.clear();
+                        // Dropped queued batches were already counted active
+                        // at handoff; their decrement would only happen
+                        // post-sink, which never runs for them.
+                        shared.stats.active_subjects.store(0, Ordering::SeqCst);
+                        shared.stats.pending_subjects.store(0, Ordering::SeqCst);
+                        shared.stats.panic_dropped_total.store(dropped as u64, Ordering::SeqCst);
+                    }
                     {
                         let _relock = shared.state.lock();
                         shared.handoff_cv.notify_all();
@@ -1085,51 +1211,66 @@ mod tests {
     }
 
     #[test]
-    fn file_watcher_debouncer_panicking_sink_degrades_admissions_truthfully() {
+    fn file_watcher_debouncer_panicking_sink_drops_and_counts_stranded_work() {
         let panic_gate: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
         let trip = Arc::clone(&panic_gate);
-        let harness = Harness::with_sink(move |uris: Vec<String>| {
-            if *trip.lock() {
-                // Force an out-of-bounds access so the dispatcher's
-                // catch_unwind observes a genuine unwind. Explicit panic!
-                // macros and panic_any are denied even in cfg(test) code by
-                // the crate's clippy configuration.
-                let boom: [u8; 0] = [];
-                let _ = boom[uris.len()];
-            }
-        });
-
-        // First batch delivers normally.
-        harness.debouncer.try_schedule("file:///ok.pl");
-        harness.advance(101);
-        harness.wait_for(
-            || harness.debouncer.pressure().batches_dispatched == 1,
-            "pre-panic delivery",
+        // Batch cap 2 so the panic strands in-flight AND queued subjects.
+        let (delivered, _unused_sink) = collect_delivered();
+        let delivered_for_sink = Arc::clone(&delivered);
+        let harness = Harness::with_caps(
+            move |uris: Vec<String>| {
+                if *trip.lock() {
+                    // Force an out-of-bounds access so the dispatcher's
+                    // catch_unwind observes a genuine unwind. Explicit panic!
+                    // macros and panic_any are denied even in cfg(test) code
+                    // by the crate's clippy configuration.
+                    let boom: [u8; 0] = [];
+                    let _ = boom[uris.len()];
+                }
+                delivered_for_sink.lock().push(uris);
+            },
+            MAX_PENDING_SUBJECTS,
+            2,
         );
-        assert!(harness.debouncer.is_operational());
 
-        // Trip the callback; the in-flight batch panics inside the dispatcher.
+        // Trip BEFORE any dispatch so the very first batch panics mid-flight
+        // with follow-up batches already queued behind it.
         *panic_gate.lock() = true;
-        harness.debouncer.try_schedule("file:///boom.pl");
+        for i in 0..5usize {
+            harness.debouncer.try_schedule(&format!("file:///strand{i}.pl"));
+        }
         harness.advance(101);
         harness.wait_for(
             || !harness.debouncer.is_operational(),
             "degraded flag after panicking dispatch",
         );
 
+        // Truthful transition: in-flight batch (2) plus queued batches (3)
+        // were dropped AND COUNTED, and pressure reports true zeros instead
+        // of phantom retention.
+        let pressure = harness.debouncer.pressure();
+        assert_eq!(pressure.panic_dropped_total, 5, "in-flight + queued subjects counted");
+        assert_eq!(pressure.pending_subjects, 0, "no phantom pending after panic");
+        assert_eq!(pressure.outboxed_batches, 0, "no phantom queued after panic");
+        assert_eq!(pressure.active_subjects, 0);
+
         assert_eq!(
             harness.debouncer.try_schedule("file:///after.pl"),
             WatcherAdmission::Unavailable,
             "degraded queue must refuse admissions instead of apparent success"
         );
-        let pressure = harness.debouncer.pressure();
-        assert!(pressure.unavailable_total >= 1);
+        assert_eq!(
+            harness.debouncer.pressure().unavailable_total,
+            1,
+            "refusal after sink panic is counted as unavailable"
+        );
 
         // Shutdown still reclaims both workers promptly (the panicked
         // dispatcher already exited; intake parks until the shutdown notify).
         harness.debouncer.shutdown_now();
         assert!(harness.workers_joined());
         assert_eq!(harness.debouncer.pending_uris(), 0);
+        assert_eq!(delivered.lock().len(), 0, "nothing was delivered");
     }
 
     #[test]
@@ -1180,7 +1321,9 @@ mod tests {
         let gate: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
         let gate_open = Arc::clone(&gate);
         let harness = Harness::with_sink(move |_uris: Vec<String>| {
-            while !*gate_open.lock() {
+            // Bounded block so a failing assert can never wedge shutdown.
+            let start = Instant::now();
+            while !*gate_open.lock() && start.elapsed() < Duration::from_secs(30) {
                 std::thread::sleep(Duration::from_millis(2));
             }
         });
@@ -1198,6 +1341,26 @@ mod tests {
         let pressure = harness.debouncer.pressure();
         assert_eq!(pressure.pending_subjects, 0);
         assert_eq!(pressure.active_subjects, 1, "active work must stay observable");
+
+        // Issue req. 9 zero-window control: while the dispatcher is stuck in
+        // the held callback, a second wave goes due and is queued. The queue
+        // counts it active AT HANDOFF — pending+active never reports zero
+        // while queued work waits for the dispatcher.
+        harness.debouncer.try_schedule("file:///queued-a.pl");
+        harness.debouncer.try_schedule("file:///queued-b.pl");
+        harness.advance(101);
+        harness.wait_for(
+            || {
+                let p = harness.debouncer.pressure();
+                p.pending_subjects == 0 && p.outboxed_batches == 1 && p.active_subjects == 3
+            },
+            "queued batch visible as active while dispatcher blocked",
+        );
+        {
+            let p = harness.debouncer.pressure();
+            assert_eq!(p.pending_subjects, 0);
+            assert_eq!(p.active_subjects, 3, "1 in callback + 2 queued at handoff");
+        }
 
         *gate.lock() = true;
         harness.wait_for(|| harness.debouncer.pressure().active_subjects == 0, "active release");
@@ -1247,5 +1410,230 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn file_watcher_debouncer_heap_cap_bounds_reschedule_storm_under_stall() {
+        let gate: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+        let gate_open = Arc::clone(&gate);
+        // pending cap 40 → heap cap 80; batch 2 + outbox 8 ⇒ 16 subjects
+        // drain into a saturated outbox and the remaining 24 stay pending
+        // while intake parks at the backpressure gate.
+        let harness = Harness::with_caps(
+            move |_uris: Vec<String>| {
+                // Bounded block: even if the test fails before opening the
+                // gate, shutdown's join must complete instead of hanging the
+                // whole suite.
+                let start = Instant::now();
+                while !*gate_open.lock() && start.elapsed() < Duration::from_secs(30) {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            },
+            40,
+            2,
+        );
+
+        for i in 0..40usize {
+            assert_eq!(
+                harness.debouncer.try_schedule(&format!("file:///storm{i}.pl")),
+                WatcherAdmission::Accepted
+            );
+        }
+        harness.advance(101);
+        // Dispatcher pops batch #1 immediately (in-callback, blocked on the
+        // gate), so queued batches plateau at 7 — count the stall by the
+        // pending map instead, which excludes both in-flight and queued work.
+        harness.wait_for(
+            || harness.debouncer.pressure().pending_subjects == 24,
+            "remainder parks at backpressure",
+        );
+        // Dispatcher holds batch #1 in-callback; up to 8 more fill the
+        // outbox; the remaining dues stay parked pending.
+        let parked: Vec<String> = {
+            let state = harness.shared.state.lock();
+            let mut keys: Vec<String> = state.subjects.keys().cloned().collect();
+            keys.sort();
+            keys
+        };
+        assert_eq!(parked.len(), 24, "40 subjects − 16 outboxed − 2 in-flight must park");
+
+        // Storm: repeated schedules for still-pending URIs. Each supersedes a
+        // previous heap entry; the retained-entry cap plus lazy purge must
+        // keep the heap bounded instead of growing without limit.
+        for _ in 0..300 {
+            for uri in &parked {
+                let admission = harness.debouncer.try_schedule(uri);
+                assert!(
+                    matches!(admission, WatcherAdmission::Coalesced | WatcherAdmission::Overflowed),
+                    "unexpected admission {admission:?}"
+                );
+            }
+            assert!(
+                harness.debouncer.pressure().retained_heap_entries <= 80,
+                "heap exceeded cap during storm"
+            );
+        }
+
+        let pressure = harness.debouncer.pressure();
+        assert!(pressure.retained_heap_entries <= 80);
+        assert!(pressure.retained_heap_entries >= parked.len(), "live entries survive purge");
+        assert_eq!(pressure.pending_subjects, parked.len());
+        *gate.lock() = true;
+    }
+
+    #[test]
+    fn file_watcher_debouncer_heap_cap_flips_to_overflowed_when_purge_cannot_free() {
+        let harness = Harness::with_caps(|_uris: Vec<String>| {}, 16, MAX_BATCH_SUBJECTS);
+        // Tighten the retained-entry cap to the live-entry count so the purge
+        // pass cannot free anything: every further coalesce must refuse.
+        harness.shared.max_heap_entries.store(4, Ordering::Relaxed);
+
+        for i in 0..4usize {
+            assert_eq!(
+                harness.debouncer.try_schedule(&format!("file:///cap{i}.pl")),
+                WatcherAdmission::Accepted
+            );
+        }
+        for attempt in 0..10 {
+            assert_eq!(
+                harness.debouncer.try_schedule("file:///cap0.pl"),
+                WatcherAdmission::Overflowed,
+                "attempt {attempt}: live entries at cap must flip admissions"
+            );
+        }
+        let pressure = harness.debouncer.pressure();
+        assert_eq!(pressure.overflowed_total, 10);
+        assert_eq!(pressure.retained_heap_entries, 4, "no growth past the cap");
+        assert_eq!(pressure.coalesced_total, 0);
+    }
+
+    #[test]
+    fn file_watcher_debouncer_batch_membership_is_interleaving_independent_above_batch_limit() {
+        const CHUNK_LIMIT: usize = 128;
+        let orders: [Vec<usize>; 2] = [(0..600usize).collect(), {
+            let mut v: Vec<usize> = (0..600usize).collect();
+            // Deterministic non-trivial permutation (xorshift shuffle).
+            let mut seed: u64 = 0x9E3779B97F4A7C15;
+            for i in (1..v.len()).rev() {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                v.swap(i, (seed as usize) % (i + 1));
+            }
+            v
+        }];
+
+        let mut runs: Vec<Vec<Vec<String>>> = Vec::new();
+        for order in &orders {
+            let (delivered, sink) = collect_delivered();
+            let harness = Harness::with_caps(sink, MAX_PENDING_SUBJECTS, CHUNK_LIMIT);
+
+            for index in order {
+                harness.debouncer.try_schedule(&format!("file:///mem{index}.pl"));
+            }
+            harness.advance(101);
+            harness.wait_for(
+                || {
+                    let batches = delivered.lock();
+                    batches.iter().map(Vec::len).sum::<usize>() == 600
+                },
+                "membership run drain",
+            );
+            runs.push(delivered.lock().clone());
+        }
+
+        // Identical membership sequences across interleavings.
+        assert_eq!(runs[0], runs[1]);
+        // Each batch bounded and internally sorted; concatenation is the full
+        // sorted set with every URI exactly once.
+        let mut expected: Vec<String> =
+            (0..600usize).map(|i| format!("file:///mem{i}.pl")).collect();
+        expected.sort();
+        for batch in &runs[0] {
+            assert!(batch.len() <= CHUNK_LIMIT);
+            let mut sorted = batch.clone();
+            sorted.sort();
+            assert_eq!(&sorted, batch, "batch itself must be sorted");
+        }
+        let flat: Vec<String> = runs[0].iter().flat_map(|b| b.iter().cloned()).collect();
+        assert_eq!(flat, expected);
+    }
+
+    #[test]
+    fn file_watcher_debouncer_survives_last_owner_drop_from_dispatcher_thread() {
+        let cell: Arc<Mutex<Option<Arc<FileWatcherDebouncer>>>> = Arc::new(Mutex::new(None));
+        let trip: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+        let latch: Arc<Mutex<bool>> = Arc::new(Mutex::new(true)); // open
+        let delivered_log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let cell_for_sink = Arc::clone(&cell);
+        let trip_for_sink = Arc::clone(&trip);
+        let latch_for_sink = Arc::clone(&latch);
+        let log_for_sink = Arc::clone(&delivered_log);
+
+        let raw = FileWatcherDebouncer::with_interval(Duration::from_millis(30), move |uris| {
+            for uri in uris {
+                log_for_sink.lock().push(uri);
+            }
+            // Hold the dispatcher inside this callback while the latch is
+            // closed, so the test can queue follow-up work behind it.
+            // Bounded so a failing assert can never wedge shutdown.
+            let spin_start = Instant::now();
+            while !*latch_for_sink.lock() && spin_start.elapsed() < Duration::from_secs(30) {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            if *trip_for_sink.lock() {
+                // Last-owner drop FROM the dispatcher thread: Drop ->
+                // shutdown_now would join this very thread. Pre-fix this
+                // self-joined (panic -> misreported sink panic -> stranded
+                // work); post-fix the worker detaches and finishes naturally.
+                if let Some(last) = cell_for_sink.lock().take() {
+                    drop(last);
+                }
+            }
+        });
+        let debouncer = Arc::new(raw);
+        *cell.lock() = Some(Arc::clone(&debouncer));
+
+        // Warm-up with the latch open.
+        debouncer.try_schedule("file:///selfjoin-a.pl");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !delivered_log.lock().iter().any(|u| u.ends_with("selfjoin-a.pl")) {
+            assert!(Instant::now() < deadline, "warm-up delivery timed out");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        // Close the latch, wait out the current window so any in-flight
+        // callback has resolved, then schedule B: its callback must block.
+        *latch.lock() = false;
+        std::thread::sleep(Duration::from_millis(80));
+        debouncer.try_schedule("file:///selfjoin-b.pl");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !delivered_log.lock().iter().any(|u| u.ends_with("selfjoin-b.pl")) {
+            assert!(Instant::now() < deadline, "blocked-callback entry timed out");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        debouncer.try_schedule("file:///selfjoin-c.pl");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while debouncer.pressure().outboxed_batches == 0 {
+            assert!(Instant::now() < deadline, "follow-up batch never reached outbox");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        drop(debouncer); // cell now holds the only strong reference
+        *trip.lock() = true;
+        *latch.lock() = true;
+
+        // Discriminator: post-fix the detached dispatcher resumes, delivers C
+        // after surviving its own teardown, and no phantom sink panic was
+        // recorded. Pre-fix, the self-join panic strands C forever.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !delivered_log.lock().iter().any(|u| u.ends_with("selfjoin-c.pl")) {
+            assert!(
+                Instant::now() < deadline,
+                "post-teardown delivery timed out (self-join hazard)"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
     }
 }
