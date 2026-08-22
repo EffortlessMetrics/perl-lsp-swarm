@@ -1179,6 +1179,28 @@ mod tests {
     }
 
     #[test]
+    fn failed_start_for_test_assemble_owner_degrades_both_worker_arms() {
+        // Both injected Err arms of `failed_start_for_test` flow through the
+        // real `assemble` owner: neither worker handle survives, admission is
+        // unavailable and counted on both the typed and legacy paths, pressure
+        // reports truthful zeros, and teardown stays idempotent with no
+        // handles to join.
+        let clock = Arc::new(ManualClock::new());
+        let debouncer = FileWatcherDebouncer::failed_start_for_test(clock);
+        assert!(!debouncer.is_operational());
+        assert_eq!(debouncer.try_schedule("file:///intake-arm.pl"), WatcherAdmission::Unavailable);
+        debouncer.schedule("file:///dispatcher-arm.pl"); // legacy path also refuses
+        let pressure = debouncer.pressure();
+        assert_eq!(pressure.unavailable_total, 2);
+        assert_eq!(pressure.pending_subjects, 0);
+        assert_eq!(pressure.active_subjects, 0);
+        assert_eq!(pressure.overflowed_total, 0);
+        debouncer.shutdown_now();
+        debouncer.shutdown_now(); // still idempotent with no handles
+        assert!(debouncer.workers_lock_is_empty());
+    }
+
+    #[test]
     fn file_watcher_debouncer_shutdown_flushes_one_final_sorted_bounded_flush_then_joins() {
         let (delivered, sink) = collect_delivered();
         let harness = Harness::with_sink(sink);
