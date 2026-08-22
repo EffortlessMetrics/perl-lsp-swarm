@@ -210,10 +210,11 @@ fn quick_fixes_for_diagnostic(
         c if c == DiagnosticCode::DuplicateHashKey.as_str() => {
             actions.extend(quick_fixes::fix_duplicate_hash_keys(source, &qf_diag));
         }
-        // PL700: Unused import
-        c if c == DiagnosticCode::UnusedImport.as_str() => {
-            actions.extend(quick_fixes::fix_unused_import(source, &qf_diag));
-        }
+        // PL700: Unused import — withdrawn (#11079). Diagnostic prose, code,
+        // range, or line shape grants no import-edit authority until the
+        // exact replacement trains land (#1719 explicit-symbol removal,
+        // #8322 complete module-load assessment). The diagnostic remains an
+        // advisory-only surface.
         // PL501: Deprecated $[ array base variable
         c if c == DiagnosticCode::DeprecatedArrayBase.as_str() => {
             actions.extend(quick_fixes::fix_deprecated_array_base(source, &qf_diag));
