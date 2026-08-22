@@ -183,17 +183,38 @@ pub fn apply_edits_exact(
     let mut order: Vec<&ResolvedEdit> = resolved.iter().collect();
     order.sort_by_key(|edit| (edit.start_byte, edit.end_byte));
 
+    let mut group_start = 0;
+    while group_start < order.len() {
+        let first = order[group_start];
+        if first.start_byte == first.end_byte {
+            let mut group_end = group_start + 1;
+            while group_end < order.len()
+                && order[group_end].start_byte == first.start_byte
+                && order[group_end].end_byte == first.end_byte
+            {
+                group_end += 1;
+            }
+
+            for (offset, current) in order[group_start + 1..group_end].iter().enumerate() {
+                for previous in &order[group_start..group_start + 1 + offset] {
+                    if edits[previous.original_index].new_text
+                        == edits[current.original_index].new_text
+                    {
+                        return Err(EditApplicationError::DuplicateEdits {
+                            first_edit_index: previous.original_index,
+                            second_edit_index: current.original_index,
+                        });
+                    }
+                }
+            }
+            group_start = group_end;
+        } else {
+            group_start += 1;
+        }
+    }
+
     for window in order.windows(2) {
         let (first, second) = (window[0], window[1]);
-        if first.start_byte == first.end_byte
-            && first.start_byte == second.start_byte
-            && edits[first.original_index].new_text == edits[second.original_index].new_text
-        {
-            return Err(EditApplicationError::DuplicateEdits {
-                first_edit_index: first.original_index,
-                second_edit_index: second.original_index,
-            });
-        }
         if second.start_byte < first.end_byte {
             return Err(EditApplicationError::OverlappingEdits {
                 first_edit_index: first.original_index,
