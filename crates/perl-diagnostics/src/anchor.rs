@@ -1,9 +1,17 @@
-//! Parser diagnostic anchors for stale-source detection.
+//! Stale-source disposition for parse diagnostics.
 //!
-//! A [`ParseDiagnosticAnchor`] pairs a [`ByteSpan`] with a digest of the source
-//! text it was minted from. Consumers call [`ParseDiagnosticAnchor::resolve_for_current`]
+//! A [`StaleSourceAnchor`] pairs a [`ByteSpan`] with a digest of the source
+//! text it was minted from. Consumers call [`StaleSourceAnchor::resolve_for_current`]
 //! to determine whether the diagnostic is still valid for the source text they
 //! currently hold.
+//!
+//! # Ownership boundary
+//!
+//! This is the freshness layer of the diagnostic-anchor contract, not a second
+//! position resolver: `perl_parser_core`'s `ParseDiagnosticAnchor` (#6941)
+//! owns *where* a diagnostic anchors in source text; this type owns *whether*
+//! that text is still the text the diagnostic was produced from. The two are
+//! complementary and neither reopens the other's contract.
 //!
 //! # Stale-source disposition
 //!
@@ -23,12 +31,12 @@
 //! for every anchor:
 //!
 //! ```
-//! use perl_diagnostics::anchor::{BatchFreshnessChecker, ParseDiagnosticAnchor};
+//! use perl_diagnostics::anchor::{BatchFreshnessChecker, StaleSourceAnchor};
 //! use perl_diagnostics::ByteSpan;
 //!
 //! let source = b"package Foo;\n1;\n";
 //! let span = ByteSpan::new(0, 7).expect("valid span");
-//! let anchor = ParseDiagnosticAnchor::mint(span, source);
+//! let anchor = StaleSourceAnchor::mint(span, source);
 //!
 //! let mut checker = BatchFreshnessChecker::new();
 //! let resolution = checker.check(&anchor, Some(source));
@@ -56,7 +64,7 @@ const ANCHOR_DIGEST_DOMAIN: &[u8] = b"perl-lsp:anchor-source-digest:v1\0";
 /// A domain-separated SHA-256 digest of exact source bytes, scoped to the
 /// parser anchor domain.
 ///
-/// `SourceDigest` is the freshness key for [`ParseDiagnosticAnchor`]. Two
+/// `SourceDigest` is the freshness key for [`StaleSourceAnchor`]. Two
 /// `SourceDigest` values are equal if and only if the source byte slices
 /// they were computed from are byte-for-byte identical.
 ///
@@ -95,24 +103,38 @@ impl SourceDigest {
     /// Format as the wire representation: `anchor-digest:<64 lowercase hex>`.
     #[must_use]
     pub fn as_wire(&self) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
         let mut out = String::with_capacity("anchor-digest:".len() + 64);
         out.push_str("anchor-digest:");
         for byte in &self.0 {
-            out.push_str(&format!("{byte:02x}"));
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 0x0f) as usize] as char);
         }
         out
+    }
+
+    /// Write the wire representation (`anchor-digest:<64 lowercase hex>`,
+    /// excluding the `SourceDigest(...)` wrapper) directly to `f`.
+    fn write_wire(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("anchor-digest:")?;
+        for byte in &self.0 {
+            f.write_fmt(format_args!("{byte:02x}"))?;
+        }
+        Ok(())
     }
 }
 
 impl std::fmt::Debug for SourceDigest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SourceDigest({})", self.as_wire())
+        f.write_str("SourceDigest(")?;
+        self.write_wire(f)?;
+        f.write_str(")")
     }
 }
 
 impl std::fmt::Display for SourceDigest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.as_wire())
+        self.write_wire(f)
     }
 }
 
@@ -126,7 +148,7 @@ impl serde::Serialize for SourceDigest {
 #[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for SourceDigest {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(deserializer)?;
+        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
         let hex = s.strip_prefix("anchor-digest:").ok_or_else(|| {
             serde::de::Error::invalid_value(
                 serde::de::Unexpected::Str(&s),
@@ -149,7 +171,7 @@ impl<'de> serde::Deserialize<'de> for SourceDigest {
     }
 }
 
-// ── ParseDiagnosticAnchor ─────────────────────────────────────────────────────
+// ── StaleSourceAnchor ─────────────────────────────────────────────────────
 
 /// A diagnostic anchor: a [`ByteSpan`] paired with a digest of the source text
 /// it was minted from.
@@ -161,24 +183,24 @@ impl<'de> serde::Deserialize<'de> for SourceDigest {
 /// # Minting
 ///
 /// ```
-/// use perl_diagnostics::anchor::ParseDiagnosticAnchor;
+/// use perl_diagnostics::anchor::StaleSourceAnchor;
 /// use perl_diagnostics::ByteSpan;
 ///
 /// let source = b"package Foo;\n1;\n";
 /// let span = ByteSpan::new(0, 7).expect("valid span");
-/// let anchor = ParseDiagnosticAnchor::mint(span, source);
+/// let anchor = StaleSourceAnchor::mint(span, source);
 /// assert_eq!(anchor.span(), span);
 /// ```
 ///
 /// # Resolving
 ///
 /// ```
-/// use perl_diagnostics::anchor::{AnchorResolution, ParseDiagnosticAnchor};
+/// use perl_diagnostics::anchor::{AnchorResolution, StaleSourceAnchor};
 /// use perl_diagnostics::ByteSpan;
 ///
 /// let source = b"package Foo;\n1;\n";
 /// let span = ByteSpan::new(0, 7).expect("valid span");
-/// let anchor = ParseDiagnosticAnchor::mint(span, source);
+/// let anchor = StaleSourceAnchor::mint(span, source);
 ///
 /// // Same source → Current.
 /// assert!(matches!(anchor.resolve_for_current(source), AnchorResolution::Current(_)));
@@ -189,14 +211,14 @@ impl<'de> serde::Deserialize<'de> for SourceDigest {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct ParseDiagnosticAnchor {
+pub struct StaleSourceAnchor {
     /// The byte span of the associated diagnostic.
     span: ByteSpan,
     /// Digest of the source text at the time this anchor was minted.
     minted_digest: SourceDigest,
 }
 
-impl ParseDiagnosticAnchor {
+impl StaleSourceAnchor {
     /// Mint a new anchor for the given `span` and `source` text.
     ///
     /// The anchor captures both the span and a digest of the exact source bytes.
@@ -245,10 +267,10 @@ impl ParseDiagnosticAnchor {
 
 // ── AnchorResolution ──────────────────────────────────────────────────────────
 
-/// The result of resolving a [`ParseDiagnosticAnchor`] against a current source
+/// The result of resolving a [`StaleSourceAnchor`] against a current source
 /// text.
 ///
-/// Produced by [`ParseDiagnosticAnchor::resolve_for_current`] and
+/// Produced by [`StaleSourceAnchor::resolve_for_current`] and
 /// [`BatchFreshnessChecker::check`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -309,7 +331,7 @@ impl AnchorResolution {
 
 // ── BatchFreshnessChecker ─────────────────────────────────────────────────────
 
-/// Once-per-batch freshness checker for [`ParseDiagnosticAnchor`] values.
+/// Once-per-batch freshness checker for [`StaleSourceAnchor`] values.
 ///
 /// Within a single batch (one source snapshot), the current-source digest is
 /// computed at most once, regardless of how many anchors are checked. This
@@ -322,15 +344,15 @@ impl AnchorResolution {
 /// # Example
 ///
 /// ```
-/// use perl_diagnostics::anchor::{AnchorResolution, BatchFreshnessChecker, ParseDiagnosticAnchor};
+/// use perl_diagnostics::anchor::{AnchorResolution, BatchFreshnessChecker, StaleSourceAnchor};
 /// use perl_diagnostics::ByteSpan;
 ///
 /// let source = b"my $x = 1;";
 /// let span1 = ByteSpan::new(0, 2).expect("valid");
 /// let span2 = ByteSpan::new(3, 5).expect("valid");
 ///
-/// let anchor1 = ParseDiagnosticAnchor::mint(span1, source);
-/// let anchor2 = ParseDiagnosticAnchor::mint(span2, source);
+/// let anchor1 = StaleSourceAnchor::mint(span1, source);
+/// let anchor2 = StaleSourceAnchor::mint(span2, source);
 ///
 /// let mut checker = BatchFreshnessChecker::new();
 /// // First call computes the current digest.
@@ -373,12 +395,12 @@ impl BatchFreshnessChecker {
     /// - `Some(source)` → computes the current digest on the first call, then
     ///   reuses the cached digest on all subsequent calls within this batch.
     ///
-    /// The anchor's [`resolve_for_current`](ParseDiagnosticAnchor::resolve_for_current)
+    /// The anchor's [`resolve_for_current`](StaleSourceAnchor::resolve_for_current)
     /// is equivalent to calling this method with `Some(current_source)` on a
     /// fresh checker; use this method to share the digest across multiple anchors.
     pub fn check(
         &mut self,
-        anchor: &ParseDiagnosticAnchor,
+        anchor: &StaleSourceAnchor,
         current_source: Option<&[u8]>,
     ) -> AnchorResolution {
         let Some(source) = current_source else {
@@ -471,13 +493,13 @@ mod tests {
         assert_eq!(format!("{d}"), d.as_wire());
     }
 
-    // ── ParseDiagnosticAnchor ─────────────────────────────────────────────────
+    // ── StaleSourceAnchor ─────────────────────────────────────────────────
 
     #[test]
     fn anchor_mint_records_span_and_digest() {
         let source = b"my $x = 42;";
         let s = span(0, 2);
-        let anchor = ParseDiagnosticAnchor::mint(s, source);
+        let anchor = StaleSourceAnchor::mint(s, source);
         assert_eq!(anchor.span(), s);
         assert_eq!(anchor.minted_digest(), &SourceDigest::of_bytes(source));
     }
@@ -485,7 +507,7 @@ mod tests {
     #[test]
     fn resolve_current_when_source_unchanged() {
         let source = b"package Foo;\n1;\n";
-        let anchor = ParseDiagnosticAnchor::mint(span(0, 7), source);
+        let anchor = StaleSourceAnchor::mint(span(0, 7), source);
         let resolution = anchor.resolve_for_current(source);
         assert!(
             matches!(resolution, AnchorResolution::Current(sp) if sp == span(0, 7)),
@@ -497,7 +519,7 @@ mod tests {
     fn resolve_stale_when_source_changed() {
         let source_a = b"package Foo;\n1;\n";
         let source_b = b"package Bar;\n1;\n";
-        let anchor = ParseDiagnosticAnchor::mint(span(0, 7), source_a);
+        let anchor = StaleSourceAnchor::mint(span(0, 7), source_a);
         let resolution = anchor.resolve_for_current(source_b);
         assert!(
             matches!(resolution, AnchorResolution::Stale { .. }),
@@ -509,7 +531,7 @@ mod tests {
     fn resolve_stale_carries_both_digests() {
         let source_a = b"original";
         let source_b = b"modified";
-        let anchor = ParseDiagnosticAnchor::mint(span(0, 8), source_a);
+        let anchor = StaleSourceAnchor::mint(span(0, 8), source_a);
         let resolution = anchor.resolve_for_current(source_b);
         if let AnchorResolution::Stale { minted_digest, current_digest } = resolution {
             assert_eq!(minted_digest, SourceDigest::of_bytes(source_a));
@@ -522,9 +544,9 @@ mod tests {
     #[test]
     fn anchor_equality_based_on_span_and_digest() {
         let source = b"my $x;";
-        let a = ParseDiagnosticAnchor::mint(span(0, 2), source);
-        let b = ParseDiagnosticAnchor::mint(span(0, 2), source);
-        let c = ParseDiagnosticAnchor::mint(span(3, 5), source);
+        let a = StaleSourceAnchor::mint(span(0, 2), source);
+        let b = StaleSourceAnchor::mint(span(0, 2), source);
+        let c = StaleSourceAnchor::mint(span(3, 5), source);
         assert_eq!(a, b, "same span + same source → equal anchors");
         assert_ne!(a, c, "different span → different anchors");
     }
@@ -566,7 +588,7 @@ mod tests {
     #[test]
     fn batch_checker_none_source_returns_not_proven() {
         let source = b"my $x;";
-        let anchor = ParseDiagnosticAnchor::mint(span(0, 2), source);
+        let anchor = StaleSourceAnchor::mint(span(0, 2), source);
         let mut checker = BatchFreshnessChecker::new();
         let resolution = checker.check(&anchor, None);
         assert!(
@@ -583,7 +605,7 @@ mod tests {
     #[test]
     fn batch_checker_caches_digest_after_first_check() {
         let source = b"package Foo;\n";
-        let anchor = ParseDiagnosticAnchor::mint(span(0, 7), source);
+        let anchor = StaleSourceAnchor::mint(span(0, 7), source);
         let mut checker = BatchFreshnessChecker::new();
         assert!(checker.cached_digest().is_none());
         let _ = checker.check(&anchor, Some(source));
@@ -591,11 +613,35 @@ mod tests {
         assert_eq!(checker.cached_digest(), Some(&SourceDigest::of_bytes(source)));
     }
 
+    /// Discriminating proof of once-per-batch freshness: after the first `check`
+    /// fixes the batch's source snapshot, later calls passing *different* source
+    /// bytes must still resolve against the first snapshot. A checker that
+    /// recomputed the digest per call would flip this result to `Stale`.
+    #[test]
+    fn batch_checker_resolves_later_calls_against_first_snapshot() {
+        let snapshot = b"snapshot at batch start";
+        let other = b"entirely different bytes";
+        let anchor = StaleSourceAnchor::mint(span(0, 8), snapshot);
+        let mut checker = BatchFreshnessChecker::new();
+        let first = checker.check(&anchor, Some(snapshot));
+        assert!(first.is_current(), "first call must resolve against its own snapshot");
+        let second = checker.check(&anchor, Some(other));
+        assert!(
+            second.is_current(),
+            "later calls must reuse the first snapshot's digest, not recompute from `other`"
+        );
+        assert_eq!(
+            checker.cached_digest(),
+            Some(&SourceDigest::of_bytes(snapshot)),
+            "cached digest must remain the first snapshot's digest"
+        );
+    }
+
     #[test]
     fn batch_checker_returns_current_for_same_source() {
         let source = b"my $x = 1;";
-        let a1 = ParseDiagnosticAnchor::mint(span(0, 2), source);
-        let a2 = ParseDiagnosticAnchor::mint(span(3, 5), source);
+        let a1 = StaleSourceAnchor::mint(span(0, 2), source);
+        let a2 = StaleSourceAnchor::mint(span(3, 5), source);
         let mut checker = BatchFreshnessChecker::new();
         let r1 = checker.check(&a1, Some(source));
         let r2 = checker.check(&a2, Some(source));
@@ -607,7 +653,7 @@ mod tests {
     fn batch_checker_returns_stale_for_different_source() {
         let source_a = b"original source";
         let source_b = b"modified source";
-        let anchor = ParseDiagnosticAnchor::mint(span(0, 8), source_a);
+        let anchor = StaleSourceAnchor::mint(span(0, 8), source_a);
         let mut checker = BatchFreshnessChecker::new();
         let resolution = checker.check(&anchor, Some(source_b));
         assert!(
@@ -619,7 +665,7 @@ mod tests {
     #[test]
     fn batch_checker_for_source_pre_loads_digest() {
         let source = b"pre-loaded";
-        let anchor = ParseDiagnosticAnchor::mint(span(0, 3), source);
+        let anchor = StaleSourceAnchor::mint(span(0, 3), source);
         let mut checker = BatchFreshnessChecker::for_source(source);
         assert!(checker.cached_digest().is_some(), "for_source must pre-load the digest");
         let resolution = checker.check(&anchor, Some(source));
@@ -629,7 +675,7 @@ mod tests {
     #[test]
     fn batch_checker_reset_clears_cache() {
         let source = b"some source";
-        let anchor = ParseDiagnosticAnchor::mint(span(0, 4), source);
+        let anchor = StaleSourceAnchor::mint(span(0, 4), source);
         let mut checker = BatchFreshnessChecker::new();
         let _ = checker.check(&anchor, Some(source));
         assert!(checker.cached_digest().is_some());
@@ -641,7 +687,7 @@ mod tests {
     fn batch_checker_handles_multiple_anchors_single_batch() {
         let source = b"my $x = 1; my $y = 2;";
         let anchors: Vec<_> =
-            (0..5).map(|i| ParseDiagnosticAnchor::mint(span(i, i + 1), source)).collect();
+            (0..5).map(|i| StaleSourceAnchor::mint(span(i, i + 1), source)).collect();
         let mut checker = BatchFreshnessChecker::new();
         for anchor in &anchors {
             let resolution = checker.check(anchor, Some(source));
@@ -656,7 +702,7 @@ mod tests {
     fn falsifier_stale_when_source_differs() {
         let source_a = b"package A;\n";
         let source_b = b"package B;\n";
-        let anchor = ParseDiagnosticAnchor::mint(span(0, 7), source_a);
+        let anchor = StaleSourceAnchor::mint(span(0, 7), source_a);
         assert!(
             matches!(anchor.resolve_for_current(source_b), AnchorResolution::Stale { .. }),
             "falsifier: different source must produce Stale"
@@ -667,7 +713,7 @@ mod tests {
     #[test]
     fn falsifier_current_when_source_same() {
         let source = b"package A;\n";
-        let anchor = ParseDiagnosticAnchor::mint(span(0, 7), source);
+        let anchor = StaleSourceAnchor::mint(span(0, 7), source);
         assert!(
             anchor.resolve_for_current(source).is_current(),
             "falsifier: same source must produce Current"
@@ -678,7 +724,7 @@ mod tests {
     #[test]
     fn falsifier_not_proven_when_no_source() {
         let source = b"any source";
-        let anchor = ParseDiagnosticAnchor::mint(span(0, 3), source);
+        let anchor = StaleSourceAnchor::mint(span(0, 3), source);
         let mut checker = BatchFreshnessChecker::new();
         assert!(
             checker.check(&anchor, None).is_not_proven(),
@@ -746,10 +792,9 @@ mod tests {
         #[test]
         fn anchor_serde_round_trip() {
             let source = b"package Foo;\n1;\n";
-            let anchor = ParseDiagnosticAnchor::mint(span(0, 7), source);
+            let anchor = StaleSourceAnchor::mint(span(0, 7), source);
             let json = serde_json::to_string(&anchor).expect("serialize anchor");
-            let back: ParseDiagnosticAnchor =
-                serde_json::from_str(&json).expect("deserialize anchor");
+            let back: StaleSourceAnchor = serde_json::from_str(&json).expect("deserialize anchor");
             assert_eq!(anchor, back);
         }
 

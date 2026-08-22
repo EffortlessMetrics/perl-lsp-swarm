@@ -4,9 +4,7 @@
 //! This prevents silent breakage from future module edits that might introduce colliding names.
 
 // Re-export from anchor module.
-pub use crate::anchor::{
-    AnchorResolution, BatchFreshnessChecker, ParseDiagnosticAnchor, SourceDigest,
-};
+pub use crate::anchor::{AnchorResolution, BatchFreshnessChecker, SourceDigest, StaleSourceAnchor};
 
 // Re-export from codes module.
 pub use crate::codes::{DiagnosticCategory, DiagnosticCode, DiagnosticSeverity, DiagnosticTag};

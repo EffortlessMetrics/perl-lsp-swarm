@@ -1,9 +1,9 @@
-# Context: ParseDiagnosticAnchor — Issue #6931 / #11616
+# Context: StaleSourceAnchor (parse-diagnostic stale-source disposition) — Issue #6931 / #11616
 
 ## Background
 
-`ParseDiagnosticAnchor` is a lightweight pair of a [`ByteSpan`] and a source-text
-digest, emitted by the parser together with each diagnostic. Its purpose is to
+`StaleSourceAnchor` is a lightweight pair of a [`ByteSpan`] and a source-text
+digest, emitted together with each parse diagnostic. Its purpose is to
 allow downstream consumers (LSP handlers, incremental-parse pipelines, workspace
 indexers) to ask a single question:
 
@@ -13,17 +13,26 @@ Without an anchor, a consumer holding a `ByteSpan` from a previous parse must
 re-run the full parse to discover whether the diagnostic is still accurate.
 With an anchor, it can check freshness in O(1) per batch.
 
+## Ownership boundary (resolved 2026-08-22 repair)
+
+Merged #6941 already owns `perl_parser_core::ParseDiagnosticAnchor`, a *position*
+resolver (`Exact`/`EndOfInput`/`NoSource`/`InvalidOffset`/`InvalidUtf8Boundary`
+resolved against source length). This contract deliberately does NOT duplicate
+that name or reopen that contract: it is the complementary *freshness* layer.
+The perl-diagnostics type was renamed from `ParseDiagnosticAnchor` to
+`StaleSourceAnchor` so the two authorities cannot be confused at import time.
+
 ## Related issues
 
 | Issue | Role |
 |-------|------|
-| #6941 | Lands the `ParseDiagnosticAnchor` base contract (source-text resolution, `InvalidUtf8Boundary`) — **merged** |
+| #6941 | Lands the `ParseDiagnosticAnchor` base contract (source-text resolution, `InvalidUtf8Boundary`) — **merged**; owns position resolution |
 | #6931 | Closed as superseded by #6941; carried one genuine P2 remainder: stale-source disposition |
 | #11616 | This work — implements `resolve_for_current` with once-per-batch freshness constraint |
 
 ## Authority split
 
-- **This issue** owns: `ParseDiagnosticAnchor` type, `AnchorResolution` enum,
+- **This issue** owns: `StaleSourceAnchor` type, `AnchorResolution` enum,
   `SourceDigest` internal type, `BatchFreshnessChecker`, and tests in
   `crates/perl-diagnostics/`.
 - **Parser** owns: minting anchors at the call site where diagnostics are emitted.
