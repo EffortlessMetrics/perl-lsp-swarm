@@ -1,0 +1,392 @@
+schema_version = 1
+policy = "ga-evidence-policy"
+
+# Governs which feature classes may claim `proven` and what evidence each
+# requires (#6731). Runtime advertisement (`maturity`) is deliberately
+# unchanged by this policy: it gates product behavior. This policy governs
+# PUBLIC CLAIMS only.
+#
+# Every eligible class requires the full evidence set. A row may always claim
+# less than it has earned; claiming more fails `catalog-authority check-catalog`.
+
+default_class = "request_response"
+
+[[class]]
+id = 'request_response'
+ga_eligible = true
+required_evidence = [
+  "capability_dispatch",
+  "positive_behavior",
+  "shape_schema",
+  "real_process_wire",
+  "negative_control",
+]
+
+# Resolve variants must earn their own receipts; a parent provider's proof
+# never promotes its resolve variant (#8289/#8345 boundary).
+[[class]]
+id = 'resolve_variant'
+ga_eligible = true
+required_evidence = [
+  "capability_dispatch",
+  "positive_behavior",
+  "shape_schema",
+  "real_process_wire",
+  "negative_control",
+]
+
+[[class]]
+id = 'notification_event'
+ga_eligible = true
+required_evidence = [
+  "capability_dispatch",
+  "positive_behavior",
+  "shape_schema",
+  "real_process_wire",
+  "negative_control",
+]
+
+# Server -> client requests cannot be GA while their client response outcome
+# is unconsumed.
+[[class]]
+id = 'server_initiated_request'
+ga_eligible = false
+required_evidence = [
+  "capability_dispatch",
+  "positive_behavior",
+  "shape_schema",
+  "real_process_wire",
+  "negative_control",
+]
+blocked_until = "#6722 #6724 own server-to-client request response consumption"
+
+# Document/workspace features cannot be GA while retained-state lifecycles
+# are unproven.
+[[class]]
+id = 'document_lifecycle'
+ga_eligible = false
+required_evidence = ["capability_dispatch", "positive_behavior", "negative_control"]
+blocked_until = "#6726 #6728 own retained-state lifecycle matrices"
+
+[[class]]
+id = 'cancellation_progress'
+ga_eligible = false
+required_evidence = ["capability_dispatch", "positive_behavior", "negative_control"]
+blocked_until = "#6729 owns cancellation/termination and token-lifetime contracts"
+
+[[class]]
+id = 'lifecycle_transport'
+ga_eligible = false
+required_evidence = ["capability_dispatch", "positive_behavior", "negative_control"]
+blocked_until = "#6720 owns real-process transport/lifecycle substrate evidence"
+
+# DAP behavior is a separate claim dimension; LSP evidence cannot promote it.
+[[class]]
+id = 'dap'
+ga_eligible = false
+required_evidence = ["capability_dispatch", "positive_behavior", "shape_schema", "real_process_wire", "negative_control"]
+blocked_until = "DAP dimension owes its own evidence receipts (#6731 residual sweep)"
+
+# Custom perl.* surfaces are a separate claim dimension from standard LSP.
+[[class]]
+id = 'custom_extension'
+ga_eligible = false
+required_evidence = ["capability_dispatch", "positive_behavior", "real_process_wire"]
+blocked_until = "custom perl.* surface owns exact-process evidence (#6731 close boundary)"
+
+# ---------------------------------------------------------------------------
+# Classification assignments. Rows may declare `class` inline instead; a row
+# declaration wins over these entries.
+# ---------------------------------------------------------------------------
+
+[[class_assignment]]
+feature_id = "lsp.apply_edit"
+class = "server_initiated_request"
+
+[[class_assignment]]
+feature_id = "lsp.apply_edit_metadata"
+class = "server_initiated_request"
+
+[[class_assignment]]
+feature_id = "lsp.configuration"
+class = "server_initiated_request"
+
+[[class_assignment]]
+feature_id = "lsp.show_message_request"
+class = "server_initiated_request"
+
+[[class_assignment]]
+feature_id = "lsp.show_document"
+class = "server_initiated_request"
+
+[[class_assignment]]
+feature_id = "lsp.work_done_progress_create"
+class = "server_initiated_request"
+
+[[class_assignment]]
+feature_id = "lsp.client_register_capability"
+class = "server_initiated_request"
+
+[[class_assignment]]
+feature_id = "lsp.client_unregister_capability"
+class = "server_initiated_request"
+
+[[class_assignment]]
+feature_id = "lsp.code_lens_refresh"
+class = "server_initiated_request"
+
+[[class_assignment]]
+feature_id = "lsp.semantic_tokens_refresh"
+class = "server_initiated_request"
+
+[[class_assignment]]
+feature_id = "lsp.inlay_hint_refresh"
+class = "server_initiated_request"
+
+[[class_assignment]]
+feature_id = "lsp.inline_value_refresh"
+class = "server_initiated_request"
+
+[[class_assignment]]
+feature_id = "lsp.diagnostic_refresh"
+class = "server_initiated_request"
+
+[[class_assignment]]
+feature_id = "lsp.folding_range_refresh"
+class = "server_initiated_request"
+
+[[class_assignment]]
+feature_id = "lsp.text_document_content_refresh"
+class = "server_initiated_request"
+
+[[class_assignment]]
+feature_id = "lsp.text_document_sync"
+class = "document_lifecycle"
+
+[[class_assignment]]
+feature_id = "lsp.did_save"
+class = "document_lifecycle"
+
+[[class_assignment]]
+feature_id = "lsp.will_save"
+class = "document_lifecycle"
+
+[[class_assignment]]
+feature_id = "lsp.will_save_wait_until"
+class = "document_lifecycle"
+
+[[class_assignment]]
+feature_id = "lsp.will_create_files"
+class = "document_lifecycle"
+
+[[class_assignment]]
+feature_id = "lsp.did_create_files"
+class = "document_lifecycle"
+
+[[class_assignment]]
+feature_id = "lsp.will_rename_files"
+class = "document_lifecycle"
+
+[[class_assignment]]
+feature_id = "lsp.did_rename_files"
+class = "document_lifecycle"
+
+[[class_assignment]]
+feature_id = "lsp.will_delete_files"
+class = "document_lifecycle"
+
+[[class_assignment]]
+feature_id = "lsp.did_delete_files"
+class = "document_lifecycle"
+
+[[class_assignment]]
+feature_id = "lsp.workspace_folders"
+class = "document_lifecycle"
+
+[[class_assignment]]
+feature_id = "lsp.cancel_request"
+class = "cancellation_progress"
+
+[[class_assignment]]
+feature_id = "lsp.progress"
+class = "cancellation_progress"
+
+[[class_assignment]]
+feature_id = "lsp.work_done_progress"
+class = "cancellation_progress"
+
+[[class_assignment]]
+feature_id = "lsp.work_done_progress_cancel"
+class = "cancellation_progress"
+
+[[class_assignment]]
+feature_id = "lsp.initialize"
+class = "lifecycle_transport"
+
+[[class_assignment]]
+feature_id = "lsp.initialized"
+class = "lifecycle_transport"
+
+[[class_assignment]]
+feature_id = "lsp.shutdown"
+class = "lifecycle_transport"
+
+[[class_assignment]]
+feature_id = "lsp.exit"
+class = "lifecycle_transport"
+
+[[class_assignment]]
+feature_id = "lsp.publish_diagnostics"
+class = "notification_event"
+
+[[class_assignment]]
+feature_id = "lsp.show_message"
+class = "notification_event"
+
+[[class_assignment]]
+feature_id = "lsp.log_message"
+class = "notification_event"
+
+[[class_assignment]]
+feature_id = "lsp.telemetry_event"
+class = "notification_event"
+
+[[class_assignment]]
+feature_id = "lsp.set_trace"
+class = "notification_event"
+
+[[class_assignment]]
+feature_id = "lsp.log_trace"
+class = "notification_event"
+
+[[class_assignment]]
+feature_id = "lsp.did_change_configuration"
+class = "notification_event"
+
+[[class_assignment]]
+feature_id = "lsp.did_change_watched_files"
+class = "notification_event"
+
+[[class_assignment]]
+feature_id = "lsp.completion_item_resolve"
+class = "resolve_variant"
+
+[[class_assignment]]
+feature_id = "lsp.code_action_resolve"
+class = "resolve_variant"
+
+[[class_assignment]]
+feature_id = "lsp.code_lens_resolve"
+class = "resolve_variant"
+
+[[class_assignment]]
+feature_id = "lsp.document_link_resolve"
+class = "resolve_variant"
+
+[[class_assignment]]
+feature_id = "lsp.inlay_hint_resolve"
+class = "resolve_variant"
+
+[[class_assignment]]
+feature_id = "lsp.workspace_symbol_resolve"
+class = "resolve_variant"
+
+[[class_assignment]]
+feature_id = "dap.core"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.breakpoints.basic"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.breakpoints.hit_condition"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.breakpoints.logpoints"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.breakpoints.function"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.breakpoint_locations"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.exceptions.die"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.exceptions.warn"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.inline_values"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.completions"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.modules"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.watchpoints"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.threads"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.pause"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.source"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.loaded_sources"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.restart"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.restart_frame"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.terminate_threads"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.set_expression"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.cancel"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.step_in_targets"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.goto_targets"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "dap.goto"
+class = "dap"
+
+[[class_assignment]]
+feature_id = "experimental.perlInlineCompletionStream"
+class = "custom_extension"

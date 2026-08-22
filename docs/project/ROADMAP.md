@@ -511,18 +511,21 @@ is open on `master` readiness tracking.
 
 ## LSP Feature Implementation
 
-The LSP compliance table is auto-generated from `features.toml`.
+The LSP claim-status table is auto-generated from the `features.toml` authority and
+`policy/ga-evidence-policy.toml`; `proven` requires the row's feature class to cite
+capability/dispatch, positive-behavior, shape/schema, real-process-wire, and
+negative-control evidence. No percentage is published over these statuses (#6731).
 
 <!-- BEGIN: COMPLIANCE_TABLE -->
-| Area | Implemented | Total | Coverage |
-|------|-------------|-------|----------|
-| debug | 22 | 24 | 92% |
-| notebook | 2 | 2 | 100% |
-| protocol | 9 | 9 | 100% |
-| text_document | 53 | 53 | 100% |
-| window | 9 | 9 | 100% |
-| workspace | 28 | 28 | 100% |
-| **Overall** | **123** | **125** | **98%** |
+| Area | proven | preview | planned | not_proven | unsupported | Total |
+|------|-------:|--------:|--------:|-----------:|------------:|------:|
+| debug | 0 | 22 | 2 | 0 | 0 | 24 |
+| notebook | 0 | 0 | 0 | 2 | 0 | 2 |
+| protocol | 0 | 9 | 0 | 0 | 0 | 9 |
+| text_document | 1 | 52 | 0 | 0 | 0 | 53 |
+| window | 0 | 9 | 0 | 0 | 0 | 9 |
+| workspace | 0 | 28 | 0 | 0 | 0 | 28 |
+| **Overall** | **1** | **120** | **2** | **2** | **0** | **125** |
 <!-- END: COMPLIANCE_TABLE -->
 
 For live capability posture, run `just status-check` or read [CURRENT_STATUS.md](CURRENT_STATUS.md).

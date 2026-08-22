@@ -4,11 +4,23 @@ on:
   pull_request:
     branches: [main, master]
     paths:
+      - 'features.toml'
+      - 'crates/perl-lsp-rs/features_sot.toml'
+      - 'crates/perl-lsp-rs-core/features_sot.toml'
+      - 'crates/perl-parser/features_sot.toml'
+      - 'crates/perl-dap/features_sot.toml'
+      - 'policy/ga-evidence-policy.toml'
       - 'docs/project/status/**'
+      - 'docs/project/ROADMAP.md'
+      - 'crates/perl-lsp-rs-core/src/feature_catalog.rs'
+      - 'crates/perl-lsp-rs-core/src/feature_evidence.rs'
       - 'policy/generated-status-evidence.json'
       - '.ci/schemas/generated-status-cell.schema.json'
+      - 'xtask/Cargo.toml'
       - 'xtask/src/bin/generated-status-contract.rs'
+      - 'xtask/src/bin/catalog-authority.rs'
       - 'xtask/src/tasks/update_status/**'
+      - 'xtask/src/tasks/features.rs'
       - '.github/workflows/generated-status-contract.yml'
   workflow_dispatch: {}
 
@@ -33,9 +45,10 @@ jobs:
         with:
           toolchain: 1.95.0
 
-      - name: Resolve status projection target
+      - name: Resolve status projection targets
         run: |
           cargo metadata --no-deps --format-version 1 | jq -e '.packages[] | select(.name == "xtask") | .targets[] | select(.name == "generated-status-contract" and (.kind | index("bin")))'
+          cargo metadata --no-deps --format-version 1 | jq -e '.packages[] | select(.name == "xtask") | .targets[] | select(.name == "catalog-authority" and (.kind | index("bin")))'
           ! cargo metadata --no-deps --format-version 1 | jq -e '.packages[] | select(.name == "xtask") | .targets[] | select(.name == "generated-status-contract-missing")'
 
       - name: Test status projection contract
@@ -45,3 +58,15 @@ jobs:
         run: |
           cargo run -p xtask --bin generated-status-contract --locked -- \
             --check
+
+      - name: Test catalog authority gate
+        run: cargo test -p xtask --bin catalog-authority --locked
+
+      - name: Catalog claims match their evidence
+        run: cargo run -p xtask --bin catalog-authority --locked -- check-catalog
+
+      - name: Vendored catalogs are authority projections
+        run: cargo run -p xtask --bin catalog-authority --locked -- sync-vendored
+
+      - name: Claim status surface is current
+        run: cargo run -p xtask --bin catalog-authority --locked -- sync-status

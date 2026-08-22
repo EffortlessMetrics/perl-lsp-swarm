@@ -18,6 +18,10 @@ categories = ["development-tools"]
 name = "generated-status-contract"
 path = "src/bin/generated-status-contract.rs"
 
+[[bin]]
+name = "catalog-authority"
+path = "src/bin/catalog-authority.rs"
+
 [dependencies]
 clap = { workspace = true }
 color-eyre = "0.6.5"

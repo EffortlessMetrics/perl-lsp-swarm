@@ -346,6 +346,7 @@ fn check_surfaces(root: &Path, contract_path: &Path) -> Result<Vec<String>> {
             .with_context(|| format!("surface {}: cannot read {}", surface.id, surface.path))?;
         match surface.kind.as_str() {
             "ratio_projection" => check_ratio_projection(surface, &text)?,
+            "counts_projection" => check_counts_projection(root, surface, &text)?,
             "evidence_verdict" => check_evidence_verdict(surface, &text)?,
             "attribution_table" => check_attribution_table(surface, &text)?,
             other => bail!("surface {}: unknown kind {other:?}", surface.id),
@@ -485,6 +486,122 @@ fn check_ratio_projection(surface: &SurfaceRow, text: &str) -> Result<()> {
             denominator,
             computed,
             percent
+        );
+    }
+    Ok(())
+}
+
+/// A rendered claim-status table row: `[proven, preview, planned,
+/// not_proven, unsupported, total]`.
+type CountRow = [u64; 6];
+
+fn parse_count_row(line: &str) -> Option<CountRow> {
+    let cells: Vec<u64> = line
+        .split('|')
+        .filter_map(|cell| cell.trim().trim_matches('*').trim_end_matches('%').parse::<u64>().ok())
+        .collect();
+    if cells.len() != 6 {
+        return None;
+    }
+    Some([cells[0], cells[1], cells[2], cells[3], cells[4], cells[5]])
+}
+
+/// Verify a claim-status projection against its own rows and against the live
+/// catalog authority (#6731).
+///
+/// - every data row's statuses must partition that row's total;
+/// - the area rows must sum, column for column, to the Overall row;
+/// - the Overall total must equal the live `features.toml` row count;
+/// - no percentage may appear inside the table.
+fn check_counts_projection(root: &Path, surface: &SurfaceRow, text: &str) -> Result<()> {
+    let begin = surface.begin_marker.as_deref().ok_or_else(|| {
+        color_eyre::eyre::eyre!("surface {}: counts_projection needs begin_marker", surface.id)
+    })?;
+    let end = surface.end_marker.as_deref().ok_or_else(|| {
+        color_eyre::eyre::eyre!("surface {}: counts_projection needs end_marker", surface.id)
+    })?;
+    let start = text.find(begin).ok_or_else(|| {
+        color_eyre::eyre::eyre!(
+            "surface {}: claim-table markers are gone — an unrendered or hand-edited surface must not pass as generated status",
+            surface.id
+        )
+    })?;
+    let region = &text[start + begin.len()..];
+    let region = region.split(end).next().unwrap_or(region);
+
+    if region.contains('%') {
+        bail!(
+            "surface {}: CONTRADICTORY — a percentage appeared in a claim-count table; percentages over claim statuses re-create the advertised-denominator defect (#6731)",
+            surface.id
+        );
+    }
+
+    let mut overall: Option<CountRow> = None;
+    let mut sum: CountRow = [0; 6];
+    let mut data_rows = 0usize;
+    for line in region.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('|') || trimmed.contains("---") || trimmed.contains("Area |") {
+            continue;
+        }
+        let Some(cells) = parse_count_row(trimmed) else {
+            bail!(
+                "surface {}: row {:?} does not carry six numeric cells (statuses plus total)",
+                surface.id,
+                trimmed
+            );
+        };
+        if cells[..5].iter().sum::<u64>() != cells[5] {
+            bail!(
+                "surface {}: row {trimmed:?} does not partition its total — statuses must cover exactly their denominator",
+                surface.id
+            );
+        }
+        if trimmed.contains("**Overall**") {
+            overall = Some(cells);
+        } else {
+            for idx in 0..6 {
+                sum[idx] += cells[idx];
+            }
+            data_rows += 1;
+        }
+    }
+    if data_rows == 0 || overall.is_none() {
+        bail!(
+            "surface {}: NOT_PROVEN — the claim table has no data rows or no Overall row",
+            surface.id
+        );
+    }
+    let overall = overall.unwrap_or([0; 6]);
+    if sum != overall {
+        bail!(
+            "surface {}: CONTRADICTORY — area rows ({proven}/{preview}/{planned}/{not_proven}/{unsupported}/{total}) do not sum to the Overall row ({op}/{opv}/{opl}/{on}/{ou}/{ot})",
+            surface.id,
+            proven = sum[0],
+            preview = sum[1],
+            planned = sum[2],
+            not_proven = sum[3],
+            unsupported = sum[4],
+            total = sum[5],
+            op = overall[0],
+            opv = overall[1],
+            opl = overall[2],
+            on = overall[3],
+            ou = overall[4],
+            ot = overall[5],
+        );
+    }
+
+    // The denominator must be the live catalog, not a copied number.
+    let catalog_path = root.join("features.toml");
+    let catalog = perl_lsp_rs_core::feature_catalog::read_catalog(&catalog_path)
+        .with_context(|| format!("reading catalog authority {}", catalog_path.display()))?;
+    if overall[5] != catalog.feature.len() as u64 {
+        bail!(
+            "surface {}: STALE — the rendered denominator is {} but the live catalog declares {} rows; regenerate from the authority",
+            surface.id,
+            overall[5],
+            catalog.feature.len()
         );
     }
     Ok(())
@@ -1013,6 +1130,112 @@ no data yet
                 .to_string()
                 .contains("unknown evidence_class")
         );
+    }
+
+    // -- counts_projection (#6731) -----------------------------------------
+
+    fn counts_surface() -> SurfaceRow {
+        SurfaceRow {
+            id: "lsp.claim_status".into(),
+            kind: "counts_projection".into(),
+            path: "status/lsp.md".into(),
+            headline_label: None,
+            table_label: Some("**Overall**".into()),
+            row_label: None,
+            begin_marker: Some("<!-- BEGIN: LSP_CLAIM_TABLE -->".into()),
+            end_marker: Some("<!-- END: LSP_CLAIM_TABLE -->".into()),
+            claim_boundary: "fixture".into(),
+        }
+    }
+
+    const COUNTS_TABLE_OK: &str = r"<!-- BEGIN: LSP_CLAIM_TABLE -->
+| Area | proven | preview | planned | not_proven | unsupported | Total |
+|------|-------:|--------:|--------:|-----------:|------------:|------:|
+| text_document | 2 | 51 | 0 | 0 | 0 | 53 |
+| debug | 0 | 22 | 2 | 0 | 0 | 24 |
+| **Overall** | **2** | **73** | **2** | **0** | **0** | **77** |
+<!-- END: LSP_CLAIM_TABLE -->
+";
+
+    fn counts_root(catalog_rows: u64) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("status")).unwrap();
+        let mut body = String::new();
+        body.push_str("[meta]\nversion = 't'\nlsp_version = '3.18'\n\n");
+        // The live-denominator check only reads the parsed row count; pad the
+        // catalog with unique placeholder rows.
+        for idx in 0..catalog_rows {
+            body.push_str(&format!(
+                "[[feature]]\nid = \"f.{idx}\"\nmaturity = \"planned\"\nadvertised = false\n\n"
+            ));
+        }
+        fs::write(dir.path().join("features.toml"), body).unwrap();
+        let surface_path = dir.path().to_path_buf();
+        (dir, surface_path)
+    }
+
+    #[test]
+    fn counts_table_matching_the_live_catalog_passes() {
+        let (dir, root) = counts_root(77);
+        fs::write(dir.path().join("status/lsp.md"), COUNTS_TABLE_OK).unwrap();
+        check_counts_projection(&root, &counts_surface(), &fs::read_to_string(dir.path().join("status/lsp.md")).unwrap())
+            .unwrap();
+    }
+
+    #[test]
+    fn counts_table_with_a_percentage_fails_closed() {
+        let (dir, root) = counts_root(77);
+        let poisoned = COUNTS_TABLE_OK.replace("| **Overall**", "| 97% **Overall**");
+        fs::write(dir.path().join("status/lsp.md"), poisoned.clone()).unwrap();
+        let error = check_counts_projection(
+            &root,
+            &counts_surface(),
+            &poisoned,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("percentage appeared"));
+    }
+
+    #[test]
+    fn counts_row_that_does_not_partition_its_total_fails() {
+        let (dir, root) = counts_root(77);
+        let broken =
+            COUNTS_TABLE_OK.replace("| text_document | 2 | 51 | 0 | 0 | 0 | 53 |", "| text_document | 3 | 51 | 0 | 0 | 0 | 53 |");
+        fs::write(dir.path().join("status/lsp.md"), broken.clone()).unwrap();
+        let error = check_counts_projection(&root, &counts_surface(), &broken).unwrap_err();
+        assert!(format!("{error:#}").contains("does not partition"));
+    }
+
+    #[test]
+    fn area_rows_disagreeing_with_overall_fail_closed() {
+        let (dir, root) = counts_root(77);
+        let broken = COUNTS_TABLE_OK
+            .replace("| **Overall** | **2** | **73** | **2** | **0** | **0** | **77** |", "| **Overall** | **2** | **72** | **2** | **0** | **0** | **76** |");
+        fs::write(dir.path().join("status/lsp.md"), broken.clone()).unwrap();
+        let error = check_counts_projection(&root, &counts_surface(), &broken).unwrap_err();
+        assert!(format!("{error:#}").contains("do not sum"));
+    }
+
+    #[test]
+    fn stale_denominator_against_the_live_catalog_fails() {
+        let (dir, root) = counts_root(80);
+        fs::write(dir.path().join("status/lsp.md"), COUNTS_TABLE_OK).unwrap();
+        let error = check_counts_projection(
+            &root,
+            &counts_surface(),
+            &fs::read_to_string(dir.path().join("status/lsp.md")).unwrap(),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("STALE"));
+    }
+
+    #[test]
+    fn missing_claim_table_markers_fail_closed() {
+        let (dir, root) = counts_root(77);
+        fs::write(dir.path().join("status/lsp.md"), "no markers here").unwrap();
+        let error =
+            check_counts_projection(&root, &counts_surface(), "no markers here").unwrap_err();
+        assert!(format!("{error:#}").contains("markers are gone"));
     }
 
     #[test]

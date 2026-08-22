@@ -30,6 +30,8 @@ pub mod critic_parser;
 pub mod external_tools;
 /// Feature catalog parsing and generation utilities shared by build/runtime code.
 pub mod feature_catalog;
+/// Evidence-backed claim model over the catalog (#6731).
+pub mod feature_evidence;
 /// Feature model, identifiers, and registry plumbing for capability gating.
 pub mod features;
 /// Policy and governance APIs for feature profiles and rollout controls.

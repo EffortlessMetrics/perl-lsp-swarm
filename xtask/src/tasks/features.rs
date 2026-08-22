@@ -2,7 +2,6 @@ use color_eyre::eyre::{Context, Result, bail, eyre};
 use perl_lsp_rs_core::feature_catalog::{Catalog, Maturity};
 use perl_lsp_rs_core::governance::{FeatureProfile, catalog_advertised_feature_ids};
 use std::collections::{BTreeMap, BTreeSet};
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -115,138 +114,14 @@ fn check_invariants() -> Result<()> {
 }
 
 fn sync_docs_impl() -> Result<()> {
-    println!("📝 Syncing documentation from features.toml...");
-
-    let catalog = load_features()?;
-    let area_stats = catalog.area_statistics();
-
-    // Update ROADMAP.md
-    update_roadmap(&catalog, &area_stats)?;
-
-    // Update LSP_ACTUAL_STATUS.md
-    update_lsp_status(&catalog)?;
-
-    println!("✅ Documentation synced successfully!");
-    Ok(())
-}
-
-fn update_roadmap(
-    catalog: &Catalog,
-    area_stats: &BTreeMap<String, perl_lsp_rs_core::feature_catalog::AreaStats>,
-) -> Result<()> {
-    let roadmap_path = Path::new("ROADMAP.md");
-    let mut content = fs::read_to_string(roadmap_path)?;
-
-    // Ensure fence markers exist
-    ensure_fence(&content, "COMPLIANCE_TABLE")?;
-
-    // Calculate overall compliance
-    let total: usize = area_stats.values().map(|s| s.total).sum();
-    let advertised: usize = area_stats.values().map(|s| s.advertised).sum();
-    let compliance =
-        if total == 0 { 0 } else { (advertised as f64 / total as f64 * 100.0).round() as u32 };
-
-    // Update compliance percentage in header
-    let new_text = format!("partial LSP 3.18 compliance (~{}%)", compliance);
-    let old_pattern = r"partial LSP 3.18 compliance \(~\d+%\)";
-    content = regex::Regex::new(old_pattern)?.replace_all(&content, new_text.as_str()).to_string();
-
-    // Update the compliance table
-    let mut table = String::new();
-    table.push_str("| Area | Implemented | Total | Coverage |\n");
-    table.push_str("|------|-------------|-------|----------|\n");
-
-    for (area, stats) in area_stats {
-        table.push_str(&format!(
-            "| {} | {} | {} | {}% |\n",
-            area.replace('_', " "),
-            stats.advertised,
-            stats.total,
-            stats.coverage_percent()
-        ));
-    }
-
-    // Inject the compliance table into the fenced section
-    content = replace_fence(&content, "COMPLIANCE_TABLE", &table)?;
-
-    fs::write(roadmap_path, content)?;
-
-    // Keep this side-effect so the BDD-style progress checks can fail fast when catalog
-    // fields are missing or out of date.
-    let version = catalog.meta.version.clone();
-    if version.is_empty() {
-        return Err(eyre!("Catalog version is missing"));
-    }
-
-    Ok(())
-}
-
-fn update_lsp_status(catalog: &Catalog) -> Result<()> {
-    let status_path = Path::new("crates/perl-parser/LSP_ACTUAL_STATUS.md");
-
-    // Check if file exists and has fence markers (for future use with fenced sections)
-    if status_path.exists() {
-        let existing = fs::read_to_string(status_path)?;
-        if existing.contains("<!-- BEGIN:") && existing.contains("<!-- END:") {
-            println!("Note: Fenced sections detected but full regeneration in use");
-        }
-    }
-
-    let mut by_area: BTreeMap<String, Vec<&perl_lsp_rs_core::feature_catalog::Feature>> =
-        BTreeMap::new();
-    for feature in catalog.features() {
-        by_area.entry(feature.area.clone()).or_default().push(feature);
-    }
-
-    let mut content = String::new();
-    content.push_str("# LSP Feature Status\n\n");
-    content.push_str("Auto-generated from `features.toml` - DO NOT EDIT\n\n");
-    content.push_str(&format!(
-        "Version: {} | LSP: {}\n\n",
-        catalog.meta.version, catalog.meta.lsp_version
-    ));
-
-    for (area, features) in by_area {
-        content.push_str(&format!("## {}\n\n", area.replace('_', " ")));
-        content.push_str("| Feature | Spec | Status | Description |\n");
-        content.push_str("|---------|------|--------|-------------|\n");
-
-        for feature in features {
-            let status = match (feature.maturity, feature.advertised) {
-                (Maturity::Ga | Maturity::Production, true) => "✅ Complete",
-                (Maturity::Preview, true) => "🔧 Preview",
-                (Maturity::Experimental, _) => "⚠️ Experimental",
-                _ => "❌ Not Implemented",
-            };
-
-            content.push_str(&format!(
-                "| {} | {} | {} | {} |\n",
-                feature.id.replace("lsp.", ""),
-                feature.spec,
-                status,
-                feature.description
-            ));
-        }
-        content.push('\n');
-    }
-
-    fs::write(status_path, content)?;
-    Ok(())
-}
-
-/// Ensure fence markers exist in document
-fn ensure_fence(content: &str, tag: &str) -> Result<()> {
-    let begin_marker = format!("<!-- BEGIN: {tag} -->");
-    let end_marker = format!("<!-- END: {tag} -->");
-
-    if !content.contains(&begin_marker) || !content.contains(&end_marker) {
-        return Err(eyre!(
-            "Missing documentation fence for {} - expected both '{}' and '{}'",
-            tag,
-            begin_marker,
-            end_marker
-        ));
-    }
+    // Documentation projection moved to single-writer owners (#6731):
+    // - `cargo xtask catalog-authority sync-status` renders
+    //   `docs/project/status/lsp.md`;
+    // - `cargo xtask update-status --only lsp` keeps the ROADMAP fence in
+    //   sync from the same evidence model.
+    println!("'features sync-docs' no longer writes ROADMAP.md or LSP_ACTUAL_STATUS.md.");
+    println!("Run `cargo xtask catalog-authority sync-status --write` and");
+    println!("`cargo xtask update-status --write --only lsp` instead.");
     Ok(())
 }
 
@@ -335,12 +210,14 @@ fn verify_features() -> Result<()> {
     }
 
     // Check that advertised features have at least one backing test file.
+    // A dangling path is an error, not a warning (#6731): a cited receipt
+    // that does not exist cannot back any claim.
     for feature in catalog.features() {
         if feature.advertised && !feature.tests.is_empty() {
             for test in &feature.tests {
                 let test_file = repo_relative_path(test);
                 if !test_file.exists() {
-                    warnings.push(format!("Test file not found for {}: {}", feature.id, test));
+                    errors.push(format!("Test file not found for {}: {}", feature.id, test));
                 }
             }
         }
@@ -377,33 +254,13 @@ fn verify_features() -> Result<()> {
         );
     }
 
-    // Verify compliance percentage matches ROADMAP documentation.
-    let computed_compliance = catalog.compliance_percent() as u32;
-    if let Ok(roadmap) = fs::read_to_string("ROADMAP.md") {
-        let regex = regex::Regex::new(r"partial LSP 3\.18 compliance \(~(\d+)%\)")?;
-        if let Some(cap) = regex.captures(&roadmap)
-            && let Some(doc_percent) = cap.get(1).and_then(|m| m.as_str().parse::<u32>().ok())
-            && doc_percent != computed_compliance
-        {
-            if env::var("CI_ALLOW_COMPLIANCE_DRIFT").is_err() {
-                errors.push(format!(
-                    "Compliance percentage drift detected: documented {}% vs computed {}% - run 'cargo xtask features sync-docs' to fix",
-                    doc_percent, computed_compliance
-                ));
-            } else {
-                warnings.push(format!(
-                    "Compliance percentage mismatch (allowed): documented {}% vs computed {}%",
-                    doc_percent, computed_compliance
-                ));
-            }
-        }
-    }
-
-    let non_planned = catalog.trackable_feature_count();
-    let advertised_ga_prod = catalog.advertised_trackable_count();
+    // The declaration-arithmetic percentage is no longer a verification
+    // target (#6731): public claims are evidence-derived, and ROADMAP.md's
+    // fence carries claim counts from the shared renderer.
     println!(
-        "📊 Computed compliance: {}% ({}/{} non-planned features)",
-        computed_compliance, advertised_ga_prod, non_planned
+        "📊 Catalog: {} rows ({} advertised GA/production); evidence-backed claims are verified by `cargo xtask catalog-authority check-catalog`",
+        catalog.feature.len(),
+        advertised_ga_prod
     );
 
     if !errors.is_empty() {
@@ -481,11 +338,10 @@ fn generate_report() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        compare_snapshot_caps, ensure_fence, lsp_feature_snapshot_path, replace_fence,
-        repo_relative_path, snapshot_caps_from_content, snapshot_comparable_feature_ids,
+        compare_snapshot_caps, lsp_feature_snapshot_path, repo_relative_path,
+        snapshot_caps_from_content, snapshot_comparable_feature_ids,
     };
     use color_eyre::eyre::Result;
-    use perl_tdd_support::must_err;
     use std::collections::BTreeSet;
     use std::path::PathBuf;
 
@@ -584,27 +440,5 @@ caps:\n\
 
         assert!(warnings.is_empty());
         assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn ensure_fence_requires_both_markers() {
-        let content = "<!-- BEGIN: COMPLIANCE_TABLE -->\nbody\n";
-        let error = must_err(ensure_fence(content, "COMPLIANCE_TABLE"));
-        assert!(error.to_string().contains("Missing documentation fence"));
-    }
-
-    #[test]
-    fn replace_fence_replaces_only_tagged_section() -> Result<()> {
-        let content = "before\n<!-- BEGIN: COMPLIANCE_TABLE -->\nold\n<!-- END: COMPLIANCE_TABLE -->\nafter\n";
-        let replaced = replace_fence(content, "COMPLIANCE_TABLE", "new\n")?;
-
-        assert!(replaced.contains("before"));
-        assert!(replaced.contains("after"));
-        assert!(
-            replaced
-                .contains("<!-- BEGIN: COMPLIANCE_TABLE -->\nnew\n<!-- END: COMPLIANCE_TABLE -->")
-        );
-        assert!(!replaced.contains("\nold\n"));
-        Ok(())
     }
 }

@@ -92,6 +92,17 @@ pub struct Feature {
     /// Human-readable description.
     #[serde(default)]
     pub description: String,
+    /// Feature class governing the GA evidence policy (#6731). When absent,
+    /// the policy's default class (or a policy assignment) applies.
+    #[serde(default)]
+    pub class: Option<String>,
+    /// Declared claim for public surfaces. Absent means derived:
+    /// shipped-but-unproven rows render `preview`.
+    #[serde(default)]
+    pub claim: Option<crate::feature_evidence::DeclaredClaim>,
+    /// Structured evidence citations backing a `proven` claim (#6731).
+    #[serde(default)]
+    pub evidence: Vec<crate::feature_evidence::EvidenceCitation>,
 }
 
 const fn default_counts_in_coverage() -> bool {
@@ -539,54 +550,38 @@ mod tests {
     use tempfile::TempDir;
 
     fn sample_catalog() -> Catalog {
+        let base = |id: &str, spec: &str, area: &str, maturity: Maturity, advertised: bool| Feature {
+            id: id.to_string(),
+            spec: spec.to_string(),
+            area: area.to_string(),
+            maturity,
+            advertised,
+            tests: Vec::new(),
+            counts_in_coverage: true,
+            description: String::new(),
+            class: None,
+            claim: None,
+            evidence: Vec::new(),
+        };
+        let mut completion = base("lsp.completion", "LSP 3.18", "text_document", Maturity::Ga, true);
+        completion.tests = vec!["crates/perl-lsp-rs/tests/completion.rs".to_string()];
+        completion.description = "Completion support".to_string();
+        let mut semantic = base("lsp.semanticTokens", "LSP 3.18", "text_document", Maturity::Preview, true);
+        semantic.tests = vec!["crates/perl-lsp-rs/tests/semantic_tokens.rs".to_string()];
+        semantic.description = "Semantic token support".to_string();
+        let mut code_action = base("lsp.codeAction", "LSP 3.18", "workspace", Maturity::Planned, true);
+        code_action.counts_in_coverage = false;
+        code_action.description = "Code actions".to_string();
+        let mut references = base("lsp.references", "LSP 3.18", "workspace", Maturity::Production, true);
+        references.tests = vec!["crates/perl-lsp-rs/tests/references.rs".to_string()];
+        references.description = "References".to_string();
         Catalog {
             meta: Meta {
                 version: "0.42.0".to_string(),
                 lsp_version: "3.18".to_string(),
                 compliance_percent: None,
             },
-            feature: vec![
-                Feature {
-                    id: "lsp.completion".to_string(),
-                    spec: "LSP 3.18".to_string(),
-                    area: "text_document".to_string(),
-                    maturity: Maturity::Ga,
-                    advertised: true,
-                    tests: vec!["crates/perl-lsp-rs/tests/completion.rs".to_string()],
-                    counts_in_coverage: true,
-                    description: "Completion support".to_string(),
-                },
-                Feature {
-                    id: "lsp.semanticTokens".to_string(),
-                    spec: "LSP 3.18".to_string(),
-                    area: "text_document".to_string(),
-                    maturity: Maturity::Preview,
-                    advertised: true,
-                    tests: vec!["crates/perl-lsp-rs/tests/semantic_tokens.rs".to_string()],
-                    counts_in_coverage: true,
-                    description: "Semantic token support".to_string(),
-                },
-                Feature {
-                    id: "lsp.codeAction".to_string(),
-                    spec: "LSP 3.18".to_string(),
-                    area: "workspace".to_string(),
-                    maturity: Maturity::Planned,
-                    advertised: true,
-                    tests: vec![],
-                    counts_in_coverage: false,
-                    description: "Code actions".to_string(),
-                },
-                Feature {
-                    id: "lsp.references".to_string(),
-                    spec: "LSP 3.18".to_string(),
-                    area: "workspace".to_string(),
-                    maturity: Maturity::Production,
-                    advertised: true,
-                    tests: vec!["crates/perl-lsp-rs/tests/references.rs".to_string()],
-                    counts_in_coverage: true,
-                    description: "References".to_string(),
-                },
-            ],
+            feature: vec![completion, semantic, code_action, references],
         }
     }
 
@@ -631,16 +626,9 @@ mod tests {
     #[test]
     fn validation_rejects_duplicate_feature_ids() -> Result<(), Box<dyn std::error::Error>> {
         let mut catalog = sample_catalog();
-        catalog.feature.push(Feature {
-            id: "lsp.completion".to_string(),
-            spec: "LSP 3.18".to_string(),
-            area: "text_document".to_string(),
-            maturity: Maturity::Ga,
-            advertised: true,
-            tests: vec![],
-            counts_in_coverage: true,
-            description: "duplicate row".to_string(),
-        });
+        let mut duplicate = catalog.feature[0].clone();
+        duplicate.description = "duplicate row".to_string();
+        catalog.feature.push(duplicate);
 
         let err = catalog.validate().err().ok_or("duplicate id must fail validation")?;
         let message = err.to_string();

@@ -7,7 +7,7 @@
 
 - **Release posture**: `v0.17.0` is the current workspace version and shipped public-beta release (2026-06-28); `v0.18.0` is the next public-beta train, not a maturity promotion or version bump in this tree. The published crate surface is 33 crates. See [release.md](release.md) for channel receipts.
 - **Status discipline**: this file is for narrative, subsystem files are for evidence, and `just status-update` plus `just status-check` are the anti-drift workflow
-- **LSP server**: `features.toml` is the canonical capability catalog; 60 user-visible features at 100% coverage (125/125 including plumbing protocol methods and DAP handlers) — see generated [lsp.md](lsp.md) for current numbers
+- **LSP server**: `features.toml` is the single catalog authority; claim statuses are evidence-derived per feature class (`policy/ga-evidence-policy.toml`) — 1 of 125 rows currently earns `proven`, the rest render `preview`/`planned`/`not_proven` honestly — see generated [lsp.md](lsp.md) for the current counts
 - **Test infrastructure**: `nix develop -c just ci-gate` is the canonical merge receipt and `cargo xtask ignored-tests` is the tracked-test-debt source
 - **Parser stack**: the default parser path is the native recursive-descent stack backed by the Rust lexer and parser-core crates, with three named coverage lanes: Ubuntu system Perl as the compatibility baseline, CPAN top 1000 as the ecosystem-breadth baseline, and the repo-owned corpus as the deterministic regression baseline
 - **Refactoring engine**: inline and move-code flows exist; broader refactoring hardening is still roadmap work
@@ -18,7 +18,7 @@
 
 | Subsystem | File | Owner | Updated when |
 |-----------|------|-------|-------------|
-| LSP coverage & compliance | [lsp.md](lsp.md) | Generator | Every LSP-touching merge |
+| LSP claim status | [lsp.md](lsp.md) | Generator (`catalog-authority sync-status`) | Every catalog- or evidence-touching merge |
 | Test counts & debt | [tests.md](tests.md) | Generator | Every merge |
 | Parser corpus & coverage | [parser.md](parser.md) | Generator | Every parser-touching merge |
 | HIR lowering coverage | [hir_lowering.md](hir_lowering.md) | Generator | Every HIR lowering merge |

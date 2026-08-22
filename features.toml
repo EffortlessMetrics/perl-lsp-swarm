@@ -5,7 +5,6 @@
 [meta]
 version = "0.17.0"
 lsp_version = "3.18"
-compliance_percent = 98  # 125 total features; notebook sync/execution remain non-GA previews
 
 # Text Document Features
 
@@ -268,8 +267,18 @@ spec = "LSP 3.16"
 area = "text_document"
 maturity = "ga"
 advertised = true
+class = "request_response"
+claim = "preview"
 tests = ["crates/perl-lsp-rs/tests/lsp_semantic_tokens.rs", "crates/perl-lsp-rs/tests/lsp_3_17_semantic_tokens_tests.rs"]
-description = "Semantic syntax highlighting via 24 token types (namespace, type, class, interface, enum, enumMember, typeParameter, function, method, property, macro, variable, parameter, keyword, modifier, comment, string, number, regexp, operator, plus sql_string/sql_heredoc_keyword/json_heredoc_key for embedded language context, and label for Perl statement/control labels) and 13 modifiers (declaration, definition, readonly, static, deprecated, abstract, async, modification, documentation, defaultLibrary, scalarVariable, arrayVariable, hashVariable). Token pipeline: lexer fast-path classification plus AST overlay for package/subroutine/method/variable/label nodes, with overlap deduplication (longer token wins) and delta-encoded [u32;5] response format (mandatory LSP wire encoding). Supports full (textDocument/semanticTokens/full), range (textDocument/semanticTokens/range), and delta (textDocument/semanticTokens/full/delta) requests; full results carry a resultId and delta requests return minimal prefix/suffix edits against the cached prior result per LSP 3.17"
+evidence = [
+  { proves = "static_mapping", test = "crates/perl-lsp-rs/tests/snapshots/all_capabilities.json" },
+  { proves = "capability_dispatch", test = "crates/perl-lsp-rs/tests/lsp_caps_contract_shapes.rs::semantic_tokens_advertise_delta_with_result_id_support" },
+  { proves = "positive_behavior", test = "crates/perl-lsp-rs/tests/lsp_semantic_tokens_e2e.rs::semantic_tokens_expected_ranges" },
+  { proves = "shape_schema", test = "crates/perl-lsp-rs/tests/lsp_schema_validation.rs::test_semantic_tokens_response_schema" },
+  { proves = "real_process_wire", test = "crates/perl-lsp-rs/tests/lsp_semantic_tokens_e2e.rs::semantic_tokens_expected_ranges" },
+  { proves = "negative_control", test = "crates/perl-lsp-rs/tests/lsp_semantic_legend_contract_tests.rs::semantic_token_result_indexes_stay_within_advertised_legend_bounds" },
+]
+description = "Semantic syntax highlighting via 24 token types (namespace, type, class, interface, enum, enumMember, typeParameter, function, method, property, macro, variable, parameter, keyword, modifier, comment, string, number, regexp, operator, plus sql_string/sql_heredoc_keyword/json_heredoc_key for embedded language context, and label for Perl statement/control labels) and 13 modifiers (declaration, definition, readonly, static, deprecated, abstract, async, modification, documentation, defaultLibrary, scalarVariable, arrayVariable, hashVariable). Token pipeline: lexer fast-path classification plus AST overlay for package/subroutine/method/variable/label nodes, with overlap deduplication (longer token wins) and delta-encoded [u32;5] response format (mandatory LSP wire encoding). Supports full (textDocument/semanticTokens/full), range (textDocument/semanticTokens/range), and delta (textDocument/semanticTokens/full/delta) requests; full results carry a resultId and delta requests return minimal prefix/suffix edits against the cached prior result per LSP 3.17. Claim is preview: the real-process receipt (lsp_semantic_tokens_e2e::semantic_tokens_expected_ranges) currently fails with a token-span mismatch (token 7) and must be repaired before proven"
 
 [[feature]]
 id = "lsp.inlay_hint"
@@ -286,8 +295,18 @@ spec = "LSP 3.17"
 area = "text_document"
 maturity = "ga"
 advertised = true
+class = "request_response"
+claim = "proven"
 tests = ["crates/perl-lsp-rs/tests/lsp_type_hierarchy_test.rs"]
-description = "Type hierarchy for classes/roles"
+evidence = [
+  { proves = "static_mapping", test = "crates/perl-lsp-rs/tests/snapshots/all_capabilities.json" },
+  { proves = "capability_dispatch", test = "crates/perl-lsp-rs/tests/lsp_caps_contract_shapes.rs::test_capability_shapes_lsp_318_contract" },
+  { proves = "positive_behavior", test = "crates/perl-lsp-rs/tests/lsp_type_hierarchy_e2e.rs::prepare_and_subtypes" },
+  { proves = "shape_schema", test = "crates/perl-lsp-rs/tests/lsp_schema_validation.rs::test_type_hierarchy_response_schema" },
+  { proves = "real_process_wire", test = "crates/perl-lsp-rs/tests/lsp_type_hierarchy_e2e.rs::prepare_and_subtypes" },
+  { proves = "negative_control", test = "crates/perl-lsp-rs/tests/lsp_type_hierarchy_e2e.rs::type_hierarchy_ignores_string_literals" },
+]
+description = "Type hierarchy for classes/roles (prepare/supertypes/subtypes proven over the shipped binary, including the string-literal negative control)"
 
 [[feature]]
 id = "lsp.call_hierarchy"
@@ -495,7 +514,7 @@ spec = "LSP 3.16"
 area = "workspace"
 maturity = "ga"
 advertised = true
-tests = ["crates/perl-lsp-rs/tests/lsp_3_17_compliance_tests.rs"]
+tests = ["crates/perl-lsp-rs/tests/lsp_moniker_e2e_test.rs"]
 description = "Cross-project symbol identity"
 
 # Window Features
@@ -965,7 +984,7 @@ spec = "LSP 3.17"
 area = "text_document"
 maturity = "ga"
 advertised = true
-tests = ["crates/perl-lsp-rs/tests/lsp_3_17_compliance_tests.rs"]
+tests = ["crates/perl-lsp-rs/tests/lsp_inline_value_e2e_test.rs"]
 description = "Inline values during debugging (LSP inlineValue)"
 
 [[feature]]
