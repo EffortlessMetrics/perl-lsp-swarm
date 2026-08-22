@@ -64,7 +64,7 @@ fn checked_in_artifact_matches_generated_output() {
 /// `generate_semantic_snapshot.rs`), and this way one render API owns both
 /// check and write paths.
 #[test]
-#[ignore = "writes docs/specs/lsp-final-surface-inventory.json; explicit regeneration only"]
+#[ignore = "writes docs/specs/lsp-final-surface-inventory.json; explicit regeneration only (#9662)"]
 fn regenerate_checked_in_artifact() {
     let path = artifact_path();
     let generated =
