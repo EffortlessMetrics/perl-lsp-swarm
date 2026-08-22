@@ -34,6 +34,22 @@ lands.
    caller search), but it is exactly the enabled no-op the ruling forbids and a
    re-wiring hazard; deleted.
 
+4. **Withdrawn-authority-equivalent — parser import optimizer**
+   `perl-parser::refactor::import_optimizer`
+   (`crates/perl-parser/src/refactor/import_optimizer.rs`):
+   `get_known_module_exports` hard-coded module→exports table plus missing-import
+   detection suggesting those exports and `generate_edits` inserting
+   `use <module>;`. Compiled (`pub mod refactor`) and publicly re-exported;
+   consumed only by `RefactoringEngine::perform_optimize_imports` and
+   `workspace_refactor` inside `perl-parser` itself. **No production request
+   path reaches it today** (caller search across `perl-lsp-rs/src`,
+   `perl-lsp-rs-core/src`, `perllsp/src` returned nothing).
+   Disposition: **withdrawn-authority-equivalent** — inventoried here rather
+   than silently omitted. Replacement owner: #790. Expiry: when #790 lands
+   exact candidate planning, this authority must be deleted or superseded by
+   that planner; the containment guard pins `get_known_module_exports` to this
+   single file until then.
+
 ## Table disposition
 
 `guess_module_for_function` had no non-authoritative consumer (completion uses

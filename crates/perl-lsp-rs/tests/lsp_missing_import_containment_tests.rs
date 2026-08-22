@@ -281,3 +281,55 @@ fn test_resolve_cannot_reconstruct_affinity_import_from_foreign_data()
     shutdown_and_exit(&server);
     Ok(())
 }
+
+/// The `quickfix` filter cannot surface a table-derived import edit either;
+/// MISS-004 promises full-action-set inspection for unfiltered, `quickfix`,
+/// and `source.fixAll` requests alike.
+#[test]
+fn test_quick_fix_filter_cannot_surface_table_derived_import()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = start_lsp_server();
+    initialize_lsp(&server);
+
+    let uri = "file:///missing_import_containment_quickfix.pl";
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": PACKAGE_FIRST_DUMPER
+                }
+            }
+        }),
+    );
+
+    let response = send_request(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": uri },
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 5, "character": 0 }
+                },
+                "context": {
+                    "only": ["quickfix"],
+                    "diagnostics": []
+                }
+            }
+        }),
+    );
+
+    let actions = response["result"].as_array().ok_or("Expected result to be an array")?;
+    assert_no_affinity_import_actions(actions);
+    shutdown_and_exit(&server);
+    Ok(())
+}

@@ -216,6 +216,11 @@ fn no_production_route_references_the_withdrawn_import_authority() -> Result<(),
                     "{relative}: invokes the retained package-blind insertion helper as production authority"
                 ));
             }
+            for (needle, inventoried_path, explanation) in PINNED_WITHDRAWN_AUTHORITY_PATTERNS {
+                if content.contains(needle) && relative != *inventoried_path {
+                    offenders.push(format!("{relative}: {explanation}"));
+                }
+            }
         }
     }
 
@@ -264,6 +269,20 @@ const WITHDRAWN_IMPORT_AUTHORITY_PATTERNS: &[(&str, &str)] = &[
         "re-creates the withdrawn compatibility empty-edit placeholder",
     ),
 ];
+
+/// Byte patterns pinned to their single inventoried home. The parser-side
+/// import optimizer (`perl-parser::refactor::import_optimizer`) is
+/// dispositioned as withdrawn-authority-equivalent in
+/// `.spec/10690-missing-import-containment/context.md`: compiled and publicly
+/// re-exported, but no production request path reaches it today; restoration
+/// belongs to #790/#8948. Occurrences inside that one file are the inventory
+/// itself; any occurrence under any other `crates/*/src` path means the
+/// affinity authority was restored or re-wired toward a live surface.
+const PINNED_WITHDRAWN_AUTHORITY_PATTERNS: &[(&str, &str, &str)] = &[(
+    "get_known_module_exports",
+    "perl-parser/src/refactor/import_optimizer.rs",
+    "reaches the withdrawn parser-side hard-coded module-export affinity table outside its inventoried home",
+)];
 
 #[test]
 fn recurrence_guard_rejects_qualified_and_ufcs_helper_calls() {
