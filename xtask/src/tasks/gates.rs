@@ -607,6 +607,7 @@ pub struct MetricChange {
 /// Configuration for the gate runner
 pub struct GateRunnerConfig {
     pub tier: GateTier,
+    pub gate_policy: Option<PathBuf>,
     pub gate_filter: Option<String>,
     pub base_ref: Option<String>,
     pub output_format: OutputFormat,
@@ -631,6 +632,7 @@ impl Default for GateRunnerConfig {
     fn default() -> Self {
         Self {
             tier: GateTier::MergeGate,
+            gate_policy: None,
             gate_filter: None,
             base_ref: None,
             output_format: OutputFormat::Human,
@@ -652,7 +654,11 @@ pub fn run(config: GateRunnerConfig) -> Result<()> {
     std::env::set_current_dir(&root).context("Failed to change to project root")?;
 
     // Load gate policy
-    let policy_path = root.join(".ci/gate-policy.yaml");
+    let policy_path = config
+        .gate_policy
+        .clone()
+        .map(|path| if path.is_absolute() { path } else { root.join(path) })
+        .unwrap_or_else(|| root.join(".ci/gate-policy.yaml"));
     let policy = load_policy_for_inspection(&policy_path)?;
 
     // Commit-tier checks are only correct against the exact staged tree

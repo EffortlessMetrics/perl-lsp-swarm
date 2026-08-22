@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11143 |
-| Rust-family files | 3399 |
-| Non-Rust files | 7744 |
-| Allowlisted | 5469 |
+| Total tracked files | 11211 |
+| Rust-family files | 3416 |
+| Non-Rust files | 7795 |
+| Allowlisted | 5520 |
 | Unclassified | 2275 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 343 |
-| documentation | 2547 |
+| config | 371 |
+| documentation | 2565 |
 | generated | 2 |
 | production | 300 |
 | test | 1817 |
-| tooling | 460 |
+| tooling | 465 |
 | unclassified | 2275 |
 
 ## Unclassified files
@@ -2349,6 +2349,8 @@
 | `.changes/unreleased/product-10533-Fixed-121500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-11613-Fixed-181500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-11739-Fixed-001500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-11740-Fixed-200900.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-11845-Security-034645.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2530,6 +2532,22 @@
 | `.ci/README-coverage.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.ci/benchmark-thresholds.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/blockers.yaml` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/corpus_manifest.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/invalid-cohort-slice-5016-6239.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/invalid-completed-authority-4997-5022.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/invalid-controller-fanin-missing.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/invalid-phase-terminal-5001-5023.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/invalid-phases-deny-2333.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/invalid-predecessor-successor-5231-5968.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/invalid-proof-level-5901-6282.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/invalid-unproven-provenance-4998-5021.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/valid-atomic-cohort-3020.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/valid-atomic-minimal-leaf.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/valid-controller-fanin-present.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/valid-fanin-1929.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/valid-phase-leaf-2624.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/valid-superseded-transfer.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/valid-true-duplicate.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/common-corpus-baseline.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/common-corpus-manifest.txt` | config | `non-rust-ci-config` | release/ci |
 | `.ci/coverage-baseline.txt` | config | `non-rust-ci-config` | release/ci |
@@ -2682,6 +2700,18 @@
 | `.ci/security/may-2026-findings/medium-1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/security/may-2026-findings/medium-2.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/security/release-settings-closeout.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/invalid-controller-no-packet.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/invalid-explicit-unproven.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/invalid-partial-slice-6239-5016.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/invalid-phase-terminal-5023-5001.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/invalid-predecessor-successor-5968-5231.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/invalid-proof-level-6282-5901.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/invalid-remaining-same-issue.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/multiple-relations-one-invalid.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/no-terminal-relation.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/valid-atomic.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/valid-controller-packet.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/valid-phase-leaf-2624.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/ux-flakes.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/workflow-security-baseline.json` | config | `non-rust-ci-config` | release/ci |
 | `.claude/README.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -2917,9 +2947,19 @@
 | `.receipts/20260129/gate-format-20260129-130332.yaml` | config | `non-rust-receipts-tree` | release/ci |
 | `.receipts/20260129/gate-format-20260129-130355.yaml` | config | `non-rust-receipts-tree` | release/ci |
 | `.roo/rules/perl-lsp.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10136-test-runner-client-authority/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10136-test-runner-client-authority/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10136-test-runner-client-authority/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10413-semantic-close-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10413-semantic-close-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10413-semantic-close-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11301-source-commit-api-and-caller-ledger/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11301-source-commit-api-and-caller-ledger/caller-ledger.toml` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11301-source-commit-api-and-caller-ledger/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11301-source-commit-api-and-caller-ledger/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3034,6 +3074,12 @@
 | `.spec/4542-wave4-completion/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/4542-wave4-completion/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/4542-wave4-completion/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/4998-external-include-root-authority/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/4998-external-include-root-authority/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/4998-external-include-root-authority/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8305-organize-imports-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8305-organize-imports-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8305-organize-imports-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/964-dap-stack-frame-lifecycle/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/964-dap-stack-frame-lifecycle/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/964-dap-stack-frame-lifecycle/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3711,6 +3757,7 @@
 | `crates/perl-semantic-analyzer/docs/dependency-boundary-audit.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-semantic-facts/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-semantic-facts/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-source-identity/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-source-identity/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-subprocess-runtime/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-subprocess-runtime/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
@@ -5732,6 +5779,7 @@
 | `scripts/ci/check_publish_package_contents.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check_release_settings_closeout.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check_security_reconciliation.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/check_source_commit_api.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/ci_classify.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_authority_common.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_authority_docs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -5749,6 +5797,7 @@
 | `scripts/ci/dap_scorecard_transport.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/docker_publish_metadata.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/emit_ci_actuals.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/fixtures/cargo_lock_conflict_policy.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/fixtures/convergence/active-unresolved-blocks/latestReviews.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/fixtures/convergence/active-unresolved-blocks/pr_view.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/fixtures/convergence/active-unresolved-blocks/reviewThreads.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -5877,6 +5926,7 @@
 | `scripts/ci/test_run_parser_integration.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_rustfmt_check.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_rustfmt_required_workflow.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_validate_cargo_lock_conflict_policy.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_gate_enforcement_contract.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_gate_lane_mapping.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_helix_fixture_drift.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -5886,6 +5936,7 @@
 | `scripts/ci/test_verify_homebrew_formula_digests.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_verify_rustfmt_receipt.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_workflow_security_ratchet.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/validate_cargo_lock_conflict_policy.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_gate_enforcement_contract.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_gate_lane_mapping.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_helix_fixture_drift.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |

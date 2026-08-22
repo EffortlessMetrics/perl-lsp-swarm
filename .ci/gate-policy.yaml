@@ -470,6 +470,22 @@ gates:
     planning:
       role: always_on
 
+  - name: source_commit_api_check
+    tier: pr_fast
+    description: "Validate source-commit API callers against the owner ledger"
+    required: true
+    command: python3 scripts/ci/check_source_commit_api.py
+    timeout_seconds: 30
+    retry_count: 0
+    budgets:
+      max_duration_ms: 10000
+    quarantine: false
+    tags:
+      - workspace
+      - caller-ledger
+    planning:
+      role: always_on
+
   - name: clippy_scoped
     tier: pr_fast
     description: "Scope-aware library clippy for ci-scope selected crates"
@@ -770,26 +786,45 @@ gates:
 
   - name: clippy_tests_kernel
     tier: pr_fast
-    description: "Clippy --all-targets on the known-clean kernel cohort: required within the pr_fast runner for test/bench/example code in these crates (#11736)"
+    description: "Clippy --all-targets on the known-clean staged cohort (32/46 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
     required: true
     # (#11736): The workspace lints in Cargo.toml deny `unwrap_used`, `expect_used`,
     # and `panic` but the existing clippy gates use `--lib` only, so these denials
     # never apply to `tests/`, `benches/`, `examples/`, or `#[cfg(test)]` modules.
     #
-    # This gate covers a kernel cohort of crates confirmed clean under `--all-targets`
-    # after addressing the concrete findings documented in #11736. The cohort is
-    # additive: add crates here only after they pass the command below locally.
-    # This is a scoped cohort assertion, not an exhaustive workspace clean/dirty census.
-    # Other crates and the current measured census are tracked on #11736.
+    # This gate covers a staged cohort of crates confirmed clean under
+    # `--all-targets -D warnings -A missing_docs`. The cohort is additive: add
+    # crates here only after they pass the command below locally.
+    # This is a scoped cohort assertion, not an exhaustive workspace clean/dirty
+    # census. The remaining 14 crates carry measured findings tracked on #11736
+    # pending the target-kind lint policy decision (2026-08-19 workspace census
+    # on d0f488dd: 3363 findings across 21 then-dirty crates, dominated by
+    # print_*/unwrap/expect in test code).
     #
     # This gate is executed by the advisory PR Smoke job, like the other pr_fast
     # gates. `required: true` makes the pr_fast runner fail on a violation; it
     # is not itself a branch-protection context.
     #
-    # Cohort confirmed clean on 2026-08-19 (post-fix):
-    #   perl-token, perl-position-tracking, perl-uri, perl-tdd-support,
-    #   perl-test-must, perl-ast-v2 (1 clone-on-copy batch fixed),
-    #   perl-symbol (1 expect_used fixed)
+    # Current-main cohort verification: exact gate rerun on 2026-08-22 against
+    # base b38568b082a733dfac7b3da76eb626b77f8a9616; this is scoped proof for
+    # the 32 selectors below.
+    # Writer proof result: PASS in 4s, within the 480s/400000ms budget.
+    #   2026-08-19 batch (post-fix, PR #11742): perl-token, perl-position-tracking,
+    #     perl-uri, perl-tdd-support, perl-test-must, perl-ast-v2 (1 clone-on-copy
+    #     batch fixed), perl-symbol (1 expect_used fixed)
+    #   2026-08-21 batch (measured clean, no fixes needed): perl-ast,
+    #     perl-semantic-facts, perl-source-identity, perl-line-index,
+    #     perl-workspace, perl-semantic-analyzer, perl-diagnostics,
+    #     perl-lsp-perltidy, perl-subprocess-runtime, perl-test-facts,
+    #     perl-parser-bench, perl-core-test-runner, perl-parser-pest,
+    #     perl-parser-comparison, tree-sitter-perl-c, perl-incremental-parsing,
+    #     tree-sitter-perl-rs, perl-kwalitee, perl-workspace-core,
+    #     perl-tree-sitter-compat
+    #   2026-08-21 batch (9 mechanical findings fixed, see PR for #11736):
+    #     perl-module (items_after_test_module + collapsible_if),
+    #     perl-pod (2 needless_borrow), perl-pragma (unfulfilled_lint_expectation +
+    #     bool_assert_comparison), perl-test-generators (2 collapsible_if),
+    #     perl-core-harness-types (expect_err_on_result)
     command: >-
       cargo clippy
       -p perl-token
@@ -799,12 +834,41 @@ gates:
       -p perl-test-must
       -p perl-ast-v2
       -p perl-symbol
+      -p perl-ast
+      -p perl-semantic-facts
+      -p perl-source-identity
+      -p perl-line-index
+      -p perl-workspace
+      -p perl-semantic-analyzer
+      -p perl-diagnostics
+      -p perl-lsp-perltidy
+      -p perl-subprocess-runtime
+      -p perl-test-facts
+      -p perl-parser-bench
+      -p perl-core-test-runner
+      -p perl-parser-pest
+      -p perl-parser-comparison
+      -p tree-sitter-perl-c
+      -p perl-incremental-parsing
+      -p tree-sitter-perl-rs
+      -p perl-kwalitee
+      -p perl-workspace-core
+      -p perl-tree-sitter-compat
+      -p perl-module
+      -p perl-pod
+      -p perl-pragma
+      -p perl-test-generators
+      -p perl-core-harness-types
       --all-targets --locked
       -- -D warnings -A missing_docs
-    timeout_seconds: 60
+    # Budget: measured ~80s locally with warm dependencies and cold check
+    # fingerprints for the 32-crate cohort (~1s fully warm); scaled from the
+    # previous 7-crate envelope and kept below the compile_all_targets
+    # ceiling (600s / 540000ms), which compiles strictly more work.
+    timeout_seconds: 480
     retry_count: 0
     budgets:
-      max_duration_ms: 45000
+      max_duration_ms: 400000
       max_warnings: 0
     quarantine: false
     tags:

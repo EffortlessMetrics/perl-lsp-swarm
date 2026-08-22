@@ -2321,42 +2321,6 @@ fn split_two_top_level_args(input: &str) -> Option<(&str, &str)> {
     Some((first, second))
 }
 
-/// Remove an unused `use Module;` import statement (PL700).
-///
-/// When a module is imported but never referenced in the file, this fix
-/// deletes the entire `use Module;` line so no blank line is left behind.
-/// The module name is extracted from the diagnostic message
-/// (`"Module 'Foo::Bar' appears to be unused"`).
-pub fn fix_unused_import(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
-    let Some((line_start, line_end)) = diagnostic_line_range(source, diagnostic.range) else {
-        return Vec::new();
-    };
-    let Some(line_text) = source.get(line_start..line_end) else {
-        return Vec::new();
-    };
-    if !line_text.trim_start().starts_with("use ") {
-        return Vec::new();
-    }
-
-    let title = diagnostic.message.split('\'').nth(1).map_or_else(
-        || "Remove unused import".to_string(),
-        |module| format!("Remove unused 'use {module};'"),
-    );
-
-    vec![CodeAction {
-        title,
-        kind: CodeActionKind::QuickFix,
-        diagnostics: vec![DiagnosticCode::UnusedImport.as_str().to_string()],
-        edit: CodeActionEdit {
-            changes: vec![TextEdit {
-                location: SourceLocation { start: line_start, end: line_end },
-                new_text: String::new(),
-            }],
-        },
-        is_preferred: true,
-    }]
-}
-
 /// Remove a deprecated `$[ = 0;` array-base variable assignment (PL501).
 ///
 /// `$[` was a Perl variable that changed the starting index for arrays and

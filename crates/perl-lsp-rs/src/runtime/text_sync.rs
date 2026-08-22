@@ -84,10 +84,20 @@ impl LspServer {
         cancellation_token: Option<Arc<AtomicBool>>,
     ) -> Result<(), JsonRpcError> {
         if let Some(params) = params {
+            // Sink-owned admission (#8895): this operation turns URIs into
+            // paths and stores buffers, so it owns URI policy. The check runs
+            // on the normalized key so plain-path inputs this server
+            // deliberately accepts are judged in their stored form. Failures
+            // are typed InvalidParams owned by this method — not generic
+            // protocol rejections.
             let uri = params
                 .pointer("/textDocument/uri")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
+            let admission_key = self.normalize_uri_key(uri);
+            if let Err(err) = crate::security::validate_document_uri(&admission_key) {
+                return Err(invalid_params(&err.to_string()));
+            }
             let text_raw = params
                 .pointer("/textDocument/text")
                 .and_then(|v| v.as_str())
@@ -96,6 +106,13 @@ impl LspServer {
             // as part of the document text, which shifts all column-0 offsets
             // by one character and produces stray glyph artifacts. (#5207)
             let text = crate::textdoc::strip_utf8_bom(text_raw);
+            // Sink-owned resource bound (#8895 review): retain the former
+            // preflight per-line parser-robustness bound where whole buffer
+            // text enters. The sink's own size and binary guards cover the
+            // remaining buffer conditions.
+            if let Err(err) = crate::security::validate_buffer_line_lengths(text) {
+                return Err(invalid_params(&err.to_string()));
+            }
             let version_i64 =
                 params.pointer("/textDocument/version").and_then(|v| v.as_i64()).unwrap_or(0);
             let version = i32::try_from(version_i64).unwrap_or(0);
@@ -203,12 +220,11 @@ impl LspServer {
                 coordinator.notify_change(uri);
             }
 
-            // Check cache first
-            let (ast, errors) = if let Some(cached_ast) = self.ast_cache.get(uri, text) {
-                tracing::debug!("Using cached AST for {}", uri);
-                (Some((*cached_ast).clone()), vec![])
-            } else {
-                // Parse the document up to __DATA__ or __END__ marker
+            // Parse the document up to __DATA__ or __END__ marker.
+            // No AST-only cache lookup: the retired AstCache stored only the
+            // AST without parse errors, so a hit synthesised Vec::new() --
+            // live semantic corruption for recovery-bearing source (#11215).
+            let (ast, errors) = {
                 let code_text = crate::util::code_slice(text);
                 let mut parser = match cancellation_token {
                     Some(token) => Parser::new_with_cancellation(code_text, token),
@@ -218,7 +234,6 @@ impl LspServer {
                     Ok(ast) => {
                         let errors = parser.errors().to_vec();
                         let arc_ast = Arc::new(ast);
-                        self.ast_cache.put(uri.to_string(), text, Arc::clone(&arc_ast));
                         (Some((*arc_ast).clone()), errors)
                     }
                     Err(crate::error::ParseError::Cancelled) => {
@@ -451,10 +466,18 @@ impl LspServer {
         allow_same_version: bool,
     ) -> Result<(), JsonRpcError> {
         if let Some(params) = params {
+            // Sink-owned admission (#8895): same URI policy as didOpen,
+            // enforced where the change is applied and judged on the
+            // normalized key. Typed InvalidParams belongs to this method, not
+            // generic preflight.
             let uri = params
                 .pointer("/textDocument/uri")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
+            let admission_key = self.normalize_uri_key(uri);
+            if let Err(err) = crate::security::validate_document_uri(&admission_key) {
+                return Err(invalid_params(&err.to_string()));
+            }
             let incoming_version_i64 =
                 params.pointer("/textDocument/version").and_then(|v| v.as_i64());
             let incoming_version = incoming_version_i64.and_then(|v| i32::try_from(v).ok());
@@ -589,6 +612,14 @@ impl LspServer {
                 let text_arc: std::sync::Arc<str> = std::sync::Arc::from(text.as_str());
                 let rope_to_string_ms = crate::runtime::timing::elapsed_ms(t_rope_start);
                 tracing::debug!("Document changed: {} (version {})", uri, version);
+
+                // The text-sync sink owns the parser-robustness bound for the
+                // resulting buffer. Check after applying both ranged and full
+                // replacements, before any document state is committed. The
+                // didSave text-reconciliation path reuses this lifecycle.
+                if let Err(err) = crate::security::validate_buffer_line_lengths(&text) {
+                    return Err(invalid_params(&err.to_string()));
+                }
 
                 // Keep template documents that were intentionally skipped on didOpen
                 // in no-parse mode across subsequent didChange notifications.
@@ -786,13 +817,13 @@ impl LspServer {
                     coordinator.notify_change(uri);
                 }
 
-                // Check cache first
+                // Parse the document up to __DATA__ or __END__ marker.
+                // No AST-only cache lookup: the retired AstCache stored only
+                // the AST without parse errors, so a hit synthesised Vec::new()
+                // -- live semantic corruption for recovery-bearing source
+                // (#11215).
                 let t_parse_start = std::time::Instant::now();
-                let (ast, errors) = if let Some(cached_ast) = self.ast_cache.get(uri, &text) {
-                    tracing::debug!("Using cached AST for {}", uri);
-                    (Some((*cached_ast).clone()), vec![])
-                } else {
-                    // Parse the document up to __DATA__ or __END__ marker
+                let (ast, errors) = {
                     let code_text = crate::util::code_slice(&text);
                     let mut parser = match cancellation_token {
                         Some(token) => Parser::new_with_cancellation(code_text, token),
@@ -802,7 +833,6 @@ impl LspServer {
                         Ok(ast) => {
                             let errors = parser.errors().to_vec();
                             let arc_ast = Arc::new(ast);
-                            self.ast_cache.put(uri.to_string(), &text, Arc::clone(&arc_ast));
                             (Some((*arc_ast).clone()), errors)
                         }
                         Err(crate::error::ParseError::Cancelled) => {

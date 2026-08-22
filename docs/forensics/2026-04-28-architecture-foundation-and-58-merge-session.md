@@ -267,7 +267,7 @@ Follow-up issues filed (selected):
 - `#7113` — receipt schema `review` variant bug
 - `#7120` — reconciler SKIPPED check handling
 - `#7126` — cascade conflict hotspot sequencing
-- `#7127` — filtered `gh pr checks` aggregator masking
+- `#7127` — filtered check summary aggregator masking
 - `#7128` — spec pseudo-code requirement for state-machine implementations
 - `#7129` — BDD cluster bundle-PR strategy
 - `#6847` — parser corpus ratchet parallelization (user-owned)

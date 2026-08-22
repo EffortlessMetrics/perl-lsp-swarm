@@ -614,6 +614,14 @@ impl LspServer {
         self.handle_did_change_configuration(params);
     }
 
+    /// Install a subprocess runtime used only by formatter requests in tests.
+    pub fn test_install_formatter_runtime(
+        &self,
+        runtime: std::sync::Arc<dyn perl_subprocess_runtime::SubprocessRuntime>,
+    ) {
+        *self.formatter_runtime_override.lock() = Some(runtime);
+    }
+
     /// Install a mock subprocess runtime for the `CriticAnalyzer`.
     ///
     /// When set, the lazy-init path in `collect_external_perlcritic_diagnostics`

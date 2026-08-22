@@ -16,8 +16,8 @@ mod tests {
     /// precisely in whether the `FunctionCall` carries that transport, and #6908
     /// forbids a helper that erases the distinction a test is meant to observe.
     fn sole_top_level_statement(ast: Node) -> Result<Node, String> {
-        match ast.kind {
-            NodeKind::Program { mut statements } => {
+        match ast.into_parts() {
+            (NodeKind::Program { mut statements }, _) => {
                 if statements.len() != 1 {
                     return Err(format!(
                         "expected exactly one statement, got {}",
@@ -26,24 +26,24 @@ mod tests {
                 }
                 statements.drain(..).next().ok_or_else(|| "expected one statement".to_string())
             }
-            other => Err(format!("Expected Program node, got {other:?}")),
+            (other, _) => Err(format!("Expected Program node, got {other:?}")),
         }
     }
 
     fn first_statement(input: &str) -> Node {
         let ast = parse_code(input).expect("source should parse");
-        match ast.kind {
-            NodeKind::Program { mut statements } => {
+        match ast.into_parts() {
+            (NodeKind::Program { mut statements }, _) => {
                 statements.drain(..).next().expect("expected one statement")
             }
-            other => panic!("Expected Program node, got {other:?}"),
+            (other, _) => panic!("Expected Program node, got {other:?}"),
         }
     }
 
     #[test]
     fn test_builtin_indirect_syntax() {
         let stmt = first_statement("print $fh \"Hello\";");
-        match stmt.kind {
+        match stmt.into_parts().0 {
             NodeKind::IndirectCall { method, object, args } => {
                 assert_eq!(method, "print");
                 assert!(matches!(
@@ -60,7 +60,7 @@ mod tests {
     #[test]
     fn test_new_indirect_syntax() {
         let stmt = first_statement("new Player \"Steven\";");
-        match stmt.kind {
+        match stmt.into_parts().0 {
             NodeKind::IndirectCall { method, object, args } => {
                 assert_eq!(method, "new");
                 assert!(matches!(
@@ -77,12 +77,13 @@ mod tests {
     fn test_unknown_lowercase_name_is_function_call() {
         let source = "my_custom_method $obj 10, 20;";
         let stmt = first_statement(source);
-        match stmt.kind {
+        let (kind, stmt_location) = stmt.into_parts();
+        match kind {
             NodeKind::FunctionCall { name, args } => {
                 assert_eq!(name, "my_custom_method");
                 assert_eq!(args.len(), 3);
                 assert_eq!(
-                    stmt.location.end,
+                    stmt_location.end,
                     source.len() - 1,
                     "FunctionCall span must cover all arguments"
                 );
@@ -102,7 +103,7 @@ mod tests {
             source.len() - 1,
             "ExpressionStatement span must include the closing parenthesis"
         );
-        match stmt.kind {
+        match stmt.into_parts().0 {
             NodeKind::ExpressionStatement { expression } => {
                 assert_eq!(expression.location.start, 1);
                 assert_eq!(expression.location.end, 3);
@@ -115,16 +116,17 @@ mod tests {
     fn test_parenthesized_builtin_call_span_keeps_closer() {
         let source = "print(1);";
         let stmt = first_statement(source);
-        let expression = match stmt.kind {
-            NodeKind::ExpressionStatement { expression } => expression,
+        let expression = match stmt.into_parts().0 {
+            NodeKind::ExpressionStatement { expression } => *expression,
             other => panic!("Expected ExpressionStatement node, got {other:?}"),
         };
-        match expression.kind {
+        let (kind, expression_location) = expression.into_parts();
+        match kind {
             NodeKind::FunctionCall { name, args } => {
                 assert_eq!(name, "print");
                 assert_eq!(args.len(), 1);
                 assert_eq!(
-                    expression.location.end,
+                    expression_location.end,
                     source.len() - 1,
                     "parenthesized builtin FunctionCall span must include ')'"
                 );
@@ -138,8 +140,8 @@ mod tests {
         let source = "print qq/value=$café/;";
         let stmt = first_statement(source);
         let statement_end = stmt.location.end;
-        let expression = match stmt.kind {
-            NodeKind::ExpressionStatement { expression } => expression,
+        let expression = match stmt.into_parts().0 {
+            NodeKind::ExpressionStatement { expression } => *expression,
             other => panic!("Expected ExpressionStatement node, got {other:?}"),
         };
         assert_eq!(
@@ -147,12 +149,13 @@ mod tests {
             source.len() - 1,
             "ExpressionStatement span must cover its expression"
         );
-        match expression.kind {
+        let (kind, expression_location) = expression.into_parts();
+        match kind {
             NodeKind::FunctionCall { name, args } => {
                 assert_eq!(name, "print");
                 assert_eq!(args.len(), 1);
                 assert_eq!(
-                    expression.location.end,
+                    expression_location.end,
                     source.len() - 1,
                     "builtin FunctionCall span must cover its argument"
                 );
@@ -166,16 +169,17 @@ mod tests {
         let source = "require 'relative/file.pl';";
         let stmt = first_statement(source);
         let statement_end = stmt.location.end;
-        let expression = match stmt.kind {
-            NodeKind::ExpressionStatement { expression } => expression,
+        let expression = match stmt.into_parts().0 {
+            NodeKind::ExpressionStatement { expression } => *expression,
             other => panic!("Expected ExpressionStatement node, got {other:?}"),
         };
         assert_eq!(statement_end, source.len() - 1);
-        match expression.kind {
+        let (kind, expression_location) = expression.into_parts();
+        match kind {
             NodeKind::FunctionCall { name, args } => {
                 assert_eq!(name, "require");
                 assert_eq!(args.len(), 1);
-                assert_eq!(expression.location.end, source.len() - 1);
+                assert_eq!(expression_location.end, source.len() - 1);
             }
             other => panic!("Expected FunctionCall node, got {other:?}"),
         }
@@ -213,7 +217,8 @@ mod tests {
             return Err("bareword route unexpectedly wrapped the call in an ExpressionStatement"
                 .to_string());
         }
-        match stmt.kind {
+        let (kind, stmt_location) = stmt.into_parts();
+        match kind {
             NodeKind::FunctionCall { name, args } => {
                 assert_eq!(name, "my_custom_method");
                 assert_eq!(args.len(), 3);
@@ -265,7 +270,7 @@ mod tests {
                     other => panic!("Expected Binary ->{{}} for third arg, got {other:?}"),
                 }
                 assert_eq!(
-                    stmt.location.end,
+                    stmt_location.end,
                     source.len() - 1,
                     "FunctionCall span must cover trailing arguments"
                 );
@@ -294,13 +299,15 @@ mod tests {
             ));
         }
         let stmt = sole_top_level_statement(ast)?;
-        let NodeKind::ExpressionStatement { expression } = stmt.kind else {
-            return Err(format!(
-                "parenthesized control should keep its ExpressionStatement transport, got {:?}",
-                stmt.kind
-            ));
+        let expression = match stmt.into_parts() {
+            (NodeKind::ExpressionStatement { expression }, _) => expression,
+            (other, _) => {
+                return Err(format!(
+                    "parenthesized control should keep its ExpressionStatement transport, got {other:?}"
+                ));
+            }
         };
-        match expression.kind {
+        match expression.into_parts().0 {
             NodeKind::FunctionCall { name, args }
                 if name == "my_custom_method" && args.len() == 3 =>
             {
@@ -334,7 +341,7 @@ mod tests {
         if matches!(stmt.kind, NodeKind::ExpressionStatement { .. }) {
             return Err("mutation control must not move the source onto another route".to_string());
         }
-        match stmt.kind {
+        match stmt.into_parts().0 {
             NodeKind::FunctionCall { name, args }
                 if name == "my_custom_method" && args.len() == 3 =>
             {
@@ -418,11 +425,11 @@ mod tests {
     fn test_unknown_lowercase_name_inside_control_flow_is_function_call() {
         // Bare call inside the block remains the specialized bareword path.
         let stmt = first_statement("if ($enabled) { my_custom_method $obj 10, 20; }");
-        let then_branch = match stmt.kind {
+        let then_branch = match stmt.into_parts().0 {
             NodeKind::If { then_branch, .. } => then_branch,
             other => panic!("Expected If node, got {other:?}"),
         };
-        let body = match then_branch.kind {
+        let body = match (*then_branch).into_parts().0 {
             NodeKind::Block { statements } => statements,
             other => panic!("Expected Block node, got {other:?}"),
         };

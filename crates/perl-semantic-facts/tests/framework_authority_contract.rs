@@ -223,4 +223,11 @@ fn each_structural_authority_check_has_a_falsifier() {
         other_descriptor.validate_authority_against(&input),
         Err(AdapterAuthorityError::InputMismatch)
     );
+
+    let mut other_source_scope = authoritative_candidate();
+    other_source_scope.source_scope.primary_content_digest = Some("sha256:other".to_string());
+    assert_eq!(
+        other_source_scope.validate_authority_against(&input),
+        Err(AdapterAuthorityError::InputMismatch)
+    );
 }

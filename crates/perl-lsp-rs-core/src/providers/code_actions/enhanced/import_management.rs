@@ -1,9 +1,7 @@
 //! Import management code actions
 
 use super::super::types::{CodeAction, CodeActionEdit, CodeActionKind};
-use crate::providers::import_management::{
-    collect_imports, find_imports_range, guess_module_for_function, sort_imports,
-};
+use crate::providers::import_management::guess_module_for_function;
 use crate::providers::rename::TextEdit;
 use perl_parser_core::ast::{Node, SourceLocation};
 
@@ -44,35 +42,6 @@ pub fn add_missing_imports(ast: &Node, _source: &str, helpers: &Helpers<'_>) -> 
         },
         is_preferred: false,
     })
-}
-
-/// Organize import statements
-pub fn organize_imports(_ast: &Node, source: &str, helpers: &Helpers<'_>) -> Option<CodeAction> {
-    let imports = collect_imports(helpers.lines());
-    if imports.len() <= 1 {
-        return None;
-    }
-
-    // Sort imports: pragmas first, then core, then CPAN, then local
-    let organized = sort_imports(imports);
-
-    // Find the range of existing imports
-    if let Some((start, end)) = find_imports_range(source, helpers.lines()) {
-        return Some(CodeAction {
-            title: "Organize imports".to_string(),
-            kind: CodeActionKind::SourceOrganizeImports,
-            diagnostics: Vec::new(),
-            edit: CodeActionEdit {
-                changes: vec![TextEdit {
-                    location: SourceLocation { start, end },
-                    new_text: organized.join("\n") + "\n",
-                }],
-            },
-            is_preferred: false,
-        });
-    }
-
-    None
 }
 
 /// Find undefined functions in the AST.

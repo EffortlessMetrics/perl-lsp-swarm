@@ -974,6 +974,43 @@ include_paths = ["stale_lib"]
     }
 
     #[test]
+    fn handle_client_response_ignores_removed_test_runner_authority() {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let folder = temp.path().join("folder");
+        std::fs::create_dir_all(&folder).expect("failed to create folder");
+        let uri = url::Url::from_directory_path(&folder).expect("failed to create uri").to_string();
+
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
+                .with_path(folder),
+        );
+        server.pending_workspace_configuration_requests.lock().insert(
+            ServerRequestId::for_test(101),
+            crate::runtime::PendingWorkspaceConfigurationRequest {
+                folder_uris: vec![uri.clone()],
+                includes_global_item: true,
+                created_at: std::time::Instant::now(),
+            },
+        );
+
+        server.handle_client_response(Some(serde_json::json!({
+            "id": 101,
+            "result": [
+                {"testRunner": {"command": "CANARY-EXECUTABLE", "args": ["CANARY-ARG"]}},
+                {"workspace": {"resolutionTimeout": 321}, "testRunner": {"timeout": 1}}
+            ]
+        })));
+
+        let folders = server.workspace_folders.lock();
+        let state = folders.iter().find(|folder| folder.uri == uri).expect("missing folder");
+        assert_eq!(state.effective_workspace_config.resolution_timeout_ms, 321);
+        let serialized = serde_json::to_value(&*server.config.lock()).expect("serialize config");
+        assert!(serialized.get("testRunner").is_none());
+        assert!(serialized.to_string().find("CANARY").is_none());
+    }
+
+    #[test]
     fn handle_client_response_accepts_numeric_string_id() -> anyhow::Result<()> {
         let server = LspServer::new();
         let temp = tempfile::tempdir()?;
@@ -1224,5 +1261,373 @@ include_paths = ["stale_lib"]
             "standard wrapped settings must still apply includePaths; got: {:?}",
             workspace_config.include_paths
         );
+    }
+
+    fn push_folder_with_project_config(
+        server: &LspServer,
+        temp: &tempfile::TempDir,
+        folder_name: &str,
+    ) -> anyhow::Result<String> {
+        use perl_lsp_rs_core::config::ProjectConfig;
+
+        let folder = temp.path().join(folder_name);
+        std::fs::create_dir_all(&folder)?;
+        let uri = url::Url::from_directory_path(&folder)
+            .map_err(|()| anyhow::anyhow!("failed to create folder URI"))?
+            .to_string();
+
+        let mut project = ProjectConfig::default();
+        project.perl.include_paths = vec![format!("{folder_name}_project_lib")];
+        project.perl.discovery_extensions = vec!["pm6".to_string()];
+
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
+                .with_path(folder)
+                .with_project_config(project),
+        );
+        Ok(uri)
+    }
+
+    fn insert_pending_request(server: &LspServer, request_id: i32, folder_uris: Vec<String>) {
+        server.pending_workspace_configuration_requests.lock().insert(
+            ServerRequestId::for_test(request_id),
+            crate::runtime::PendingWorkspaceConfigurationRequest {
+                folder_uris,
+                includes_global_item: true,
+                created_at: std::time::Instant::now(),
+            },
+        );
+    }
+
+    #[test]
+    fn workspace_configuration_response_applies_full_precedence_stack() -> anyhow::Result<()> {
+        // Declared per-folder generation order (issue #6736):
+        // defaults < initializationOptions < project config < global item < folder item.
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let uri = push_folder_with_project_config(&server, &temp, "alpha")?;
+        *server.initialization_options_perl_settings.lock() = Some(serde_json::json!({
+            "workspace": {
+                "resolutionTimeout": 111,
+                "includePaths": ["init_lib"],
+                "usePerl5lib": false
+            }
+        }));
+        insert_pending_request(&server, 300, vec![uri.clone()]);
+
+        server.handle_client_response(Some(serde_json::json!({
+            "id": 300,
+            "result": [
+                {
+                    "workspace": {
+                        "useSystemInc": true,
+                        "discoveryExtensions": ["tmpl"],
+                        "resolutionTimeout": 222
+                    }
+                },
+                { "workspace": { "resolutionTimeout": 444 } }
+            ]
+        })));
+
+        let folders = server.workspace_folders.lock();
+        let state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        assert_eq!(
+            state.effective_workspace_config.resolution_timeout_ms, 444,
+            "folder-scoped item must beat every lower layer, including the global item's 222"
+        );
+        assert!(
+            state.effective_workspace_config.use_system_inc,
+            "global item must override the default false"
+        );
+        assert_eq!(
+            state.effective_workspace_config.discovery_extra_extensions,
+            vec!["tmpl".to_string()],
+            "global item must override the project-config discoveryExtensions"
+        );
+        assert_eq!(
+            state.effective_workspace_config.include_paths,
+            vec!["alpha_project_lib".to_string()],
+            "project config must replace both defaults and initializationOptions includePaths \
+             because no client layer set includePaths in this generation"
+        );
+        assert!(
+            !state.effective_workspace_config.use_perl5lib,
+            "initializationOptions must land above the defaults: no other layer sets usePerl5lib"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn did_change_configuration_commits_client_layer_over_project_and_init_layers()
+    -> anyhow::Result<()> {
+        // The immediate state after didChangeConfiguration (before any pull response)
+        // must be one coherent generation: client layer over init/project layers, with
+        // lower layers preserved exactly where the client batch is silent.
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let uri = push_folder_with_project_config(&server, &temp, "beta")?;
+        *server.initialization_options_perl_settings.lock() =
+            Some(serde_json::json!({ "workspace": { "resolutionTimeout": 111 } }));
+
+        server.handle_did_change_configuration(Some(serde_json::json!({
+            "settings": { "perl": { "workspace": { "resolutionTimeout": 222 } } }
+        })));
+
+        let folders = server.workspace_folders.lock();
+        let state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        assert_eq!(
+            state.effective_workspace_config.resolution_timeout_ms, 222,
+            "client settings layer must beat initializationOptions and project config"
+        );
+        assert_eq!(
+            state.effective_workspace_config.include_paths,
+            vec!["beta_project_lib".to_string()],
+            "fields the client batch does not mention keep their project-config layer value"
+        );
+        assert_eq!(
+            state.effective_workspace_config.discovery_extra_extensions,
+            vec!["pm6".to_string()],
+            "a partial client batch must not clear lower-layer fields it did not override"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_and_unknown_response_ids_cannot_overwrite_newer_generation() -> anyhow::Result<()>
+    {
+        // A consumed request id and a never-pending id are both uncorrelated: replaying
+        // or delivering them must leave the accepted newer generation untouched.
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let uri = push_folder_with_project_config(&server, &temp, "gamma")?;
+        insert_pending_request(&server, 9, vec![uri.clone()]);
+
+        server.handle_client_response(Some(serde_json::json!({
+            "id": 9,
+            "result": [{}, { "workspace": { "resolutionTimeout": 333 } }]
+        })));
+
+        server.handle_client_response(Some(serde_json::json!({
+            "id": 9,
+            "result": [{}, { "workspace": { "resolutionTimeout": 999 } }]
+        })));
+        server.handle_client_response(Some(serde_json::json!({
+            "id": 7,
+            "result": [
+                { "workspace": { "useSystemInc": true } },
+                { "workspace": { "resolutionTimeout": 555, "includePaths": ["stale_lib"] } }
+            ]
+        })));
+
+        let folders = server.workspace_folders.lock();
+        let state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        assert_eq!(
+            state.effective_workspace_config.resolution_timeout_ms, 333,
+            "duplicate delivery of a consumed id and an unknown id must be rejected"
+        );
+        assert!(
+            !state.effective_workspace_config.include_paths.contains(&"stale_lib".to_string()),
+            "an uncorrelated response must not contribute any layer"
+        );
+        assert!(
+            !state.effective_workspace_config.use_system_inc,
+            "an uncorrelated global item must not apply"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn error_response_keeps_last_accepted_generation() -> anyhow::Result<()> {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let uri = push_folder_with_project_config(&server, &temp, "delta")?;
+
+        insert_pending_request(&server, 20, vec![uri.clone()]);
+        server.handle_client_response(Some(serde_json::json!({
+            "id": 20,
+            "result": [
+                {},
+                { "workspace": { "resolutionTimeout": 321, "includePaths": ["kept_lib"] } }
+            ]
+        })));
+
+        insert_pending_request(&server, 21, vec![uri.clone()]);
+        server.handle_client_response(Some(serde_json::json!({
+            "id": 21,
+            "error": { "code": -32601, "message": "configuration unsupported" }
+        })));
+
+        let folders = server.workspace_folders.lock();
+        let state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        assert_eq!(state.effective_workspace_config.resolution_timeout_ms, 321);
+        assert_eq!(
+            state.effective_workspace_config.include_paths,
+            vec!["kept_lib".to_string()],
+            "a failed pull response must retain the last fully accepted generation"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn partial_result_array_rebuilds_folder_from_remaining_layers_without_stale_mix()
+    -> anyhow::Result<()> {
+        // Declared fallback for a missing folder item: rebuild that folder's
+        // generation from defaults + initializationOptions + project + global item.
+        // The prior generation's folder-scoped values must not leak into it.
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let uri = push_folder_with_project_config(&server, &temp, "epsilon")?;
+
+        insert_pending_request(&server, 30, vec![uri.clone()]);
+        server.handle_client_response(Some(serde_json::json!({
+            "id": 30,
+            "result": [{}, { "workspace": { "resolutionTimeout": 777 } }]
+        })));
+        assert_eq!(
+            server.workspace_folders.lock()[0].effective_workspace_config.resolution_timeout_ms,
+            777
+        );
+
+        insert_pending_request(&server, 31, vec![uri.clone()]);
+        server.handle_client_response(Some(serde_json::json!({
+            "id": 31,
+            "result": [{ "workspace": { "useSystemInc": true } }]
+        })));
+
+        let folders = server.workspace_folders.lock();
+        let state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        assert_ne!(
+            state.effective_workspace_config.resolution_timeout_ms, 777,
+            "the rebuilt generation must not reuse the superseded folder-scoped value"
+        );
+        assert_eq!(
+            state.effective_workspace_config.resolution_timeout_ms, 50,
+            "with no timeout layer present the rebuilt generation falls back to the default"
+        );
+        assert!(
+            state.effective_workspace_config.use_system_inc,
+            "the global item of the new generation still applies"
+        );
+        assert_eq!(
+            state.effective_workspace_config.discovery_extra_extensions,
+            vec!["pm6".to_string()],
+            "lower layers are re-assembled deterministically in the rebuilt generation"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_batch_preserves_last_valid_values_and_updates_only_valid_fields() {
+        // Per-field fail-safe contract: wrong-typed values keep the last valid value,
+        // valid siblings in the same batch still apply, and nothing else moves.
+        let server = LspServer::new();
+
+        server.handle_did_change_configuration(Some(serde_json::json!({
+            "settings": { "perl": {
+                "inlayHints": { "enabled": true },
+                "workspace": {
+                    "includePaths": ["good_lib"],
+                    "resolutionTimeout": 123,
+                    "useSystemInc": true
+                }
+            } }
+        })));
+
+        server.handle_did_change_configuration(Some(serde_json::json!({
+            "settings": { "perl": {
+                "inlayHints": { "maxLength": "wide" },
+                "workspace": {
+                    "includePaths": "good_lib",
+                    "resolutionTimeout": "soon",
+                    "discoveryExtensions": ["tmpl"]
+                }
+            } }
+        })));
+
+        let config = server.config.lock();
+        assert!(
+            config.inlay_hints_enabled,
+            "unrelated ServerConfig field from the earlier batch must survive"
+        );
+        assert_eq!(
+            config.inlay_hints_max_length, 30,
+            "wrong-typed inlayHints.maxLength keeps the last valid value"
+        );
+        drop(config);
+
+        let workspace_config = server.workspace_config.lock();
+        assert_eq!(
+            workspace_config.include_paths,
+            vec!["good_lib".to_string()],
+            "wrong-typed includePaths keeps the last valid list instead of clearing it"
+        );
+        assert_eq!(
+            workspace_config.resolution_timeout_ms, 123,
+            "wrong-typed resolutionTimeout keeps the last valid value"
+        );
+        assert!(
+            workspace_config.use_system_inc,
+            "absent-from-batch field keeps its accepted value"
+        );
+        assert!(
+            workspace_config.discovery_extra_extensions.contains(&"tmpl".to_string()),
+            "valid sibling field in the same malformed batch still applies"
+        );
+    }
+
+    #[test]
+    fn malformed_batch_folder_generation_falls_back_to_lower_layers_not_previous_client_values()
+    -> anyhow::Result<()> {
+        // Folder effective configs are reassembled per generation
+        // (defaults < initializationOptions < project < current payload), so a
+        // wrong-typed or absent client field falls back to its LOWER LAYER value,
+        // never to the previous generation's accepted client value and never to a
+        // partial mix of the two consumer classes.
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let uri = push_folder_with_project_config(&server, &temp, "zeta")?;
+        *server.initialization_options_perl_settings.lock() =
+            Some(serde_json::json!({ "workspace": { "resolutionTimeout": 111 } }));
+
+        server.handle_did_change_configuration(Some(serde_json::json!({
+            "settings": { "perl": { "workspace": {
+                "includePaths": ["good_lib"],
+                "resolutionTimeout": 123,
+                "useSystemInc": true
+            } } }
+        })));
+
+        server.handle_did_change_configuration(Some(serde_json::json!({
+            "settings": { "perl": { "workspace": {
+                "includePaths": "good_lib",
+                "resolutionTimeout": "soon",
+                "discoveryExtensions": ["tmpl"]
+            } } }
+        })));
+
+        let folders = server.workspace_folders.lock();
+        let state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        assert_eq!(
+            state.effective_workspace_config.resolution_timeout_ms, 111,
+            "wrong-typed resolutionTimeout falls back to the initializationOptions layer, \
+             not to the previous batch's 123"
+        );
+        assert_eq!(
+            state.effective_workspace_config.include_paths,
+            vec!["zeta_project_lib".to_string()],
+            "wrong-typed includePaths falls back to the project-config layer, \
+             not to the previous batch's good_lib"
+        );
+        assert!(
+            !state.effective_workspace_config.use_system_inc,
+            "absent-from-batch useSystemInc falls back to the default, \
+             not to the previous batch's true"
+        );
+        assert_eq!(
+            state.effective_workspace_config.discovery_extra_extensions,
+            vec!["tmpl".to_string()],
+            "the valid sibling field of the malformed batch still applies over the project layer"
+        );
+        Ok(())
     }
 }

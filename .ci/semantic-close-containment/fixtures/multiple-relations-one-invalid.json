@@ -1,0 +1,47 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5023",
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10413"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves only the CP00 contradiction class."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 990007,
+    "title": "fix(config): land a bounded phase and an atomic repair (#5001)",
+    "body": "## Controlling issue\n\n#5001\n\n## Claim Boundary\n\nThe #5001 work is Phase 1 only. The unrelated atomic defect is complete.\n\nCloses #5001 (Phase 1 only).\nCloses #9000001."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 5001,
+      "title": "security(config): audit all resource-scoped settings for workspace-owned capabilities",
+      "body": "## Acceptance\n\nEvery resource-scoped setting is classified and protected."
+    },
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 9000001,
+      "title": "fix(parser): reject one malformed delimiter",
+      "body": "## Acceptance\n\nThe one atomic defect is repaired."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "FAIL_PHASE_TERMINAL_RELATION",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 5001,
+        "code": "FAIL_PHASE_TERMINAL_RELATION"
+      },
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9000001,
+        "code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION"
+      }
+    ]
+  }
+}

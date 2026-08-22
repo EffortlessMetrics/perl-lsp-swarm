@@ -172,12 +172,15 @@ fn apply_patch(worktree: &Path, patch: &[u8]) -> Result<()> {
         .stderr(Stdio::piped())
         .spawn()
         .context("spawning git apply")?;
-    child
+    // Capture the write result without short-circuiting: `git apply` may exit
+    // early on malformed input, closing its stdin pipe before we finish writing.
+    // In that case `write_all` returns a BrokenPipe error, but the authoritative
+    // failure reason comes from the process exit status collected below.
+    let write_result = child
         .stdin
         .take()
         .ok_or_else(|| eyre!("git apply stdin was unavailable"))?
-        .write_all(patch)
-        .context("writing PR net patch to git apply")?;
+        .write_all(patch);
     let output = child.wait_with_output().context("waiting for git apply")?;
     if !output.status.success() {
         return Err(eyre!(
@@ -186,6 +189,9 @@ fn apply_patch(worktree: &Path, patch: &[u8]) -> Result<()> {
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
+    // Surface a write error only when git apply itself succeeded — a BrokenPipe
+    // during a failed apply is expected and already reported above.
+    write_result.context("writing PR net patch to git apply")?;
     Ok(())
 }
 

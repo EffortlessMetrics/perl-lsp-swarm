@@ -10,7 +10,8 @@
 //! - **extract_variable**: Extract selected expression into a named variable
 //! - **extract_subroutine**: Extract code block into a new subroutine
 //! - **loop_conversion**: Convert between loop styles (for/foreach/while)
-//! - **import_management**: Organize and add/remove use statements
+//! - **import_management**: Add missing `use` statements (the legacy line-
+//!   oriented import organizer is withdrawn, see issue #8305)
 //! - **postfix**: Postfix completion-style actions (e.g., `.if`, `.unless`)
 //! - **error_checking**: Add error handling around expressions
 //! - **helpers**: Shared utilities for text manipulation and position mapping
@@ -21,7 +22,9 @@
 //!
 //! - **refactor.extract**: Extract variable, extract subroutine
 //! - **refactor.rewrite**: Loop conversion, error wrapping
-//! - **source.organizeImports**: Import management
+//!
+//! `source.organizeImports` is intentionally absent: the only implementation was
+//! a destructive line sorter and is withdrawn until #10696 lands a proven cohort.
 //!
 //! # Performance Characteristics
 //!
@@ -412,10 +415,11 @@ impl EnhancedCodeActionsProvider {
             actions.push(action);
         }
 
-        // Organize imports
-        if let Some(action) = import_management::organize_imports(ast, &self.source, &helpers) {
-            actions.push(action);
-        }
+        // Organize imports is withdrawn (#8305): the legacy line-oriented
+        // organizer replaced the whole first-to-last import-looking interval
+        // and could destroy executable statements in between. No action may be
+        // offered for `source.organizeImports` until #8319 admits a bounded
+        // source-preserving cohort and #10696 lands the proven cutover.
 
         // Add pragmas
         actions.extend(self.add_recommended_pragmas(&helpers));

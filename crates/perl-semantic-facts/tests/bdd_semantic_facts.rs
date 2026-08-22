@@ -1055,46 +1055,54 @@ fn given_mixed_provenance_facts_when_compared_then_exact_ast_most_reliable() {
 fn given_moo_module_in_activation_list_when_detection_runs_then_detected_with_confidence() {
     use perl_semantic_facts::framework::{
         AdapterBudget, AdapterCancellation, AdapterDescriptor, AdapterDetectionInput,
-        AdapterDetectionResult, AdapterDisposition, AdapterId, DetectionOutcome,
-        ModuleActivationIdentity,
+        AdapterDetectionResult, AdapterDisposition, AdapterId, DetectionEvidenceClass,
+        DetectionOutcome, ModuleActivationIdentity, ModuleObservationReceipt,
+        ModuleSelectorEvaluation, ModuleSelectorOutcome,
     };
     use perl_semantic_facts::{Confidence, FileId, SourceGeneration};
 
     let descriptor =
         AdapterDescriptor::new(AdapterId(1), "moo", "Moo", None, 1, AdapterDisposition::Production);
-    let available_modules = vec![
-        ModuleActivationIdentity::new(
-            "Moo",
-            Some(FileId(10)),
-            SourceGeneration::known("sha256:moo-ver"),
-        ),
-        ModuleActivationIdentity::new(
-            "Moo::Role",
-            Some(FileId(11)),
-            SourceGeneration::known("sha256:moo-role-ver"),
-        ),
-    ];
-    let input = AdapterDetectionInput::new(
-        descriptor.clone(),
-        available_modules,
+    let moo = ModuleActivationIdentity::new(
+        "Moo",
+        Some(FileId(10)),
         SourceGeneration::known("sha256:project"),
-        None,
+    );
+    let observation = ModuleObservationReceipt::new(
+        "module-resolver.v1",
+        "root:bdd-fixture",
+        "project-environment.v1",
+        SourceGeneration::known("sha256:project"),
+        "sha256:input",
+        vec![ModuleSelectorEvaluation::matched(
+            "Moo",
+            moo.clone(),
+            DetectionEvidenceClass::ResolvedModule,
+        )],
+    );
+    let input = AdapterDetectionInput::new(
+        descriptor,
+        observation,
         Some(AdapterBudget::new(10, 65_536)),
         AdapterCancellation::active(),
     );
 
-    // Simulate a test adapter decision: Moo is in the list → Detected.
-    let outcome = if input.available_modules.iter().any(|m| m.module_name == "Moo") {
+    // Simulate a test adapter decision: Moo resolved in the observed universe → Detected.
+    let outcome = if input.module_observation.evaluations.iter().any(|evaluation| {
+        evaluation.selector == "Moo"
+            && matches!(evaluation.outcome, ModuleSelectorOutcome::Matched { .. })
+    }) {
         DetectionOutcome::Detected { confidence: Confidence::High, framework_version: None }
     } else {
         DetectionOutcome::Absent {
             reason: perl_semantic_facts::framework::DetectionAbsenceReason::RequiredModulesMissing,
         }
     };
-    let result = AdapterDetectionResult::new(descriptor, input.project_generation.clone(), outcome);
+    let result =
+        AdapterDetectionResult::for_input(&input, outcome).with_contributing_modules(vec![moo]);
 
     assert!(result.is_detected());
-    assert!(result.is_authoritative());
+    assert!(result.is_authoritative_against(&input));
 }
 
 // ── Scenario 20: Framework Adapter — Cancelled Detection ──────────────────
@@ -1104,35 +1112,65 @@ fn given_moo_module_in_activation_list_when_detection_runs_then_detected_with_co
 /// then the outcome is `Cancelled` and no partial state is produced.
 #[test]
 fn given_cancelled_token_when_detection_checked_then_outcome_is_cancelled() {
-    use perl_semantic_facts::SourceGeneration;
     use perl_semantic_facts::framework::{
-        AdapterCancellation, AdapterDescriptor, AdapterDetectionResult, AdapterDisposition,
-        AdapterId, DetectionOutcome,
+        AdapterCancellation, AdapterDescriptor, AdapterDetectionInput, AdapterDetectionResult,
+        AdapterDisposition, AdapterId, DetectionAuthorityError, DetectionEvidenceClass,
+        DetectionOutcome, ModuleActivationIdentity, ModuleObservationReceipt,
+        ModuleSelectorEvaluation,
     };
+    use perl_semantic_facts::{FileId, SourceGeneration};
 
-    let descriptor =
-        AdapterDescriptor::new(AdapterId(2), "moose", "Moose", None, 1, AdapterDisposition::Shadow);
+    let descriptor = AdapterDescriptor::new(
+        AdapterId(2),
+        "moose",
+        "Moose",
+        None,
+        1,
+        AdapterDisposition::Production,
+    );
     let cancellation = AdapterCancellation::cancelled();
     assert!(cancellation.is_cancelled, "token must reflect cancellation request");
 
+    let observation = ModuleObservationReceipt::new(
+        "module-resolver.v1",
+        "root:bdd-fixture",
+        "project-environment.v1",
+        SourceGeneration::known("sha256:project"),
+        "sha256:input",
+        vec![ModuleSelectorEvaluation::matched(
+            "Moose",
+            ModuleActivationIdentity::new(
+                "Moose",
+                Some(FileId(12)),
+                SourceGeneration::known("sha256:project"),
+            ),
+            DetectionEvidenceClass::ResolvedModule,
+        )],
+    );
+    let input = AdapterDetectionInput::new(descriptor, observation, None, cancellation);
+
     // Simulate adapter: bail out immediately if cancelled.
-    let outcome = if cancellation.is_cancelled {
+    let outcome = if input.cancellation.is_cancelled {
         DetectionOutcome::Cancelled
     } else {
         panic!("adapter must not run when cancelled")
     };
-    let result =
-        AdapterDetectionResult::new(descriptor, SourceGeneration::known("sha256:project"), outcome);
+    let result = AdapterDetectionResult::for_input(&input, outcome);
 
     assert!(!result.is_detected());
-    assert!(!result.is_authoritative(), "cancelled result must not be authoritative");
+    // A cancelled admission is refused at the input, before any outcome is trusted.
+    assert_eq!(
+        result.validate_authority_against(&input),
+        Err(DetectionAuthorityError::CancelledInput),
+        "cancelled result must not be authoritative"
+    );
 }
 
 // ── Scenario 21: Framework Adapter — Explicit Declarations Win ────────────
 
 /// Given two facts for the same attribute — one synthesised and one explicit —
 /// when resolving conflicts in the provider,
-/// then the explicit fact (is_stronger_than_generated=true) takes precedence.
+/// then the source-backed explicit fact takes precedence.
 #[test]
 fn given_synthesised_and_explicit_facts_when_resolving_then_explicit_wins() {
     use perl_semantic_facts::framework::{AdapterId, EmittedFact, FactClass, FactSink, FactSinkId};
@@ -1142,48 +1180,26 @@ fn given_synthesised_and_explicit_facts_when_resolving_then_explicit_wins() {
         SemanticProducer, SemanticProvenance, SemanticReasonCode, SourceAnchor, SourceGeneration,
     };
 
-    let make_envelope = |entity_id: u64| {
-        SemanticFactEnvelope::new(
-            FactId(entity_id),
-            Some(EntityId(entity_id)),
-            SemanticFactKind::Declaration,
-            SourceAnchor::new(Some(AnchorId(1)), FileId(10), 10, 20),
-            SourceGeneration::known("sha256:aabbcc"),
-            None,
-            Some("My::Package".to_string()),
-            LifecyclePhase::Runtime,
-            SemanticProducer::FrameworkAdapter,
-            SemanticProvenance::Known(Provenance::FrameworkSynthesis),
-            SemanticConfidence::Known(Confidence::Medium),
-            SemanticFreshness::Fresh,
-            None,
-            vec![],
-            SemanticReasonCode::GeneratedFromSource,
-        )
-    };
-
-    // An explicit source declaration is source-backed: `can_override_generated`
-    // requires both a source provenance and `ExactSource`, so a fixture that only
-    // sets `is_stronger_than_generated` cannot stand in for one.
-    let make_source_envelope = |entity_id: u64| {
-        SemanticFactEnvelope::new(
-            FactId(entity_id),
-            Some(EntityId(entity_id)),
-            SemanticFactKind::Declaration,
-            SourceAnchor::new(Some(AnchorId(1)), FileId(10), 10, 20),
-            SourceGeneration::known("sha256:aabbcc"),
-            None,
-            Some("My::Package".to_string()),
-            LifecyclePhase::Runtime,
-            SemanticProducer::FrameworkAdapter,
-            SemanticProvenance::Known(Provenance::ExactAst),
-            SemanticConfidence::Known(Confidence::High),
-            SemanticFreshness::Fresh,
-            None,
-            vec![],
-            SemanticReasonCode::ExactSource,
-        )
-    };
+    let make_envelope =
+        |entity_id: u64, provenance: Provenance, reason_code: SemanticReasonCode| {
+            SemanticFactEnvelope::new(
+                FactId(entity_id),
+                Some(EntityId(entity_id)),
+                SemanticFactKind::Declaration,
+                SourceAnchor::new(Some(AnchorId(1)), FileId(10), 10, 20),
+                SourceGeneration::known("sha256:aabbcc"),
+                None,
+                Some("My::Package".to_string()),
+                LifecyclePhase::Runtime,
+                SemanticProducer::FrameworkAdapter,
+                SemanticProvenance::Known(provenance),
+                SemanticConfidence::Known(Confidence::Medium),
+                SemanticFreshness::Fresh,
+                None,
+                vec![],
+                reason_code,
+            )
+        };
 
     // Synthesised fact (lower priority).
     let synthesised = EmittedFact::new(
@@ -1192,7 +1208,7 @@ fn given_synthesised_and_explicit_facts_when_resolving_then_explicit_wins() {
         "Moo",
         Provenance::FrameworkSynthesis,
         Confidence::Medium,
-        make_envelope(1),
+        make_envelope(1, Provenance::FrameworkSynthesis, SemanticReasonCode::GeneratedFromSource),
         FactClass::GeneratedMembers,
         None,
         false, // NOT stronger than generated
@@ -1205,46 +1221,52 @@ fn given_synthesised_and_explicit_facts_when_resolving_then_explicit_wins() {
         "Moo",
         Provenance::ExactAst,
         Confidence::High,
-        make_source_envelope(2),
+        make_envelope(2, Provenance::ExactAst, SemanticReasonCode::ExactSource),
         FactClass::GeneratedMembers,
         None,
-        true, // IS stronger than generated — explicit `reader => 'get_name'`
+        true, // Source-backed explicit declaration: `reader => 'get_name'`.
     );
 
-    // Provider conflict resolution. `is_stronger_than_generated` is an untrusted
-    // producer hint, so selecting on it directly would assert the same field the
-    // fixture sets. Resolve through the validator that downstream code must use.
-    let winning_fact = if explicit.can_override_generated() { &explicit } else { &synthesised };
+    // The synthesized fact cannot override generated output, while the
+    // source-backed explicit fact can.
+    assert!(!synthesised.can_override_generated());
+    assert!(explicit.can_override_generated());
 
-    assert!(winning_fact.can_override_generated(), "the winner must be source-backed");
-    assert_eq!(winning_fact.confidence, Confidence::High);
-    assert!(
-        !synthesised.can_override_generated(),
-        "a synthesised fact never overrides a generated one, whatever its hint claims"
-    );
-
-    // The discriminating case: a synthesised fact that *claims* precedence. Only
-    // this shape separates "reads the validator" from "reads the hint", because
-    // for the two facts above the hint and the validator happen to agree.
-    let forged = EmittedFact::new(
+    // A forged precedence hint with generated provenance must not be eligible.
+    let forged_explicit = EmittedFact::new(
         FactSinkId(1),
         AdapterId(1),
         "Moo",
         Provenance::FrameworkSynthesis,
         Confidence::High,
-        make_envelope(3),
+        make_envelope(3, Provenance::FrameworkSynthesis, SemanticReasonCode::GeneratedFromSource),
         FactClass::GeneratedMembers,
         None,
-        true, // claims precedence with no source backing
+        true,
     );
-    assert!(forged.is_stronger_than_generated, "the fixture must carry the untrusted claim");
-    assert!(
-        !forged.can_override_generated(),
-        "a precedence claim without source-backed provenance must not override a generated fact"
-    );
+    assert!(forged_explicit.is_stronger_than_generated);
+    assert!(!forged_explicit.can_override_generated());
+
+    // Provider conflict resolution must select the source-backed fact regardless
+    // of candidate order, while excluding the forged precedence hint.
+    for candidates in [
+        vec![synthesised.clone(), explicit.clone(), forged_explicit.clone()],
+        vec![explicit.clone(), synthesised.clone(), forged_explicit.clone()],
+    ] {
+        let mut candidate_sink = FactSink::new(FactSinkId(1), AdapterId(1));
+        candidate_sink.facts = candidates;
+        let winning_facts: Vec<_> = candidate_sink.source_precedence_facts().collect();
+
+        assert_eq!(winning_facts.len(), 1);
+        let winning_fact = winning_facts[0];
+        assert_eq!(winning_fact.envelope.fact_id, FactId(2));
+        assert_eq!(winning_fact.provenance, Provenance::ExactAst);
+        assert_eq!(winning_fact.envelope.reason_code, SemanticReasonCode::ExactSource);
+        assert_eq!(winning_fact.confidence, Confidence::High);
+    }
 
     // Both facts round-trip cleanly through JSON.
-    for fact in [&synthesised, &explicit] {
+    for fact in [&synthesised, &explicit, &forged_explicit] {
         let json = serde_json::to_string(fact).expect("serialize fact");
         let decoded: EmittedFact = serde_json::from_str(&json).expect("deserialize fact");
         assert_eq!(&decoded, fact);

@@ -1,0 +1,95 @@
+{
+  "schema_version": "close_proof_contract_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts of historical GitHub subjects. The fixture proves schema-level dispositions only; semantic completion evaluation belongs to CP03 (#10382)."
+  },
+  "contract": {
+    "schema_version": "issue_contract.v1",
+    "repository": "effortlessmetrics/perl-lsp-swarm",
+    "issue_number": 9000003,
+    "title": "fix(parser): reject one malformed delimiter",
+    "kind": "leaf",
+    "required_proof_level": "mechanism",
+    "allowed_close_modes": [
+      "completed",
+      "phase_complete_issue_remains_open",
+      "superseded",
+      "true_duplicate",
+      "not_planned"
+    ],
+    "denominator": [
+      {
+        "row_id": "single-row.defect.fixed",
+        "statement": "The one malformed-delimiter defect is repaired and its neighboring form still parses.",
+        "required_proof_level": "mechanism"
+      }
+    ],
+    "negative_controls": [],
+    "mandatory_children": [],
+    "transfer_policy": {
+      "permitted": false,
+      "conditions": []
+    },
+    "domain_evidence_refs": [],
+    "identity": {
+      "issue_body_digest": "0000000000000000000000000000000000000000000000000000000000895443",
+      "denominator_digest": "b8ac516e9f51508600d30ec5729173f50327de0552e148814f7ee5815d50680d",
+      "accepted_ruling": null
+    }
+  },
+  "cases": [
+    {
+      "case_id": "pr-9000103-minimal-leaf",
+      "description": "Minimal generated leaf contracts stay cheap for ordinary one-line bugs.",
+      "packet": {
+        "schema_version": "issue_close_proof.v1",
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9000003,
+        "requested_close_mode": "completed",
+        "contract_binding": {
+          "contract_issue_body_digest": "0000000000000000000000000000000000000000000000000000000000895443",
+          "contract_denominator_digest": "b8ac516e9f51508600d30ec5729173f50327de0552e148814f7ee5815d50680d",
+          "accepted_ruling_digest": null
+        },
+        "candidate_pr": 9000103,
+        "landed_subjects": [],
+        "landing_content_proof": [],
+        "established_claims": [
+          {
+            "statement": "The named malformed delimiter is rejected and the valid neighboring form still parses.",
+            "covers_rows": [
+              "single-row.defect.fixed"
+            ]
+          }
+        ],
+        "explicitly_not_established_claims": [],
+        "row_dispositions": {
+          "single-row.defect.fixed": {
+            "disposition": "proven_current_main",
+            "evidence": {
+              "producer": "xtask-pr-close-proof",
+              "subject": "0000000000000000000000000000000000015f93",
+              "content_digest": "00000000000000000000000000000000000000000000000000000000000dbbc5",
+              "reference": "cargo xtask pr-close-proof --pr 9000103"
+            }
+          }
+        },
+        "negative_control_dispositions": {},
+        "child_dispositions": [],
+        "duplicate_of": null,
+        "verdict": {
+          "pr_scope": "pass",
+          "issue_close": "valid",
+          "reasons": [
+            "An ordinary localized bug closes with a one-row minimal leaf contract."
+          ]
+        }
+      },
+      "expected_pr_scope": "pass",
+      "expected_issue_close": "valid"
+    }
+  ]
+}

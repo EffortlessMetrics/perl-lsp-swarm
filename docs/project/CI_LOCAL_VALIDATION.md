@@ -198,13 +198,32 @@ just ci-gate
 **Solution:**
 
 ```bash
-# Remove nested lockfiles
-find . -name 'Cargo.lock' -not -path './Cargo.lock' -delete
+# Do not blindly delete or recreate a lockfile during conflict repair.
+# Validate the repository-local policy fixture/oracle; this does not validate
+# actual Cargo metadata or provide a runtime typed result.
+python3 scripts/ci/validate_cargo_lock_conflict_policy.py --repo-root .
 
 # Always run from repo root
 cd /path/to/perl-lsp
 just ci-gate
 ```
+
+The fixture/test transition cases include the typed outcome
+`manifest_requires_lock_change`. The CLI itself only reports validator success; it
+does not return a runtime result or validate actual Cargo metadata. Stop for explicit
+dependency admission; do not use `cargo generate-lockfile`, bare `cargo update`, or
+delete/recreate `Cargo.lock` as conflict repair. Nested lock detection remains a gate,
+but cleanup must be scoped to an independently identified accidental artifact rather
+than a blind deletion. Inspect the reported path first, then remove only a confirmed
+accidental nested lock:
+
+```bash
+find . -type f -name Cargo.lock ! -path './Cargo.lock' -print
+rm -- ./path/to/confirmed-accidental/Cargo.lock
+```
+
+The `rm` path is a placeholder, not a command to run unchanged. Replace it only with
+the exact path confirmed by inspection; never delete every nested lock as cleanup.
 
 The merge gate includes `ci-check-no-nested-lock` to catch this automatically.
 

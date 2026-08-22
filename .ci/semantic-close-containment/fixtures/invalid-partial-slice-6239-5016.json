@@ -1,0 +1,38 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/6239",
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5016"
+    ],
+    "subject_shas": [
+      "bb8652e4521de44dad8ccf76349692b825e06414"
+    ],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves only the CP00 contradiction class."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 6239,
+    "title": "Gate rename, hover, and refactor receipts on stale workspace index (#5016 item 2)",
+    "body": "## Controlling issue\n\n#5016\n\n## Claim boundary\n\n**Proves:** generation-stale workspace state is rejected at three named call sites.\n\n**Does not prove:** Full coverage of every remaining `with_semantic_queries_for_uri` caller in the workspace.\n\n## Remaining ungated callers (follow-up)\n\n- references\n- completion\n- navigation\n- pull diagnostics\n\nCloses #5016 (partial — item 2 slice only)."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 5016,
+      "title": "fix(workspace-index): five workspace-index correctness risks",
+      "body": "Five workspace-index correctness risks found by audit:\n\n1. count_usages/find_references disagreement.\n2. Query methods do not validate generation.\n3. symbols/search_index drift.\n4. case-insensitive package merging.\n5. find_unused_symbols is O(N^2)."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "FAIL_REMAINING_WORK_SAME_ISSUE",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 5016,
+        "code": "FAIL_REMAINING_WORK_SAME_ISSUE"
+      }
+    ]
+  }
+}

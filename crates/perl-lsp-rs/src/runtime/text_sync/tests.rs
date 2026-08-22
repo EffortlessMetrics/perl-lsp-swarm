@@ -1524,6 +1524,83 @@ fn test_did_save_text_preserves_client_version() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
+/// The per-line resource bound must be enforced after both forms of didChange
+/// produce their resulting buffer, without committing the rejected text.
+#[test]
+fn test_did_change_rejects_overlong_result_before_commit() -> Result<(), Box<dyn std::error::Error>>
+{
+    let uri = "file:///test_did_change_line_bound.pl";
+    let overlong = "x".repeat(100_001);
+
+    let changes = [
+        json!({
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 5}
+            },
+            "text": overlong.clone()
+        }),
+        json!({"text": overlong.clone()}),
+    ];
+
+    for (case, change) in changes.into_iter().enumerate() {
+        let server = LspServer::new();
+        server.did_open(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "short\n"
+            }
+        }))?;
+
+        let result = server.handle_did_change(Some(json!({
+            "textDocument": {"uri": uri, "version": 2},
+            "contentChanges": [change]
+        })));
+        assert!(result.is_err(), "didChange case {case} must reject an overlong line");
+
+        let document = server
+            .documents
+            .lock()
+            .get(uri)
+            .ok_or("rejected didChange must retain the document")?
+            .clone();
+        assert_eq!(document.text, "short\n", "rejected didChange must not commit case {case}");
+    }
+
+    Ok(())
+}
+
+/// didSave text reconciliation must enforce the same per-line bound before
+/// replacing the already-open document.
+#[test]
+fn test_did_save_rejects_overlong_text_before_commit() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///test_did_save_line_bound.pl";
+    let overlong = "x".repeat(100_001);
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "saved\n"
+        }
+    }))?;
+
+    let result = server.handle_did_save(Some(json!({
+        "textDocument": {"uri": uri, "version": 1},
+        "text": overlong
+    })));
+    assert!(result.is_err(), "didSave must reject an overlong saved line");
+
+    let documents = server.documents.lock();
+    let document = documents.get(uri).ok_or("rejected didSave must retain the document")?;
+    assert_eq!(document.text, "saved\n", "rejected didSave must not commit the text");
+    Ok(())
+}
+
 /// A changed same-version didSave replacement must cancel streams that captured
 /// the previous buffer, including streams using the preserved client version.
 #[test]
@@ -1555,6 +1632,58 @@ fn test_did_save_text_cancels_same_version_streams() -> Result<(), Box<dyn std::
 
     assert!(session.is_cancelled(), "changed didSave text must cancel same-version streams");
     assert_eq!(server.stream_sessions().len(), 0, "cancelled same-version streams must be evicted");
+    Ok(())
+}
+
+/// The ordinary synchronous `didOpen` route must retain the complete parse
+/// outcome when the same recovery-bearing source is opened again. Before
+/// #11215, the AST-only cache returned an AST with an empty error list on the
+/// second open, upgrading the document to a false-clean result.
+#[test]
+fn repeated_did_open_of_recovery_bearing_source_preserves_parse_outcome()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///did_open_recovery_repeat.pl";
+    let malformed = "my $x = ;\n";
+    let mut first_outcome = None;
+
+    for version in [1, 2] {
+        server.did_open(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": version,
+                "text": malformed
+            }
+        }))?;
+
+        let normalized_uri = server.normalize_uri_key(uri);
+        let documents = server.documents.lock();
+        let document = documents.get(&normalized_uri).ok_or("didOpen must store the document")?;
+        let snapshot = document
+            .current_parsed()
+            .ok_or("didOpen must synchronously publish a parse snapshot")?;
+        let outcome = (
+            snapshot.parse_errors().iter().map(|error| format!("{error:?}")).collect::<Vec<_>>(),
+            snapshot.degradation_tier(),
+            snapshot.ast().is_some(),
+        );
+        assert!(
+            !outcome.0.is_empty(),
+            "recovery-bearing source must retain parse diagnostics on didOpen version {version}"
+        );
+
+        if let Some(expected) = first_outcome.as_ref() {
+            assert_eq!(
+                expected, &outcome,
+                "reopening identical recovery-bearing source must preserve diagnostic \
+                 identity/order, degradation tier, and AST/result class"
+            );
+        } else {
+            first_outcome = Some(outcome);
+        }
+    }
+
     Ok(())
 }
 
@@ -1598,6 +1727,49 @@ fn test_cancelled_open_returns_ok_without_storing_document()
         "cancelled parse must not store document state"
     );
 
+    Ok(())
+}
+
+/// Configured file-limit guard (#8895): a document over `maxFileSizeBytes`
+/// must be stored WITHOUT a parse (Minimal tier, no AST) rather than being
+/// structurally rejected. The sink owns the configured limit precisely;
+/// structural admission deliberately carries only headroom above it.
+#[test]
+fn test_over_limit_document_is_stored_without_parse() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///over_limit.pl";
+    let limit = crate::state::max_file_size_bytes();
+    // Short lines so only the total-size guard is exercised; build exactly
+    // limit+1 bytes so the guard fires on the boundary byte.
+    let line = format!("{}\n", "a".repeat(79));
+    let mut text = line.repeat((limit + 1) / line.len());
+    let remainder = (limit + 1) % line.len();
+    if remainder > 0 {
+        text.push_str(&"a".repeat(remainder));
+    }
+    debug_assert_eq!(text.len(), limit + 1);
+    assert!(text.len() > limit, "test document must exceed the configured limit");
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": text
+        }
+    }))?;
+
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("over-limit document must still be stored")?;
+    assert_eq!(
+        doc.current_parsed().map_or(DegradationTier::Minimal, |p| p.degradation_tier()),
+        DegradationTier::Minimal,
+        "over-limit content should result in Minimal degradation tier"
+    );
+    assert!(
+        doc.current_parsed().is_none_or(|p| p.ast().is_none()),
+        "parser must not run on over-limit documents"
+    );
     Ok(())
 }
 
