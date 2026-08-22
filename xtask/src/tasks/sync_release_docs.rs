@@ -905,14 +905,15 @@ channels remain independently versioned and must be verified before editor use.\
 
     #[test]
     fn sync_readme_refreshes_published_surface_prose() -> Result<()> {
+        let surface = ReleaseSurface { published_crate_count: 34, ..release_surface() };
         let input = "The published surface is 33 crates, listed in `[workspace.metadata.publish.allow]` in [`Cargo.toml`](Cargo.toml).\n\
 The verified GitHub `v0.16.0` release assets are public alpha. Other distribution\n\
 channels remain independently versioned and must be verified before editor use.\n";
-        let expected = "The published surface is 32 crates, listed in `[workspace.metadata.publish.allow]` in [`Cargo.toml`](Cargo.toml).\n\
+        let expected = "The published surface is 34 crates, listed in `[workspace.metadata.publish.allow]` in [`Cargo.toml`](Cargo.toml).\n\
 The verified GitHub `v0.17.0` release assets are public beta. Other distribution\n\
 channels remain independently versioned and must be verified before editor use.\n";
 
-        assert_eq!(sync_readme(input, &release_surface())?, expected);
+        assert_eq!(sync_readme(input, &surface)?, expected);
         Ok(())
     }
 
