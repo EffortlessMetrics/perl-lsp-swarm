@@ -186,20 +186,39 @@ fn collect_checkout_refs(dir: &Path, refs: &mut BTreeSet<String>) -> Result<()> 
         if path.extension().is_none_or(|ext| ext != "yml" && ext != "yaml") {
             continue;
         }
+        // Parse the document so only executable `uses:` values count. SHA
+        // mentions inside comments or prose (e.g. bump annotations) must not
+        // participate in the pin contract.
         let content = fs::read_to_string(&path)
             .with_context(|| format!("reading workflow file {}", path.display()))?;
-        for segment in content.split("actions/checkout@").skip(1) {
-            let reference: String =
-                segment.chars().take_while(char::is_ascii_alphanumeric).collect();
-            ensure!(
-                !reference.is_empty(),
-                "`actions/checkout@` in {} has no pinned reference",
-                path.display()
-            );
-            refs.insert(reference);
-        }
+        let document: Value = serde_yaml_ng::from_str(&content)
+            .with_context(|| format!("parsing workflow file {}", path.display()))?;
+        collect_uses_refs(&document, refs);
     }
     Ok(())
+}
+
+fn collect_uses_refs(value: &Value, refs: &mut BTreeSet<String>) {
+    match value {
+        Value::Mapping(mapping) => {
+            for (key, entry) in mapping {
+                match (key.as_str(), entry.as_str()) {
+                    (Some("uses"), Some(uses)) => {
+                        if let Some(reference) = uses.strip_prefix("actions/checkout@") {
+                            refs.insert(reference.to_owned());
+                        }
+                    }
+                    _ => collect_uses_refs(entry, refs),
+                }
+            }
+        }
+        Value::Sequence(sequence) => {
+            for item in sequence {
+                collect_uses_refs(item, refs);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn workflow() -> Result<(String, Value)> {
