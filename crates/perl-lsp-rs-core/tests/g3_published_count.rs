@@ -1,4 +1,5 @@
-//! Integration test: Verify published crate count is 31 after Wave Final PR B absorption.
+//! Integration test: Verify the published crate count matches
+//! `xtask/published-crate-baseline.txt` (the ratchet record).
 //!
 //! Wave G3 absorbs 7 crates: governance, protocol, uri, transport, performance,
 //! critic-parser, tooling. Reduces published count from 44 → 37.
@@ -14,16 +15,27 @@ fn workspace_root() -> PathBuf {
     PathBuf::from(manifest_dir).join("..").join("..")
 }
 
-/// Count entries in the root `[workspace.metadata.publish.allow]` array — the live
-/// published-crate count, which the baseline file must match. Derived, not hard-coded,
-/// so an intentional change to the published set only edits Cargo.toml + the baseline file.
-fn published_allowlist_count(root: &std::path::Path) -> std::io::Result<usize> {
+/// Extract the crate names in the root `[workspace.metadata.publish.allow]` array —
+/// the live published set, which the baseline file must match. Derived, not hard-coded.
+///
+/// The allowlist is densely commented: most entries sit beside a `#` note recording
+/// where an absorbed crate went. Those comments are not entries, and one of them
+/// quotes an ADR section name (`PLSP-ADR-0006 "Scope boundary"`), so counting quotes
+/// across the whole block over-reports by one per quoted phrase. Strip each line's
+/// comment before reading its entry, and return the names so failures show which
+/// rows drifted instead of only a diverging count.
+fn published_allowlist_entries(root: &std::path::Path) -> std::io::Result<Vec<String>> {
     let root_toml = fs::read_to_string(root.join("Cargo.toml"))?;
     let section = root_toml.split("[workspace.metadata.publish]").nth(1).unwrap_or("");
     let allow_start = section.find("allow = [").unwrap_or(0);
     let allow = &section[allow_start..];
     let allow_end = allow.find(']').unwrap_or(allow.len());
-    Ok(allow[..allow_end].matches('"').count() / 2)
+    Ok(allow[..allow_end]
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or("").trim())
+        .filter(|code| code.starts_with('"'))
+        .map(|code| code.trim_end_matches(',').trim().trim_matches('"').to_string())
+        .collect())
 }
 
 #[test]
@@ -40,11 +52,13 @@ fn g3_published_count_matches_allowlist() -> Result<(), Box<dyn std::error::Erro
     let content = fs::read_to_string(&baseline_path)?;
     let baseline: usize =
         content.trim().parse().map_err(|_| "failed to parse baseline count as an integer")?;
-    let allowlist = published_allowlist_count(&root)?;
+    let entries = published_allowlist_entries(&root)?;
+    let allowlist = entries.len();
 
     assert_eq!(
         baseline, allowlist,
-        "baseline ({baseline}) must match the publish allowlist entry count ({allowlist})"
+        "baseline ({baseline}) must match the publish allowlist entry count ({allowlist}) — \
+         parsed allowlist entries: {entries:?}"
     );
 
     Ok(())
