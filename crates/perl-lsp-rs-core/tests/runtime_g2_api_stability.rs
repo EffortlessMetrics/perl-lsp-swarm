@@ -19,7 +19,7 @@ use perl_lsp_rs_core::runtime::cancellation::{
     CancellableProvider, CancellationError, CancellationRegistry, PerlLspCancellationToken,
 };
 use perl_lsp_rs_core::runtime::input_validation::{
-    sanitize_string, validate_file_content, validate_file_path, validate_lsp_request,
+    sanitize_string, validate_file_content, validate_file_path, validate_request_admission,
 };
 use perl_lsp_rs_core::runtime::launcher::{
     DEFAULT_LSP_PORT, LaunchAction, LaunchConfig, LaunchParseError, LaunchPlan, TransportArgs,
@@ -106,7 +106,7 @@ fn test_api_input_validation_functions_public() -> Result<(), Box<dyn std::error
     let _sanitized = sanitize_string("test");
     let _result = validate_file_path("./test.pl", Path::new("."));
     let _result = validate_file_content("", Path::new("test.pl"));
-    let _result = validate_lsp_request("initialize", &serde_json::json!({}));
+    let _result = validate_request_admission("initialize", &serde_json::json!({}));
     Ok(())
 }
 
