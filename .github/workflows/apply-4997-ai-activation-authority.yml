@@ -38,23 +38,37 @@ jobs:
 
           path = Path("scripts/maintenance/apply_4997_ai_activation_authority.py")
           text = path.read_text(encoding="utf-8")
-          replacements = [
-              (
-                  r'fn workspace_ai_completion_ignores_untrusted_endpoint_and_credential_settings\(\) \{',
-                  r'fn workspace_ai_completion_ignores_untrusted_endpoint_and_credential_settings\(\)(?: -> TestResult)? \{',
-              ),
-              (
-                  "AI-powered inline completion configuration. Sensitive destination/credential fields are intentionally excluded from LSP client settings.",
-                  "Client-controlled AI completion behavior. Endpoint and credential-routing fields are intentionally excluded because workspace-delivered LSP settings may not redirect source/secret-bearing requests.",
-              ),
-              (
-                  '"provider": { "type": "string", "default": "openai_compat" }',
-                  '"provider": { "type": "string", "enum": ["openai_compat"], "default": "openai_compat" }',
-              ),
-          ]
-          for old, new in replacements:
-              assert text.count(old) == 1, (old, text.count(old))
-              text = text.replace(old, new)
+
+          signature_old = (
+              r'fn workspace_ai_completion_ignores_untrusted_endpoint_and_credential_settings\(\) \{'
+          )
+          signature_new = (
+              r'fn workspace_ai_completion_ignores_untrusted_endpoint_and_credential_settings\(\)(?: -> TestResult)? \{'
+          )
+          assert text.count(signature_old) == 1, text.count(signature_old)
+          text = text.replace(signature_old, signature_new)
+
+          description_old = (
+              "AI-powered inline completion configuration. Sensitive destination/credential fields are intentionally excluded from LSP client settings."
+          )
+          description_new = (
+              "Client-controlled AI completion behavior. Endpoint and credential-routing fields are intentionally excluded because workspace-delivered LSP settings may not redirect source/secret-bearing requests."
+          )
+          assert text.count(description_old) == 1, text.count(description_old)
+          text = text.replace(description_old, description_new)
+
+          provider_old = '"provider": { "type": "string", "default": "openai_compat" }'
+          provider_new = (
+              '"provider": { "type": "string", "enum": ["openai_compat"], '
+              '"default": "openai_compat" }'
+          )
+          block_start = text.index('for line in [')
+          block_end = text.index(']:\n    replace_exact(SCHEMA, line, "")', block_start)
+          block = text[block_start:block_end]
+          assert block.count(provider_old) == 1, block.count(provider_old)
+          block = block.replace(provider_old, provider_new)
+          text = text[:block_start] + block + text[block_end:]
+
           path.write_text(text, encoding="utf-8")
           PY
 
