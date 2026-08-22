@@ -240,7 +240,7 @@ The JSON output includes:
 
 ## Feature Catalog and Compliance
 
-The compliance percentage reported by the server reflects how many features the active profile advertises as a fraction of all `advertised = true` entries in the catalog.
+The active profile's grid percentage is calculated as **advertised trackable features divided by trackable features**. A feature is trackable only when it is not planned and its catalog row has `counts_in_coverage = true`; that flag controls both the numerator and denominator. This is a grid/navigation metric showing the profile's advertised feature projection, not behavior evidence, a compliance verdict, or status authority.
 
 Profile compliance is monotonic: `all >= production >= ga-lock`.
 
