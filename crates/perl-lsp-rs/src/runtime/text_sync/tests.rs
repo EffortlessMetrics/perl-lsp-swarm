@@ -2694,11 +2694,13 @@ fn open_save_source_generation_held_save_loses_to_newer_edit()
     Ok(())
 }
 
-/// Reopen ABA: close/reopen under an identical URI/version/bytes installs a
-/// fresh document instance whose numeric generation coincides with the prior
-/// instance's; a held save from the PRIOR instance must not commit even
-/// though the workspace monotonic guard alone would now accept it (close
-/// resets the high-water mark).
+/// Reopen ABA with TRUE numeric coincidence: instance I1 is captured at
+/// generation 1 with NO intervening edit; close resets the workspace
+/// high-water mark and the reopened instance I2 also sits at generation 1.
+/// Numeric generation alone therefore accepts the released work -- only the
+/// document-instance Arc identity (`Arc::ptr_eq`) can reject it, and the
+/// workspace monotonic guard alone would visibly ACCEPT it (high-water was
+/// reset, payload bytes differ from the reopened buffer).
 #[cfg(feature = "workspace")]
 #[test]
 fn open_save_source_generation_reopen_aba_rejects_prior_instance_work()
@@ -2710,18 +2712,16 @@ fn open_save_source_generation_reopen_aba_rejects_prior_instance_work()
     let bytes_a = "package ReopenAba;\nsub aba_alpha { 1 }\n1;\n";
     let bytes_b = "package ReopenAba;\nsub aba_beta { 2 }\n1;\n";
 
+    // Instance I1 at generation 1; its background open task commits A@1.
     server.did_open(json!({
         "textDocument": {
             "uri": uri, "languageId": "perl", "version": 1, "text": bytes_a
         }
     }))?;
 
-    // Capture instance I1's final state (generation 2 after one edit).
+    // Hold I1's gen-1 save work carrying divergent payload B -- captured
+    // exactly as `handle_did_save` snapshots it, BEFORE anything else moves.
     let normalized_uri = server.normalize_uri_key(uri);
-    server.handle_did_change(Some(json!({
-        "textDocument": {"uri": uri, "version": 2},
-        "contentChanges": [{"text": bytes_b}]
-    })))?;
     let (i1_generation, i1_instance) = {
         let documents = server.documents.lock();
         let doc = server
@@ -2731,10 +2731,12 @@ fn open_save_source_generation_reopen_aba_rejects_prior_instance_work()
             .ok_or("prior instance identity must be non-zero")?;
         (generation, doc.generation.clone())
     };
-    assert_eq!(i1_generation.get(), 2);
+    assert_eq!(i1_generation.get(), 1);
 
-    // Close resets the workspace high-water mark; reopen identical
-    // URI/version/bytes creates instance I2 at the same numeric generation 1.
+    // Close resets the workspace high-water mark to 0; reopen identical
+    // URI/version/bytes creates instance I2 whose first accepted generation
+    // numerically COINCIDES with the held identity (both 1). No edit
+    // intervenes between capture and release.
     server.handle_did_close(Some(json!({"textDocument": {"uri": uri}})))?;
     server.did_open(json!({
         "textDocument": {
@@ -2749,8 +2751,9 @@ fn open_save_source_generation_reopen_aba_rejects_prior_instance_work()
         "the fresh instance's own open work must not be silenced by prior-session state"
     );
 
-    // Release I1's held save: Arc identity differs from I2 even though the
-    // numeric guard and URI/bytes equality would both accept it.
+    // Release I1's held save: numbers are equal and the workspace guard
+    // would accept (high-water reset to 0, then I2 committed @1 <= 1), so
+    // ONLY Arc instance identity can reject this commit.
     let url = url::Url::parse(uri)?;
     let outcome = server.commit_live_save_reconciliation(
         index,
@@ -2763,7 +2766,8 @@ fn open_save_source_generation_reopen_aba_rejects_prior_instance_work()
     );
     assert!(
         outcome.is_none(),
-        "prior-instance save work must be rejected after close/reopen; got {outcome:?}"
+        "prior-instance save work must be rejected after close/reopen even at an \
+         equal numeric generation; got {outcome:?}"
     );
     let symbols = index.file_symbols(uri);
     let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();

@@ -39,7 +39,11 @@ compatibility_baseline = 697
 # Structural recurrence control (#11305): files under these prefixes must
 # never call compatibility source APIs at all -- live commits go through
 # index_live_file behind the document-instance/generation oracle. Prefix
-# matching fails closed (any file path beginning with the prefix).
+# matching fails closed (any tracked file path beginning with the prefix).
+# Scope note: this ban is PER-FILE and SYNTACTIC (method-name scan of each
+# tracked file). It does not see compatibility calls reached through UFCS,
+# wrappers, or helper indirection in other files; that residual hole closes
+# only at #11312's deletion of the compatibility surface itself.
 compatibility_banned_prefixes = ["crates/perl-lsp-rs/src/runtime/text_sync"]
 
 # Live identity is the URI argument plus an owner-supplied non-zero NonZeroU32
@@ -119,7 +123,12 @@ caller_paths = [
 
 [[owner]]
 prefix = "crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs"
-role = "#8041 close-handoff disk reload residual"
+# Since #11305 this file holds ZERO compatibility calls: the didSave
+# reconciliation branches commit through index_live_file behind the
+# document-instance/generation oracle, and the close-handoff reload below is
+# the explicit initial-import role. This row remains only because lifecycle.rs
+# still counts as a canonical caller file needing an owner anchor.
+role = "#8041 close-handoff disk reload residual (canonical index_initial_file today)"
 owner = "perl-lsp-rs text synchronization / #8041 open-buffer authority"
 successor = "index_live_file when #8041 defines the closed-file source commit identity"
 removal_condition = "#8041 lands its closed-file live commit identity"
