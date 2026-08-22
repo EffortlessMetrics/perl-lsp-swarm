@@ -106,6 +106,15 @@ fn adjacent_edits_are_allowed_but_overlap_is_rejected() -> TestResult {
 }
 
 #[test]
+fn overlap_precedes_duplicate_zero_width_validation() {
+    let edits = [one_edit(0, 0, 0, 3, "X"), one_edit(0, 1, 0, 1, "A"), one_edit(0, 1, 0, 1, "A")];
+    assert_eq!(
+        apply_edits_exact("abcd", &edits, UTF16),
+        Err(EditApplicationError::OverlappingEdits { first_edit_index: 0, second_edit_index: 1 })
+    );
+}
+
+#[test]
 fn distinct_zero_width_insertions_preserve_oracle_input_order() -> TestResult {
     let edits = [one_edit(0, 2, 0, 2, "A"), one_edit(0, 2, 0, 2, "B")];
     assert_eq!(apply_edits_exact("abcd", &edits, UTF16)?, "abABcd");

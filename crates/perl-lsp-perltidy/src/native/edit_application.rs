@@ -183,6 +183,16 @@ pub fn apply_edits_exact(
     let mut order: Vec<&ResolvedEdit> = resolved.iter().collect();
     order.sort_by_key(|edit| (edit.start_byte, edit.end_byte));
 
+    for window in order.windows(2) {
+        let (first, second) = (window[0], window[1]);
+        if second.start_byte < first.end_byte {
+            return Err(EditApplicationError::OverlappingEdits {
+                first_edit_index: first.original_index,
+                second_edit_index: second.original_index,
+            });
+        }
+    }
+
     let mut group_start = 0;
     while group_start < order.len() {
         let first = order[group_start];
@@ -210,16 +220,6 @@ pub fn apply_edits_exact(
             group_start = group_end;
         } else {
             group_start += 1;
-        }
-    }
-
-    for window in order.windows(2) {
-        let (first, second) = (window[0], window[1]);
-        if second.start_byte < first.end_byte {
-            return Err(EditApplicationError::OverlappingEdits {
-                first_edit_index: first.original_index,
-                second_edit_index: second.original_index,
-            });
         }
     }
 
