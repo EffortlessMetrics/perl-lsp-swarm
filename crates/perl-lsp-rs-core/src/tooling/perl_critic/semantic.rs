@@ -164,6 +164,22 @@ pub fn native_finding_candidates(
     (candidates, unresolved)
 }
 
+/// Convert raw native findings into candidates for one production subject,
+/// accounting for every rejection.
+///
+/// This is the production entrypoint: both diagnostic call sites take their
+/// candidates from here, so a finding rejected for a missing producer
+/// disposition is always logged and counted rather than silently dropped.
+pub fn native_finding_candidates_with_accounting(
+    subject: &str,
+    findings: impl IntoIterator<Item = CriticFinding>,
+    source_identity: CriticSourceIdentity,
+) -> Vec<CriticFindingCandidate> {
+    let (candidates, unresolved) = native_finding_candidates(findings, source_identity);
+    account_unresolved_native_identities(subject, &unresolved);
+    candidates
+}
+
 /// Account for native findings rejected at one production subject because
 /// their emitted `(rule_id, observed_shape)` pair has no registered producer
 /// disposition.
@@ -399,6 +415,69 @@ mod tests {
             super::account_unresolved_native_identities("file:///subject.pm", &unresolved);
         assert_eq!(accounted, 1, "exactly the undeclared rejection is accounted");
         assert_eq!(accounted, unresolved.len());
+    }
+
+    #[test]
+    fn production_entrypoint_logs_each_rejected_emission_shape() {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone, Default)]
+        struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+        impl SharedBuf {
+            fn snapshot(&self) -> String {
+                let bytes = self.0.lock().map(|guard| guard.clone()).unwrap_or_default();
+                String::from_utf8(bytes).unwrap_or_default()
+            }
+        }
+
+        impl std::io::Write for SharedBuf {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if let Ok(mut guard) = self.0.lock() {
+                    guard.extend_from_slice(buf);
+                }
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let buffer = SharedBuf::default();
+        let writer_buffer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(move || writer_buffer.clone())
+            .finish();
+
+        let declared =
+            native_finding("native.security.qx_readpipe", CriticFindingShape::Qx, Severity::Harsh);
+        let undeclared = native_finding(
+            "native.security.system_exec",
+            CriticFindingShape::General,
+            Severity::Stern,
+        );
+
+        tracing::subscriber::with_default(subscriber, || {
+            let candidates = super::native_finding_candidates_with_accounting(
+                "file:///pin-test.pm",
+                [declared, undeclared],
+                subject(),
+            );
+
+            assert_eq!(candidates.len(), 1, "only the declared shape becomes a candidate");
+            assert_eq!(candidates[0].identity().code(), "native.security.qx_readpipe");
+        });
+
+        let captured = buffer.snapshot();
+        assert!(
+            captured.contains("no registered producer disposition"),
+            "the accounting warn must fire for the undeclared shape; got: {captured:?}"
+        );
+        assert!(
+            captured.contains("native.security.system_exec"),
+            "the warn must attribute the rejected rule; got: {captured:?}"
+        );
     }
 
     #[test]

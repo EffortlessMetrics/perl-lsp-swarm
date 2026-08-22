@@ -2041,7 +2041,7 @@ impl LspServer {
         diagnostics: &mut Vec<InternalDiagnostic>,
     ) {
         use perl_lsp_rs_core::tooling::perl_critic::{
-            NativeCriticPolicy, account_unresolved_native_identities, native_finding_candidates,
+            NativeCriticPolicy, native_finding_candidates_with_accounting,
             normalize_with_native_policy,
         };
 
@@ -2082,9 +2082,11 @@ impl LspServer {
         // once post-merge. Findings without a registered producer-owned
         // identity are rejected here rather than guessed, and every rejection
         // is accounted for instead of silently vanishing.
-        let (candidates, unresolved) =
-            native_finding_candidates(registry.check_unfiltered(&critic_context), source_identity);
-        account_unresolved_native_identities(subject, &unresolved);
+        let candidates = native_finding_candidates_with_accounting(
+            subject,
+            registry.check_unfiltered(&critic_context),
+            source_identity,
+        );
         let suppressions =
             perl_lsp_rs_core::tooling::perl_critic::CriticSuppressionMap::from_source(doc_text);
         let policy = NativeCriticPolicy::new(

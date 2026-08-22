@@ -620,8 +620,8 @@ impl PullDiagnosticsProvider {
         diagnostics: &mut Vec<LspDiagnostic>,
     ) {
         use perl_lsp_rs_core::tooling::perl_critic::{
-            CriticSuppressionMap, NativeCriticPolicy, account_unresolved_native_identities,
-            native_finding_candidates, normalize_with_native_policy,
+            CriticSuppressionMap, NativeCriticPolicy, native_finding_candidates_with_accounting,
+            normalize_with_native_policy,
         };
 
         let severity_threshold = context.perlcritic_severity.clamp(1, 5) as u8;
@@ -642,9 +642,11 @@ impl PullDiagnosticsProvider {
         // once post-merge. Findings without a registered producer-owned
         // identity are rejected here rather than guessed, and every rejection
         // is accounted for instead of silently vanishing.
-        let (candidates, unresolved) =
-            native_finding_candidates(registry.check_unfiltered(&critic_context), source_identity);
-        account_unresolved_native_identities(&uri.to_string(), &unresolved);
+        let candidates = native_finding_candidates_with_accounting(
+            &uri.to_string(),
+            registry.check_unfiltered(&critic_context),
+            source_identity,
+        );
         let suppressions = CriticSuppressionMap::from_source(content);
         let policy = NativeCriticPolicy::new(
             severity_threshold,

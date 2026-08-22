@@ -44,7 +44,8 @@ pub use result_identity::{
 };
 pub use semantic::{
     NativeCriticPolicy, UnresolvedNativeFindingIdentity, account_unresolved_native_identities,
-    critic_source_identity_for_uri, native_finding_candidates, normalize_with_native_policy,
+    critic_source_identity_for_uri, native_finding_candidates,
+    native_finding_candidates_with_accounting, normalize_with_native_policy,
 };
 pub use types::{CriticConfig, Severity, Violation};
 
