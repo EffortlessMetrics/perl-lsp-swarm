@@ -2048,6 +2048,9 @@ impl LspServer {
                     continue;
                 };
 
+                let old_raw_uri = old_uri.to_string();
+                let new_raw_uri = new_uri.to_string();
+
                 // Normalize URIs so the index and pinned_doc_map_for
                 // lookups (which use normalize_uri_key / uri_key) match
                 // regardless of percent-encoding or case differences in
@@ -2059,14 +2062,14 @@ impl LspServer {
 
                 let old_document = {
                     let documents = self.documents_guard();
-                    self.uri_key_variants(&old_uri).iter().find_map(|key| {
+                    self.uri_key_variants(&old_raw_uri).iter().find_map(|key| {
                         self.get_document(&documents, key)
                             .map(|doc| (doc.current_generation(), doc.text_arc.to_string()))
                     })
                 };
                 let destination_is_open = {
                     let documents = self.documents_guard();
-                    self.uri_key_variants(&new_uri)
+                    self.uri_key_variants(&new_raw_uri)
                         .iter()
                         .any(|key| self.get_document(&documents, key).is_some())
                 };
@@ -2080,7 +2083,7 @@ impl LspServer {
                 if old_document.is_some() && !destination_is_open {
                     let mut documents = self.documents_guard();
                     let old_key = self
-                        .uri_key_variants(&old_uri)
+                        .uri_key_variants(&old_raw_uri)
                         .into_iter()
                         .find(|key| documents.contains_key(key));
                     if let Some(old_key) = old_key
@@ -2089,18 +2092,20 @@ impl LspServer {
                         documents.insert(new_uri.clone(), doc);
                     }
                 }
-                self.evict_open_document_session_state(&old_uri);
+                // Evict using the raw client spelling so this sweep includes
+                // both that spelling and all normalized/file-path variants.
+                self.evict_open_document_session_state(&old_raw_uri);
 
                 // Update the index for the renamed file
                 // Note: Mutation operation - use coordinator with lifecycle tracking
                 #[cfg(feature = "workspace")]
                 if let Some(coordinator) = self.coordinator() {
                     let old_was_indexed = self
-                        .uri_key_variants(&old_uri)
+                        .uri_key_variants(&old_raw_uri)
                         .iter()
                         .any(|key| coordinator.index().indexed_generation(key).is_some());
                     let destination_was_indexed = self
-                        .uri_key_variants(&new_uri)
+                        .uri_key_variants(&new_raw_uri)
                         .iter()
                         .any(|key| coordinator.index().indexed_generation(key).is_some());
 
@@ -2112,11 +2117,11 @@ impl LspServer {
                     // Remove the old identity before publishing the new one. A
                     // closed destination may have stale facts, but an open
                     // destination must not be discarded as a rename side effect.
-                    for key in self.uri_key_variants(&old_uri) {
+                    for key in self.uri_key_variants(&old_raw_uri) {
                         coordinator.index().remove_file(&key);
                     }
                     if !destination_is_open {
-                        for key in self.uri_key_variants(&new_uri) {
+                        for key in self.uri_key_variants(&new_raw_uri) {
                             coordinator.index().remove_file(&key);
                         }
                     }
@@ -3782,6 +3787,166 @@ sub destination_only { 1 }
             coordinator.index().document_store().get_text(&new_uri).as_deref(),
             Some(destination_source)
         );
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn did_rename_invalidates_raw_uri_state_alongside_normalized_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let dir = tempfile::tempdir()?;
+        let old_path = dir.path().join("raw-old.pm");
+        let new_path = dir.path().join("raw-new.pm");
+        let source = "package Rename::Raw;
+sub old_only { 1 }
+1;
+";
+        std::fs::write(&old_path, source)?;
+
+        let normalized_old_uri =
+            url::Url::from_file_path(&old_path).map_err(|_| "invalid old file path")?.to_string();
+        let old_path_part =
+            normalized_old_uri.strip_prefix("file:///").ok_or("expected file URI")?;
+        let raw_old_uri = format!("file://localhost/{old_path_part}");
+        let new_uri =
+            url::Url::from_file_path(&new_path).map_err(|_| "invalid new file path")?.to_string();
+        assert_ne!(raw_old_uri, normalized_old_uri);
+        assert_eq!(
+            server.normalize_uri_key(&raw_old_uri),
+            server.normalize_uri_key(&normalized_old_uri)
+        );
+
+        server.did_open(json!({
+            "textDocument": {
+                "uri": normalized_old_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": source
+            }
+        }))?;
+        let raw_parse_token = server.new_parse_token(&raw_old_uri);
+        server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
+            uri: raw_old_uri.clone(),
+            document_version: 1,
+            line: 0,
+            character: 0,
+        });
+        let coordinator = server.coordinator().ok_or("workspace coordinator unavailable")?;
+        coordinator
+            .index()
+            .index_file(url::Url::parse(&normalized_old_uri)?, source.to_string())?;
+
+        server.handle_did_rename_files(Some(json!({
+            "files": [{ "oldUri": raw_old_uri, "newUri": new_uri }]
+        })))?;
+
+        assert!(raw_parse_token.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(!server.parse_cancel_flags.lock().contains_key(&raw_old_uri));
+        assert_eq!(server.memory_state_snapshot().stream_sessions, 0);
+        let documents = server.documents_guard();
+        assert!(server.get_document(&documents, &normalized_old_uri).is_none());
+        let renamed =
+            server.get_document(&documents, &new_uri).ok_or("renamed document missing")?;
+        assert_eq!(renamed.text_str(), source);
+        drop(documents);
+        assert!(coordinator.index().file_symbols(&normalized_old_uri).is_empty());
+        assert!(coordinator.index().document_store().get(&normalized_old_uri).is_none());
+        assert!(
+            coordinator
+                .index()
+                .file_symbols(&new_uri)
+                .iter()
+                .any(|symbol| symbol.name == "old_only")
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn explicit_delete_preserves_open_buffer_authority_until_close()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("explicit-delete.pm");
+        let disk_source = "package Explicit::Disk;
+sub disk_only { 1 }
+1;
+";
+        let buffer_source = "package Explicit::Buffer;
+sub buffer_only { 1 }
+1;
+";
+        std::fs::write(&path, disk_source)?;
+        let uri = url::Url::from_file_path(&path).map_err(|_| "invalid file path")?.to_string();
+
+        server.did_open(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": buffer_source
+            }
+        }))?;
+        let coordinator = server.coordinator().ok_or("workspace coordinator unavailable")?;
+        coordinator.index().index_file(url::Url::parse(&uri)?, buffer_source.to_string())?;
+        std::fs::remove_file(&path)?;
+
+        server.handle_did_delete_files(Some(json!({ "files": [{ "uri": uri }] })))?;
+
+        assert_eq!(server.memory_state_snapshot().documents, 1);
+        assert!(
+            coordinator
+                .index()
+                .file_symbols(&uri)
+                .iter()
+                .any(|symbol| symbol.name == "buffer_only")
+        );
+        assert!(
+            !coordinator.index().file_symbols(&uri).iter().any(|symbol| symbol.name == "disk_only")
+        );
+        server.handle_did_close(Some(json!({ "textDocument": { "uri": uri } })))?;
+        assert_eq!(server.memory_state_snapshot().documents, 0);
+        assert!(coordinator.index().file_symbols(&uri).is_empty());
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn did_close_rejected_disk_reread_clears_buffer_facts() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let server = LspServer::new();
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("rejected-close.pm");
+        let disk_source = "package Rejected::Disk;
+sub disk_only { 1 }
+1;
+";
+        let buffer_source = "package Rejected::Buffer;
+sub buffer_only { 1 }
+1;
+";
+        std::fs::write(&path, disk_source)?;
+        let uri = url::Url::from_file_path(&path).map_err(|_| "invalid file path")?.to_string();
+
+        server.did_open(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": buffer_source
+            }
+        }))?;
+        let coordinator = server.coordinator().ok_or("workspace coordinator unavailable")?;
+        coordinator.index().index_file(url::Url::parse(&uri)?, buffer_source.to_string())?;
+        let mut rejected_disk = b"package Rejected::Disk;\nsub disk_only { 1 }\n".to_vec();
+        rejected_disk.extend_from_slice(&[0; 64]);
+        std::fs::write(&path, rejected_disk)?;
+
+        server.handle_did_close(Some(json!({ "textDocument": { "uri": uri } })))?;
+
+        assert!(coordinator.index().file_symbols(&uri).is_empty());
+        assert!(coordinator.index().document_store().get(&uri).is_none());
         Ok(())
     }
 
