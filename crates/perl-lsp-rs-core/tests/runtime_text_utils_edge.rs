@@ -88,46 +88,11 @@ fn pragma_insert_position_shebang_without_newline_returns_zero() {
 }
 
 // ---------------------------------------------------------------------------
-// find_import_insert_position
+// find_import_insert_position — withdrawn (#10690)
 // ---------------------------------------------------------------------------
-
-#[test]
-fn import_insert_position_empty_source_returns_zero() {
-    let source = "";
-    let lines = make_lines(source);
-    let h = helpers(source, &lines);
-    assert_eq!(h.find_import_insert_position(), 0);
-}
-
-#[test]
-fn import_insert_position_no_use_or_require_returns_zero() {
-    let source = "my $x = 1;\nsub foo { }\n";
-    let lines = make_lines(source);
-    let h = helpers(source, &lines);
-    // No 'use' or 'require' lines; non-empty non-comment line 'my $x' causes break
-    assert_eq!(h.find_import_insert_position(), 0);
-}
-
-#[test]
-fn import_insert_position_single_require_line() {
-    let source = "require Carp;\nmy $x = 1;\n";
-    let lines = make_lines(source);
-    let h = helpers(source, &lines);
-    // After 'require Carp;\n' = 14 chars
-    let pos = h.find_import_insert_position();
-    assert!(pos > 0, "import insert position should be after require line");
-}
-
-#[test]
-fn import_insert_position_with_comment_between_uses() {
-    // Comments should not break the import block
-    let source = "use strict;\n# a comment\nuse warnings;\nmy $x = 1;\n";
-    let lines = make_lines(source);
-    let h = helpers(source, &lines);
-    let pos = h.find_import_insert_position();
-    // Should be at or after 'use warnings;\n' end
-    assert!(pos >= "use strict;\n# a comment\nuse warnings;\n".len() - 1);
-}
+// The package-blind preamble import-insertion helper was the edit-placement
+// authority for hard-coded missing-import edits and is deleted with them
+// (restoration: #790/#8948).
 
 // ---------------------------------------------------------------------------
 // truncate_expr
