@@ -26,6 +26,10 @@ use crate::runtime::workspace_progress::{
     send_progress_create, send_progress_end, send_progress_report,
 };
 use crate::state::workspace_symbol_cap;
+use perl_lsp_rs_core::config::{
+    ExternalIncludePathAuthority, UnauthorizedExternalIncludePathSource,
+    WorkspaceConfigUpdateContext,
+};
 use perl_module::path::file_path_to_module_name;
 use perl_module::rename::plan_module_rename_edits;
 #[cfg(feature = "workspace")]
@@ -1423,9 +1427,11 @@ impl LspServer {
                     let root_path = self.root_path.lock().clone();
                     let rejected = workspace_config.update_from_value_with_context(
                         perl,
-                        perl_lsp_rs_core::config::WorkspaceConfigUpdateContext {
+                        WorkspaceConfigUpdateContext {
                             workspace_root: root_path.as_deref(),
-                            apply_external_include_paths: true,
+                            external_include_paths: ExternalIncludePathAuthority::Untrusted(
+                                UnauthorizedExternalIncludePathSource::DidChangeConfiguration,
+                            ),
                         },
                     );
                     for entry in rejected {
@@ -1456,7 +1462,15 @@ impl LspServer {
                         let mut effective_config =
                             perl_lsp_rs_core::config::WorkspaceConfig::default();
                         if let Some(init_opts) = init_options_perl.as_ref() {
-                            let rejected = effective_config.update_from_value(init_opts);
+                            let rejected = effective_config.update_from_value_with_context(
+                                init_opts,
+                                WorkspaceConfigUpdateContext {
+                                    workspace_root: folder.path.as_deref(),
+                                    external_include_paths: ExternalIncludePathAuthority::Untrusted(
+                                        UnauthorizedExternalIncludePathSource::InitializationOptions,
+                                    ),
+                                },
+                            );
                             for entry in rejected {
                                 tracing::warn!(
                                     target: "perl_lsp::config",
@@ -1478,9 +1492,11 @@ impl LspServer {
                         }
                         let rejected = effective_config.update_from_value_with_context(
                             perl,
-                            perl_lsp_rs_core::config::WorkspaceConfigUpdateContext {
+                            WorkspaceConfigUpdateContext {
                                 workspace_root: folder.path.as_deref(),
-                                apply_external_include_paths: true,
+                                external_include_paths: ExternalIncludePathAuthority::Untrusted(
+                                    UnauthorizedExternalIncludePathSource::DidChangeConfiguration,
+                                ),
                             },
                         );
                         for entry in rejected {
