@@ -113,8 +113,11 @@ The path to "the best Perl LSP" requires **leadership in three dimensions**:
 - Payoff: IDE is your documentation
 
 **Import Management**
-- Organizes imports (unused removal, standard library grouping)
-- "Add missing import" code action
+- Organizes imports (unused removal, standard library grouping) — withdrawn
+  until a proven safe cohort lands (#8305, #10696)
+- "Add missing import" code action — withdrawn until exact unresolved-subject
+  selection and insertion planning land (#10690, #790, #8948); hard-coded
+  name-affinity insertion is never offered
 - Payoff: Never think about import management again
 
 **Build System Integration**

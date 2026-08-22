@@ -10,8 +10,6 @@
 //! - **extract_variable**: Extract selected expression into a named variable
 //! - **extract_subroutine**: Extract code block into a new subroutine
 //! - **loop_conversion**: Convert between loop styles (for/foreach/while)
-//! - **import_management**: Add missing `use` statements (the legacy line-
-//!   oriented import organizer is withdrawn, see issue #8305)
 //! - **postfix**: Postfix completion-style actions (e.g., `.if`, `.unless`)
 //! - **error_checking**: Add error handling around expressions
 //! - **helpers**: Shared utilities for text manipulation and position mapping
@@ -25,6 +23,10 @@
 //!
 //! `source.organizeImports` is intentionally absent: the only implementation was
 //! a destructive line sorter and is withdrawn until #10696 lands a proven cohort.
+//!
+//! Automatic missing-import insertion is intentionally absent: the hard-coded
+//! function-to-module affinity routes are withdrawn (#10690) until #790/#8948
+//! land exact unresolved-subject selection and insertion planning.
 //!
 //! # Performance Characteristics
 //!
@@ -43,7 +45,6 @@ mod error_checking;
 mod extract_subroutine;
 mod extract_variable;
 mod helpers;
-mod import_management;
 mod loop_conversion;
 mod postfix;
 mod signature_actions;
@@ -406,14 +407,14 @@ impl EnhancedCodeActionsProvider {
     }
 
     /// Get global refactoring actions
-    fn get_global_refactorings(&self, ast: &Node) -> Vec<CodeAction> {
+    fn get_global_refactorings(&self, _ast: &Node) -> Vec<CodeAction> {
         let mut actions = Vec::new();
         let helpers = Helpers::new(&self.source, &self.lines);
 
-        // Add missing imports
-        if let Some(action) = import_management::add_missing_imports(ast, &self.source, &helpers) {
-            actions.push(action);
-        }
+        // Add missing imports is withdrawn (#10690): a hard-coded
+        // function-to-module affinity grants no import-edit authority until
+        // #790/#8948 land exact unresolved-subject selection and insertion
+        // planning. No action may be offered for affinity candidates.
 
         // Organize imports is withdrawn (#8305): the legacy line-oriented
         // organizer replaced the whole first-to-last import-looking interval

@@ -109,8 +109,9 @@ fn quick_fixes_for_diagnostic(
         // PL109: Unquoted bareword
         c if c == DiagnosticCode::UnquotedBareword.as_str() => {
             actions.extend(quick_fixes::fix_bareword(source, &qf_diag));
-            // Also offer an import action when the bareword resolves to a known module.
-            actions.extend(quick_fixes::fix_import_for_bareword_function(source, &qf_diag));
+            // The name-affinity import fix is withdrawn (#10690). A PL109
+            // presentation grants no import-edit authority until #790/#8948
+            // land exact unresolved-subject selection and insertion planning.
         }
         // PL001: General parse error (stable code)
         // PL002: Syntax error — same quick-fix routing as PL001
