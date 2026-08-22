@@ -212,7 +212,7 @@ pub fn check_strict_warnings(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                 }
             ],
             tags: Vec::new(),
-            fixable: false,
+            fixable: true,
             suggestion: Some("Add 'use strict;' at the top of the file".to_string()),
         });
     }

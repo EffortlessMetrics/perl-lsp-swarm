@@ -352,7 +352,7 @@ impl DiagnosticsProvider {
                 related_information,
                 tags: Vec::new(),
                 suggestion,
-                fixable: false,
+                fixable: code == DiagnosticCode::ParseError,
             });
         }
 
