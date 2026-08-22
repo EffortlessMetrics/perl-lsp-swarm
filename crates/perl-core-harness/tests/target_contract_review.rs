@@ -191,6 +191,67 @@ fn read_matrix_rejects_changed_target_id_in_part() -> TestResult {
     Ok(())
 }
 
+fn assert_loader_rejects_contract_mutation(
+    mut matrix: UpstreamTargetMatrix,
+    target_id: &str,
+    mutate: impl FnOnce(&mut model::TargetSelectionContract),
+) -> TestResult {
+    let entry = matrix
+        .targets
+        .iter_mut()
+        .find(|entry| entry.contract.target_id == target_id)
+        .ok_or_else(|| format!("missing target contract {target_id}"))?;
+    mutate(&mut entry.contract);
+
+    let temporary = tempfile::NamedTempFile::new()?;
+    fs::write(temporary.path(), serde_json::to_vec_pretty(&matrix)?)?;
+    let error = io::read_matrix(temporary.path())
+        .expect_err("offline loader accepted an invalid target contract");
+    assert!(
+        error.to_string().contains(target_id),
+        "loader error should identify {target_id}: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn loader_observes_each_contract_kind_and_collection_guard() -> TestResult {
+    let matrix = io::read_matrix(&repo_file(".ci/perl-core-harness/upstream-targets-5.42.2.v1"))?;
+
+    assert_loader_rejects_contract_mutation(matrix.clone(), "component_base", |contract| {
+        contract.selectors.clear();
+    })?;
+    assert_loader_rejects_contract_mutation(matrix.clone(), "selector_test_core", |contract| {
+        contract.selection_authority = None;
+    })?;
+    assert_loader_rejects_contract_mutation(matrix.clone(), "make_minitest_notty", |contract| {
+        contract.runner_switches.clear();
+        contract.variant_parameters.clear();
+        contract.environment.clear();
+        contract.terminal_policy = model::TargetTerminalPolicy::Inherited;
+    })?;
+    assert_loader_rejects_contract_mutation(matrix.clone(), "prep_test", |contract| {
+        contract.preparation.make_target = None;
+    })?;
+    assert_loader_rejects_contract_mutation(
+        matrix.clone(),
+        "legacy_custom_core_harness",
+        |contract| contract.composite_members.clear(),
+    )?;
+    assert_loader_rejects_contract_mutation(matrix.clone(), "instrument_valgrind", |contract| {
+        contract.environment.clear();
+        contract.capability_predicates.clear();
+        contract.runner_switches.clear();
+        contract.variant_parameters.clear();
+        contract.terminal_policy = model::TargetTerminalPolicy::Inherited;
+    })?;
+    assert_loader_rejects_contract_mutation(matrix, "component_base", |contract| {
+        contract.selectors.push(contract.selectors[0].clone());
+    })?;
+
+    Ok(())
+}
+
 #[test]
 fn target_names_are_globally_unambiguous() -> TestResult {
     let mut matrix = matrix_with_contract(
