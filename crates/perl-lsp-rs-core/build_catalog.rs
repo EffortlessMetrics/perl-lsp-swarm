@@ -83,6 +83,38 @@ impl Catalog {
         ids
     }
 
+    /// Compatibility-only alias for the grid-oriented trackable count.
+    /// This is not a compliance, status, or reporting authority.
+    #[deprecated(note = "compatibility-only; use trackable_feature_count_for_grid")]
+    pub fn trackable_feature_count(&self) -> usize {
+        self.feature
+            .iter()
+            .filter(|feature| feature.maturity != Maturity::Planned)
+            .count()
+    }
+
+    /// Compatibility-only alias for the grid-oriented advertised count.
+    /// This is not a compliance, status, or reporting authority.
+    #[deprecated(note = "compatibility-only; use advertised_trackable_count_for_grid")]
+    pub fn advertised_trackable_count(&self) -> usize {
+        self.feature
+            .iter()
+            .filter(|feature| feature.advertised && feature.maturity.is_advertised())
+            .count()
+    }
+
+    /// Compatibility-only alias for the grid-oriented percentage.
+    /// This is not a compliance, status, or reporting authority.
+    #[deprecated(note = "compatibility-only; use compliance_percent_for_grid")]
+    pub fn compliance_percent(&self) -> f32 {
+        let trackable = self.trackable_feature_count();
+        if trackable == 0 {
+            return 0.0;
+        }
+        let advertised = self.advertised_trackable_count();
+        (advertised as f64 / trackable as f64 * 100.0).round() as f32
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         let mut seen = BTreeSet::new();
         let mut issues = Vec::new();

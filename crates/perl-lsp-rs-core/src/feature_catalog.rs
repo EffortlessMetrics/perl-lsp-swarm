@@ -169,6 +169,36 @@ impl Catalog {
         (advertised as f64 / trackable as f64 * 100.0).round() as f32
     }
 
+    /// Compatibility-only alias for [`Self::trackable_feature_count_for_grid`].
+    ///
+    /// This name is retained for existing catalog consumers. It is not a
+    /// compliance, status, or reporting authority.
+    #[deprecated(note = "compatibility-only; use trackable_feature_count_for_grid")]
+    pub fn trackable_feature_count(&self) -> usize {
+        self.feature.iter().filter(|feature| feature.maturity.is_trackable()).count()
+    }
+
+    /// Compatibility-only alias for [`Self::advertised_trackable_count_for_grid`].
+    ///
+    /// This name is retained for existing catalog consumers. It is not a
+    /// compliance, status, or reporting authority.
+    #[deprecated(note = "compatibility-only; use advertised_trackable_count_for_grid")]
+    pub fn advertised_trackable_count(&self) -> usize {
+        self.feature
+            .iter()
+            .filter(|feature| feature.advertised && feature.maturity.is_advertised())
+            .count()
+    }
+
+    /// Compatibility-only alias for [`Self::compliance_percent_for_grid`].
+    ///
+    /// This name is retained for existing catalog consumers. It is not a
+    /// compliance, status, or reporting authority.
+    #[deprecated(note = "compatibility-only; use compliance_percent_for_grid")]
+    pub fn compliance_percent(&self) -> f32 {
+        self.compliance_percent_for_grid()
+    }
+
     /// Per-area statistics useful for documentation and reporting.
     pub fn area_statistics(&self) -> BTreeMap<String, AreaStats> {
         let mut stats: BTreeMap<String, AreaStats> = BTreeMap::new();
@@ -595,11 +625,15 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn compliance_math_uses_trackable_features_only() {
         let catalog = sample_catalog();
         assert_eq!(catalog.trackable_feature_count_for_grid(), 3);
         assert_eq!(catalog.advertised_trackable_count_for_grid(), 2);
         assert_eq!(catalog.compliance_percent_for_grid(), 67.0);
+        assert_eq!(catalog.trackable_feature_count(), 3);
+        assert_eq!(catalog.advertised_trackable_count(), 2);
+        assert_eq!(catalog.compliance_percent(), 67.0);
     }
 
     #[test]
