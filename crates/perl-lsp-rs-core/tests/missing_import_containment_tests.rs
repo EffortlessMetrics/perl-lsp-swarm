@@ -15,8 +15,8 @@
 //! production route offers an affinity-derived import edit again, or if any
 //! production source re-wires the withdrawn authority.
 
-use perl_lsp_rs_core::providers::code_actions::{CodeAction, CodeActionKind, CodeActionsProvider};
 use perl_lsp_rs_core::providers::code_actions::EnhancedCodeActionsProvider;
+use perl_lsp_rs_core::providers::code_actions::{CodeAction, CodeActionKind, CodeActionsProvider};
 use perl_lsp_rs_core::providers::diagnostics::{Diagnostic, DiagnosticSeverity};
 
 /// Package-first source calling a table-mapped function. The withdrawn route
@@ -32,15 +32,12 @@ fn parse(source: &str) -> Result<perl_parser_core::Node, String> {
 
 fn enhanced_actions(source: &str) -> Result<Vec<CodeAction>, String> {
     let ast = parse(source)?;
-    Ok(
-        EnhancedCodeActionsProvider::new(source.to_string())
-            .get_enhanced_refactoring_actions(&ast, (0, source.len())),
-    )
+    Ok(EnhancedCodeActionsProvider::new(source.to_string())
+        .get_enhanced_refactoring_actions(&ast, (0, source.len())))
 }
 
 fn v2_actions_with_pl109(source: &str, symbol: &str) -> Result<Vec<CodeAction>, String> {
-    let start =
-        source.find(symbol).ok_or_else(|| format!("fixture must contain {symbol:?}"))?;
+    let start = source.find(symbol).ok_or_else(|| format!("fixture must contain {symbol:?}"))?;
     let end = start + symbol.len();
     let diagnostic = Diagnostic {
         range: (start, end),
@@ -176,8 +173,9 @@ fn no_production_route_references_the_withdrawn_import_authority() -> Result<(),
     let mut scanned = 0usize;
     let mut stack = vec![crates_dir.clone()];
     while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir)
-            .map_err(|error| format!("failed to read source directory {}: {error}", dir.display()))?;
+        let entries = std::fs::read_dir(&dir).map_err(|error| {
+            format!("failed to read source directory {}: {error}", dir.display())
+        })?;
         for entry in entries {
             let entry = entry.map_err(|error| {
                 format!("failed to inspect an entry in {}: {error}", dir.display())
@@ -185,7 +183,9 @@ fn no_production_route_references_the_withdrawn_import_authority() -> Result<(),
             let path = entry.path();
             if entry
                 .file_type()
-                .map_err(|error| format!("failed to inspect source path {}: {error}", path.display()))?
+                .map_err(|error| {
+                    format!("failed to inspect source path {}: {error}", path.display())
+                })?
                 .is_dir()
             {
                 stack.push(path);
@@ -202,8 +202,9 @@ fn no_production_route_references_the_withdrawn_import_authority() -> Result<(),
             if !relative.contains("/src/") {
                 continue;
             }
-            let content = std::fs::read_to_string(&path)
-                .map_err(|error| format!("failed to read production source {}: {error}", path.display()))?;
+            let content = std::fs::read_to_string(&path).map_err(|error| {
+                format!("failed to read production source {}: {error}", path.display())
+            })?;
             scanned += 1;
             for (needle, explanation) in WITHDRAWN_IMPORT_AUTHORITY_PATTERNS {
                 if content.contains(needle) {
@@ -227,7 +228,10 @@ fn no_production_route_references_the_withdrawn_import_authority() -> Result<(),
 const WITHDRAWN_IMPORT_AUTHORITY_PATTERNS: &[(&str, &str)] = &[
     ("guess_module_for_function", "references the withdrawn hard-coded function-to-module table"),
     ("add_missing_imports", "references the withdrawn enhanced global missing-import action"),
-    ("find_undefined_functions", "references the withdrawn table-driven undefined-function detector"),
+    (
+        "find_undefined_functions",
+        "references the withdrawn table-driven undefined-function detector",
+    ),
     ("fix_import_for_bareword_function", "references the withdrawn PL109 diagnostic import fix"),
     (
         "find_import_insert_position",
