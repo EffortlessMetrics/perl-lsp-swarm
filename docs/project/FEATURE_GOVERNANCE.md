@@ -13,8 +13,9 @@ The Perl LSP advertises 80+ features spanning LSP text document operations,
 workspace services, window notifications, notebook support, debug adapter
 protocol (DAP) capabilities, and protocol lifecycle methods. Each feature
 carries metadata: its LSP spec version, functional area, maturity level,
-whether it is advertised to clients, associated test files, and whether it
-counts toward compliance metrics.
+whether it is advertised to clients, associated test files, and whether it is
+included in the catalog's historical declaration grouping. These fields are
+not behavior evidence and do not establish a compliance percentage.
 
 Managing this catalog by hand -- scattered across server initialization code,
 test assertions, documentation, and CI gates -- would inevitably lead to drift.
@@ -63,7 +64,7 @@ perl-lsp-feature-policy       (FeatureProfile enum; resolves profile + runtime
     |                           tooling checks into BuildFlags)
     |
     v
-perl-lsp-feature-grid         (JSON payload for BDD matrices, compliance %)
+perl-lsp-feature-grid         (JSON payload for BDD matrices and feature rows)
     |
     v
 perl-lsp-feature-governance   (facade re-exporting all of the above)
@@ -83,12 +84,13 @@ Every feature is declared as a `[[feature]]` entry with these fields:
 | `area` | Functional grouping: `text_document`, `workspace`, `window`, `notebook`, `debug`, `protocol` |
 | `maturity` | Lifecycle stage: `planned`, `experimental`, `preview`, `ga`, `production` |
 | `advertised` | Whether the server announces this capability to clients |
-| `counts_in_coverage` | Whether this feature is included in compliance math |
+| `counts_in_coverage` | Historical declaration grouping selector; not behavior evidence |
 | `tests` | Paths to test files exercising the feature |
 | `description` | Human-readable summary |
 
-The `[meta]` section records the catalog version, target LSP spec version,
-and the computed compliance percentage.
+The `[meta]` section records the catalog version and target LSP spec version.
+It must not carry a computed compliance percentage; aggregate declaration
+counts are navigation context only (#6731).
 
 ## Crate Responsibilities
 
@@ -98,10 +100,10 @@ and the computed compliance percentage.
 | `perl-lsp-feature-ids` | `crates/perl-lsp-feature-ids/` | Defines `pub const` string constants for every feature identifier (`LSP_COMPLETION`, `LSP_HOVER`, `DAP_CORE`, etc.). Zero dependencies beyond `std`. Prevents typo-based identifier drift. |
 | `perl-lsp-capability-map` | `crates/perl-lsp-capability-map/` | Bidirectional translation between feature ID strings and `lsp_types::ServerCapabilities`. `feature_ids_from_caps()` extracts IDs from a capabilities struct; `caps_from_feature_ids()` builds capabilities from IDs. |
 | `perl-lsp-feature-flags` | `crates/perl-lsp-feature-flags/` | Defines `BuildFlags` (per-feature booleans for compile-time selection) and `AdvertisedFeatures` (runtime projection). Provides preset constructors: `production()`, `ga_lock()`, `all()`. Converts flags to feature ID vectors. |
-| `perl-lsp-feature-contracts` | `crates/perl-lsp-feature-contracts/` | Runs a `build.rs` that compiles `features.toml` into `feature_contracts.rs` constants via `perl-feature-catalog`. Defines `FeatureProfileKind` (GaLock, Production, All) and `BddFeatureRow` for reporting. Exposes `all_features()`, `has_feature()`, `compliance_percent()`. |
+| `perl-lsp-feature-contracts` | `crates/perl-lsp-feature-contracts/` | Runs a `build.rs` that compiles `features.toml` into `feature_contracts.rs` constants via `perl-feature-catalog`. Defines `FeatureProfileKind` (GaLock, Production, All) and `BddFeatureRow` for reporting. The retained `compliance_percent()` helper is compatibility-only and not an evidence or reporting authority. |
 | `perl-lsp-feature-profile` | `crates/perl-lsp-feature-profile/` | Parses raw CLI profile tokens (`"ga-lock"`, `"prod"`, `"all"`, `"auto"`) into `FeatureProfileKind`. Handles normalization (trimming, case folding, underscore-to-hyphen). |
 | `perl-lsp-feature-policy` | `crates/perl-lsp-feature-policy/` | Defines `FeatureProfile` and resolves it into `BuildFlags`. Keeps native formatting capabilities deterministic; external `perltidy` availability is only relevant to the explicit compatibility adapter. Provides `catalog_advertised_feature_ids()` which intersects profile flags with the catalog. |
-| `perl-lsp-feature-grid` | `crates/perl-lsp-feature-grid/` | Assembles the BDD feature grid JSON payload. Computes per-profile compliance percentages. Consumed by `xtask`, CI reporting, and the server's feature catalog endpoint. |
+| `perl-lsp-feature-grid` | `crates/perl-lsp-feature-grid/` | Assembles the BDD feature grid JSON payload and profile feature rows. Any retained aggregate helper is compatibility-only, not behavior evidence or authoritative reporting. |
 | `perl-lsp-feature-profile-cli` | `crates/perl-lsp-feature-profile-cli/` | Parses `--feature-profile` CLI arguments. Returns structured `UnsupportedFeatureProfileError` with the supported token list for user diagnostics. |
 | `perl-lsp-feature-governance` | `crates/perl-lsp-feature-governance/` | Facade crate that re-exports the public API surface from all governance sub-crates. The LSP server binary and launcher depend on this single crate rather than each sub-crate individually. |
 
@@ -143,19 +145,23 @@ type system. At build time, its `build.rs` invokes `perl-feature-catalog` to:
    - `ALL_FEATURES: &[Feature]` -- every feature row as a const array.
    - `ADVERTISED_LSP_FEATURES: &[&str]` -- IDs for GA/production features with
      `advertised = true`.
-   - `has_feature()`, `compliance_percent()`, `advertised_features()` functions.
+   - `has_feature()` and `advertised_features()` functions. Any retained
+     `compliance_percent()` helper is not an evidence or reporting authority.
 
 This generated module is included via `include!(concat!(env!("OUT_DIR"), "/feature_contracts.rs"))`,
 giving downstream crates compile-time access to the complete feature catalog
 without runtime TOML parsing.
 
-Compliance is computed as:
+Historical declaration tooling used the following aggregate:
 
 ```
 compliance % = advertised_trackable_features / trackable_features * 100
 ```
 
 Where "trackable" means `maturity != planned` and `counts_in_coverage == true`.
+That aggregate is retained only as historical/declaration context. It must not
+be presented as current compliance, used to rewrite roadmap/report claims, or
+treated as a substitute for the evidence model owned by #6731.
 Features like protocol lifecycle methods (`lsp.initialize`, `lsp.shutdown`) and
 window notifications set `counts_in_coverage = false` because they are
 infrastructure, not user-facing language features.
@@ -256,7 +262,8 @@ advertised = true
 ```
 
 Then enable it in the `production()` and `ga_lock()` `BuildFlags` constructors.
-The compliance percentage will automatically update on the next build.
+Update maturity and advertising declarations only; no computed compliance
+percentage is generated from them.
 
 ## Dependency Graph
 
@@ -307,6 +314,6 @@ dependencies pay the compile-time cost.
 ## Related Documentation
 
 - [features.toml](../../features.toml) -- the canonical feature catalog
-- [CURRENT_STATUS.md](CURRENT_STATUS.md) -- computed compliance metrics
+- [CURRENT_STATUS.md](CURRENT_STATUS.md) -- current status and evidence boundaries
 - [STABILITY.md](../reference/STABILITY.md) -- API stability policy
 - [LSP_IMPLEMENTATION_GUIDE.md](../reference/LSP_IMPLEMENTATION_GUIDE.md) -- server architecture

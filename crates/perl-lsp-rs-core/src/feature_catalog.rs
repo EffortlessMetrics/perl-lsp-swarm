@@ -515,33 +515,6 @@ pub fn render_dap_fallback_module(default_features: &[&str]) -> String {
     render_dap_feature_catalog_module(default_features)
 }
 
-/// Minimal fallback module for build failures in `perl-lsp`.
-pub fn render_lsp_fallback_module() -> String {
-    let mut code = String::new();
-    code.push_str("// Auto-generated minimal catalog - features.toml not found\n\n");
-    code.push_str("pub struct Feature {\n");
-    code.push_str("    pub id: &'static str,\n");
-    code.push_str("    pub spec: &'static str,\n");
-    code.push_str("    pub area: &'static str,\n");
-    code.push_str("    pub maturity: &'static str,\n");
-    code.push_str("    pub advertised: bool,\n");
-    code.push_str("    pub description: &'static str,\n");
-    code.push_str("    pub counts_in_coverage: bool,\n");
-    code.push_str("    pub tests: &'static [&'static str],\n");
-    code.push_str("}\n");
-    code.push_str("pub const VERSION: &str = \"0.10.0\";\n");
-    code.push_str("pub const LSP_VERSION: &str = \"3.18\";\n");
-    code.push_str("pub const COMPLIANCE_PERCENT: f32 = 0.0;\n");
-    code.push_str("pub const ALL_FEATURES: &[Feature] = &[];\n");
-    code.push_str("pub const ADVERTISED_LSP_FEATURES: &[&str] = &[];\n");
-    code.push_str(
-        "pub fn advertised_features() -> &'static [&'static str] { ADVERTISED_LSP_FEATURES }\n",
-    );
-    code.push_str("pub fn has_feature(_id: &str) -> bool { false }\n");
-    code.push_str("pub fn compliance_percent() -> f32 { 0.0 }\n");
-    code
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

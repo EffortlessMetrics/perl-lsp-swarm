@@ -17,9 +17,7 @@ mod catalog {
     include!("build_catalog.rs");
 }
 
-use catalog::{
-    load_catalog_for_build, render_lsp_fallback_module, render_lsp_feature_catalog_module,
-};
+use catalog::{load_catalog_for_build, render_lsp_feature_catalog_module};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let out_dir = env::var("OUT_DIR").map_err(
@@ -31,22 +29,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("cargo:rerun-if-env-changed=FEATURES_TOML_OVERRIDE");
 
-    match load_catalog_for_build(Path::new(&manifest_dir)) {
-        Ok((catalog, source)) => {
-            println!("cargo:rerun-if-changed={}", source.path.display());
-            let code = render_lsp_feature_catalog_module(&catalog, source.comment());
-            fs::write(&dest_path, code).map_err(|error| {
-                format!("Failed to write feature_contracts.rs to {:?}: {error}", dest_path)
-            })?;
-        }
-        Err(error) => {
-            eprintln!("Warning: failed to load LSP feature catalog from features.toml: {error}");
-            let code = render_lsp_fallback_module();
-            fs::write(&dest_path, code).map_err(|error| {
-                format!("Failed to write fallback feature_contracts.rs to {:?}: {error}", dest_path)
-            })?;
-        }
-    }
+    let (catalog, source) = load_catalog_for_build(Path::new(&manifest_dir))
+        .map_err(|error| format!("failed to load LSP feature catalog: {error}"))?;
+    println!("cargo:rerun-if-changed={}", source.path.display());
+    let code = render_lsp_feature_catalog_module(&catalog, source.comment());
+    fs::write(&dest_path, code).map_err(|error| {
+        format!("Failed to write feature_contracts.rs to {:?}: {error}", dest_path)
+    })?;
 
     Ok(())
 }
