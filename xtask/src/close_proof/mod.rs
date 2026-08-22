@@ -25,7 +25,8 @@
 //! Serde strictness note: top-level documents reject unknown fields; payload
 //! variants inside internally tagged enums (`disposition`, `state`) cannot use
 //! `deny_unknown_fields`, so unknown keys inside variant payloads are ignored
-//! by serde. Downstream evaluators must not treat that silence as authority.
+//! by serde, and serde_json resolves duplicate JSON object keys last-wins.
+//! Downstream evaluators must not treat that silence as authority.
 
 pub mod contract;
 pub mod corpus;

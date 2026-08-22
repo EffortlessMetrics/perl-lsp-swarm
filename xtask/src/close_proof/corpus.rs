@@ -9,6 +9,11 @@
 //! 4. each case's packet validates against its contract and the recorded
 //!    packet verdict agrees with the fixture's expected outcomes.
 //!
+//! Note on step 4: agreement between a fixture's expectations and its own
+//! recorded verdict proves internal consistency and schema validity only.
+//! Independently recomputing those outcomes is the CP03 evaluator's job
+//! (#10382), which replays this same corpus against its own decisions.
+//!
 //! Honest immutability boundary: a writer who regenerates both a fixture and
 //! its manifest can still produce a self-consistent tree; repository history
 //! remains the final authority over reviewed mutation. What this layer proves
