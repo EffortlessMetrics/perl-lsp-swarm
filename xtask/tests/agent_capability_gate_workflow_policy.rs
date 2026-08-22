@@ -153,9 +153,79 @@ fn agent_capability_gate_preserves_trust_and_failure_boundaries() -> Result<()> 
 #[test]
 fn checkout_pins_share_one_full_commit_sha() -> Result<()> {
     let root = repo_root()?;
-    let mut refs = BTreeSet::new();
-    collect_checkout_refs(&root.join(".github"), &mut refs)?;
+    let refs = collect_checkout_refs(&root.join(".github"))?;
+    validate_checkout_refs(&refs)
+}
 
+fn collect_checkout_refs(dir: &Path) -> Result<BTreeSet<String>> {
+    let mut refs = BTreeSet::new();
+    collect_checkout_refs_from_dir(dir, &mut refs)?;
+    Ok(refs)
+}
+
+fn collect_checkout_refs_from_dir(dir: &Path, refs: &mut BTreeSet<String>) -> Result<()> {
+    let entries = fs::read_dir(dir)
+        .with_context(|| format!("reading workflow directory {}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.with_context(|| format!("reading entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_checkout_refs_from_dir(&path, refs)?;
+            continue;
+        }
+        if path.extension().is_none_or(|ext| ext != "yml" && ext != "yaml") {
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("reading workflow file {}", path.display()))?;
+        refs.extend(checkout_refs_in_yaml(&content, &path)?);
+    }
+    Ok(())
+}
+
+fn checkout_refs_in_yaml(content: &str, path: &Path) -> Result<BTreeSet<String>> {
+    let document: Value = serde_yaml_ng::from_str(content)
+        .with_context(|| format!("parsing workflow file {}", path.display()))?;
+    let mut refs = BTreeSet::new();
+    collect_checkout_refs_from_value(&document, path, &mut refs)?;
+    Ok(refs)
+}
+
+fn collect_checkout_refs_from_value(
+    value: &Value,
+    path: &Path,
+    refs: &mut BTreeSet<String>,
+) -> Result<()> {
+    match value {
+        Value::Mapping(mapping) => {
+            for (key, value) in mapping {
+                if key.as_str() == Some("uses") {
+                    let uses = scalar_string(value).with_context(|| {
+                        format!("`uses` in {} must be a YAML string scalar", path.display())
+                    })?;
+                    if let Some(reference) = uses.strip_prefix("actions/checkout@") {
+                        ensure!(
+                            !reference.is_empty(),
+                            "`actions/checkout@` in {} has no pinned reference",
+                            path.display()
+                        );
+                        refs.insert(reference.to_owned());
+                    }
+                }
+                collect_checkout_refs_from_value(value, path, refs)?;
+            }
+        }
+        Value::Sequence(sequence) => {
+            for value in sequence {
+                collect_checkout_refs_from_value(value, path, refs)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_checkout_refs(refs: &BTreeSet<String>) -> Result<()> {
     ensure!(
         !refs.is_empty(),
         "no `actions/checkout@<ref>` found under .github; the pin contract needs a reference"
@@ -173,52 +243,47 @@ fn checkout_pins_share_one_full_commit_sha() -> Result<()> {
     Ok(())
 }
 
-fn collect_checkout_refs(dir: &Path, refs: &mut BTreeSet<String>) -> Result<()> {
-    let entries = fs::read_dir(dir)
-        .with_context(|| format!("reading workflow directory {}", dir.display()))?;
-    for entry in entries {
-        let entry = entry.with_context(|| format!("reading entry in {}", dir.display()))?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_checkout_refs(&path, refs)?;
-            continue;
-        }
-        if path.extension().is_none_or(|ext| ext != "yml" && ext != "yaml") {
-            continue;
-        }
-        // Parse the document so only executable `uses:` values count. SHA
-        // mentions inside comments or prose (e.g. bump annotations) must not
-        // participate in the pin contract.
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("reading workflow file {}", path.display()))?;
-        let document: Value = serde_yaml_ng::from_str(&content)
-            .with_context(|| format!("parsing workflow file {}", path.display()))?;
-        collect_uses_refs(&document, refs);
-    }
-    Ok(())
-}
+#[test]
+fn checkout_ref_scan_ignores_comments_but_rejects_stale_executable_use() -> Result<()> {
+    const CURRENT: &str = "3d3c42e5aac5ba805825da76410c181273ba90b1";
+    const STALE: &str = "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0";
+    let path = Path::new("checkout-fixture.yml");
 
-fn collect_uses_refs(value: &Value, refs: &mut BTreeSet<String>) {
-    match value {
-        Value::Mapping(mapping) => {
-            for (key, entry) in mapping {
-                match (key.as_str(), entry.as_str()) {
-                    (Some("uses"), Some(uses)) => {
-                        if let Some(reference) = uses.strip_prefix("actions/checkout@") {
-                            refs.insert(reference.to_owned());
-                        }
-                    }
-                    _ => collect_uses_refs(entry, refs),
-                }
-            }
-        }
-        Value::Sequence(sequence) => {
-            for item in sequence {
-                collect_uses_refs(item, refs);
-            }
-        }
-        _ => {}
-    }
+    let comment_only = format!(
+        "jobs:\n  build:\n    steps:\n      # stale prose: actions/checkout@{STALE}\n      - uses: actions/checkout@{CURRENT}\n"
+    );
+    let refs = checkout_refs_in_yaml(&comment_only, path)?;
+    assert_eq!(refs, BTreeSet::from([CURRENT.to_owned()]));
+    validate_checkout_refs(&refs)?;
+
+    let executable_stale = format!(
+        "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@{CURRENT}\n      - uses: actions/checkout@{STALE}\n"
+    );
+    let refs = checkout_refs_in_yaml(&executable_stale, path)?;
+    assert_eq!(refs, BTreeSet::from([CURRENT.to_owned(), STALE.to_owned()]));
+    assert!(
+        validate_checkout_refs(&refs).is_err(),
+        "a stale executable checkout use must not be ignored"
+    );
+
+    assert!(
+        validate_checkout_refs(&BTreeSet::new()).is_err(),
+        "an absent executable checkout use must fail closed"
+    );
+
+    let non_string = "jobs:\n  build:\n    steps:\n      - uses:\n          - actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n";
+    assert!(
+        checkout_refs_in_yaml(non_string, path).is_err(),
+        "a non-string executable checkout use must fail closed"
+    );
+
+    let malformed = "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@\n";
+    assert!(
+        checkout_refs_in_yaml(malformed, path).is_err(),
+        "an executable checkout with no ref must fail closed"
+    );
+
+    Ok(())
 }
 
 fn workflow() -> Result<(String, Value)> {
