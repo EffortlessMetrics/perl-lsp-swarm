@@ -1,0 +1,3674 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "title": "LSP final-surface builder/mutation/registration inventory",
+    "status": "generated",
+    "issue": "#9662",
+    "train_controller": "#8032",
+    "train_stage": "S01 differential inventory (no production behavior change)",
+    "generator": "cargo test -p perl-lsp-rs-core --lib final_surface_inventory::tests::regenerate_checked_in_artifact --locked -- --ignored",
+    "check": "cargo test -p perl-lsp-rs-core --lib final_surface_inventory --locked",
+    "source_packages": [
+      "crates/perl-lsp-rs-core",
+      "crates/perl-lsp-rs"
+    ],
+    "scope_note": "Migration evidence for the #8032 train, not a second capability catalog. Rows are bijective with the serialized static-builder census plus the runtime mutation/registration surface proven by perl-lsp-rs final-surface census tests."
+  },
+  "census_profiles": [
+    {
+      "name": "ga-lock",
+      "description": "Conservative GA-lock BuildFlags baseline."
+    },
+    {
+      "name": "production",
+      "description": "Default supported public-beta baseline."
+    },
+    {
+      "name": "all",
+      "description": "All in-tree capabilities including preview flags."
+    }
+  ],
+  "static_surface_census": {
+    "all": [
+      "callHierarchyProvider",
+      "codeActionProvider.codeActionKinds[]",
+      "codeActionProvider.resolveProvider",
+      "codeLensProvider.resolveProvider",
+      "colorProvider",
+      "completionProvider.completionItem.insertTextModes[]",
+      "completionProvider.completionItem.labelDetailsSupport",
+      "completionProvider.resolveProvider",
+      "completionProvider.triggerCharacters[]",
+      "declarationProvider",
+      "definitionProvider",
+      "diagnosticProvider.identifier",
+      "diagnosticProvider.interFileDependencies",
+      "diagnosticProvider.workspaceDiagnostics",
+      "documentFormattingProvider",
+      "documentHighlightProvider",
+      "documentLinkProvider.resolveProvider",
+      "documentOnTypeFormattingProvider.firstTriggerCharacter",
+      "documentOnTypeFormattingProvider.moreTriggerCharacter[]",
+      "documentRangeFormattingProvider.rangesSupport",
+      "documentSymbolProvider",
+      "executeCommandProvider.commands[]",
+      "experimental.typeHierarchyProvider",
+      "foldingRangeProvider",
+      "hoverProvider",
+      "implementationProvider",
+      "inlayHintProvider.resolveProvider",
+      "inlineCompletionProvider",
+      "inlineValueProvider",
+      "linkedEditingRangeProvider",
+      "monikerProvider",
+      "notebookDocumentSync.notebookSelector[]",
+      "notebookDocumentSync.notebookSelector[].cells[]",
+      "notebookDocumentSync.notebookSelector[].cells[].language",
+      "notebookDocumentSync.notebookSelector[].notebook",
+      "notebookDocumentSync.save",
+      "referencesProvider",
+      "renameProvider.prepareProvider",
+      "selectionRangeProvider",
+      "semanticTokensProvider.full.delta",
+      "semanticTokensProvider.legend.tokenModifiers[]",
+      "semanticTokensProvider.legend.tokenTypes[]",
+      "semanticTokensProvider.range",
+      "signatureHelpProvider.retriggerCharacters[]",
+      "signatureHelpProvider.triggerCharacters[]",
+      "textDocumentSync.change",
+      "textDocumentSync.openClose",
+      "textDocumentSync.save",
+      "typeDefinitionProvider",
+      "typeHierarchyProvider.workDoneProgressOptions",
+      "workspaceSymbolProvider.resolveProvider"
+    ],
+    "ga-lock": [
+      "callHierarchyProvider",
+      "codeActionProvider.codeActionKinds[]",
+      "codeActionProvider.resolveProvider",
+      "codeLensProvider.resolveProvider",
+      "colorProvider",
+      "completionProvider.completionItem.insertTextModes[]",
+      "completionProvider.completionItem.labelDetailsSupport",
+      "completionProvider.resolveProvider",
+      "completionProvider.triggerCharacters[]",
+      "declarationProvider",
+      "definitionProvider",
+      "diagnosticProvider.identifier",
+      "diagnosticProvider.interFileDependencies",
+      "diagnosticProvider.workspaceDiagnostics",
+      "documentFormattingProvider",
+      "documentHighlightProvider",
+      "documentLinkProvider.resolveProvider",
+      "documentOnTypeFormattingProvider.firstTriggerCharacter",
+      "documentOnTypeFormattingProvider.moreTriggerCharacter[]",
+      "documentRangeFormattingProvider.rangesSupport",
+      "documentSymbolProvider",
+      "executeCommandProvider.commands[]",
+      "experimental.typeHierarchyProvider",
+      "foldingRangeProvider",
+      "hoverProvider",
+      "implementationProvider",
+      "inlayHintProvider.resolveProvider",
+      "inlineCompletionProvider",
+      "linkedEditingRangeProvider",
+      "monikerProvider",
+      "referencesProvider",
+      "renameProvider.prepareProvider",
+      "selectionRangeProvider",
+      "semanticTokensProvider.full.delta",
+      "semanticTokensProvider.legend.tokenModifiers[]",
+      "semanticTokensProvider.legend.tokenTypes[]",
+      "semanticTokensProvider.range",
+      "signatureHelpProvider.retriggerCharacters[]",
+      "signatureHelpProvider.triggerCharacters[]",
+      "textDocumentSync.change",
+      "textDocumentSync.openClose",
+      "textDocumentSync.save",
+      "typeDefinitionProvider",
+      "typeHierarchyProvider.workDoneProgressOptions",
+      "workspaceSymbolProvider.resolveProvider"
+    ],
+    "production": [
+      "callHierarchyProvider",
+      "codeActionProvider.codeActionKinds[]",
+      "codeActionProvider.resolveProvider",
+      "codeLensProvider.resolveProvider",
+      "colorProvider",
+      "completionProvider.completionItem.insertTextModes[]",
+      "completionProvider.completionItem.labelDetailsSupport",
+      "completionProvider.resolveProvider",
+      "completionProvider.triggerCharacters[]",
+      "declarationProvider",
+      "definitionProvider",
+      "diagnosticProvider.identifier",
+      "diagnosticProvider.interFileDependencies",
+      "diagnosticProvider.workspaceDiagnostics",
+      "documentFormattingProvider",
+      "documentHighlightProvider",
+      "documentLinkProvider.resolveProvider",
+      "documentOnTypeFormattingProvider.firstTriggerCharacter",
+      "documentOnTypeFormattingProvider.moreTriggerCharacter[]",
+      "documentRangeFormattingProvider.rangesSupport",
+      "documentSymbolProvider",
+      "executeCommandProvider.commands[]",
+      "experimental.typeHierarchyProvider",
+      "foldingRangeProvider",
+      "hoverProvider",
+      "implementationProvider",
+      "inlayHintProvider.resolveProvider",
+      "inlineCompletionProvider",
+      "inlineValueProvider",
+      "linkedEditingRangeProvider",
+      "monikerProvider",
+      "referencesProvider",
+      "renameProvider.prepareProvider",
+      "selectionRangeProvider",
+      "semanticTokensProvider.full.delta",
+      "semanticTokensProvider.legend.tokenModifiers[]",
+      "semanticTokensProvider.legend.tokenTypes[]",
+      "semanticTokensProvider.range",
+      "signatureHelpProvider.retriggerCharacters[]",
+      "signatureHelpProvider.triggerCharacters[]",
+      "textDocumentSync.change",
+      "textDocumentSync.openClose",
+      "textDocumentSync.save",
+      "typeDefinitionProvider",
+      "typeHierarchyProvider.workDoneProgressOptions",
+      "workspaceSymbolProvider.resolveProvider"
+    ]
+  },
+  "profile_snapshots": {
+    "all": {
+      "callHierarchyProvider": true,
+      "codeActionProvider": {
+        "codeActionKinds": [
+          "quickfix",
+          "source.organizeImports",
+          "refactor",
+          "refactor.extract",
+          "refactor.rewrite",
+          "source.fixAll",
+          "source.modernize"
+        ],
+        "resolveProvider": true
+      },
+      "codeLensProvider": {
+        "resolveProvider": true
+      },
+      "colorProvider": true,
+      "completionProvider": {
+        "completionItem": {
+          "insertTextModes": [
+            1,
+            2
+          ],
+          "labelDetailsSupport": true
+        },
+        "resolveProvider": true,
+        "triggerCharacters": [
+          "$",
+          "@",
+          "%",
+          "-",
+          ">",
+          ":",
+          ".",
+          "/",
+          "\\",
+          "\"",
+          "'"
+        ]
+      },
+      "declarationProvider": true,
+      "definitionProvider": true,
+      "diagnosticProvider": {
+        "identifier": "perl-lsp",
+        "interFileDependencies": false,
+        "workspaceDiagnostics": true
+      },
+      "documentFormattingProvider": true,
+      "documentHighlightProvider": true,
+      "documentLinkProvider": {
+        "resolveProvider": true
+      },
+      "documentOnTypeFormattingProvider": {
+        "firstTriggerCharacter": "}",
+        "moreTriggerCharacter": [
+          ";",
+          "\n"
+        ]
+      },
+      "documentRangeFormattingProvider": {
+        "rangesSupport": true
+      },
+      "documentSymbolProvider": true,
+      "executeCommandProvider": {
+        "commands": [
+          "perl.runTests",
+          "perl.runFile",
+          "perl.runScript",
+          "perl.runTestSub",
+          "perl.runCritic",
+          "perl.runTest",
+          "perl.runTestFile",
+          "perl.runSubtest",
+          "perl.debugFile",
+          "perl.debugTest",
+          "perl.debugTests",
+          "perl.debugTestFile",
+          "perl.goToTest",
+          "perl.goToImplementation",
+          "perl.explainProviderDecision",
+          "perl.workspaceTrustReport",
+          "perl.agentContext",
+          "perl.previewSafeDelete",
+          "perl.safeDeleteSymbol",
+          "perl.previewPackageRename",
+          "perl.explainMissingModuleLookup"
+        ]
+      },
+      "experimental": {
+        "typeHierarchyProvider": true
+      },
+      "foldingRangeProvider": true,
+      "hoverProvider": true,
+      "implementationProvider": true,
+      "inlayHintProvider": {
+        "resolveProvider": true
+      },
+      "inlineCompletionProvider": {},
+      "inlineValueProvider": true,
+      "linkedEditingRangeProvider": true,
+      "monikerProvider": true,
+      "notebookDocumentSync": {
+        "notebookSelector": [
+          {
+            "cells": [
+              {
+                "language": "perl"
+              }
+            ],
+            "notebook": "jupyter-notebook"
+          }
+        ],
+        "save": true
+      },
+      "referencesProvider": true,
+      "renameProvider": {
+        "prepareProvider": true
+      },
+      "selectionRangeProvider": true,
+      "semanticTokensProvider": {
+        "full": {
+          "delta": true
+        },
+        "legend": {
+          "tokenModifiers": [
+            "declaration",
+            "definition",
+            "readonly",
+            "static",
+            "deprecated",
+            "abstract",
+            "async",
+            "modification",
+            "documentation",
+            "defaultLibrary",
+            "scalarVariable",
+            "arrayVariable",
+            "hashVariable"
+          ],
+          "tokenTypes": [
+            "namespace",
+            "type",
+            "class",
+            "interface",
+            "enum",
+            "enumMember",
+            "typeParameter",
+            "function",
+            "method",
+            "property",
+            "macro",
+            "variable",
+            "parameter",
+            "keyword",
+            "modifier",
+            "comment",
+            "string",
+            "number",
+            "regexp",
+            "operator",
+            "sql_string",
+            "sql_heredoc_keyword",
+            "json_heredoc_key",
+            "label"
+          ]
+        },
+        "range": true
+      },
+      "signatureHelpProvider": {
+        "retriggerCharacters": [
+          ",",
+          "@",
+          "%",
+          "{",
+          "["
+        ],
+        "triggerCharacters": [
+          "(",
+          ","
+        ]
+      },
+      "textDocumentSync": {
+        "change": 1,
+        "openClose": true,
+        "save": true
+      },
+      "typeDefinitionProvider": true,
+      "typeHierarchyProvider": {
+        "workDoneProgressOptions": {}
+      },
+      "workspaceSymbolProvider": {
+        "resolveProvider": true
+      }
+    },
+    "ga-lock": {
+      "callHierarchyProvider": true,
+      "codeActionProvider": {
+        "codeActionKinds": [
+          "quickfix",
+          "source.organizeImports",
+          "refactor",
+          "refactor.extract",
+          "refactor.rewrite",
+          "source.fixAll",
+          "source.modernize"
+        ],
+        "resolveProvider": true
+      },
+      "codeLensProvider": {
+        "resolveProvider": true
+      },
+      "colorProvider": true,
+      "completionProvider": {
+        "completionItem": {
+          "insertTextModes": [
+            1,
+            2
+          ],
+          "labelDetailsSupport": true
+        },
+        "resolveProvider": true,
+        "triggerCharacters": [
+          "$",
+          "@",
+          "%",
+          "-",
+          ">",
+          ":",
+          ".",
+          "/",
+          "\\",
+          "\"",
+          "'"
+        ]
+      },
+      "declarationProvider": true,
+      "definitionProvider": true,
+      "diagnosticProvider": {
+        "identifier": "perl-lsp",
+        "interFileDependencies": false,
+        "workspaceDiagnostics": true
+      },
+      "documentFormattingProvider": true,
+      "documentHighlightProvider": true,
+      "documentLinkProvider": {
+        "resolveProvider": true
+      },
+      "documentOnTypeFormattingProvider": {
+        "firstTriggerCharacter": "}",
+        "moreTriggerCharacter": [
+          ";",
+          "\n"
+        ]
+      },
+      "documentRangeFormattingProvider": {
+        "rangesSupport": true
+      },
+      "documentSymbolProvider": true,
+      "executeCommandProvider": {
+        "commands": [
+          "perl.runTests",
+          "perl.runFile",
+          "perl.runScript",
+          "perl.runTestSub",
+          "perl.runCritic",
+          "perl.runTest",
+          "perl.runTestFile",
+          "perl.runSubtest",
+          "perl.debugFile",
+          "perl.debugTest",
+          "perl.debugTests",
+          "perl.debugTestFile",
+          "perl.goToTest",
+          "perl.goToImplementation",
+          "perl.explainProviderDecision",
+          "perl.workspaceTrustReport",
+          "perl.agentContext",
+          "perl.previewSafeDelete",
+          "perl.safeDeleteSymbol",
+          "perl.previewPackageRename",
+          "perl.explainMissingModuleLookup"
+        ]
+      },
+      "experimental": {
+        "typeHierarchyProvider": true
+      },
+      "foldingRangeProvider": true,
+      "hoverProvider": true,
+      "implementationProvider": true,
+      "inlayHintProvider": {
+        "resolveProvider": true
+      },
+      "inlineCompletionProvider": {},
+      "linkedEditingRangeProvider": true,
+      "monikerProvider": true,
+      "referencesProvider": true,
+      "renameProvider": {
+        "prepareProvider": true
+      },
+      "selectionRangeProvider": true,
+      "semanticTokensProvider": {
+        "full": {
+          "delta": true
+        },
+        "legend": {
+          "tokenModifiers": [
+            "declaration",
+            "definition",
+            "readonly",
+            "static",
+            "deprecated",
+            "abstract",
+            "async",
+            "modification",
+            "documentation",
+            "defaultLibrary",
+            "scalarVariable",
+            "arrayVariable",
+            "hashVariable"
+          ],
+          "tokenTypes": [
+            "namespace",
+            "type",
+            "class",
+            "interface",
+            "enum",
+            "enumMember",
+            "typeParameter",
+            "function",
+            "method",
+            "property",
+            "macro",
+            "variable",
+            "parameter",
+            "keyword",
+            "modifier",
+            "comment",
+            "string",
+            "number",
+            "regexp",
+            "operator",
+            "sql_string",
+            "sql_heredoc_keyword",
+            "json_heredoc_key",
+            "label"
+          ]
+        },
+        "range": true
+      },
+      "signatureHelpProvider": {
+        "retriggerCharacters": [
+          ",",
+          "@",
+          "%",
+          "{",
+          "["
+        ],
+        "triggerCharacters": [
+          "(",
+          ","
+        ]
+      },
+      "textDocumentSync": {
+        "change": 1,
+        "openClose": true,
+        "save": true
+      },
+      "typeDefinitionProvider": true,
+      "typeHierarchyProvider": {
+        "workDoneProgressOptions": {}
+      },
+      "workspaceSymbolProvider": {
+        "resolveProvider": true
+      }
+    },
+    "production": {
+      "callHierarchyProvider": true,
+      "codeActionProvider": {
+        "codeActionKinds": [
+          "quickfix",
+          "source.organizeImports",
+          "refactor",
+          "refactor.extract",
+          "refactor.rewrite",
+          "source.fixAll",
+          "source.modernize"
+        ],
+        "resolveProvider": true
+      },
+      "codeLensProvider": {
+        "resolveProvider": true
+      },
+      "colorProvider": true,
+      "completionProvider": {
+        "completionItem": {
+          "insertTextModes": [
+            1,
+            2
+          ],
+          "labelDetailsSupport": true
+        },
+        "resolveProvider": true,
+        "triggerCharacters": [
+          "$",
+          "@",
+          "%",
+          "-",
+          ">",
+          ":",
+          ".",
+          "/",
+          "\\",
+          "\"",
+          "'"
+        ]
+      },
+      "declarationProvider": true,
+      "definitionProvider": true,
+      "diagnosticProvider": {
+        "identifier": "perl-lsp",
+        "interFileDependencies": false,
+        "workspaceDiagnostics": true
+      },
+      "documentFormattingProvider": true,
+      "documentHighlightProvider": true,
+      "documentLinkProvider": {
+        "resolveProvider": true
+      },
+      "documentOnTypeFormattingProvider": {
+        "firstTriggerCharacter": "}",
+        "moreTriggerCharacter": [
+          ";",
+          "\n"
+        ]
+      },
+      "documentRangeFormattingProvider": {
+        "rangesSupport": true
+      },
+      "documentSymbolProvider": true,
+      "executeCommandProvider": {
+        "commands": [
+          "perl.runTests",
+          "perl.runFile",
+          "perl.runScript",
+          "perl.runTestSub",
+          "perl.runCritic",
+          "perl.runTest",
+          "perl.runTestFile",
+          "perl.runSubtest",
+          "perl.debugFile",
+          "perl.debugTest",
+          "perl.debugTests",
+          "perl.debugTestFile",
+          "perl.goToTest",
+          "perl.goToImplementation",
+          "perl.explainProviderDecision",
+          "perl.workspaceTrustReport",
+          "perl.agentContext",
+          "perl.previewSafeDelete",
+          "perl.safeDeleteSymbol",
+          "perl.previewPackageRename",
+          "perl.explainMissingModuleLookup"
+        ]
+      },
+      "experimental": {
+        "typeHierarchyProvider": true
+      },
+      "foldingRangeProvider": true,
+      "hoverProvider": true,
+      "implementationProvider": true,
+      "inlayHintProvider": {
+        "resolveProvider": true
+      },
+      "inlineCompletionProvider": {},
+      "inlineValueProvider": true,
+      "linkedEditingRangeProvider": true,
+      "monikerProvider": true,
+      "referencesProvider": true,
+      "renameProvider": {
+        "prepareProvider": true
+      },
+      "selectionRangeProvider": true,
+      "semanticTokensProvider": {
+        "full": {
+          "delta": true
+        },
+        "legend": {
+          "tokenModifiers": [
+            "declaration",
+            "definition",
+            "readonly",
+            "static",
+            "deprecated",
+            "abstract",
+            "async",
+            "modification",
+            "documentation",
+            "defaultLibrary",
+            "scalarVariable",
+            "arrayVariable",
+            "hashVariable"
+          ],
+          "tokenTypes": [
+            "namespace",
+            "type",
+            "class",
+            "interface",
+            "enum",
+            "enumMember",
+            "typeParameter",
+            "function",
+            "method",
+            "property",
+            "macro",
+            "variable",
+            "parameter",
+            "keyword",
+            "modifier",
+            "comment",
+            "string",
+            "number",
+            "regexp",
+            "operator",
+            "sql_string",
+            "sql_heredoc_keyword",
+            "json_heredoc_key",
+            "label"
+          ]
+        },
+        "range": true
+      },
+      "signatureHelpProvider": {
+        "retriggerCharacters": [
+          ",",
+          "@",
+          "%",
+          "{",
+          "["
+        ],
+        "triggerCharacters": [
+          "(",
+          ","
+        ]
+      },
+      "textDocumentSync": {
+        "change": 1,
+        "openClose": true,
+        "save": true
+      },
+      "typeDefinitionProvider": true,
+      "typeHierarchyProvider": {
+        "workDoneProgressOptions": {}
+      },
+      "workspaceSymbolProvider": {
+        "resolveProvider": true
+      }
+    }
+  },
+  "rows": [
+    {
+      "surface_id": "cap.callHierarchyProvider",
+      "kind": "capability-field",
+      "protocol_field": "callHierarchyProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/prepareCallHierarchy",
+      "evidence_owner": "features.toml#lsp.call_hierarchy",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.codeActionProvider.codeActionKinds[]",
+      "kind": "capability-field",
+      "protocol_field": "codeActionProvider.codeActionKinds[]",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_code_action_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/codeAction kind filter",
+      "evidence_owner": "features.toml#lsp.refactoring; lifecycle test code_action_kinds_include_exact_advertised_set",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.codeActionProvider.resolveProvider",
+      "kind": "capability-field",
+      "protocol_field": "codeActionProvider.resolveProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_code_action_features",
+      "client_capability_inputs": [
+        "textDocument.codeAction.resolveSupport",
+        "textDocument.codeAction.disabledSupport (consumed downstream)",
+        "textDocument.codeAction.tagSupport.valueSet (LLMGenerated=1, consumed downstream)"
+      ],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "codeAction/resolve",
+      "evidence_owner": "features.toml#lsp.code_action_resolve; lifecycle tests code_action documentation/disabled/llm-tag parsing",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.codeLensProvider.resolveProvider",
+      "kind": "capability-field",
+      "protocol_field": "codeLensProvider.resolveProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
+      "client_capability_inputs": [
+        "textDocument.codeLens.resolveSupport.properties"
+      ],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "codeLens/resolve",
+      "evidence_owner": "features.toml#lsp.code_lens_resolve; lifecycle test code_lens resolve-support parsing",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.colorProvider",
+      "kind": "capability-field",
+      "protocol_field": "colorProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/documentColor + colorPresentation",
+      "evidence_owner": "features.toml#lsp.document_color",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.completionProvider.completionItem.insertTextModes[]",
+      "kind": "capability-field",
+      "protocol_field": "completionProvider.completionItem.insertTextModes[]",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+      "client_capability_inputs": [
+        "textDocument.completion.completionItem.insertTextMode (advertised modes [1,2] = PlainText, Snippet)"
+      ],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.completion"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/completion insertTextFormat/Mode negotiation",
+      "evidence_owner": "LSP 3.17 insertTextModes patched because lsp-types 0.97 lacks the field",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.completionProvider.completionItem.labelDetailsSupport",
+      "kind": "capability-field",
+      "protocol_field": "completionProvider.completionItem.labelDetailsSupport",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
+      "client_capability_inputs": [
+        "textDocument.completion.completionItem.labelDetailsSupport"
+      ],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/completion item shape",
+      "evidence_owner": "features.toml#lsp.completion; lifecycle tests label_details/commit-characters parsing",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.completionProvider.resolveProvider",
+      "kind": "capability-field",
+      "protocol_field": "completionProvider.resolveProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
+      "client_capability_inputs": [
+        "textDocument.completion.completionItem.resolveSupport.properties"
+      ],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "completionItem/resolve",
+      "evidence_owner": "features.toml#lsp.completion_item_resolve",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.completionProvider.triggerCharacters[]",
+      "kind": "capability-field",
+      "protocol_field": "completionProvider.triggerCharacters[]",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
+      "client_capability_inputs": [
+        "textDocument.completion.completionItem.commitCharactersSupport"
+      ],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/completion",
+      "evidence_owner": "features.toml#lsp.completion; completion_trigger_characters() canonical list",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.declarationProvider",
+      "kind": "capability-field",
+      "protocol_field": "declarationProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/declaration",
+      "evidence_owner": "features.toml#lsp.declaration",
+      "competing_paths": [
+        {
+          "path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+          "delta": "runtime unconditionally re-sets declarationProvider=true when AdvertisedFeatures.declaration is on (same value, second writer; see mut.handle_initialize.declarationProviderRewrite)"
+        }
+      ],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.definitionProvider",
+      "kind": "capability-field",
+      "protocol_field": "definitionProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/definition",
+      "evidence_owner": "features.toml#lsp.definition",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.diagnosticProvider.identifier",
+      "kind": "capability-field",
+      "protocol_field": "diagnosticProvider.identifier",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
+      "client_capability_inputs": [
+        "textDocument.diagnostic.markupMessageSupport"
+      ],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/diagnostic identifier perl-lsp",
+      "evidence_owner": "features.toml#lsp.pull_diagnostics; lifecycle test markup-message parsing",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.diagnosticProvider.interFileDependencies",
+      "kind": "capability-field",
+      "protocol_field": "diagnosticProvider.interFileDependencies",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/diagnostic context",
+      "evidence_owner": "features.toml#lsp.pull_diagnostics",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.diagnosticProvider.workspaceDiagnostics",
+      "kind": "capability-field",
+      "protocol_field": "diagnosticProvider.workspaceDiagnostics",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "workspace/diagnostic",
+      "evidence_owner": "features.toml#lsp.workspace_diagnostics",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.documentFormattingProvider",
+      "kind": "capability-field",
+      "protocol_field": "documentFormattingProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/formatting",
+      "evidence_owner": "features.toml#lsp.formatting",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.documentHighlightProvider",
+      "kind": "capability-field",
+      "protocol_field": "documentHighlightProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/documentHighlight",
+      "evidence_owner": "features.toml#lsp.document_highlight",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.documentLinkProvider.resolveProvider",
+      "kind": "capability-field",
+      "protocol_field": "documentLinkProvider.resolveProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "documentLink/resolve",
+      "evidence_owner": "features.toml#lsp.document_link_resolve",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.documentOnTypeFormattingProvider.firstTriggerCharacter",
+      "kind": "capability-field",
+      "protocol_field": "documentOnTypeFormattingProvider.firstTriggerCharacter",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/onTypeFormatting",
+      "evidence_owner": "features.toml#lsp.on_type_formatting",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.documentOnTypeFormattingProvider.moreTriggerCharacter[]",
+      "kind": "capability-field",
+      "protocol_field": "documentOnTypeFormattingProvider.moreTriggerCharacter[]",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/onTypeFormatting",
+      "evidence_owner": "features.toml#lsp.on_type_formatting",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.documentRangeFormattingProvider.rangesSupport",
+      "kind": "capability-field",
+      "protocol_field": "documentRangeFormattingProvider.rangesSupport",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/rangeFormatting multi-range variant",
+      "evidence_owner": "features.toml#lsp.ranges_formatting; lifecycle tests ranges_formatting_*",
+      "competing_paths": [
+        {
+          "path": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+          "delta": "capabilities_for() emits boolean true (OneOf::Left) but capabilities_json() replaces the whole value with {rangesSupport:true} when range_formatting is enabled (LSP 3.18 rangesSupport absent from lsp-types 0.97)"
+        }
+      ],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.documentSymbolProvider",
+      "kind": "capability-field",
+      "protocol_field": "documentSymbolProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/documentSymbol",
+      "evidence_owner": "features.toml#lsp.document_symbol; lifecycle tests document_symbol_provider_*",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.executeCommandProvider.commands[]",
+      "kind": "capability-field",
+      "protocol_field": "executeCommandProvider.commands[]",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_code_action_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "workspace/executeCommand (see cmd.* rows)",
+      "evidence_owner": "features.toml#lsp.execute_command; SUPPORTED_COMMANDS canonical list",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.experimental.typeHierarchyProvider",
+      "kind": "capability-field",
+      "protocol_field": "experimental.typeHierarchyProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/experimental.rs apply_experimental_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "typeHierarchy/subtypes|supertypes",
+      "evidence_owner": "features.toml#lsp.type_hierarchy; feature_ids_from_caps detection contract",
+      "competing_paths": [
+        {
+          "path": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+          "delta": "capabilities_json() additionally injects top-level typeHierarchyProvider {workDoneProgressOptions:{}} for LSP compatibility while apply_experimental_features() advertises experimental.typeHierarchyProvider boolean for feature_ids_from_caps detection - the same variant advertised twice through two paths"
+        }
+      ],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.foldingRangeProvider",
+      "kind": "capability-field",
+      "protocol_field": "foldingRangeProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/foldingRange",
+      "evidence_owner": "features.toml#lsp.folding_range",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.hoverProvider",
+      "kind": "capability-field",
+      "protocol_field": "hoverProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/hover",
+      "evidence_owner": "features.toml#lsp.hover",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.implementationProvider",
+      "kind": "capability-field",
+      "protocol_field": "implementationProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/implementation",
+      "evidence_owner": "features.toml#lsp.implementation",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.inlayHintProvider.resolveProvider",
+      "kind": "capability-field",
+      "protocol_field": "inlayHintProvider.resolveProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
+      "client_capability_inputs": [
+        "textDocument.inlayHint.resolveSupport.properties"
+      ],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "inlayHint/resolve",
+      "evidence_owner": "features.toml#lsp.inlay_hint_resolve; lifecycle test inlay_hint resolve-support parsing",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.inlineCompletionProvider",
+      "kind": "capability-field",
+      "protocol_field": "inlineCompletionProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.inline_completion"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/inlineCompletion (static mode)",
+      "evidence_owner": "features.toml#lsp.inline_completion; lifecycle tests inline_completion_*",
+      "competing_paths": [
+        {
+          "path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+          "delta": "initialize-time tri-state removes or re-inserts inlineCompletionProvider depending on (feature, client static support, client dynamicRegistration): dynamic-registration clients get the provider removed here and registered post-initialized instead (see mut.handle_initialize.inlineCompletionTriState)"
+        }
+      ],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.inlineValueProvider",
+      "kind": "capability-field",
+      "protocol_field": "inlineValueProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/inlineValue",
+      "evidence_owner": "features.toml#lsp.inline_value (ga-lock suppresses)",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.linkedEditingRangeProvider",
+      "kind": "capability-field",
+      "protocol_field": "linkedEditingRangeProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/linkedEditingRange",
+      "evidence_owner": "features.toml#lsp.linked_editing_range",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.monikerProvider",
+      "kind": "capability-field",
+      "protocol_field": "monikerProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/moniker",
+      "evidence_owner": "features.toml#lsp.moniker",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.notebookDocumentSync.notebookSelector[].cells[].language",
+      "kind": "capability-field",
+      "protocol_field": "notebookDocumentSync.notebookSelector[].cells[].language",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "notebookDocument cell filtering (language perl)",
+      "evidence_owner": "features.toml#lsp.notebook_document_sync",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [
+        "notebookDocumentSync.notebookSelector[]",
+        "notebookDocumentSync.notebookSelector[].cells[]"
+      ],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.notebookDocumentSync.notebookSelector[].notebook",
+      "kind": "capability-field",
+      "protocol_field": "notebookDocumentSync.notebookSelector[].notebook",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "notebookDocument/didOpen|didSave|didClose",
+      "evidence_owner": "features.toml#lsp.notebook_document_sync (preview: all profile only)",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.notebookDocumentSync.save",
+      "kind": "capability-field",
+      "protocol_field": "notebookDocumentSync.save",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "notebookDocument/didSave",
+      "evidence_owner": "features.toml#lsp.notebook_cell_execution sub-feature carrier",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.referencesProvider",
+      "kind": "capability-field",
+      "protocol_field": "referencesProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/references",
+      "evidence_owner": "features.toml#lsp.references",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.renameProvider.prepareProvider",
+      "kind": "capability-field",
+      "protocol_field": "renameProvider.prepareProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
+      "client_capability_inputs": [
+        "textDocument.rename.prepareSupport",
+        "textDocument.rename.prepareSupportDefaultBehavior"
+      ],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/prepareRename",
+      "evidence_owner": "features.toml#lsp.prepare_rename; lifecycle tests prepare_support_default_behavior",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.selectionRangeProvider",
+      "kind": "capability-field",
+      "protocol_field": "selectionRangeProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/selectionRange",
+      "evidence_owner": "features.toml#lsp.selection_range",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.semanticTokensProvider.full.delta",
+      "kind": "capability-field",
+      "protocol_field": "semanticTokensProvider.full.delta",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/semanticTokens/full/delta",
+      "evidence_owner": "features.toml#lsp.semantic_tokens",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.semanticTokensProvider.legend.tokenModifiers[]",
+      "kind": "capability-field",
+      "protocol_field": "semanticTokensProvider.legend.tokenModifiers[]",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/semanticTokens/full legend",
+      "evidence_owner": "features.toml#lsp.semantic_tokens; lifecycle test semantic_token_modifiers_are_exact_ordered_list",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.semanticTokensProvider.legend.tokenTypes[]",
+      "kind": "capability-field",
+      "protocol_field": "semanticTokensProvider.legend.tokenTypes[]",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/semanticTokens/full legend",
+      "evidence_owner": "features.toml#lsp.semantic_tokens; lifecycle test semantic_token_types_are_exact_ordered_list",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.semanticTokensProvider.range",
+      "kind": "capability-field",
+      "protocol_field": "semanticTokensProvider.range",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_analysis_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/semanticTokens/range",
+      "evidence_owner": "features.toml#lsp.semantic_tokens",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.signatureHelpProvider.retriggerCharacters[]",
+      "kind": "capability-field",
+      "protocol_field": "signatureHelpProvider.retriggerCharacters[]",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/signatureHelp",
+      "evidence_owner": "features.toml#lsp.signature_help; lifecycle test signature_help_retrigger_characters_include_required_set",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.signatureHelpProvider.triggerCharacters[]",
+      "kind": "capability-field",
+      "protocol_field": "signatureHelpProvider.triggerCharacters[]",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/signatureHelp",
+      "evidence_owner": "features.toml#lsp.signature_help; lifecycle test signature_help_trigger_characters_are_paren_and_comma",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.textDocumentSync.change",
+      "kind": "capability-field",
+      "protocol_field": "textDocumentSync.change",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_document_sync",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/didChange (Full=1 reparse)",
+      "evidence_owner": "features.toml#lsp.text_document_sync; lifecycle tests text_document_sync_advertises_full_sync_and_open_close",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.textDocumentSync.openClose",
+      "kind": "capability-field",
+      "protocol_field": "textDocumentSync.openClose",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_document_sync",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/didOpen + didClose notifications",
+      "evidence_owner": "features.toml#lsp.text_document_sync",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.textDocumentSync.save",
+      "kind": "capability-field",
+      "protocol_field": "textDocumentSync.save",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_document_sync",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/didSave",
+      "evidence_owner": "features.toml#lsp.did_save; lifecycle test text_document_sync_advertises_did_save_support",
+      "competing_paths": [
+        {
+          "path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+          "delta": "runtime replaces the whole textDocumentSync value after initialize parsing: adds willSave=true, willSaveWaitUntil=true and turns save from boolean true into {includeText:true} (see mut.handle_initialize.textDocumentSyncOverride)"
+        }
+      ],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.typeDefinitionProvider",
+      "kind": "capability-field",
+      "protocol_field": "typeDefinitionProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "textDocument/typeDefinition",
+      "evidence_owner": "features.toml#lsp.type_definition",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.typeHierarchyProvider.workDoneProgressOptions",
+      "kind": "capability-field",
+      "protocol_field": "typeHierarchyProvider.workDoneProgressOptions",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "typeHierarchy/subtypes|supertypes work-done progress",
+      "evidence_owner": "manual patch: lsp-types 0.97 lacks type_hierarchy_provider on ServerCapabilities",
+      "competing_paths": [
+        {
+          "path": "perl-lsp-rs-core/src/protocol/capabilities/experimental.rs apply_experimental_features",
+          "delta": "experimental.typeHierarchyProvider boolean duplicates this top-level advertisement for typed-caps consumers that cannot see the JSON patch"
+        }
+      ],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cap.workspaceSymbolProvider.resolveProvider",
+      "kind": "capability-field",
+      "protocol_field": "workspaceSymbolProvider.resolveProvider",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags (ga-lock | production | all census profiles)"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "workspace/symbol + workspaceSymbol/resolve",
+      "evidence_owner": "features.toml#lsp.workspace_symbol_resolve; lifecycle test workspace_symbol_provider_advertises_resolve_when_enabled",
+      "competing_paths": [
+        {
+          "path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features (workspace_symbol arm)",
+          "delta": "workspace_symbol=true claims OneOf::Left(true); the later workspace_symbol_resolve arm overwrites the same provider with OneOf::Right({resolveProvider:true}) when both flags are set - two writers inside one function claim the same variant"
+        }
+      ],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.agentContext",
+      "kind": "command",
+      "protocol_field": "cmd.perl.agentContext",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.debugFile",
+      "kind": "command",
+      "protocol_field": "cmd.perl.debugFile",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.debugTest",
+      "kind": "command",
+      "protocol_field": "cmd.perl.debugTest",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.debugTestFile",
+      "kind": "command",
+      "protocol_field": "cmd.perl.debugTestFile",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.debugTests",
+      "kind": "command",
+      "protocol_field": "cmd.perl.debugTests",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.explainMissingModuleLookup",
+      "kind": "command",
+      "protocol_field": "cmd.perl.explainMissingModuleLookup",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.explainProviderDecision",
+      "kind": "command",
+      "protocol_field": "cmd.perl.explainProviderDecision",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.goToImplementation",
+      "kind": "command",
+      "protocol_field": "cmd.perl.goToImplementation",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.goToTest",
+      "kind": "command",
+      "protocol_field": "cmd.perl.goToTest",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.previewPackageRename",
+      "kind": "command",
+      "protocol_field": "cmd.perl.previewPackageRename",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.previewSafeDelete",
+      "kind": "command",
+      "protocol_field": "cmd.perl.previewSafeDelete",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.runCritic",
+      "kind": "command",
+      "protocol_field": "cmd.perl.runCritic",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.runFile",
+      "kind": "command",
+      "protocol_field": "cmd.perl.runFile",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.runScript",
+      "kind": "command",
+      "protocol_field": "cmd.perl.runScript",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.runSubtest",
+      "kind": "command",
+      "protocol_field": "cmd.perl.runSubtest",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.runTest",
+      "kind": "command",
+      "protocol_field": "cmd.perl.runTest",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.runTestFile",
+      "kind": "command",
+      "protocol_field": "cmd.perl.runTestFile",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.runTestSub",
+      "kind": "command",
+      "protocol_field": "cmd.perl.runTestSub",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.runTests",
+      "kind": "command",
+      "protocol_field": "cmd.perl.runTests",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.safeDeleteSymbol",
+      "kind": "command",
+      "protocol_field": "cmd.perl.safeDeleteSymbol",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "cmd.perl.workspaceTrustReport",
+      "kind": "command",
+      "protocol_field": "cmd.perl.workspaceTrustReport",
+      "builder_mutator_path": "perl-lsp-rs-core/src/protocol/capabilities.rs SUPPORTED_COMMANDS",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "BuildFlags.execute_command"
+      ],
+      "disposition": "static",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch/workspace.rs execute-command dispatcher",
+      "evidence_owner": "#8285 command descriptors; features.toml#lsp.execute_command",
+      "competing_paths": [],
+      "target_issue": "#8285",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "compat.client.jetbrains.watcherForceDisable",
+      "kind": "compatibility",
+      "protocol_field": "clientInfo.name =~ /(jetbrains|intellij|idea)/i",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "client_capability_inputs": [
+        "workspace.didChangeWatchedFiles.dynamicRegistration (claimed but overridden)"
+      ],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "n/a (negotiation-time behavior branch)",
+      "evidence_owner": "#4630-era workaround; lifecycle tests initialize_disables_dynamic_registration_for_jetbrains_clients",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": {
+        "subject": "JetBrains-family clients (name contains jetbrains/intellij/idea, case-insensitive)",
+        "reason": "their dynamic watcher registration flow is unreliable and degrades startup; forces caps.dynamic_registration_support=false regardless of declaration and queues one-time logMessage after initialized",
+        "expiry": "until EffectiveLspSurface introduces typed compatibility policy (#9665)"
+      },
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "compat.client.opencode.pushDiagnosticsRetention",
+      "kind": "compatibility",
+      "protocol_field": "clientInfo.name =~ /opencode/i && textDocument.diagnostic advertised",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "client_capability_inputs": [
+        "textDocument/diagnostic presence"
+      ],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "n/a (negotiation-time behavior branch)",
+      "evidence_owner": "lifecycle tests initialize_keeps_push_diagnostics_for_opencode / initialize_enables_pull_diagnostics_for_non_opencode_clients",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": {
+        "subject": "OpenCode clients advertising pull diagnostics",
+        "reason": "OpenCode relies on push publishDiagnostics even while declaring textDocument.diagnostic; pull gating suppressed to avoid losing diagnostics",
+        "expiry": "revisit under #6735 negotiation matrix when OpenCode consumes pull diagnostics"
+      },
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "compat.initialize.cwdFallback",
+      "kind": "compatibility",
+      "protocol_field": "process current directory used when no root signal exists (e.g. Aider)",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "n/a (negotiation-time behavior branch)",
+      "evidence_owner": "cwd fallback in handle_initialize; lifecycle test initialize_uses_current_directory_when_root_is_missing",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": {
+        "subject": "lightweight clients initializing without any root signal",
+        "reason": "prevents an uninitialized workspace state for minimal clients",
+        "expiry": "until #9665 defines explicit no-workspace behavior"
+      },
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "compat.initialize.initOptionsRootFallbackChain",
+      "kind": "compatibility",
+      "protocol_field": "initializationOptions.{workspaceFolders|rootUri|rootPath} (+perl-lsp/perl_lsp namespaces)",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "n/a (negotiation-time behavior branch)",
+      "evidence_owner": "initializationOptions fallback chain in handle_initialize; lifecycle tests initialize_init_options_workspace_folders_sets_root_path / initialize_reads_root_uri_from_initialization_options",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": {
+        "subject": "clients placing workspace roots inside initializationOptions instead of top-level params",
+        "reason": "mirrors top-level resolution order after all standard fields are absent",
+        "expiry": "until #9665 owns root-resolution policy"
+      },
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "compat.initialize.legacyRootPath",
+      "kind": "compatibility",
+      "protocol_field": "initialize params rootPath (deprecated since LSP 3.0)",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "n/a (negotiation-time behavior branch)",
+      "evidence_owner": "legacy fallback chain in handle_initialize; lifecycle tests initialize_uses_current_directory_when_root_is_missing",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": {
+        "subject": "older JetBrains LSP clients sending rootPath",
+        "reason": "rootPath converted to file URI and used after workspaceFolders/rootUri checks fail",
+        "expiry": "drop when minimum supported client floor excludes legacy JetBrains versions"
+      },
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "compat.negotiated.clientInputsWithoutAdvertisementSeam",
+      "kind": "compatibility",
+      "protocol_field": "parsed-but-unadvertised client negotiation inputs: workspace.workspaceEdit.{documentChanges|snippetEditSupport|metadataSupport}; completion.completionList.{itemDefaults(data)|applyKindSupport}; textDocument.codeAction.{disabledSupport|tagSupport.valueSet(1=LLMGenerated)|dataSupport}; declaration/definition/typeDefinition/implementation.linkSupport; window.showDocument.support; window.workDoneProgress; diagnostic.markupMessageSupport; textDocument.diagnostic.relatedDocuments (not parsed on current main)",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "client_capability_inputs": [
+        "workspace.workspaceEdit.documentChanges",
+        "workspace.workspaceEdit.snippetEditSupport",
+        "workspace.workspaceEdit.metadataSupport",
+        "textDocument.completion.completionList.itemDefaults",
+        "textDocument.completion.completionList.applyKindSupport",
+        "textDocument.codeAction.disabledSupport",
+        "textDocument.codeAction.tagSupport.valueSet",
+        "textDocument.declaration.linkSupport (and definition/typeDefinition/implementation)",
+        "window.showDocument.support",
+        "window.workDoneProgress",
+        "textDocument.diagnostic.markupMessageSupport"
+      ],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "n/a (negotiation-time behavior branch)",
+      "evidence_owner": "#6735 negotiation matrix; lifecycle tests initialize_parses_* / initialize_leaves_*_disabled_when_absent",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": {
+        "subject": "client-negotiated behavior variants with no dedicated serverCapabilities advertisement field",
+        "reason": "each input is parsed in handle_initialize into ClientCapabilities and consumed downstream by providers/edits/outbound requests (#8068/#8285); recorded once so the denominator stays closed instead of implying an advertisement seam that does not exist",
+        "expiry": "S02 EffectiveLspSurface models each as a typed negotiation outcome (#9665)"
+      },
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "compat.protocol.completionItemFlattenedShape",
+      "kind": "compatibility",
+      "protocol_field": "snippetSupport/commitCharactersSupport flattened onto textDocument.completion accepted beside completionItem.* shape",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "client_capability_inputs": [
+        "textDocument.completion.completionItem.snippetSupport (flattened alternative)"
+      ],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "n/a (negotiation-time behavior branch)",
+      "evidence_owner": "dual-shape parse branch in handle_initialize; lifecycle tests initialize_parses_completion_item_capabilities_from_flattened_shape",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": {
+        "subject": "generic clients flattening completionItem booleans onto textDocument.completion",
+        "reason": "both shapes parsed; flattened form wins only when completionItem lacks the key",
+        "expiry": "until #9665 normalizes capability parsing"
+      },
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "compat.protocol.diagnosticRefreshSingularKey",
+      "kind": "compatibility",
+      "protocol_field": "workspace.diagnostic.refreshSupport (singular) accepted beside spec workspace.diagnostics.refreshSupport",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "client_capability_inputs": [
+        "workspace.diagnostics.refreshSupport",
+        "workspace.diagnostic.refreshSupport"
+      ],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "n/a (negotiation-time behavior branch)",
+      "evidence_owner": "#9592; lifecycle tests initialize_reads_diagnostic_refresh_support_from_spec_plural_key/_singular_client_deviation",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": {
+        "subject": "clients built on lsp-types/helix-lsp-types emit singular diagnostic on the wire",
+        "reason": "spec key is plural diagnostics; dropping singular would regress lsp-types-based clients (Helix)",
+        "expiry": "when observed clients stop emitting the singular spelling; dual-read guarded by tests until then"
+      },
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "compat.protocol.markdownContentFormatFallback",
+      "kind": "compatibility",
+      "protocol_field": "general.markup.contentFormat -> textDocument.hover.contentFormat legacy fallback -> default markdown=true",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "client_capability_inputs": [
+        "general.markup.contentFormat",
+        "textDocument.hover.contentFormat"
+      ],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "n/a (negotiation-time behavior branch)",
+      "evidence_owner": "#1724; markdown_support default-true branch in handle_initialize",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": {
+        "subject": "clients omitting general.markup.contentFormat",
+        "reason": "legacy fallback reads hover.contentFormat; absent both, markdown assumed supported",
+        "expiry": "until #9665 canonical negotiation model owns markup selection"
+      },
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "compat.protocol.positionEncodingUtf16Pin",
+      "kind": "compatibility",
+      "protocol_field": "positionEncoding always advertised utf-16 despite general.positionEncodings negotiation",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "client_capability_inputs": [
+        "general.positionEncodings"
+      ],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "n/a (negotiation-time behavior branch)",
+      "evidence_owner": "phase-comment block in handle_initialize; position authority #2298",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": {
+        "subject": "every client negotiating a non-UTF-16 preferred encoding",
+        "reason": "providers still compute UTF-16 offsets; advertising anything else would corrupt positions, so the negotiated value is stored but not advertised",
+        "expiry": "#8032 train stage threading the negotiated encoding through position/text contracts"
+      },
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "mut.handle_initialize.codeActionDocumentationInsert",
+      "kind": "mutation",
+      "protocol_field": "codeActionProvider.documentation[]",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "client_capability_inputs": [
+        "textDocument.codeAction.documentationSupport"
+      ],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "static",
+      "runtime_route_owner": "n/a (initialize response assembly)",
+      "evidence_owner": "PLSP-SPEC-0029#code-action-documentation; features.toml#lsp.code_action_documentation; lifecycle test initialize_advertises_code_action_documentation_only_when_supported",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [
+        "codeActionProvider.documentation[].kind",
+        "codeActionProvider.documentation[].command.title",
+        "codeActionProvider.documentation[].command.command",
+        "codeActionProvider.documentation[].command.arguments[]",
+        "codeActionProvider.documentation[].command.arguments[].provider",
+        "codeActionProvider.documentation[].command.arguments[].receipt_id",
+        "codeActionProvider.documentation[].command.arguments[].scenario"
+      ],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "mut.handle_initialize.declarationProviderRewrite",
+      "kind": "mutation",
+      "protocol_field": "(rewrite) declarationProvider",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "static",
+      "runtime_route_owner": "n/a (initialize response assembly)",
+      "evidence_owner": "unconditional re-set when AdvertisedFeatures.declaration; ownership stays with cap.declarationProvider",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": "declarationProvider",
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "mut.handle_initialize.envelopeAssembly",
+      "kind": "mutation",
+      "protocol_field": "envelope.protocolVersion=3.18",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "static",
+      "runtime_route_owner": "n/a (initialize response assembly)",
+      "evidence_owner": "LSP_PROTOCOL_VERSION const + serverInfo name/version in the initialize result envelope; json!() assembly kept per in-source rationale comment",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [
+        "envelope.serverInfo.name",
+        "envelope.serverInfo.version"
+      ],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "mut.handle_initialize.experimentalPerlInlineCompletionStreamMerge",
+      "kind": "mutation",
+      "protocol_field": "experimental.perlInlineCompletionStream",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "client_capability_inputs": [
+        "textDocument/inlineCompletion presence"
+      ],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "static",
+      "runtime_route_owner": "n/a (initialize response assembly)",
+      "evidence_owner": "features.toml#experimental.perlInlineCompletionStream; merge_experimental_capability",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [
+        "experimental.perlInlineCompletionStream"
+      ],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "mut.handle_initialize.fileOperationsIntersection",
+      "kind": "mutation",
+      "protocol_field": "workspace.fileOperations",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "client_capability_inputs": [
+        "workspace.fileOperations.willCreate",
+        "workspace.fileOperations.didCreate",
+        "workspace.fileOperations.willRename",
+        "workspace.fileOperations.didRename",
+        "workspace.fileOperations.willDelete",
+        "workspace.fileOperations.didDelete"
+      ],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "static",
+      "runtime_route_owner": "n/a (initialize response assembly)",
+      "evidence_owner": "#7682 exact-operation intersection; FileOperationSupport::from_initialize_params",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [
+        "workspace.fileOperations.willCreate.filters[]",
+        "workspace.fileOperations.didCreate.filters[]",
+        "workspace.fileOperations.willRename.filters[]",
+        "workspace.fileOperations.didRename.filters[]",
+        "workspace.fileOperations.willDelete.filters[]",
+        "workspace.fileOperations.didDelete.filters[]",
+        "workspace.fileOperations.willCreate.filters[].pattern.glob",
+        "workspace.fileOperations.didCreate.filters[].pattern.glob",
+        "workspace.fileOperations.willRename.filters[].pattern.glob",
+        "workspace.fileOperations.didRename.filters[].pattern.glob",
+        "workspace.fileOperations.willDelete.filters[].pattern.glob",
+        "workspace.fileOperations.didDelete.filters[].pattern.glob"
+      ],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "mut.handle_initialize.inlineCompletionTriState",
+      "kind": "mutation",
+      "protocol_field": "(rewrite) inlineCompletionProvider",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "client_capability_inputs": [
+        "textDocument/inlineCompletion presence",
+        "textDocument/inlineCompletion/dynamicRegistration"
+      ],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "static",
+      "runtime_route_owner": "n/a (initialize response assembly)",
+      "evidence_owner": "(feature, static-support, dynamic-support) tri-state removes/re-inserts the static provider; lsp_inline_completion_registration_tests.rs",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": "inlineCompletionProvider",
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "mut.handle_initialize.positionEncodingPin",
+      "kind": "mutation",
+      "protocol_field": "positionEncoding",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "client_capability_inputs": [
+        "general.positionEncodings (negotiated, stored, NOT advertised)"
+      ],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "static",
+      "runtime_route_owner": "n/a (initialize response assembly)",
+      "evidence_owner": "position contract pinned utf-16 until negotiated encoding threads through providers; see compat.protocol.positionEncodingUtf16Pin",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [
+        "positionEncoding"
+      ],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "mut.handle_initialize.textDocumentSyncOverride",
+      "kind": "mutation",
+      "protocol_field": "textDocumentSync",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "static",
+      "runtime_route_owner": "n/a (initialize response assembly)",
+      "evidence_owner": "#4995 typed TextDocumentSyncOptions override; lifecycle tests text_document_sync_*",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [
+        "textDocumentSync.willSave",
+        "textDocumentSync.willSaveWaitUntil",
+        "textDocumentSync.save.includeText"
+      ],
+      "rewrites_surface_pointer": "textDocumentSync",
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "mut.handle_initialize.workspaceReplacement",
+      "kind": "mutation",
+      "protocol_field": "workspace",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+      "client_capability_inputs": [
+        "workspace.workspaceFolders"
+      ],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "static",
+      "runtime_route_owner": "n/a (initialize response assembly)",
+      "evidence_owner": "workspace_capabilities(); lifecycle test initialize_disables_workspace_folder_server_capability_when_client_lacks_support; matrix workspace/textDocumentContent row",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [
+        "workspace.workspaceFolders.supported",
+        "workspace.workspaceFolders.changeNotifications",
+        "workspace.textDocumentContent.schemes[]"
+      ],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "ref.workspace/codeLens/refresh",
+      "kind": "refresh-request",
+      "protocol_field": "workspace/codeLens/refresh",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/client_requests.rs request_code_lens_refresh",
+      "client_capability_inputs": [
+        "workspace.codeLens.refreshSupport"
+      ],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "dynamic",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
+      "evidence_owner": "features.toml#lsp.code_lens_refresh",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "ref.workspace/diagnostic/refresh",
+      "kind": "refresh-request",
+      "protocol_field": "workspace/diagnostic/refresh",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/client_requests.rs request_diagnostic_refresh",
+      "client_capability_inputs": [
+        "workspace.diagnostics.refreshSupport (spec plural key)",
+        "workspace.diagnostic.refreshSupport (client-deviation singular)"
+      ],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "dynamic",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
+      "evidence_owner": "features.toml#lsp.diagnostic_refresh; #9592 dual-spelling deviation",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "ref.workspace/foldingRange/refresh",
+      "kind": "refresh-request",
+      "protocol_field": "workspace/foldingRange/refresh",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/client_requests.rs request_folding_range_refresh",
+      "client_capability_inputs": [
+        "workspace.foldingRange.refreshSupport"
+      ],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "dynamic",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
+      "evidence_owner": "features.toml#lsp.folding_range_refresh",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "ref.workspace/inlayHint/refresh",
+      "kind": "refresh-request",
+      "protocol_field": "workspace/inlayHint/refresh",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/client_requests.rs request_inlay_hint_refresh",
+      "client_capability_inputs": [
+        "workspace.inlayHint.refreshSupport"
+      ],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "dynamic",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
+      "evidence_owner": "features.toml#lsp.inlay_hint_refresh",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "ref.workspace/inlineValue/refresh",
+      "kind": "refresh-request",
+      "protocol_field": "workspace/inlineValue/refresh",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/client_requests.rs request_inline_value_refresh",
+      "client_capability_inputs": [
+        "workspace.inlineValue.refreshSupport"
+      ],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "dynamic",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
+      "evidence_owner": "features.toml#lsp.inline_value_refresh",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "ref.workspace/semanticTokens/refresh",
+      "kind": "refresh-request",
+      "protocol_field": "workspace/semanticTokens/refresh",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/client_requests.rs request_semantic_tokens_refresh",
+      "client_capability_inputs": [
+        "workspace.semanticTokens.refreshSupport"
+      ],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "dynamic",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/refresh.rs RefreshController (debounced)",
+      "evidence_owner": "features.toml#lsp.semantic_tokens_refresh",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "reg.client-unregisterCapability",
+      "kind": "registration",
+      "protocol_field": "client/unregisterCapability",
+      "builder_mutator_path": "none (no sender exists on current main)",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "initialized notification -> perl-lsp-rs/src/runtime/dispatch/lifecycle.rs",
+      "evidence_owner": "features.toml#lsp.client_unregister_capability is catalog-only; finding: server never unregisters today",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "reg.perl-didChangeWatchedFiles",
+      "kind": "registration",
+      "protocol_field": "register perl-didChangeWatchedFiles@workspace/didChangeWatchedFiles",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/watchers.rs register_file_watchers_if_needed",
+      "client_capability_inputs": [
+        "workspace.didChangeWatchedFiles.dynamicRegistration",
+        "workspace.didChangeWatchedFiles.relativePatternSupport"
+      ],
+      "build_profile_config_tool_inputs": [
+        "AdvertisedFeatures.workspace_symbol",
+        "config runtime_tuning.file_watchers"
+      ],
+      "disposition": "dynamic",
+      "runtime_route_owner": "initialized notification -> perl-lsp-rs/src/runtime/dispatch/lifecycle.rs",
+      "evidence_owner": "features.toml#lsp.did_change_watched_files; lsp_registration_tests.rs; RelativePattern fallback string globs (**/*.pl,*.pm,*.t,*.psgi)",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "reg.perl-inlineCompletion",
+      "kind": "registration",
+      "protocol_field": "register perl-inlineCompletion@textDocument/inlineCompletion",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/watchers.rs register_inline_completion_if_needed",
+      "client_capability_inputs": [
+        "textDocument/inlineCompletion.dynamicRegistration"
+      ],
+      "build_profile_config_tool_inputs": [
+        "AdvertisedFeatures.inline_completion"
+      ],
+      "disposition": "dynamic",
+      "runtime_route_owner": "initialized notification -> perl-lsp-rs/src/runtime/dispatch/lifecycle.rs",
+      "evidence_owner": "features.toml#lsp.inline_completion; lsp_inline_completion_registration_tests.rs; documentSelector perl+perl5",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.call_hierarchy",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.call_hierarchy",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "call_hierarchy"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.code_action",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.code_action",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "code_actions"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.code_lens",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.code_lens",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "code_lens"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.completion",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.completion",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "completion"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.declaration",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.declaration",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "declaration"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.definition",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.definition",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "definition"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.document_color",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.document_color",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "document_color"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.document_highlight",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.document_highlight",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "document_highlight"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.document_link",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.document_link",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "document_links"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.document_symbol",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.document_symbol",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "document_symbol"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.execute_command",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.execute_command",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "execute_command"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.folding_range",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.folding_range",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "folding_range"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.formatting",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.formatting",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "formatting"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.hover",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.hover",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "hover"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.implementation",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.implementation",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "implementation"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.inlay_hint",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.inlay_hint",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "inlay_hints"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.inline_completion",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.inline_completion",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "inline_completion"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.inline_value",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.inline_value",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "inline_values"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.linked_editing_range",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.linked_editing_range",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "linked_editing"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.moniker",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.moniker",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "moniker"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.notebook_cell_execution",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.notebook_cell_execution",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "notebook_cell_execution"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.notebook_document_sync",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.notebook_document_sync",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "notebook_document_sync"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.on_type_formatting",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.on_type_formatting",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "on_type_formatting"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.pull_diagnostics",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.pull_diagnostics",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "pull_diagnostics"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.range_formatting",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.range_formatting",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "range_formatting"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.ranges_formatting",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.ranges_formatting",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "range_formatting"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.references",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.references",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "references"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.rename",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.rename",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "rename"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.selection_range",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.selection_range",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "selection_ranges"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.semantic_tokens",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.semantic_tokens",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "semantic_tokens"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.signature_help",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.signature_help",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "signature_help"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.type_definition",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.type_definition",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "type_definition"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.type_hierarchy",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.type_hierarchy",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "type_hierarchy"
+      }
+    },
+    {
+      "surface_id": "sup.disabledFeature.lsp.workspace_symbol",
+      "kind": "suppression",
+      "protocol_field": "initializationOptions.disabledFeatures:lsp.workspace_symbol",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs apply_disabled_feature_id",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "initializationOptions.disabledFeatures"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "workspace_symbol"
+      }
+    },
+    {
+      "surface_id": "sys.config.runtimeTuning.fileWatchers",
+      "kind": "suppression",
+      "protocol_field": "config:runtime_tuning.file_watchers=false blocks reg.perl-didChangeWatchedFiles",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/lifecycle/watchers.rs register_file_watchers_if_needed early return",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "config:runtime_tuning.file_watchers=false blocks reg.perl-didChangeWatchedFiles"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "sys.dispatch.advertisedFeaturesGating",
+      "kind": "suppression",
+      "protocol_field": "config:AdvertisedFeatures false => -32601 method_not_advertised",
+      "builder_mutator_path": "perl-lsp-rs/src/runtime/dispatch preflight/handlers gate on advertised_features",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "config:AdvertisedFeatures false => -32601 method_not_advertised"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    },
+    {
+      "surface_id": "sys.profile.gaLock.inlineValues",
+      "kind": "suppression",
+      "protocol_field": "profile:lsp-ga-lock:inline_values=false",
+      "builder_mutator_path": "perl-lsp-rs-core/src/features/flags.rs BuildFlags::ga_lock",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "profile:lsp-ga-lock:inline_values=false"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "inline_values"
+      }
+    },
+    {
+      "surface_id": "sys.profile.preview.notebookCellExecution",
+      "kind": "suppression",
+      "protocol_field": "profile:not-all:notebook_cell_execution=false",
+      "builder_mutator_path": "perl-lsp-rs-core/src/features/flags.rs BuildFlags::production/all",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "profile:not-all:notebook_cell_execution=false"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "notebook_cell_execution"
+      }
+    },
+    {
+      "surface_id": "sys.profile.preview.notebookSync",
+      "kind": "suppression",
+      "protocol_field": "profile:not-all:notebook_document_sync=false",
+      "builder_mutator_path": "perl-lsp-rs-core/src/features/flags.rs BuildFlags::production/all",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "profile:not-all:notebook_document_sync=false"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": {
+        "flag": "notebook_document_sync"
+      }
+    },
+    {
+      "surface_id": "sys.tool.perltidy.runtimeFlags",
+      "kind": "suppression",
+      "protocol_field": "tool:perltidy availability:FeatureProfile.runtime_flags",
+      "builder_mutator_path": "perl-lsp-rs-core FeatureProfile::runtime_flags consumed in handle_initialize",
+      "client_capability_inputs": [],
+      "build_profile_config_tool_inputs": [
+        "tool:perltidy availability:FeatureProfile.runtime_flags"
+      ],
+      "disposition": "unadvertised",
+      "runtime_route_owner": "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
+      "evidence_owner": "features.toml catalog; perl-lsp-rs lifecycle tests",
+      "competing_paths": [],
+      "target_issue": "#9665",
+      "compatibility": null,
+      "additional_owned_pointers": [],
+      "rewrites_surface_pointer": null,
+      "build_flag_effect": null
+    }
+  ],
+  "competing_builder_diff": [
+    {
+      "surface_id": "cap.declarationProvider",
+      "protocol_field": "declarationProvider",
+      "primary_builder": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
+      "competitors": [
+        {
+          "path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+          "delta": "runtime unconditionally re-sets declarationProvider=true when AdvertisedFeatures.declaration is on (same value, second writer; see mut.handle_initialize.declarationProviderRewrite)"
+        }
+      ],
+      "target_issue": "#9665"
+    },
+    {
+      "surface_id": "cap.documentRangeFormattingProvider.rangesSupport",
+      "protocol_field": "documentRangeFormattingProvider.rangesSupport",
+      "primary_builder": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+      "competitors": [
+        {
+          "path": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+          "delta": "capabilities_for() emits boolean true (OneOf::Left) but capabilities_json() replaces the whole value with {rangesSupport:true} when range_formatting is enabled (LSP 3.18 rangesSupport absent from lsp-types 0.97)"
+        }
+      ],
+      "target_issue": "#9665"
+    },
+    {
+      "surface_id": "cap.experimental.typeHierarchyProvider",
+      "protocol_field": "experimental.typeHierarchyProvider",
+      "primary_builder": "perl-lsp-rs-core/src/protocol/capabilities/experimental.rs apply_experimental_features",
+      "competitors": [
+        {
+          "path": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+          "delta": "capabilities_json() additionally injects top-level typeHierarchyProvider {workDoneProgressOptions:{}} for LSP compatibility while apply_experimental_features() advertises experimental.typeHierarchyProvider boolean for feature_ids_from_caps detection - the same variant advertised twice through two paths"
+        }
+      ],
+      "target_issue": "#9665"
+    },
+    {
+      "surface_id": "cap.inlineCompletionProvider",
+      "protocol_field": "inlineCompletionProvider",
+      "primary_builder": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+      "competitors": [
+        {
+          "path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+          "delta": "initialize-time tri-state removes or re-inserts inlineCompletionProvider depending on (feature, client static support, client dynamicRegistration): dynamic-registration clients get the provider removed here and registered post-initialized instead (see mut.handle_initialize.inlineCompletionTriState)"
+        }
+      ],
+      "target_issue": "#9665"
+    },
+    {
+      "surface_id": "cap.textDocumentSync.save",
+      "protocol_field": "textDocumentSync.save",
+      "primary_builder": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_document_sync",
+      "competitors": [
+        {
+          "path": "perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
+          "delta": "runtime replaces the whole textDocumentSync value after initialize parsing: adds willSave=true, willSaveWaitUntil=true and turns save from boolean true into {includeText:true} (see mut.handle_initialize.textDocumentSyncOverride)"
+        }
+      ],
+      "target_issue": "#9665"
+    },
+    {
+      "surface_id": "cap.typeHierarchyProvider.workDoneProgressOptions",
+      "protocol_field": "typeHierarchyProvider.workDoneProgressOptions",
+      "primary_builder": "perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+      "competitors": [
+        {
+          "path": "perl-lsp-rs-core/src/protocol/capabilities/experimental.rs apply_experimental_features",
+          "delta": "experimental.typeHierarchyProvider boolean duplicates this top-level advertisement for typed-caps consumers that cannot see the JSON patch"
+        }
+      ],
+      "target_issue": "#9665"
+    },
+    {
+      "surface_id": "cap.workspaceSymbolProvider.resolveProvider",
+      "protocol_field": "workspaceSymbolProvider.resolveProvider",
+      "primary_builder": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features",
+      "competitors": [
+        {
+          "path": "perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features (workspace_symbol arm)",
+          "delta": "workspace_symbol=true claims OneOf::Left(true); the later workspace_symbol_resolve arm overwrites the same provider with OneOf::Right({resolveProvider:true}) when both flags are set - two writers inside one function claim the same variant"
+        }
+      ],
+      "target_issue": "#9665"
+    }
+  ],
+  "coverage": {
+    "errors": []
+  }
+}
