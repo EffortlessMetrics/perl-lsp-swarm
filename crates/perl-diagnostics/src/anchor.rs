@@ -637,6 +637,32 @@ mod tests {
         );
     }
 
+    /// Mixed-anchor single batch: anchor₁ minted from the batch's snapshot bytes
+    /// resolves `Current`, while anchor₂ minted from *different* bytes resolves
+    /// `Stale` against that same first-snapshot cache. Complements
+    /// `batch_checker_resolves_later_calls_against_first_snapshot`, which holds
+    /// the anchor fixed and varies the passed source.
+    #[test]
+    fn batch_checker_mixed_anchors_resolve_against_first_snapshot() {
+        let snapshot = b"package Snapshot;\n1;\n";
+        let foreign = b"package Foreign;\n1;\n";
+        let anchor_from_snapshot = StaleSourceAnchor::mint(span(0, 8), snapshot);
+        let anchor_from_foreign = StaleSourceAnchor::mint(span(0, 8), foreign);
+        let mut checker = BatchFreshnessChecker::new();
+        let current = checker.check(&anchor_from_snapshot, Some(snapshot));
+        assert!(
+            matches!(current, AnchorResolution::Current(sp) if sp == span(0, 8)),
+            "anchor minted from the snapshot bytes must resolve Current"
+        );
+        let stale = checker.check(&anchor_from_foreign, Some(snapshot));
+        if let AnchorResolution::Stale { minted_digest, current_digest } = stale {
+            assert_eq!(minted_digest, SourceDigest::of_bytes(foreign));
+            assert_eq!(current_digest, SourceDigest::of_bytes(snapshot));
+        } else {
+            panic!("foreign-minted anchor must resolve Stale in the snapshot batch");
+        }
+    }
+
     #[test]
     fn batch_checker_returns_current_for_same_source() {
         let source = b"my $x = 1;";

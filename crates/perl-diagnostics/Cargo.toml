@@ -20,7 +20,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 serde = { version = "1.0", optional = true, features = ["derive"] }
 serde_json.workspace = true
-# sha2: collision-resistant digest for ParseDiagnosticAnchor stale-source detection.
+# sha2: collision-resistant digest for StaleSourceAnchor stale-source detection.
 # Domain-separated; the workspace pins sha2 0.11.
 sha2 = { workspace = true }
 
