@@ -155,10 +155,14 @@ fn production_features_json_has_no_declaration_compliance_claim() {
     assert_eq!(value["profile"].as_str(), Some("production"));
     assert!(value["advertised"].as_array().is_some_and(|items| !items.is_empty()));
     assert!(value["feature_profiles"].as_array().is_some_and(|profiles| !profiles.is_empty()));
-    assert!(
-        !json.contains("compliance_percent"),
-        "production --features-json must not expose declaration compliance: {json}"
-    );
+    for forbidden_key in
+        ["compliance_percent", "trackable_feature_count", "advertised_trackable_feature_count"]
+    {
+        assert!(
+            value.get(forbidden_key).is_none(),
+            "production --features-json must not expose declaration aggregate {forbidden_key}: {json}"
+        );
+    }
 }
 
 #[test]

@@ -160,9 +160,13 @@ pub enum CatalogSourceKind {
 pub fn resolve_catalog_source(manifest_dir: &Path) -> Result<CatalogSource, String> {
     if let Ok(override_path) = env::var("FEATURES_TOML_OVERRIDE") {
         let override_path = PathBuf::from(override_path);
-        if override_path.exists() {
-            return Ok(CatalogSource { path: override_path, kind: CatalogSourceKind::Override });
+        if !override_path.exists() {
+            return Err(format!(
+                "FEATURES_TOML_OVERRIDE path does not exist: {}",
+                override_path.display()
+            ));
         }
+        return Ok(CatalogSource { path: override_path, kind: CatalogSourceKind::Override });
     }
 
     let local = manifest_dir.join("features.toml");
