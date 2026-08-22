@@ -264,7 +264,7 @@ fn write_receipt(path: &Path, receipt: &Receipt) -> Result<()> {
 
 #[cfg(test)]
 mod output_tests {
-    use super::{ensure_safe_output, same_file_identity};
+    use super::ensure_safe_output;
     use color_eyre::eyre::{Result, bail};
     use std::fs;
     use tempfile::TempDir;
@@ -279,26 +279,31 @@ mod output_tests {
 
     #[cfg(windows)]
     #[test]
-    fn unknown_identity_aborts_instead_of_claiming_distinct() -> Result<()> {
+    fn dangling_protected_source_rejects_before_publication_write() -> Result<()> {
+        use std::os::windows::fs::symlink_file;
+
         let temp = TempDir::new()?;
         let out = temp.path().join("receipt.json");
-        let missing = temp.path().join("missing-source.json");
-        fs::write(&out, "{}")?;
+        let input = temp.path().join("observation.json");
+        let dangling = temp.path().join("dangling-source.json");
+        let missing_target = temp.path().join("missing-target.json");
+        let original = b"existing receipt\n";
+        fs::write(&out, original)?;
+        fs::write(&input, "{}")?;
+        symlink_file(&missing_target, &dangling)?;
 
-        match same_file_identity(&out, &missing) {
-            Ok(distinct) => {
-                bail!("unknown identity must not classify the pair as distinct: {distinct}")
-            }
-            Err(error) => {
-                let message = format!("{error:#}");
-                if !message.contains("cannot prove")
-                    || !message.contains("receipt.json")
-                    || !message.contains("missing-source.json")
-                {
-                    bail!("unexpected unknown-identity error: {message}");
-                }
-            }
+        let error = ensure_safe_output(&out, &input, Some(&dangling))
+            .expect_err("dangling protected source must fail closed");
+        let message = format!("{error:#}");
+        if !message.contains("protected evidence source")
+            || !message.contains("dangling-source.json")
+        {
+            bail!("unexpected dangling-source error: {message}");
         }
+        if fs::read(&out)? != original {
+            bail!("publication output changed after rejecting dangling protected source");
+        }
+
         Ok(())
     }
 
