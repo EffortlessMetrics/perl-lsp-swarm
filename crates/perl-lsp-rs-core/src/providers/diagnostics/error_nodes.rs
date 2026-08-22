@@ -70,8 +70,31 @@ pub fn check_error_nodes(
 #[cfg(test)]
 mod tests {
     use super::super::diagnostics::DiagnosticsProvider;
+    use super::{DiagnosticCode, check_error_nodes};
     use perl_parser::Parser;
+    use perl_parser_core::error_classifier::ErrorClassifier;
     use std::sync::Arc;
+
+    #[test]
+    fn error_node_helper_emits_fixable_parse_diagnostic() {
+        // Unit-scoped coverage of check_error_nodes; provider conversion is covered separately below.
+        let source = "if () { 1 }";
+        let ast = Parser::new(source)
+            .parse()
+            .expect("malformed condition must produce the established ERROR-node AST");
+        let classifier = ErrorClassifier::new();
+        let mut diagnostics = Vec::new();
+
+        check_error_nodes(&ast, source, &classifier, &mut diagnostics);
+
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.code.as_deref() == Some(DiagnosticCode::ParseError.as_str())
+            })
+            .expect("the ERROR node must emit a ParseError diagnostic");
+        assert!(diagnostic.fixable);
+    }
 
     #[test]
     fn malformed_parse_output_reaches_provider_as_fixable_parse_diagnostic() {
