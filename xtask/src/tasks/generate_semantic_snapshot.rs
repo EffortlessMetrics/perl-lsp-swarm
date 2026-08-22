@@ -229,11 +229,11 @@ fn normalize_output_path(path: &Path, exists: bool) -> Result<PathBuf> {
 /// through a hard link, which canonicalized-path comparison cannot see
 /// (symlink and junction aliases are already resolved by `fs::canonicalize`).
 ///
-/// Windows limitation: identity comes from kernel file identities (volume
-/// serial number plus 64-bit file index) read through the already-vendored
-/// `winapi` dependency instead of the unstable `windows_by_handle` metadata
-/// APIs. Filesystems that cannot report those identities fail this guard
-/// loudly rather than guessing equal-or-distinct.
+/// Windows limitation: identity comes from the complete `FILE_ID_INFO` kernel
+/// identity (volume serial number plus 128-bit file identifier) read through
+/// the already-vendored `winapi` dependency instead of the unstable
+/// `windows_by_handle` metadata APIs. Filesystems that cannot report that
+/// identity fail this guard loudly rather than guessing equal-or-distinct.
 #[cfg(unix)]
 fn same_file_identity(output: &Path, fixture: &Path) -> Result<bool> {
     use std::os::unix::fs::MetadataExt as _;
@@ -257,12 +257,14 @@ fn read_windows_file_identity(
     path: &Path,
     operand: &str,
 ) -> Result<xtask::file_identity::WindowsFileIdentity> {
-    xtask::file_identity::windows_file_identity(path)?.ok_or_else(|| {
-        color_eyre::eyre::eyre!(
-            "Snapshot {operand} file identity is unavailable on Windows: {}",
-            path.display()
-        )
-    })
+    xtask::file_identity::windows_file_identity(path)
+        .wrap_err_with(|| format!("reading snapshot {operand} file identity {}", path.display()))?
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "Snapshot {operand} file identity is unavailable on Windows: {}",
+                path.display()
+            )
+        })
 }
 
 #[cfg(not(any(unix, windows)))]
