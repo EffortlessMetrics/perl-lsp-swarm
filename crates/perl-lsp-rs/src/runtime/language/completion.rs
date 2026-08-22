@@ -1342,14 +1342,20 @@ impl LspServer {
                     break 'completion_response None;
                 }
 
-                let ast_available = doc.current_parsed().is_some_and(|p| p.ast().is_some());
+                // Prefer the generation-current snapshot; fall back to the latest
+                // published one when the current generation has no snapshot yet
+                // (e.g. the workspace indexer bumped the generation before the
+                // completion request arrived, leaving `current_parsed()` empty).
+                // For completions, a slightly-stale AST is always more useful than
+                // the symbol-table-free `lexical_complete` fallback (#11858).
+                let parsed = doc.current_parsed().or_else(|| doc.latest_parsed());
+                let ast_available = parsed.as_ref().is_some_and(|p| p.ast().is_some());
 
                 // One `@INC` context per request, shared by the module roots
                 // below and the workspace-symbol filter further down (#1684).
                 let inc_context = RequestIncContext::new(self, uri, &doc.text, offset);
 
                 // Get completions, with fallback for missing AST
-                let parsed = doc.current_parsed();
                 #[cfg_attr(not(feature = "workspace"), allow(unused_mut))]
                 let mut completions = if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let (include_paths, system_inc_paths, include_system_inc) =
@@ -1713,7 +1719,14 @@ impl LspServer {
                     break 'completion_response None;
                 }
 
-                let ast_available = doc.current_parsed().is_some_and(|p| p.ast().is_some());
+                // Prefer the generation-current snapshot; fall back to the latest
+                // published one when the current generation has no snapshot yet
+                // (e.g. the workspace indexer bumped the generation before the
+                // completion request arrived, leaving `current_parsed()` empty).
+                // For completions, a slightly-stale AST is always more useful than
+                // the symbol-table-free `lexical_complete` fallback (#11858).
+                let parsed = doc.current_parsed().or_else(|| doc.latest_parsed());
+                let ast_available = parsed.as_ref().is_some_and(|p| p.ast().is_some());
 
                 // Create optimized cancellation callback with reduced frequency
                 // Performance optimization: reduced overhead from 16.66% to <10%
@@ -1734,7 +1747,6 @@ impl LspServer {
                 let inc_context = RequestIncContext::new(self, uri, &doc.text, offset);
 
                 // Get completions with optimized cancellation support
-                let parsed = doc.current_parsed();
                 let mut completions = if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let (include_paths, system_inc_paths, include_system_inc) =
                         self.module_completion_roots(&inc_context);
