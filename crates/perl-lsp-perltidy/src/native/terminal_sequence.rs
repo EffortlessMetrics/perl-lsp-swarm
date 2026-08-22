@@ -312,3 +312,44 @@ pub fn apply_terminal_sequence_policy(
 
     PolicyOutcome { bytes, evidence }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        FinalNewlinePolicy, TerminalChange, TerminalSequence, apply_terminal_sequence_policy,
+    };
+
+    #[test]
+    fn trim_policy_and_evidence_fields_follow_the_real_terminal_seam() {
+        let outcome = apply_terminal_sequence_policy(
+            "x\n\r\n\r",
+            FinalNewlinePolicy { insert_final_newline: false, trim_final_newlines: true },
+            None,
+        );
+
+        assert_eq!(outcome.bytes, "x\r");
+        assert_eq!(
+            outcome.evidence.predecessor.sequences(),
+            &[TerminalSequence::Lf, TerminalSequence::CrLf, TerminalSequence::Cr]
+        );
+        assert_eq!(outcome.evidence.final_run.sequences(), &[TerminalSequence::Cr]);
+        assert_eq!(outcome.evidence.removed_count, 2);
+        assert_eq!(outcome.evidence.change, TerminalChange::Trimmed);
+        assert!(outcome.evidence.is_consistent());
+    }
+
+    #[test]
+    fn insertion_evidence_fields_follow_the_final_returned_bytes() {
+        let outcome = apply_terminal_sequence_policy(
+            "x",
+            FinalNewlinePolicy { insert_final_newline: true, trim_final_newlines: false },
+            Some(TerminalSequence::CrLf),
+        );
+
+        assert!(outcome.evidence.predecessor.is_empty());
+        assert_eq!(outcome.evidence.final_run.sequences(), &[TerminalSequence::CrLf]);
+        assert_eq!(outcome.evidence.inserted, Some(TerminalSequence::CrLf));
+        assert_eq!(outcome.evidence.change, TerminalChange::Inserted);
+        assert!(outcome.evidence.is_consistent());
+    }
+}
