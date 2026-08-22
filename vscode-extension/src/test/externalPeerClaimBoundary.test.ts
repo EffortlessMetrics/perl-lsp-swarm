@@ -49,10 +49,7 @@ const invalidExternalConfigurations: Array<[Record<string, unknown>, string]> = 
     'listen mode requires a loopback host',
   ],
   [{ debuggerBackend: 'ptkdb-bootstrap' }, 'does not yet wire'],
-  [
-    { externalDebugger: { mode: 'connect', port: 13604 } },
-    'requires debuggerBackend="external"',
-  ],
+  [{ externalDebugger: { mode: 'connect', port: 13604 } }, 'requires debuggerBackend="external"'],
   [
     {
       debuggerBackend: 'native',

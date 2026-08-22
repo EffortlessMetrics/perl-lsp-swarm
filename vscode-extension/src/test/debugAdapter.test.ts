@@ -336,10 +336,7 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
       },
       'Only mirror control',
     ],
-    [
-      { externalDebugger: { mode: 'connect', port: 13604 } },
-      'requires debuggerBackend="external"',
-    ],
+    [{ externalDebugger: { mode: 'connect', port: 13604 } }, 'requires debuggerBackend="external"'],
   ])(
     'factory refuses an invalid explicit backend selection end-to-end and spawns nothing %#',
     (configuration, reason) => {
