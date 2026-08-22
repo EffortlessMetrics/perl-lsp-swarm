@@ -1,7 +1,5 @@
-mod build_script {
-    include!("../build.rs");
-
-    use serial_test::serial;
+mod build_catalog {
+    include!("../build_catalog.rs");
 
     #[test]
     fn missing_explicit_override_does_not_fall_back_to_workspace_catalog() {
@@ -13,8 +11,7 @@ mod build_script {
         std::fs::write(&workspace_catalog, "[feature]\n")
             .expect("write fallback workspace catalog");
 
-        let result =
-            super::resolve_catalog_source_with_override(&root, Some(missing_override.clone()));
+        let result = resolve_catalog_source_with_override(&root, Some(missing_override.clone()));
 
         assert!(result.is_err(), "missing explicit override must be terminal");
         assert!(
@@ -29,7 +26,6 @@ mod build_script {
     }
 
     #[test]
-    #[serial]
     fn generate_catalog_module_propagates_missing_explicit_override() {
         let root = tempfile::tempdir().expect("create test catalog directory");
         let workspace_catalog = root.path().join("features.toml");
@@ -39,31 +35,8 @@ mod build_script {
         std::fs::write(&workspace_catalog, "[feature]\n")
             .expect("write fallback workspace catalog");
 
-        let previous_manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR");
-        let previous_out_dir = std::env::var_os("OUT_DIR");
-        let previous_override = std::env::var_os("FEATURES_TOML_OVERRIDE");
-        unsafe {
-            std::env::set_var("CARGO_MANIFEST_DIR", root.path());
-            std::env::set_var("OUT_DIR", &out_dir);
-            std::env::set_var("FEATURES_TOML_OVERRIDE", &missing_override);
-        }
-
-        let result = generate_catalog_module();
-
-        unsafe {
-            match previous_manifest_dir {
-                Some(value) => std::env::set_var("CARGO_MANIFEST_DIR", value),
-                None => std::env::remove_var("CARGO_MANIFEST_DIR"),
-            }
-            match previous_out_dir {
-                Some(value) => std::env::set_var("OUT_DIR", value),
-                None => std::env::remove_var("OUT_DIR"),
-            }
-            match previous_override {
-                Some(value) => std::env::set_var("FEATURES_TOML_OVERRIDE", value),
-                None => std::env::remove_var("FEATURES_TOML_OVERRIDE"),
-            }
-        }
+        let result =
+            generate_catalog_module_at(root.path(), &out_dir, Some(missing_override.clone()));
 
         let error = result.expect_err("missing explicit override must fail the entrypoint");
         assert!(error.to_string().contains("FEATURES_TOML_OVERRIDE path does not exist"));

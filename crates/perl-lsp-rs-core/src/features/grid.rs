@@ -128,14 +128,8 @@ fn feature_grid_payload(
     let profile_summaries: Vec<Value> = profiles.iter().copied().map(profile_summary).collect();
 
     let advertised = match selected_profile {
-        Some(profile) => {
-            let advertised = catalog_advertised_feature_ids(profile);
-            advertised
-        }
-        None => {
-            let advertised = advertised_for_profiles(profiles);
-            advertised
-        }
+        Some(profile) => catalog_advertised_feature_ids(profile),
+        None => advertised_for_profiles(profiles),
     };
     let mut payload = json!({
         "version": VERSION,
