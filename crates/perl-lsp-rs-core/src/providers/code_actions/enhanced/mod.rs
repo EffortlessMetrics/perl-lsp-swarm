@@ -97,7 +97,7 @@ impl EnhancedCodeActionsProvider {
         self.collect_signature_actions(ast, ast, normalized_range, &mut actions);
 
         // Global actions (not node-specific)
-        actions.extend(self.get_global_refactorings(ast));
+        actions.extend(self.get_global_refactorings());
 
         actions
     }
@@ -408,7 +408,7 @@ impl EnhancedCodeActionsProvider {
     }
 
     /// Get global refactoring actions
-    fn get_global_refactorings(&self, _ast: &Node) -> Vec<CodeAction> {
+    fn get_global_refactorings(&self) -> Vec<CodeAction> {
         let mut actions = Vec::new();
         let helpers = Helpers::new(&self.source, &self.lines);
 
@@ -534,7 +534,7 @@ mod tests {
         let ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
         let utf8_action = must_some(actions.iter().find(|a| a.title == "Add UTF-8 support"));
 
         assert_eq!(
@@ -550,7 +550,7 @@ mod tests {
         let ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
         let utf8_action = must_some(actions.iter().find(|a| a.title == "Add UTF-8 support"));
 
         assert_eq!(
@@ -567,7 +567,7 @@ mod tests {
         let ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
         let utf8_action = must_some(actions.iter().find(|a| a.title == "Add UTF-8 support"));
 
         assert_eq!(
@@ -584,7 +584,7 @@ mod tests {
         let ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
 
         assert!(
             !actions.iter().any(|a| a.title == "Add UTF-8 support"),
@@ -600,7 +600,7 @@ mod tests {
         let ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
 
         assert!(
             !actions.iter().any(|a| a.title == "Add UTF-8 support"),
@@ -616,7 +616,7 @@ mod tests {
         let ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
 
         assert!(
             !actions.iter().any(|a| a.title == "Add UTF-8 support"),
@@ -632,7 +632,7 @@ mod tests {
         let ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
         let utf8_action = must_some(actions.iter().find(|a| a.title == "Add UTF-8 support"));
 
         assert_eq!(
@@ -649,7 +649,7 @@ mod tests {
         let ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
         let utf8_action = must_some(actions.iter().find(|a| a.title == "Add UTF-8 support"));
 
         assert_eq!(
@@ -666,7 +666,7 @@ mod tests {
         let ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
         let utf8_action = must_some(actions.iter().find(|a| a.title == "Add UTF-8 support"));
 
         assert_eq!(

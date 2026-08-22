@@ -285,13 +285,18 @@ const PINNED_WITHDRAWN_AUTHORITY_PATTERNS: &[(&str, &str, &str)] = &[(
 )];
 
 #[test]
-fn recurrence_guard_rejects_qualified_and_ufcs_helper_calls() {
+fn recurrence_guard_rejects_receiver_qualified_and_ufcs_helper_calls() {
     let declaration = r#"
         pub fn find_import_insert_position(&self) -> usize {
             0
         }
     "#;
     assert!(!contains_withdrawn_import_helper_invocation(declaration));
+
+    let receiver_call = r#"
+        helpers.find_import_insert_position()
+    "#;
+    assert!(contains_withdrawn_import_helper_invocation(receiver_call));
 
     let qualified_call = r#"
         Helpers::find_import_insert_position(&helpers);

@@ -88,10 +88,12 @@ fn pragma_insert_position_shebang_without_newline_returns_zero() {
 }
 
 // ---------------------------------------------------------------------------
-// find_import_insert_position — withdrawn (#10690)
+// find_import_insert_position — production routes withdrawn (#10690)
 // ---------------------------------------------------------------------------
 // The package-blind preamble import-insertion helper was the edit-placement
-// authority for hard-coded missing-import edits and is deleted with them
+// authority for hard-coded missing-import edits. Its production callers are
+// withdrawn; the public declaration is retained only for API compatibility
+// and must not be used as missing-import edit authority again
 // (restoration: #790/#8948).
 
 // ---------------------------------------------------------------------------
