@@ -3963,35 +3963,44 @@ mod tests {
         );
     }
 
-    /// Destruction audit over one representative of every `NodeKind` variant.
+    /// Destruction audit over one fully populated representative of every
+    /// `NodeKind` variant.
     ///
     /// The mutable traversal that drives detachment and the canonical
-    /// read-only traversal must agree on every direct child, and each variant
-    /// fixture must release at least its full node count on destruction. An
-    /// arm omitted from either traversal fails here instead of silently
-    /// falling back to recursive drop glue; leaked subtrees trip the floor.
+    /// read-only traversal must agree on every direct child, including
+    /// optional, repeated, pair, and clause fields. The populated fixture
+    /// corpus supplies the child-bearing cases, while the immutable traversal
+    /// establishes the expected cardinality and exact destruction accounting
+    /// catches any detached placeholder that was not created.
     #[test]
     fn every_variant_drains_through_canonical_traversal_parity() {
-        for kind in all_node_kinds() {
-            let kind_name = kind.kind_name().to_string();
-            let mut node = Node::new(kind, SourceLocation { start: 0, end: 0 });
+        for fixture in crate::invariant_policy::node_kind_fixtures() {
+            let kind_name = fixture.sample.kind.kind_name().to_string();
+            let mut node = fixture.sample;
             let expected = node.count_nodes();
 
-            let mut mutable_visits = 0usize;
-            node.for_each_child_mut(|_| mutable_visits += 1);
-            let mut immutable_visits = 0usize;
-            node.for_each_child(|_| immutable_visits += 1);
+            let mut immutable_kinds = Vec::new();
+            node.for_each_child(|child| immutable_kinds.push(child.kind.kind_name()));
+            let expected_children = immutable_kinds.len();
+            let mut mutable_kinds = Vec::new();
+            node.for_each_child_mut(|child| mutable_kinds.push(child.kind.kind_name()));
             assert_eq!(
-                mutable_visits, immutable_visits,
-                "{kind_name}: mutable and immutable traversals disagree on child count"
+                mutable_kinds, immutable_kinds,
+                "{kind_name}: mutable and immutable traversals disagree on direct children"
+            );
+            assert_eq!(
+                mutable_kinds.len(),
+                expected_children,
+                "{kind_name}: populated fixture exposed the wrong direct-child cardinality"
             );
 
             let _ = drop_audit::take_counts();
             drop(node);
             let (_, destroyed) = drop_audit::take_counts();
             assert!(
-                destroyed >= expected as u64,
-                "{kind_name}: destroyed {destroyed} nodes but fixture held {expected}"
+                destroyed == (expected + expected_children) as u64,
+                "{kind_name}: destroyed {destroyed} nodes; populated fixture held {expected} and \
+                 detachment created {expected_children} placeholders"
             );
         }
     }
