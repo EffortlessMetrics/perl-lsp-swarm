@@ -2397,6 +2397,7 @@ fn is_fixable_perlcritic_policy(code: &str) -> bool {
             | "native.testing.require_use_strict"
             | "native.testing.require_use_warnings"
             | "native.common.undef_comparison"
+            | "native.common.unreachable_code"
             | "native.io.bareword_filehandle"
             | "native.io.two_arg_open"
             | "Variables::ProhibitUnusedVariables"
