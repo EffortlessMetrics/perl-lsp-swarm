@@ -702,6 +702,52 @@ class GateShardTests(unittest.TestCase):
             shard._path_from_repository_root(Path("receipts"), root),
         )
 
+    def test_main_rebases_relative_launch_paths_from_subdirectory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".ci").mkdir()
+            (root / ".ci/gate-policy.yaml").write_text(
+                "schema_version: 1\ngates:\n"
+                "  - name: alpha\n"
+                "    command: echo alpha\n",
+                encoding="utf-8",
+            )
+            (root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+            execution_policy = write_policy(root, {"alpha": []})
+            receipt_schema = write_receipt_schema(root)
+            nested = root / "scripts/ci"
+            nested.mkdir(parents=True)
+            runner_type = mock.Mock()
+            runner_type.return_value.run.return_value = 0
+            with (
+                mock.patch.object(shard.Path, "cwd", return_value=nested),
+                mock.patch.object(shard, "ShardRunner", runner_type),
+                mock.patch.object(shard.signal, "signal"),
+            ):
+                status = shard.main(
+                    [
+                        "--xtask",
+                        "target/debug/xtask",
+                        "--receipt-dir",
+                        "receipts",
+                        "--summary",
+                        "summary.json",
+                        "--execution-policy",
+                        str(execution_policy.relative_to(root)),
+                        "--receipt-schema",
+                        str(receipt_schema.relative_to(root)),
+                        "--gate-policy",
+                        ".ci/gate-policy.yaml",
+                        "alpha",
+                    ]
+                )
+            self.assertEqual(0, status)
+            kwargs = runner_type.call_args.kwargs
+        self.assertEqual(root / "target/debug/xtask", kwargs["xtask"])
+        self.assertEqual(root / "receipts", kwargs["receipt_dir"])
+        self.assertEqual(root / "summary.json", kwargs["summary_path"])
+        self.assertEqual(root / ".ci/gate-policy.yaml", kwargs["gate_policy"])
+
     def test_gate_policy_preflight_rejects_missing_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             policy = write_gate_policy(
