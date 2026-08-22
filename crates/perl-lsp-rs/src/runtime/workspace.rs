@@ -2005,7 +2005,6 @@ impl LspServer {
                     );
                     continue;
                 }
-
                 // Index the new file if it's a Perl file
                 // Note: Mutation operation - use coordinator with lifecycle tracking
                 #[cfg(feature = "workspace")]
