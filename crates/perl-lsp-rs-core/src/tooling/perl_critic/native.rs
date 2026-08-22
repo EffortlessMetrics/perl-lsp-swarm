@@ -7,7 +7,7 @@
 
 #[cfg(test)]
 use super::CriticConfig;
-use super::{Severity, insertion_range};
+use super::{CriticFindingShape, Severity, insertion_range};
 use crate::providers::diagnostics::unreachable_code::check_unreachable_code;
 use perl_parser_core::Node;
 use perl_parser_core::NodeKind;
@@ -81,6 +81,7 @@ impl CriticRule for RequireUseStrictRule {
             message: "Code does not use strict".to_string(),
             explanation: "Always use strict to catch common mistakes".to_string(),
             suppression_key: self.id().to_string(),
+            observed_shape: CriticFindingShape::General,
             related: Vec::new(),
             fix: Some(CriticFix {
                 title: "Add 'use strict'".to_string(),
@@ -126,6 +127,7 @@ impl CriticRule for RequireUseWarningsRule {
             message: "Code does not use warnings".to_string(),
             explanation: "Always use warnings to catch potential issues".to_string(),
             suppression_key: self.id().to_string(),
+            observed_shape: CriticFindingShape::General,
             related: Vec::new(),
             fix: Some(CriticFix {
                 title: "Add 'use warnings'".to_string(),
@@ -891,6 +893,7 @@ fn unused_lexical_finding(
         message: format!("Lexical variable '{}' is declared but never used", issue.variable_name),
         explanation: "Remove the lexical variable, use it, or prefix it with '_' to mark it intentionally unused.".to_string(),
         suppression_key: rule.id().to_string(),
+            observed_shape: CriticFindingShape::General,
         related: Vec::new(),
         fix: Some(CriticFix {
             title: format!("Rename to '{unused_name}'"),
@@ -917,6 +920,7 @@ fn unused_parameter_finding(
         explanation: "Use the parameter or prefix it with '_' to mark it intentionally unused."
             .to_string(),
         suppression_key: rule.id().to_string(),
+        observed_shape: CriticFindingShape::General,
         related: Vec::new(),
         fix: Some(CriticFix {
             title: format!("Rename to '{unused_name}'"),
@@ -947,6 +951,7 @@ fn duplicate_parameter_finding(
             "Remove the duplicate parameter or rename it so every signature binding is unique."
                 .to_string(),
         suppression_key: rule.id().to_string(),
+        observed_shape: CriticFindingShape::General,
         related: Vec::new(),
         fix: Some(CriticFix {
             title: format!("Rename duplicate parameter to '{replacement}'"),
@@ -972,6 +977,7 @@ fn parameter_shadows_global_finding(
         message: format!("Parameter '{}' shadows an outer declaration", issue.variable_name),
         explanation: "Rename the parameter or use the outer variable directly to avoid confusing scope shadowing.".to_string(),
         suppression_key: rule.id().to_string(),
+            observed_shape: CriticFindingShape::General,
         related: Vec::new(),
         fix: Some(CriticFix {
             title: format!("Rename parameter to '{replacement}'"),
@@ -997,6 +1003,7 @@ fn assignment_in_condition_finding(
         message: "Assignment in condition - did you mean '=='?".to_string(),
         explanation: "Assignments in conditions are usually accidental. Use '==' for numeric comparison, 'eq' for string comparison, or add parentheses if the assignment is intentional.".to_string(),
         suppression_key: rule.id().to_string(),
+            observed_shape: CriticFindingShape::General,
         related: vec![
             CriticRelatedInformation {
                 range,
@@ -1045,6 +1052,7 @@ fn printf_format_arity_finding(
             if specifier_count == 1 { "" } else { "s" },
         ),
         suppression_key: rule.id().to_string(),
+        observed_shape: CriticFindingShape::General,
         related: vec![CriticRelatedInformation {
             range: format_range,
             message: format!(
@@ -1080,6 +1088,7 @@ fn deprecated_defined_finding(
             "Testing definedness of a whole {type_name} is deprecated because it was rarely useful and often wrong. Use the {type_name} in boolean context instead."
         ),
         suppression_key: rule.id().to_string(),
+        observed_shape: CriticFindingShape::General,
         related: vec![CriticRelatedInformation {
             range: arg_range,
             message: format!("Use 'if ({variable_text})' instead"),
@@ -1122,6 +1131,7 @@ fn undef_comparison_finding(
         message: format!("Using '{op}' with undef -- use defined() to check first"),
         explanation: "Numeric comparison with undef is usually wrong because undef is coerced before comparison. Use defined(...) for definedness checks, or normalize the value before comparing.".to_string(),
         suppression_key: rule.id().to_string(),
+        observed_shape: CriticFindingShape::LiteralUndefComparison,
         related: vec![
             CriticRelatedInformation {
                 range: undef_range,
@@ -1158,6 +1168,7 @@ fn stale_dollar_at_finding(
         message: "Checking $@ after eval can observe a stale error".to_string(),
         explanation: "The $@ variable is global and can retain or be clobbered by unrelated exception handling. Localize $@ around eval, or check the eval return value before inspecting the error.".to_string(),
         suppression_key: rule.id().to_string(),
+            observed_shape: CriticFindingShape::General,
         related: vec![CriticRelatedInformation {
             range: eval_range,
             message: "This eval should localize $@ or have its return value checked.".to_string(),
@@ -1183,6 +1194,7 @@ fn unreachable_code_finding(
         message: "Unreachable code: this statement cannot be executed".to_string(),
         explanation: "This statement follows an unconditional control-flow exit such as return, die, exit, last, next, redo, croak, or confess. Remove it or move it before the exit if it is still needed.".to_string(),
         suppression_key: rule.id().to_string(),
+            observed_shape: CriticFindingShape::General,
         related: Vec::new(),
         fix: Some(CriticFix {
             title: "Remove unreachable code".to_string(),
@@ -1209,6 +1221,7 @@ fn bareword_filehandle_finding(
         message: format!("Bareword filehandle '{handle_name}' should be lexical"),
         explanation: "Bareword filehandles are package globals and can be accidentally reused across scopes. Use lexical filehandles for safer IO.".to_string(),
         suppression_key: rule.id().to_string(),
+            observed_shape: CriticFindingShape::General,
         related: Vec::new(),
         fix: Some(CriticFix {
             title: format!(
@@ -1244,6 +1257,7 @@ fn two_arg_open_finding(
         message: "Two-argument open should use an explicit mode".to_string(),
         explanation: "Two-argument open combines mode and filename, which can allow shell interpretation when the filename is derived from input. Use three-argument open with a separate mode.".to_string(),
         suppression_key: rule.id().to_string(),
+            observed_shape: CriticFindingShape::General,
         related: Vec::new(),
         fix,
     }
@@ -1275,6 +1289,7 @@ fn pipe_open_finding(rule: &PipeOpenRule, source: &str, open_node: &Node) -> Cri
         message: "Pipe-open executes a shell command".to_string(),
         explanation: "Pipe-open forms run a command through the shell. Prefer explicit command argument lists or IPC modules when command execution is required.".to_string(),
         suppression_key: rule.id().to_string(),
+            observed_shape: CriticFindingShape::General,
         related: vec![CriticRelatedInformation {
             range,
             message: "Validate command arguments and avoid string command execution when input may be user-controlled.".to_string(),
@@ -1303,6 +1318,7 @@ fn unchecked_open_close_finding(
         message: message.to_string(),
         explanation: "open and close report I/O failures through their return value. Check the result with an explicit error path such as `or die` so failures are not silently ignored.".to_string(),
         suppression_key: rule.id().to_string(),
+            observed_shape: CriticFindingShape::General,
         related: vec![CriticRelatedInformation {
             range,
             message: "Unchecked I/O calls can hide missing files, permission failures, and failed flushes.".to_string(),
@@ -1326,6 +1342,7 @@ fn backtick_exec_finding(
         message: "Command execution detected".to_string(),
         explanation: "Backticks execute shell commands. Prefer explicit command argument lists or IPC modules when command execution is required.".to_string(),
         suppression_key: rule.id().to_string(),
+        observed_shape: CriticFindingShape::Backtick,
         related: vec![CriticRelatedInformation {
             range,
             message: "Validate command arguments and avoid shell command execution when input may be user-controlled.".to_string(),
@@ -1334,7 +1351,12 @@ fn backtick_exec_finding(
     }
 }
 
-fn qx_readpipe_finding(rule: &QxReadpipeRule, source: &str, command_node: &Node) -> CriticFinding {
+fn qx_readpipe_finding(
+    rule: &QxReadpipeRule,
+    source: &str,
+    command_node: &Node,
+    observed_shape: CriticFindingShape,
+) -> CriticFinding {
     let range = range_for_byte_span(source, command_node.location.start, command_node.location.end);
 
     CriticFinding {
@@ -1345,6 +1367,7 @@ fn qx_readpipe_finding(rule: &QxReadpipeRule, source: &str, command_node: &Node)
         message: "qx/readpipe command execution detected".to_string(),
         explanation: "qx and readpipe execute shell commands. Prefer explicit command argument lists or IPC modules when command execution is required.".to_string(),
         suppression_key: rule.id().to_string(),
+        observed_shape,
         related: vec![CriticRelatedInformation {
             range,
             message: "Validate command arguments and avoid shell command execution when input may be user-controlled.".to_string(),
@@ -1364,6 +1387,7 @@ fn string_eval_finding(rule: &StringEvalRule, source: &str, eval_node: &Node) ->
         message: "String eval is a security risk".to_string(),
         explanation: "String eval executes dynamically generated Perl code and is difficult to analyze safely. Prefer block eval for exception handling or a safer dispatch mechanism.".to_string(),
         suppression_key: rule.id().to_string(),
+            observed_shape: CriticFindingShape::General,
         related: vec![CriticRelatedInformation {
             range,
             message: "String eval executes arbitrary Perl code at runtime when the string contains user-controlled input.".to_string(),
@@ -1379,9 +1403,12 @@ fn system_exec_finding(
     name: &str,
 ) -> CriticFinding {
     let range = range_for_byte_span(source, call_node.location.start, call_node.location.end);
-    let message = match name {
-        "exec" => "exec() replaces the current process with a shell command",
-        _ => "system() executes a shell command",
+    let (message, observed_shape) = match name {
+        "exec" => (
+            "exec() replaces the current process with a shell command",
+            CriticFindingShape::ExecCall,
+        ),
+        _ => ("system() executes a shell command", CriticFindingShape::SystemCall),
     };
 
     CriticFinding {
@@ -1392,6 +1419,7 @@ fn system_exec_finding(
         message: message.to_string(),
         explanation: "system and exec run external commands. Prefer explicit argument lists or IPC modules when command execution is required, and validate any user-controlled input.".to_string(),
         suppression_key: rule.id().to_string(),
+        observed_shape,
         related: vec![CriticRelatedInformation {
             range,
             message: "List form avoids shell interpolation, but command execution still needs an explicit security review.".to_string(),
@@ -1418,6 +1446,7 @@ fn require_pod_sections_finding(
             missing.name
         ),
         suppression_key: rule.id().to_string(),
+        observed_shape: CriticFindingShape::General,
         related: vec![CriticRelatedInformation {
             range,
             message: "This POD block is missing a required documentation section.".to_string(),
@@ -1447,6 +1476,7 @@ fn duplicate_lexical_finding(
             "Remove the duplicate lexical declarator or assign to the existing lexical variable."
                 .to_string(),
         suppression_key: rule.id().to_string(),
+        observed_shape: CriticFindingShape::General,
         related: Vec::new(),
         fix,
     }
@@ -1468,6 +1498,7 @@ fn shadowed_lexical_finding(
         message: format!("Lexical variable '{}' shadows an outer declaration", issue.variable_name),
         explanation: "Rename the inner lexical variable or use the outer variable directly to avoid confusing scope shadowing.".to_string(),
         suppression_key: rule.id().to_string(),
+            observed_shape: CriticFindingShape::General,
         related: Vec::new(),
         fix: Some(CriticFix {
             title: format!("Rename to '{replacement}'"),
@@ -1495,6 +1526,7 @@ fn capture_var_without_match_finding(
         ),
         explanation: "Capture variables are set by the most recent successful regex match. Using them without a match in scope may read undef or a stale value.".to_string(),
         suppression_key: rule.id().to_string(),
+            observed_shape: CriticFindingShape::General,
         related: Vec::new(),
         fix: None,
     }
@@ -1516,6 +1548,7 @@ fn undeclared_variable_finding(
         message: format!("Variable '{}' is used but not declared", issue.variable_name),
         explanation: "Declare the variable with 'my', 'our', or 'local' before use. Under 'use strict' this is a compile-time error.".to_string(),
         suppression_key: rule.id().to_string(),
+            observed_shape: CriticFindingShape::General,
         related: Vec::new(),
         fix: Some(CriticFix {
             title: format!("Change to '{declared}'"),
@@ -1542,6 +1575,7 @@ fn uninitialized_variable_finding(
             "Assign a value to the variable before its first use to avoid unintended undef reads."
                 .to_string(),
         suppression_key: rule.id().to_string(),
+        observed_shape: CriticFindingShape::General,
         related: Vec::new(),
         fix: None,
     }
@@ -1563,6 +1597,7 @@ fn unquoted_bareword_finding(
         message: format!("Bareword '{}' not allowed under strict", issue.variable_name),
         explanation: "Barewords are ambiguous under use strict. Quote the string explicitly, declare a filehandle, or import the symbol.".to_string(),
         suppression_key: rule.id().to_string(),
+            observed_shape: CriticFindingShape::General,
         related: Vec::new(),
         fix: Some(CriticFix {
             title: format!("Quote as {quoted}"),
@@ -1995,10 +2030,10 @@ fn collect_qx_readpipe_findings(
 ) {
     match &node.kind {
         NodeKind::String { value, interpolated: true } if is_qx_string(value) => {
-            out.push(qx_readpipe_finding(rule, source, node));
+            out.push(qx_readpipe_finding(rule, source, node, CriticFindingShape::Qx));
         }
         NodeKind::FunctionCall { name, .. } if name == "readpipe" => {
-            out.push(qx_readpipe_finding(rule, source, node));
+            out.push(qx_readpipe_finding(rule, source, node, CriticFindingShape::Readpipe));
         }
         _ => {}
     }
@@ -2527,6 +2562,7 @@ fn leading_zeros_finding(
              the decimal value directly.",
         ),
         suppression_key: rule.id().to_string(),
+        observed_shape: CriticFindingShape::General,
         related: Vec::new(),
         fix: None,
     }
@@ -2588,6 +2624,7 @@ mod tests {
                     message: "dummy finding".to_string(),
                     explanation: "dummy explanation".to_string(),
                     suppression_key: self.id().to_string(),
+                    observed_shape: CriticFindingShape::General,
                     related: Vec::new(),
                     fix: None,
                 });
@@ -2623,6 +2660,7 @@ mod tests {
                     message: "second finding".to_string(),
                     explanation: "second explanation".to_string(),
                     suppression_key: self.id().to_string(),
+                    observed_shape: CriticFindingShape::General,
                     related: Vec::new(),
                     fix: None,
                 });
@@ -2668,6 +2706,7 @@ mod tests {
             message: "style issue".to_string(),
             explanation: "style explanation".to_string(),
             suppression_key: "native.test.fixable".to_string(),
+            observed_shape: CriticFindingShape::General,
             related: Vec::new(),
             fix: Some(CriticFix {
                 title: "Apply style fix".to_string(),
@@ -2703,6 +2742,7 @@ mod tests {
             message: "unused lexical variable".to_string(),
             explanation: "remove or use the lexical variable".to_string(),
             suppression_key: "native.variables.unused_lexical".to_string(),
+            observed_shape: CriticFindingShape::General,
             related: Vec::new(),
             fix: None,
         };
@@ -2750,6 +2790,25 @@ mod tests {
         assert_eq!(registry.rule_ids(), vec!["native.test.second"]);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].category, CriticCategory::Maintainability);
+    }
+
+    #[test]
+    fn check_unfiltered_returns_pre_policy_findings_for_normalization() {
+        // Severity threshold and suppression are post-merge policy (#7475);
+        // the raw path must leave sub-threshold findings in place.
+        let ast = empty_program_node();
+        let config = config_with_minimum_severity(5);
+        let ctx = CriticContext::new("second", &ast, &config);
+        let mut registry = NativeCriticRegistry::new();
+        registry.add_rule(Box::new(SecondDummyRule));
+
+        assert!(
+            registry.check(&ctx).is_empty(),
+            "SecondDummyRule (Cruel=2) is below the threshold 5"
+        );
+        let raw = registry.check_unfiltered(&ctx);
+        assert_eq!(raw.len(), 1, "unfiltered path keeps pre-policy findings");
+        assert_eq!(raw[0].rule_id, "native.test.second");
     }
 
     #[test]
@@ -2947,7 +3006,7 @@ mod tests {
             Box::new(RequireUseWarningsRule),
         ]);
 
-        // Plain `use Test2::V0;` turns strict + warnings on — no findings.
+        // Plain `use Test2::V0;` turns strict + warnings on â€” no findings.
         let v0 = CriticContext::new("use Test2::V0;\nok(1);\ndone_testing;\n", &ast, &config);
         assert!(
             registry.check(&v0).is_empty(),
@@ -2968,7 +3027,7 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, "native.testing.require_use_warnings");
 
-        // `-no_pragmas` disables both — both findings return.
+        // `-no_pragmas` disables both â€” both findings return.
         let no_pragmas = CriticContext::new("use Test2::V0 -no_pragmas;\nok(1);\n", &ast, &config);
         assert_eq!(registry.check(&no_pragmas).len(), 2);
 

@@ -377,6 +377,24 @@ impl NativeCriticRegistry {
     /// Run all registered rules and return collected findings.
     #[must_use]
     pub fn check(&self, ctx: &CriticContext<'_>) -> Vec<CriticFinding> {
+        let suppressions = CriticSuppressionMap::from_source(ctx.source);
+        self.check_unfiltered(ctx)
+            .into_iter()
+            .filter(|finding| severity_enabled(finding.severity, ctx.config))
+            .filter(|finding| !suppressions.suppresses(finding))
+            .collect()
+    }
+
+    /// Run all registered rules and return findings before post-normalization
+    /// policy.
+    ///
+    /// Include/exclude stay execution gates here; the severity threshold and
+    /// scoped suppression are policy decisions that must apply exactly once,
+    /// after canonical alias merging (#7475). The production semantic boundary
+    /// consumes this path; [`Self::check`] keeps the legacy filtered behavior
+    /// for callers that have not migrated yet.
+    #[must_use]
+    pub fn check_unfiltered(&self, ctx: &CriticContext<'_>) -> Vec<CriticFinding> {
         let mut findings = Vec::new();
 
         // Pre-compute scope analysis once and share it across all scope-based
@@ -412,12 +430,7 @@ impl NativeCriticRegistry {
             rule.check(&rich_ctx, &mut findings);
         }
 
-        let suppressions = CriticSuppressionMap::from_source(ctx.source);
         findings
-            .into_iter()
-            .filter(|finding| severity_enabled(finding.severity, ctx.config))
-            .filter(|finding| !suppressions.suppresses(finding))
-            .collect()
     }
 
     /// Run all registered rules and return current legacy violation values.
