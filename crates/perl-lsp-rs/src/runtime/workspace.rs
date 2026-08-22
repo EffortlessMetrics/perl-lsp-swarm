@@ -1782,10 +1782,29 @@ impl LspServer {
 
                 tracing::debug!("File created: {}", uri);
 
+                // Resolve source authority BEFORE any index mutation (#8041).
+                // A backing file recreated externally must not re-index disk
+                // bytes over the facts of an open document whose buffer stays
+                // authoritative — including the delete-then-recreate case.
+                #[cfg(feature = "workspace")]
+                let document_is_open = {
+                    let documents = self.documents.lock();
+                    self.get_document(&documents, uri).is_some()
+                };
+
                 // Index the new file if it's a Perl file
                 // Note: Mutation operation - use coordinator with lifecycle tracking
                 #[cfg(feature = "workspace")]
-                if let Some(coordinator) = self.coordinator()
+                if document_is_open {
+                    tracing::debug!(
+                        "File created for open document {} — open buffer is authoritative; skipping disk indexing (#8041)",
+                        uri
+                    );
+                    if let Some(coordinator) = self.coordinator() {
+                        coordinator.notify_change(uri);
+                        coordinator.notify_parse_complete(uri);
+                    }
+                } else if let Some(coordinator) = self.coordinator()
                     && is_perl_source_uri(uri)
                     && let Some(path) = uri_to_fs_path(uri)
                 {
@@ -1856,6 +1875,7 @@ impl LspServer {
                 // the exact document instance (text, version, generation Arc)
                 // to the new URI and re-binds workspace facts to the buffer
                 // text — never to disk bytes read behind the buffer's back.
+                #[cfg(feature = "workspace")]
                 let old_doc_open = {
                     let documents = self.documents.lock();
                     self.get_document(&documents, &old_uri).is_some()
@@ -3530,6 +3550,55 @@ mod tests {
                 assert!(coordinator.index().document_store().get(uri).is_none());
             }
         }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn did_create_files_never_indexes_disk_over_open_buffer_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("recreate.pm");
+        let disk_v1 = "package Recreate;\nsub v1_only { 1 }\n1;\n";
+        std::fs::write(&path, disk_v1)?;
+        let uri = url::Url::from_file_path(&path).map_err(|_| "invalid file path")?.to_string();
+
+        server.did_open(json!({
+            "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": disk_v1 }
+        }))?;
+        let buffer_v2 = "package Recreate;\nsub v2_only { 2 }\n1;\n";
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{ "text": buffer_v2 }]
+        })))?;
+        wait_for_pending_index_tasks(&server);
+
+        // Delete-then-recreate with divergent bytes; the client reports the
+        // recreation through workspace/didCreateFiles.
+        std::fs::remove_file(&path)?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [ { "uri": uri, "type": 3 } ]
+        })))?;
+        std::fs::write(&path, "package Recreate;\nsub recreated_disk { 7 }\n1;\n")?;
+
+        server.handle_did_create_files(Some(json!({
+            "files": [ { "uri": uri } ]
+        })))?;
+
+        if let Some(coordinator) = server.coordinator() {
+            let names = index_symbol_names(coordinator.index(), &uri);
+            assert!(
+                !names.iter().any(|name| name == "recreated_disk"),
+                "didCreateFiles must not index disk bytes over an open buffer: {names:?}"
+            );
+            assert!(names.iter().any(|name| name == "v2_only"), "{names:?}");
+        }
+        assert_eq!(
+            server.documents_text_snapshot(),
+            vec![(server.normalize_uri_key(&uri), buffer_v2.to_string())]
+        );
 
         Ok(())
     }

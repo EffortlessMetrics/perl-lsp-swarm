@@ -2,7 +2,8 @@ use super::{
     CodeFormatter, FormattingOptions, JsonRpcError, LspServer, Value, invalid_params, json,
     source_path_from_uri,
 };
-use perl_parser_core::source_file::is_perl_source_uri;
+#[cfg(feature = "workspace")]
+use perl_parser_core::source_file::{is_binary_content, is_perl_source_uri};
 
 impl LspServer {
     /// Handle didClose notification
@@ -58,12 +59,19 @@ impl LspServer {
                             coordinator.index().reset_generation_for_close(&key);
                         }
 
+                        // Honor the same large-file and binary-content guards
+                        // as didOpen/didChange (#8041 review): a close-time
+                        // reload must not parse what the open path would have
+                        // refused.
+                        let size_limit = crate::state::max_file_size_bytes();
                         if is_perl_source_uri(uri)
                             && let Some(content) =
                                 crate::runtime::workspace::read_watched_file_content(
                                     uri,
                                     "didClose closed-authority reload",
                                 )
+                            && content.len() <= size_limit
+                            && !is_binary_content(&content)
                             && let Ok(url) = url::Url::parse(uri)
                         {
                             match coordinator.index().index_file(url, content) {
