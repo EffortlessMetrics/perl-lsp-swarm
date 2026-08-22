@@ -8,7 +8,7 @@ The pinned Perl 5.42.2 authority is stored under:
 .ci/perl-core-harness/upstream-targets-5.42.2.v1/
 ```
 
-`index.json` binds the Perl commit, the exact `Makefile.SH`, `t/TEST`, and `t/harness` blobs, and the ordered target-part files. The validator assembles those parts into one canonical typed matrix before fingerprinting it. File partitioning is review structure, not denominator identity.
+`index.json` records the Perl commit, the claimed `Makefile.SH`, `t/TEST`, and `t/harness` blob identities, and the ordered target-part files. The validator assembles those parts into one canonical typed matrix before fingerprinting it. File partitioning is review structure, not denominator identity. This offline contract does not resolve or hash an upstream checkout, so the recorded source identities and target membership remain claims awaiting an independently generated source-bound receipt.
 
 ## Validate the authority
 
@@ -41,7 +41,8 @@ The validator fails closed on:
 - replacement lineage without a nonempty reviewed reason;
 - generated composites without an explicit overlap policy;
 - duplicate or unsorted target identities;
-- deletion or substitution of any pinned Perl 5.42.2 target or topology-source identity.
+- malformed, duplicate, unsorted, or internally inconsistent target topology;
+- deletion or substitution of a matrix part without updating the bundle's file set.
 
 Runner-switch order is part of target identity rather than a direct rejection rule.
 A reordered switch list changes the target digest and matrix fingerprint, so the
@@ -64,6 +65,11 @@ Presentation fields such as `display_name` remain part of the matrix artifact an
 
 ## Claim boundary
 
-A matrix row establishes topology, identity, ownership, and selection intent only. It is not parse, compile, semantic, execution, platform, or performance evidence.
+A matrix row establishes recorded topology, identity, ownership, and selection intent only. It is not independently verified upstream membership, parse, compile, semantic, execution, platform, or performance evidence.
+
+The current artifact deliberately does not claim independent upstream-source authority: no
+resolver or source checkout is available in this contract's allowed offline surface. A
+future source-bound receipt must bind the exact upstream object contents to the generated
+membership before the matrix can claim upstream membership authority.
 
 A target becomes compatibility authority only after exact membership is frozen into a comparison series, its evidence bundle is complete, and every failure or accepted semantic boundary is typed and governed. Missing capability, preparation, generated input, native extension, process, or environment state remains separate from product compiler failure.

@@ -9,6 +9,7 @@ use model::{
 };
 use perl_core_harness::target_contracts::{io, model};
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -166,6 +167,26 @@ fn legacy_composites_are_partitioned_by_runner() -> TestResult {
         op_hook.selectors,
         vec![TargetSelector::RecursiveRoot { path: "op/hook".to_string() }]
     );
+    Ok(())
+}
+
+#[test]
+fn read_matrix_rejects_changed_part_without_index_change() -> TestResult {
+    let source = repo_file(".ci/perl-core-harness/upstream-targets-5.42.2.v1");
+    let temporary = tempfile::tempdir()?;
+    for entry in fs::read_dir(&source)? {
+        let entry = entry?;
+        fs::copy(entry.path(), temporary.path().join(entry.file_name()))?;
+    }
+
+    let part_path = temporary.path().join("01-components-a.json");
+    let mut part: serde_json::Value = serde_json::from_slice(&fs::read(&part_path)?)?;
+    part["targets"][0]["contract"]["target_id"] =
+        serde_json::Value::String("component_class".to_string());
+    fs::write(&part_path, serde_json::to_vec_pretty(&part)?)?;
+
+    let error = io::read_matrix(temporary.path()).expect_err("changed matrix part was accepted");
+    assert!(error.to_string().contains("target matrix"));
     Ok(())
 }
 
@@ -335,6 +356,12 @@ fn presentation_only_changes_do_not_become_topology_drift() -> TestResult {
     let pinned_fingerprint = pinned.fingerprint()?;
 
     drift.validate_against(&pinned, &pinned_fingerprint, Some(&observed))?;
+    let mut wrong_fingerprint = drift;
+    wrong_fingerprint.pinned_matrix_fingerprint =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+    assert!(
+        wrong_fingerprint.validate_against(&pinned, &pinned_fingerprint, Some(&observed)).is_err()
+    );
     Ok(())
 }
 
