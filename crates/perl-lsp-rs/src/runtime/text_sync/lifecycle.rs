@@ -85,6 +85,12 @@ impl LspServer {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
             let normalized_uri = self.normalize_uri_key(uri);
+            // Sink-owned admission (#8895): the save path resolves the URI for
+            // diagnostics and index refresh, so it owns URI policy, judged on
+            // the normalized key it will actually use.
+            if let Err(err) = crate::security::validate_document_uri(&normalized_uri) {
+                return Err(invalid_params(&err.to_string()));
+            };
             tracing::debug!("Document saved: {}", uri);
 
             // When the client sends the full saved text in params.text,
