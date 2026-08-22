@@ -24,7 +24,7 @@ fn parse(source: &str) -> perl_parser_core::Node {
 /// Extract the first top-level statement from a Program node.
 fn first_stmt(source: &str) -> Result<perl_parser_core::Node, String> {
     let root = parse(source);
-    match root.kind {
+    match root.into_parts().0 {
         NodeKind::Program { statements } => statements
             .into_iter()
             .next()

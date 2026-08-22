@@ -28,11 +28,12 @@ mod tests {
     /// Helper: parse code and return the first statement node.
     fn parse_first_stmt(code: &str) -> Node {
         let ast = parse_program(code);
-        match ast.kind {
+        let sexp = ast.to_sexp();
+        match ast.into_parts().0 {
             NodeKind::Program { mut statements } if !statements.is_empty() => {
                 statements.swap_remove(0)
             }
-            _ => panic!("Expected Program with statements, got: {}", ast.to_sexp()),
+            _ => panic!("Expected Program with statements, got: {sexp}"),
         }
     }
 
@@ -45,13 +46,11 @@ mod tests {
 
     /// Helper: extract expression from an ExpressionStatement.
     fn unwrap_expr_stmt(stmt: Node) -> Node {
-        match stmt.kind {
+        let sexp = stmt.to_sexp();
+        let stmt_kind = stmt.into_parts().0;
+        match stmt_kind {
             NodeKind::ExpressionStatement { expression } => *expression,
-            _ => panic!(
-                "Expected ExpressionStatement, got {} (sexp: {})",
-                stmt.kind.kind_name(),
-                stmt.to_sexp()
-            ),
+            _ => panic!("Expected ExpressionStatement, got {} (sexp: {})", stmt_kind.kind_name(), sexp),
         }
     }
 

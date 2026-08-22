@@ -5,7 +5,7 @@ use perl_parser_core::{Node, NodeKind};
 
 fn program_statements(source: &str) -> Result<Vec<Node>, String> {
     let ast = parse(source);
-    match ast.kind {
+    match ast.into_parts().0 {
         NodeKind::Program { statements } => Ok(statements),
         other => Err(format!("expected Program node, got {other:?}")),
     }

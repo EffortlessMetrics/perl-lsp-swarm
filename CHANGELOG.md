@@ -14,6 +14,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking (`perl-ast`): `Node` now implements `Drop`, so direct
+  by-value field moves out of a `Node` no longer compile (E0509).**
+  Destruction is iterative and depth-independent (#8836): dropping any tree
+  shape releases every original node exactly once with bounded call-stack
+  usage, so adversarially deep publicly constructed trees can no longer abort
+  the process through recursive drop glue. Borrow-based matching on
+  `node.kind` is unchanged. For by-value consumption, use the new
+  `Node::into_parts(self) -> (NodeKind, SourceLocation)`, which preserves the
+  original move economics without cloning; in-repo consumers (hash/block
+  disambiguation, inline dereference bodies, statement dispatch) were
+  migrated to it. Destructor order is intentionally unspecified.
+
 - **Breaking (`perl-lsp-rs-core`): `JsonRpcResponse::jsonrpc` is now
   `&'static str`.** Always `"2.0"` (see `JSONRPC_VERSION`); removes a
   per-response `String` allocation (#5053 item 7). Struct literals that

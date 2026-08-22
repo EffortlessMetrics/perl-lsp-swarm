@@ -5,8 +5,9 @@ use perl_parser_core::{Node, NodeKind};
 
 fn program_statement(source: &str, context: &str) -> Result<Node, String> {
     let ast = parse(source);
-    let NodeKind::Program { statements } = ast.kind else {
-        return Err(format!("expected Program node for {context}, got {:?}", ast.kind));
+    let ast_kind = ast.into_parts().0;
+    let NodeKind::Program { statements } = ast_kind else {
+        return Err(format!("expected Program node for {context}, got {:?}", ast_kind));
     };
     statements.into_iter().next().ok_or_else(|| format!("expected first statement for {context}"))
 }

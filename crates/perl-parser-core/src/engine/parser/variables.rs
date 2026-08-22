@@ -1675,13 +1675,17 @@ fn parse_inline_expression(source: &str, offset: usize) -> ParseResult<(Node, Ve
         .cloned()
         .map(|error| offset_parse_error(error, offset))
         .collect();
-    let NodeKind::Program { mut statements } = ast.kind else {
+    let (ast_kind, _ast_location) = ast.into_parts();
+    let NodeKind::Program { mut statements } = ast_kind else {
         return Err(ParseError::syntax("Expected an expression program", offset));
     };
     let mut expressions = Vec::new();
     for statement in statements.drain(..) {
-        let statement_start = statement.location.start;
-        let NodeKind::ExpressionStatement { expression: statement_expression } = statement.kind
+        // `Node` implements `Drop`; consume via into_parts rather than
+        // moving fields out of the struct directly.
+        let (statement_kind, statement_location) = statement.into_parts();
+        let statement_start = statement_location.start;
+        let NodeKind::ExpressionStatement { expression: statement_expression } = statement_kind
         else {
             return Err(ParseError::syntax(
                 "Expected an expression statement",
@@ -1852,7 +1856,8 @@ mod inline_expression_tests {
     fn multi_statement_inline_expression_preserves_every_expression() -> ParseResult<()> {
         let (node, _) = parse_inline_expression("$tmp; 'STDOUT'", 17)?;
 
-        let NodeKind::Block { statements } = node.kind else {
+        let (node_kind, _) = node.into_parts();
+        let NodeKind::Block { statements } = node_kind else {
             return Err(ParseError::syntax(
                 "expected multi-statement inline expression to remain a block",
                 17,
@@ -1921,7 +1926,7 @@ mod prototype_heuristic_tests {
     fn parse_sub(code: &str) -> Option<Node> {
         let mut parser = Parser::new(code);
         let ast = parser.parse().ok()?;
-        if let NodeKind::Program { statements } = ast.kind {
+        if let NodeKind::Program { statements } = ast.into_parts().0 {
             statements.into_iter().next()
         } else {
             None
@@ -2275,7 +2280,7 @@ mod code_dereference_tests {
     /// Helper: parse code and return the first statement node.
     fn parse_first_stmt(code: &str) -> Option<Node> {
         let ast = parse_program(code);
-        match ast.kind {
+        match ast.into_parts().0 {
             NodeKind::Program { mut statements } if !statements.is_empty() => {
                 Some(statements.swap_remove(0))
             }

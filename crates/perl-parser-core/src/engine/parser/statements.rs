@@ -282,10 +282,7 @@ impl<'a> Parser<'a> {
             TokenKind::Field if self.is_field_declaration_context() => {
                 let decl = self.parse_variable_declaration()?;
                 if self.peek_kind() == Some(TokenKind::FatArrow) {
-                    let variable = match decl.kind {
-                        NodeKind::VariableDeclaration { variable, .. } => *variable,
-                        _ => decl,
-                    };
+                    let variable = into_declaration_variable_or_self(decl);
                     let call_start = variable.location.start;
                     let mut args = vec![variable];
 
@@ -1937,6 +1934,21 @@ impl<'a> Parser<'a> {
         Ok(Box::new(self.parse_statement()?))
     }
 
+}
+
+/// Consume a parsed declaration, unwrapping a `VariableDeclaration` to its
+/// declared variable and returning any other node unchanged.
+///
+/// `Node` implements `Drop`, so the kind must be consumed via `into_parts`
+/// rather than moved out of the struct field directly. This lives in its own
+/// leaf function so the consuming locals stay out of
+/// [`Parser::parse_statement_inner`]'s frame on deeply nested parse paths.
+fn into_declaration_variable_or_self(decl: Node) -> Node {
+    let (decl_kind, decl_location) = decl.into_parts();
+    match decl_kind {
+        NodeKind::VariableDeclaration { variable, .. } => *variable,
+        other_kind => Node::new(other_kind, decl_location),
+    }
 }
 
 #[cfg(test)]

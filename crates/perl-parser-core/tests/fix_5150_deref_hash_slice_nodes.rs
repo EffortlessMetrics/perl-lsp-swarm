@@ -236,11 +236,12 @@ fn at_deref_hash_slice_node_structure() -> Result<(), String> {
     let ast = parse(source);
 
     // drill to the ExpressionStatement's expression
-    let stmt = match ast.kind {
+    let ast_sexp = ast.to_sexp();
+    let stmt = match ast.into_parts().0 {
         NodeKind::Program { mut statements } if !statements.is_empty() => statements.swap_remove(0),
-        _ => return Err(format!("Expected Program, got: {}", ast.to_sexp())),
+        _ => return Err(format!("Expected Program, got: {ast_sexp}")),
     };
-    let expr = match stmt.kind {
+    let expr = match stmt.into_parts().0 {
         NodeKind::ExpressionStatement { expression } => *expression,
         other => return Err(format!("Expected ExpressionStatement, got: {}", other.kind_name())),
     };
@@ -278,11 +279,12 @@ fn pct_deref_key_value_slice_node_structure() -> Result<(), String> {
     assert_clean_parse(source);
     let ast = parse(source);
 
-    let stmt = match ast.kind {
+    let ast_sexp = ast.to_sexp();
+    let stmt = match ast.into_parts().0 {
         NodeKind::Program { mut statements } if !statements.is_empty() => statements.swap_remove(0),
-        _ => return Err(format!("Expected Program, got: {}", ast.to_sexp())),
+        _ => return Err(format!("Expected Program, got: {ast_sexp}")),
     };
-    let expr = match stmt.kind {
+    let expr = match stmt.into_parts().0 {
         NodeKind::ExpressionStatement { expression } => *expression,
         other => return Err(format!("Expected ExpressionStatement, got: {}", other.kind_name())),
     };

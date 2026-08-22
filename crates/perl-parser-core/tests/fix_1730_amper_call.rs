@@ -16,13 +16,13 @@ type TestResult = Result<(), String>;
 
 fn first_statement_expr(source: &str) -> Result<perl_parser_core::Node, String> {
     let ast = parse(source);
-    let NodeKind::Program { statements } = ast.kind else {
-        return Err(format!("expected Program, got {:?}", ast.kind.kind_name()));
+    let NodeKind::Program { statements } = ast.into_parts().0 else {
+        return Err("expected Program".to_string());
     };
     let Some(stmt) = statements.into_iter().next() else {
         return Err("expected at least one statement".to_string());
     };
-    match stmt.kind {
+    match stmt.into_parts().0 {
         NodeKind::ExpressionStatement { expression } => Ok(*expression),
         other => Err(format!("expected ExpressionStatement, got {other:?}")),
     }
@@ -69,7 +69,7 @@ fn amper_call_without_parens_produces_amper_call_node() -> TestResult {
 #[test]
 fn amper_call_preserves_function_name() -> TestResult {
     let expr = first_statement_expr("&bar(1);")?;
-    let NodeKind::AmperCall { name, .. } = expr.kind else {
+    let NodeKind::AmperCall { name, .. } = expr.into_parts().0 else {
         return Err("expected AmperCall for &bar(1)".to_string());
     };
     assert_eq!(name, "bar", "&bar(1) must capture name 'bar'");
@@ -79,7 +79,7 @@ fn amper_call_preserves_function_name() -> TestResult {
 #[test]
 fn amper_call_qualified_name() -> TestResult {
     let expr = first_statement_expr("&Package::sub(42);")?;
-    let NodeKind::AmperCall { name, args } = expr.kind else {
+    let NodeKind::AmperCall { name, args } = expr.into_parts().0 else {
         return Err("expected AmperCall for &Package::sub(42)".to_string());
     };
     assert_eq!(name, "Package::sub");
@@ -90,7 +90,7 @@ fn amper_call_qualified_name() -> TestResult {
 #[test]
 fn amper_call_empty_args_when_no_parens() -> TestResult {
     let expr = first_statement_expr("&helper;")?;
-    let NodeKind::AmperCall { name, args } = expr.kind else {
+    let NodeKind::AmperCall { name, args } = expr.into_parts().0 else {
         return Err("expected AmperCall for &helper".to_string());
     };
     assert_eq!(name, "helper");
@@ -119,14 +119,15 @@ fn amper_call_dynamic_coderef_with_args_produces_amper_call_node() {
 #[test]
 fn goto_amper_dynamic_coderef_target_is_amper_call() -> TestResult {
     let ast = parse("goto &$callback;");
-    let NodeKind::Program { statements } = ast.kind else {
+    let NodeKind::Program { statements } = ast.into_parts().0 else {
         return Err("expected Program".to_string());
     };
     let Some(stmt) = statements.into_iter().next() else {
         return Err("expected statement".to_string());
     };
-    let NodeKind::Goto { target, .. } = stmt.kind else {
-        return Err(format!("expected Goto node, got: {:?}", stmt.kind.kind_name()));
+    let stmt_kind = stmt.into_parts().0;
+    let NodeKind::Goto { target, .. } = stmt_kind else {
+        return Err(format!("expected Goto node, got: {:?}", stmt_kind.kind_name()));
     };
     assert!(
         matches!(target.kind, NodeKind::AmperCall { .. }),
@@ -150,15 +151,16 @@ fn amper_call_parses_cleanly() {
 fn goto_amper_sub_target_is_amper_call() -> TestResult {
     // `goto &sub` is Perl's tail-call idiom; the target should now be AmperCall
     let ast = parse("goto &helper;");
-    let NodeKind::Program { statements } = ast.kind else {
+    let NodeKind::Program { statements } = ast.into_parts().0 else {
         return Err("expected Program".to_string());
     };
     let Some(stmt) = statements.into_iter().next() else {
         return Err("expected statement".to_string());
     };
     // goto is parsed as a statement-level Goto node, not wrapped in ExpressionStatement
-    let NodeKind::Goto { target, .. } = stmt.kind else {
-        return Err(format!("expected Goto node, got: {:?}", stmt.kind.kind_name()));
+    let stmt_kind = stmt.into_parts().0;
+    let NodeKind::Goto { target, .. } = stmt_kind else {
+        return Err(format!("expected Goto node, got: {:?}", stmt_kind.kind_name()));
     };
     assert!(
         matches!(target.kind, NodeKind::AmperCall { .. }),
@@ -201,7 +203,7 @@ fn method_call_unaffected() -> TestResult {
 #[test]
 fn plain_call_name_unaffected() -> TestResult {
     let expr = first_statement_expr("say('hello');")?;
-    let NodeKind::FunctionCall { name, .. } = expr.kind else {
+    let NodeKind::FunctionCall { name, .. } = expr.into_parts().0 else {
         return Err("expected FunctionCall for say()".to_string());
     };
     assert_eq!(name, "say");

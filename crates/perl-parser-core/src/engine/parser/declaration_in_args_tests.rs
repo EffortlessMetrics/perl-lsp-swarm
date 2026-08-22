@@ -24,7 +24,7 @@ mod tests {
     /// Helper: parse code and return the first statement node.
     fn first_stmt(code: &str) -> Node {
         let ast = parse_program(code);
-        match ast.kind {
+        match ast.into_parts().0 {
             NodeKind::Program { statements } => must_some(statements.into_iter().next()),
             _ => must_some(None),
         }

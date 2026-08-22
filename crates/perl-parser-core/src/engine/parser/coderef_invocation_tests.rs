@@ -14,7 +14,7 @@ mod tests {
     fn parse_first_stmt(code: &str) -> Node {
         let ast = parse_program(code);
         let sexp = ast.to_sexp();
-        let NodeKind::Program { mut statements } = ast.kind else {
+        let NodeKind::Program { mut statements } = ast.into_parts().0 else {
             panic!("Expected Program with statements, got: {sexp}");
         };
         if statements.is_empty() {
@@ -32,12 +32,10 @@ mod tests {
 
     /// Helper: extract expression from an ExpressionStatement.
     fn unwrap_expr_stmt(stmt: Node) -> Node {
-        let NodeKind::ExpressionStatement { expression } = stmt.kind else {
-            panic!(
-                "Expected ExpressionStatement, got {} (sexp: {})",
-                stmt.kind.kind_name(),
-                stmt.to_sexp()
-            );
+        let sexp = stmt.to_sexp();
+        let stmt_kind = stmt.into_parts().0;
+        let NodeKind::ExpressionStatement { expression } = stmt_kind else {
+            panic!("Expected ExpressionStatement, got {} (sexp: {})", stmt_kind.kind_name(), sexp);
         };
         *expression
     }

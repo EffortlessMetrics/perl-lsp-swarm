@@ -964,13 +964,17 @@ impl<'a> Parser<'a> {
                                 let first_arg = self.parse_assignment_or_declaration()?;
                                 let args_node =
                                     self.collect_comma_fat_arrow_continuation(first_arg)?;
-                                let args = match args_node.kind {
+                                // `Node` implements `Drop`; consume the node
+                                // via into_parts instead of moving its kind
+                                // out of the struct field directly.
+                                let (args_kind, args_location) = args_node.into_parts();
+                                let args = match args_kind {
                                     NodeKind::ArrayLiteral { elements } => elements,
                                     NodeKind::HashLiteral { pairs } => pairs
                                         .into_iter()
                                         .flat_map(|(k, v)| [k, v])
                                         .collect(),
-                                    _ => vec![args_node],
+                                    other_kind => vec![Node::new(other_kind, args_location)],
                                 };
                                 let call_end = args
                                     .last()

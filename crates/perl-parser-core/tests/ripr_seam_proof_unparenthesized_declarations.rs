@@ -41,7 +41,7 @@ fn parse_program(source: &str) -> Result<Node, String> {
 
 fn statements(source: &str) -> Result<Vec<Node>, String> {
     let ast = parse_program(source)?;
-    match ast.kind {
+    match ast.into_parts().0 {
         NodeKind::Program { statements } => Ok(statements),
         other => Err(format!("expected Program node, got {other:?}")),
     }

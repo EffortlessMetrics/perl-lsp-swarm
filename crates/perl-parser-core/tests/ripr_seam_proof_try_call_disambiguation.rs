@@ -17,7 +17,7 @@ fn parenthesized_try_is_a_user_defined_function_call() {
 
     let mut parser = Parser::new(source);
     let ast = must(parser.parse());
-    let statements = must_some(match ast.kind {
+    let statements = must_some(match ast.into_parts().0 {
         NodeKind::Program { statements } => Some(statements),
         _ => None,
     });
@@ -44,7 +44,7 @@ fn braced_try_remains_a_try_catch_construct() {
 
     let mut parser = Parser::new(source);
     let ast = must(parser.parse());
-    let statements = must_some(match ast.kind {
+    let statements = must_some(match ast.into_parts().0 {
         NodeKind::Program { statements } => Some(statements),
         _ => None,
     });

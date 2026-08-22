@@ -18,16 +18,17 @@ use perl_parser_core::{Node, NodeKind};
 fn first_expression(source: &str) -> Result<Node, Box<dyn std::error::Error>> {
     let ast = parse(source);
     let sexp = ast.to_sexp();
-    let NodeKind::Program { mut statements } = ast.kind else {
+    let NodeKind::Program { mut statements } = ast.into_parts().0 else {
         return Err(format!("expected Program, got {sexp}").into());
     };
     if statements.len() != 1 {
         return Err(format!("expected 1 statement, got {} in {sexp}", statements.len()).into());
     }
     let statement = statements.remove(0);
-    let NodeKind::ExpressionStatement { expression } = statement.kind else {
+    let statement_kind = statement.into_parts().0;
+    let NodeKind::ExpressionStatement { expression } = statement_kind else {
         return Err(
-            format!("expected ExpressionStatement, got {}", statement.kind.kind_name()).into()
+            format!("expected ExpressionStatement, got {}", statement_kind.kind_name()).into()
         );
     };
     Ok(*expression)
@@ -46,7 +47,7 @@ fn assert_lvalue_builtin_assignment(
         let ast = parse(source);
         ast.to_sexp()
     };
-    let NodeKind::Assignment { lhs, rhs: _, op } = expr.kind else {
+    let NodeKind::Assignment { lhs, rhs: _, op } = expr.into_parts().0 else {
         return Err(format!(
             "expected Assignment node at top level for `{source}`, \
                  got something else. sexp:\n{sexp}"
@@ -54,7 +55,7 @@ fn assert_lvalue_builtin_assignment(
         .into());
     };
     assert_eq!(op, expected_op, "wrong assignment operator in `{source}`");
-    let NodeKind::FunctionCall { name, args } = lhs.kind else {
+    let NodeKind::FunctionCall { name, args } = lhs.into_parts().0 else {
         return Err(format!(
             "expected FunctionCall lhs for `{source}`, got something else. sexp:\n{sexp}"
         )
@@ -155,16 +156,15 @@ fn test_length_parens_not_lvalue() {
     // Either an error node or the assignment is NOT "Assignment { lhs: length() }"
     if let NodeKind::Program { statements } = &ast.kind {
         for stmt in statements {
-            if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
-                if let NodeKind::Assignment { lhs, .. } = &expression.kind {
-                    if let NodeKind::FunctionCall { name, .. } = &lhs.kind {
-                        assert_ne!(
-                            name.as_str(),
-                            "length",
-                            "length() must NOT be treated as an lvalue; sexp:\n{sexp}"
-                        );
-                    }
-                }
+            if let NodeKind::ExpressionStatement { expression } = &stmt.kind
+                && let NodeKind::Assignment { lhs, .. } = &expression.kind
+                && let NodeKind::FunctionCall { name, .. } = &lhs.kind
+            {
+                assert_ne!(
+                    name.as_str(),
+                    "length",
+                    "length() must NOT be treated as an lvalue; sexp:\n{sexp}"
+                );
             }
         }
     }
@@ -180,15 +180,14 @@ fn test_user_defined_func_parens_not_affected() {
     let sexp = ast.to_sexp();
     if let NodeKind::Program { statements } = &ast.kind {
         for stmt in statements {
-            if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
-                if let NodeKind::Assignment { lhs, .. } = &expression.kind {
-                    if let NodeKind::FunctionCall { name, .. } = &lhs.kind {
-                        assert!(
-                            !matches!(name.as_str(), "pos" | "substr" | "vec"),
-                            "unexpected lvalue builtin treatment for user func; sexp:\n{sexp}"
-                        );
-                    }
-                }
+            if let NodeKind::ExpressionStatement { expression } = &stmt.kind
+                && let NodeKind::Assignment { lhs, .. } = &expression.kind
+                && let NodeKind::FunctionCall { name, .. } = &lhs.kind
+            {
+                assert!(
+                    !matches!(name.as_str(), "pos" | "substr" | "vec"),
+                    "unexpected lvalue builtin treatment for user func; sexp:\n{sexp}"
+                );
             }
         }
     }
