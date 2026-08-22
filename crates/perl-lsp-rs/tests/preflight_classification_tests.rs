@@ -114,6 +114,21 @@ fn error_classification_matrix_matches_the_layer_boundaries() -> TestResult {
         response.get("error").map(|e| e.to_string()).unwrap_or_default()
     );
 
+    // `$/cancelRequest` is still subject to generic resource admission before
+    // its special notification handling. The request-shaped envelope makes the
+    // -32600 response observable while preserving normal notification behavior.
+    let response = harness.request_raw(json!({
+        "jsonrpc": "2.0",
+        "id": 16,
+        "method": "$/cancelRequest",
+        "params": {"id": 999, "padding": "a".repeat(1_000_001)}
+    }));
+    assert_eq!(
+        error_code(&response),
+        Some(-32600),
+        "oversized cancelRequest params must be rejected before special dispatch: {response:?}"
+    );
+
     // A syntactically valid custom extension method with punctuation outside
     // the old allowlist reaches routing and is answered by -32601 — proving
     // admission no longer polices method charset (negative control 2).

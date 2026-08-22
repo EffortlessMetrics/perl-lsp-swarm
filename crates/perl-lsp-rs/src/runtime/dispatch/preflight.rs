@@ -40,11 +40,8 @@ pub(super) fn prepare_request(
     request: &JsonRpcRequest,
     context: &RequestContext,
 ) -> PreflightOutcome {
-    if handle_cancel_notification(server, request) {
-        return PreflightOutcome::NotificationHandled;
-    }
-
-    // Structural admission runs *before* cancellation registration, deliberately.
+    // Structural admission runs before cancellation dispatch and registration,
+    // deliberately. Cancellation handling remains ahead of token registration.
     //
     // `register_request_cancellation` inserts a token and a cloned cleanup
     // context into the global registry, and the entry is normally removed by
@@ -79,6 +76,10 @@ pub(super) fn prepare_request(
                 data: None,
             }),
         });
+    }
+
+    if handle_cancel_notification(server, request) {
+        return PreflightOutcome::NotificationHandled;
     }
 
     if let Some(cancelled) = register_request_cancellation(server, context.id.as_ref(), request) {
