@@ -44,12 +44,12 @@ jobs:
                   r'fn workspace_ai_completion_ignores_untrusted_endpoint_and_credential_settings\(\)(?: -> TestResult)? \{',
               ),
               (
-                  '          "description": "AI-powered inline completion configuration. Sensitive destination/credential fields are intentionally excluded from LSP client settings.",\\n',
-                  '          "description": "Client-controlled AI completion behavior. Endpoint and credential-routing fields are intentionally excluded because workspace-delivered LSP settings may not redirect source/secret-bearing requests.",\\n',
+                  "AI-powered inline completion configuration. Sensitive destination/credential fields are intentionally excluded from LSP client settings.",
+                  "Client-controlled AI completion behavior. Endpoint and credential-routing fields are intentionally excluded because workspace-delivered LSP settings may not redirect source/secret-bearing requests.",
               ),
               (
-                  '    \'            "provider": { "type": "string", "default": "openai_compat" },\\n\',\\n',
-                  '    \'            "provider": { "type": "string", "enum": ["openai_compat"], "default": "openai_compat" },\\n\',\\n',
+                  '"provider": { "type": "string", "default": "openai_compat" }',
+                  '"provider": { "type": "string", "enum": ["openai_compat"], "default": "openai_compat" }',
               ),
           ]
           for old, new in replacements:
