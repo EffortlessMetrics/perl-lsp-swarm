@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install Rust toolchain
         run: |
@@ -84,14 +84,46 @@ jobs:
             --perl-ref "${{ steps.upstream.outputs.ref }}" \
             --output-dir target/perl-core/smoke/run
 
+      # Fail closed on runner terminal status before any consumer trusts green
+      # file/assertion counts: an absent or nonzero legacy `harness_status` is
+      # NOT_PROVEN (#6884 interim false-green block). The gate verifies report
+      # identity and writes read-only admitted copies plus a versioned receipt
+      # per profile; the ratchet check below consumes only the admitted bytes.
+      # Reports record `perl_ref: "unknown"` because the prepared tree has its
+      # .git stripped, so the expected ref pins that honest current value.
+      - name: Admit runner terminal status
+        if: always()
+        run: |
+          for profile in base comp run; do
+            cargo run --locked -p perl-core-harness \
+              --bin perl-core-harness-terminal-admission -- \
+              --report "target/perl-core/smoke/$profile/parse.json" \
+              --report "target/perl-core/smoke/$profile/compile.json" \
+              --output "target/perl-core/smoke/$profile/terminal-admission.json" \
+              --admitted-dir "target/perl-core/smoke/$profile/admitted-reports" \
+              --expected-runner test \
+              --expected-profile "$profile" \
+              --expected-commit "$GITHUB_SHA" \
+              --expected-perl-ref unknown
+          done
+
       - name: Check upstream compile ratchets
         if: always()
         run: |
           for profile in base comp run; do
+            # Re-verify the receipt before consuming admitted bytes so a
+            # tampered or replaced copy fails closed here.
+            cargo run --locked -p perl-core-harness \
+              --bin perl-core-harness-terminal-admission -- \
+              --check-receipt "target/perl-core/smoke/$profile/terminal-admission.json" \
+              --expected-runner test \
+              --expected-profile "$profile" \
+              --expected-commit "$GITHUB_SHA" \
+              --expected-perl-ref unknown
             cargo run -p xtask -- perl-core-harness baseline \
               --mode compile \
               --profile "$profile" \
-              --report "target/perl-core/smoke/$profile/compile.json" \
+              --report "target/perl-core/smoke/$profile/admitted-reports/compile.json" \
               --baseline ".ci/perl-core-harness/upstream-$profile-compile-baseline.json" \
               --check
           done
@@ -145,6 +177,17 @@ jobs:
               print()
           PY
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The upload below is `if: always()`, so failing this job is not enough to
+      # keep a leaking receipt private. `--quarantine` deletes the rejected
+      # files, so a receipt this gate rejects cannot reach the artifact.
+      - name: Reject embedded host paths in public receipts
+        if: always()
+        run: |
+          cargo run --locked -p perl-core-harness \
+            --bin perl-core-harness-public-evidence -- \
+            --evidence-dir target/perl-core \
+            --quarantine
 
       - name: Upload Perl core harness receipts
         if: always()

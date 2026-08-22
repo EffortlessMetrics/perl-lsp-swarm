@@ -1,0 +1,60 @@
+name: Legacy Authority Banners
+
+on:
+  pull_request:
+    paths:
+      - 'docs/reference/ORCHESTRATION_DOCTRINE.md'
+      - 'docs/reference/PIPELINE_GATES.md'
+      - 'docs/reference/OCTOPUS_CLUSTER.md'
+      - 'docs/reference/GLOSSARY.md'
+      - 'docs/reference/LIVE_SIGNALS_VS_LABELS.md'
+      - 'docs/adr/0044-octopus-cluster-orchestration.md'
+      - 'docs/articles/PIPELINE_STATE_MACHINE.md'
+      - 'docs/handoff/SWARM_DESIGN.md'
+      - '.spec/3988-merge-readiness/spec.md'
+      - 'docs/agents/authority_status.toml'
+      - 'scripts/migrate-legacy-authority-banners.py'
+      - 'tests/test_legacy_authority_banners.py'
+      - '.github/workflows/legacy-authority-banners.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'docs/reference/ORCHESTRATION_DOCTRINE.md'
+      - 'docs/reference/PIPELINE_GATES.md'
+      - 'docs/reference/OCTOPUS_CLUSTER.md'
+      - 'docs/reference/GLOSSARY.md'
+      - 'docs/reference/LIVE_SIGNALS_VS_LABELS.md'
+      - 'docs/adr/0044-octopus-cluster-orchestration.md'
+      - 'docs/articles/PIPELINE_STATE_MACHINE.md'
+      - 'docs/handoff/SWARM_DESIGN.md'
+      - '.spec/3988-merge-readiness/spec.md'
+      - 'docs/agents/authority_status.toml'
+      - 'scripts/migrate-legacy-authority-banners.py'
+      - 'tests/test_legacy_authority_banners.py'
+      - '.github/workflows/legacy-authority-banners.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: legacy-authority-banners-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Check local legacy-authority banners
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate banners, registry agreement, and inert migrator
+        run: |
+          python3 -m unittest \
+            tests/test_legacy_authority_banners.py \
+            tests/test_agent_authority_status.py
+
+      - name: Check diff hygiene
+        run: git diff --check

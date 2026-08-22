@@ -202,7 +202,6 @@ these blocks merge (via the `ci/merge-gate` commit status check):
 | `v2_bundle_sync` | `bash scripts/check-v2-bundle-sync.sh` | v2 bundle files stay synchronized |
 | `workflow_audit` | `python3 scripts/ci-audit-workflows.py` | No ungated expensive jobs in workflows |
 | `nested_lock_check` | `find . -name Cargo.lock` | No nested Cargo.lock files |
-| `published_crate_count` | `xtask published-crate-count` | Crate count ratchet |
 
 ### Advisory (Informational) Gates
 
@@ -214,7 +213,6 @@ These gates have `required: false`. Failures produce signal and are tracked in
 | `parser_corpus_ratchet` | Baseline drifts with runner Perl version (Ubuntu Perl updates produce environmental false positives) |
 | `cpan_corpus_ratchet` | CPAN corpus not installed on PR runners; owned by post-merge cron |
 | `security_audit` | Currently quarantined: `cargo-audit` ecosystem breakage as of 2026-04-26 |
-| `published_crate_count` | Quarantined until collapse completes (~30–31 target crates) |
 | All `nightly` gates | Informational by tier definition |
 
 **Quarantine tracking**: Quarantined items are tracked in `.ci/debt-ledger.yaml`. The
@@ -523,11 +521,12 @@ gh pr view <N> --json statusCheckRollup \
 gh pr view <N> --json mergeStateStatus
 ```
 
-**Do not use `rtk gh pr checks` for merge-readiness decisions.** The `rtk` filter
-summarizes individual job conclusions and can drop aggregator failures. PR #7016 showed
-this: `rtk` reported "Passed: 14, Failed: 0" while `CI Gate (Merge-Blocking)` was
-`FAILURE` on the latest SHA. Use raw `statusCheckRollup` queries for merge gates.
-See [FAILURE_MODES.md — rtk gh pr checks Masks Aggregator Failure](FAILURE_MODES.md).
+**Do not rely on filtered check summaries for merge-readiness decisions.** A filtered
+view can summarize individual job conclusions while dropping aggregator failures. PR
+#7016 showed this: an individual-job summary reported "Passed: 14, Failed: 0" while
+`CI Gate (Merge-Blocking)` was `FAILURE` on the latest SHA. Use direct
+`statusCheckRollup` queries for merge gates. See
+[FAILURE_MODES.md — Filtered Check Summaries Mask Aggregator Failure](FAILURE_MODES.md).
 
 ### Native merge-state behavior
 
@@ -660,7 +659,8 @@ differing only in `metadata.environment.type` ("local" vs "ci").
 - [OCTOPUS_CLUSTER.md](OCTOPUS_CLUSTER.md) — umbrella system design, vocabulary
 - [FAILURE_MODES.md](FAILURE_MODES.md) — operational failure patterns (Master Bit-Rot
   Cascade, xtask fmt False Cascade, Master Test Panic Blocker, CI Cancellation Cascade,
-  Workflow PR-Only Trigger Observability Gap, rtk Masks Aggregator Failure)
+  Workflow PR-Only Trigger Observability Gap, Filtered Check Summaries Mask Aggregator
+  Failure)
 - [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md) — live CI vs `ci-green` label;
   reconciler behavior; merge-readiness query patterns
 - [ORCHESTRATION_DOCTRINE.md](ORCHESTRATION_DOCTRINE.md) — design philosophy behind the
@@ -695,5 +695,4 @@ The JSON receipt classifies the first observed failure and provides reproduction
 | `server_crash` | `crash_fix` | Fix crash before merge |
 | `new_test_bug` | `test_fix` | Fix test logic and rerun |
 | `unknown` | `triage` | Inspect logs and add classifier coverage |
-
 

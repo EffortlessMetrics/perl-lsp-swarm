@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp/blob/master/schemas/perllsp-settings.schema.json",
+  "title": "perllsp generic LSP settings",
+  "description": "Server-native settings accepted under the `perl` namespace by generic LSP clients. This is distinct from editor-extension settings such as VS Code's `perl-lsp.*` keys.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "perl": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspace": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "includePaths": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": ["lib", ".", "local/lib/perl5"],
+              "description": "Workspace-relative Perl module roots. Absolute or escaping entries are rejected on the resource-scoped LSP channel.",
+              "x-perllsp-scope": "resource",
+              "x-perllsp-transports": ["initializationOptions", "workspace/configuration", "workspace/didChangeConfiguration"]
+            },
+            "externalIncludePaths": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": [],
+              "description": "Absolute external Perl module roots. This is machine/user authority and is ignored on resource-scoped workspace payloads.",
+              "x-perllsp-scope": "machine",
+              "x-perllsp-transports": ["workspace/configuration-global"]
+            },
+            "discoveryExtensions": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": [],
+              "description": "Additional file extensions considered by workspace discovery.",
+              "x-perllsp-scope": "resource"
+            },
+            "discoverySkippedDirs": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": [],
+              "description": "Additional directory names skipped during workspace discovery.",
+              "x-perllsp-scope": "resource"
+            },
+            "useSystemInc": {
+              "type": "boolean",
+              "default": false,
+              "description": "Include the Perl interpreter's system @INC paths in module resolution.",
+              "x-perllsp-scope": "resource"
+            },
+            "resolutionTimeout": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 50,
+              "description": "Module-resolution timeout in milliseconds.",
+              "x-perllsp-scope": "resource"
+            },
+            "usePerl5lib": {
+              "type": "boolean",
+              "default": true,
+              "description": "Read PERL5LIB/PERLLIB and merge those paths into module resolution.",
+              "x-perllsp-scope": "resource"
+            },
+            "perl5libPrecedence": {
+              "type": "string",
+              "enum": ["prepend", "append"],
+              "default": "prepend",
+              "description": "Place PERL5LIB paths before or after configured include paths.",
+              "x-perllsp-scope": "resource"
+            }
+          }
+        },
+        "inlayHints": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "parameterHints": { "type": "boolean", "default": true },
+            "typeHints": { "type": "boolean", "default": true },
+            "chainedHints": { "type": "boolean", "default": false },
+            "maxLength": { "type": "integer", "minimum": 0, "default": 30 }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Resource and result limits consumed by the LSP runtime.",
+          "properties": {
+            "workspaceSymbolCap": { "type": "integer", "minimum": 0, "default": 200 },
+            "referencesCap": { "type": "integer", "minimum": 0, "default": 500 },
+            "completionCap": { "type": "integer", "minimum": 0, "default": 100 },
+            "documentSymbolCap": { "type": "integer", "minimum": 0, "default": 500 },
+            "codeLensCap": { "type": "integer", "minimum": 0, "default": 100 },
+            "diagnosticsPerFileCap": { "type": "integer", "minimum": 0, "default": 200 },
+            "inlayHintsCap": { "type": "integer", "minimum": 0, "default": 500 },
+            "astCacheMaxEntries": { "type": "integer", "minimum": 0, "default": 100 },
+            "astCacheTtlSecs": { "type": "integer", "minimum": 0, "default": 300 },
+            "symbolCacheMaxEntries": { "type": "integer", "minimum": 0, "default": 1000 },
+            "maxIndexedFiles": { "type": "integer", "minimum": 0, "default": 10000 },
+            "maxTotalSymbols": { "type": "integer", "minimum": 0, "default": 500000 },
+            "maxFileSizeBytes": { "type": "integer", "minimum": 0, "default": 1048576 },
+            "workspaceScanDeadlineMs": { "type": "integer", "minimum": 0, "default": 30000 },
+            "referenceSearchDeadlineMs": { "type": "integer", "minimum": 0, "default": 2000 },
+            "memoryWarningThresholdBytes": { "type": "integer", "minimum": 0 },
+            "memoryCriticalThresholdBytes": { "type": "integer", "minimum": 0 },
+            "astCacheMaxMemoryBytes": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "telemetry": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": false }
+          }
+        },
+        "nextEdit": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Preview gate for future next-edit suggestions; enabling it does not by itself create an editor-visible provider.",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false }
+          }
+        },
+        "perlcritic": {
+          "type": "object",
+          "additionalProperties": false,
+          "deprecated": true,
+          "description": "Legacy compatibility aliases. Prefer `critic.*`. Profile/theme paths are intentionally not accepted from the LSP client-settings channel.",
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "severity": { "type": "integer", "minimum": 1, "maximum": 5, "default": 3 }
+          }
+        },
+        "critic": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "severity": { "type": "integer", "minimum": 1, "maximum": 5, "default": 3 },
+            "engine": {
+              "type": "string",
+              "enum": ["native"],
+              "default": "native",
+              "description": "The LSP settings channel may select the native critic only. Trusted project config owns legacy external-process selection."
+            },
+            "profile": {
+              "type": "string",
+              "enum": ["recommended", "strict"],
+              "default": "recommended"
+            },
+            "include": { "type": "array", "items": { "type": "string" }, "default": [] },
+            "exclude": { "type": "array", "items": { "type": "string" }, "default": [] }
+          }
+        },
+        "formatting": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Generic formatting settings. Profile paths and arbitrary extra arguments are intentionally excluded from the LSP client-settings channel.",
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "formatOnSave": { "type": "boolean", "default": true },
+            "engine": {
+              "type": "string",
+              "enum": ["native", "compat", "off"],
+              "default": "native"
+            },
+            "maximumLineLength": { "type": "integer", "minimum": 0, "default": 80 },
+            "indentColumns": { "type": "integer", "minimum": 0 },
+            "tabs": { "type": "boolean" },
+            "openingBraceOnNewLine": { "type": "boolean", "default": false },
+            "cuddledElse": { "type": "boolean", "default": true },
+            "spaceAfterKeyword": { "type": "boolean", "default": true },
+            "addTrailingCommas": { "type": "boolean", "default": false },
+            "verticalAlignment": { "type": "boolean", "default": true },
+            "blockCommentIndentation": { "type": "integer", "minimum": 0, "default": 0 },
+            "timeoutSecs": { "type": "integer", "minimum": 0, "default": 10 }
+          }
+        },
+        "aiCompletion": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Client-controlled AI completion behavior. Endpoint and credential-routing fields are intentionally excluded because workspace-delivered LSP settings may not redirect source/secret-bearing requests.",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "provider": { "type": "string", "enum": ["openai_compat"], "default": "openai_compat" },
+            "model": { "type": "string", "default": "gpt-4o-mini" },
+            "timeoutMs": { "type": "integer", "minimum": 0, "default": 1800 },
+            "maxOutputTokens": { "type": "integer", "minimum": 1, "default": 64 },
+            "rateLimitRps": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
+            "maxInflight": { "type": "integer", "minimum": 1, "default": 1 },
+            "fallback": { "type": "boolean", "default": true },
+            "localModelMode": { "type": "boolean", "default": false },
+            "streaming": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean", "default": true },
+                "updateDebounceMs": { "type": "integer", "minimum": 0, "default": 60 }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "required": ["perl"]
+}

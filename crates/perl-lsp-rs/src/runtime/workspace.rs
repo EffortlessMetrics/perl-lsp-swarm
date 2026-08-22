@@ -27,7 +27,7 @@ use crate::runtime::workspace_progress::{
 };
 use crate::state::workspace_symbol_cap;
 use perl_module::path::file_path_to_module_name;
-use perl_module::rename::{apply_module_rename_edits, plan_module_rename_edits};
+use perl_module::rename::plan_module_rename_edits;
 #[cfg(feature = "workspace")]
 use perl_parser::workspace_index::{
     DegradationReason, EarlyExitReason, IndexState, ResourceKind, SymbolKind,
@@ -623,17 +623,18 @@ impl LspServer {
             }
         }
 
-        let mut candidates = self.symbol_index.lock().search_prefix(query);
-        if candidates.is_empty() && !query.is_empty() {
-            candidates = self.symbol_index.lock().search_fuzzy(query);
-        }
-        let mut dedup = HashSet::new();
-        candidates.retain(|candidate| dedup.insert(candidate.clone()));
-
-        let mut provider_results = provider.search_with_candidates(query, &source_map, &candidates);
-        if provider_results.is_empty() && !query.is_empty() {
-            provider_results = provider.search(query, &source_map);
-        }
+        let candidates = self.name_index_measurement_candidates(query);
+        let provider_results = provider.search(query, &source_map);
+        let canonical_matched_count = provider_results.len();
+        let canonical_names_missing_from_candidates =
+            count_canonical_names_missing_from(&provider_results, &candidates);
+        tracing::debug!(
+            candidate_count = candidates.len(),
+            canonical_matched_count,
+            canonical_names_missing_from_candidates,
+            candidate_acceleration = WORKSPACE_SYMBOL_CANDIDATE_UNPROVEN,
+            "Workspace symbol: canonical full search over open documents"
+        );
         let mut all_symbols: Vec<Value> = provider_results
             .into_iter()
             .filter_map(|symbol| serde_json::to_value(symbol).ok())
@@ -654,7 +655,11 @@ impl LspServer {
         self.record_workspace_symbols_provider_decision_trace(
             query,
             all_symbols.len(),
-            WorkspaceSymbolsTraceKind::OpenDocumentFallback,
+            WorkspaceSymbolsTraceKind::OpenDocumentFallback {
+                name_index_candidate_count: candidates.len(),
+                canonical_matched_count,
+                canonical_names_missing_from_candidates,
+            },
             0,
         );
         Ok(Some(to_json_array(&all_symbols)))
@@ -901,7 +906,46 @@ fn workspace_symbol_has_generated_label(name: &str, container_name: Option<&str>
         || container_name.is_some_and(|container| container.contains("[generated/framework]"))
 }
 
+/// The name index is a candidate accelerator only: until a candidate set proves
+/// it is a superset of every canonical match tier (#8262), workspace-symbol
+/// search runs the canonical full matcher and records the name-index profile as
+/// measurement only.
+const WORKSPACE_SYMBOL_CANDIDATE_UNPROVEN: &str = "unproven_superset_full_search";
+
+fn count_canonical_names_missing_from(
+    results: &[perl_lsp_rs_core::providers::workspace_symbols::WorkspaceSymbol],
+    candidates: &[String],
+) -> usize {
+    let candidates: HashSet<&str> = candidates.iter().map(String::as_str).collect();
+    let result_names: HashSet<&str> = results.iter().map(|symbol| symbol.name.as_str()).collect();
+    result_names.iter().filter(|name| !candidates.contains(**name)).count()
+}
+
 impl LspServer {
+    /// Name-index candidate profile for measurement only.
+    ///
+    /// Mirrors the historical candidate composition (case-sensitive prefix,
+    /// falling back to exact-token fuzzy when empty) so traces can quantify what
+    /// the accelerator would have contributed. The result never restricts the
+    /// canonical workspace-symbol search: a non-empty candidate set is not
+    /// completeness evidence (#8262).
+    ///
+    /// Live measurements are best-effort across transient `didChange` windows:
+    /// `symbol_index` reflects the prior generation until post-parse side
+    /// effects run, so counts recorded during a pending parse may compare
+    /// canonical results and candidates from different generations. Discriminating
+    /// accelerator validation happens through the pinned differential tests, not
+    /// through live-window receipts.
+    fn name_index_measurement_candidates(&self, query: &str) -> Vec<String> {
+        let mut candidates = self.symbol_index.lock().search_prefix(query);
+        if candidates.is_empty() && !query.is_empty() {
+            candidates = self.symbol_index.lock().search_fuzzy(query);
+        }
+        let mut seen = HashSet::new();
+        candidates.retain(|candidate| seen.insert(candidate.clone()));
+        candidates
+    }
+
     /// Search open documents for symbols (non-workspace stub)
     #[cfg(not(feature = "workspace"))]
     fn search_open_documents_for_symbols(
@@ -993,20 +1037,19 @@ impl LspServer {
             source_map.insert(uri.clone(), text.clone());
         }
 
-        let mut candidates = self.symbol_index.lock().search_prefix(query);
-        if candidates.is_empty() && !query.is_empty() {
-            candidates = self.symbol_index.lock().search_fuzzy(query);
-        }
-        let mut dedup = HashSet::new();
-        candidates.retain(|candidate| dedup.insert(candidate.clone()));
-
-        let mut symbols = provider.search_with_candidates(query, &source_map, &candidates);
-        if symbols.is_empty() && !query.is_empty() {
-            symbols = provider.search(query, &source_map);
-        }
+        let candidates = self.name_index_measurement_candidates(query);
+        let mut symbols = provider.search(query, &source_map);
+        tracing::debug!(
+            count = symbols.len(),
+            cap,
+            candidate_count = candidates.len(),
+            canonical_matched_count = symbols.len(),
+            canonical_names_missing_from_candidates =
+                count_canonical_names_missing_from(&symbols, &candidates),
+            candidate_acceleration = WORKSPACE_SYMBOL_CANDIDATE_UNPROVEN,
+            "Found symbols total"
+        );
         symbols.truncate(cap);
-
-        tracing::debug!(count = symbols.len(), cap, "Found symbols total");
 
         let result = serde_json::to_value(&symbols).unwrap_or_else(|_| json!([]));
 
@@ -1199,10 +1242,6 @@ impl LspServer {
                                     json!(config.inlay_hints_chained_hints)
                                 }
                                 "perl.inlayHints.maxLength" => json!(config.inlay_hints_max_length),
-                                "perl.testRunner.enabled" => json!(config.test_runner_enabled),
-                                "perl.testRunner.testCommand" => json!(config.test_runner_command),
-                                "perl.testRunner.testArgs" => json!(config.test_runner_args),
-                                "perl.testRunner.testTimeout" => json!(config.test_runner_timeout),
                                 "perl.formatting.enabled" => json!(config.perltidy_enabled),
                                 "perl.formatting.engine" => {
                                     let engine = match config.formatting_engine {
@@ -1347,7 +1386,7 @@ impl LspServer {
                     )
                 };
 
-                // Update server config (inlay hints, test runner)
+                // Update server-owned LSP configuration.
                 {
                     let mut config = self.config.lock();
                     config.update_from_value(perl);
@@ -1622,162 +1661,6 @@ impl LspServer {
         }
 
         tracing::debug!("Processed file watcher change: {}", uri);
-    }
-
-    /// Handle workspace/willRenameFiles request
-    pub(super) fn handle_will_rename_files(
-        &self,
-        params: Option<Value>,
-    ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params
-            && let Some(files) = params["files"].as_array()
-        {
-            let mut workspace_edit = json!({
-                "changes": {}
-            });
-            let mut planned_workspace_texts: std::collections::BTreeMap<String, (String, String)> =
-                std::collections::BTreeMap::new();
-
-            for file in files {
-                let Some(old_uri) = file["oldUri"].as_str() else {
-                    continue;
-                };
-                let Some(new_uri) = file["newUri"].as_str() else {
-                    continue;
-                };
-
-                tracing::debug!("File rename: {} -> {}", old_uri, new_uri);
-
-                // Extract module names from file paths
-                let old_module = path_to_module_name(old_uri);
-                let new_module = path_to_module_name(new_uri);
-
-                if !old_module.is_empty() && !new_module.is_empty() {
-                    if !planned_workspace_texts.contains_key(old_uri)
-                        && let Some(text) = self.read_workspace_text(old_uri)
-                    {
-                        planned_workspace_texts.insert(old_uri.to_string(), (text.clone(), text));
-                    }
-                    if let Some((_, current_text)) = planned_workspace_texts.get_mut(old_uri) {
-                        let planned =
-                            plan_module_rename_edits(current_text, &old_module, &new_module);
-                        if !planned.is_empty() {
-                            *current_text = apply_module_rename_edits(current_text, &planned);
-                        }
-                    }
-
-                    // Find all files that reference the old module
-                    // Note: Query operation - use coordinator.index() for consistency
-                    #[cfg(feature = "workspace")]
-                    let dependents = if let Some(coordinator) = self.coordinator() {
-                        coordinator.index().find_dependents(&old_module)
-                    } else {
-                        Vec::new()
-                    };
-
-                    #[cfg(not(feature = "workspace"))]
-                    let dependents = Vec::<String>::new();
-
-                    for dependent_uri in dependents {
-                        if !planned_workspace_texts.contains_key(&dependent_uri) {
-                            let Some(text) = self.read_workspace_text(&dependent_uri) else {
-                                continue;
-                            };
-                            planned_workspace_texts
-                                .insert(dependent_uri.clone(), (text.clone(), text));
-                        }
-
-                        if let Some((_, current_text)) =
-                            planned_workspace_texts.get_mut(&dependent_uri)
-                        {
-                            let planned =
-                                plan_module_rename_edits(current_text, &old_module, &new_module);
-                            if !planned.is_empty() {
-                                *current_text = apply_module_rename_edits(current_text, &planned);
-                            }
-                        }
-                    }
-                }
-
-                // Update the index for the renamed file
-                // Note: Mutation operation - use coordinator with lifecycle tracking
-                #[cfg(feature = "workspace")]
-                if let Some(coordinator) = self.coordinator() {
-                    coordinator.notify_change(old_uri);
-                    coordinator.notify_change(new_uri);
-                    let workspace_index = coordinator.index();
-                    workspace_index.remove_file(old_uri);
-                    if let Some(path) = uri_to_fs_path(new_uri)
-                        && let Ok(content) = read_text_file_with_encoding(&path)
-                        && let Ok(url) = url::Url::parse(new_uri)
-                        && let Err(e) = workspace_index.index_file(url, content.clone())
-                    {
-                        tracing::warn!("Failed to index renamed file {}: {}", new_uri, e);
-                    }
-                    coordinator.notify_parse_complete(old_uri);
-                    coordinator.notify_parse_complete(new_uri);
-                }
-
-                // Warn the user if open documents reference the old module name via
-                // patterns that were not updated (e.g., `->` static calls, `@ISA`,
-                // qualified function calls). These are known gaps tracked in
-                // docs/reference/KNOWN_LIMITATIONS.md.
-                if !old_module.is_empty() {
-                    #[cfg(feature = "workspace")]
-                    let updated_uris: std::collections::HashSet<&str> =
-                        planned_workspace_texts.keys().map(String::as_str).collect();
-                    #[cfg(not(feature = "workspace"))]
-                    let updated_uris = std::collections::HashSet::<&str>::new();
-                    // Build a word-boundary pattern so "Base" does not match "Database".
-                    // Perl module names consist of \w and ::, so we check that any match
-                    // of old_module in the document text is not immediately preceded or
-                    // followed by a word character.
-                    let documents = self.documents.lock();
-                    let unhandled = documents.iter().any(|(uri, doc)| {
-                        // Skip the file being renamed itself — it is expected to contain
-                        // the old module name (e.g., `package OldModule;`).
-                        if uri.as_str() == old_uri {
-                            return false;
-                        }
-                        if updated_uris.contains(uri.as_str()) {
-                            return false;
-                        }
-                        // Word-boundary check: reject matches where old_module is part of
-                        // a longer identifier (e.g., "Base" inside "Database").
-                        module_name_appears_in_text(&doc.text, old_module.as_str())
-                    });
-                    drop(documents);
-                    if unhandled {
-                        let msg = format!(
-                            "Some references to '{}' may not have been updated. \
-                                 String literals, comments, and dynamic method calls \
-                                 are not automatically rewritten. \
-                                 Use find-and-replace to update them manually.",
-                            old_module
-                        );
-                        if let Err(e) =
-                            self.show_message(crate::runtime::window::MessageType::Warning, &msg)
-                        {
-                            tracing::debug!("Failed to send rename warning: {}", e);
-                        }
-                    }
-                }
-            }
-
-            #[cfg(feature = "workspace")]
-            for (uri, (original_text, current_text)) in planned_workspace_texts {
-                self.append_workspace_edits(
-                    &mut workspace_edit,
-                    &uri,
-                    build_module_rename_workspace_edits(&original_text, &current_text),
-                );
-            }
-
-            return Ok(Some(workspace_edit));
-        }
-
-        // Return empty edit if no changes needed
-        Ok(Some(json!({"changes": {}})))
     }
 
     /// Handle workspace/didDeleteFiles notification
@@ -2685,10 +2568,15 @@ impl LspServer {
 }
 
 #[cfg(feature = "workspace")]
+#[derive(Clone, Copy)]
 enum WorkspaceSymbolsTraceKind {
     SourceBackedReadyIndex,
     PartialIndexFallback,
-    OpenDocumentFallback,
+    OpenDocumentFallback {
+        name_index_candidate_count: usize,
+        canonical_matched_count: usize,
+        canonical_names_missing_from_candidates: usize,
+    },
 }
 
 #[cfg(feature = "workspace")]
@@ -2765,7 +2653,7 @@ impl LspServer {
                 "legacy_provider",
                 "partial-index workspace symbols remain fallback behavior until the index is fresh and ready",
             ),
-            WorkspaceSymbolsTraceKind::OpenDocumentFallback => (
+            WorkspaceSymbolsTraceKind::OpenDocumentFallback { .. } => (
                 "fallback",
                 "open_document_fallback",
                 "fallback",
@@ -2777,113 +2665,48 @@ impl LspServer {
             ),
         };
 
-        self.record_provider_decision_trace(
-            "workspace_symbols",
-            &json!({
-                "provider": "workspace_symbols",
-                "provider_action": "workspace/symbol",
-                "decision": decision,
-                "reason": reason,
-                "fact_source": fact_source,
-                "confidence": confidence,
-                "freshness": "fresh",
-                "source_backed": source_backed,
-                "source_backed_state": source_backed_state,
-                "dynamic_boundary": false,
-                "fallback_state": fallback_state,
-                "live_provider_result_kind": "array",
-                "live_provider_result_count": result_count,
-                "generated_pilot_count": generated_pilot_count,
-                "query_empty": query.is_empty(),
-                "live_cutover": if source_backed {
-                    if generated_pilot_count > 0 {
-                        "partial_live_source_backed_generated_pilot"
-                    } else {
-                        "partial_live_source_backed"
-                    }
+        let mut receipt = json!({
+            "provider": "workspace_symbols",
+            "provider_action": "workspace/symbol",
+            "decision": decision,
+            "reason": reason,
+            "fact_source": fact_source,
+            "confidence": confidence,
+            "freshness": "fresh",
+            "source_backed": source_backed,
+            "source_backed_state": source_backed_state,
+            "dynamic_boundary": false,
+            "fallback_state": fallback_state,
+            "live_provider_result_kind": "array",
+            "live_provider_result_count": result_count,
+            "generated_pilot_count": generated_pilot_count,
+            "query_empty": query.is_empty(),
+            "live_cutover": if source_backed {
+                if generated_pilot_count > 0 {
+                    "partial_live_source_backed_generated_pilot"
                 } else {
-                    "fallback_only"
-                },
-                "claim_boundary": claim_boundary,
-            }),
-        );
-    }
-}
-
-impl LspServer {
-    #[cfg(feature = "workspace")]
-    fn append_workspace_edits(&self, workspace_edit: &mut Value, uri: &str, mut edits: Vec<Value>) {
-        if edits.is_empty() {
-            return;
-        }
-        if let Some(existing) = workspace_edit["changes"][uri].as_array_mut() {
-            existing.append(&mut edits);
-        } else {
-            workspace_edit["changes"][uri] = Value::Array(edits);
-        }
-    }
-
-    #[cfg(feature = "workspace")]
-    fn read_workspace_text(&self, uri: &str) -> Option<String> {
-        // Priority 1: actively-open document (editor is authoritative).
-        if let Some(doc) = self.documents.lock().get(uri) {
-            return Some(doc.text_arc.to_string());
-        }
-
-        // Priority 2: workspace index document store (content from the last
-        // time the file was indexed; avoids a synchronous disk read for files
-        // that were open and then closed within the session).
-        if let Some(coordinator) = self.coordinator()
-            && let Some(doc) = coordinator.index().document_store().get(uri)
+                    "partial_live_source_backed"
+                }
+            } else {
+                "fallback_only"
+            },
+            "claim_boundary": claim_boundary,
+        });
+        if let WorkspaceSymbolsTraceKind::OpenDocumentFallback {
+            name_index_candidate_count,
+            canonical_matched_count,
+            canonical_names_missing_from_candidates,
+        } = kind
         {
-            return Some(doc.text().to_string());
+            receipt["name_index_candidate_count"] = json!(name_index_candidate_count);
+            receipt["canonical_matched_count"] = json!(canonical_matched_count);
+            receipt["canonical_names_missing_from_candidates"] =
+                json!(canonical_names_missing_from_candidates);
+            receipt["candidate_acceleration"] = json!(WORKSPACE_SYMBOL_CANDIDATE_UNPROVEN);
         }
 
-        // Priority 3: read from disk.  `workspace/willRenameFiles` is a
-        // workspace-wide refactoring operation; returning edits for files not
-        // currently open in the editor is explicitly correct per LSP 3.17 §3.17
-        // (the client requests cross-file edits and applies them).  This path
-        // is restricted to workspace-root-relative paths by the caller and is
-        // bounded to files that `find_dependents` already knows about.
-        uri_to_fs_path(uri).and_then(|path| read_text_file_with_encoding(&path).ok())
+        self.record_provider_decision_trace("workspace_symbols", &receipt);
     }
-}
-
-#[cfg(feature = "workspace")]
-fn build_module_rename_workspace_edits(original: &str, updated: &str) -> Vec<Value> {
-    let original_lines: Vec<&str> = original.split('\n').collect();
-    let updated_lines: Vec<&str> = updated.split('\n').collect();
-
-    debug_assert_eq!(
-        original_lines.len(),
-        updated_lines.len(),
-        "module rename planning should not change line counts"
-    );
-
-    original_lines
-        .iter()
-        .zip(updated_lines.iter())
-        .enumerate()
-        .filter_map(|(line, (old_line, new_line))| {
-            if old_line == new_line {
-                return None;
-            }
-
-            Some(json!({
-                "range": {
-                    "start": {
-                        "line": line,
-                        "character": 0,
-                    },
-                    "end": {
-                        "line": line,
-                        "character": old_line.len(),
-                    }
-                },
-                "newText": new_line
-            }))
-        })
-        .collect()
 }
 
 #[cfg(feature = "workspace")]
@@ -3059,6 +2882,9 @@ pub(super) fn path_to_module_name(uri: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    // Test assertions favor `expect_err()` with a descriptive message over
+    // silent unwraps; the workspace-wide deny is a production-code rule.
+    #![allow(clippy::expect_used)]
     #[cfg(feature = "workspace")]
     use super::WORKSPACE_INDEX_PROGRESS_TOKEN;
     use super::{LspServer, module_name_appears_in_text};
@@ -3086,6 +2912,141 @@ mod tests {
 
         assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
         assert_eq!(err.message, "workspace/symbol/resolve: missing required parameter 'params'");
+    }
+
+    /// #8262 counterexample: the case-sensitive name-index prefix search returns
+    /// only `foobar2` for query "foo", but a non-empty candidate set must never
+    /// suppress the canonical case-insensitive matcher that also admits `FooBar`.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn open_document_symbol_query_returns_case_insensitive_matches_despite_partial_candidates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut server = LspServer::new();
+        server.index_coordinator = None;
+        server.test_apply_did_open(
+            "file:///wssym8262/upper.pm",
+            "package Upper;\nsub FooBar { 1 }\n1;\n",
+            1,
+        )?;
+        server.test_apply_did_open(
+            "file:///wssym8262/lower.pm",
+            "package Lower;\nsub foobar2 { 1 }\n1;\n",
+            1,
+        )?;
+
+        assert_eq!(
+            server.symbol_index.lock().search_prefix("foo"),
+            vec!["foobar2".to_string()],
+            "precondition: the case-sensitive name index must be partial for this fixture"
+        );
+
+        let result = server
+            .test_handle_workspace_symbols(Some(json!({"query": "foo"})))
+            .map_err(|e| format!("workspace/symbol failed: {e:?}"))?;
+        let symbols = result.ok_or("workspace/symbol returned no payload")?;
+        let names: Vec<&str> = symbols
+            .as_array()
+            .ok_or("workspace/symbol must return an array")?
+            .iter()
+            .filter_map(|symbol| symbol.get("name").and_then(Value::as_str))
+            .collect();
+
+        assert_eq!(
+            names,
+            vec!["FooBar", "foobar2"],
+            "canonical case-insensitive matching must surface both symbols in stable rank order"
+        );
+        Ok(())
+    }
+
+    /// #8262 matrix through the production open-document path: mixed case,
+    /// camelCase/snake_case/acronyms, package-qualified names, one-char vs
+    /// loose-query threshold, empty/whitespace queries, duplicate names across
+    /// documents, and multiple occurrences of one name. Every row must match
+    /// what the unrestricted canonical matcher produces.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn open_document_symbol_query_matrix_is_completeness_neutral()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut server = LspServer::new();
+        server.index_coordinator = None;
+        server.test_apply_did_open(
+            "file:///wssym8262/matrix_a.pm",
+            "package MatrixA;\nsub FooBar { 1 }\nsub run { 2 }\nsub getLogger { 3 }\n1;\n",
+            1,
+        )?;
+        server.test_apply_did_open(
+            "file:///wssym8262/matrix_b.pm",
+            "package MatrixB;\nsub foobar2 { 1 }\nsub run { 2 }\nsub parseHTML { 3 }\n1;\n",
+            1,
+        )?;
+        server.test_apply_did_open(
+            "file:///wssym8262/matrix_c.pm",
+            "package MatrixC::Inner;\nsub run { 1 }\npackage MatrixC::Other;\nsub run { 2 }\n1;\n",
+            1,
+        )?;
+
+        let names_for = |query: &str| -> Result<Vec<String>, Box<dyn std::error::Error>> {
+            let result = server
+                .test_handle_workspace_symbols(Some(json!({ "query": query })))
+                .map_err(|e| format!("workspace/symbol failed: {e:?}"))?;
+            let payload = result.ok_or("workspace/symbol returned no payload")?;
+            let array = payload.as_array().ok_or("workspace/symbol must return an array")?;
+            Ok(array
+                .iter()
+                .filter_map(|symbol| symbol.get("name").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect())
+        };
+
+        assert_eq!(names_for("foo")?, vec!["FooBar".to_string(), "foobar2".to_string()]);
+        assert_eq!(names_for("FooBar")?.first(), Some(&"FooBar".to_string()));
+        assert!(names_for("gL")?.contains(&"getLogger".to_string()));
+        assert!(names_for("html")?.contains(&"parseHTML".to_string()));
+        assert_eq!(names_for("MatrixC")?.len(), 2, "package-qualified names match");
+
+        assert_eq!(
+            names_for("f")?,
+            vec!["FooBar".to_string(), "foobar2".to_string()],
+            "one-char queries stay on exact/prefix tier"
+        );
+
+        let all = names_for("")?;
+        let whitespace = names_for("   ")?;
+        assert_eq!(all.len(), 12, "empty query returns every open-document symbol");
+        assert_eq!(whitespace.len(), all.len(), "whitespace queries trim to empty");
+
+        assert_eq!(
+            names_for("run")?.iter().filter(|name| name.as_str() == "run").count(),
+            4,
+            "duplicate names keep every occurrence across and within documents"
+        );
+        Ok(())
+    }
+
+    /// #8262: caps apply after the canonical full search, so truncation never
+    /// depends on candidate acceleration.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn open_document_symbol_cap_truncates_after_canonical_search()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut server = LspServer::new();
+        server.index_coordinator = None;
+        let mut source = String::from("package CapDemo;\n");
+        for i in 0..250 {
+            source.push_str(&format!("sub cap_symbol_{i:03} {{ {i} }}\n"));
+        }
+        source.push_str("1;\n");
+        server.test_apply_did_open("file:///wssym8262/cap.pm", &source, 1)?;
+
+        let result = server
+            .test_handle_workspace_symbols(Some(json!({ "query": "cap_symbol" })))
+            .map_err(|e| format!("workspace/symbol failed: {e:?}"))?;
+        let payload = result.ok_or("workspace/symbol returned no payload")?;
+        let array = payload.as_array().ok_or("workspace/symbol must return an array")?;
+
+        assert_eq!(array.len(), crate::state::workspace_symbol_cap().min(250));
+        Ok(())
     }
 
     #[derive(Clone, Default)]
@@ -3212,6 +3173,32 @@ mod tests {
         );
         assert_eq!(current_engine, perl_lsp_rs_core::config::CriticEngine::Native);
         Ok(())
+    }
+
+    #[test]
+    fn did_change_configuration_ignores_removed_test_runner_authority() {
+        let server = LspServer::new();
+
+        server.test_handle_did_change_configuration(Some(json!({
+            "settings": {
+                "perl": {
+                    "testRunner": {
+                        "enabled": false,
+                        "command": "CANARY-EXECUTABLE",
+                        "args": ["CANARY-ARG"],
+                        "cwd": "CANARY-CWD",
+                        "env": {"CANARY": "CANARY-VALUE"},
+                        "timeout": 0
+                    },
+                    "telemetry": {"enabled": true}
+                }
+            }
+        })));
+
+        assert!(server.config.lock().telemetry_enabled);
+        let serialized = serde_json::to_value(&*server.config.lock()).expect("serialize config");
+        assert!(serialized.get("testRunner").is_none());
+        assert!(serialized.to_string().find("CANARY").is_none());
     }
 
     #[test]

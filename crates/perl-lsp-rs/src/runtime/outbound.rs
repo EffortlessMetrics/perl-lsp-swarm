@@ -76,7 +76,11 @@ pub(crate) struct RecordingSink {
     pub messages: std::sync::Mutex<Vec<OutboundMessage>>,
 }
 
+// This RecordingSink test helper is `#[cfg(test)]`-only and uses `unwrap()`
+// on its own private mutex, which is never contended across a panic
+// boundary; the workspace-wide deny is a production-code rule.
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 impl RecordingSink {
     pub(crate) fn new() -> Self {
         Self { messages: std::sync::Mutex::new(Vec::new()) }
@@ -89,6 +93,7 @@ impl RecordingSink {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 impl OutboundSink for RecordingSink {
     fn send_response(&self, response: JsonRpcResponse) -> io::Result<()> {
         self.messages.lock().unwrap().push(OutboundMessage::Response(response));
@@ -316,6 +321,9 @@ fn serialize_message(msg: &OutboundMessage) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    // Test assertions favor `unwrap()`/`panic!` over propagating errors;
+    // the workspace-wide deny is a production-code rule.
+    #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use serde_json::json;
     use std::error::Error;

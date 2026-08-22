@@ -1,45 +1,31 @@
 use crate::incremental::{
-    IncrementalState, diagnostics::ReparseResult, edit::Edit, lex::create_lex_checkpoints,
+    IncrementalState, ParseSnapshotStrategy,
+    diagnostics::{LexRestartReport, LexRestartStrategy, ReparseResult},
+    edit::Edit,
+    lex::{capture_live_checkpoint, lex_from_live_checkpoint, lex_source_with_checkpoints},
 };
 use anyhow::Result;
-use perl_lexer::{PerlLexer, TokenType};
-use perl_parser_core::ast::{Node, NodeKind, SourceLocation};
-use perl_parser_core::parser::Parser;
-use ropey::Rope;
 use std::ops::Range;
 
 pub(crate) struct SingleEditReparse {
     pub(crate) range: Range<usize>,
-    pub(crate) reused_tokens: usize,
+    pub(crate) lex_restart: LexRestartReport,
     pub(crate) token_count: usize,
 }
 
-/// Apply a (possibly negative) `byte_shift` to a token offset without wrapping.
-///
-/// A negative `byte_shift` whose magnitude exceeds `offset` would underflow when
-/// `(offset as isize + byte_shift)` is cast back to `usize`, silently wrapping to
-/// a huge value and corrupting the token stream. Clamp the result to 0 instead so
-/// the shifted offset stays valid (fixes #2471).
-fn shift_offset(offset: usize, byte_shift: isize) -> usize {
-    (offset as isize).saturating_add(byte_shift).max(0) as usize
-}
-
 pub(crate) fn apply_text_edit_to_state(state: &mut IncrementalState, edit: &Edit) -> Result<()> {
-    let old_end = edit.old_end_byte.min(state.source.len());
-    let start = edit.start_byte.min(state.source.len());
-    if !state.source.is_char_boundary(start) || !state.source.is_char_boundary(old_end) {
+    let old_end = edit.old_end_byte.min(state.source().len());
+    let start = edit.start_byte.min(state.source().len());
+    if !state.source().is_char_boundary(start) || !state.source().is_char_boundary(old_end) {
         anyhow::bail!("edit range is not on UTF-8 boundaries");
     }
 
     let mut new_source =
-        String::with_capacity(state.source.len() - (old_end - start) + edit.new_text.len());
-    new_source.push_str(&state.source[..start]);
+        String::with_capacity(state.source().len() - (old_end - start) + edit.new_text.len());
+    new_source.push_str(&state.source()[..start]);
     new_source.push_str(&edit.new_text);
-    new_source.push_str(&state.source[old_end..]);
-    state.source = new_source;
-    state.rope = Rope::from_str(&state.source);
-    state.line_index = perl_line_index::LineIndex::new(&state.source);
-
+    new_source.push_str(&state.source()[old_end..]);
+    state.replace_source_text(new_source);
     Ok(())
 }
 
@@ -47,148 +33,198 @@ pub(crate) fn apply_single_edit(
     state: &mut IncrementalState,
     edit: &Edit,
 ) -> Result<SingleEditReparse> {
-    let Some(cp) = state.find_lex_checkpoint(edit.start_byte).copied() else {
+    let checkpoint_boundary = state
+        .tokens()
+        .iter()
+        .find(|token| token.end >= edit.start_byte)
+        .map_or(edit.start_byte, |token| token.start);
+    let Some(summary) = state.find_lex_checkpoint(checkpoint_boundary).copied() else {
         apply_text_edit_to_state(state, edit)?;
-        anyhow::bail!("No checkpoint found");
+        anyhow::bail!("No lexer restart boundary found");
     };
-    let old_end = edit.old_end_byte.min(state.source.len());
-    let start = edit.start_byte.min(state.source.len());
-    let byte_shift = edit.new_text.len() as isize - (old_end - start) as isize;
+    let Some(mut live_checkpoint) = capture_live_checkpoint(state.source(), summary.byte) else {
+        apply_text_edit_to_state(state, edit)?;
+        anyhow::bail!("Could not reproduce complete live lexer state at restart boundary");
+    };
+    let old_len = edit
+        .old_end_byte
+        .checked_sub(edit.start_byte)
+        .ok_or_else(|| anyhow::anyhow!("edit end precedes edit start"))?;
+    if !live_checkpoint.try_apply_edit(edit.start_byte, old_len, edit.new_text.len()) {
+        apply_text_edit_to_state(state, edit)?;
+        anyhow::bail!("Edit invalidated required live lexer state");
+    }
+
+    let restart_byte = live_checkpoint.position;
+    let reused_prefix_tokens =
+        state.tokens().iter().take_while(|token| token.start < restart_byte).count();
     apply_text_edit_to_state(state, edit)?;
 
-    use perl_lexer::{Checkpointable, LexerCheckpoint, Position};
-    let mut lexer = PerlLexer::new(&state.source);
-    let mut lex_cp = LexerCheckpoint::new();
-    lex_cp.position = cp.byte;
-    lex_cp.mode = cp.mode;
-    lex_cp.current_pos =
-        Position { byte: cp.byte, line: (cp.line + 1) as u32, column: (cp.column + 1) as u32 };
-    lexer.restore(&lex_cp);
-    let start_idx =
-        state.tokens.iter().position(|t| t.start >= cp.byte).unwrap_or(state.tokens.len());
-    let edit_end_in_new = start + edit.new_text.len();
-    let old_sync_start =
-        state.tokens.iter().position(|t| t.start >= old_end).unwrap_or(state.tokens.len());
-    let mut new_tokens = Vec::new();
-    let mut last = cp.byte;
-    let mut synced = false;
-    let mut sync_old_idx = state.tokens.len();
-    while let Some(token) = lexer.next_token() {
-        if token.token_type == TokenType::EOF {
-            break;
-        }
-        if token.end <= last {
-            anyhow::bail!("incremental lexer did not advance at byte {}", token.start);
-        }
-        last = token.end;
-        if token.start >= edit_end_in_new {
-            let mut found = false;
-            for (off, old_tok) in state.tokens[old_sync_start..].iter().enumerate() {
-                let shifted_start = shift_offset(old_tok.start, byte_shift);
-                let shifted_end = shift_offset(old_tok.end, byte_shift);
-                if token.start == shifted_start
-                    && token.end == shifted_end
-                    && token.token_type == old_tok.token_type
-                {
-                    found = true;
-                    sync_old_idx = old_sync_start + off + 1;
-                    break;
-                }
-            }
-            new_tokens.push(token);
-            if found {
-                synced = true;
-                break;
-            }
-        } else {
-            new_tokens.push(token);
-        }
-    }
-    let reused_tokens = if synced { state.tokens.len().saturating_sub(sync_old_idx) } else { 0 };
-    if synced {
-        for old_tok in &state.tokens[sync_old_idx..] {
-            let mut adjusted = old_tok.clone();
-            adjusted.start = shift_offset(adjusted.start, byte_shift);
-            adjusted.end = shift_offset(adjusted.end, byte_shift);
-            last = adjusted.end;
-            new_tokens.push(adjusted);
-        }
-    }
-    state.tokens.splice(start_idx.., new_tokens);
-    state.lex_checkpoints = create_lex_checkpoints(&state.tokens, &state.line_index);
-    Ok(SingleEditReparse { range: cp.byte..last, reused_tokens, token_count: state.tokens.len() })
+    let lexed = lex_from_live_checkpoint(state.source(), state.line_index(), &live_checkpoint)?;
+
+    let mut tokens = state.tokens()[..reused_prefix_tokens].to_vec();
+    tokens.extend(lexed.tokens);
+
+    let mut checkpoints = state
+        .lex_checkpoints()
+        .iter()
+        .take_while(|checkpoint| checkpoint.byte < restart_byte)
+        .copied()
+        .collect::<Vec<_>>();
+    checkpoints.extend(lexed.checkpoints);
+    state.replace_lex_state(tokens, checkpoints);
+
+    let lex_restart = LexRestartReport {
+        strategy: LexRestartStrategy::LiveCheckpointToEof,
+        restart_byte,
+        relexed_bytes: state.source().len().saturating_sub(restart_byte),
+        reused_prefix_tokens,
+        reused_suffix_tokens: 0,
+    };
+
+    Ok(SingleEditReparse {
+        range: restart_byte..state.source().len(),
+        lex_restart,
+        token_count: state.tokens().len(),
+    })
 }
 
-#[expect(deprecated, reason = "full reparse is the legacy AST field's supported refresh boundary")]
 pub(crate) fn full_reparse(state: &mut IncrementalState) -> Result<ReparseResult> {
-    let mut parser = Parser::new(&state.source);
-    state.ast = match parser.parse() {
-        Ok(ast) => ast,
-        Err(e) => Node::new(
-            NodeKind::Error {
-                message: e.to_string(),
-                expected: vec![],
-                found: None,
-                partial: None,
-            },
-            SourceLocation { start: 0, end: state.source.len() },
-        ),
+    state.refresh_parse_output(ParseSnapshotStrategy::IncrementalFullFallback)?;
+    let source_len = state.source().len();
+    let lexed = lex_source_with_checkpoints(state.source(), state.line_index());
+    state.replace_lex_state(lexed.tokens, lexed.checkpoints);
+
+    let lex_restart = LexRestartReport {
+        strategy: LexRestartStrategy::FullRelex,
+        restart_byte: 0,
+        relexed_bytes: source_len,
+        reused_prefix_tokens: 0,
+        reused_suffix_tokens: 0,
     };
-    let mut lexer = PerlLexer::new(&state.source);
-    let mut tokens = Vec::new();
-    while let Some(token) = lexer.next_token() {
-        if token.token_type == TokenType::EOF {
-            break;
-        }
-        tokens.push(token);
-    }
-    state.tokens = tokens;
-    state.rope = Rope::from_str(&state.source);
-    state.line_index = perl_line_index::LineIndex::new(&state.source);
-    state.lex_checkpoints = create_lex_checkpoints(&state.tokens, &state.line_index);
-    state.parse_checkpoints = IncrementalState::create_parse_checkpoints(&state.ast);
+
     Ok(ReparseResult {
-        changed_ranges: vec![0..state.source.len()],
+        changed_ranges: vec![0..source_len],
+        snapshot: state.snapshot().clone(),
         diagnostics: vec![],
-        reparsed_bytes: state.source.len(),
-        reused_tokens: 0,
-        token_count: state.tokens.len(),
+        lex_restart,
+        reparsed_bytes: source_len,
+        reused_tokens: lex_restart.reused_tokens(),
+        token_count: state.tokens().len(),
     })
 }
 
 #[cfg(test)]
-mod reparse_offset_tests {
+mod tests {
     use super::*;
-    use crate::incremental::IncrementalState;
-    use anyhow::Result;
+    use perl_lexer::{PerlLexer, Token, TokenType};
 
-    #[test]
-    fn shift_offset_clamps_negative_underflow_to_zero() {
-        // A negative `byte_shift` whose magnitude exceeds the offset previously
-        // wrapped to a huge usize via `(offset as isize + byte_shift) as usize`.
-        // It must clamp to 0 instead (regression for #2471).
-        assert_eq!(shift_offset(3, -10), 0);
-        assert_eq!(shift_offset(0, -1), 0);
-        // Exact boundary: shifting to zero is fine, one past zero clamps.
-        assert_eq!(shift_offset(5, -5), 0);
-        assert_eq!(shift_offset(5, -6), 0);
-        // Non-underflowing shifts are unaffected.
-        assert_eq!(shift_offset(5, -2), 3);
-        assert_eq!(shift_offset(5, 0), 5);
-        assert_eq!(shift_offset(5, 4), 9);
+    fn fresh_tokens(source: &str) -> Vec<Token> {
+        let mut lexer = PerlLexer::new(source);
+        let mut tokens = Vec::new();
+        while let Some(token) = lexer.next_token() {
+            if token.token_type == TokenType::EOF {
+                break;
+            }
+            tokens.push(token);
+        }
+        tokens
+    }
+
+    fn assert_tokens_equal(actual: &[Token], expected: &[Token]) {
+        assert_eq!(actual.len(), expected.len(), "token count diverged");
+        for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+            assert_eq!(actual.token_type, expected.token_type, "token kind {index}");
+            assert_eq!(actual.text, expected.text, "token payload {index}");
+            assert_eq!(actual.start, expected.start, "token start {index}");
+            assert_eq!(actual.end, expected.end, "token end {index}");
+        }
     }
 
     #[test]
-    fn apply_single_edit_negative_shift_does_not_wrap_token_offsets() -> Result<()> {
-        // Build a document whose tokens near the start sit at small byte offsets,
-        // then delete a large run from the very beginning so `byte_shift` is
-        // negative and larger in magnitude than those token positions. Before the
-        // fix, the reused/sync token offsets wrapped to enormous usize values; now
-        // they must stay bounded by the (much smaller) new source length.
-        let source = "my $a = 1;\nmy $b = 2;\nmy $c = 3;\nmy $d = 4;\n".to_string();
-        let mut state = IncrementalState::new(source.clone());
+    fn equal_width_edit_relexes_to_eof_without_speculative_suffix_reuse() -> Result<()> {
+        let source = "my $x = 1; my $y = 2;";
+        let start = source.find("= 1").ok_or_else(|| anyhow::anyhow!("literal missing"))? + 2;
+        let edit = Edit {
+            start_byte: start,
+            old_end_byte: start + 1,
+            new_end_byte: start + 1,
+            new_text: "9".to_string(),
+        };
+        let mut state = IncrementalState::new(source.to_string());
+        let result = apply_single_edit(&mut state, &edit)?;
 
-        // Delete the first statement plus newline (12 bytes) from offset 0.
+        assert_eq!(result.lex_restart.strategy, LexRestartStrategy::LiveCheckpointToEof);
+        assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
+        assert_eq!(result.range.end, state.source.len());
+        assert_tokens_equal(&state.tokens, &fresh_tokens(&state.source));
+        Ok(())
+    }
+
+    #[test]
+    fn method_name_edit_restores_after_arrow_state_and_matches_fresh_lex() -> Result<()> {
+        let source = "$object->method(); my $x = 1;";
+        let start = source.find("method").ok_or_else(|| anyhow::anyhow!("method missing"))?;
+        let edit = Edit {
+            start_byte: start,
+            old_end_byte: start + "method".len(),
+            new_end_byte: start + "member".len(),
+            new_text: "member".to_string(),
+        };
+        let mut state = IncrementalState::new(source.to_string());
+        let result = apply_single_edit(&mut state, &edit)?;
+
+        assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
+        assert_tokens_equal(&state.tokens, &fresh_tokens(&state.source));
+        Ok(())
+    }
+
+    #[test]
+    fn token_boundary_insertion_relexes_adjoining_token_and_matches_fresh_lex() -> Result<()> {
+        let source = "my $foo;";
+        let token_start = source.find("$foo").ok_or_else(|| anyhow::anyhow!("variable missing"))?;
+        let edit_start = token_start + "$foo".len();
+        let edit = Edit {
+            start_byte: edit_start,
+            old_end_byte: edit_start,
+            new_end_byte: edit_start + 1,
+            new_text: "x".to_string(),
+        };
+        let mut state = IncrementalState::new(source.to_string());
+        let result = apply_single_edit(&mut state, &edit)?;
+
+        assert_eq!(result.lex_restart.strategy, LexRestartStrategy::LiveCheckpointToEof);
+        assert_eq!(
+            result.lex_restart.restart_byte, 2,
+            "restart must begin before the adjoining variable token"
+        );
+        assert_tokens_equal(&state.tokens, &fresh_tokens(&state.source));
+        Ok(())
+    }
+
+    #[test]
+    fn heredoc_body_edit_fails_closed_then_full_reparse_matches_fresh_lex() -> Result<()> {
+        let source = "my $value = <<EOF;\nbody\nEOF\nprint $value;\n";
+        let start = source.find("body").ok_or_else(|| anyhow::anyhow!("body missing"))?;
+        let edit = Edit {
+            start_byte: start,
+            old_end_byte: start + "body".len(),
+            new_end_byte: start + "changed".len(),
+            new_text: "changed".to_string(),
+        };
+        let mut state = IncrementalState::new(source.to_string());
+        let result = apply_single_edit(&mut state, &edit);
+        assert!(result.is_err(), "queued-heredoc restart must fail closed");
+        let reparsed = full_reparse(&mut state)?;
+
+        assert_eq!(reparsed.lex_restart.strategy, LexRestartStrategy::FullRelex);
+        assert_tokens_equal(&state.tokens, &fresh_tokens(&state.source));
+        Ok(())
+    }
+
+    #[test]
+    fn length_changing_edit_keeps_every_token_span_in_current_source() -> Result<()> {
+        let source = "my $a = 1;\nmy $b = 2;\nmy $c = 3;\n";
         let delete_len = "my $a = 1;\n".len();
         let edit = Edit {
             start_byte: 0,
@@ -196,22 +232,17 @@ mod reparse_offset_tests {
             new_end_byte: 0,
             new_text: String::new(),
         };
+        let mut state = IncrementalState::new(source.to_string());
+        let result = apply_single_edit(&mut state, &edit)?;
 
-        // `apply_single_edit` may legitimately bail (e.g. no usable checkpoint),
-        // in which case the wrapping branch was never reached. The invariant we
-        // assert is: if it succeeds, every resulting token offset is in range.
-        if apply_single_edit(&mut state, &edit).is_ok() {
-            let new_len = state.source.len();
-            for tok in &state.tokens {
-                assert!(
-                    tok.start <= new_len && tok.end <= new_len,
-                    "token offset wrapped: start={}, end={}, source len={}",
-                    tok.start,
-                    tok.end,
-                    new_len,
-                );
-                assert!(tok.start <= tok.end, "token start exceeds end: {tok:?}");
-            }
+        assert_eq!(result.lex_restart.restart_byte, 0);
+        assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
+        assert_tokens_equal(&state.tokens, &fresh_tokens(&state.source));
+        for token in &state.tokens {
+            assert!(token.start <= token.end);
+            assert!(token.end <= state.source.len());
+            assert!(state.source.is_char_boundary(token.start));
+            assert!(state.source.is_char_boundary(token.end));
         }
         Ok(())
     }

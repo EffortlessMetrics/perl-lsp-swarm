@@ -40,7 +40,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -239,7 +239,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -706,3 +706,35 @@ jobs:
             printf -- '- **Target version**: %s\n' "$TARGET_VERSION"
             echo "- **Status**: All crates verified on crates.io sparse index"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The downstream smoke test must learn which version was actually
+      # published, not infer it from a ref that merely looks like a release
+      # tag (#9593). This receipt is written only after the sparse-index
+      # verification above succeeded, and this job never runs for a dry run,
+      # so its presence is evidence of a real publication.
+      - name: Write publication receipt
+        if: success()
+        env:
+          CRATES_JSON: ${{ needs.compute-order.outputs.crates }}
+          PUBLISHED_VERSION: ${{ needs.compute-order.outputs.version }}
+          SUBJECT_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$PUBLISHED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            printf '::error::Refusing to write a receipt for a malformed version: %s\n' "$PUBLISHED_VERSION"
+            exit 1
+          fi
+          mkdir -p receipt
+          COUNT="$(printf '%s\n' "$CRATES_JSON" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+          printf '{"version":"%s","subject_sha":"%s","crate_count":%s,"publish_run_id":"%s"}\n' \
+            "$PUBLISHED_VERSION" "$SUBJECT_SHA" "$COUNT" "$RUN_ID" > receipt/publication-receipt.json
+          cat receipt/publication-receipt.json
+
+      - name: Upload publication receipt
+        if: success()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: publication-receipt
+          path: receipt/publication-receipt.json
+          retention-days: 90

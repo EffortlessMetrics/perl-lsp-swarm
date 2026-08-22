@@ -19,6 +19,9 @@ pub(super) struct DebugSession {
     pub(super) thread_id: i32,
     /// Last resume command issued while running.
     pub(super) last_resume_mode: ResumeMode,
+    /// Monotonic stopped-suspension authority used to prevent old frame ids
+    /// from becoming valid again when the debugger reuses a numeric frame id.
+    pub(super) stopped_generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]

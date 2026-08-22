@@ -1954,16 +1954,13 @@ fn run_single_gate(
     }
 
     if command
-        == "cargo build --release -p perl-lsp-rs --bin perl-lsp --locked && cargo xtask smoke inline-completion --binary target/release/perl-lsp"
+        == "cargo build --release -p perllsp --bin perllsp --locked && cargo xtask smoke inline-completion --binary target/release/perllsp"
     {
         return run_internal_xtask_gate(gate, &log_path, command, start, || {
-            cmd(
-                "cargo",
-                ["build", "--release", "-p", "perl-lsp-rs", "--bin", "perl-lsp", "--locked"],
-            )
-            .run()
-            .context("Failed to build release perl-lsp binary for inline-completion smoke")?;
-            super::inline_completion_smoke::run(PathBuf::from("target/release/perl-lsp"))
+            cmd("cargo", ["build", "--release", "-p", "perllsp", "--bin", "perllsp", "--locked"])
+                .run()
+                .context("Failed to build release perllsp binary for inline-completion smoke")?;
+            super::inline_completion_smoke::run(PathBuf::from("target/release/perllsp"))
         });
     }
 
@@ -1992,7 +1989,13 @@ fn run_single_gate(
         });
     }
 
-    let execution = run_shell_command_with_timeout(command, &log_path, timeout_secs);
+    let execution = run_shell_command_with_retries(
+        command,
+        &log_path,
+        timeout_secs,
+        gate.retry_count,
+        &gate.name,
+    );
     let duration_ms = start.elapsed().as_millis() as u64;
 
     match execution {
@@ -2065,6 +2068,93 @@ struct ShellExecutionResult {
     stdout: String,
     exit_code: i32,
     timed_out: bool,
+}
+
+/// Run a gate command, retrying only when an attempt is killed by the
+/// watchdog (`timed_out`), up to `retry_count` additional attempts.
+///
+/// Why timeouts only, and why this is not masking (#10023): the four
+/// observed race-family gates (`unit_lsp_full` 420s, `unit_parser_stack_full`
+/// 180s, `inline_completion_registration`/`core` 150s, `unit_dap_support_full`
+/// 300s) all failed with exit 124 at the exact budget while their captured
+/// logs held compiler warnings and zero test output — the budget was
+/// consumed by a cold-cache dependency rebuild, not by a test. Genuine test
+/// hangs remain bounded by the in-test ceilings (e.g. the parse-worker
+/// barrier's 1-minute labeled assert, #3812), so a watchdog timeout retried
+/// once is a compile-overrun remedy, not a hang hider. A non-zero test
+/// exit (`fail`) is never retried — a real assertion failure must stay red.
+///
+/// Each attempt truncates the gate log; when more than one attempt ran, a
+/// trailer records the attempt count so receipts stay honest about what the
+/// single visible log represents.
+fn run_shell_command_with_retries(
+    command: &str,
+    log_path: &Path,
+    timeout_secs: u64,
+    retry_count: u32,
+    gate_name: &str,
+) -> Result<ShellExecutionResult> {
+    let total_attempts = 1u32 + retry_count;
+    let mut attempt = 1u32;
+    let mut timeouts_seen = 0u32;
+    loop {
+        let mut execution = run_shell_command_with_timeout(command, log_path, timeout_secs)?;
+        if execution.timed_out {
+            timeouts_seen += 1;
+            let trailer = append_retry_trailer(
+                log_path,
+                gate_name,
+                attempt,
+                total_attempts,
+                "watchdog timeout",
+            )?;
+            execution.stdout.push_str(&trailer);
+            if attempt < total_attempts {
+                eprintln!(
+                    "gate {gate_name} timed out after {timeout_secs}s on attempt {attempt}; \
+                     retrying ({}/{total_attempts})",
+                    attempt + 1
+                );
+                attempt += 1;
+                continue;
+            }
+        } else if timeouts_seen > 0 {
+            // `run_shell_command_with_timeout` reads the log back as `stdout`
+            // before this trailer exists, so mirror it into the returned
+            // stdout — the receipt's output summary must show the retry. The
+            // label reflects the FINAL attempt's own outcome: a nonzero exit
+            // after an earlier timeout is still a failure, never "passed".
+            let outcome = if execution.exit_code == 0 {
+                "passed after earlier watchdog timeout(s)".to_string()
+            } else {
+                format!("exited {} after earlier watchdog timeout(s)", execution.exit_code)
+            };
+            let trailer =
+                append_retry_trailer(log_path, gate_name, attempt, total_attempts, &outcome)?;
+            execution.stdout.push_str(&trailer);
+        }
+        return Ok(execution);
+    }
+}
+
+/// Append an attempt trailer to the gate log. Each fresh attempt truncates
+/// the file, so the trailer on the FINAL attempt's log is the only durable
+/// record of the retry history that produced it.
+fn append_retry_trailer(
+    log_path: &Path,
+    gate_name: &str,
+    attempt: u32,
+    total_attempts: u32,
+    outcome: &str,
+) -> Result<String> {
+    use std::io::Write as _;
+    let mut file = fs::OpenOptions::new().append(true).open(log_path).with_context(|| {
+        format!("Failed to open gate log for retry trailer: {}", log_path.display())
+    })?;
+    let trailer =
+        format!("\n==== gate {gate_name} attempt {attempt}/{total_attempts}: {outcome} ====\n");
+    file.write_all(trailer.as_bytes()).context("Failed to write gate log retry trailer")?;
+    Ok(trailer)
 }
 
 const MAX_GATE_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
@@ -2196,6 +2286,17 @@ fn shell_command_process(command: &str, timeout_secs: u64) -> Command {
 
 #[cfg(windows)]
 fn terminate_shell_command(child: &mut Child) {
+    // Kill the whole tree: the gate command runs under `cmd /C`, whose
+    // cargo/rustc grandchildren survive a plain kill() of the shell and keep
+    // holding target/ locks a retry attempt would then contend with
+    // (#11825 review). taskkill /T walks the descendants; /F forces.
+    let pid = child.id().to_string();
+    Command::new("taskkill")
+        .args(["/PID", &pid, "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok();
     child.kill().ok();
 }
 
@@ -2940,9 +3041,9 @@ mod tests {
         extract_output_summary, failure_guidance, filter_gates, is_blocking_gate_status,
         is_cargo_test_command, is_latest_commit, load_policy_for_inspection, load_receipt,
         output_diff, parse_first_failure, parse_test_metrics, plan_gates, read_gate_output,
-        run_internal_commit_check, run_internal_xtask_gate, run_shell_command_with_timeout,
-        run_single_gate, selects_commit_tier_gate, staged_guard_violation, static_gate_plan,
-        write_receipt,
+        run_gate_plan, run_internal_commit_check, run_internal_xtask_gate,
+        run_shell_command_with_timeout, run_single_gate, selects_commit_tier_gate,
+        staged_guard_violation, static_gate_plan, write_receipt,
     };
     use crate::tasks::ci_scope::{
         ArchWidener, DirectCrate, HeavyLaneEntry, LaneDecisions, LaneEntry, PlatformOverrides,
@@ -4243,9 +4344,9 @@ gates:
     fn shell_command_natural_exit_preserves_actual_exit_code() -> color_eyre::eyre::Result<()> {
         let tmp = tempdir()?;
         let log_path = tmp.path().join("natural_exit.log");
-        // A command that exits quickly with a non-zero code.
-        // On Windows `cmd /C exit 42` is reliable; on Unix `bash -lc "exit 42"`.
-        let command = if cfg!(windows) { "exit 42" } else { "exit 42" };
+        // A command that exits quickly with a non-zero code. `exit 42` is spelled the
+        // same for the Windows and Unix shells this runner drives.
+        let command = "exit 42";
 
         let execution = run_shell_command_with_timeout(command, &log_path, 30)?;
 
@@ -4420,6 +4521,169 @@ gates:
         assert!(
             diff.metric_changes.iter().any(|change| change.metric_name == "tests_total"),
             "diff should include the changed metric rendered above"
+        );
+        Ok(())
+    }
+
+    /// #10023 race family: a gate whose attempt hits the watchdog must retry
+    /// when policy declares retry_count, and the final log must record the
+    /// attempt history. The family gates' budgets are dominated by cold-cache
+    /// dependency rebuilds (exit 124 with zero test output), so one retry is a
+    /// compile-overrun remedy, not a hang hider.
+    #[test]
+    fn timeout_gate_with_retry_count_runs_both_attempts_and_trails_the_log()
+    -> color_eyre::eyre::Result<()> {
+        let gate = GateDefinition {
+            name: "synthetic_retry_timeout_gate".to_string(),
+            tier: "merge_gate".to_string(),
+            description: "Always times out; proves retry_count is honored".to_string(),
+            required: true,
+            command: if cfg!(windows) {
+                "ping -n 4 127.0.0.1".to_string()
+            } else {
+                "sleep 3".to_string()
+            },
+            timeout_seconds: 1,
+            retry_count: 1,
+            budgets: None,
+            quarantine: false,
+            tags: Vec::new(),
+            artifacts: Vec::new(),
+            matrix: None,
+            planning: Some(GatePlanningConfig {
+                role: GatePlanningRole::AlwaysOn,
+                packages: Vec::new(),
+            }),
+        };
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+        let config = GateRunnerConfig::default();
+
+        let result = run_single_gate(&gate, &policy, tmp.path(), &config, None)?;
+
+        assert_eq!(result.status, "timeout", "both attempts time out; final status stays timeout");
+        assert!(
+            result.duration_ms >= 2_000,
+            "duration {:?} should cover two 1s attempts",
+            result.duration_ms
+        );
+        let log = std::fs::read_to_string(tmp.path().join("synthetic_retry_timeout_gate.log"))?;
+        assert!(
+            log.contains("attempt 2/2: watchdog timeout"),
+            "final log must trail the attempt history; got: {log}"
+        );
+        Ok(())
+    }
+
+    /// A rescued gate (first attempt times out, second passes) must report
+    /// `pass` with the rescue visible in the receipt's output summary.
+    /// POSIX-only: the marker-file dance needs a shell.
+    #[test]
+    #[cfg(unix)]
+    fn timeout_gate_rescued_on_retry_reports_pass_with_rescue_trailer()
+    -> color_eyre::eyre::Result<()> {
+        // The marker is interpolated into a shell command, so its name must
+        // stay shell-safe: ThreadId's Debug output (`ThreadId(2)`) carries
+        // parentheses that break the `if [ -f ... ]` syntax on Linux.
+        static MARKER_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = MARKER_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let marker =
+            std::env::temp_dir().join(format!("gate-retry-marker-{}-{seq}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let marker_display = marker.display().to_string();
+        let command = format!(
+            "if [ -f {marker_display} ]; then echo rescued; else touch {marker_display}; sleep 3; fi"
+        );
+        let gate = GateDefinition {
+            name: "synthetic_rescued_gate".to_string(),
+            tier: "merge_gate".to_string(),
+            description: "Times out once, passes on retry".to_string(),
+            required: true,
+            command,
+            timeout_seconds: 1,
+            retry_count: 1,
+            budgets: None,
+            quarantine: false,
+            tags: Vec::new(),
+            artifacts: Vec::new(),
+            matrix: None,
+            planning: Some(GatePlanningConfig {
+                role: GatePlanningRole::AlwaysOn,
+                packages: Vec::new(),
+            }),
+        };
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+        let config = GateRunnerConfig::default();
+
+        let result = run_single_gate(&gate, &policy, tmp.path(), &config, None)?;
+        let _ = std::fs::remove_file(&marker);
+
+        assert_eq!(result.status, "pass", "second attempt exits 0 before its sleep");
+        assert!(
+            result.duration_ms >= 1_000,
+            "duration {:?} should include the timed-out first attempt",
+            result.duration_ms
+        );
+        let summary = result.output_summary.unwrap_or_default();
+        assert!(
+            summary.contains("passed after earlier watchdog timeout(s)"),
+            "receipt summary must surface the rescue; got: {summary}"
+        );
+        Ok(())
+    }
+
+    /// A first-attempt timeout rescued by a NONZERO second exit must report
+    /// `fail` with a label that does not claim a pass (#11825 review: the
+    /// trailer previously read "passed after earlier watchdog timeout(s)"
+    /// regardless of the final attempt's exit code).
+    #[test]
+    #[cfg(unix)]
+    fn timeout_gate_failing_retry_labels_the_failure_not_a_pass() -> color_eyre::eyre::Result<()> {
+        static MARKER_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = MARKER_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let marker = std::env::temp_dir()
+            .join(format!("gate-retry-fail-marker-{}-{seq}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let marker_display = marker.display().to_string();
+        let command = format!(
+            "if [ -f {marker_display} ]; then exit 3; else touch {marker_display}; sleep 3; fi"
+        );
+        let gate = GateDefinition {
+            name: "synthetic_retry_fail_gate".to_string(),
+            tier: "merge_gate".to_string(),
+            description: "Times out once, exits nonzero on retry".to_string(),
+            required: true,
+            command,
+            timeout_seconds: 1,
+            retry_count: 1,
+            budgets: None,
+            quarantine: false,
+            tags: Vec::new(),
+            artifacts: Vec::new(),
+            matrix: None,
+            planning: Some(GatePlanningConfig {
+                role: GatePlanningRole::AlwaysOn,
+                packages: Vec::new(),
+            }),
+        };
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+        let config = GateRunnerConfig::default();
+
+        let result = run_single_gate(&gate, &policy, tmp.path(), &config, None)?;
+        let _ = std::fs::remove_file(&marker);
+
+        assert_eq!(result.status, "fail", "second attempt exits 3; the gate must stay red");
+        assert_eq!(result.exit_code, Some(3));
+        let summary = result.output_summary.unwrap_or_default();
+        assert!(
+            summary.contains("exited 3 after earlier watchdog timeout(s)"),
+            "receipt summary must label the failed retry honestly; got: {summary}"
+        );
+        assert!(
+            !summary.contains("passed after earlier"),
+            "a failed retry must never be labeled a pass; got: {summary}"
         );
         Ok(())
     }
@@ -5336,6 +5600,12 @@ error: aborting due to previous error
         assert!(is_cargo_test_command("cargo test -p perl-parser --lib"), "with flags");
         assert!(is_cargo_test_command("cargo test --workspace"), "workspace flag");
         assert!(is_cargo_test_command("/usr/local/bin/cargo test"), "absolute path cargo");
+        assert!(
+            is_cargo_test_command(
+                "cargo build -p perllsp --locked && cargo test --locked --tests -p perl-lsp-rs"
+            ),
+            "prebuild chain keeps test recognition"
+        );
     }
 
     #[test]
@@ -5346,6 +5616,10 @@ error: aborting due to previous error
         assert!(!is_cargo_test_command("cargo xtask fmt --check"), "xtask fmt is not test");
         assert!(!is_cargo_test_command("true"), "bare true is not test");
         assert!(!is_cargo_test_command(""), "empty string is not test");
+        assert!(
+            !is_cargo_test_command("cargo build -p perllsp --locked"),
+            "prebuild alone is still not a test command"
+        );
     }
 
     #[test]
@@ -5498,6 +5772,252 @@ error: aborting due to previous error
 
         assert_eq!(result.status, "pass");
         assert_eq!(result.command, VERSION_SYNC_GATE_COMMAND);
+        Ok(())
+    }
+
+    // =========================================================================
+    // inline_completion_contract gate-split tests (issue #6845)
+    //
+    // The former `inline_completion_contract` gate chained four Cargo commands
+    // with `&&`, so one failure masked the other three contracts.  It was
+    // replaced with four independent gates.  The tests below prove the split
+    // is structurally correct against the live gate-policy.yaml.
+    // =========================================================================
+
+    /// The four expected gate names and their canonical package scope.
+    const INLINE_COMPLETION_GATE_NAMES: &[&str] = &[
+        "inline_completion_registration",
+        "lsp_registration_contract",
+        "lsp_capability_snapshots",
+        "inline_completion_core",
+    ];
+
+    #[test]
+    fn inline_completion_contract_replaced_by_four_independent_gates()
+    -> color_eyre::eyre::Result<()> {
+        // Load the live policy so any drift in gate-policy.yaml causes a
+        // compile-time-equivalent failure here rather than silently passing.
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        // The old composite gate must not exist.
+        let old_gate = policy.gates.iter().find(|g| g.name == "inline_completion_contract");
+        assert!(
+            old_gate.is_none(),
+            "inline_completion_contract must be removed — it chains commands \
+             with && which masks individual contract failures (issue #6845)"
+        );
+
+        // All four replacement gates must exist.
+        for &expected_name in INLINE_COMPLETION_GATE_NAMES {
+            let gate = policy.gates.iter().find(|g| g.name == expected_name);
+            assert!(
+                gate.is_some(),
+                "Expected independent gate '{expected_name}' not found in gate-policy.yaml \
+                 (issue #6845 requires four separate gate entries)"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn inline_completion_gates_have_no_command_chaining() -> color_eyre::eyre::Result<()> {
+        // Each new gate must have exactly one command.  Shell operators (`&&`,
+        // `||`, `;`) inside a single command string re-introduce the masking
+        // that the split was designed to eliminate: the runner cannot observe
+        // individual sub-command results and cannot continue past the first
+        // failure within the shell chain.
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        for &gate_name in INLINE_COMPLETION_GATE_NAMES {
+            let gate = policy
+                .gates
+                .iter()
+                .find(|g| g.name == gate_name)
+                .ok_or_else(|| color_eyre::eyre::eyre!("gate '{gate_name}' not found"))?;
+
+            assert!(
+                !gate.command.contains("&&"),
+                "Gate '{gate_name}' command must not contain '&&': {}",
+                gate.command,
+            );
+            assert!(
+                !gate.command.contains("||"),
+                "Gate '{gate_name}' command must not contain '||': {}",
+                gate.command,
+            );
+            // Semicolons used as statement separators are the same failure
+            // mode; a single trailing ';' from YAML folded-block is fine but a
+            // second Cargo invocation after ';' defeats the isolation.
+            let cmd = gate.command.trim_end_matches(';');
+            assert!(
+                !cmd.contains(';'),
+                "Gate '{gate_name}' command must not contain ';' separators: {}",
+                gate.command,
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn inline_completion_gates_are_required_within_tier_and_family_scoped()
+    -> color_eyre::eyre::Result<()> {
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        for &gate_name in INLINE_COMPLETION_GATE_NAMES {
+            let gate = policy
+                .gates
+                .iter()
+                .find(|gate| gate.name == gate_name)
+                .ok_or_else(|| color_eyre::eyre::eyre!("gate '{gate_name}' not found"))?;
+
+            assert!(
+                gate.required,
+                "Gate '{gate_name}' must remain required within the pr_fast runner; \
+                 this field does not claim that GitHub protects the containing PR Smoke job"
+            );
+            let planning = gate.planning.as_ref().ok_or_else(|| {
+                color_eyre::eyre::eyre!("Gate '{gate_name}' must have planning metadata")
+            })?;
+            assert_eq!(planning.role, GatePlanningRole::RustPackageScoped);
+            let packages: Vec<_> = planning.packages.iter().map(String::as_str).collect();
+            assert_eq!(
+                packages,
+                vec!["perl-lsp-rs", "perl-lsp-rs-core"],
+                "every split child must preserve the former family's selection on either package"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn inline_completion_gates_cover_the_same_packages_as_former_composite()
+    -> color_eyre::eyre::Result<()> {
+        // The original `inline_completion_contract` was scoped to
+        // [perl-lsp-rs, perl-lsp-rs-core].  The four replacement gates must
+        // collectively cover at least these packages so the package-scoped
+        // trigger logic selects them on the same set of code changes.
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        let covered_packages: HashSet<&str> = INLINE_COMPLETION_GATE_NAMES
+            .iter()
+            .filter_map(|&gate_name| policy.gates.iter().find(|g| g.name == gate_name))
+            .flat_map(|gate| {
+                gate.planning
+                    .as_ref()
+                    .map(|p| p.packages.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+                    .unwrap_or_default()
+            })
+            .collect();
+
+        let required_packages = ["perl-lsp-rs", "perl-lsp-rs-core"];
+        for &pkg in &required_packages {
+            assert!(
+                covered_packages.contains(pkg),
+                "The inline-completion gate family must cover package '{pkg}' \
+                 (it was covered by the former composite gate). \
+                 Current coverage: {covered_packages:?}"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// (issue #6845) Union coverage across the family is not the property that
+    /// matters — the former composite was selected when a diff touched *either*
+    /// package, and ran all four commands. Assert the actual selected set for
+    /// each package independently, so a future narrowing of any child's scope
+    /// (which union coverage would still accept) fails here.
+    #[test]
+    fn each_former_composite_package_selects_the_whole_inline_completion_family()
+    -> color_eyre::eyre::Result<()> {
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        let family: Vec<GateDefinition> = INLINE_COMPLETION_GATE_NAMES
+            .iter()
+            .map(|&gate_name| {
+                policy
+                    .gates
+                    .iter()
+                    .find(|gate| gate.name == gate_name)
+                    .cloned()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("gate '{gate_name}' not found"))
+            })
+            .collect::<color_eyre::eyre::Result<_>>()?;
+
+        for package in ["perl-lsp-rs", "perl-lsp-rs-core"] {
+            let plan = build_pr_fast_plan_from_scope_with_targets(
+                GateTier::PrFast,
+                "origin/main".to_string(),
+                family.clone(),
+                Some(scope_output("code", &[package], &[], &[])),
+                true,
+                false,
+                None,
+                None,
+            )?;
+
+            let selected: HashSet<&str> =
+                plan.selected.iter().map(|planned| planned.gate.name.as_str()).collect();
+
+            for &gate_name in INLINE_COMPLETION_GATE_NAMES {
+                assert!(
+                    selected.contains(gate_name),
+                    "a change touching only '{package}' must still select '{gate_name}': \
+                     the former composite ran all four contracts on either package, so a \
+                     child scoped away from one of them silently narrows coverage. \
+                     Selected: {selected:?}"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn gate_runner_reports_independent_results_when_a_peer_fails() -> color_eyre::eyre::Result<()> {
+        let failing_gate = tier_gate("gate_a_fails", "pr_fast", "exit 1");
+        let passing_gate = tier_gate("gate_b_still_runs", "pr_fast", "exit 0");
+        let policy = policy_with_gates(vec![failing_gate.clone(), passing_gate.clone()]);
+        let plan = static_gate_plan(
+            GateTier::PrFast,
+            "HEAD".to_string(),
+            vec![failing_gate, passing_gate],
+            None,
+        );
+        let config = GateRunnerConfig {
+            tier: GateTier::PrFast,
+            output_format: OutputFormat::Summary,
+            fail_fast: false,
+            ..GateRunnerConfig::default()
+        };
+
+        let receipt = run_gate_plan(&plan, &policy, &config)?;
+
+        assert_eq!(receipt.gates.len(), 2, "the real plan must emit both terminal rows");
+        assert_eq!(receipt.gates[0].gate_name, "gate_a_fails");
+        assert_eq!(receipt.gates[0].status, "fail");
+        assert_eq!(receipt.gates[1].gate_name, "gate_b_still_runs");
+        assert_eq!(receipt.gates[1].status, "pass");
+        assert!(
+            receipt.gates.iter().all(|gate| gate.log_path.is_some()),
+            "each terminal row must retain its independent log path"
+        );
+        assert_eq!(receipt.summary.total_gates, 2);
+        assert_eq!(receipt.summary.failed, 1);
+        assert_eq!(receipt.summary.passed, 1);
+        assert_eq!(
+            receipt.summary.blocking_failures.as_deref(),
+            Some(&["gate_a_fails".to_string()][..])
+        );
+
         Ok(())
     }
 }

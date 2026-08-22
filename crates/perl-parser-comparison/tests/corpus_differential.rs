@@ -59,10 +59,10 @@ fn workspace_root() -> PathBuf {
     if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
         let manifest = PathBuf::from(manifest_dir);
         // crates/perl-parser-comparison -> workspace root is two levels up
-        if let Some(root) = manifest.parent().and_then(|p| p.parent()) {
-            if root.join("Cargo.toml").exists() {
-                return root.to_owned();
-            }
+        if let Some(root) = manifest.parent().and_then(|p| p.parent())
+            && root.join("Cargo.toml").exists()
+        {
+            return root.to_owned();
         }
     }
     // Fallback: walk up from cwd looking for workspace Cargo.toml
@@ -72,12 +72,11 @@ fn workspace_root() -> PathBuf {
     };
     loop {
         let candidate = dir.join("Cargo.toml");
-        if candidate.exists() {
-            if let Ok(content) = std::fs::read_to_string(&candidate) {
-                if content.contains("[workspace]") {
-                    return dir;
-                }
-            }
+        if candidate.exists()
+            && let Ok(content) = std::fs::read_to_string(&candidate)
+            && content.contains("[workspace]")
+        {
+            return dir;
         }
         match dir.parent() {
             Some(p) => dir = p.to_owned(),

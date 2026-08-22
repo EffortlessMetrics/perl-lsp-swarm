@@ -1188,11 +1188,18 @@ The thread-safe semantic token provider achieves exceptional performance:
 
 This makes it suitable for real-time LSP operations and high-frequency syntax highlighting updates.
 
-## Import Optimization Integration (**Diataxis: Reference**)
+## Import Optimization Integration — Historical Prototype (Withdrawn)
+
+> **Currentness boundary:** This section preserves the design and proof examples for
+> the withdrawn legacy line-oriented organizer. It is not a description of a live
+> capability. The organizer remains withdrawn pending #8319/#10696: #8319 must admit
+> a bounded source-preserving cohort, and #10696 must land the proven cutover.
 
 ### Overview
 
-The import optimization system provides comprehensive analysis and optimization of Perl import statements through LSP code actions. It integrates seamlessly with the existing code actions framework to provide real-time import management.
+The following material describes the former import optimization prototype. Its
+implementation and integration claims are historical and must not be used as current
+product or contributor guidance.
 
 ### Core Components
 
@@ -1217,7 +1224,7 @@ fn optimize_imports(&self) -> Option<CodeAction> {
 
 ### Import Analysis Engine
 
-**Features Provided**:
+**Features Described by the Withdrawn Prototype**:
 - **Unused Import Detection**: Regex-based usage analysis identifies import statements never used in code
 - **Duplicate Import Consolidation**: Merges multiple import lines from same module into single optimized statements
 - **Missing Import Detection**: Identifies Module::symbol references requiring additional imports
@@ -1252,7 +1259,7 @@ impl ImportOptimizer {
 }
 ```
 
-### LSP Integration Pattern
+### Historical LSP Integration Pattern (Not Active)
 
 **Code Action Registration**:
 ```rust
@@ -1287,7 +1294,7 @@ fn handle_code_action(&self, params: Option<Value>) -> Result<Option<Value>, Jso
         &diagnostics
     );
     
-    // Import optimization is automatically included via optimize_imports()
+    // The withdrawn prototype would have included import optimization here.
     Ok(Some(json!(actions)))
 }
 ```
@@ -1312,7 +1319,7 @@ static IMPORT_REGEX: Lazy<Regex> = Lazy::new(|| {
 });
 ```
 
-### Testing Integration
+### Historical Testing Example (Not a Current Contract)
 
 **Comprehensive Test Coverage**:
 ```rust
@@ -1338,13 +1345,13 @@ print "Hello World\n";
 }
 ```
 
-### Editor Integration Benefits
+### Historical Editor Integration Benefits (Unavailable While Withdrawn)
 
-1. **VSCode Integration**: Seamless "Organize Imports" command via LSP code actions
-2. **Real-time Analysis**: Import issues detected as you type with immediate fixes
-3. **Batch Operations**: Single action to clean up all import issues in a file  
-4. **Workspace-wide**: Can be applied across entire Perl codebases
-5. **Non-destructive**: Preview changes before applying optimizations
+1. **VSCode Integration**: The former prototype exposed an "Organize Imports" command via LSP code actions
+2. **Real-time Analysis**: The former prototype detected import issues as you typed
+3. **Batch Operations**: The former prototype offered a single action to clean up imports in a file
+4. **Workspace-wide**: The former prototype was intended for Perl codebases
+5. **Non-destructive**: The former prototype intended to preview changes before applying optimizations
 
 ## Enhanced LSP Cancellation System Integration (*Diataxis: Explanation* - Understanding enhanced cancellation architecture for responsive LSP operations)
 
@@ -1739,7 +1746,7 @@ pub fn create_extract_subroutine_action(&self, node: &Node) -> CodeAction {
 }
 ```
 
-**SourceOrganizeImports Operations**:
+**Historical `SourceOrganizeImports` Operations (Withdrawn)**:
 ```rust
 // Comprehensive import optimization
 pub fn create_organize_imports_action(&self, document_uri: &str) -> CodeAction {
@@ -1932,7 +1939,7 @@ The Perl LSP server has achieved **100% user-visible coverage (53/53)** and **10
 |---------|---------|----------|------------------|
 | **Cross-file Definition** | ✅ Complete | 98% success rate | Package::subroutine patterns |
 | **Workspace Indexing** | ✅ Complete | Dual indexing | Qualified/bare function names |
-| **Import Optimization** | ✅ Complete | Full analysis | Remove unused, add missing, sort |
+| **Import Optimization** | Withdrawn | Legacy line-oriented prototype retained here for history; pending #8319/#10696 |
 | **File Path Completion** | ✅ Complete | Enterprise security | Path traversal prevention |
 | **Multi-root Workspace** | ✅ Complete | Full support | Scalable indexing architecture |
 | **Workspace Refactoring** | ✅ Complete | Cross-file safe | Extract variable/subroutine |
@@ -1951,7 +1958,7 @@ The Perl LSP server has achieved **100% user-visible coverage (53/53)** and **10
 |----------|------------|---------|-------------|-------------------|
 | **RefactorExtract** | Variable, Subroutine | ✅ Complete | <50ms | ✅ Dual indexing aware |
 | **RefactorRewrite** | Modernize patterns, Add pragmas | ✅ Complete | <75ms | ✅ Workspace analysis |
-| **SourceOrganizeImports** | Remove unused, Add missing, Sort | ✅ Complete | <100ms | ✅ Cross-file dependency tracking |
+| **SourceOrganizeImports** | Legacy remove/add/sort prototype | Withdrawn pending #8319/#10696 | — | Not a current production capability |
 | **QuickFix** | Syntax corrections, Policy fixes | ✅ Complete | <25ms | ✅ Integrated with diagnostics |
 
 ### Performance Achievements (*Diataxis: Explanation* - PR #140 impact)
@@ -4832,28 +4839,39 @@ cargo test -p perl-dap -- test_setup_environment_path_separator
 - Environment variable merging and PERL5LIB construction
 - Empty argument lists and include paths
 
-### Future Roadmap (*Diataxis: Explanation* - Phase 2/3 native implementation)
+### Roadmap (*Diataxis: Explanation* - native DAP direction)
 
-**Phase 2: Native Rust Adapter** (Planned):
+**Native Rust adapter** (current default):
 
-Replace bridge with native Rust DAP implementation:
+`perl-dap` speaks DAP directly and drives the local `perl -d` runtime. No
+bundled Perl module sits between them:
 
 ```
-VS Code ↔ perl-dap (Rust) ↔ Devel::TSPerlDAP (Perl shim) ↔ perl -d
+IDE / DAP client ↔ perl-dap (Rust) ↔ local perl -d ↔ debuggee
 ```
 
-**Features**:
-- Direct DAP protocol implementation (no Perl::LanguageServer dependency)
+The 0.9-era plan routed this path through a bundled `Devel::TSPerlDAP` shim.
+That design is superseded; its historical rationale is archived in
+[`docs/archive/DAP_0_9_SHIM_DESIGN.md`](../../../docs/archive/DAP_0_9_SHIM_DESIGN.md)
+and must not be revived as current architecture. A future first-party
+structured runtime helper requires fresh evidence and a new ADR under #7295.
+
+**Delivered on the native path**:
+- Direct DAP protocol implementation (no `Perl::LanguageServer` runtime dependency)
 - AST-based breakpoint validation using `perl-parser`
-- Incremental parsing integration (<1ms breakpoint updates)
-- Enhanced workspace navigation during debugging
+- Incremental parsing integration for breakpoint updates
+- Workspace navigation during debugging
 
-**Phase 3: Production Hardening** (Planned):
+**Production hardening** (in progress):
 
 - Advanced DAP features (conditional breakpoints, logpoints, hit counts)
-- Performance optimization (<50ms all operations)
+- Performance work across debugger operations
 - Multi-editor support (Neovim, Emacs, Helix)
-- Comprehensive security audit and fuzzing
+- Security audit and fuzzing
+
+DAP remains preview until the installed-artifact and real-session contracts in
+[`docs/reference/CRATE_ARCHITECTURE_DAP.md`](../../../docs/reference/CRATE_ARCHITECTURE_DAP.md)
+earn a stronger posture.
 
 ### See Also (*Diataxis: Reference* - Related documentation)
 

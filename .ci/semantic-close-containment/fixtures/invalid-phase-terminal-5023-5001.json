@@ -1,0 +1,38 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5023",
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5001"
+    ],
+    "subject_shas": [
+      "afd37f99a25344fc5b2c362925333b1b71604d8c"
+    ],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves only the CP00 contradiction class."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 5023,
+    "title": "fix(config): machine-scope legacy critic/perltidy settings (#5001)",
+    "body": "## Claim boundary (Phase 1 only)\n\n**Proves:** VS Code resource/workspace settings and the LSP `didChangeConfiguration` channel cannot enable legacy perlcritic subprocess profile paths or external perltidy profile/extra-arg injection.\n\n**Does not prove:** `.perl-lsp.toml` hardening, full 17-setting inventory gate (Phase 2), `includePaths`, or AI completion.\n\nCloses #5001 (Phase 1)."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 5001,
+      "title": "security(config): audit all resource-scoped settings for workspace-owned capabilities",
+      "body": "## Work\n\n1. Determine whether `perlcritic.profile` reaches a subprocess or filesystem read.\n2. Audit every `scope: resource` setting.\n3. Apply one trust-boundary fix shape.\n4. Write the answer down as a checked-in table.\n\n## Acceptance\n\n- Every resource-scoped setting is classified.\n- Capability-granting settings are hardened.\n- A test covers committed workspace settings.\n- Adding a setting without classification fails."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "FAIL_PHASE_TERMINAL_RELATION",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 5001,
+        "code": "FAIL_PHASE_TERMINAL_RELATION"
+      }
+    ]
+  }
+}

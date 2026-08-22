@@ -7,8 +7,8 @@ use support::lsp_client::LspClient;
 
 #[test]
 fn native_default_document_formatting() -> Result<(), Box<dyn std::error::Error>> {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut client = LspClient::spawn(bin)?;
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
     let uri = "file:///fmt.pl";
 
     let source = "sub test{my$x=1;return$x;}\nsub another{return 2;}\n";
@@ -50,8 +50,8 @@ fn native_default_document_formatting() -> Result<(), Box<dyn std::error::Error>
 
 #[test]
 fn native_default_range_formatting() -> Result<(), Box<dyn std::error::Error>> {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut client = LspClient::spawn(bin)?;
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
     let uri = "file:///range.pl";
 
     let source = "# First subroutine - leave this comment untouched\nsub first{my$a=1;return$a;}\n\n# Second subroutine - don't format this\nsub second{my$b=2;return$b;}\n";
@@ -89,8 +89,8 @@ fn native_default_range_formatting() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn native_default_formatting_preserves_comments() -> Result<(), Box<dyn std::error::Error>> {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut client = LspClient::spawn(bin)?;
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
     let uri = "file:///comments.pl";
 
     let source = r#"#!/usr/bin/perl
@@ -137,8 +137,8 @@ return$x;
 
 #[test]
 fn native_default_formatting_honors_lsp_tab_size() -> Result<(), Box<dyn std::error::Error>> {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut client = LspClient::spawn(bin)?;
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
     let uri = "file:///tab-size.pl";
 
     let source = "sub test{my$x=1;return$x;}\n";
@@ -170,8 +170,8 @@ fn native_default_formatting_honors_lsp_tab_size() -> Result<(), Box<dyn std::er
 #[test]
 fn native_default_ranges_formatting_formats_selected_ranges()
 -> Result<(), Box<dyn std::error::Error>> {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut client = LspClient::spawn(bin)?;
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
     let uri = "file:///ranges.pl";
 
     let source = r#"

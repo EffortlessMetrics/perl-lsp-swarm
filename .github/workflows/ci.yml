@@ -41,7 +41,7 @@ jobs:
     steps:
       - name: Checkout for docs-only detection
         if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 1
 
@@ -156,7 +156,7 @@ jobs:
       CONTRACT_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
       CONTRACT_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ env.CONTRACT_HEAD }}
@@ -220,7 +220,7 @@ jobs:
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
       - name: Check for conflict markers
@@ -258,7 +258,7 @@ jobs:
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
@@ -279,7 +279,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
         with:
           tool: just
 
@@ -293,12 +293,15 @@ jobs:
 
       - name: Select PR Smoke Cargo target
         shell: bash
+        env:
+          PR_SMOKE_RUN_ID: ${{ github.run_id }}
+          PR_SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           if [ -d /mnt ] && sudo mkdir -p /mnt/perl-lsp-swarm && sudo chown "$USER" /mnt/perl-lsp-swarm; then
-            target_dir="/mnt/perl-lsp-swarm/pr-smoke-${{ github.run_id }}-${{ github.run_attempt }}"
+            target_dir="/mnt/perl-lsp-swarm/pr-smoke-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}"
           else
-            target_dir="${RUNNER_TEMP:-$PWD/target}/cargo-target/pr-smoke-${{ github.run_id }}-${{ github.run_attempt }}"
+            target_dir="${RUNNER_TEMP:-$PWD/target}/cargo-target/pr-smoke-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}"
           fi
           mkdir -p "$target_dir"
           echo "CARGO_TARGET_DIR=$target_dir" >> "$GITHUB_ENV"
@@ -307,6 +310,74 @@ jobs:
 
       - name: Warm xtask
         run: cargo build -p xtask --locked
+
+      - name: Determine inline-completion warm-up scope
+        id: inline-completion-scope
+        shell: bash
+        env:
+          PR_SMOKE_RUN_ID: ${{ github.run_id }}
+          PR_SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          scope_json="${RUNNER_TEMP}/pr-smoke-ci-scope-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}.json"
+          warm_inline_completion=true
+
+          if ! "$CARGO_TARGET_DIR/debug/xtask" ci-scope --base origin/main --format json > "$scope_json"; then
+            echo "::warning::ci-scope failed; retaining inline-completion warm-up (fail-closed)"
+          elif ! diff_class="$(jq -er '
+            if type != "object" or (.diff_class | type) != "string" or
+               (.direct_crates | type) != "array" or
+               (any(.direct_crates[]?; type != "object" or (.name | type) != "string")) or
+               (.reverse_dep_closure | type) != "array" or
+               (any(.reverse_dep_closure[]?; type != "object" or (.name | type) != "string")) or
+               (.architecture_wideners | type) != "array" or
+               (any(.architecture_wideners[]?; type != "object" or (.name | type) != "string")) or
+               (.selected_lanes | type) != "array" or
+               (any(.selected_lanes[]?; type != "object" or (.scope | type) != "array" or any(.scope[]?; type != "string")))
+            then error("invalid ci-scope JSON")
+            else .diff_class
+            end
+          ' "$scope_json")"; then
+            echo "::warning::ci-scope returned invalid JSON; retaining inline-completion warm-up (fail-closed)"
+          else
+            case "$diff_class" in
+              prose_only|docs_as_code|ci_config)
+                warm_inline_completion=false
+                ;;
+              code|mixed)
+                if ! relevant="$(jq -r '
+                  [
+                    .direct_crates[]?.name,
+                    .reverse_dep_closure[]?.name,
+                    .architecture_wideners[]?.name,
+                    .selected_lanes[]?.scope[]?
+                  ]
+                  | any(. == "perl-lsp-rs" or . == "perl-lsp-rs-core")
+                ' "$scope_json")"; then
+                  echo "::warning::ci-scope package analysis failed; retaining inline-completion warm-up (fail-closed)"
+                elif [ "$relevant" = "false" ]; then
+                  warm_inline_completion=false
+                fi
+                ;;
+              *)
+                echo "::warning::ci-scope returned unknown diff_class '$diff_class'; retaining inline-completion warm-up (fail-closed)"
+                ;;
+            esac
+          fi
+
+          echo "diff_class=${diff_class:-unknown}"
+          echo "warm_inline_completion=$warm_inline_completion"
+          echo "warm_inline_completion=$warm_inline_completion" >> "$GITHUB_OUTPUT"
+
+      # Build the two cold inline-completion test targets before the independent
+      # pr-fast gates start when ci-scope identifies a relevant package change.
+      # The gates retain their separate 150s budgets and still execute the tests;
+      # scope failure intentionally keeps this warm-up enabled.
+      - name: Warm inline-completion test targets
+        if: steps.inline-completion-scope.outputs.warm_inline_completion == 'true'
+        run: |
+          cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests --no-run
+          cargo test -p perl-lsp-rs-core --locked --lib inline_completion --no-run
 
       - name: Run PR-fast via shared xtask gate runner
         run: |
@@ -348,8 +419,9 @@ jobs:
       - name: Upload PR-fast test results to Codecov
         if: always() && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3  # v1
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
+          report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
           files: target/test-results/pr-fast-junit.xml
         env:
@@ -370,7 +442,10 @@ jobs:
     # lsp 18.6 min, meta 16.4 min. At 20 the busiest shards had 1.4 and 3.6 min
     # of headroom, so a ~10% slower runner would kill the job outright — the
     # same merge-blocking symptom the gate split fixes, one level up.
-    timeout-minutes: 30
+    # Raised 30 -> 40 with #10023's watchdog-retry support: a retried
+    # unit_lsp_full consumes 2x its 420s budget (+7 min), which at lsp's
+    # measured wall time left under 2.5 min of slow-runner headroom.
+    timeout-minutes: 40
     # No functional dependency on pr-smoke output; run in parallel after preflight
     # + conflict guard to reduce end-to-end merge-gate wall time.
     needs: [draft-pr-check, conflict-markers, preflight-latest-check]
@@ -380,11 +455,11 @@ jobs:
       matrix:
         include:
           - name: meta
-            gates: fmt ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast release_history_check perl_token_leaf_contract compile_all_targets clippy_full
+            gates: fmt ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast release_history_check source_commit_api_check perl_token_leaf_contract compile_all_targets clippy_full
           - name: foundation
             gates: unit_foundation_full
           - name: parser_stack
-            gates: unit_parser_stack_full parser_integration
+            gates: unit_parser_stack_full parser_integration parser_behavior_proof
           - name: analysis
             gates: unit_analysis_full
           - name: lsp
@@ -394,20 +469,17 @@ jobs:
           - name: corpus
             gates: common_corpus_clean
           - name: policy
-            # msrv_authority_sync runs first: it is the cheapest gate here (~1s
-            # against a warm xtask) and the shard aborts on first failure, so
-            # ordering it behind the 137s non_rust_inventory_check would leave
-            # it unexecuted whenever that gate is red — which is chronic while
-            # #6229 stands, since the committed inventory count is invalidated
-            # by every merge that adds or removes a file.
-            gates: msrv_authority_sync docs_build adr_link_check non_rust_inventory_check v2_bundle_sync nested_lock_check published_crate_count version_sync
+            # The cheapest control remains first for fast diagnosis, but the
+            # shard runner now records every independent member before it
+            # returns the aggregate failure verdict.
+            gates: msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof docs_build adr_link_check non_rust_inventory_check v2_bundle_sync nested_lock_check version_sync
     permissions:
       contents: read
     # Run on every PR push and on push to main/master
     # Earlier gating > label-gated gating (see #4675)
     # Frequent commits will queue; preflight skips superseded SHAs.
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
@@ -436,7 +508,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
         with:
           tool: just
 
@@ -451,24 +523,62 @@ jobs:
       - name: Warm xtask
         run: cargo build -p xtask --locked
 
+      - name: Verify complete shard runner falsifiers
+        if: matrix.name == 'meta'
+        run: python3 -m unittest scripts/ci/test_run_gate_shard.py
+
       - name: Run merge-gate shard with receipts
         shell: bash
+        env:
+          SHARD_NAME: ${{ matrix.name }}
+          SHARD_GATES: ${{ matrix.gates }}
         run: |
-          set -euo pipefail
+          set +e
           (
             while true; do
               sleep 30
-              printf 'ci-gate shard %s still running at %s\n' "${{ matrix.name }}" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+              printf 'ci-gate shard %s still running at %s\n' "$SHARD_NAME" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             done
           ) &
           heartbeat_pid=$!
           trap 'kill "$heartbeat_pid" 2>/dev/null || true' EXIT
-          mkdir -p target/receipts/shards
-          for gate in ${{ matrix.gates }}; do
-            printf '::group::gate %s\n' "$gate"
-            cargo xtask gates --gate "$gate" --receipt --receipt-path "target/receipts/shards/${gate}.json"
-            printf '::endgroup::\n'
-          done
+          subject_sha="$(git rev-parse 'HEAD^{commit}')"
+          mkdir -p target/receipts/shards target/receipts/shard-summaries
+          timeout --signal=TERM --kill-after=30s 1200s \
+            python3 scripts/ci/run_gate_shard.py \
+              --xtask target/debug/xtask \
+              --receipt-dir target/receipts/shards \
+              --summary "target/receipts/shard-summaries/${SHARD_NAME}.json" \
+              --subject-sha "$subject_sha" \
+              $SHARD_GATES
+          status=$?
+          case "$status" in
+            124)
+              echo "::error::Shard hit the 20m inner watchdog; completed receipts and the partial shard summary remain available"
+              ;;
+            137|143)
+              echo "::error::Shard was cancelled by the runner or process group (exit $status)"
+              ;;
+          esac
+          exit "$status"
+
+      - name: Verify parser integration receipt subject
+        if: always() && matrix.name == 'parser_stack'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, "scripts/ci")
+          import run_parser_integration
+
+          run_parser_integration.validate_receipt_subject(
+              Path.cwd(),
+              Path("target/receipts/parser-integration.json"),
+              Path(".ci/parser-integration-targets.json"),
+              Path(".ci/parser-integration-targets.lock.json"),
+          )
 
       - name: Upload gate receipt
         if: always()
@@ -477,9 +587,19 @@ jobs:
           name: gate-receipt-${{ matrix.name }}-${{ github.sha }}
           path: |
             target/receipts/shards/*.json
+            target/receipts/shard-summaries/*.json
             target/receipts/logs/*.log
             target/receipts/artifacts/*
           if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload parser integration receipt
+        if: always() && matrix.name == 'parser_stack'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: parser-integration-receipt-${{ github.sha }}
+          path: target/receipts/parser-integration.json
+          if-no-files-found: error
           retention-days: 7
 
       - name: Convert gate shard receipts to JUnit
@@ -519,8 +639,9 @@ jobs:
       - name: Upload gate shard test results to Codecov
         if: always() && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3  # v1
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
+          report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
           files: target/test-results/gate-shard-${{ matrix.name }}-junit.xml
         env:
@@ -529,8 +650,10 @@ jobs:
       - name: Dump gate failures on error
         if: failure()
         run: |
-          echo "=== receipt.json (tail) ==="
+          echo "=== gate receipts (tail) ==="
           find target/receipts/shards -name '*.json' -maxdepth 1 -print -exec tail -120 {} \; || true
+          echo "=== shard summary ==="
+          find target/receipts/shard-summaries -name '*.json' -maxdepth 1 -print -exec cat {} \; || true
           echo "=== failed gates ==="
           python3 - <<'PY' || true
           import json, pathlib
@@ -550,30 +673,32 @@ jobs:
           import os
           from pathlib import Path
 
-          receipt_paths = sorted(Path("target/receipts/shards").glob("*.json"))
+          shard_name = os.environ.get("SHARD_NAME", "")
+          shard_summary = Path("target/receipts/shard-summaries") / f"{shard_name}.json"
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
 
           if not summary_path:
               raise SystemExit(0)
 
-          lines = [f"### CI Gate shard: {os.environ.get('SHARD_NAME', '')}", ""]
-          if not receipt_paths:
-              lines.append("Receipt not found.")
+          lines = [f"### CI Gate shard: {shard_name}", ""]
+          if not shard_summary.is_file():
+              lines.append("Shard summary not found.")
               Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
               raise SystemExit(0)
 
-          lines.append("| Gate | Status | Exit | Duration (s) |")
-          lines.append("| --- | --- | --- | --- |")
-          for receipt_path in receipt_paths:
-              data = json.loads(receipt_path.read_text(encoding="utf-8"))
-              for gate in data.get("gates", []):
-                  gate_label = gate.get('gate_name', gate.get('name', ''))
-                  dur_ms = gate.get('duration_ms')
-                  dur_s = f"{dur_ms / 1000:.1f}" if dur_ms is not None else str(gate.get('duration_seconds', ''))
-                  lines.append(
-                      f"| {gate_label} | {gate.get('status', '')} | "
-                      f"{gate.get('exit_code', '')} | {dur_s} |"
-                  )
+          payload = json.loads(shard_summary.read_text(encoding="utf-8"))
+          lines.append("| Gate | Result | Receipt status | Exit | Duration (s) |")
+          lines.append("| --- | --- | --- | --- | --- |")
+          for gate in payload.get("gates", []):
+              dur_ms = gate.get("duration_ms")
+              dur_s = f"{dur_ms / 1000:.1f}" if isinstance(dur_ms, int) else ""
+              lines.append(
+                  f"| {gate.get('gate_name', '')} | {gate.get('result', '')} | "
+                  f"{gate.get('receipt_status') or ''} | {gate.get('exit_code') if gate.get('exit_code') is not None else ''} | {dur_s} |"
+              )
+          non_success = payload.get("summary", {}).get("non_success_gates", [])
+          if non_success:
+              lines.extend(["", f"Non-success gates: {', '.join(non_success)}"])
 
           Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
@@ -649,7 +774,7 @@ jobs:
 
       - name: Set PR status (check)
         if: always()
-        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553  # v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9
         env:
           NEEDS_JSON: ${{ toJson(needs) }}
         with:
@@ -701,10 +826,23 @@ jobs:
     # fails this job fails and merge-gate blocks. Quarantine enforcement (reading the
     # registry to generate --skip flags) is a follow-up; see .ci/ux-flakes.json.
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify tested candidate identity
+        env:
+          TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse 'HEAD^{commit}')"
+          if [ "$actual_sha" != "$TESTED_SHA" ]; then
+            printf '::error::Checked-out candidate %s does not match tested SHA %s\n' \
+              "$actual_sha" "$TESTED_SHA"
+            exit 1
+          fi
+          printf 'Testing exact candidate %s\n' "$TESTED_SHA"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -712,7 +850,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
         with:
           tool: just
 
@@ -724,41 +862,95 @@ jobs:
           shared-key: ci-ux-tests-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
-      - name: Build perl-lsp binary
-        run: cargo build -p perl-lsp-rs
+      - name: Build perllsp binary
+        run: cargo build -p perllsp --bin perllsp
 
       - name: Run UX regression tests
         id: ux_tests
         continue-on-error: true
         env:
-          PERL_LSP_BIN: ${{ github.workspace }}/target/debug/perl-lsp
+          PERL_LSP_BIN: ${{ github.workspace }}/target/debug/perllsp
           RUST_TEST_THREADS: "1"
         run: |
+          set -o pipefail
           mkdir -p target/receipts
+          set +e
           just ux-tests 2>&1 | tee target/receipts/ux-regression.log
-          test_status=${PIPESTATUS[0]}
+          pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          test_status="${pipeline_status[0]}"
+          tee_status="${pipeline_status[1]}"
           printf '%s\n' "$test_status" > target/receipts/ux-regression.exit
+          if [ "$tee_status" -ne 0 ]; then
+            printf '%s\n' "$tee_status" > target/receipts/ux-regression.instrumentation.exit
+            printf '::error::UX regression tee failed with status %s\n' "$tee_status" >&2
+            exit "$tee_status"
+          fi
+          printf '0\n' > target/receipts/ux-regression.instrumentation.exit
           exit "$test_status"
 
       - name: Emit UX regression receipt
         if: always()
+        env:
+          TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           cargo xtask ux-regression-receipt \
             --input target/receipts/ux-regression.log \
             --receipt target/receipts/ux-regression.json \
             --exit-status-file target/receipts/ux-regression.exit \
-            --sha "${{ github.sha }}"
+            --sha "$TESTED_SHA"
 
-      - name: Upload UX regression artifacts
+      - name: Verify receipt subject identity
+        id: verify_receipt
         if: always()
+        env:
+          TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          receipt_path = Path("target/receipts/ux-regression.json")
+          instrumentation_path = Path("target/receipts/ux-regression.instrumentation.exit")
+          if not instrumentation_path.is_file() or instrumentation_path.is_symlink():
+              raise SystemExit("UX receipt instrumentation status is missing or not a regular file")
+          if instrumentation_path.read_text(encoding="utf-8").strip() != "0":
+              raise SystemExit("UX receipt instrumentation failed")
+          if not receipt_path.is_file() or receipt_path.is_symlink():
+              raise SystemExit("UX receipt is missing or not a regular file")
+          receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+          if receipt.get("sha") != os.environ["TESTED_SHA"]:
+              raise SystemExit(
+                  f"UX receipt subject {receipt.get('sha')!r} does not match "
+                  f"{os.environ['TESTED_SHA']}"
+              )
+          PY
+
+      - name: Upload UX regression evidence
+        if: always() && steps.verify_receipt.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
-          name: ux-regression-receipt-${{ github.sha }}
+          name: ux-regression-receipt-${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           path: |
             target/receipts/ux-regression.json
             target/receipts/ux-regression.log
             target/receipts/ux-regression.exit
+            target/receipts/ux-regression.instrumentation.exit
             target/receipts/editor-ux/golden-editor-workload-v3.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload unverified UX diagnostics
+        if: always() && steps.verify_receipt.outcome != 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: ux-regression-unverified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/receipts/ux-regression.json
+            target/receipts/ux-regression.log
+            target/receipts/ux-regression.exit
+            target/receipts/ux-regression.instrumentation.exit
           if-no-files-found: warn
           retention-days: 7
 
@@ -773,8 +965,9 @@ jobs:
       - name: Upload UX regression test results to Codecov
         if: always() && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3  # v1
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
+          report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
           files: target/test-results/ux-regression-junit.xml
         env:
@@ -827,14 +1020,29 @@ jobs:
   check-all-targets:
     name: Compile All Targets (bit-rot guard)
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # +5m headroom for the focused emacs docs contract after workspace check.
+    timeout-minutes: 15
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      # INTENTIONAL: no `ref:` override here — see #9594.
+      #
+      # For a pull_request event the workflow *definition* comes from the base
+      # branch, so pinning the head SHA runs base's step list against the
+      # candidate's tree. When one commit adds a required step and the file it
+      # depends on together (as d5064c4d did for the Emacs docs contract), every
+      # PR branched before it inherits the step without the file, and this
+      # required check fails on branch age rather than on content.
+      #
+      # Omitting `ref` checks out the event's own ref — the merge ref for a
+      # pull_request — so the definition and the tree stay one coherent
+      # integration subject. That is also what a bit-rot guard should measure:
+      # whether what would actually land still compiles. Other jobs in this
+      # workflow deliberately keep exact-head checkout for head-pinned receipts;
+      # this one is a merge-surface gate and must not.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -842,7 +1050,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
         with:
           tool: just
 
@@ -857,6 +1065,30 @@ jobs:
       - name: Compile all targets (catches integration-test + bench bit-rot)
         run: just check-all-targets
 
+      # Required merge surface for #7767/#7796: unit_routed_full only executes via
+      # advisory pr-smoke, so stale Emacs guidance could otherwise merge while this
+      # contract merely compiles. Keep the oracle on Compile All Targets.
+      - name: Emacs docs contract (required merge surface)
+        run: cargo test -p xtask --test emacs_docs_contract --locked -- --nocapture
+
+      # Keep the direct-command guidance guard load-bearing on the required
+      # merge surface, including the tracked root AGENTS.md instructions.
+      - name: Direct command guidance contract (required merge surface)
+        run: cargo test -p xtask --test direct_command_guidance --locked -- --nocapture
+
+      # Same reasoning as the Emacs contract above: the merge gate runs
+      # `cargo test --workspace --lib`, so this integration test would otherwise
+      # only execute via advisory pr-smoke. It guards the publish path that can
+      # overwrite a shipped release asset (#9597), so keep it required here.
+      - name: Release-asset identity contract (required merge surface)
+        run: cargo test -p xtask --test publish_extension_release_identity --locked -- --nocapture
+
+      # Same reasoning for the publication receipt the post-publish smoke test
+      # consumes (#9593). If this drifts unobserved the smoke lane silently
+      # goes back to certifying a version from a ref shape.
+      - name: Publish-provenance contract (required merge surface)
+        run: cargo test -p xtask --test post_publish_smoke_version_provenance --locked -- --nocapture
+
   lsp-memory-smoke:
     name: LSP Memory Smoke
     runs-on: ubuntu-24.04
@@ -864,7 +1096,7 @@ jobs:
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
@@ -882,8 +1114,8 @@ jobs:
           shared-key: ci-lsp-memory-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
-      - name: Build perl-lsp release binary
-        run: cargo build --release -p perl-lsp-rs --bin perl-lsp --locked
+      - name: Build perllsp release binary
+        run: cargo build --release -p perllsp --bin perllsp --locked
 
       - name: Run document-churn memory smoke
         run: |
@@ -892,7 +1124,7 @@ jobs:
           N_CHANGES=5 \
           DO_WORKSPACE_SYMBOL=0 \
           DELETE_AFTER_CLOSE=1 \
-          BINARY=./target/release/perl-lsp \
+          BINARY=./target/release/perllsp \
           python3 scripts/repro_lsp_storm.py \
             --json-out target/memory/pr-smoke-doc-churn.json \
             --csv-out target/memory/pr-smoke-doc-churn.csv \
@@ -959,3 +1191,75 @@ jobs:
             target/memory/receipts/pr-smoke-doc-churn.receipt.json
           if-no-files-found: warn
           retention-days: 14
+
+  # Standalone, candidate-bound formatter result for protected integration.
+  # Keep the existing advisory `fmt` meta-shard during the parity window tracked
+  # by #7087; this independently visible context is the ruleset promotion target.
+  rust-formatting:
+    name: Rust formatting
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      SUBJECT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
+      RECEIPT_PATH: target/receipts/rustfmt/rustfmt-check.json
+    steps:
+      - name: Checkout exact formatter subject
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ env.SUBJECT_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install pinned formatter toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Bind formatter evidence to the checked-out tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD^{commit})"
+          test "$actual_sha" = "$SUBJECT_SHA"
+          echo "SUBJECT_TREE_SHA=$(git rev-parse HEAD^{tree})" >> "$GITHUB_ENV"
+
+      - name: Run candidate-bound rustfmt check
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt_bin="$(rustup which --toolchain 1.95.0 rustfmt)"
+          rustc_bin="$(rustup which --toolchain 1.95.0 rustc)"
+          python3 scripts/ci/rustfmt_check.py \
+            --root . \
+            --receipt "$RECEIPT_PATH" \
+            --cargo "$(command -v cargo)" \
+            --rustfmt "$rustfmt_bin" \
+            --rustc "$rustc_bin" \
+            --candidate-sha "$SUBJECT_SHA" \
+            --candidate-tree-sha "$SUBJECT_TREE_SHA"
+
+      - name: Verify candidate-bound rustfmt receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt_bin="$(rustup which --toolchain 1.95.0 rustfmt)"
+          rustc_bin="$(rustup which --toolchain 1.95.0 rustc)"
+          python3 scripts/ci/verify_rustfmt_receipt.py \
+            --root . \
+            --receipt "$RECEIPT_PATH" \
+            --producer scripts/ci/rustfmt_check.py \
+            --cargo "$(command -v cargo)" \
+            --rustfmt "$rustfmt_bin" \
+            --rustc "$rustc_bin" \
+            --candidate-sha "$SUBJECT_SHA" \
+            --candidate-tree-sha "$SUBJECT_TREE_SHA"
+
+      - name: Upload candidate-bound rustfmt receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: rustfmt-check-${{ env.SUBJECT_SHA }}
+          path: ${{ env.RECEIPT_PATH }}
+          if-no-files-found: error
+          retention-days: 7

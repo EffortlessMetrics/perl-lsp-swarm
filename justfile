@@ -1213,9 +1213,9 @@ ci-lsp-smoke-e2e:
 ux-tests:
     @echo "Running UX regression test harness (base scenarios)..."
     @env -u RUSTC_WRAPPER CARGO_BUILD_JOBS=1 \
-        cargo build -p perl-lsp-rs --bin perl-lsp
+        cargo build -p perllsp --bin perllsp
     @env -u RUSTC_WRAPPER RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1 \
-        PERL_LSP_BIN={{justfile_directory()}}/target/debug/perl-lsp \
+        PERL_LSP_BIN={{justfile_directory()}}/target/debug/perllsp \
         PERL_LSP_UX_REQUIRE_BINARY=1 \
         cargo test -p perl-lsp-ux-tests -- --test-threads=1
     @echo "UX tests passed"
@@ -1226,9 +1226,9 @@ ux-tests:
 ux-tests-full:
     @echo "Running UX regression test harness (full, including large-file)..."
     @env -u RUSTC_WRAPPER CARGO_BUILD_JOBS=1 \
-        cargo build -p perl-lsp-rs --bin perl-lsp
+        cargo build -p perllsp --bin perllsp
     @env -u RUSTC_WRAPPER RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1 \
-        PERL_LSP_BIN={{justfile_directory()}}/target/debug/perl-lsp \
+        PERL_LSP_BIN={{justfile_directory()}}/target/debug/perllsp \
         PERL_LSP_UX_REQUIRE_BINARY=1 \
         cargo test -p perl-lsp-ux-tests --features integration-test -- --test-threads=1
     @echo "UX tests (full) passed"
@@ -1412,6 +1412,8 @@ ci-docs-check:
 ci-policy:
     @echo "⚖️  Checking project policies..."
     just ci-check-todos
+    @python3 scripts/ci/test_validate_cargo_lock_conflict_policy.py
+    @python3 scripts/ci/validate_cargo_lock_conflict_policy.py --repo-root .
     @cargo xtask check-from-raw
     @cargo xtask check-memory-lifecycle-policy
     just version-check
@@ -2515,10 +2517,28 @@ changelog-append:
     fi
 
 # ============================================================================
+# Dependency Hygiene (Issue #9364)
+# ============================================================================
+# Identify unused Cargo dependencies using cargo-machete (primary, V1).
+# cargo-udeps removed from active path per #9364.
+# Produces typed item-level findings: SUCCESS | POLICY_FINDING | NOT_PROVEN.
+# Never installs tools as a side effect.
+
+# Check for unused dependencies (fail closed on any finding)
+dependency-hygiene:
+    @echo "🔍 Running dependency hygiene check..."
+    @cargo xtask dependency-hygiene check
+
+# Write machine-readable JSON report (exits 0 regardless of findings)
+dependency-hygiene-report:
+    @echo "📊 Generating dependency hygiene report..."
+    @cargo xtask dependency-hygiene report
+
+# ============================================================================
 # Dead Code Detection (Issue #284)
 # ============================================================================
 # Detect unused dependencies, dead code, and unused imports/variables.
-# Uses cargo-udeps and clippy dead_code lints.
+# NOTE: dependency-unused analysis is transitioning to dependency-hygiene (#9364).
 
 # Run dead code detection (local check)
 dead-code:

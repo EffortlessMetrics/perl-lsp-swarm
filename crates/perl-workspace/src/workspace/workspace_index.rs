@@ -43,7 +43,7 @@
 //! // Index a Perl file
 //! let uri = Url::parse("file:///example.pl")?;
 //! let code = "package MyPackage;\nsub example { return 42; }";
-//! index.index_file(uri, code.to_string())?;
+//! index.index_initial_file(uri, code.to_string())?;
 //!
 //! // Find symbol definitions
 //! let definition = index.find_definition("MyPackage::example");
@@ -66,7 +66,7 @@ use crate::ast::{Node, NodeKind};
 use crate::document_store::{Document, DocumentStore};
 use crate::position::{Position, Range};
 use crate::workspace::monitoring::IndexInstrumentation;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::{ArcMutexGuard, Mutex, RawMutex, RwLock};
 use perl_position_tracking::{WireLocation, WirePosition, WireRange};
 use perl_semantic_facts::{
     AnchorFact, AnchorId, Confidence, EdgeFact, EntityFact, EntityId, EntityKind, FileId,
@@ -76,9 +76,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 use url::Url;
 
@@ -158,6 +159,7 @@ pub use perl_uri::{is_file_uri, is_special_scheme, uri_extension, uri_key};
 /// };
 /// ```
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum IndexState {
     /// Index is being constructed (workspace scan in progress)
     Building {
@@ -955,6 +957,7 @@ impl Default for IndexCoordinator {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 /// Symbol kinds for cross-file indexing during Index/Navigate workflows.
+#[non_exhaustive]
 pub enum SymKind {
     /// Variable symbol ($, @, or % sigil)
     Var,
@@ -1114,6 +1117,7 @@ pub struct SymbolReference {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Classification of how a symbol is referenced in Navigate/Analyze workflows.
+#[non_exhaustive]
 pub enum ReferenceKind {
     /// Symbol definition site (sub declaration, variable declaration)
     Definition,
@@ -1262,6 +1266,28 @@ impl Drop for ReservationGuard<'_> {
     }
 }
 
+/// Signals the beginning and completion of one multi-store index mutation.
+///
+/// Readers use the two version reads around their multi-store access to detect
+/// that a write overlapped the read. This is a torn-read signal, not a
+/// cross-store transaction or snapshot boundary.
+struct WriteVersionGuard<'a> {
+    index: &'a WorkspaceIndex,
+}
+
+impl WriteVersionGuard<'_> {
+    fn new(index: &WorkspaceIndex) -> WriteVersionGuard<'_> {
+        index.bump_write_version();
+        WriteVersionGuard { index }
+    }
+}
+
+impl Drop for WriteVersionGuard<'_> {
+    fn drop(&mut self) {
+        self.index.bump_write_version();
+    }
+}
+
 /// Write-through semantic fact storage for one indexed file.
 ///
 /// Derives `Serialize, Deserialize` (Campaign 31 PR 5, perl-lsp-swarm#2592)
@@ -1302,6 +1328,49 @@ pub struct FileFactShard {
     pub occurrences: Vec<perl_semantic_facts::OccurrenceFact>,
     /// Edge facts for this file.
     pub edges: Vec<EdgeFact>,
+}
+
+/// Owner-supplied currentness token for one live source commit.
+///
+/// The workspace index does not mint or interpret this value. The owning
+/// document/currentness authority must supply a non-zero generation after its
+/// own currentness check. URI identity is already supplied by the `uri`
+/// argument; this API does not invent a competing per-URI source identity.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct SourceCommit {
+    generation: NonZeroU32,
+}
+
+impl SourceCommit {
+    /// Construct a live source commit guard from an owner-supplied generation.
+    pub const fn new(generation: NonZeroU32) -> Self {
+        Self { generation }
+    }
+
+    /// Return the non-zero source generation represented by this commit.
+    pub const fn generation(self) -> NonZeroU32 {
+        self.generation
+    }
+}
+
+/// Typed result of a source commit attempt.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum SourceCommitOutcome {
+    /// Candidate was parsed and published.
+    Accepted,
+    /// Candidate matched the accepted content and required no work.
+    NoOp,
+    /// Candidate was older than the accepted live generation.
+    RejectedStale,
+    /// Candidate failed before publication.
+    Failed(String),
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum IndexFileWithGenerationOutcome {
+    Accepted,
+    NoOp,
+    RejectedStale,
 }
 
 /// Thread-safe workspace index
@@ -1351,6 +1420,39 @@ pub struct WorkspaceIndex {
     /// Monotonic write version — bumped on every index mutation so readers
     /// can detect torn reads across the multiple independent RwLocks. (#5116)
     write_version: Arc<AtomicU64>,
+    /// Per-file lifecycle serialization. Entries are reference-counted and
+    /// removed after the last holder releases one, so a long-running server
+    /// does not retain one lock forever for every URI it has ever seen.
+    lifecycle_guards: Arc<Mutex<HashMap<String, Arc<LifecycleGuardEntry>>>>,
+}
+
+struct LifecycleGuardEntry {
+    lock: Arc<Mutex<()>>,
+    holders: AtomicUsize,
+}
+
+struct LifecycleGuard {
+    key: String,
+    entry: Arc<LifecycleGuardEntry>,
+    registry: Arc<Mutex<HashMap<String, Arc<LifecycleGuardEntry>>>>,
+    lock: Option<ArcMutexGuard<RawMutex, ()>>,
+}
+
+impl Drop for LifecycleGuard {
+    fn drop(&mut self) {
+        // Unlock before touching the registry. The entry Arc held by this
+        // guard keeps the mutex alive even if the registry removes it.
+        drop(self.lock.take());
+        // Keep the registry locked while decrementing and possibly removing
+        // the entry. A new holder must not observe the unlocked URI mutex and
+        // then lose its registry entry to this guard's cleanup.
+        let mut guards = self.registry.lock();
+        if self.entry.holders.fetch_sub(1, Ordering::AcqRel) == 1
+            && guards.get(&self.key).is_some_and(|current| Arc::ptr_eq(current, &self.entry))
+        {
+            guards.remove(&self.key);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -1743,6 +1845,7 @@ impl WorkspaceIndex {
             limits,
             resource_limit_rejection: Mutex::new(None),
             write_version: Arc::new(AtomicU64::new(0)),
+            lifecycle_guards: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1803,6 +1906,7 @@ impl WorkspaceIndex {
             limits,
             resource_limit_rejection: Mutex::new(None),
             write_version: Arc::new(AtomicU64::new(0)),
+            lifecycle_guards: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1843,8 +1947,41 @@ impl WorkspaceIndex {
         }
     }
 
+    #[cfg(test)]
     fn restore_document(&self, uri: &str, rejected_text: &str, previous: Option<&Document>) {
         self.document_store.restore_if_current(uri, 1, rejected_text, previous);
+    }
+
+    /// Publish a document only after its candidate has passed parsing and
+    /// admission.  An existing document store entry must accept the version;
+    /// a rejected update is an explicit failed per-file commit.
+    fn commit_document(
+        &self,
+        uri: &str,
+        version: i32,
+        text: String,
+        enforce_version: bool,
+    ) -> bool {
+        self.document_store.accept_candidate(uri.to_string(), version, text, enforce_version)
+            == crate::document_store::DocumentCommitResult::Accepted
+    }
+
+    fn lifecycle_guard(&self, key: &str) -> LifecycleGuard {
+        let (entry, registry) = {
+            let mut guards = self.lifecycle_guards.lock();
+            let entry = Arc::clone(guards.entry(key.to_string()).or_insert_with(|| {
+                Arc::new(LifecycleGuardEntry {
+                    lock: Arc::new(Mutex::new(())),
+                    holders: AtomicUsize::new(0),
+                })
+            }));
+            // The registry owns the entry while this holder is being
+            // registered. Do not hold the registry mutex while waiting for
+            // another operation on this URI.
+            entry.holders.fetch_add(1, Ordering::Relaxed);
+            (entry, Arc::clone(&self.lifecycle_guards))
+        };
+        LifecycleGuard { key: key.to_string(), lock: Some(entry.lock.lock_arc()), entry, registry }
     }
 
     fn admission_limit_for(
@@ -1942,6 +2079,7 @@ impl WorkspaceIndex {
     /// `pending_generation` to 0 lets the reopened file index normally.
     pub fn reset_generation_for_close(&self, uri: &str) {
         let key = DocumentStore::uri_key(&Self::normalize_uri(uri));
+        let _lifecycle = self.lifecycle_guard(&key);
         let mut files = self.files.write();
         if let Some(file_index) = files.get_mut(&key) {
             file_index.generation = 0;
@@ -1998,24 +2136,97 @@ impl WorkspaceIndex {
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let index = WorkspaceIndex::new();
     /// let uri = Url::parse("file:///example.pl")?;
-    /// index.index_file(uri, "sub hello { return 1; }".to_string())?;
+    /// index.index_initial_file(uri, "sub hello { return 1; }".to_string())?;
     /// # Ok(())
     /// # }
     /// ```
     ///
     /// Returns: `Ok(())` when indexing succeeds, otherwise an error string.
+    ///
+    /// # Compatibility and migration
+    ///
+    /// This is a deprecated compatibility surface retained for existing
+    /// initial-index callers. New code should use [`Self::index_initial_file`]
+    /// for discovery/import or [`Self::index_live_file`] for an owner-checked
+    /// live source commit.
     pub fn index_file(&self, uri: Url, text: String) -> Result<(), String> {
+        self.index_initial_file(uri, text)
+    }
+
+    /// Index one file during initial discovery/import with no live-document
+    /// generation semantics.
+    pub fn index_initial_file(&self, uri: Url, text: String) -> Result<(), String> {
         self.index_file_with_generation(uri, text, 0)
     }
 
+    /// Index one live source commit after the owner has checked currentness.
+    ///
+    /// A raw generation or the legacy [`Self::index_file`] surface cannot
+    /// represent this contract. The typed guard makes zero identity and
+    /// generation structurally unrepresentable at this boundary.
+    pub fn index_live_file(
+        &self,
+        uri: Url,
+        text: String,
+        commit: SourceCommit,
+    ) -> SourceCommitOutcome {
+        let key = DocumentStore::uri_key(uri.as_str());
+        let mut hasher = DefaultHasher::new();
+        text.hash(&mut hasher);
+        let content_hash = hasher.finish();
+
+        // Serialize the freshness check and identical-content generation
+        // advance with all other writers of this URI. Otherwise a generation
+        // one NoOp can return without recording its high-water mark, allowing
+        // a later older live commit to be accepted.
+        {
+            let _lifecycle = self.lifecycle_guard(&key);
+            let mut files = self.files.write();
+            if let Some(file) = files.get_mut(&key) {
+                let high_water = file.generation.max(file.pending_generation);
+                if high_water > commit.generation.get() {
+                    return SourceCommitOutcome::RejectedStale;
+                }
+                if file.content_hash == content_hash {
+                    file.generation = commit.generation.get();
+                    file.pending_generation = file.pending_generation.max(file.generation);
+                    return SourceCommitOutcome::NoOp;
+                }
+            }
+        }
+
+        match self.index_file_with_generation_outcome(uri, text, commit.generation.get()) {
+            Ok(IndexFileWithGenerationOutcome::Accepted) => SourceCommitOutcome::Accepted,
+            Ok(IndexFileWithGenerationOutcome::NoOp) => SourceCommitOutcome::NoOp,
+            Ok(IndexFileWithGenerationOutcome::RejectedStale) => SourceCommitOutcome::RejectedStale,
+            Err(error) => SourceCommitOutcome::Failed(error),
+        }
+    }
+
     /// Index a file from its URI, text content, and document generation.
+    ///
+    /// # Compatibility and migration
+    ///
+    /// This is a deprecated compatibility surface for callers that still pass
+    /// a raw generation. New initial-index code should use
+    /// [`Self::index_initial_file`], and live source commits should use
+    /// [`Self::index_live_file`] with [`SourceCommit`].
     pub fn index_file_with_generation(
         &self,
         uri: Url,
         text: String,
         generation: u32,
     ) -> Result<(), String> {
-        self.bump_write_version(); // Signal to readers that a mutation is in progress (#5116)
+        self.index_file_with_generation_outcome(uri, text, generation).map(|_| ())
+    }
+
+    fn index_file_with_generation_outcome(
+        &self,
+        uri: Url,
+        text: String,
+        generation: u32,
+    ) -> Result<IndexFileWithGenerationOutcome, String> {
+        let _write_version = WriteVersionGuard::new(self);
         let uri_str = uri.to_string();
 
         // Compute content hash for early-exit optimization
@@ -2023,22 +2234,14 @@ impl WorkspaceIndex {
         text.hash(&mut hasher);
         let content_hash = hasher.finish();
 
-        // Check if content is unchanged (early-exit optimization), and --
-        // still under the SAME `files.write()` guard -- update
-        // `document_store`. `document_store` has its own, entirely separate
-        // internal lock (`DocumentStore::documents: Arc<RwLock<..>>`, no
-        // cross-reference to `self.files`), so holding `files.write()`
-        // across both the generation check AND the `document_store` write
-        // does not risk any lock-ordering deadlock; it makes the two
-        // genuinely atomic with respect to any other writer of this URI's
-        // entry, closing the race outright rather than narrowing it (an
-        // earlier revision applied this same generation check here but
-        // released `files.write()` before the `document_store` write,
-        // leaving a real, if nanosecond-scale, window a stale out-of-order
-        // task could still land in -- flagged again by factory-droid on
-        // PR #3618 after that partial fix).
+        // Check the current generation under the per-URI lifecycle guard, then
+        // publish the DocumentStore candidate and the index projections in
+        // their respective critical sections. The guard serializes writers of
+        // this URI; the separate stores are not one cross-store atomic
+        // transaction, so readers must use the write-version/torn-read
+        // protections where a coherent snapshot is required.
         let key = DocumentStore::uri_key(&uri_str);
-        let previous_document = self.document_store.get(&uri_str);
+        let _lifecycle = self.lifecycle_guard(&key);
         // Set below iff this task's generation genuinely advances the
         // claimed high-water mark (a genuine reservation, not a
         // same-or-older no-op). `ReservationGuard::drop` rolls the claim
@@ -2064,7 +2267,7 @@ impl WorkspaceIndex {
                     // Content unchanged, skip re-indexing
                     #[cfg(test)]
                     reindex_metrics::record_content_hash_short_circuit();
-                    return Ok(());
+                    return Ok(IndexFileWithGenerationOutcome::NoOp);
                 }
                 // Same monotonic generation guard as the one under the later
                 // `files.write()` block below (see its doc comment for the
@@ -2081,7 +2284,7 @@ impl WorkspaceIndex {
                 if generation > 0 && high_water > 0 && high_water > generation {
                     #[cfg(test)]
                     reindex_metrics::record_stale_rejected_pre_parse();
-                    return Ok(());
+                    return Ok(IndexFileWithGenerationOutcome::RejectedStale);
                 }
                 // Reserve this generation NOW, before parsing -- not just at
                 // the later guard, which only runs AFTER
@@ -2122,48 +2325,18 @@ impl WorkspaceIndex {
             }
         }
 
-        // Update document store AFTER releasing `files.write()` (#3722).
-        // The LineIndex::new(text) inside Document::new()/update() is O(text),
-        // so holding the global files lock during this call serialized all
-        // indexing. document_store has its own internal RwLock, and its
-        // version check handles concurrent writes independently.
-        {
-            // Use generation as the document version so the document_store's
-            // stale-write check becomes load-bearing. Ensure version >= 1 to
-            // avoid rejecting updates to batch-indexed files (which open with
-            // version 1) when generation is 0 (#3686).
-            let doc_version = (generation as i32).max(1);
-            if self.document_store.is_open(&uri_str) {
-                self.document_store.update(&uri_str, doc_version, text.clone());
-            } else {
-                self.document_store.open(uri_str.clone(), doc_version, text.clone());
-            }
-        }
+        // Keep the candidate private while parsing and extracting.  In
+        // particular, constructing its LineIndex here must not publish the
+        // candidate geometry to readers of the accepted DocumentStore.
+        let doc_version = (generation as i32).max(1);
+        let mut candidate_document = Document::new(uri_str.clone(), doc_version, text.clone());
         let mut parser = Parser::new(&text);
         let ast = match parser.parse() {
             Ok(ast) => ast,
             Err(e) => {
-                // `reservation`'s `Drop` (if it holds a claim) rolls
-                // `pending_generation` back to the last genuinely committed
-                // generation -- this task never reaches the late guard's
-                // commit below.
-                self.restore_document(&uri_str, &text, previous_document.as_ref());
+                // `reservation`'s `Drop` (if it holds a claim) rolls the
+                // pending generation back; no shared projection was touched.
                 return Err(format!("Parse error: {}", e));
-            }
-        };
-
-        // Get the document for line index. If the document was closed out
-        // from under a still-in-flight background index task (e.g. a rapid
-        // didClose racing this task's own reservation), `reservation`'s
-        // `Drop` rolls the claim back here too -- previously this early
-        // return left `self.files[key].generation`'s reservation
-        // permanently claimed with nothing that would ever commit it
-        // (#3618 review-3660 finding 3(c)).
-        let mut doc = match self.document_store.get(&uri_str) {
-            Some(document) => document,
-            None => {
-                self.restore_document(&uri_str, &text, previous_document.as_ref());
-                return Err("Document not found".to_string());
             }
         };
 
@@ -2183,8 +2356,13 @@ impl WorkspaceIndex {
         // the reference walk is unified (declarations are a separable
         // follow-up; see `FileExtractionBundle::build_unified`'s doc
         // comment).
-        let mut bundle =
-            FileExtractionBundle::build_unified(&ast, &uri_str, content_hash, &mut doc, folder_uri);
+        let mut bundle = FileExtractionBundle::build_unified(
+            &ast,
+            &uri_str,
+            content_hash,
+            &mut candidate_document,
+            folder_uri,
+        );
         // `build_unified` builds its own `FileIndex` (it has no notion of
         // this call's `generation` parameter) -- restore it here, exactly
         // as the pre-cutover `FileIndex { ..., generation, ... }` literal
@@ -2285,19 +2463,29 @@ impl WorkspaceIndex {
             // in-flight document -- without touching any untracked caller.
             if generation > 0 {
                 if let Some(existing) = files.get(&key) {
-                    if existing.generation > 0 && existing.generation > generation {
+                    let high_water = existing.generation.max(existing.pending_generation);
+                    if high_water > 0 && high_water > generation {
                         #[cfg(test)]
                         reindex_metrics::record_stale_rejected_post_parse();
-                        return Ok(());
+                        return Ok(IndexFileWithGenerationOutcome::RejectedStale);
                     }
                 }
             }
 
             if let Some(kind) = self.admission_limit_for(&files, &key, &file_index) {
-                self.restore_document(&uri_str, &text, previous_document.as_ref());
                 drop(files);
                 self.record_resource_limit_rejection(kind.clone());
                 return Err(Self::resource_limit_error(kind, &self.limits));
+            }
+
+            // Generation zero is the existing untracked scan/reopen contract:
+            // this seam has no session/epoch identity with which to reject a
+            // stale refresh. Preserve that contract for file-watcher and
+            // reopen callers; only tracked generations get store-level stale
+            // rejection here. A future epoch-aware seam can tighten this
+            // without changing the LSP handlers in this issue.
+            if !self.commit_document(&uri_str, doc_version, text.clone(), generation > 0) {
+                return Err("Document store rejected candidate version".to_string());
             }
 
             // Remove stale global references from previous version of this file
@@ -2407,7 +2595,7 @@ impl WorkspaceIndex {
             reindex_metrics::record_generation_accepted();
         }
 
-        Ok(())
+        Ok(IndexFileWithGenerationOutcome::Accepted)
     }
 
     /// Remove a file from the index
@@ -2429,79 +2617,89 @@ impl WorkspaceIndex {
     /// index.remove_file("file:///example.pl");
     /// ```
     pub fn remove_file(&self, uri: &str) {
-        self.bump_write_version();
+        let _write_version = WriteVersionGuard::new(self);
         let uri_str = Self::normalize_uri(uri);
         let key = DocumentStore::uri_key(&uri_str);
+        let _lifecycle = self.lifecycle_guard(&key);
 
-        // Remove from document store
-        self.document_store.close(&uri_str);
+        // Remove file/projection state before closing the document. Indexing
+        // and batch publication acquire `files` before touching the
+        // DocumentStore, so keeping that order here avoids a cross-URI lock
+        // inversion.
+        {
+            let mut files = self.files.write();
+            if let Some(file_index) = files.remove(&key) {
+                self.fact_shards.write().remove(&key);
 
-        // Remove file index
-        let mut files = self.files.write();
-        if let Some(file_index) = files.remove(&key) {
-            self.fact_shards.write().remove(&key);
-
-            // Clean up semantic cross-file indexes for this file.
-            self.semantic_reference_index.write().remove_file(&uri_str);
-            {
-                let mut ie_idx = self.semantic_import_export_index.write();
-                ie_idx.remove_file_imports(&uri_str);
-                ie_idx.remove_module_exports(&uri_str);
-                ie_idx.remove_file_use_lib(&uri_str);
-            }
-            self.semantic_package_graph_index.write().remove_edges_for_file(&uri_str);
-
-            // Incrementally remove symbols and re-insert any shadowed names.
-            let mut symbols = self.symbols.write();
-            let mut search_idx = self.search_index.write();
-            Self::incremental_remove_symbols(&files, &mut symbols, &file_index);
-            Self::incremental_remove_search(&files, &mut search_idx, &file_index);
-
-            // Defensive sweep: purge any remaining cache entries whose value
-            // points to this file's URI.  incremental_remove_symbols already
-            // handles known symbol names; this sweep guarantees no stale
-            // candidates survive even when:
-            //   * the file had zero symbols (nothing for incremental_remove
-            //     to walk), or
-            //   * a symbol's stored uri differs from the canonical normalize_uri
-            //     output (URI normalization edge cases).
-            // Match against every URI spelling observed in this file index plus
-            // the canonical uri_str so raw/normalized variants are all caught.
-            let mut removed_uris = vec![uri_str.as_str()];
-            for observed_uri in file_index.symbols.iter().map(|s| s.uri.as_str()).chain(
-                file_index.references.values().flat_map(|refs| refs.iter().map(|r| r.uri.as_str())),
-            ) {
-                if !removed_uris.contains(&observed_uri) {
-                    removed_uris.push(observed_uri);
+                // Clean up semantic cross-file indexes for this file.
+                self.semantic_reference_index.write().remove_file(&uri_str);
+                {
+                    let mut ie_idx = self.semantic_import_export_index.write();
+                    ie_idx.remove_file_imports(&uri_str);
+                    ie_idx.remove_module_exports(&uri_str);
+                    ie_idx.remove_file_use_lib(&uri_str);
                 }
-            }
-            symbols.retain(|_, candidates| {
-                candidates.retain(|candidate| {
-                    let cand_uri = candidate.location.uri.as_str();
-                    !removed_uris.contains(&cand_uri)
-                });
-                !candidates.is_empty()
-            });
-            // Defensive sweep for search_index: remove any remaining entries
-            // pointing to the removed URI (mirrors the symbols sweep above).
-            search_idx.retain(|_, syms| {
-                syms.retain(|sym| !removed_uris.contains(&sym.uri.as_str()));
-                !syms.is_empty()
-            });
+                self.semantic_package_graph_index.write().remove_edges_for_file(&uri_str);
 
-            // Remove from global reference index. Two-phase cleanup: first
-            // remove names this file was known to reference (cheap path), then
-            // a defensive sweep over all remaining entries to catch any that
-            // were inserted under names not present in this file's
-            // FileIndex::references map (e.g. via aggregated/global insertion
-            // paths). Empty buckets are dropped.
-            let mut global_refs = self.global_references.write();
-            Self::remove_file_global_refs(&mut global_refs, &file_index, &uri_str);
-            global_refs.retain(|_, locs| {
-                locs.retain(|loc| !removed_uris.contains(&loc.uri.as_str()));
-                !locs.is_empty()
-            });
+                // Incrementally remove symbols and re-insert any shadowed names.
+                let mut symbols = self.symbols.write();
+                let mut search_idx = self.search_index.write();
+                Self::incremental_remove_symbols(&files, &mut symbols, &file_index);
+                Self::incremental_remove_search(&files, &mut search_idx, &file_index);
+
+                // Defensive sweep: purge any remaining cache entries whose value
+                // points to this file's URI.  incremental_remove_symbols already
+                // handles known symbol names; this sweep guarantees no stale
+                // candidates survive even when:
+                //   * the file had zero symbols (nothing for incremental_remove
+                //     to walk), or
+                //   * a symbol's stored uri differs from the canonical normalize_uri
+                //     output (URI normalization edge cases).
+                // Match against every URI spelling observed in this file index plus
+                // the canonical uri_str so raw/normalized variants are all caught.
+                let mut removed_uris = vec![uri_str.as_str()];
+                for observed_uri in file_index.symbols.iter().map(|s| s.uri.as_str()).chain(
+                    file_index
+                        .references
+                        .values()
+                        .flat_map(|refs| refs.iter().map(|r| r.uri.as_str())),
+                ) {
+                    if !removed_uris.contains(&observed_uri) {
+                        removed_uris.push(observed_uri);
+                    }
+                }
+                symbols.retain(|_, candidates| {
+                    candidates.retain(|candidate| {
+                        let cand_uri = candidate.location.uri.as_str();
+                        !removed_uris.contains(&cand_uri)
+                    });
+                    !candidates.is_empty()
+                });
+                // Defensive sweep for search_index: remove any remaining entries
+                // pointing to the removed URI (mirrors the symbols sweep above).
+                search_idx.retain(|_, syms| {
+                    syms.retain(|sym| !removed_uris.contains(&sym.uri.as_str()));
+                    !syms.is_empty()
+                });
+
+                // Remove from global reference index. Two-phase cleanup: first
+                // remove names this file was known to reference (cheap path), then
+                // a defensive sweep over all remaining entries to catch any that
+                // were inserted under names not present in this file's
+                // FileIndex::references map (e.g. via aggregated/global insertion
+                // paths). Empty buckets are dropped.
+                let mut global_refs = self.global_references.write();
+                Self::remove_file_global_refs(&mut global_refs, &file_index, &uri_str);
+                global_refs.retain(|_, locs| {
+                    locs.retain(|loc| !removed_uris.contains(&loc.uri.as_str()));
+                    !locs.is_empty()
+                });
+            }
         }
+
+        // Close only after all file/projection locks have been released. This
+        // preserves the files-then-DocumentStore ordering used by indexers.
+        self.document_store.close(&uri_str);
     }
 
     /// Remove a file from the index (URL variant for compatibility)
@@ -2644,10 +2842,16 @@ impl WorkspaceIndex {
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let index = WorkspaceIndex::new();
-    /// index.index_file_str("file:///example.pl", "sub hello { }")?;
+    /// index.index_initial_file_str("file:///example.pl", "sub hello { }")?;
     /// # Ok(())
     /// # }
     /// ```
+    /// # Compatibility and migration
+    ///
+    /// This is a deprecated compatibility surface retained for existing
+    /// initial-index callers. New code should use [`Self::index_initial_file_str`]
+    /// for discovery/import or [`Self::index_live_file`] for an owner-checked
+    /// live source commit.
     pub fn index_file_str(&self, uri: &str, text: &str) -> Result<(), String> {
         let path = Path::new(uri);
         let url = if path.is_absolute() {
@@ -2661,7 +2865,23 @@ impl WorkspaceIndex {
                     .map_err(|_| format!("Invalid URI or file path: {}", uri))
             })?
         };
-        self.index_file(url, text.to_string())
+        self.index_initial_file(url, text.to_string())
+    }
+
+    /// String/path form of [`Self::index_initial_file`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn index_initial_file_str(&self, uri: &str, text: &str) -> Result<(), String> {
+        let path = Path::new(uri);
+        let url = if path.is_absolute() {
+            url::Url::from_file_path(path)
+                .map_err(|_| format!("Invalid URI or file path: {}", uri))?
+        } else {
+            url::Url::parse(uri).or_else(|_| {
+                url::Url::from_file_path(path)
+                    .map_err(|_| format!("Invalid URI or file path: {}", uri))
+            })?
+        };
+        self.index_initial_file(url, text.to_string())
     }
 
     /// Index multiple files in a single batch operation.
@@ -2673,18 +2893,41 @@ impl WorkspaceIndex {
     /// Phase 1: Parse all files without holding locks.
     /// Phase 2: Bulk-insert file indices and rebuild the symbol cache once.
     pub fn index_files_batch(&self, files_to_index: Vec<(Url, String)>) -> Vec<String> {
+        let _write_version = WriteVersionGuard::new(self);
         let mut errors = Vec::new();
 
+        // A duplicate normalized key is one logical batch item. Retain the
+        // last input deliberately and deterministically. This does not claim
+        // historical sequential equivalence under partial failure.
+        let mut deduplicated = Vec::with_capacity(files_to_index.len());
+        let mut positions = HashMap::new();
+        for item in files_to_index {
+            let key = DocumentStore::uri_key(item.0.as_str());
+            if let Some(position) = positions.get(&key).copied() {
+                deduplicated[position] = item;
+            } else {
+                positions.insert(key, deduplicated.len());
+                deduplicated.push(item);
+            }
+        }
+
+        // Hold each URI's lifecycle guard across parsing and commit. This
+        // prevents remove_file from completing between those phases and then
+        // being undone by a late batch insertion. Sort the normalized keys so
+        // concurrent batches acquire multiple guards in one global order.
+        let mut lifecycle_keys: Vec<_> =
+            deduplicated.iter().map(|(uri, _)| DocumentStore::uri_key(uri.as_str())).collect();
+        lifecycle_keys.sort_unstable();
+        lifecycle_keys.dedup();
+        let mut lifecycle_guards = Vec::new();
+        for key in lifecycle_keys {
+            lifecycle_guards.push(self.lifecycle_guard(&key));
+        }
+
         // Phase 1: Parse all files without locks
-        let mut parsed: Vec<(
-            String,
-            String,
-            String,
-            FileIndex,
-            Vec<PackageEdge>,
-            Option<Document>,
-        )> = Vec::with_capacity(files_to_index.len());
-        for (uri, text) in &files_to_index {
+        let mut parsed: Vec<(String, String, String, FileIndex, Vec<PackageEdge>)> =
+            Vec::with_capacity(deduplicated.len());
+        for (uri, text) in &deduplicated {
             let uri_str = uri.to_string();
 
             // Content hash for early-exit
@@ -2693,7 +2936,6 @@ impl WorkspaceIndex {
             let content_hash = hasher.finish();
 
             let key = DocumentStore::uri_key(&uri_str);
-            let previous_document = self.document_store.get(&uri_str);
 
             // Check if content unchanged
             {
@@ -2705,32 +2947,17 @@ impl WorkspaceIndex {
                 }
             }
 
-            // Update document store
-            if self.document_store.is_open(&uri_str) {
-                self.document_store.update(&uri_str, 1, text.clone());
-            } else {
-                self.document_store.open(uri_str.clone(), 1, text.clone());
-            }
-
             // Parse
             let mut parser = Parser::new(text);
             let ast = match parser.parse() {
                 Ok(ast) => ast,
                 Err(e) => {
-                    self.restore_document(&uri_str, text, previous_document.as_ref());
                     errors.push(format!("Parse error in {}: {}", uri_str, e));
                     continue;
                 }
             };
 
-            let mut doc = match self.document_store.get(&uri_str) {
-                Some(d) => d,
-                None => {
-                    self.restore_document(&uri_str, text, previous_document.as_ref());
-                    errors.push(format!("Document not found: {}", uri_str));
-                    continue;
-                }
-            };
+            let mut candidate_document = Document::new(uri_str.clone(), 1, text.clone());
 
             // Determine workspace folder URI from the file URI
             let folder_uri = self.determine_folder_uri(&uri_str);
@@ -2741,11 +2968,12 @@ impl WorkspaceIndex {
                 folder_uri: folder_uri.clone(),
                 ..Default::default()
             };
-            let mut visitor = IndexVisitor::new(&mut doc, uri_str.clone(), folder_uri);
+            let mut visitor =
+                IndexVisitor::new(&mut candidate_document, uri_str.clone(), folder_uri);
             visitor.visit(&ast, &mut file_index);
 
             let package_edges = package_graph_edges_from_hir(&ast);
-            parsed.push((key, uri_str, text.clone(), file_index, package_edges, previous_document));
+            parsed.push((key, uri_str, text.clone(), file_index, package_edges));
         }
 
         // Phase 2: Bulk insert with single cache rebuild
@@ -2760,11 +2988,21 @@ impl WorkspaceIndex {
             files.reserve(parsed.len());
             symbols.reserve(parsed.len().saturating_mul(20).saturating_mul(2));
 
-            for (key, uri_str, text, file_index, package_edges, previous_document) in parsed {
+            for (key, uri_str, text, file_index, package_edges) in parsed {
                 if let Some(kind) = self.admission_limit_for(&files, &key, &file_index) {
-                    self.restore_document(&uri_str, &text, previous_document.as_ref());
                     self.record_resource_limit_rejection(kind.clone());
                     errors.push(Self::resource_limit_error(kind, &self.limits));
+                    continue;
+                }
+
+                // Batch indexing is an untracked filesystem/initial-scan
+                // refresh, matching `index_file` and generation-zero callers.
+                // It has no document generation with which to reject a stale
+                // candidate; tracked LSP updates use
+                // `index_file_with_generation` instead.
+                if !self.commit_document(&uri_str, 1, text.clone(), false) {
+                    errors
+                        .push(format!("Document store rejected candidate version for {}", uri_str));
                     continue;
                 }
 
@@ -2800,6 +3038,11 @@ impl WorkspaceIndex {
         }
 
         errors
+    }
+
+    /// Initial-discovery name for [`Self::index_files_batch`].
+    pub fn index_initial_files_batch(&self, files_to_index: Vec<(Url, String)>) -> Vec<String> {
+        self.index_files_batch(files_to_index)
     }
 
     /// Find all references to a symbol using dual indexing strategy
@@ -3190,6 +3433,7 @@ impl WorkspaceIndex {
 
     /// Clear all indexed files and symbols from the workspace.
     pub fn clear(&self) {
+        let _write_version = WriteVersionGuard::new(self);
         self.files.write().clear();
         self.symbols.write().clear();
         self.search_index.write().clear();
@@ -9334,6 +9578,78 @@ sub hello {
         Ok(())
     }
 
+    /// #11298 red proof: a rejected `DocumentStore` update must prevent the
+    /// candidate from being parsed/extracted against the predecessor's line
+    /// geometry and then published as accepted facts.
+    ///
+    /// A tracked candidate deliberately exercises a store version that is
+    /// newer than the candidate generation. The old path ignored the atomic
+    /// store rejection, so it could replace accepted file facts while the
+    /// store still contained A.
+    #[test]
+    fn rejected_document_store_version_cannot_publish_mixed_geometry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///lib/MixedGeometry.pm"));
+        let accepted = "package MixedGeometry;\nsub accepted_a { 1 }\n1;\n";
+        let candidate = "package MixedGeometry;\n\n\n\nsub candidate_b { 1 }\n1;\n";
+
+        index.index_file_with_generation(uri.clone(), accepted.to_string(), 9)?;
+        // Simulate a newer accepted text-sync version without changing the
+        // already-indexed file facts. Generation 10 is valid for the index,
+        // but must be rejected by the store's version decision.
+        index.document_store().open(uri.to_string(), 100, accepted.to_string());
+        let accepted_document = must_some(index.document_store().get(uri.as_str()));
+        assert_eq!(accepted_document.version, 100);
+        assert_eq!(accepted_document.text(), accepted);
+        assert_eq!(
+            accepted_document
+                .line_index
+                .offset_to_position(accepted.find("sub accepted_a").unwrap()),
+            (1, 0),
+            "the accepted predecessor must have A's line geometry"
+        );
+
+        // Version 10 is rejected by the already-accepted version 100, but the
+        // candidate parser still has a valid, independently distinguishable B.
+        let result = index.index_file_with_generation(uri.clone(), candidate.to_string(), 10);
+        let stored = must_some(index.document_store().get(uri.as_str()));
+        assert_eq!(stored.version, 100, "the stale store update must be rejected");
+        assert_eq!(stored.text(), accepted, "accepted source must remain A");
+        assert_eq!(
+            stored.line_index.offset_to_position(stored.text().find("sub accepted_a").unwrap()),
+            (1, 0),
+            "accepted DocumentStore geometry must remain A"
+        );
+
+        // Capture the fact observations before asserting the rejection.  This
+        // keeps a current-main failure diagnostic if the candidate reaches
+        // extraction with mixed geometry, while the expected accepted facts
+        // remain the predecessor's A.
+        let symbols = index.file_symbols(uri.as_str());
+        let candidate_b_line = symbols
+            .iter()
+            .find(|symbol| symbol.name == "candidate_b")
+            .map(|symbol| symbol.range.start.line);
+        let candidate_b_present = candidate_b_line.is_some();
+        let accepted_a_present = symbols.iter().any(|symbol| symbol.name == "accepted_a");
+        assert!(
+            !candidate_b_present,
+            "rejected candidate_b must be absent; observed presence={candidate_b_present}, line={candidate_b_line:?}"
+        );
+        assert!(
+            accepted_a_present,
+            "accepted facts must retain accepted_a; observed candidate_b presence={candidate_b_present}, line={candidate_b_line:?}, accepted_a presence={accepted_a_present}"
+        );
+
+        assert!(
+            result.is_err(),
+            "a rejected DocumentStore version must stop candidate publication; got {result:?}; observed candidate_b presence={candidate_b_present}, line={candidate_b_line:?}, accepted_a presence={accepted_a_present}"
+        );
+
+        Ok(())
+    }
+
     /// #3618 review thread (factory-droid, PRRT_kwDOSid81M6QBZ1u): before the
     /// `generation`/`pending_generation` split added in this PR's fix-3
     /// round, the early guard's reservation wrote directly onto
@@ -9680,6 +9996,68 @@ Utils::process_data();
         assert_eq!(index.file_count(), 5);
         assert!(index.find_definition("Batch::Mod0::func_0").is_some());
         assert!(index.find_definition("Batch::Mod4::func_4").is_some());
+    }
+
+    #[test]
+    fn batch_untracked_refresh_accepts_existing_document() {
+        let index = WorkspaceIndex::new();
+        let uri = must(Url::parse("file:///batch/stale.pm"));
+        let accepted = "package BatchStale;\nsub accepted { 1 }\n1;\n";
+        must(index.index_file_with_generation(uri.clone(), accepted.to_string(), 4));
+        index.document_store().open(uri.to_string(), 9, accepted.to_string());
+
+        let candidate = "package BatchStale;\nsub changed { 1 }\n1;\n";
+        let errors = index.index_files_batch(vec![(uri.clone(), candidate.to_string())]);
+
+        assert!(errors.is_empty(), "untracked batch refresh errors: {errors:?}");
+        assert_eq!(index.document_store().get_text(uri.as_str()).as_deref(), Some(candidate));
+        let symbols = index.file_symbols(uri.as_str());
+        assert!(symbols.iter().any(|symbol| symbol.name == "changed"));
+        assert!(!symbols.iter().any(|symbol| symbol.name == "accepted"));
+        assert_eq!(index.indexed_generation(uri.as_str()), Some(0));
+    }
+
+    #[test]
+    fn batch_duplicate_uri_uses_last_input_deterministically() {
+        let index = WorkspaceIndex::new();
+        let uri = must(Url::parse("file:///batch/duplicate.pm"));
+        let errors = index.index_files_batch(vec![
+            (uri.clone(), "package Duplicate; sub first { 1 } 1;".to_string()),
+            (uri.clone(), "package Duplicate; sub middle { 1 } 1;".to_string()),
+            (uri.clone(), "package Duplicate; sub last { 1 } 1;".to_string()),
+        ]);
+
+        assert!(errors.is_empty(), "duplicate batch indexing errors: {errors:?}");
+        let symbols = index.file_symbols(uri.as_str());
+        assert!(symbols.iter().any(|symbol| symbol.name == "last"));
+        assert!(!symbols.iter().any(|symbol| symbol.name == "first"));
+        assert!(!symbols.iter().any(|symbol| symbol.name == "middle"));
+        assert_eq!(
+            index.document_store().get_text(uri.as_str()).as_deref(),
+            Some("package Duplicate; sub last { 1 } 1;")
+        );
+    }
+
+    #[test]
+    fn generation_zero_refresh_preserves_the_untracked_caller_contract() {
+        let index = WorkspaceIndex::new();
+        let uri = must(Url::parse("file:///generation-zero-refresh.pl"));
+        must(index.index_file_with_generation(
+            uri.clone(),
+            "package Refresh; sub old { 1 } 1;".to_string(),
+            7,
+        ));
+
+        // No session/epoch identity reaches this seam, so generation zero is
+        // intentionally accepted as a later untracked scan/reopen refresh.
+        must(index.index_file(uri.clone(), "package Refresh; sub new { 1 } 1;".to_string()));
+        let symbols = index.file_symbols(uri.as_str());
+        assert!(symbols.iter().any(|symbol| symbol.name == "new"));
+        assert!(!symbols.iter().any(|symbol| symbol.name == "old"));
+        assert_eq!(
+            index.document_store().get_text(uri.as_str()).as_deref(),
+            Some("package Refresh; sub new { 1 } 1;")
+        );
     }
 
     #[test]
@@ -13914,6 +14292,121 @@ sub bar { return $greeting; }
             "file:///edge/coverage_delta_indexed_assignment.pl",
             text,
             "compute_key",
+        );
+    }
+
+    #[test]
+    fn source_commit_api_separates_initial_and_live_contracts() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit.pl"));
+        let initial = index.index_initial_file(
+            uri.clone(),
+            "package ApiSourceCommit; sub initial { 1 } 1;".to_string(),
+        );
+        assert!(initial.is_ok(), "initial import must remain fallible: {initial:?}");
+
+        let generation = must_some(NonZeroU32::new(1));
+        let outcome = index.index_live_file(
+            uri.clone(),
+            "package ApiSourceCommit; sub live { 2 } 1;".to_string(),
+            SourceCommit::new(generation),
+        );
+        assert_eq!(outcome, SourceCommitOutcome::Accepted);
+        assert!(index.file_symbols(uri.as_str()).iter().any(|symbol| symbol.name == "live"));
+    }
+
+    #[test]
+    fn source_commit_api_preserves_stale_and_noop_outcomes() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit-outcomes.pl"));
+        let generation_two = must_some(NonZeroU32::new(2));
+        let generation_one = must_some(NonZeroU32::new(1));
+        let text = "package Outcomes; sub stable { 1 } 1;".to_string();
+
+        assert_eq!(
+            index.index_live_file(uri.clone(), text.clone(), SourceCommit::new(generation_two),),
+            SourceCommitOutcome::Accepted
+        );
+        assert_eq!(
+            index.index_live_file(uri.clone(), text, SourceCommit::new(generation_two),),
+            SourceCommitOutcome::NoOp
+        );
+        assert_eq!(
+            index.index_live_file(
+                uri,
+                "package Outcomes; sub stale { 1 } 1;".to_string(),
+                SourceCommit::new(generation_one),
+            ),
+            SourceCommitOutcome::RejectedStale
+        );
+    }
+
+    #[test]
+    fn identical_live_generation_advances_before_older_live_commit() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit-noop-generation.pl"));
+        let text = "package NoOpGeneration; sub stable { 1 } 1;".to_string();
+        let generation_one = must_some(NonZeroU32::new(1));
+        let generation_two = must_some(NonZeroU32::new(2));
+
+        must(index.index_initial_file(uri.clone(), text.clone()));
+        assert_eq!(
+            index.index_live_file(uri.clone(), text.clone(), SourceCommit::new(generation_one)),
+            SourceCommitOutcome::NoOp
+        );
+        assert_eq!(index.indexed_generation(uri.as_str()), Some(1));
+        assert_eq!(
+            index.index_live_file(uri.clone(), text, SourceCommit::new(generation_two)),
+            SourceCommitOutcome::NoOp
+        );
+        assert_eq!(index.indexed_generation(uri.as_str()), Some(2));
+        assert_eq!(
+            index.index_live_file(
+                uri,
+                "package NoOpGeneration; sub older { 2 } 1;".to_string(),
+                SourceCommit::new(generation_one),
+            ),
+            SourceCommitOutcome::RejectedStale
+        );
+    }
+
+    #[test]
+    fn live_noop_rejects_generation_below_pending_high_water() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit-pending-noop.pl"));
+        let text = "package PendingNoOp; sub stable { 1 } 1;".to_string();
+        let generation_one = must_some(NonZeroU32::new(1));
+
+        must(index.index_initial_file(uri.clone(), text.clone()));
+        let key = DocumentStore::uri_key(uri.as_str());
+        {
+            // Model the ordered state after a newer live writer reserves its
+            // generation but before it publishes parsed content. The lower
+            // live commit has identical content, which used to bypass the
+            // pending high-water guard through the NoOp fast path.
+            let mut files = index.files.write();
+            let file = must_some(files.get_mut(&key));
+            file.pending_generation = 3;
+            assert_eq!(file.generation, 0);
+        }
+
+        assert_eq!(
+            index.index_live_file(uri, text, SourceCommit::new(generation_one)),
+            SourceCommitOutcome::RejectedStale
+        );
+    }
+
+    #[test]
+    fn stale_internal_live_candidate_is_not_accepted_by_legacy_mapping() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit-stale-mapping.pl"));
+        let current = "package StaleMapping; sub current { 2 } 1;".to_string();
+        let stale = "package StaleMapping; sub stale { 1 } 1;".to_string();
+
+        must(index.index_file_with_generation(uri.clone(), current, 2));
+        assert_eq!(
+            index.index_file_with_generation_outcome(uri, stale, 1),
+            Ok(IndexFileWithGenerationOutcome::RejectedStale)
         );
     }
 }

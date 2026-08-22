@@ -181,8 +181,9 @@ gh pr checks <pr-number>
 # Check for conflicts
 cargo tree -d
 
-# Update manually
-cargo update -p <package> --precise <version>
+# Do not use Cargo's resolver to repair a Cargo.lock conflict.
+# Preserve the accepted lock and route any required graph change
+# through explicit dependency admission.
 
 # Verify
 cargo check --workspace

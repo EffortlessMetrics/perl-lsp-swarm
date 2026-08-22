@@ -250,10 +250,11 @@ impl LspServer {
             }
         }
 
-        // Pull client-scoped workspace settings (if supported) and merge them
-        // as the highest-precedence layer over TOML-derived folder config.
+        // Client-scoped `workspace/configuration` is deliberately deferred to
+        // the post-initialize lifecycle. During `initialize` only local project
+        // and initialization-option state may be applied; server→client requests
+        // are not legal until after InitializeResult has been returned (#7708).
         drop(folders);
-        self.request_workspace_configuration_for_folders();
     }
 
     /// In single-file mode, try to discover `.perl-lsp.toml` from the
@@ -973,6 +974,43 @@ include_paths = ["stale_lib"]
     }
 
     #[test]
+    fn handle_client_response_ignores_removed_test_runner_authority() {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let folder = temp.path().join("folder");
+        std::fs::create_dir_all(&folder).expect("failed to create folder");
+        let uri = url::Url::from_directory_path(&folder).expect("failed to create uri").to_string();
+
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
+                .with_path(folder),
+        );
+        server.pending_workspace_configuration_requests.lock().insert(
+            ServerRequestId::for_test(101),
+            crate::runtime::PendingWorkspaceConfigurationRequest {
+                folder_uris: vec![uri.clone()],
+                includes_global_item: true,
+                created_at: std::time::Instant::now(),
+            },
+        );
+
+        server.handle_client_response(Some(serde_json::json!({
+            "id": 101,
+            "result": [
+                {"testRunner": {"command": "CANARY-EXECUTABLE", "args": ["CANARY-ARG"]}},
+                {"workspace": {"resolutionTimeout": 321}, "testRunner": {"timeout": 1}}
+            ]
+        })));
+
+        let folders = server.workspace_folders.lock();
+        let state = folders.iter().find(|folder| folder.uri == uri).expect("missing folder");
+        assert_eq!(state.effective_workspace_config.resolution_timeout_ms, 321);
+        let serialized = serde_json::to_value(&*server.config.lock()).expect("serialize config");
+        assert!(serialized.get("testRunner").is_none());
+        assert!(serialized.to_string().find("CANARY").is_none());
+    }
+
+    #[test]
     fn handle_client_response_accepts_numeric_string_id() -> anyhow::Result<()> {
         let server = LspServer::new();
         let temp = tempfile::tempdir()?;
@@ -1104,6 +1142,9 @@ include_paths = ["stale_lib"]
     fn request_workspace_configuration_supersedes_older_pending_requests() {
         let server = LspServer::new();
         server.client_capabilities.lock().workspace_configuration_support = true;
+        // Supersession is a post-initialize concern; server->client requests are
+        // rejected before initialization completes (#7708).
+        server.initialized.store(true, Ordering::Release);
 
         let temp = tempfile::tempdir().expect("failed to create temp dir");
         let folder = temp.path().join("folder");

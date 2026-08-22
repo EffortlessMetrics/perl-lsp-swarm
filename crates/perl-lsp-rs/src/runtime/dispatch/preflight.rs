@@ -3,6 +3,13 @@
 //! Keeps cancellation registration and compatibility initialization separate from
 //! method routing and response construction.
 
+// #7098 co-locates the bounded lifecycle substrate at the request-admission
+// boundary. It does not become the live admission owner until #7100 wires it
+// into prepare_request, cancellation, supersession, and response finalization.
+#[expect(dead_code, reason = "incoming request owner remains unwired until #7100")]
+#[path = "request_lifecycle.rs"]
+pub(super) mod request_lifecycle;
+
 use super::super::{
     JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse, LspServer, Ordering, Value,
 };
@@ -81,6 +88,11 @@ fn auto_initialize_for_compat(server: &LspServer, request: &JsonRpcRequest) {
         && !is_lifecycle_method(&request.method)
     {
         server.auto_initialize_for_compat(&request.method);
+        // Mirror the post-`initialized` configuration pull for clients that
+        // skip the notification (#7708).
+        if server.initialized.load(Ordering::Acquire) {
+            server.request_workspace_configuration_for_folders();
+        }
     }
 }
 

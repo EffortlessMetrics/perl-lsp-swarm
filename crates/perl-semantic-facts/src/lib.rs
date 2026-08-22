@@ -12,6 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 mod envelope;
+pub mod framework;
 
 pub use envelope::*;
 

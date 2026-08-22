@@ -7,7 +7,10 @@
 //! - **Response Matching**: Match by ID for request/response pairing
 //! - **Timeouts**: Configurable via env vars, with sensible defaults
 //! - **Quiet Drain**: Wait for server to settle after changes before assertions
-//! - **Portable Spawn**: PERL_LSP_BIN -> CARGO_BIN_EXE_* -> PATH -> cargo run fallback
+//! - **Portable Spawn**: PERL_LSP_BIN -> canonical perllsp artifact (pre-built
+//!   on miss, honoring CARGO_TARGET_DIR) -> PATH. Never a compile-at-runtime
+//!   fallback: a cargo invocation inside the handshake deadline is the #11848
+//!   stall family, so resolution ends in a loud failure instead.
 //!
 //! ## Environment Variables
 //!
@@ -48,12 +51,13 @@ pub use handshake::{
     await_index_ready, initialize_lsp, initialize_lsp_with_capabilities, shutdown_and_exit,
 };
 pub use protocol_io::{
-    drain_until_quiet, read_notification_method, read_notification_timeout, read_response,
-    read_response_matching, read_response_matching_i64, read_response_only_timeout,
-    read_response_timeout, send_raw, send_raw_message, send_request_no_wait,
+    ReadResponseOutcome, drain_until_quiet, read_notification_method, read_notification_timeout,
+    read_response, read_response_matching, read_response_matching_i64,
+    read_response_matching_outcome, read_response_only_timeout, read_response_timeout, send_raw,
+    send_raw_message, send_request_no_wait,
 };
 
-use binary_resolution::{CARGO_BIN_EXE, resolve_perl_lsp_cmds};
+use binary_resolution::resolve_perl_lsp_cmds;
 use protocol_io::{
     ERR_TEST_TIMEOUT, error_response_for_request, map_send_error, send_message_inner,
 };
@@ -97,12 +101,45 @@ pub struct LspServer {
     pub process: Mutex<Child>,
     pub(crate) writer: Mutex<BufWriter<ChildStdin>>, // keep stdin pinned and flushed
     rx: Mutex<mpsc::Receiver<Value>>,
+    /// Protocol-level failures reported by the stdout reader thread
+    /// (unparsable frames); drained by the response readers so callers can
+    /// distinguish a broken payload from a slow one.
+    err_rx: Mutex<mpsc::Receiver<String>>,
     // Keep threads alive for the lifetime of the server
     _stdout_thread: std::thread::JoinHandle<()>,
     _stderr_thread: std::thread::JoinHandle<()>,
     pending: Mutex<VecDeque<Value>>,
+    /// Bounded tail of the server's stderr lines (#11848): the drain thread
+    /// records the last lines so a handshake stall can be diagnosed from the
+    /// failure output alone, without rerunning with LSP_TEST_ECHO_STDERR.
+    /// Shared with the drain thread, hence the Arc; the tuple's second
+    /// element is the unterminated final line's raw bytes.
+    stderr_tail: std::sync::Arc<Mutex<(VecDeque<String>, Vec<u8>)>>,
     /// Flag to track if shutdown has been initiated (prevents double-shutdown)
     pub(crate) shutdown_initiated: std::sync::atomic::AtomicBool,
+}
+
+/// How many stderr lines the tail keeps.
+const STDERR_TAIL_LINES: usize = 40;
+const STDERR_PARTIAL_MAX_BYTES: usize = 8 * 1024;
+
+fn record_stderr_chunk(tail: &mut (VecDeque<String>, Vec<u8>), chunk: &[u8]) -> Vec<String> {
+    let mut completed = Vec::new();
+    tail.1.extend_from_slice(chunk);
+    while let Some(pos) = tail.1.iter().position(|byte| *byte == b'\n') {
+        let line = String::from_utf8_lossy(&tail.1[..pos]).trim_end().to_owned();
+        tail.1.drain(..=pos);
+        if tail.0.len() >= STDERR_TAIL_LINES {
+            tail.0.pop_front();
+        }
+        completed.push(line.clone());
+        tail.0.push_back(line);
+    }
+    if tail.1.len() > STDERR_PARTIAL_MAX_BYTES {
+        let start = tail.1.len() - STDERR_PARTIAL_MAX_BYTES;
+        tail.1.drain(..start);
+    }
+    completed
 }
 
 impl LspServer {
@@ -117,6 +154,28 @@ impl LspServer {
     /// Get mutable access to the stdin writer
     pub fn stdin_writer(&self) -> std::sync::MutexGuard<'_, BufWriter<ChildStdin>> {
         self.writer.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Render the captured stderr tail (#11848). Returns an empty string
+    /// when the server produced no stderr, so callers can interpolate it
+    /// into failure messages unconditionally.
+    pub fn stderr_tail(&self) -> String {
+        let tail = self.stderr_tail.lock().unwrap_or_else(|e| e.into_inner());
+        if tail.0.is_empty() && tail.1.is_empty() {
+            return String::new();
+        }
+        let mut rendered = String::from("server stderr tail:\n");
+        for line in tail.0.iter() {
+            rendered.push_str("  | ");
+            rendered.push_str(line);
+            rendered.push('\n');
+        }
+        if !tail.1.is_empty() {
+            rendered.push_str("  | ");
+            rendered.push_str(String::from_utf8_lossy(&tail.1).trim_end());
+            rendered.push_str("  (unterminated final line)\n");
+        }
+        rendered
     }
 }
 
@@ -156,46 +215,35 @@ pub fn start_lsp_server() -> LspServer {
             eprintln!("╠════════════════════════════════════════════════════════════════════╣");
             eprintln!("║ Resolution order tried:                                            ║");
             eprintln!("║  1. PERL_LSP_BIN env var: {:?}", std::env::var("PERL_LSP_BIN").ok());
-            eprintln!("║  2. Compile-time CARGO_BIN_EXE: {:?}", CARGO_BIN_EXE);
             eprintln!(
-                "║  3. Runtime CARGO_BIN_EXE_perl-lsp: {:?}",
-                std::env::var("CARGO_BIN_EXE_perl-lsp").ok()
+                "║  2. Runtime CARGO_BIN_EXE_perllsp: {:?}",
+                std::env::var("CARGO_BIN_EXE_perllsp").ok()
             );
-            eprintln!(
-                "║  4. Runtime CARGO_BIN_EXE_perl_lsp: {:?}",
-                std::env::var("CARGO_BIN_EXE_perl_lsp").ok()
-            );
-            if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-                let crate_dir = std::path::Path::new(&manifest_dir);
-                let workspace_root = crate_dir
-                    .ancestors()
-                    .find(|p| p.join("Cargo.lock").exists())
-                    .unwrap_or(crate_dir);
-                let debug_binary = workspace_root.join("target/debug/perl-lsp");
-                let release_binary = workspace_root.join("target/release/perl-lsp");
+            for (index, path) in binary_resolution::probed_binary_paths().into_iter().enumerate() {
                 eprintln!(
-                    "║  5. Debug binary exists: {} ({})",
-                    debug_binary.exists(),
-                    debug_binary.display()
-                );
-                eprintln!(
-                    "║  6. Release binary exists: {} ({})",
-                    release_binary.exists(),
-                    release_binary.display()
+                    "║  3. Prebuilt binary [{}]: exists={} {}",
+                    index,
+                    path.exists(),
+                    path.display()
                 );
             }
-            eprintln!("║  7. perl-lsp in PATH: {:?}", which::which("perl-lsp").ok());
-            eprintln!("║  8. cargo run fallback");
+            eprintln!(
+                "║     (probe honors CARGO_TARGET_DIR={:?}; failed pre-builds refuse loudly \
+                 per #11848)",
+                std::env::var("CARGO_TARGET_DIR").ok()
+            );
+            eprintln!("║  4. perllsp in PATH: {:?}", which::which("perllsp").ok());
             eprintln!("╠════════════════════════════════════════════════════════════════════╣");
             eprintln!("║ Last error: {:?}", last_err);
             eprintln!("╠════════════════════════════════════════════════════════════════════╣");
             eprintln!("║ HINTS:                                                             ║");
-            eprintln!("║  • Run: cargo build -p perl-lsp-rs   (builds debug binary)            ║");
+            eprintln!("║  • Run: cargo build -p perllsp --bin perllsp                         ║");
             eprintln!("║  • Or:  cargo test -p perl-lsp-rs    (builds + tests automatically)   ║");
-            eprintln!("║  • Set PERL_LSP_BIN=/path/to/perl-lsp for custom binary            ║");
+            eprintln!("║  • Set PERL_LSP_BIN=/path/to/perllsp for a custom product binary    ║");
             eprintln!("╚════════════════════════════════════════════════════════════════════╝");
             must(Err::<std::process::Child, _>(format!(
-                "Failed to start perl-lsp via any available method: {:?}",
+                "Failed to start perl-lsp via any available method (no compile-at-runtime \
+                 fallback exists; see #11848): {:?}",
                 last_err
             )))
         })
@@ -216,15 +264,30 @@ pub fn start_lsp_server() -> LspServer {
         )),
     };
     let echo = std::env::var_os("LSP_TEST_ECHO_STDERR").is_some();
+    // Shared tail the drain thread records into (see `LspServer::stderr_tail`).
+    // `partial` holds the bytes of a not-yet-terminated final line: a stalled
+    // server's last partial diagnostic is often the most informative byte it
+    // produced, and a `read_line` drain would sit blocked on it forever while
+    // `stderr_tail` reported "no stderr" (#11853 review). Chunked reads keep
+    // the partial visible.
+    let stderr_tail = std::sync::Arc::new(Mutex::new((VecDeque::<String>::new(), Vec::new())));
+    let stderr_tail_for_thread = std::sync::Arc::clone(&stderr_tail);
     let _stderr_thread =
         match std::thread::Builder::new().name("lsp-stderr-drain".into()).spawn(move || {
-            let mut r = BufReader::new(stderr);
-            let mut line = String::new();
-            while r.read_line(&mut line).unwrap_or(0) > 0 {
+            let mut stderr = stderr;
+            let mut chunk = [0u8; 4096];
+            loop {
+                let n = match stderr.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                let mut tail = stderr_tail_for_thread.lock().unwrap_or_else(|e| e.into_inner());
+                let completed = record_stderr_chunk(&mut tail, &chunk[..n]);
                 if echo {
-                    eprintln!("[perl-lsp] {}", line.trim_end());
+                    for line in completed {
+                        eprintln!("[perl-lsp] {line}");
+                    }
                 }
-                line.clear();
             }
         }) {
             Ok(handle) => handle,
@@ -241,6 +304,7 @@ pub fn start_lsp_server() -> LspServer {
         )),
     };
     let (tx, rx) = mpsc::channel::<Value>();
+    let (err_tx, err_rx) = mpsc::channel::<String>();
     let debug_reader = std::env::var_os("LSP_TEST_DEBUG_READER").is_some();
     let _stdout_thread =
         match std::thread::Builder::new().name("lsp-stdout-reader".into()).spawn(move || {
@@ -283,7 +347,11 @@ pub fn start_lsp_server() -> LspServer {
                 }
                 let len = match content_len {
                     Some(n) => n,
-                    None => continue,
+                    None => {
+                        let _ = err_tx
+                            .send("frame without a parsable Content-Length header".to_owned());
+                        continue;
+                    }
                 };
                 // Read body
                 let mut buf = vec![0u8; len];
@@ -293,13 +361,22 @@ pub fn start_lsp_server() -> LspServer {
                     }
                     return;
                 }
-                if let Ok(val) = serde_json::from_slice::<Value>(&buf) {
-                    if debug_reader {
-                        let id = val.get("id").map(|v| v.to_string()).unwrap_or_default();
-                        let method = val.get("method").and_then(|v| v.as_str()).unwrap_or("");
-                        eprintln!("[reader] Received message id={id} method={method}");
+                match serde_json::from_slice::<Value>(&buf) {
+                    Ok(val) => {
+                        if debug_reader {
+                            let id = val.get("id").map(|v| v.to_string()).unwrap_or_default();
+                            let method = val.get("method").and_then(|v| v.as_str()).unwrap_or("");
+                            eprintln!("[reader] Received message id={id} method={method}");
+                        }
+                        let _ = tx.send(val);
                     }
-                    let _ = tx.send(val);
+                    Err(e) => {
+                        let snippet = String::from_utf8_lossy(&buf);
+                        let _ = err_tx.send(format!(
+                            "invalid JSON in {len}-byte frame: {e}; body: {:.200}",
+                            snippet.trim()
+                        ));
+                    }
                 }
             }
         }) {
@@ -313,9 +390,11 @@ pub fn start_lsp_server() -> LspServer {
         process: Mutex::new(process),
         writer: Mutex::new(BufWriter::new(stdin)),
         rx: Mutex::new(rx),
+        err_rx: Mutex::new(err_rx),
         _stdout_thread,
         _stderr_thread,
         pending: Mutex::new(VecDeque::new()),
+        stderr_tail,
         shutdown_initiated: std::sync::atomic::AtomicBool::new(false),
     };
 
@@ -323,6 +402,65 @@ pub fn start_lsp_server() -> LspServer {
     std::thread::sleep(Duration::from_millis(100));
 
     server
+}
+
+#[cfg(test)]
+mod stderr_tests {
+    use super::{STDERR_PARTIAL_MAX_BYTES, STDERR_TAIL_LINES, record_stderr_chunk};
+    use std::collections::VecDeque;
+
+    #[test]
+    fn stderr_fragments_reconstruct_across_reads() {
+        let mut tail = (VecDeque::new(), Vec::new());
+        assert!(record_stderr_chunk(&mut tail, b"warning: split ").is_empty());
+        assert_eq!(
+            record_stderr_chunk(&mut tail, b"across reads\nnext"),
+            vec!["warning: split across reads"]
+        );
+
+        assert_eq!(tail.0.iter().collect::<Vec<_>>(), vec!["warning: split across reads"]);
+        assert_eq!(tail.1, b"next");
+    }
+
+    #[test]
+    fn stderr_preserves_utf8_code_points_split_across_reads() {
+        let mut tail = (VecDeque::new(), Vec::new());
+        let character = "界".as_bytes();
+
+        assert!(record_stderr_chunk(&mut tail, &character[..1]).is_empty());
+        assert_eq!(
+            record_stderr_chunk(&mut tail, &[character[1], character[2], b'\n']),
+            vec!["界"]
+        );
+    }
+
+    #[test]
+    fn unterminated_stderr_keeps_newest_bounded_bytes() {
+        let mut tail = (VecDeque::new(), Vec::new());
+        record_stderr_chunk(
+            &mut tail,
+            format!("old{}new", "x".repeat(STDERR_PARTIAL_MAX_BYTES)).as_bytes(),
+        );
+
+        assert!(tail.1.len() <= STDERR_PARTIAL_MAX_BYTES);
+        assert!(tail.1.ends_with(b"new"));
+        assert!(tail.0.len() <= STDERR_TAIL_LINES);
+    }
+
+    #[test]
+    fn stderr_echo_lines_survive_tail_eviction() {
+        let mut tail = (VecDeque::new(), Vec::new());
+        for index in 0..STDERR_TAIL_LINES {
+            record_stderr_chunk(&mut tail, format!("line {index}\n").as_bytes());
+        }
+
+        let completed = record_stderr_chunk(&mut tail, b"new line\n");
+
+        assert_eq!(completed, vec!["new line"]);
+        assert_eq!(tail.0.len(), STDERR_TAIL_LINES);
+        assert_eq!(tail.0.front().map(String::as_str), Some("line 1"));
+        assert_eq!(tail.0.back().map(String::as_str), Some("new line"));
+    }
 }
 
 pub fn send_request(server: &LspServer, request: Value) -> Value {

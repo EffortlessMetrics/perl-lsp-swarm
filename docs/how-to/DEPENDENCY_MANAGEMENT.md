@@ -265,11 +265,11 @@ If Dependabot updates create version conflicts:
    ```bash
    cargo tree -d  # Show duplicates
    ```
-2. **Update parent dependencies** - May need to update multiple crates
-3. **Use `cargo update`** - Try resolving with cargo:
-   ```bash
-   cargo update -p <package-name>
-   ```
+2. **Stop on a lockfile conflict** - Preserve the accepted `Cargo.lock` and
+   route any required graph change through explicit dependency admission.
+3. **Do not use Cargo's resolver to repair the conflict in place** - A
+   dependency graph change is a separately reviewed branch operation, not a
+   routine conflict repair.
 
 ## Best Practices
 

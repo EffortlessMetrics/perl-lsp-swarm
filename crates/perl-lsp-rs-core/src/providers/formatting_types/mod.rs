@@ -41,31 +41,52 @@ pub struct FormatRange {
     pub end: FormatPosition,
 }
 
-/// Count the number of UTF-16 code units in `s`.
+/// Locate the exact end-of-document position in LSP coordinates.
 ///
-/// LSP positions use UTF-16 code units (see Language Server Protocol spec §3.1).
-/// Characters in the Basic Multilingual Plane (U+0000–U+FFFF) count as 1 unit;
-/// supplementary-plane characters (U+10000 and above) count as 2 units.
-fn utf16_len(s: &str) -> usize {
-    s.chars().map(|c| if c as u32 >= 0x10000 { 2 } else { 1 }).sum()
+/// Saturation is the deliberate terminal behavior, not a swallowed error.
+/// `FormatPosition` carries the protocol's own `u32` line and character types,
+/// so a document large enough to saturate either counter — upwards of 4 GiB,
+/// since saturating `line` needs more than `u32::MAX` separators — has no
+/// representable LSP position at all, and no return type here could express
+/// one. Saturating is strictly safer than the `as u32` casts this replaced,
+/// which truncated modulo 2^32 and could report a large document as a very
+/// small position.
+fn true_eof_position(content: &str) -> FormatPosition {
+    let mut line = 0_u32;
+    let mut character = 0_u32;
+    let mut chars = content.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    let _ = chars.next();
+                }
+                line = line.saturating_add(1);
+                character = 0;
+            }
+            '\n' => {
+                line = line.saturating_add(1);
+                character = 0;
+            }
+            _ => {
+                character = character.saturating_add(ch.len_utf16() as u32);
+            }
+        }
+    }
+
+    FormatPosition { line, character }
 }
 
 impl FormatRange {
-    /// Create a range covering the entire document.
+    /// Create a range covering the entire document through its true EOF.
+    ///
+    /// A terminal line separator creates a final empty line, so the end of
+    /// `"text\n"`, `"text\r\n"`, and supported bare-CR `"text\r"` is
+    /// `(1, 0)`, not the end of line zero. CRLF is treated as one separator and
+    /// non-BMP characters count as two UTF-16 code units.
     pub fn whole_document(content: &str) -> Self {
-        let lines: Vec<&str> = content.lines().collect();
-        let last_line = if lines.is_empty() { 0 } else { (lines.len() - 1) as u32 };
-
-        FormatRange {
-            start: FormatPosition { line: 0, character: 0 },
-            end: FormatPosition {
-                line: last_line,
-                character: lines
-                    .get(last_line as usize)
-                    .map(|line| utf16_len(line) as u32)
-                    .unwrap_or(0),
-            },
-        }
+        Self { start: FormatPosition { line: 0, character: 0 }, end: true_eof_position(content) }
     }
 
     /// Create a new range from positions.
@@ -95,7 +116,7 @@ pub struct FormattingOptions {
 }
 
 /// Formatted document result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct FormattedDocument {
     /// The formatted text.
     pub text: String,
@@ -106,6 +127,14 @@ pub struct FormattedDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_whole_document_end(content: &str, line: u32, character: u32) {
+        let range = FormatRange::whole_document(content);
+        assert_eq!(range.start.line, 0);
+        assert_eq!(range.start.character, 0);
+        assert_eq!(range.end.line, line);
+        assert_eq!(range.end.character, character);
+    }
 
     #[test]
     fn test_formatting_options() {
@@ -135,5 +164,27 @@ mod tests {
         let range = FormatRange::new(start, end);
         assert_eq!(range.start.line, 0);
         assert_eq!(range.end.line, 10);
+    }
+
+    #[test]
+    fn whole_document_reaches_empty_and_unterminated_eof() {
+        assert_whole_document_end("", 0, 0);
+        assert_whole_document_end("abc", 0, 3);
+        assert_whole_document_end("a\nb", 1, 1);
+    }
+
+    #[test]
+    fn whole_document_preserves_terminal_line_identity() {
+        assert_whole_document_end("a\n", 1, 0);
+        assert_whole_document_end("a\r\n", 1, 0);
+        assert_whole_document_end("a\r", 1, 0);
+        assert_whole_document_end("a\r\n\r\nb", 2, 1);
+    }
+
+    #[test]
+    fn whole_document_counts_utf16_without_splitting_crlf() {
+        assert_whole_document_end("😀", 0, 2);
+        assert_whole_document_end("a\r\nb😀", 1, 3);
+        assert_whole_document_end("😀\n", 1, 0);
     }
 }

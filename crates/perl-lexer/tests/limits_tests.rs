@@ -5,8 +5,8 @@
 //! `MAX_REGEX_PARSE_STEPS` is the only constant with `pub` visibility, so it
 //! is the only one verifiable directly from an integration test.  The remaining
 //! budgets (`MAX_REGEX_BYTES`, `MAX_HEREDOC_BYTES`, `MAX_DELIM_NEST`,
-//! `MAX_HEREDOC_DEPTH`, `HEREDOC_TIMEOUT_MS`) are `pub(crate)` and are tested
-//! indirectly through their observable lexer behaviour.
+//! `MAX_HEREDOC_DEPTH`) are `pub(crate)` and are tested indirectly through their
+//! observable lexer behaviour.
 //!
 //! Existing test suites (`lexer_catastrophic_regex_test`, `heredoc_security_tests`,
 //! `lexer_slash_timeout_tests`, `hang_risk_regex_literal_tests`) already cover
@@ -15,8 +15,9 @@
 //! 1. Sanity / invariant checks on `MAX_REGEX_PARSE_STEPS`.
 //! 2. The ordering invariant: the step budget fires before the byte budget.
 //! 3. Quote-like operator deep-nesting (not covered by other suites).
-//! 4. Wall-clock termination assertion for specific pathological inputs
-//!    (hang-detector, 2-second ceiling — generous, not a latency benchmark).
+//! 4. Outer test-level wall-clock hang guards for specific pathological inputs.
+//!    Elapsed time is deliberately not part of the lexer's source-derived token
+//!    contract (hang-detector, 2-second ceiling — not a latency benchmark).
 
 use perl_lexer::{MAX_REGEX_PARSE_STEPS, PerlLexer, TokenType};
 use std::time::Instant;

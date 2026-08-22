@@ -4,6 +4,10 @@ members = [
     "crates/perl-ast",
     "crates/perl-ast-v2",
     "crates/perl-token",
+    # perl-source-identity: canonical source_identity.v1 core types (#7652).
+    # Tier 1 leaf — no parser/workspace/LSP/DAP deps. Dependency contract
+    # asserted in tests/dependency_contract.rs.
+    "crates/perl-source-identity",
     "crates/perl-pragma",
     "crates/perl-regex",
     "crates/perl-lexer",
@@ -104,6 +108,9 @@ allow = [
     # Tier 1 — Leaf crates (no workspace deps)
     "perl-position-tracking",
     "perl-token",
+    "perl-test-facts",
+    # Canonical source_identity.v1 owner (PLSP-ADR-0006 "Scope boundary").
+    "perl-source-identity",
     # (perl-content-length-framing absorbed into perl-lsp-rs-core::transport::framing — Wave Final PR B)
     # (perl-percentile absorbed into perl-parser — Wave D)
     "perl-subprocess-runtime",
@@ -228,6 +235,8 @@ homepage = "https://github.com/EffortlessMetrics/perl-lsp"
 perl-ast-v2 = { path = "crates/perl-ast-v2", version = "0.17.0" }
 # Tier 1: Leaf crates (no internal dependencies)
 perl-token = { path = "crates/perl-token", version = "0.17.0" }
+# perl-source-identity: source_identity.v1 core types (#7652). No internal deps.
+perl-source-identity = { path = "crates/perl-source-identity", version = "0.17.0" }
 perl-regex = { path = "crates/perl-regex", version = "0.17.0" }
 perl-pragma = { path = "crates/perl-pragma", version = "0.17.0" }
 perl-lexer = { path = "crates/perl-lexer", version = "0.17.0" }
@@ -347,7 +356,7 @@ tempfile = "3.24.0"
 anyhow = "1.0.103"
 url = "2.5.8"
 lsp-types = "0.97.0"
-parking_lot = "0.12.5"
+parking_lot = { version = "0.12.5", features = ["arc_lock"] }
 tracing = "0.1.44"
 walkdir = "2.5.0"
 clap = { version = "4.5.60", features = ["derive"] }

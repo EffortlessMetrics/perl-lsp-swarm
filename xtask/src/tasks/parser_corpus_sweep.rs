@@ -1135,6 +1135,11 @@ fn measure_files(
                 total_dirty_files += 1;
                 files_with_catastrophic_parse_failure += 1;
             }
+            // Forward-compatible fallback for future variants (#2898)
+            _ => {
+                files_with_errors += 1;
+                total_dirty_files += 1;
+            }
         }
         progress.inc(1);
     }
@@ -2360,7 +2365,7 @@ mod tests {
         let manifest_path = dir.join("manifest.txt");
         fs::write(&manifest_path, "Found4872::Module\nMissing4872::Module\n")?;
 
-        let err = resolve_manifest_modules(&manifest_path, &[lib.clone()], 2)
+        let err = resolve_manifest_modules(&manifest_path, std::slice::from_ref(&lib), 2)
             .expect_err("partial resolution must fail");
         let message = err.to_string();
         assert!(message.contains("Only 1 of 2 manifest modules resolved"), "{message}");

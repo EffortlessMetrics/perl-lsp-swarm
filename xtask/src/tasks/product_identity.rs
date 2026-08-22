@@ -46,7 +46,6 @@ struct ServerIdentity {
     package_manifest: PathBuf,
     implementation_crate: String,
     implementation_manifest: PathBuf,
-    compatibility_executable: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,10 +81,8 @@ pub fn check(repo_root: &Path) -> Result<()> {
     check_with_resolved_repository_context(repo_root, repository_context.as_ref())
 }
 
-fn check_with_repository_context(
-    repo_root: &Path,
-    repository_context: Option<&str>,
-) -> Result<()> {
+#[cfg(test)]
+fn check_with_repository_context(repo_root: &Path, repository_context: Option<&str>) -> Result<()> {
     let repository_context = repository_context.map(|repository| RepositoryContext {
         repository: repository.to_string(),
         authoritative: true,
@@ -155,10 +152,7 @@ fn validate_contract(
     }
 
     require_non_empty("product.name", &contract.product.name)?;
-    validate_repository_slug(
-        "product.public_repository",
-        &contract.product.public_repository,
-    )?;
+    validate_repository_slug("product.public_repository", &contract.product.public_repository)?;
     validate_repository_slug(
         "product.development_repository",
         &contract.product.development_repository,
@@ -171,10 +165,8 @@ fn validate_contract(
     }
     validate_repository_context(contract, repository_context)?;
 
-    let expected_extension_id = format!(
-        "{}.{}",
-        contract.extension.publisher, contract.extension.package_name
-    );
+    let expected_extension_id =
+        format!("{}.{}", contract.extension.publisher, contract.extension.package_name);
     if contract.extension.id != expected_extension_id {
         bail!(
             "extension id {:?} does not match publisher/package identity {:?}",
@@ -190,35 +182,42 @@ fn validate_contract(
         &["workspace", "package", "repository"],
         "workspace package repository",
     )?;
-    require_equal(
-        "workspace repository",
-        workspace_repository,
-        &public_repository_url,
-    )?;
+    require_equal("workspace repository", workspace_repository, &public_repository_url)?;
 
-    validate_cargo_identity(
+    let primary_manifest = validate_cargo_package_identity(
         repo_root,
         "primary server",
         &contract.server.package_manifest,
         &contract.server.cargo_package,
-        &contract.server.primary_executable,
         workspace_repository,
     )?;
-    validate_cargo_identity(
+    validate_cargo_binary_identity(
+        repo_root,
+        "primary server",
+        &contract.server.package_manifest,
+        &primary_manifest,
+        &contract.server.primary_executable,
+    )?;
+    validate_cargo_package_identity(
         repo_root,
         "server implementation",
         &contract.server.implementation_manifest,
         &contract.server.implementation_crate,
-        &contract.server.compatibility_executable,
         workspace_repository,
     )?;
-    validate_cargo_identity(
+    let debug_adapter_manifest = validate_cargo_package_identity(
         repo_root,
         "debug adapter",
         &contract.debug_adapter.package_manifest,
         &contract.debug_adapter.cargo_package,
-        &contract.debug_adapter.executable,
         workspace_repository,
+    )?;
+    validate_cargo_binary_identity(
+        repo_root,
+        "debug adapter",
+        &contract.debug_adapter.package_manifest,
+        &debug_adapter_manifest,
+        &contract.debug_adapter.executable,
     )?;
     validate_facade_dependency(
         repo_root,
@@ -264,22 +263,17 @@ fn validate_repository_context(
     Ok(())
 }
 
-fn validate_cargo_identity(
+fn validate_cargo_package_identity(
     repo_root: &Path,
     label: &str,
     manifest_path: &Path,
     expected_package: &str,
-    expected_binary: &str,
     workspace_repository: &str,
-) -> Result<()> {
+) -> Result<toml::Value> {
     validate_relative_path(manifest_path)?;
     let manifest = read_toml(repo_root, manifest_path)?;
     let package_name = toml_string(&manifest, &["package", "name"], "Cargo package name")?;
-    require_equal(
-        &format!("{label} Cargo package"),
-        package_name,
-        expected_package,
-    )?;
+    require_equal(&format!("{label} Cargo package"), package_name, expected_package)?;
 
     let package_repository = effective_package_repository(&manifest, workspace_repository)?;
     require_equal(
@@ -288,7 +282,18 @@ fn validate_cargo_identity(
         workspace_repository,
     )?;
 
-    let binary_names = cargo_binary_names(repo_root, manifest_path, &manifest, package_name)?;
+    Ok(manifest)
+}
+
+fn validate_cargo_binary_identity(
+    repo_root: &Path,
+    label: &str,
+    manifest_path: &Path,
+    manifest: &toml::Value,
+    expected_binary: &str,
+) -> Result<()> {
+    let package_name = toml_string(manifest, &["package", "name"], "Cargo package name")?;
+    let binary_names = cargo_binary_names(repo_root, manifest_path, manifest, package_name)?;
     if !binary_names.contains(expected_binary) {
         bail!(
             "{label} manifest {} does not expose binary {:?}; found {:?}",
@@ -308,10 +313,8 @@ fn validate_facade_dependency(
     implementation_crate: &str,
 ) -> Result<()> {
     let facade_manifest = read_toml(repo_root, facade_manifest_path)?;
-    let dependencies = facade_manifest
-        .get("dependencies")
-        .and_then(toml::Value::as_table)
-        .ok_or_else(|| {
+    let dependencies =
+        facade_manifest.get("dependencies").and_then(toml::Value::as_table).ok_or_else(|| {
             eyre!(
                 "primary server manifest {} has no [dependencies] table",
                 facade_manifest_path.display()
@@ -372,21 +375,14 @@ fn dependency_source_match(
         return Ok((alias == implementation_crate, false));
     };
 
-    if table
-        .get("workspace")
-        .and_then(toml::Value::as_bool)
-        == Some(true)
-    {
+    if table.get("workspace").and_then(toml::Value::as_bool) == Some(true) {
         let workspace_dependencies = root_manifest
             .get("workspace")
             .and_then(|workspace| workspace.get("dependencies"))
             .and_then(toml::Value::as_table)
             .ok_or_else(|| eyre!("workspace manifest has no [workspace.dependencies] table"))?;
         let workspace_specification = workspace_dependencies.get(alias).ok_or_else(|| {
-            eyre!(
-                "workspace dependency {:?} referenced by the primary server is missing",
-                alias
-            )
+            eyre!("workspace dependency {:?} referenced by the primary server is missing", alias)
         })?;
         let matches_package =
             dependency_package_name(alias, workspace_specification) == implementation_crate;
@@ -420,10 +416,8 @@ fn dependency_path_matches(
     specification: &toml::Value,
     expected_path: &Path,
 ) -> Result<bool> {
-    let Some(path) = specification
-        .as_table()
-        .and_then(|table| table.get("path"))
-        .and_then(toml::Value::as_str)
+    let Some(path) =
+        specification.as_table().and_then(|table| table.get("path")).and_then(toml::Value::as_str)
     else {
         return Ok(false);
     };
@@ -463,9 +457,8 @@ fn effective_package_repository<'a>(
         .get("package")
         .and_then(toml::Value::as_table)
         .ok_or_else(|| eyre!("Cargo manifest has no [package] table"))?;
-    let repository = package
-        .get("repository")
-        .ok_or_else(|| eyre!("Cargo package repository is missing"))?;
+    let repository =
+        package.get("repository").ok_or_else(|| eyre!("Cargo package repository is missing"))?;
 
     if let Some(value) = repository.as_str() {
         return Ok(value);
@@ -480,15 +473,13 @@ fn effective_package_repository<'a>(
         return Ok(workspace_repository);
     }
 
-    bail!(
-        concat!(
-            "Cargo package repository must be a string or inherit workspace.repository; ",
-            "found {repository:?}"
-        )
-    )
+    bail!(concat!(
+        "Cargo package repository must be a string or inherit workspace.repository; ",
+        "found {repository:?}"
+    ))
 }
 
-fn cargo_binary_names(
+pub(crate) fn cargo_binary_names(
     repo_root: &Path,
     manifest_path: &Path,
     manifest: &toml::Value,
@@ -497,9 +488,7 @@ fn cargo_binary_names(
     let mut names = BTreeSet::new();
 
     if let Some(bins) = manifest.get("bin") {
-        let bins = bins
-            .as_array()
-            .ok_or_else(|| eyre!("Cargo bin targets are not an array"))?;
+        let bins = bins.as_array().ok_or_else(|| eyre!("Cargo bin targets are not an array"))?;
         for bin in bins {
             let name = bin
                 .get("name")
@@ -513,15 +502,22 @@ fn cargo_binary_names(
         .get("package")
         .and_then(toml::Value::as_table)
         .ok_or_else(|| eyre!("Cargo manifest has no [package] table"))?;
-    let autobins = package
-        .get("autobins")
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(true);
-    if autobins {
+    let autobins = package.get("autobins").and_then(toml::Value::as_bool).unwrap_or(true);
+    // Cargo autodiscovers src/main.rs and src/bin/* unless suppressed:
+    // explicit `autobins = false` always suppresses, and an explicit
+    // [[bin]] list suppresses discovery only for edition-2015 manifests
+    // (the default when the edition is unspecified). From edition 2018
+    // onward an explicit [[bin]] coexists with autodiscovery - verified
+    // against cargo metadata: an edition-2015 manifest with [[bin]] plus
+    // src/main.rs and src/bin/extra.rs reports one binary, while the same
+    // manifest at edition 2018/2024 reports all three.
+    let edition_2015 = package
+        .get("edition")
+        .and_then(toml::Value::as_str)
+        .is_none_or(|edition| edition == "2015");
+    if autobins && (names.is_empty() || !edition_2015) {
         let manifest_dir = repo_root.join(
-            manifest_path
-                .parent()
-                .ok_or_else(|| eyre!("Cargo manifest path has no parent"))?,
+            manifest_path.parent().ok_or_else(|| eyre!("Cargo manifest path has no parent"))?,
         );
         if manifest_dir.join("src/main.rs").is_file() {
             names.insert(package_name.to_string());
@@ -533,16 +529,16 @@ fn cargo_binary_names(
             {
                 let entry = entry?;
                 let path = entry.path();
-                if path.is_file()
-                    && path.extension().and_then(|value| value.to_str()) == Some("rs")
+                if path.is_file() && path.extension().and_then(|value| value.to_str()) == Some("rs")
                 {
                     if let Some(stem) = path.file_stem().and_then(|value| value.to_str()) {
                         names.insert(stem.to_string());
                     }
-                } else if path.is_dir() && path.join("main.rs").is_file() {
-                    if let Some(name) = path.file_name().and_then(|value| value.to_str()) {
-                        names.insert(name.to_string());
-                    }
+                } else if path.is_dir()
+                    && path.join("main.rs").is_file()
+                    && let Some(name) = path.file_name().and_then(|value| value.to_str())
+                {
+                    names.insert(name.to_string());
                 }
             }
         }
@@ -580,11 +576,7 @@ fn validate_extension(
     )?;
     require_equal(
         "extension repository",
-        json_string(
-            &manifest,
-            &["repository", "url"],
-            "extension repository URL",
-        )?,
+        json_string(&manifest, &["repository", "url"], "extension repository URL")?,
         expected_repository_url,
     )?;
     Ok(())
@@ -613,11 +605,7 @@ fn validate_conflicts(contract: &ProductIdentityContract) -> Result<()> {
     }
 
     let primary_package_identity = format!("crates.io/{}", contract.server.cargo_package);
-    if contract
-        .conflicts
-        .iter()
-        .any(|conflict| conflict.identity == primary_package_identity)
-    {
+    if contract.conflicts.iter().any(|conflict| conflict.identity == primary_package_identity) {
         bail!(
             "primary server package {:?} cannot also be classified as an identity conflict",
             primary_package_identity
@@ -661,10 +649,7 @@ fn resolve_repository_context(repo_root: &Path) -> Result<Option<RepositoryConte
         return Ok(None);
     };
     validate_repository_slug("origin repository", &repository)?;
-    Ok(Some(RepositoryContext {
-        repository,
-        authoritative: false,
-    }))
+    Ok(Some(RepositoryContext { repository, authoritative: false }))
 }
 
 fn parse_github_repository(remote: &str) -> Option<String> {
@@ -716,45 +701,31 @@ fn read_toml(repo_root: &Path, relative_path: &Path) -> Result<toml::Value> {
         .wrap_err_with(|| format!("parsing TOML identity source {}", path.display()))
 }
 
-fn toml_string<'a>(
-    value: &'a toml::Value,
-    path: &[&str],
-    description: &str,
-) -> Result<&'a str> {
+fn toml_string<'a>(value: &'a toml::Value, path: &[&str], description: &str) -> Result<&'a str> {
     let mut current = value;
     for segment in path {
         current = current
             .get(*segment)
             .ok_or_else(|| eyre!("missing {description} at {}", path.join(".")))?;
     }
-    current
-        .as_str()
-        .ok_or_else(|| eyre!("{description} at {} is not a string", path.join(".")))
+    current.as_str().ok_or_else(|| eyre!("{description} at {} is not a string", path.join(".")))
 }
 
-fn json_string<'a>(
-    value: &'a JsonValue,
-    path: &[&str],
-    description: &str,
-) -> Result<&'a str> {
+fn json_string<'a>(value: &'a JsonValue, path: &[&str], description: &str) -> Result<&'a str> {
     let mut current = value;
     for segment in path {
         current = current
             .get(*segment)
             .ok_or_else(|| eyre!("missing {description} at {}", path.join(".")))?;
     }
-    current
-        .as_str()
-        .ok_or_else(|| eyre!("{description} at {} is not a string", path.join(".")))
+    current.as_str().ok_or_else(|| eyre!("{description} at {} is not a string", path.join(".")))
 }
 
 fn validate_relative_path(path: &Path) -> Result<()> {
-    let raw = path
-        .to_str()
-        .ok_or_else(|| eyre!("identity source path is not valid UTF-8: {path:?}"))?;
-    let invalid_segment = raw
-        .split('/')
-        .any(|segment| segment.is_empty() || segment == "." || segment == "..");
+    let raw =
+        path.to_str().ok_or_else(|| eyre!("identity source path is not valid UTF-8: {path:?}"))?;
+    let invalid_segment =
+        raw.split('/').any(|segment| segment.is_empty() || segment == "." || segment == "..");
     if raw.is_empty()
         || raw.starts_with('/')
         || raw.starts_with('\\')

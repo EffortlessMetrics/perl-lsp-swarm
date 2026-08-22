@@ -146,14 +146,29 @@ require('lspconfig').perl_lsp.setup({
 In `languages.toml`:
 
 ```toml
-[[language]]
-name = "perl"
-language-servers = ["perl-lsp"]
-
-[language-server.perl-lsp]
+[language-server.perllsp]
 command = "perllsp"
 args = ["--stdio", "--feature-profile", "production"]
+
+[[language]]
+name = "perl"
+language-servers = ["perllsp"]
+roots = [".perl-lsp.toml", "Makefile.PL", "Build.PL", "cpanfile", "dist.ini"]
+file-types = [
+  "pl",
+  "pm",
+  "t",
+  "psgi",
+  { glob = "latexmkrc" },
+  { glob = ".latexmkrc" },
+]
+shebangs = ["perl"]
 ```
+
+This narrows Helix's combined `perl` entry to reviewed Perl 5 file families so
+Raku/NQP/P6 files do not launch the Perl 5 server. See
+[`docs/examples/helix/languages.toml`](../examples/helix/languages.toml) for the
+checked base registration.
 
 ### Emacs (via eglot)
 
