@@ -25,7 +25,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -508,6 +508,13 @@ pub struct GateMetrics {
     pub memory_peak_mb: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub files_checked: Option<u32>,
+    /// For `cargo test`-class gates: `Some(true)` when the log shows the
+    /// standard test-binary marker (`running N tests` or a `test result:`
+    /// summary line), `Some(false)` when the command was a cargo test but no
+    /// such marker was ever produced (compile-only budget spent — the shape
+    /// #11797 asks the receipt to make explicit), `None` for non-test gates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_execution_reached: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -2017,12 +2024,27 @@ fn run_single_gate(
             // Extract output summary (last 10 lines or error message)
             let output_summary = extract_output_summary(&execution.stdout, 10);
 
-            // Parse metrics if this is a test gate
-            let metrics = if gate.tags.contains(&"test".to_string()) {
+            // Parse metrics if this is a test gate. Whether the test binary
+            // was reached (#11797) is orthogonal to whether the summary was
+            // parseable: a compile-timeout for a cargo test command produces
+            // no summary at all but still deserves an explicit false in the
+            // receipt so a reviewer can tell it from an intra-test hang.
+            let mut metrics = if gate.tags.contains(&"test".to_string()) {
                 parse_test_metrics(&execution.stdout)
             } else {
                 None
             };
+            // Scan the gate's full on-disk log rather than the retained
+            // stdout tail: `read_gate_output` keeps only the last 4 MiB, so
+            // an early `running N tests` preamble can scroll out of the tail
+            // before an intra-test hang produces any summary footer, which
+            // would misclassify the hang as a compile-only overrun.
+            if let Some(reached) = log_reaches_test_execution(command, &log_path)
+                .or_else(|| parse_test_execution_reached(command, &execution.stdout))
+            {
+                metrics.get_or_insert_with(GateMetrics::default).test_execution_reached =
+                    Some(reached);
+            }
 
             // For failing cargo test gates, extract the first failure details
             let first_failure = if status == "fail" && is_cargo_test_command(command) {
@@ -2605,6 +2627,87 @@ fn parse_test_metrics(output: &str) -> Option<GateMetrics> {
     None
 }
 
+/// For a `cargo test`-class gate, report whether the captured log ever
+/// crossed from compilation into test-binary execution. Returns `Some(true)`
+/// when a `running N tests` marker or a `test result:` summary line is
+/// present, `Some(false)` when the command was a cargo test invocation but
+/// neither marker appears (the compile-overrun signature #11797 asks the
+/// receipt to distinguish from a real test failure), and `None` when the
+/// gate was not a cargo test invocation and the distinction does not apply.
+///
+/// The string variant scans exactly the output it is handed; the receipt
+/// wires `log_reaches_test_execution` first so the verdict covers the full
+/// final-attempt log rather than its retained tail. When retries ran, this
+/// reflects the final recorded attempt: each retry truncates the gate log,
+/// so earlier attempts' reach evidence is not retained in this field (the
+/// final attempt's retry trailer names the earlier timeouts).
+///
+/// The "running N tests" line is the libtest harness's own preamble printed
+/// once the linked test binary starts executing; a compile timeout — even
+/// one whose Cargo output includes an unrelated occurrence of the word
+/// "running" — will not produce that line. `test result:` is the harness
+/// footer; either marker alone proves the binary was reached.
+fn parse_test_execution_reached(command: &str, output: &str) -> Option<bool> {
+    if !is_cargo_test_command(command) {
+        return None;
+    }
+    Some(output.lines().any(is_test_binary_execution_marker))
+}
+
+/// `parse_test_execution_reached` against a gate's complete on-disk log.
+///
+/// The retained stdout handed to the string variant is truncated to the last
+/// [`MAX_GATE_OUTPUT_BYTES`] by `read_gate_output`; a libtest preamble that
+/// scrolled past that boundary before a hang would otherwise be reported as
+/// `Some(false)` (compile-only overrun) even though the binary ran. This
+/// streams the whole file line by line so the verdict never depends on how
+/// much output followed the marker. Returns the same tri-state contract as
+/// the string variant, and `None` when the log cannot be read at all (the
+/// caller falls back to the retained tail).
+fn log_reaches_test_execution(command: &str, log_path: &Path) -> Option<bool> {
+    if !is_cargo_test_command(command) {
+        return None;
+    }
+    let file = fs::File::open(log_path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    // filter_map, not map_while: gate logs can contain arbitrary test
+    // subprocess bytes, so an invalid-UTF-8 line must be skipped without
+    // ending the scan before a later libtest marker.
+    Some(
+        reader
+            .lines()
+            .filter_map(|line| line.ok())
+            .any(|line| is_test_binary_execution_marker(&line)),
+    )
+}
+
+/// A single line from cargo test output that proves the libtest binary
+/// began executing: either the harness preamble `running N tests` (any
+/// non-negative N, including 0 for empty binaries) or the summary footer
+/// `test result:`.
+fn is_test_binary_execution_marker(line: &str) -> bool {
+    let trimmed = line.trim();
+    if let Some(rest) = trimmed.strip_prefix("running") {
+        // Require whitespace after `running`, then an integer and the exact
+        // libtest noun. This accepts repeated spaces/tabs while rejecting
+        // near-misses such as `running 4 testing` or `running4 tests`.
+        if !rest.chars().next().is_some_and(char::is_whitespace) {
+            return false;
+        }
+        let mut fields = rest.split_whitespace();
+        let Some(count_token) = fields.next() else {
+            return false;
+        };
+        let Some(test_token) = fields.next() else {
+            return false;
+        };
+        return count_token.chars().all(|c| c.is_ascii_digit())
+            && matches!(test_token, "test" | "tests")
+            && fields.next().is_none();
+    }
+    trimmed.starts_with("test result:")
+}
+
 fn extract_number(line: &str, suffix: &str) -> Option<u32> {
     let pattern = format!(" {}", suffix);
     line.find(&pattern).and_then(|idx| {
@@ -3046,10 +3149,10 @@ mod tests {
         extend_plan_with_non_pr_fast_static_gates, extend_plan_with_static_tiers,
         extract_output_summary, failure_guidance, filter_gates, is_blocking_gate_status,
         is_cargo_test_command, is_latest_commit, load_policy_for_inspection, load_receipt,
-        output_diff, parse_first_failure, parse_test_metrics, plan_gates, read_gate_output,
-        run_gate_plan, run_internal_commit_check, run_internal_xtask_gate,
-        run_shell_command_with_timeout, run_single_gate, selects_commit_tier_gate,
-        staged_guard_violation, static_gate_plan, write_receipt,
+        log_reaches_test_execution, output_diff, parse_first_failure, parse_test_execution_reached,
+        parse_test_metrics, plan_gates, read_gate_output, run_gate_plan, run_internal_commit_check,
+        run_internal_xtask_gate, run_shell_command_with_timeout, run_single_gate,
+        selects_commit_tier_gate, staged_guard_violation, static_gate_plan, write_receipt,
     };
     use crate::tasks::ci_scope::{
         ArchWidener, DirectCrate, HeavyLaneEntry, LaneDecisions, LaneEntry, PlatformOverrides,
@@ -4402,6 +4505,290 @@ gates:
         assert!(parse_test_metrics("no cargo summary here").is_none());
     }
 
+    // =========================================================================
+    // parse_test_execution_reached tests (issue #11797)
+    //
+    // The receipt distinguishes a compile-overrun timeout (cargo never linked
+    // and started the test binary) from a real test-body failure. A retry
+    // that only warms the compile cache is defensible; a retry that hides
+    // an intra-test hang is not (#10023 §"why timeouts only"). Making the
+    // distinction visible in the receipt is the mechanism #11797 asks for.
+    // =========================================================================
+
+    const CARGO_COMMAND: &str = "cargo test -p perl-lsp-rs-core --locked --lib inline_completion";
+    const NON_CARGO_COMMAND: &str = "just doctor";
+
+    #[test]
+    fn parse_test_execution_reached_detects_running_marker() {
+        // The libtest harness prints "running N tests" once the linked test
+        // binary starts executing, regardless of whether any test passes.
+        let output = "   Compiling perl-lsp-rs-core v0.17.0\n\
+                      running 4 tests\n\
+                      test inline_completion::mod::tests::stub_a ... ok\n";
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, output), Some(true));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_accepts_repeated_and_tab_whitespace() {
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, "running  4 tests"), Some(true));
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, "running\t4\ttests"), Some(true));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_rejects_nearby_running_tokens() {
+        for output in ["running 4 testing", "running4 tests", "running 4 tests extra"] {
+            assert_eq!(
+                parse_test_execution_reached(CARGO_COMMAND, output),
+                Some(false),
+                "nearby text must not count as a libtest marker: {output:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_test_execution_reached_detects_zero_tests_running_marker() {
+        // `running 0 tests` still proves the binary linked and started.
+        let output = "running 0 tests\n\
+                      test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured";
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, output), Some(true));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_detects_summary_line_alone() {
+        // Some libtest configurations may buffer the preamble but still emit
+        // the summary; either marker alone proves the binary was reached.
+        let output = "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured";
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, output), Some(true));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_is_false_when_only_compile_output_captured() {
+        // The exact #11797 signature: exit 124 with a log of compile
+        // progress and warnings, no libtest preamble or summary anywhere.
+        let output = "   Compiling perl-parser-core v0.17.0\n\
+                      warning: unused import: `foo::Bar`\n\
+                      warning: field is never read: `baz`\n\
+                      ==== gate inline_completion_core attempt 2/2: watchdog timeout ====";
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, output), Some(false));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_is_false_when_output_is_empty() {
+        // A watchdog kill during cargo's `Compiling` phase can leave the log
+        // essentially empty by the time the receipt is written.
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, ""), Some(false));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_ignores_running_substring_inside_test_stdout() {
+        // A test that prints "running" or a build script that says "still
+        // running" must not trip the marker — the harness preamble is a
+        // line prefix followed by an integer, not a substring anywhere.
+        let output = "gate command still running elapsed_ms=42000 timeout_seconds=150\n\
+                      warning: something running in background\n";
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, output), Some(false));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_ignores_non_cargo_test_commands() {
+        // The receipt field only makes a claim for cargo test invocations;
+        // returning a bare bool for `just doctor` or a shell script would
+        // mislabel any incidental "running" output in those logs.
+        let output = "running gates\ntest result: ok";
+        assert_eq!(parse_test_execution_reached(NON_CARGO_COMMAND, output), None);
+    }
+
+    #[test]
+    fn log_reaches_test_execution_survives_a_tail_evicting_preamble() {
+        // read_gate_output retains only the last 4 MiB of a gate log. A
+        // verbose test that printed its preamble and then hung past the
+        // retention boundary must still be reported as reached — the string
+        // variant would see only the post-preamble noise and answer false,
+        // misclassifying an intra-test hang as a compile-only overrun
+        // (#11797 review, P2 tail-truncation finding).
+        let marker_line = "running 4 tests\n";
+        let filler = "x".repeat(256) + "\n";
+        let head_lines = (MAX_GATE_OUTPUT_BYTES as usize) / filler.len() + 16;
+        let mut body = String::new();
+        for _ in 0..head_lines {
+            body.push_str(&filler);
+        }
+        body.push_str(marker_line);
+        body.push_str(&filler.repeat(4));
+        let tmp = tempdir().expect("test tempdir");
+        let log_path = tmp.path().join("gate.log");
+        std::fs::write(&log_path, &body).expect("write gate log");
+        assert!(
+            body.len() > MAX_GATE_OUTPUT_BYTES as usize,
+            "precondition: the fixture must exceed the retained-tail bound"
+        );
+        assert_eq!(
+            log_reaches_test_execution(CARGO_COMMAND, &log_path),
+            Some(true),
+            "a preamble outside the 4 MiB tail still proves the binary ran"
+        );
+        let compile_only = "   Compiling perl-lsp-rs-core v0.17.0\n".repeat(64);
+        std::fs::write(&log_path, compile_only).expect("rewrite gate log");
+        assert_eq!(
+            log_reaches_test_execution(CARGO_COMMAND, &log_path),
+            Some(false),
+            "compile-only full logs stay false"
+        );
+        assert_eq!(
+            log_reaches_test_execution(NON_CARGO_COMMAND, &log_path),
+            None,
+            "non-cargo-test commands carry no claim regardless of log shape"
+        );
+        assert_eq!(
+            log_reaches_test_execution(CARGO_COMMAND, &tmp.path().join("missing.log")),
+            None,
+            "unreadable logs defer to the caller's fallback"
+        );
+    }
+
+    #[test]
+    fn log_reaches_test_execution_scans_env_wrapped_commands() {
+        let tmp = tempdir().expect("test tempdir");
+        let log_path = tmp.path().join("lsp_smoke.log");
+        std::fs::write(&log_path, "running 3 tests\n").expect("write gate log");
+        assert_eq!(
+            log_reaches_test_execution(
+                "cargo build -p perllsp --locked && env -u RUSTC_WRAPPER cargo test",
+                &log_path
+            ),
+            Some(true),
+            "the lsp_smoke env-wrapped shape must gain the receipt diagnostic"
+        );
+    }
+
+    #[test]
+    fn parse_test_execution_reached_recognizes_doc_tests_preamble() {
+        // The doc-test binary uses the same preamble shape.
+        let output = "   Doc-tests inline_completion\n\n\
+                      running 12 tests\n";
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, output), Some(true));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_single_gate_marks_test_execution_reached_for_cargo_test_passes()
+    -> color_eyre::eyre::Result<()> {
+        // is_cargo_test_command inspects the last `&&`-separated segment of
+        // the command string (`.split("&&").last()`), so we shape the gate as
+        // a printf that emits libtest-style output and then terminates the
+        // shell before the trailing `cargo test <bogus>` classifier tail is
+        // ever reached. The receipt's claim keys off that shape without
+        // touching the real Cargo toolchain.
+        let full_command =
+            "printf 'running 2 tests\\ntest inline_completion::mod::stub_a ... ok\\n\
+              test inline_completion::mod::stub_b ... ok\\n\\n\
+              test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured\\n' \
+              ; exit 0; true && cargo test --lib --locked"
+                .to_string();
+        let mut gate = pr_gate("inline-fake", GatePlanningRole::AlwaysOn, &full_command);
+        gate.tags.push("test".to_string());
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+
+        let result =
+            run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
+
+        // Sanity: is_cargo_test_command must have accepted the shape, or the
+        // wiring under test never gets a chance to make its claim.
+        assert!(
+            is_cargo_test_command(&full_command),
+            "test precondition failed: command must be a cargo test invocation for the wiring to fire"
+        );
+        let metrics = result
+            .metrics
+            .as_ref()
+            .ok_or_else(|| color_eyre::eyre::eyre!("cargo test gate should populate metrics"))?;
+        assert_eq!(
+            metrics.test_execution_reached,
+            Some(true),
+            "receipt must record that the libtest binary was reached; got {metrics:?}"
+        );
+        // Corollary: the same log line the harness reads must be parseable
+        // as a cargo summary, so tests_total matches what the log says.
+        assert_eq!(
+            metrics.tests_total,
+            Some(2),
+            "the same run must parse the summary line and count tests; got {metrics:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_single_gate_marks_test_execution_not_reached_for_compile_only_output()
+    -> color_eyre::eyre::Result<()> {
+        // The #11797 signature: cargo-test-class command whose log holds
+        // only Compiling/warning lines, no libtest preamble anywhere. The
+        // false && cargo test suffix short-circuits so the real toolchain
+        // is not invoked, but the command STRING still qualifies for the
+        // test_execution_reached claim via is_cargo_test_command's tail
+        // segment rule.
+        let full_command = "printf '   Compiling perl-lsp-rs-core v0.17.0\\n\
+              warning: unused import: `foo::Bar`\\n\
+              warning: field is never read: `baz`\\n' \
+              ; false && cargo test --lib --locked"
+            .to_string();
+        let mut gate = pr_gate("inline-compile-only", GatePlanningRole::AlwaysOn, &full_command);
+        gate.tags.push("test".to_string());
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+
+        let result =
+            run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
+
+        assert!(
+            is_cargo_test_command(&full_command),
+            "test precondition failed: command must be a cargo test invocation for the wiring to fire"
+        );
+        let metrics = result.metrics.as_ref().ok_or_else(|| {
+            color_eyre::eyre::eyre!("cargo-test-class gate should always carry a metrics envelope")
+        })?;
+        assert_eq!(
+            metrics.test_execution_reached,
+            Some(false),
+            "receipt must flag a compile-only log as test-execution-not-reached; got {metrics:?}"
+        );
+        // Corollary: no cargo test summary was emitted, so tests_total stays absent.
+        assert!(
+            metrics.tests_total.is_none(),
+            "compile-only log must not synthesize a tests_total; got {metrics:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_single_gate_omits_test_execution_reached_for_non_cargo_commands()
+    -> color_eyre::eyre::Result<()> {
+        // A non-cargo-test command (formatter, linter, shell script) leaves
+        // the field absent even when its output happens to contain "running"
+        // — the claim only applies where it could be evidenced.
+        let command = "printf 'running fmt\\ntest result: ok\\n'";
+        let gate = pr_gate("fmt-like", GatePlanningRole::AlwaysOn, command);
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+
+        let result =
+            run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
+
+        assert!(
+            !is_cargo_test_command(command),
+            "test precondition failed: command must NOT be a cargo test invocation"
+        );
+        assert!(
+            result.metrics.is_none()
+                || result.metrics.as_ref().unwrap().test_execution_reached.is_none(),
+            "non-cargo-test gate must not carry a test_execution_reached claim; got {:?}",
+            result.metrics,
+        );
+        Ok(())
+    }
+
     #[test]
     fn unresolved_package_args_gate_refuses_to_spawn() -> color_eyre::eyre::Result<()> {
         let gate =
@@ -5615,6 +6002,35 @@ error: aborting due to previous error
     }
 
     #[test]
+    fn is_cargo_test_command_recognizes_env_wrapped_invocations() {
+        // lsp_smoke's merge-gate command ends its chain with
+        // `env -u RUSTC_WRAPPER cargo test ...` (#11797 review): env(1)'s
+        // flags and assignments must not hide the wrapped cargo invocation.
+        assert!(
+            is_cargo_test_command("env -u RUSTC_WRAPPER cargo test --locked -p perl-lsp-rs"),
+            "unset flag pair"
+        );
+        assert!(is_cargo_test_command("env RUST_TEST_THREADS=2 cargo test"), "assignment prefix");
+        assert!(
+            is_cargo_test_command(
+                "env PROPTEST_CASES=2048 PROPTEST_MAX_SHRINK_ITERS=1000 cargo test --lib"
+            ),
+            "multiple assignments"
+        );
+        assert!(
+            is_cargo_test_command(
+                "cargo build -p perllsp --locked && env -u RUSTC_WRAPPER cargo test"
+            ),
+            "env shape as the chained final segment"
+        );
+        assert!(
+            !is_cargo_test_command("env RUST_TEST_THREADS=2 cargo build"),
+            "env wrapping does not make a non-test command a test"
+        );
+        assert!(!is_cargo_test_command("env"), "bare env with no wrapped command");
+    }
+
+    #[test]
     fn is_cargo_test_command_rejects_non_test_commands() {
         assert!(!is_cargo_test_command("cargo clippy"), "clippy is not test");
         assert!(!is_cargo_test_command("cargo build"), "build is not test");
@@ -5984,6 +6400,86 @@ error: aborting due to previous error
             }
         }
 
+        Ok(())
+    }
+
+    /// (issue #11797) PR Smoke selects a per-run `CARGO_TARGET_DIR`
+    /// (`pr-smoke-${run_id}-${run_attempt}`); the shared Rust cache covers
+    /// dependencies, not target artifacts across runs, and the separate
+    /// "Warm xtask" step prebuilds xtask only. These bounds are policy
+    /// protection informed by the reported timeout family, not a cold-cache
+    /// acceptance receipt. `retry_count: 1` permits a second attempt to reuse
+    /// artifacts created in the same run. Current hosted receipts remain the
+    /// authority for whether a PR reaches the test binary within the bounds.
+    #[test]
+    fn inline_completion_gates_size_budget_for_cold_cache_compilation()
+    -> color_eyre::eyre::Result<()> {
+        // Only the two gates whose command targets the perl-lsp-rs-core mega
+        // crate are covered here; the lsp_registration_contract / lsp_capability_snapshots
+        // pair compile a smaller subset of that crate's tests and their budgets
+        // are governed independently.
+        const COLD_COMPILE_GATES: &[&str] =
+            &["inline_completion_registration", "inline_completion_core"];
+        // These numbers are the policy floor/ceiling: `retry_count: 1` still
+        // bounds the total wall time to 2x per gate, and the outer PR-smoke
+        // watchdog (2700s = 45m) has to absorb every pr-fast gate combined.
+        // This invariant constrains configuration; it does not establish a
+        // cold-cache performance result.
+        const MIN_TIMEOUT_SECONDS: u64 = 240;
+        const MAX_TIMEOUT_SECONDS: u64 = 300;
+        const MIN_MAX_DURATION_MS: u64 = 210_000;
+        const MAX_MAX_DURATION_MS: u64 = 270_000;
+
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        for &gate_name in COLD_COMPILE_GATES {
+            let gate = policy
+                .gates
+                .iter()
+                .find(|g| g.name == gate_name)
+                .ok_or_else(|| color_eyre::eyre::eyre!("gate '{gate_name}' not found"))?;
+            assert!(
+                gate.timeout_seconds >= MIN_TIMEOUT_SECONDS
+                    && gate.timeout_seconds <= MAX_TIMEOUT_SECONDS,
+                "Gate '{gate_name}' timeout_seconds={} must sit in [{MIN_TIMEOUT_SECONDS}, {MAX_TIMEOUT_SECONDS}] \
+                 to keep the configured PR Smoke policy within its outer 45m watchdog (#11797)",
+                gate.timeout_seconds,
+            );
+            let budget = gate.budgets.as_ref().ok_or_else(|| {
+                color_eyre::eyre::eyre!("Gate '{gate_name}' must declare a budget")
+            })?;
+            let max_ms = budget.max_duration_ms.ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "Gate '{gate_name}' budget must declare max_duration_ms (#11797)"
+                )
+            })?;
+            assert!(
+                max_ms >= MIN_MAX_DURATION_MS && max_ms <= MAX_MAX_DURATION_MS,
+                "Gate '{gate_name}' budget.max_duration_ms={max_ms} must sit in \
+                 [{MIN_MAX_DURATION_MS}, {MAX_MAX_DURATION_MS}] (#11797)",
+            );
+            // max_duration_ms is declarative only today (the runner enforces
+            // timeout_seconds; see the budgets NOTE in gate-policy.yaml), so
+            // this ordering assertion is anti-drift configuration shape, not
+            // an enforcement guarantee: it keeps the recorded ceiling below
+            // the enforced hard timeout so a future enforcement change cannot
+            // inherit a policy where the soft budget could never fire first.
+            assert!(
+                max_ms < gate.timeout_seconds * 1000,
+                "Gate '{gate_name}' budget.max_duration_ms={max_ms} must stay below \
+                 hard timeout_seconds={} * 1000",
+                gate.timeout_seconds,
+            );
+            // Retry-once is the compile-overrun remedy from #10023; drop it
+            // and a cold first attempt has no chance to warm the target dir
+            // for a second, and #11797 comes straight back.
+            assert_eq!(
+                gate.retry_count, 1,
+                "Gate '{gate_name}' must keep retry_count: 1 so a compile-overrun first attempt \
+                 warms the per-run CARGO_TARGET_DIR for the second (#10023, #11797)",
+            );
+        }
         Ok(())
     }
 
