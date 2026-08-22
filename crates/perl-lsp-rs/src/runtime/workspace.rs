@@ -3965,7 +3965,7 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn watched_unsafe_reread_clears_closed_state_and_balances_accounting()
+    fn watched_absent_reread_clears_closed_state_and_balances_accounting()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let dir = tempfile::tempdir()?;
@@ -3979,11 +3979,10 @@ mod tests {
         assert!(coordinator.index().file_symbols(&uri).iter().any(|s| s.name == "stale_only"));
         let pending_before_unsafe = coordinator.pending_parse_count();
 
-        // The bounded reread rejects binary content. The stale closed-file
-        // subject must be cleared rather than presented as current.
-        let mut unsafe_source = b"package UnsafeReread;\nsub unsafe_only { 2 }\n".to_vec();
-        unsafe_source.extend(std::iter::repeat_n(0, 128));
-        std::fs::write(&path, unsafe_source)?;
+        // The backing path is absent while a CHANGED event asks for a
+        // closed-file reread. The bounded helper must return None, and the
+        // stale subject must be cleared rather than presented as current.
+        std::fs::remove_file(&path)?;
         server.handle_did_change_watched_files(Some(json!({
             "changes": [{ "uri": uri, "type": 2 }]
         })))?;
