@@ -1214,16 +1214,14 @@ impl LspServer {
         if let (Some(uri), Some(offset), Some(text)) = data_info
             && let Some(obj) = action.as_object_mut()
         {
-            let edit_range = if offset as usize >= doc.text.len() {
-                let end = self.get_document_end_position(&doc.text);
-                json!({"start": end.clone(), "end": end })
-            } else {
-                let (line, col) = self.offset_to_pos16(doc, offset as usize);
-                json!({
-                    "start": {"line": line, "character": col},
-                    "end": {"line": line, "character": col}
-                })
-            };
+            // True EOF (`insertAt == document length`) projects through the
+            // same UTF-16 mapper as every other offset (#10220). No
+            // byte-column or split-based endpoint authority remains here.
+            let (line, col) = self.offset_to_pos16(doc, offset as usize);
+            let edit_range = json!({
+                "start": {"line": line, "character": col},
+                "end": {"line": line, "character": col}
+            });
 
             obj.insert(
                 "edit".into(),
