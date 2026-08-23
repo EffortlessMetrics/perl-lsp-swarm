@@ -388,7 +388,7 @@ spec = "LSP 3.16"
 area = "workspace"
 maturity = "ga"
 advertised = true
-tests = ["crates/perl-lsp-rs/tests/lsp_3_17_compliance_tests.rs"]
+tests = ["crates/perl-lsp-rs/tests/lsp_moniker_e2e_test.rs"]
 description = "Cross-project symbol identity"
 
 # Window Features
@@ -855,7 +855,7 @@ spec = "LSP 3.17"
 area = "text_document"
 maturity = "ga"
 advertised = true
-tests = ["crates/perl-lsp-rs/tests/lsp_3_17_compliance_tests.rs"]
+tests = ["crates/perl-lsp-rs/tests/lsp_inline_value_e2e_test.rs"]
 description = "Inline values during debugging (LSP inlineValue)"
 
 [[feature]]

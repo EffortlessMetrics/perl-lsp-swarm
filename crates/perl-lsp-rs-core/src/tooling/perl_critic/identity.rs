@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Schema version for serialized critic identity records.
 pub const CRITIC_IDENTITY_SCHEMA_VERSION: u16 = 2;
@@ -29,7 +29,9 @@ pub enum CriticFindingOrigin {
 }
 
 /// Reviewed syntax distinction needed when one code or rule spans several findings.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum CriticFindingShape {
     /// No narrower syntax distinction is required.

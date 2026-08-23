@@ -49,6 +49,7 @@ fn v2_actions_with_pl109(source: &str, symbol: &str) -> Result<Vec<CodeAction>, 
         related_information: Vec::new(),
         tags: Vec::new(),
         suggestion: None,
+        fixable: false,
     };
     let ast = parse(source)?;
     Ok(CodeActionsProvider::new(source.to_string()).get_code_actions(

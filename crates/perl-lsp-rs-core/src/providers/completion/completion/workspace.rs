@@ -33,7 +33,7 @@ use perl_workspace::semantic::{
     references::ReferenceIndex,
 };
 use perl_workspace::workspace_index::{
-    SymbolKind as WsSymbolKind, VarKind, WorkspaceIndex, WorkspaceSymbol,
+    SymbolKind as WsSymbolKind, WorkspaceIndex, WorkspaceSymbol,
 };
 use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
@@ -146,43 +146,26 @@ pub fn add_workspace_symbol_completions(
                     label_details: None,
                 });
             }
-            WsSymbolKind::Variable(var_kind) => {
-                // Add variable completion with appropriate sigil
-                let sigil = match var_kind {
-                    VarKind::Scalar => "$",
-                    VarKind::Array => "@",
-                    VarKind::Hash => "%",
-                };
-
-                let label = if let Some(ref qname) = symbol.qualified_name {
-                    format!("{}{}", sigil, qname)
-                } else {
-                    format!("{}{}", sigil, symbol.name)
-                };
-
-                // Only suggest if the prefix matches (considering sigil)
-                if !label.starts_with(&context.prefix) {
-                    continue;
-                }
-
-                completions.push(CompletionItem {
-                    insert_text: Some(Cow::Owned(label.clone())),
-                    sort_text: Some(Cow::Owned(format!("4_{}", label))), // Tier 4: after core builtins
-                    filter_text: Some(Cow::Owned(label.clone())),
-                    label: Cow::Owned(label),
-                    kind: CompletionItemKind::Variable,
-                    detail: symbol
-                        .container_name
-                        .clone()
-                        .or_else(|| Some("workspace".to_string()))
-                        .map(Cow::Owned),
-                    documentation: symbol.documentation.clone().map(Cow::Owned),
-                    additional_edits: vec![],
-                    text_edit_range: Some((context.prefix_start, context.position)),
-                    commit_characters: None,
-                    insert_text_format: InsertTextFormat::PlainText,
-                    label_details: None,
-                });
+            WsSymbolKind::Variable(_) => {
+                // Unreachable, and deliberately left empty rather than gated.
+                //
+                // Every workspace variable candidate is spelled with a leading
+                // sigil, so only a sigil-prefixed request could ever match one.
+                // `complete_sigil_context` (`request/dispatch.rs`) intercepts
+                // every `$`/`@`/`%` prefix and always returns, so
+                // `complete_general_context` — the sole caller of this function
+                // — never runs for one; an empty prefix returns above. The arm
+                // that used to stand here could therefore only fire when called
+                // directly, and did so wrongly: `symbol.name` already carries
+                // its sigil, so the unqualified branch emitted `$$name`.
+                //
+                // Variable candidates are owned by the sigil path (in-file and
+                // `Pkg::`-qualified) and by the runtime workspace fallback,
+                // which qualifies cross-file package variables and withdraws
+                // cross-file lexicals (issue #11937).
+                // `sigil_prefixed_requests_never_reach_the_workspace_symbol_pass`
+                // pins that interception: if it fails, add a gated arm here
+                // rather than restoring the previous emission.
             }
             WsSymbolKind::Package => {
                 // Add package completion — tier 4 (workspace, after core builtins)
