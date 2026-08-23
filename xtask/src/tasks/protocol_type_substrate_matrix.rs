@@ -138,7 +138,7 @@ const SUBSTRATE_RECORD: &[SubstrateRecordField] = &[
     },
     SubstrateRecordField {
         field: "null / absent serialization model",
-        value: "`Option<T>` fields serialize as absent (`skip_serializing_if = \"Option::is_none\"`, 498 occurrences in structures.rs); explicit null appears only where the metamodel demands it - distinct wire states preserved, not flattened",
+        value: "`Option<T>` fields serialize as absent (`skip_serializing_if = \"Option::is_none\"` carried on 498 lines of structures.rs); explicit null appears only where the metamodel demands it - distinct wire states preserved, not flattened",
         evidence: "verified 0.11.0 src/generated/structures.rs serde attributes",
     },
     SubstrateRecordField {
@@ -609,14 +609,14 @@ const SCHEMA_DELTAS: &[SchemaDeltaRow] = &[
         row_id: "DELTA-UNKNOWN-ENUMS",
         area: "unknown enum value tolerance",
         incumbent_evidence: "exactly one serde(other) catch-all across 0.97 src (closed enums otherwise)",
-        candidate_evidence: "open enums throughout: 220 `Custom(...)` variants in enumerations.rs alone (e.g. InsertTextMode::AsIs|AdjustIndentation|Custom(any))",
+        candidate_evidence: "open enums throughout: `Custom` variants appear on 220 lines of enumerations.rs alone (e.g. InsertTextMode::AsIs|AdjustIndentation|Custom(any))",
         classification: "schema_equivalent_representation_difference",
         migration_note: "wire acceptance for unknown values widens; #7113 validator remains the admission oracle, snapshots stay behavior evidence only",
     },
     SchemaDeltaRow {
         row_id: "DELTA-NULL-ABSENT",
         area: "null vs absent wire states on optional fields",
-        incumbent_evidence: "0.97 uses skip_serializing_if extensively (448 occurrences verified in src)",
+        incumbent_evidence: "skip_serializing_if carried on 448 lines across 0.97 src",
         candidate_evidence: "498 skip_serializing_if = \"Option::is_none\" occurrences in structures.rs; explicit null only where metamodel requires",
         classification: "schema_equivalent_representation_difference",
         migration_note: "distinct wire states preserved on both sides; do not flatten null-vs-absent during migration (#11802 falsifier 8)",
