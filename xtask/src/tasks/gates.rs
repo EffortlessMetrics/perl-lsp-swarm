@@ -2112,9 +2112,15 @@ struct ShellExecutionResult {
 /// once is a compile-overrun remedy, not a hang hider. A non-zero test
 /// exit (`fail`) is never retried — a real assertion failure must stay red.
 ///
-/// Each attempt truncates the gate log; when more than one attempt ran, a
-/// trailer records the attempt count so receipts stay honest about what the
-/// single visible log represents.
+/// Each attempt truncates the gate log. When more than one attempt ran:
+///
+/// - A retry trailer is appended to the log. For non-final timed-out attempts
+///   the trailer includes per-attempt reach evidence (`[reached=yes/no]` for
+///   `cargo test`-class commands) so the final log is honest about what each
+///   timed-out attempt actually produced (#11914).
+/// - Non-final attempt logs are archived to `<gate>.log.attempt_<N>` siblings
+///   of the main log so the full evidence for each timed-out attempt survives
+///   the next truncation.
 fn run_shell_command_with_retries(
     command: &str,
     log_path: &Path,
@@ -2129,15 +2135,28 @@ fn run_shell_command_with_retries(
         let mut execution = run_shell_command_with_timeout(command, log_path, timeout_secs)?;
         if execution.timed_out {
             timeouts_seen += 1;
+            // Compute per-attempt reach evidence from the on-disk log before
+            // the next attempt truncates it. Embed the result in the trailer
+            // so the final log retains honest per-attempt history (#11914).
+            let reached = log_reaches_test_execution(command, log_path);
+            let timeout_outcome = match reached {
+                Some(true) => "watchdog timeout [reached=yes]",
+                Some(false) => "watchdog timeout [reached=no]",
+                None => "watchdog timeout",
+            };
             let trailer = append_retry_trailer(
                 log_path,
                 gate_name,
                 attempt,
                 total_attempts,
-                "watchdog timeout",
+                timeout_outcome,
             )?;
             execution.stdout.push_str(&trailer);
             if attempt < total_attempts {
+                // Archive the complete log for this attempt (trailer included)
+                // before the next call to `run_shell_command_with_timeout`
+                // truncates it. Archiving is best-effort (#11914).
+                archive_attempt_log(log_path, attempt);
                 eprintln!(
                     "gate {gate_name} timed out after {timeout_secs}s on attempt {attempt}; \
                      retrying ({}/{total_attempts})",
@@ -2165,9 +2184,30 @@ fn run_shell_command_with_retries(
     }
 }
 
-/// Append an attempt trailer to the gate log. Each fresh attempt truncates
-/// the file, so the trailer on the FINAL attempt's log is the only durable
-/// record of the retry history that produced it.
+/// Copy a completed attempt's gate log to a sibling path so it survives
+/// the next attempt's truncation (#11914). The archive name is
+/// `<original_name>.attempt_<N>` (e.g. `unit_lsp_full.log.attempt_1`).
+///
+/// Archiving is best-effort: a failure here is silently ignored. The
+/// retry trailer already encodes key per-attempt evidence (reach outcome)
+/// in the surviving final log, so the archive is supplementary.
+fn archive_attempt_log(log_path: &Path, attempt: u32) {
+    let Some(file_name) = log_path.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    let archive_name = format!("{file_name}.attempt_{attempt}");
+    let archive_path = log_path.with_file_name(archive_name);
+    let _ = fs::copy(log_path, archive_path);
+}
+
+/// Append an attempt trailer to the gate log.
+///
+/// For non-final timed-out attempts the caller supplies a reach-annotated
+/// outcome (e.g. `"watchdog timeout [reached=no]"`) and then archives the
+/// log before the next attempt truncates it. For the final attempt the
+/// caller supplies the concluding outcome string. In both cases the trailer
+/// is mirrored back as the return value so the caller can append it to the
+/// in-memory `stdout` snapshot.
 fn append_retry_trailer(
     log_path: &Path,
     gate_name: &str,
@@ -2638,9 +2678,11 @@ fn parse_test_metrics(output: &str) -> Option<GateMetrics> {
 /// The string variant scans exactly the output it is handed; the receipt
 /// wires `log_reaches_test_execution` first so the verdict covers the full
 /// final-attempt log rather than its retained tail. When retries ran, this
-/// reflects the final recorded attempt: each retry truncates the gate log,
-/// so earlier attempts' reach evidence is not retained in this field (the
-/// final attempt's retry trailer names the earlier timeouts).
+/// reflects the final recorded attempt. Earlier attempts' reach evidence is
+/// embedded as `[reached=yes/no]` in the per-attempt retry trailer that
+/// appears in the final log, and in the archived attempt logs written by
+/// `archive_attempt_log` (`<gate>.log.attempt_<N>` siblings of the final
+/// log) (#11914).
 ///
 /// The "running N tests" line is the libtest harness's own preamble printed
 /// once the linked test binary starts executing; a compile timeout — even
@@ -5077,6 +5119,101 @@ gates:
         assert!(
             !summary.contains("passed after earlier"),
             "a failed retry must never be labeled a pass; got: {summary}"
+        );
+        Ok(())
+    }
+
+    /// Non-final timed-out attempts archive their full log as a sibling file
+    /// (`<gate>.log.attempt_<N>`) before the next attempt truncates the main
+    /// log. The final log remains at the original path (#11914).
+    #[test]
+    fn timeout_gate_archives_non_final_attempt_log() -> color_eyre::eyre::Result<()> {
+        let gate = GateDefinition {
+            name: "synthetic_archive_gate".to_string(),
+            tier: "merge_gate".to_string(),
+            description: "Always times out; proves per-attempt archive (#11914)".to_string(),
+            required: true,
+            command: if cfg!(windows) {
+                "ping -n 4 127.0.0.1".to_string()
+            } else {
+                "sleep 3".to_string()
+            },
+            timeout_seconds: 1,
+            retry_count: 1,
+            budgets: None,
+            quarantine: false,
+            tags: Vec::new(),
+            artifacts: Vec::new(),
+            matrix: None,
+            planning: Some(GatePlanningConfig {
+                role: GatePlanningRole::AlwaysOn,
+                packages: Vec::new(),
+            }),
+        };
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+        let config = GateRunnerConfig::default();
+
+        let _result = run_single_gate(&gate, &policy, tmp.path(), &config, None)?;
+
+        // The archive for attempt 1 must be present alongside the main log.
+        let archive = tmp.path().join("synthetic_archive_gate.log.attempt_1");
+        assert!(
+            archive.exists(),
+            "attempt_1 archive must be written before the next attempt truncates the log"
+        );
+        // The main log must still be present at its canonical path.
+        let main_log = tmp.path().join("synthetic_archive_gate.log");
+        assert!(main_log.exists(), "main gate log must still exist at its original path");
+        Ok(())
+    }
+
+    /// Non-final timed-out attempts embed reach evidence (`[reached=yes/no]`)
+    /// in the retry trailer written to the main gate log. For non-cargo-test
+    /// commands the trailer omits the reach annotation and uses the bare
+    /// `watchdog timeout` label instead (#11914).
+    #[test]
+    fn timeout_gate_trailer_omits_reach_annotation_for_non_cargo_commands()
+    -> color_eyre::eyre::Result<()> {
+        let gate = GateDefinition {
+            name: "synthetic_reach_trailer_gate".to_string(),
+            tier: "merge_gate".to_string(),
+            description: "Non-cargo timeout; trailer must not emit reach annotation".to_string(),
+            required: true,
+            command: if cfg!(windows) {
+                "ping -n 4 127.0.0.1".to_string()
+            } else {
+                "sleep 3".to_string()
+            },
+            timeout_seconds: 1,
+            retry_count: 1,
+            budgets: None,
+            quarantine: false,
+            tags: Vec::new(),
+            artifacts: Vec::new(),
+            matrix: None,
+            planning: Some(GatePlanningConfig {
+                role: GatePlanningRole::AlwaysOn,
+                packages: Vec::new(),
+            }),
+        };
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+        let config = GateRunnerConfig::default();
+
+        let _result = run_single_gate(&gate, &policy, tmp.path(), &config, None)?;
+
+        // The first attempt's archived log must contain its own trailer.
+        let archive = tmp.path().join("synthetic_reach_trailer_gate.log.attempt_1");
+        let archive_content = std::fs::read_to_string(&archive).unwrap_or_default();
+        assert!(
+            archive_content.contains("attempt 1/2: watchdog timeout"),
+            "archived attempt_1 log must carry the attempt-1 trailer; got: {archive_content}"
+        );
+        // Non-cargo commands must not include a reach annotation.
+        assert!(
+            !archive_content.contains("[reached="),
+            "non-cargo gate must not emit a reach annotation; got: {archive_content}"
         );
         Ok(())
     }
