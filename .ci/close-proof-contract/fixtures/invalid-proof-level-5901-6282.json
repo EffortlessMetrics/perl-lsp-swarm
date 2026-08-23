@@ -1,0 +1,124 @@
+{
+  "schema_version": "close_proof_contract_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5901",
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/6282"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts of historical GitHub subjects. The fixture proves schema-level dispositions only; semantic completion evaluation belongs to CP03 (#10382)."
+  },
+  "contract": {
+    "schema_version": "issue_contract.v1",
+    "repository": "effortlessmetrics/perl-lsp-swarm",
+    "issue_number": 5901,
+    "title": "feat(editor): prove readiness presentation and packaged acceptance for the installed product",
+    "kind": "installed",
+    "required_proof_level": "public",
+    "allowed_close_modes": [
+      "completed",
+      "phase_complete_issue_remains_open",
+      "superseded",
+      "true_duplicate",
+      "not_planned"
+    ],
+    "denominator": [
+      {
+        "row_id": "readiness.transport.signal",
+        "statement": "Readiness transport signal is wired end to end.",
+        "required_proof_level": "mechanism"
+      },
+      {
+        "row_id": "presentation.installed.public-proof",
+        "statement": "Installed presentation acceptance is proven at public level.",
+        "required_proof_level": "public"
+      },
+      {
+        "row_id": "packaged.acceptance.public-proof",
+        "statement": "Packaged acceptance is proven at public level.",
+        "required_proof_level": "public"
+      }
+    ],
+    "negative_controls": [],
+    "mandatory_children": [],
+    "transfer_policy": {
+      "permitted": false,
+      "conditions": []
+    },
+    "domain_evidence_refs": [],
+    "identity": {
+      "issue_body_digest": "000000000000000000000000000000000000000000000000000000000000170d",
+      "denominator_digest": "825b48ce2b5ffbb7b2c2cff5a2f697ef1e9922828e9e68b5f66d9652e2613019",
+      "accepted_ruling": null
+    }
+  },
+  "cases": [
+    {
+      "case_id": "pr-6282-proof-level-contradiction",
+      "description": "Historical PR #6282 closed #5901 with readiness transport only while excluding installed/packaged proof.",
+      "packet": {
+        "schema_version": "issue_close_proof.v1",
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 5901,
+        "requested_close_mode": "completed",
+        "contract_binding": {
+          "contract_issue_body_digest": "000000000000000000000000000000000000000000000000000000000000170d",
+          "contract_denominator_digest": "825b48ce2b5ffbb7b2c2cff5a2f697ef1e9922828e9e68b5f66d9652e2613019",
+          "accepted_ruling_digest": null
+        },
+        "candidate_pr": 6282,
+        "landed_subjects": [],
+        "landing_content_proof": [],
+        "established_claims": [
+          {
+            "statement": "The readiness transport signal is connected end to end.",
+            "covers_rows": [
+              "readiness.transport.signal"
+            ]
+          }
+        ],
+        "explicitly_not_established_claims": [
+          {
+            "statement": "Complete presentation and packaged acceptance are explicitly excluded from this PR.",
+            "covers_rows": [
+              "presentation.installed.public-proof",
+              "packaged.acceptance.public-proof"
+            ]
+          }
+        ],
+        "row_dispositions": {
+          "packaged.acceptance.public-proof": {
+            "disposition": "not_proven",
+            "reason": "packaged acceptance is excluded by the claim boundary."
+          },
+          "presentation.installed.public-proof": {
+            "disposition": "not_proven",
+            "reason": "readiness transport does not prove installed public presentation."
+          },
+          "readiness.transport.signal": {
+            "disposition": "proven_current_main",
+            "evidence": {
+              "producer": "xtask-pr-close-proof",
+              "subject": "000000000000000000000000000000000000f565",
+              "content_digest": "00000000000000000000000000000000000000000000000000000000000995f9",
+              "reference": "cargo xtask pr-close-proof --pr 6282"
+            }
+          }
+        },
+        "negative_control_dispositions": {},
+        "child_dispositions": [],
+        "duplicate_of": null,
+        "verdict": {
+          "pr_scope": "pass",
+          "issue_close": "invalid",
+          "reasons": [
+            "A mechanism-level transport result cannot satisfy required public proof levels."
+          ]
+        }
+      },
+      "expected_pr_scope": "pass",
+      "expected_issue_close": "invalid"
+    }
+  ]
+}

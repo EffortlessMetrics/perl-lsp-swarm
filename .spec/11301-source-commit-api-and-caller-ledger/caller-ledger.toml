@@ -4,11 +4,55 @@ canonical_initial_api = "index_initial_file"
 canonical_initial_batch_api = "index_initial_files_batch"
 canonical_live_api = "index_live_file"
 compatibility_apis = ["index_file", "index_file_str", "index_file_with_generation", "index_files_batch"]
-compatibility_baseline = 694
+# compatibility_baseline reconciled 694 -> 702 by #11916 (#11907-era meta-shard
+# redness). Explicit attribution of every added call site, all from reviewed
+# squash-merged PRs (checker-equivalent count, base c754f41c6 = 694):
+#   completion/tests.rs 103 -> 109 (+6): #11874 (#11858 proof-seam tests),
+#     #11862 (#11158 import-edit withdrawal)
+#   runtime/text_sync/lifecycle.rs 1 -> 3 (+2): #11887 (#8895 protocol
+#     validation), #11893 (#8041 open-buffer authority)
+# By API: index_file 590 -> 597 (+7); index_file_with_generation 37 -> 38 (+1).
+# Structural gap: PR CI validates the PR head tree, so a green PR can push
+# post-merge main over this baseline; combined-tree evaluation is tracked on
+# #11916.
+# Burndown 702 -> 701 by #11938 (#8896 containment leaf): removing the
+# reversed-direction `handle_configuration` application arm deleted its
+# `.index_file(url, ...)` re-index call in
+# crates/perl-lsp-rs/src/runtime/workspace.rs (checker-equivalent count on the
+# combined tree, base #11916-era = 702).
+# Growth 701 -> 704 by #11944 (#11937 Variable-class cross-file candidate
+# withdrawal). Explicit attribution of every added call site, all from one
+# reviewed squash-merged PR (checker-equivalent per-file scan over
+# git ls-tree blobs, base 704e872c6 = 701):
+#   crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs
+#     109 -> 110 (+1)
+#   crates/perl-lsp-rs/src/runtime/language/completion.rs 2 -> 4 (+2)
+# Reconciled 704 -> 697 by #11305 (SRC-03): every open/save compatibility call
+# in runtime/text_sync moved to index_live_file with the document-instance/
+# generation currentness guard, and its fixture callers to
+# index_initial_file (-4 index_file_with_generation at text_sync.rs didOpen +
+# shared post-parse seam and lifecycle.rs #8041 re-cohere + stale-index
+# reconciliation; -3 index_file at lifecycle.rs close-handoff reload ->
+# index_initial_file role rename and two tests.rs fixtures).
+# Burndown 697 -> 696 by #11305 fixture rebaseline (lifted from the closed
+# duplicate #11940 @ 254f0e214): the document_access gen-0 builder fixture
+# dropped one .index_file_with_generation(...) call; the scorecard coordinator
+# re-seed added a canonical index_live_file caller identity (not counted).
+compatibility_baseline = 696
+
+# Structural recurrence control (#11305): files under these prefixes must
+# never call compatibility source APIs at all -- live commits go through
+# index_live_file behind the document-instance/generation oracle. Prefix
+# matching fails closed (any tracked file path beginning with the prefix).
+# Scope note: this ban is PER-FILE and SYNTACTIC (method-name scan of each
+# tracked file). It does not see compatibility calls reached through UFCS,
+# wrappers, or helper indirection in other files; that residual hole closes
+# only at #11312's deletion of the compatibility surface itself.
+compatibility_banned_prefixes = ["crates/perl-lsp-rs/src/runtime/text_sync"]
 
 # Live identity is the URI argument plus an owner-supplied non-zero NonZeroU32
-# generation; #11305 owns didOpen/didSave migration. Exact source paths are the
-# ledger identity. A new caller must be deliberately
+# generation; didOpen/didSave migrated through #11305. Exact source paths are
+# the ledger identity. A new caller must be deliberately
 # added with an owner, role, successor, and removal condition; broad directory
 # globs are intentionally not accepted by the validator.
 caller_paths = [
@@ -28,6 +72,7 @@ caller_paths = [
   "crates/perl-lsp-rs/src/runtime/language/misc.rs",
   "crates/perl-lsp-rs/src/runtime/language/navigation.rs",
   "crates/perl-lsp-rs/src/runtime/language/provider_decision_live_trace_tests.rs",
+  "crates/perl-lsp-rs/src/runtime/language/references_tier_scorecard_tests.rs",
   "crates/perl-lsp-rs/src/runtime/language/rename.rs",
   "crates/perl-lsp-rs/src/runtime/test_api.rs",
   "crates/perl-lsp-rs/src/runtime/text_sync.rs",
@@ -82,11 +127,16 @@ caller_paths = [
 ]
 
 [[owner]]
-prefix = "crates/perl-lsp-rs/src/runtime/text_sync"
-role = "live didOpen/didSave generation path"
-owner = "perl-lsp-rs text synchronization"
-successor = "index_live_file with the #11305 currentness guard"
-removal_condition = "#11305 lands the owner-supplied live commit identity"
+prefix = "crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs"
+# Since #11305 this file holds ZERO compatibility calls: the didSave
+# reconciliation branches commit through index_live_file behind the
+# document-instance/generation oracle, and the close-handoff reload below is
+# the explicit initial-import role. This row remains only because lifecycle.rs
+# still counts as a canonical caller file needing an owner anchor.
+role = "#8041 close-handoff disk reload residual (canonical index_initial_file today)"
+owner = "perl-lsp-rs text synchronization / #8041 open-buffer authority"
+successor = "index_live_file when #8041 defines the closed-file source commit identity"
+removal_condition = "#8041 lands its closed-file live commit identity"
 
 [[owner]]
 prefix = "crates/perl-workspace/tests"

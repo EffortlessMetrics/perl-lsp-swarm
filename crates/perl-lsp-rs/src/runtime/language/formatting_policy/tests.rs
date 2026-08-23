@@ -555,6 +555,284 @@ fn stale_unknown_range_decision_preserves_unknown_receipt_engine()
 }
 
 #[test]
+fn empty_document_formatting_is_a_legitimate_no_change() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::Document);
+    let uri = "file:///empty-document-formatting.pl";
+    server.test_apply_did_open(uri, "", 1)?;
+
+    let result = server.handle_formatting_policy(
+        Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })),
+        None,
+    )?;
+
+    assert_eq!(result, Some(json!([])));
+    let trace = receipt(&server)?;
+    assert_eq!(trace["decision"], "acted");
+    assert_eq!(trace["reason"], "already_formatted");
+    assert_eq!(trace["actual_engine"], "native");
+    assert_eq!(trace["result_count"], 0);
+    Ok(())
+}
+
+#[test]
+fn range_outside_content_refuses_as_invalid_params_without_engine_invocation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::Range);
+    let runtime = Arc::new(MockSubprocessRuntime::new());
+    server.test_install_formatter_runtime(runtime.clone());
+    let uri = "file:///range-outside-content.pl";
+    server.test_apply_did_open(uri, "my$x=1;\nmy$y=2;\n", 1)?;
+
+    let error = server
+        .handle_range_formatting_policy(
+            Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 99, "character": 0 }
+                },
+                "options": { "tabSize": 4, "insertSpaces": true },
+            })),
+            None,
+        )
+        .err()
+        .ok_or("an out-of-content range was admitted")?;
+
+    assert_eq!(error.code, -32602);
+    let data = error.data.ok_or("missing typed refusal evidence")?;
+    assert_eq!(data["reason"], "invalid_position");
+    assert_eq!(data["error_kind"], "invalid_format_range_plan");
+    let trace = receipt(&server)?;
+    assert_eq!(trace["decision"], "blocked");
+    assert_eq!(trace["reason"], "invalid_position");
+    assert_eq!(trace["actual_engine"], "not_started");
+    assert_eq!(trace["result_count"], 0);
+    assert!(
+        runtime.invocations().is_empty(),
+        "the formatter engine must never see an unadmitted range"
+    );
+    Ok(())
+}
+
+#[test]
+fn reversed_single_range_uses_the_shared_range_plan_vocabulary()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::Range);
+    let uri = "file:///reversed-single-range.pl";
+    server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
+
+    let error = server
+        .handle_range_formatting_policy(
+            Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "range": {
+                    "start": { "line": 0, "character": 5 },
+                    "end": { "line": 0, "character": 2 }
+                },
+                "options": { "tabSize": 4, "insertSpaces": true },
+            })),
+            None,
+        )
+        .err()
+        .ok_or("a reversed single range was admitted")?;
+
+    assert_eq!(error.code, -32602);
+    let data = error.data.ok_or("missing typed reversal evidence")?;
+    assert_eq!(data["reason"], "reversed_range");
+    assert!(
+        data["formatting_receipt"].is_object(),
+        "reversal must record the shared formatting receipt"
+    );
+    assert!(
+        error.message.contains("range ends before it starts"),
+        "single-range reversal must use the shared plan vocabulary: {}",
+        error.message
+    );
+    Ok(())
+}
+
+#[test]
+fn single_range_and_one_element_multi_range_share_one_outcome_policy()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::Range);
+    advertise(&server, Surface::Ranges);
+    let uri = "file:///shared-range-policy.pl";
+    server.test_apply_did_open(uri, "my$x=1;\nmy$y=2;\n", 1)?;
+    let options = json!({ "tabSize": 4, "insertSpaces": true });
+
+    let single = server.handle_range_formatting_policy(
+        Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 7 } },
+            "options": options,
+        })),
+        None,
+    )?;
+    let single_trace = receipt(&server)?;
+    let multi = server.handle_ranges_formatting_policy(
+        Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "ranges": [
+                { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 7 } }
+            ],
+            "options": options,
+        })),
+        None,
+    )?;
+    let multi_trace = receipt(&server)?;
+
+    assert_eq!(single, multi, "one-element multi-range and single-range must produce one edit set");
+    for field in ["decision", "reason", "actual_engine", "result_count", "config_fingerprint"] {
+        assert_eq!(
+            single_trace[field], multi_trace[field],
+            "{field} must not diverge between the two range surfaces"
+        );
+    }
+
+    let out_of_bounds =
+        json!([{ "start": { "line": 99, "character": 0 }, "end": { "line": 99, "character": 1 } }]);
+    let single_error = server
+        .handle_range_formatting_policy(
+            Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "range": out_of_bounds[0],
+                "options": options,
+            })),
+            None,
+        )
+        .err()
+        .ok_or("invalid single range was admitted")?;
+    let multi_error = server
+        .handle_ranges_formatting_policy(
+            Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "ranges": out_of_bounds,
+                "options": options,
+            })),
+            None,
+        )
+        .err()
+        .ok_or("invalid multi range was admitted")?;
+
+    assert_eq!(single_error.code, multi_error.code);
+    let single_data = single_error.data.ok_or("missing single refusal evidence")?;
+    let multi_data = multi_error.data.ok_or("missing multi refusal evidence")?;
+    assert_eq!(single_data["reason"], multi_data["reason"]);
+    assert_eq!(single_data["error_kind"], multi_data["error_kind"]);
+    assert_eq!(single_data["reason"], "invalid_position");
+    Ok(())
+}
+
+#[test]
+fn empty_document_range_requests_refuse_identically_on_both_surfaces()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::Range);
+    advertise(&server, Surface::Ranges);
+    let uri = "file:///empty-range-surfaces.pl";
+    server.test_apply_did_open(uri, "", 1)?;
+
+    let single = server.handle_range_formatting_policy(
+        Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })),
+        None,
+    )?;
+    let single_trace = receipt(&server)?;
+    let multi = server.handle_ranges_formatting_policy(
+        Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "ranges": [
+                { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } }
+            ],
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })),
+        None,
+    )?;
+    let multi_trace = receipt(&server)?;
+
+    assert_eq!(single, multi);
+    for field in ["decision", "reason", "actual_engine", "result_count"] {
+        assert_eq!(
+            single_trace[field], multi_trace[field],
+            "{field} must converge on an empty document"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn on_type_at_trailing_eof_line_applies_bounded_indentation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::OnType);
+    let uri = "file:///on-type-eof-indent.pl";
+    server.test_apply_did_open(uri, "if ($ok) {\n", 1)?;
+
+    let result = server.handle_on_type_formatting_policy(
+        Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "position": { "line": 1, "character": 0 },
+            "ch": "\n",
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })),
+        None,
+    )?;
+
+    let edits = result.ok_or("on-type returned no response")?;
+    let edits = edits.as_array().ok_or("on-type edits must be an array")?;
+    assert_eq!(edits.len(), 1, "the trailing EOF line must receive one indent edit");
+    assert_eq!(
+        edits[0],
+        json!({
+            "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 1, "character": 0 } },
+            "newText": "    "
+        })
+    );
+    let trace = receipt(&server)?;
+    assert_eq!(trace["decision"], "acted");
+    assert_eq!(trace["reason"], "applied");
+    assert_eq!(trace["actual_engine"], "on_type_indentation");
+    assert_eq!(trace["result_count"], 1);
+    Ok(())
+}
+
+#[test]
+fn on_type_out_of_document_trigger_is_a_deterministic_no_change()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::OnType);
+    let uri = "file:///on-type-out-of-document.pl";
+    server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
+
+    let result = server.handle_on_type_formatting_policy(
+        Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "position": { "line": 99, "character": 0 },
+            "ch": ";",
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })),
+        None,
+    )?;
+
+    assert_eq!(result, Some(json!([])));
+    let trace = receipt(&server)?;
+    assert_eq!(trace["decision"], "acted");
+    assert_eq!(trace["reason"], "already_formatted");
+    assert_eq!(trace["result_count"], 0);
+    Ok(())
+}
+
+#[test]
 fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
@@ -948,14 +1226,15 @@ fn live_dispatch_receipt_carries_canonical_provider_identity()
         !boundary.is_empty(),
         "claim_boundary must be a non-empty explanation; got {boundary:?}"
     );
-    // Per the documented text-sync invariant (`handle_did_open` in
-    // runtime/text_sync.rs), didOpen always starts at generation 0; only a
-    // didChange bumps it. A first-dispatch receipt on a freshly opened
-    // document must therefore carry source_generation == 0, and a
-    // re-dispatch after an edit must carry a positive generation.
+    // Per the documented text-sync invariant (#11305), didOpen mints the
+    // first accepted generation as 1; only a didChange advances it further. A
+    // first-dispatch receipt on a freshly opened document must therefore
+    // carry source_generation == 1, and a re-dispatch after an edit must
+    // carry a strictly larger generation.
     assert_eq!(
-        trace["source_generation"], 0,
-        "source_generation must be 0 for a freshly opened document; got trace={trace}"
+        trace["source_generation"], 1,
+        "source_generation must be the accepted open generation (1) for a \
+         freshly opened document; got trace={trace}"
     );
     server.test_apply_did_change(uri, "my $x = 2;\n", 2)?;
     let edited = server

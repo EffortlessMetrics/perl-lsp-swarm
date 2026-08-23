@@ -9,6 +9,16 @@ use std::borrow::Cow;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 
+/// First accepted generation of a newly opened document (#11305).
+///
+/// The live source-commit contract (#11301 `SourceCommit`) structurally
+/// requires a non-zero generation so initial import and live commits can
+/// never collapse into one identity. A freshly opened document instance
+/// therefore accepts its first parsed snapshot at this generation, and later
+/// edits advance monotonically from it. Handlers consume this constant; the
+/// document-generation authority owns its value.
+pub const FIRST_ACCEPTED_DOCUMENT_GENERATION: std::num::NonZeroU32 = std::num::NonZeroU32::MIN;
+
 /// Degradation tier for a document, indicating what level of LSP functionality
 /// is available based on parse success.
 ///

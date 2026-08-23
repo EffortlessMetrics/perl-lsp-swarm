@@ -60,6 +60,7 @@ perl-pod = { workspace = true }
 perl-ripr-facts = { workspace = true }
 perl-ast = { workspace = true }
 perl-parser-core = { workspace = true }
+perl-source-identity.workspace = true
 perl-workspace = { workspace = true }
 perl-lexer = { workspace = true }
 perl-uri = { workspace = true }

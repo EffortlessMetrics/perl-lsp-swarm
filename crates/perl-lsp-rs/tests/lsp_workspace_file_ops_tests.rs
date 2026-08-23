@@ -265,14 +265,16 @@ fn test_did_change_watched_files_deleted() -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-/// Verify that a DELETED event removes the document from the in-memory store.
+/// Verify that a DELETED event does NOT evict an open document (#8041).
 ///
-/// Acceptance criterion: "Deleted files are removed from index and symbol cache."
+/// The editor buffer is the authoritative source while a document is open;
+/// a watched disk deletion may only remove backing-file state, never the
+/// open document or its generation.
 ///
 /// Uses `test_has_document` which requires the `expose_lsp_test_api` feature.
 #[cfg(feature = "expose_lsp_test_api")]
 #[test]
-fn test_did_change_watched_files_deleted_removes_from_store()
+fn test_did_change_watched_files_deleted_preserves_open_document()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -306,11 +308,8 @@ fn test_did_change_watched_files_deleted_removes_from_store()
     assert!(result.is_ok());
     assert_eq!(result?, None, "notification must return None");
 
-    // The document must have been evicted from the store.
-    assert!(
-        !server.test_has_document(uri),
-        "deleted file must be removed from document store after DELETED event"
-    );
+    // The open document must survive the external deletion (#8041).
+    assert!(server.test_has_document(uri), "watched disk deletion must not evict an open document");
     Ok(())
 }
 
@@ -402,13 +401,14 @@ fn test_did_change_watched_files_multiple_mixed_events() -> Result<(), Box<dyn s
     Ok(())
 }
 
-/// Verify that a batch with multiple changes includes correct behavioral outcome
-/// for the DELETED event: the document is removed from the in-memory store.
+/// Verify that a batch with multiple changes keeps every OPEN document alive:
+/// a DELETED event must not evict an open document, and a CHANGED event must
+/// not disturb it (#8041).
 ///
 /// Requires the `expose_lsp_test_api` feature for `test_has_document`.
 #[cfg(feature = "expose_lsp_test_api")]
 #[test]
-fn test_did_change_watched_files_mixed_batch_deleted_removed()
+fn test_did_change_watched_files_mixed_batch_preserves_open_documents()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -447,9 +447,9 @@ fn test_did_change_watched_files_mixed_batch_deleted_removed()
     });
     let _ = make_request(&server, "workspace/didChangeWatchedFiles", Some(params));
 
-    // The deleted document must have been evicted from the store.
-    assert!(!server.test_has_document(deleted_uri), "deleted file must be removed");
-    // The changed document must still be present (it was not deleted).
+    // Both open documents must survive the mixed batch: the watched delete
+    // only drops backing-file authority, never the open buffer (#8041).
+    assert!(server.test_has_document(deleted_uri), "deleted file's open buffer must survive");
     assert!(server.test_has_document(changed_uri), "changed file must still be present");
     Ok(())
 }
@@ -1031,7 +1031,8 @@ fn test_will_delete_files_warns_for_cross_file_symbol_usage_without_module_impor
 }
 
 #[test]
-fn test_apply_edit_single_line() -> Result<(), Box<dyn std::error::Error>> {
+fn client_sent_workspace_apply_edit_is_method_not_found() -> Result<(), Box<dyn std::error::Error>>
+{
     let server = create_test_server();
 
     // Initialize the server
@@ -1043,18 +1044,9 @@ fn test_apply_edit_single_line() -> Result<(), Box<dyn std::error::Error>> {
     let _ = make_request(&server, "initialize", Some(init_params));
     send_initialized(&server);
 
-    // Open a document
-    let open_params = json!({
-        "textDocument": {
-            "uri": "file:///test/workspace/test.pl",
-            "languageId": "perl",
-            "version": 1,
-            "text": "print 'Hello';\nprint 'World';\n"
-        }
-    });
-    let _ = make_request(&server, "textDocument/didOpen", Some(open_params));
-
-    // Apply an edit
+    // `workspace/applyEdit` is a standard server→client request (#8896): a
+    // client-originated request must be rejected at method routing instead of
+    // reaching edit application handling.
     let params = json!({
         "edit": {
             "changes": {
@@ -1071,16 +1063,16 @@ fn test_apply_edit_single_line() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let result = make_request(&server, "workspace/applyEdit", Some(params));
-
-    // Should return success
-    let response = result?.ok_or("expected applyEdit response")?;
-    assert_eq!(response.get("applied"), Some(&json!(true)));
+    let error = make_request(&server, "workspace/applyEdit", Some(params))
+        .err()
+        .ok_or("client-sent workspace/applyEdit must be rejected, not answered with a result")?;
+    assert!(error.starts_with("-32601"), "expected MethodNotFound, got {error}");
     Ok(())
 }
 
 #[test]
-fn test_apply_edit_multi_line() -> Result<(), Box<dyn std::error::Error>> {
+fn client_sent_workspace_configuration_is_method_not_found()
+-> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
     // Initialize the server
@@ -1092,102 +1084,16 @@ fn test_apply_edit_multi_line() -> Result<(), Box<dyn std::error::Error>> {
     let _ = make_request(&server, "initialize", Some(init_params));
     send_initialized(&server);
 
-    // Open a document
-    let open_params = json!({
-        "textDocument": {
-            "uri": "file:///test/workspace/test.pl",
-            "languageId": "perl",
-            "version": 1,
-            "text": "print 'Hello';\nprint 'World';\nprint 'End';\n"
-        }
-    });
-    let _ = make_request(&server, "textDocument/didOpen", Some(open_params));
-
-    // Apply a multi-line edit
+    // `workspace/configuration` is a standard server→client request (#8896):
+    // the server must not answer client-originated configuration requests.
     let params = json!({
-        "edit": {
-            "changes": {
-                "file:///test/workspace/test.pl": [
-                    {
-                        "range": {
-                            "start": {"line": 0, "character": 0},
-                            "end": {"line": 1, "character": 14}
-                        },
-                        "newText": "# Combined print\nprint 'Hello World';"
-                    }
-                ]
-            }
-        }
+        "items": [{ "section": "perl.workspace.includePaths" }]
     });
 
-    let result = make_request(&server, "workspace/applyEdit", Some(params));
-
-    // Should return success
-    let response = result?.ok_or("expected applyEdit response")?;
-    assert_eq!(response.get("applied"), Some(&json!(true)));
-    Ok(())
-}
-
-#[test]
-fn test_apply_edit_no_document() -> Result<(), Box<dyn std::error::Error>> {
-    let server = create_test_server();
-
-    // Initialize the server
-    let init_params = json!({
-        "processId": 1234,
-        "rootUri": "file:///test/workspace",
-        "capabilities": {}
-    });
-    let _ = make_request(&server, "initialize", Some(init_params));
-    send_initialized(&server);
-
-    // Try to apply edit to non-existent document
-    let params = json!({
-        "edit": {
-            "changes": {
-                "file:///test/workspace/nonexistent.pl": [
-                    {
-                        "range": {
-                            "start": {"line": 0, "character": 0},
-                            "end": {"line": 0, "character": 0}
-                        },
-                        "newText": "new text"
-                    }
-                ]
-            }
-        }
-    });
-
-    let result = make_request(&server, "workspace/applyEdit", Some(params));
-
-    // Should still return success (edit was "applied" even if document doesn't exist)
-    let response = result?.ok_or("expected applyEdit response")?;
-    assert_eq!(response.get("applied"), Some(&json!(true)));
-    Ok(())
-}
-
-#[test]
-fn test_apply_edit_invalid_params() -> Result<(), Box<dyn std::error::Error>> {
-    let server = create_test_server();
-
-    // Initialize the server
-    let init_params = json!({
-        "processId": 1234,
-        "rootUri": "file:///test/workspace",
-        "capabilities": {}
-    });
-    let _ = make_request(&server, "initialize", Some(init_params));
-    send_initialized(&server);
-
-    // Send invalid params (no edit field)
-    let params = json!({});
-
-    let result = make_request(&server, "workspace/applyEdit", Some(params));
-
-    // Should return failure
-    let response = result?.ok_or("expected applyEdit response")?;
-    assert_eq!(response.get("applied"), Some(&json!(false)));
-    assert!(response.get("failureReason").is_some());
+    let error = make_request(&server, "workspace/configuration", Some(params)).err().ok_or(
+        "client-sent workspace/configuration must be rejected, not answered with a result",
+    )?;
+    assert!(error.starts_with("-32601"), "expected MethodNotFound, got {error}");
     Ok(())
 }
 

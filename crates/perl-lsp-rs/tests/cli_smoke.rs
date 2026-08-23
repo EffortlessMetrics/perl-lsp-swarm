@@ -74,14 +74,40 @@ fn help_prints_to_stdout() {
 }
 
 #[test]
-fn info_shows_version_and_features() {
+fn info_shows_version_and_features() -> Result<(), Box<dyn std::error::Error>> {
+    // The catalog line reports declaration counts as navigation data only; a
+    // percentage there would re-present declarations as behavior evidence
+    // (#6731), so this oracle pins the wording and rejects coverage,
+    // compliance, and percentage claims.
     let mut cmd = product_command();
-    cmd.arg("--info")
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("perl-lsp"))
-        .stdout(predicates::str::contains("Features:"))
-        .stdout(predicates::str::contains("LSP spec coverage:"));
+    let output = cmd.arg("--info").output()?;
+    let stdout = String::from_utf8(output.stdout)?;
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(stdout.contains("perl-lsp"), "--info must identify the product: {stdout:?}");
+    assert!(stdout.contains("Features:"), "--info must list features: {stdout:?}");
+
+    let catalog_line = stdout
+        .lines()
+        .find(|line| line.starts_with("LSP catalog rows:"))
+        .ok_or("--info output has no 'LSP catalog rows:' line")?;
+    assert!(
+        catalog_line.contains("navigation only"),
+        "catalog rows must be labeled navigation only: {catalog_line:?}"
+    );
+    assert!(
+        !catalog_line.contains('%'),
+        "catalog rows must not present a percentage as evidence: {catalog_line:?}"
+    );
+    assert!(
+        !catalog_line.contains("coverage"),
+        "catalog rows must not use coverage wording: {catalog_line:?}"
+    );
+    assert!(
+        !catalog_line.contains("compliance"),
+        "catalog rows must not use compliance wording: {catalog_line:?}"
+    );
+    Ok(())
 }
 
 #[test]

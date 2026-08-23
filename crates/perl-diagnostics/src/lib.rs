@@ -15,6 +15,8 @@
 //!   `DiagnosticTag`
 //! - [`types`] — validated [`ByteSpan`], [`Diagnostic`], and [`RelatedInformation`]
 //! - [`catalog`] — diagnostic metadata catalog functions
+//! - [`anchor`] — [`StaleSourceAnchor`] for stale-source detection and
+//!   once-per-batch freshness checking
 //!
 //! # Location contract
 //!
@@ -29,7 +31,10 @@
 //! [`ByteSpan`]: crate::types::ByteSpan
 //! [`Diagnostic`]: crate::types::Diagnostic
 //! [`RelatedInformation`]: crate::types::RelatedInformation
+//! [`StaleSourceAnchor`]: crate::anchor::StaleSourceAnchor
 
+/// Parser diagnostic anchors for stale-source detection and once-per-batch freshness.
+pub mod anchor;
 /// Diagnostic metadata catalog and LSP-facing helpers.
 pub mod catalog;
 /// Canonical diagnostic codes, categories, severities, and tags.

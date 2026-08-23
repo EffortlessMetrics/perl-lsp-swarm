@@ -11,6 +11,7 @@
 use parking_lot::Mutex;
 use perl_lsp::state::WorkspaceConfig;
 use perl_lsp::{JsonRpcId, JsonRpcRequest, LspServer};
+use perl_lsp_rs_core::config::Perl5LibPrecedence;
 use serde_json::{Value, json};
 use std::io::Write;
 use std::sync::Arc;
@@ -300,7 +301,12 @@ fn initialize_rejects_double_initialize() -> Result<(), Box<dyn std::error::Erro
 }
 
 // =============================================================================
-// Configuration Request Tests
+// Configuration Default Tests
+//
+// `workspace/configuration` is a standard server→client request (#8896): the
+// server must not expose a client→server application route for it, so these
+// tests observe effective configuration through `config_for_doc` instead of a
+// reversed inbound request.
 // =============================================================================
 
 #[test]
@@ -310,27 +316,14 @@ fn configuration_returns_workspace_include_paths() -> Result<(), Box<dyn std::er
     // Initialize and mark ready
     initialize_server(&server);
 
-    // Request configuration
-    let result = send_request(
-        &server,
-        "workspace/configuration",
-        Some(JsonRpcId::Integer(2)),
-        json!({
-            "items": [
-                { "section": "perl.workspace.includePaths" }
-            ]
-        }),
-    );
-
-    let items = result.ok_or("Expected configuration result")?;
-    let array = items.as_array().ok_or("Expected array")?;
-    assert_eq!(array.len(), 1);
+    let config = server
+        .config_for_doc("file:///workspace/test.pl")
+        .ok_or("expected effective workspace config for document under rootUri")?;
 
     // Should return default include paths
-    let paths = array[0].as_array().ok_or("Expected paths array")?;
-    assert!(paths.contains(&json!("lib")));
-    assert!(paths.contains(&json!(".")));
-    assert!(paths.contains(&json!("local/lib/perl5")));
+    assert!(config.include_paths.contains(&"lib".to_string()));
+    assert!(config.include_paths.contains(&".".to_string()));
+    assert!(config.include_paths.contains(&"local/lib/perl5".to_string()));
     Ok(())
 }
 
@@ -341,21 +334,11 @@ fn configuration_returns_system_inc_disabled() -> Result<(), Box<dyn std::error:
     // Initialize and mark ready
     initialize_server(&server);
 
-    // Request configuration
-    let result = send_request(
-        &server,
-        "workspace/configuration",
-        Some(JsonRpcId::Integer(2)),
-        json!({
-            "items": [
-                { "section": "perl.workspace.useSystemInc" }
-            ]
-        }),
-    );
+    let config = server
+        .config_for_doc("file:///workspace/test.pl")
+        .ok_or("expected effective workspace config for document under rootUri")?;
 
-    let items = result.ok_or("Expected configuration result")?;
-    let array = items.as_array().ok_or("Expected array")?;
-    assert_eq!(array[0], json!(false)); // Disabled by default
+    assert!(!config.use_system_inc); // Disabled by default
     Ok(())
 }
 
@@ -365,23 +348,12 @@ fn configuration_returns_perl5lib_defaults() -> Result<(), Box<dyn std::error::E
 
     initialize_server(&server);
 
-    let result = send_request(
-        &server,
-        "workspace/configuration",
-        Some(JsonRpcId::Integer(2)),
-        json!({
-            "items": [
-                { "section": "perl.workspace.usePerl5lib" },
-                { "section": "perl.workspace.perl5libPrecedence" }
-            ]
-        }),
-    );
+    let config = server
+        .config_for_doc("file:///workspace/test.pl")
+        .ok_or("expected effective workspace config for document under rootUri")?;
 
-    let items = result.ok_or("Expected configuration result")?;
-    let array = items.as_array().ok_or("Expected array")?;
-    assert_eq!(array.len(), 2);
-    assert_eq!(array[0], json!(true));
-    assert_eq!(array[1], json!("prepend"));
+    assert!(config.use_perl5lib);
+    assert_eq!(config.perl5lib_precedence, Perl5LibPrecedence::Prepend);
     Ok(())
 }
 
@@ -392,21 +364,11 @@ fn configuration_returns_resolution_timeout() -> Result<(), Box<dyn std::error::
     // Initialize and mark ready
     initialize_server(&server);
 
-    // Request configuration
-    let result = send_request(
-        &server,
-        "workspace/configuration",
-        Some(JsonRpcId::Integer(2)),
-        json!({
-            "items": [
-                { "section": "perl.workspace.resolutionTimeout" }
-            ]
-        }),
-    );
+    let config = server
+        .config_for_doc("file:///workspace/test.pl")
+        .ok_or("expected effective workspace config for document under rootUri")?;
 
-    let items = result.ok_or("Expected configuration result")?;
-    let array = items.as_array().ok_or("Expected array")?;
-    assert_eq!(array[0], json!(50)); // Default 50ms
+    assert_eq!(config.resolution_timeout_ms, 50); // Default 50ms
     Ok(())
 }
 
@@ -416,52 +378,69 @@ fn configuration_returns_resolution_timeout() -> Result<(), Box<dyn std::error::
 
 #[test]
 fn did_change_configuration_updates_workspace_settings() -> Result<(), Box<dyn std::error::Error>> {
-    let (server, _buffer) = create_test_server();
+    // Client includePaths entries are fail-closed validated against a
+    // canonicalizable workspace root, so this test uses a real temporary
+    // directory instead of a synthetic `file:///workspace` URI. TempDir keeps
+    // cleanup panic-safe.
+    let root = tempfile::TempDir::new()?;
 
-    // Initialize and mark ready
-    initialize_server(&server);
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        let (server, _buffer) = create_test_server();
+        let root_uri = url::Url::from_file_path(root.path())
+            .map_err(|()| format!("temp root {} is not absolute", root.path().display()))?
+            .to_string();
+        let doc_uri = format!("{}/test.pl", root_uri.trim_end_matches('/'));
 
-    // Send didChangeConfiguration notification
-    let req = JsonRpcRequest {
-        _jsonrpc: "2.0".into(),
-        id: None, // No ID for notifications
-        method: "workspace/didChangeConfiguration".into(),
-        params: Some(json!({
-            "settings": {
-                "perl": {
-                    "workspace": {
-                        "includePaths": ["custom/lib", "vendor"],
-                        "useSystemInc": true,
-                        "resolutionTimeout": 100
+        send_request(
+            &server,
+            "initialize",
+            Some(JsonRpcId::Integer(1)),
+            json!({
+                "rootUri": root_uri,
+                "capabilities": {}
+            }),
+        );
+        let initialized = JsonRpcRequest {
+            _jsonrpc: "2.0".into(),
+            id: None,
+            method: "initialized".into(),
+            params: Some(json!({})),
+        };
+        let _ = server.handle_request(initialized);
+
+        // Send didChangeConfiguration notification
+        let req = JsonRpcRequest {
+            _jsonrpc: "2.0".into(),
+            id: None, // No ID for notifications
+            method: "workspace/didChangeConfiguration".into(),
+            params: Some(json!({
+                "settings": {
+                    "perl": {
+                        "workspace": {
+                            "includePaths": ["custom/lib", "vendor"],
+                            "useSystemInc": true,
+                            "resolutionTimeout": 100
+                        }
                     }
                 }
-            }
-        })),
-    };
+            })),
+        };
 
-    // Process the notification
-    let _ = server.handle_request(req);
+        // Process the notification
+        let _ = server.handle_request(req);
 
-    // Verify configuration was updated by requesting it
-    let result = send_request(
-        &server,
-        "workspace/configuration",
-        Some(JsonRpcId::Integer(2)),
-        json!({
-            "items": [
-                { "section": "perl.workspace.includePaths" }
-            ]
-        }),
-    );
+        // Verify configuration was applied by observing the effective config
+        let config = server
+            .config_for_doc(&doc_uri)
+            .ok_or("expected effective workspace config for document under rootUri")?;
 
-    let items = result.ok_or("Expected configuration result")?;
-    let array = items.as_array().ok_or("Expected array")?;
-    let paths = array[0].as_array().ok_or("Expected paths array")?;
+        // Should now have custom paths
+        assert!(config.include_paths.contains(&"custom/lib".to_string()));
+        assert!(config.include_paths.contains(&"vendor".to_string()));
+        Ok(())
+    })();
 
-    // Should now have custom paths
-    assert!(paths.contains(&json!("custom/lib")));
-    assert!(paths.contains(&json!("vendor")));
-    Ok(())
+    result
 }
 
 #[test]
@@ -488,23 +467,12 @@ fn did_change_configuration_updates_perl5lib_workspace_settings()
     };
     let _ = server.handle_request(req);
 
-    let result = send_request(
-        &server,
-        "workspace/configuration",
-        Some(JsonRpcId::Integer(3)),
-        json!({
-            "items": [
-                { "section": "perl.workspace.usePerl5lib" },
-                { "section": "perl.workspace.perl5libPrecedence" }
-            ]
-        }),
-    );
+    let config = server
+        .config_for_doc("file:///workspace/test.pl")
+        .ok_or("expected effective workspace config for document under rootUri")?;
 
-    let items = result.ok_or("Expected configuration result")?;
-    let array = items.as_array().ok_or("Expected array")?;
-    assert_eq!(array.len(), 2);
-    assert_eq!(array[0], json!(false));
-    assert_eq!(array[1], json!("append"));
+    assert!(!config.use_perl5lib);
+    assert_eq!(config.perl5lib_precedence, Perl5LibPrecedence::Append);
     Ok(())
 }
 

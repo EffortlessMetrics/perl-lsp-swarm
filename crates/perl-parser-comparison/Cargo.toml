@@ -19,6 +19,8 @@ current-upstream = ["dep:ts-parser-perl"]
 perl-ast = { workspace = true }
 perl-parser-core = { workspace = true }
 perl-parser-pest = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
 ts-parser-perl = { version = "=1.2.1", optional = true }
 tree-sitter-perl-c = { workspace = true, optional = true }
 tree-sitter = { workspace = true }
@@ -26,7 +28,6 @@ walkdir = { workspace = true }
 
 [dev-dependencies]
 perl-tdd-support = { workspace = true }
-sha2 = { workspace = true }
 
 [[bin]]
 name = "corpus_differential"

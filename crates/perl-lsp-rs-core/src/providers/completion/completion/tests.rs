@@ -3033,6 +3033,77 @@ al"#;
     Ok(())
 }
 
+#[test]
+fn runtime_import_visible_symbol_is_position_gated_and_has_no_edits()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/lib/Tools.pm")?,
+        r#"package Tools;
+use Exporter 'import';
+our @EXPORT_OK = qw(alpha);
+sub alpha { }
+1;
+"#
+        .to_string(),
+    )?;
+
+    let importer_uri = Url::parse("file:///workspace/runtime.pl")?;
+    let before = r#"package App;
+require Tools;
+al
+Tools->import(qw(alpha));
+"#;
+    index.index_file(importer_uri.clone(), before.to_string())?;
+    let mut parser = Parser::new(before);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, before, Some(index.clone()));
+    let before_completions = provider.get_completions_with_path(
+        before,
+        before.find("al\n").unwrap() + 2,
+        Some(importer_uri.as_str()),
+    );
+    assert!(
+        !before_completions.iter().any(|item| item.label == "alpha"),
+        "runtime import must not authorize a bare symbol before the import call"
+    );
+
+    let after = r#"package App;
+require Tools;
+Tools->import(qw(alpha));
+al
+"#;
+    index.index_file(importer_uri.clone(), after.to_string())?;
+    let mut parser = Parser::new(after);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, after, Some(index));
+    let completions =
+        provider.get_completions_with_path(after, after.len() - 1, Some(importer_uri.as_str()));
+    let alpha = must_some(completions.iter().find(|item| item.label == "alpha"));
+    assert!(alpha.additional_edits.is_empty());
+    Ok(())
+}
+
+#[test]
+fn require_only_does_not_authorize_bare_visible_symbol() -> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/lib/Tools.pm")?,
+        "package Tools;\nsub alpha { }\n1;\n".to_string(),
+    )?;
+    let importer_uri = Url::parse("file:///workspace/require_only.pl")?;
+    let code = "package App;\nrequire Tools;\nal\n";
+    index.index_file(importer_uri.clone(), code.to_string())?;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
+    let completions =
+        provider.get_completions_with_path(code, code.len() - 1, Some(importer_uri.as_str()));
+
+    assert!(!completions.iter().any(|item| item.label == "alpha"));
+    Ok(())
+}
+
 // -------------------------------------------------------------------------
 // Unknown-receiver bounded fallback (issue #7929, outcome A)
 //
@@ -3993,26 +4064,15 @@ fn test_use_statement_skips_past_module_name_at_qw() -> Result<(), Box<dyn std::
 }
 
 // -------------------------------------------------------------------------
-// Auto-import additionalTextEdits for workspace symbol completions (#1694)
+// Import-edit withdrawal and workspace completion containment (#11158)
 //
-// Completing an unimported workspace subroutine, variable, or constant should
-// attach an `additionalTextEdits` entry inserting the required `use Module;`
-// statement, matching the behavior already provided for method completions.
+// Completion providers must not synthesize `use` edits. Bare candidates are
+// omitted unless their namespace is already visible; qualified insertions remain.
 // -------------------------------------------------------------------------
 
-/// Find the auto-import edit text on the completion item whose label matches
-/// `label`, if any.
-fn auto_import_edit_text<'a>(completions: &'a [CompletionItem], label: &str) -> Option<&'a str> {
-    completions
-        .iter()
-        .find(|c| c.label == label)?
-        .additional_edits
-        .first()
-        .map(|(_, text)| text.as_str())
-}
-
 #[test]
-fn workspace_subroutine_completion_auto_imports_module() -> Result<(), Box<dyn std::error::Error>> {
+fn workspace_subroutine_completion_omits_unimported_bare_symbol()
+-> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
     index.index_file(
         Url::parse("file:///lib/Foo.pm")?,
@@ -4024,15 +4084,20 @@ fn workspace_subroutine_completion_auto_imports_module() -> Result<(), Box<dyn s
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
     let completions = provider.get_completions(code, code.len());
 
-    // Workspace subroutine completions are labelled by qualified name.
-    let edit = auto_import_edit_text(&completions, "Foo::barker")
-        .ok_or("expected `Foo::barker` workspace subroutine completion with an auto-import edit")?;
-    assert_eq!(edit, "use Foo;\n", "should auto-insert `use Foo;` for unimported subroutine");
+    assert!(
+        !completions.iter().any(|c| c.label == "barker"),
+        "bare unimported workspace subroutine must be omitted; qualified completion may remain"
+    );
+    assert!(
+        !completions.iter().any(|c| c.label == "Foo::barker"),
+        "unimported workspace subroutine must not leak an unsafe qualified label"
+    );
     Ok(())
 }
 
 #[test]
-fn workspace_constant_completion_auto_imports_module() -> Result<(), Box<dyn std::error::Error>> {
+fn workspace_constant_completion_omits_unimported_bare_symbol()
+-> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
     index.index_file(
         Url::parse("file:///lib/Foo.pm")?,
@@ -4044,20 +4109,27 @@ fn workspace_constant_completion_auto_imports_module() -> Result<(), Box<dyn std
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
     let completions = provider.get_completions(code, code.len());
 
-    let item = completions
-        .iter()
-        .find(|c| c.label == "ANSWER")
-        .ok_or("expected `ANSWER` constant completion")?;
-    assert_eq!(item.kind, CompletionItemKind::Constant);
-    assert_eq!(
-        item.additional_edits.len(),
-        1,
-        "constant completion must carry exactly one auto-import edit; got {:?}",
-        item.additional_edits
-    );
-    assert_eq!(
-        item.additional_edits[0].1, "use Foo;\n",
-        "constant completion must auto-insert exactly `use Foo;`"
+    assert!(!completions.iter().any(|c| c.label == "ANSWER"));
+    Ok(())
+}
+
+#[test]
+fn workspace_export_completion_omits_unimported_bare_symbol()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///lib/Foo.pm")?,
+        "package Foo;\nour @EXPORT = qw(barker);\nsub barker { }\n1;\n".to_string(),
+    )?;
+    let code = "use strict;\nbark";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    assert!(
+        !completions.iter().any(|c| c.label == "barker"),
+        "unimported workspace export must not produce a bare insertion"
     );
     Ok(())
 }
@@ -4070,8 +4142,8 @@ fn workspace_completion_suppresses_auto_import_when_already_imported()
         Url::parse("file:///lib/Foo.pm")?,
         "package Foo;\nsub barker { }\n1;\n".to_string(),
     )?;
-    // `Foo` is already imported, so no duplicate `use Foo;` edit should attach.
-    let code = "use strict;\nuse Foo;\nbark";
+    // An exact explicit import makes the bare insertion valid, but never adds an edit.
+    let code = "use strict;\nuse Foo qw(barker);\nbark";
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
@@ -4081,12 +4153,7 @@ fn workspace_completion_suppresses_auto_import_when_already_imported()
         .iter()
         .find(|c| c.label == "Foo::barker")
         .ok_or("expected `Foo::barker` workspace completion")?;
-    assert_eq!(
-        item.additional_edits,
-        vec![],
-        "already-imported module must not produce a duplicate auto-import edit; got {:?}",
-        item.additional_edits
-    );
+    assert!(item.additional_edits.is_empty());
     Ok(())
 }
 
@@ -4113,7 +4180,13 @@ fn workspace_completion_no_auto_import_for_file_local_symbol()
 }
 
 #[test]
-fn workspace_variable_completion_auto_imports_module() -> Result<(), Box<dyn std::error::Error>> {
+fn workspace_variable_completion_preserves_qualified_insertion_without_import()
+-> Result<(), Box<dyn std::error::Error>> {
+    // `$Foo::xyl` is served by the sigil path's `::` branch
+    // (`add_package_completions`). The name of this test claims a qualified
+    // insertion, so assert the inserted text — not just the absence of an
+    // import edit, which an untruthful bare insertion would also satisfy
+    // (issue #11937).
     let index = Arc::new(WorkspaceIndex::new());
     index.index_file(
         Url::parse("file:///lib/Foo.pm")?,
@@ -4131,23 +4204,78 @@ fn workspace_variable_completion_auto_imports_module() -> Result<(), Box<dyn std
         .ok_or("expected `$xylophone` workspace variable completion")?;
     assert_eq!(item.kind, CompletionItemKind::Variable);
     assert_eq!(
-        item.additional_edits.len(),
-        1,
-        "variable completion must carry exactly one auto-import edit; got {:?}",
-        item.additional_edits
+        item.insert_text.as_deref(),
+        Some("$Foo::xylophone"),
+        "the document never imports Foo, so only a fully qualified insertion resolves"
     );
-    assert_eq!(
-        item.additional_edits[0].1, "use Foo;\n",
-        "variable completion from Foo must auto-insert exactly `use Foo;`"
+    assert!(item.additional_edits.is_empty());
+    Ok(())
+}
+
+/// Pins the interception that makes the `WsSymbolKind::Variable` arm of
+/// `add_workspace_symbol_completions` dead code.
+///
+/// Every workspace variable candidate carries a leading sigil, so only a
+/// sigil-prefixed request could match one — and `complete_sigil_context`
+/// serves every sigil prefix and returns before `complete_general_context`
+/// (the sole caller of the workspace-symbol pass) runs. That is why the arm
+/// was removed rather than gated (issue #11937). If this test fails, the
+/// dispatch order changed and the arm has to come back *gated*, not as the
+/// bare/double-sigil emission it used to be.
+#[test]
+fn sigil_prefixed_requests_never_reach_the_workspace_symbol_pass()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///lib/Foo.pm")?,
+        "package Foo;\nour $xylophone = 1;\n1;\n".to_string(),
+    )?;
+
+    // Guard against vacuity: the same index, reached through the sigil path's
+    // `::` branch, does serve this symbol. So an empty bare-prefix result below
+    // is the dispatch interception, not an unpopulated index.
+    let qualified_code = "use strict;\n$Foo::xyl";
+    let mut qualified_parser = Parser::new(qualified_code);
+    let qualified_ast = must(qualified_parser.parse());
+    let qualified_provider =
+        CompletionProvider::new_with_index(&qualified_ast, Some(index.clone()));
+    let qualified = qualified_provider.get_completions(qualified_code, qualified_code.len());
+    assert!(
+        qualified.iter().any(|c| c.insert_text.as_deref() == Some("$Foo::xylophone")),
+        "index must be populated and findable through the sigil `::` branch; got {:?}",
+        qualified.iter().map(|c| c.label.as_ref()).collect::<Vec<_>>()
     );
+
+    // A bare sigil prefix is served entirely by the sigil path, which knows
+    // nothing of the workspace index — so no workspace variable appears under
+    // any spelling.
+    for code in ["use strict;\n$", "use strict;\n$xyl", "use strict;\n@xyl", "use strict;\n%xyl"] {
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let provider = CompletionProvider::new_with_index(&ast, Some(index.clone()));
+        let completions = provider.get_completions(code, code.len());
+        let leaked: Vec<_> = completions
+            .iter()
+            .filter(|c| {
+                c.label.contains("xylophone")
+                    || c.insert_text.as_deref().is_some_and(|t| t.contains("xylophone"))
+            })
+            .map(|c| (c.label.to_string(), c.insert_text.as_deref().map(str::to_string)))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "sigil prefix {code:?} must be served by the sigil path alone; got {leaked:?}"
+        );
+    }
     Ok(())
 }
 
 #[test]
-fn qualified_subroutine_completion_auto_imports_module() -> Result<(), Box<dyn std::error::Error>> {
+fn qualified_subroutine_completion_preserves_qualified_insertion_without_import()
+-> Result<(), Box<dyn std::error::Error>> {
     // Qualified `Foo::bar` completions are served by add_package_completions
     // (the `::` path), not add_workspace_symbol_completions. Observe that this
-    // path auto-imports the unimported defining module.
+    // path inserts the fully qualified member and needs no import edit.
     let index = Arc::new(WorkspaceIndex::new());
     index.index_file(
         Url::parse("file:///lib/Foo.pm")?,
@@ -4163,50 +4291,8 @@ fn qualified_subroutine_completion_auto_imports_module() -> Result<(), Box<dyn s
         .iter()
         .find(|c| c.label == "barley")
         .ok_or("expected `barley` qualified subroutine completion")?;
-    assert_eq!(
-        item.additional_edits.len(),
-        1,
-        "qualified subroutine completion must carry exactly one auto-import edit; got {:?}",
-        item.additional_edits
-    );
-    assert_eq!(
-        item.additional_edits[0].1, "use Foo;\n",
-        "qualified subroutine completion must auto-insert exactly `use Foo;`"
-    );
+    assert!(item.additional_edits.is_empty());
     Ok(())
-}
-
-#[test]
-fn workspace_auto_import_edits_returns_exact_edits_per_branch() {
-    // Direct call-observation with exact assertions on the helper that produces
-    // every workspace completion's `additionalTextEdits`, discriminating each
-    // guard branch (reachable, main, current package, empty, file-local,
-    // already-imported).
-    use super::workspace::workspace_auto_import_edits;
-
-    let source = "use strict;\nmy $x = 1;\n";
-    let after_use = "use strict;\n".len();
-
-    // Reachable, unimported, foreign module -> exactly one edit after the use block.
-    let edits = workspace_auto_import_edits(source, Some("My::App"), "main");
-    assert_eq!(edits.len(), 1, "expected exactly one edit; got {edits:?}");
-    assert_eq!(edits[0].1, "use My::App;\n");
-    assert_eq!(edits[0].0.start, after_use);
-    assert_eq!(edits[0].0.end, after_use);
-
-    // Implicit `main` package must never be auto-imported.
-    assert_eq!(workspace_auto_import_edits(source, Some("main"), "Other"), vec![]);
-    // The document's own current package needs no import.
-    assert_eq!(workspace_auto_import_edits(source, Some("Demo"), "Demo"), vec![]);
-    // Empty module name yields no edit.
-    assert_eq!(workspace_auto_import_edits(source, Some(""), "main"), vec![]);
-    // File-local symbol (no container module) yields no edit.
-    assert_eq!(workspace_auto_import_edits(source, None, "main"), vec![]);
-    // Already-imported module yields no duplicate edit.
-    assert_eq!(
-        workspace_auto_import_edits("use My::App;\nmy $x = 1;\n", Some("My::App"), "main"),
-        vec![]
-    );
 }
 
 #[test]

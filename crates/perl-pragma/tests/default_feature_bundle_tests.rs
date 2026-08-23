@@ -161,7 +161,7 @@ fn all_strict_boundary_discriminator_input_that_hits_the_boundary_strict_refs_tr
         builtin_imports: Vec::new(),
     };
 
-    assert_eq!(state.strict_refs, true, "input that hits the boundary: strict_refs: true");
+    assert!(state.strict_refs, "input that hits the boundary: strict_refs: true");
     assert_eq!(state, expected, "all_strict should match the exact expected state");
     Ok(())
 }

@@ -12,14 +12,16 @@
 use super::*;
 use super::{
     Arc, AtomicBool, AtomicU32, CodeFormatter, DocumentState, FormattingOptions, HashMap,
-    JsonRpcError, LspServer, Mutex, Node, Ordering, Parser, Value, json, parse_worker,
+    JsonRpcError, LspServer, Mutex, Node, NonZeroU32, Ordering, Parser, Value, json, parse_worker,
     source_path_from_uri, workspace_progress,
 };
 use crate::protocol::invalid_params;
-use crate::state::{DegradationTier, ParsedSnapshot};
+use crate::state::{DegradationTier, FIRST_ACCEPTED_DOCUMENT_GENERATION, ParsedSnapshot};
 #[cfg(feature = "workspace")]
 use perl_parser::workspace_index::{IndexPhase, IndexState};
 use perl_parser_core::source_file::is_binary_content;
+#[cfg(feature = "workspace")]
+use perl_workspace::workspace_index::{SourceCommit, SourceCommitOutcome};
 
 mod document_state;
 mod lifecycle;
@@ -84,10 +86,20 @@ impl LspServer {
         cancellation_token: Option<Arc<AtomicBool>>,
     ) -> Result<(), JsonRpcError> {
         if let Some(params) = params {
+            // Sink-owned admission (#8895): this operation turns URIs into
+            // paths and stores buffers, so it owns URI policy. The check runs
+            // on the normalized key so plain-path inputs this server
+            // deliberately accepts are judged in their stored form. Failures
+            // are typed InvalidParams owned by this method — not generic
+            // protocol rejections.
             let uri = params
                 .pointer("/textDocument/uri")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
+            let admission_key = self.normalize_uri_key(uri);
+            if let Err(err) = crate::security::validate_document_uri(&admission_key) {
+                return Err(invalid_params(&err.to_string()));
+            }
             let text_raw = params
                 .pointer("/textDocument/text")
                 .and_then(|v| v.as_str())
@@ -96,6 +108,13 @@ impl LspServer {
             // as part of the document text, which shifts all column-0 offsets
             // by one character and produces stray glyph artifacts. (#5207)
             let text = crate::textdoc::strip_utf8_bom(text_raw);
+            // Sink-owned resource bound (#8895 review): retain the former
+            // preflight per-line parser-robustness bound where whole buffer
+            // text enters. The sink's own size and binary guards cover the
+            // remaining buffer conditions.
+            if let Err(err) = crate::security::validate_buffer_line_lengths(text) {
+                return Err(invalid_params(&err.to_string()));
+            }
             let version_i64 =
                 params.pointer("/textDocument/version").and_then(|v| v.as_i64()).unwrap_or(0);
             let version = i32::try_from(version_i64).unwrap_or(0);
@@ -234,7 +253,11 @@ impl LspServer {
 
             // Store document state with normalized URI
             let normalized_uri = self.normalize_uri_key(uri);
-            let generation = Arc::new(AtomicU32::new(0));
+            // #11305: the opened document instance accepts its first snapshot
+            // at a non-zero generation so the workspace-source commit below
+            // crosses the live API as an unambiguous live identity, never the
+            // generation-zero sentinel shared with initial import.
+            let generation = Arc::new(AtomicU32::new(FIRST_ACCEPTED_DOCUMENT_GENERATION.get()));
 
             // Initialize the incremental parsing state from the already-parsed
             // text (didOpen). Off by default (#3396): the committed AST that
@@ -285,8 +308,9 @@ impl LspServer {
             // separately -- see `state::ParsedSnapshot`. `from_parse_result`
             // derives content_hash/parent_map/degradation_tier internally so
             // they can never disagree with `ast_arc`/`errors`/`text`. didOpen
-            // always starts at generation 0 (freshly created above), so this
-            // publication always succeeds synchronously.
+            // always starts at its freshly minted first accepted generation
+            // (created above, never edited yet), so this publication always
+            // succeeds synchronously.
             let doc_generation = doc_state.current_generation();
             let snapshot = Arc::new(ParsedSnapshot::from_parse_result(
                 doc_generation,
@@ -313,25 +337,44 @@ impl LspServer {
                     let text_owned = text.to_string();
                     let uri_owned = uri.to_string();
                     let generation = Arc::clone(&generation);
+                    let documents_for_task =
+                        parse_worker::DocumentsHandle(Arc::clone(&self.documents));
+                    let normalized_uri_owned = normalized_uri.clone();
                     let outbound = self.outbound.clone();
                     let task_counter = Arc::clone(&self.pending_index_task_count);
                     task_counter.fetch_add(1, Ordering::SeqCst);
 
                     let task = move || {
-                        if generation.load(Ordering::Acquire) != 0 {
-                            tracing::debug!(
-                                uri = %uri_owned,
-                                "Skipping stale background index task after document close/change"
-                            );
-                            coordinator_clone.notify_parse_complete(&uri_owned);
-                            task_counter.fetch_sub(1, Ordering::SeqCst);
-                            return;
-                        }
-                        match workspace_index.index_file_with_generation(url, text_owned, 0) {
-                            Ok(()) => {
-                                if generation.load(Ordering::Acquire) == 0 {
+                        // #11305: the SAME sanctioned oracle every deferred
+                        // post-parse side effect uses -- revalidates the exact
+                        // document instance (`Arc::ptr_eq`) AND accepted
+                        // generation immediately before commit. A close/reopen
+                        // installs a fresh Arc even at an equal numeric value,
+                        // so held work from a prior open cannot commit here
+                        // (reopen ABA), and a newer edit advances the numeric
+                        // past `FIRST_ACCEPTED_DOCUMENT_GENERATION`.
+                        let committed = commit_parse_effect_if_current(
+                            &documents_for_task,
+                            &normalized_uri_owned,
+                            FIRST_ACCEPTED_DOCUMENT_GENERATION.get(),
+                            &generation,
+                            || {
+                                workspace_index.index_live_file(
+                                    url,
+                                    text_owned,
+                                    SourceCommit::new(FIRST_ACCEPTED_DOCUMENT_GENERATION),
+                                )
+                            },
+                        );
+                        match committed {
+                            Some(SourceCommitOutcome::Accepted | SourceCommitOutcome::NoOp) => {
+                                if generation.load(Ordering::Acquire)
+                                    == FIRST_ACCEPTED_DOCUMENT_GENERATION.get()
+                                {
                                     workspace_progress::send_active_document_ready_notification(
-                                        &outbound, &uri_owned, 0,
+                                        &outbound,
+                                        &uri_owned,
+                                        u64::from(FIRST_ACCEPTED_DOCUMENT_GENERATION.get()),
                                     );
                                 }
                                 if matches!(
@@ -348,8 +391,24 @@ impl LspServer {
                                     );
                                 }
                             }
-                            Err(e) => {
+                            Some(SourceCommitOutcome::RejectedStale) => {
+                                tracing::debug!(
+                                    uri = %uri_owned,
+                                    "Skipping superseded background open-index task after \
+                                     document close/change"
+                                );
+                            }
+                            Some(SourceCommitOutcome::Failed(e)) => {
+                                // The open buffer stays authoritative; only
+                                // workspace facts lag (typed failed).
                                 tracing::warn!("Failed to index file {}: {}", uri_owned, e);
+                            }
+                            None => {
+                                tracing::debug!(
+                                    uri = %uri_owned,
+                                    "Skipping stale background index task after document \
+                                     close/change"
+                                );
                             }
                         }
                         coordinator_clone.notify_parse_complete(&uri_owned);
@@ -449,10 +508,18 @@ impl LspServer {
         allow_same_version: bool,
     ) -> Result<(), JsonRpcError> {
         if let Some(params) = params {
+            // Sink-owned admission (#8895): same URI policy as didOpen,
+            // enforced where the change is applied and judged on the
+            // normalized key. Typed InvalidParams belongs to this method, not
+            // generic preflight.
             let uri = params
                 .pointer("/textDocument/uri")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
+            let admission_key = self.normalize_uri_key(uri);
+            if let Err(err) = crate::security::validate_document_uri(&admission_key) {
+                return Err(invalid_params(&err.to_string()));
+            }
             let incoming_version_i64 =
                 params.pointer("/textDocument/version").and_then(|v| v.as_i64());
             let incoming_version = incoming_version_i64.and_then(|v| i32::try_from(v).ok());
@@ -587,6 +654,14 @@ impl LspServer {
                 let text_arc: std::sync::Arc<str> = std::sync::Arc::from(text.as_str());
                 let rope_to_string_ms = crate::runtime::timing::elapsed_ms(t_rope_start);
                 tracing::debug!("Document changed: {} (version {})", uri, version);
+
+                // The text-sync sink owns the parser-robustness bound for the
+                // resulting buffer. Check after applying both ranged and full
+                // replacements, before any document state is committed. The
+                // didSave text-reconciliation path reuses this lifecycle.
+                if let Err(err) = crate::security::validate_buffer_line_lengths(&text) {
+                    return Err(invalid_params(&err.to_string()));
+                }
 
                 // Keep template documents that were intentionally skipped on didOpen
                 // in no-parse mode across subsequent didChange notifications.
@@ -1178,12 +1253,36 @@ impl LspServer {
                         expected_generation,
                         &document_instance,
                         || {
-                            if let Err(e) = workspace_index.index_file_with_generation(
-                                url,
-                                doc_content,
-                                expected_generation,
-                            ) {
-                                tracing::warn!("Failed to index file {}: {}", uri_owned, e);
+                            // #11305: live workspace-source commits cross the
+                            // typed API with a non-zero owner generation; raw
+                            // zero is structurally unrepresentable here.
+                            match NonZeroU32::new(expected_generation) {
+                                Some(commit_generation) => {
+                                    match workspace_index.index_live_file(
+                                        url,
+                                        doc_content,
+                                        SourceCommit::new(commit_generation),
+                                    ) {
+                                        SourceCommitOutcome::Accepted
+                                        | SourceCommitOutcome::NoOp => {}
+                                        SourceCommitOutcome::RejectedStale => tracing::debug!(
+                                            uri = %uri_owned,
+                                            expected_generation,
+                                            "Live index commit rejected stale after newer source won"
+                                        ),
+                                        SourceCommitOutcome::Failed(e) => {
+                                            tracing::warn!(
+                                                "Failed to index file {}: {}",
+                                                uri_owned,
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
+                                None => tracing::warn!(
+                                    uri = %uri_owned,
+                                    "Refusing zero-generation live source commit"
+                                ),
                             }
                         },
                     );

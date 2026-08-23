@@ -494,6 +494,94 @@ fn collect_literal_import_entries(
     false
 }
 
+/// Parse a line of the form `Module::Name->import(literal list);`.
+///
+/// Returns `Some(Vec<String>)` of symbol names when the line matches the
+/// expected module name with only literal arguments (`qw(...)`, `'x'`, `"x"`).
+/// Returns `None` when the line does not match or contains dynamic arguments.
+fn parse_literal_import_call(line: &str, expected_module: &str) -> Option<Vec<String>> {
+    let after_module = line.strip_prefix(expected_module)?.trim_start();
+    let after_arrow = after_module.strip_prefix("->")?.trim_start();
+    let after_method = after_arrow.strip_prefix("import")?.trim_start();
+    let after_open = after_method.strip_prefix('(')?;
+
+    // Find the matching close paren.
+    let close_idx = after_open.rfind(')')?;
+    let args_src = &after_open[..close_idx];
+
+    // Reject dynamic arguments: arrays, scalars, map, grep.
+    if args_src.contains('@') || args_src.contains('$') {
+        return None;
+    }
+
+    let symbols = parse_literal_arg_list(args_src)?;
+    Some(symbols)
+}
+
+/// Parse the interior of an `import(...)` argument list that contains only
+/// literal strings and/or a `qw(...)` list.
+///
+/// Returns `None` when any argument looks dynamic or unparseable.
+fn parse_literal_arg_list(args: &str) -> Option<Vec<String>> {
+    let trimmed = args.trim();
+
+    if trimmed.is_empty() {
+        return Some(Vec::new());
+    }
+
+    if let Some(words) = parse_qw_arg_list(trimmed) {
+        return Some(words);
+    }
+
+    // Comma-separated literal strings: 'a', "b", 'c'
+    let mut symbols = Vec::new();
+    for part in trimmed.split(',') {
+        let p = part.trim();
+        if p.is_empty() {
+            continue;
+        }
+        // Single-quoted string.
+        if let Some(inner) = p.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
+            if inner.is_empty() {
+                continue;
+            }
+            symbols.push(inner.to_string());
+            continue;
+        }
+        // Double-quoted string.
+        if let Some(inner) = p.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+            if inner.is_empty() {
+                continue;
+            }
+            symbols.push(inner.to_string());
+            continue;
+        }
+        // Anything else is not a literal — bail out.
+        return None;
+    }
+
+    Some(symbols)
+}
+
+pub fn parse_qw_arg_list(trimmed: &str) -> Option<Vec<String>> {
+    perl_parser_core::parse_qw_words(trimmed)
+}
+
+/// Return true when `line` indicates a new statement boundary that should stop
+/// the lookahead window for require-then-import matching.
+///
+/// We stop on `use`, another `require`, a `sub`, `package`, or `my` declaration
+/// to avoid false positives across unrelated statement blocks.
+fn is_statement_terminator(line: &str) -> bool {
+    line.starts_with("use ")
+        || line.starts_with("require ")
+        || line.starts_with("sub ")
+        || line.starts_with("package ")
+        || line.starts_with("my ")
+        || line.starts_with("our ")
+        || line.starts_with("local ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -586,92 +674,4 @@ mod tests {
 
         Ok(())
     }
-}
-
-/// Parse a line of the form `Module::Name->import(literal list);`.
-///
-/// Returns `Some(Vec<String>)` of symbol names when the line matches the
-/// expected module name with only literal arguments (`qw(...)`, `'x'`, `"x"`).
-/// Returns `None` when the line does not match or contains dynamic arguments.
-fn parse_literal_import_call(line: &str, expected_module: &str) -> Option<Vec<String>> {
-    let after_module = line.strip_prefix(expected_module)?.trim_start();
-    let after_arrow = after_module.strip_prefix("->")?.trim_start();
-    let after_method = after_arrow.strip_prefix("import")?.trim_start();
-    let after_open = after_method.strip_prefix('(')?;
-
-    // Find the matching close paren.
-    let close_idx = after_open.rfind(')')?;
-    let args_src = &after_open[..close_idx];
-
-    // Reject dynamic arguments: arrays, scalars, map, grep.
-    if args_src.contains('@') || args_src.contains('$') {
-        return None;
-    }
-
-    let symbols = parse_literal_arg_list(args_src)?;
-    Some(symbols)
-}
-
-/// Parse the interior of an `import(...)` argument list that contains only
-/// literal strings and/or a `qw(...)` list.
-///
-/// Returns `None` when any argument looks dynamic or unparseable.
-fn parse_literal_arg_list(args: &str) -> Option<Vec<String>> {
-    let trimmed = args.trim();
-
-    if trimmed.is_empty() {
-        return Some(Vec::new());
-    }
-
-    if let Some(words) = parse_qw_arg_list(trimmed) {
-        return Some(words);
-    }
-
-    // Comma-separated literal strings: 'a', "b", 'c'
-    let mut symbols = Vec::new();
-    for part in trimmed.split(',') {
-        let p = part.trim();
-        if p.is_empty() {
-            continue;
-        }
-        // Single-quoted string.
-        if let Some(inner) = p.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
-            if inner.is_empty() {
-                continue;
-            }
-            symbols.push(inner.to_string());
-            continue;
-        }
-        // Double-quoted string.
-        if let Some(inner) = p.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
-            if inner.is_empty() {
-                continue;
-            }
-            symbols.push(inner.to_string());
-            continue;
-        }
-        // Anything else is not a literal — bail out.
-        return None;
-    }
-
-    Some(symbols)
-}
-
-pub fn parse_qw_arg_list(trimmed: &str) -> Option<Vec<String>> {
-    perl_parser_core::parse_qw_words(trimmed)
-}
-
-/// Return true when `line` indicates a new statement boundary that should stop
-/// the lookahead window for require-then-import matching.
-///
-/// We stop on `use`, another `require`, a `sub`, `package`, or `my` declaration
-/// to avoid false positives across unrelated statement blocks.
-fn is_statement_terminator(line: &str) -> bool {
-    line.starts_with("use ")
-        || line.starts_with("require ")
-        || line.starts_with("sub ")
-        || line.starts_with("package ")
-        || line.starts_with("my ")
-        || line.starts_with("our ")
-        || line.starts_with("local ")
 }

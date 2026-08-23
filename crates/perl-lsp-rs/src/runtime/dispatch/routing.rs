@@ -22,6 +22,35 @@ impl LspServer {
         let method = request.method.clone();
         let request_start = std::time::Instant::now();
 
+        // Checked method-direction admission (#8896). #7010 has already
+        // classified the envelope, so anything reaching this seam carries a
+        // method name; only methods registered client→server may proceed to
+        // application handlers. Wrong-direction requests answer MethodNotFound
+        // (-32601); wrong-direction notifications are dropped with no response
+        // and no state mutation. JSON-RPC responses never arrive here because
+        // #7010 consumes them as `$/perl-lsp/clientResponse` first.
+        match crate::protocol::method_direction::inbound_decision(&method, id.is_some()) {
+            crate::protocol::method_direction::InboundDecision::Allow => {}
+            crate::protocol::method_direction::InboundDecision::RejectRequest => {
+                let result = Err(enhanced_error(
+                    METHOD_NOT_FOUND,
+                    &format!("Method '{method}' is not valid in the client-to-server direction"),
+                    "method_not_found",
+                    Some(&method),
+                ));
+                self.record_lsp_request_latency(&method, request_start);
+                return RoutedResponse::Handler { id, method, should_respond, result };
+            }
+            crate::protocol::method_direction::InboundDecision::IgnoreNotification => {
+                tracing::debug!(
+                    method = %method,
+                    "Dropped server-to-client notification received from client"
+                );
+                self.record_lsp_request_latency(&method, request_start);
+                return RoutedResponse::Handler { id, method, should_respond, result: Ok(None) };
+            }
+        }
+
         // LSP spec: after shutdown, the server must reject all requests except
         // `exit` with -32600 InvalidRequest (#6103).
         if method != "exit"
@@ -230,7 +259,6 @@ impl LspServer {
             }
             "perl/showAst" => self.handle_show_ast_dispatch(request.params),
             "experimental/testDiscovery" => self.handle_test_discovery_dispatch(request.params),
-            "workspace/configuration" => self.handle_configuration_dispatch(request.params),
             "workspace/didChangeWatchedFiles" => {
                 self.handle_did_change_watched_files_dispatch(request.params)
             }
@@ -253,7 +281,6 @@ impl LspServer {
             "workspace/didDeleteFiles" => self.handle_did_delete_files_dispatch(request.params),
             "workspace/willCreateFiles" => self.handle_will_create_files_dispatch(request.params),
             "workspace/didCreateFiles" => self.handle_did_create_files_dispatch(request.params),
-            "workspace/applyEdit" => self.handle_apply_edit_dispatch(request.params),
             "workspace/textDocumentContent" => {
                 self.handle_text_document_content_dispatch(request.params)
             }
@@ -852,6 +879,99 @@ mod tests {
             }
         }
 
+        Ok(())
+    }
+
+    /// #8896: a server→client standard request sent by the client is rejected
+    /// with MethodNotFound (-32601) and never reaches the (removed) stateful
+    /// application handler.
+    #[test]
+    fn wrong_direction_standard_request_returns_method_not_found()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for method in [
+            "workspace/applyEdit",
+            "workspace/configuration",
+            "client/registerCapability",
+            "client/unregisterCapability",
+        ] {
+            let server = LspServer::new();
+            server.initialize_requested.store(true, Ordering::Release);
+
+            let routed = server.route_request(
+                JsonRpcRequest {
+                    _jsonrpc: "2.0".to_string(),
+                    id: Some(JsonRpcId::Integer(8896)),
+                    method: method.to_string(),
+                    params: Some(json!({ "edit": { "changes": {} } })),
+                },
+                Some(json!(8896)),
+                true,
+            );
+
+            let RoutedResponse::Handler { result, .. } = routed else {
+                return Err(format!("{method} must produce a routable rejection").into());
+            };
+            let error = result.err().ok_or_else(|| {
+                format!("{method} must be rejected, not answered by an application handler")
+            })?;
+            assert_eq!(error.code, METHOD_NOT_FOUND, "{method}");
+            assert!(
+                error.message.contains("client-to-server"),
+                "{method} rejection must name the direction boundary: {}",
+                error.message
+            );
+        }
+        Ok(())
+    }
+
+    /// #8896: a wrong-direction notification produces no response frame and
+    /// runs no application code, so it cannot mutate documents or feature
+    /// state.
+    #[test]
+    fn wrong_direction_notification_is_dropped_without_state_mutation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for method in ["workspace/applyEdit", "$/progress", "window/showMessage"] {
+            let server = LspServer::new();
+            server.initialize_requested.store(true, Ordering::Release);
+            server
+                .test_apply_did_open("file:///direction-drop.pl", "my $kept = 1;\n", 1)
+                .map_err(|error| std::io::Error::other(format!("didOpen failed: {error:?}")))?;
+
+            let routed = server.route_request(
+                JsonRpcRequest {
+                    _jsonrpc: "2.0".to_string(),
+                    id: None,
+                    method: method.to_string(),
+                    params: Some(json!({
+                        "edit": { "changes": {
+                            "file:///direction-drop.pl": [
+                                { "range": { "start": {"line": 0, "character": 0},
+                                             "end": {"line": 0, "character": 1} },
+                                  "newText": "MUTATED" } ]
+                        } }
+                    })),
+                },
+                None,
+                false,
+            );
+
+            let RoutedResponse::Handler { result, should_respond, .. } = routed else {
+                return Err(format!("{method} notification must route as dropped").into());
+            };
+            assert!(!should_respond, "{method} notification must not request a response");
+            assert!(
+                matches!(result, Ok(None)),
+                "{method} notification drop must produce no handler result: {result:?}"
+            );
+
+            // No application code ran, so the open document must be intact.
+            let documents = server.documents.lock();
+            let mutated = documents
+                .get("file:///direction-drop.pl")
+                .map(|document| document.text.contains("MUTATED"))
+                .unwrap_or(false);
+            assert!(!mutated, "{method} notification must not mutate application state");
+        }
         Ok(())
     }
 }
