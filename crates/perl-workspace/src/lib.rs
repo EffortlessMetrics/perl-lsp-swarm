@@ -56,6 +56,12 @@ pub use perl_parser_core::line_index;
 pub use perl_parser_core::{Node, NodeKind, SourceLocation};
 pub use perl_parser_core::{Parser, ast, position};
 
+/// Transport-neutral reachability operation, work-budget, and
+/// terminal-outcome contract (#11553), re-exported from the
+/// `perl-semantic-facts` substrate for the liveness train consumers
+/// (#10915/#10921/#10928/#10935 and later leaves).
+pub use perl_semantic_facts::reachability_operation;
+
 /// Unified public API surface.
 pub mod api;
 /// Git-aware workspace file discovery.
@@ -89,3 +95,6 @@ pub use workspace::workspace_rename;
 
 #[cfg(test)]
 mod workspace_index_utf16_test;
+
+#[cfg(test)]
+mod reachability_operation_tests;
