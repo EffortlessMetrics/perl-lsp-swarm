@@ -639,12 +639,20 @@ fn check_system_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>)
         }],
         tags: Vec::new(),
         fixable: false,
-        critic_observation: Some(BuiltInCriticObservation::pl603_system(
-            Severity::Harsh,
-            range,
-            message,
-            Some(explanation),
-        )),
+        critic_observation: Some(
+            BuiltInCriticObservation::pl603_system(
+                Severity::Harsh,
+                range,
+                message,
+                Some(explanation.clone()),
+            )
+            // #12004: the observation carries the ordinary row's exact
+            // user-visible remediation so retirement cannot drop it.
+            .with_suggestion(
+                "Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection",
+            )
+            .with_related_information(range, explanation),
+        ),
         suggestion: Some(
             "Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection"
                 .to_string(),
@@ -682,12 +690,18 @@ fn check_exec_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
         }],
         tags: Vec::new(),
         fixable: false,
-        critic_observation: Some(BuiltInCriticObservation::pl604_exec(
-            Severity::Harsh,
-            range,
-            message,
-            Some(explanation),
-        )),
+        critic_observation: Some(
+            BuiltInCriticObservation::pl604_exec(
+                Severity::Harsh,
+                range,
+                message,
+                Some(explanation.clone()),
+            )
+            .with_suggestion(
+                "Use the list form: exec($cmd, @args) instead of exec(\"$cmd @args\") to avoid shell injection",
+            )
+            .with_related_information(range, explanation),
+        ),
         suggestion: Some(
             "Use the list form: exec($cmd, @args) instead of exec(\"$cmd @args\") to avoid shell injection"
                 .to_string(),
@@ -815,12 +829,16 @@ fn check_readpipe(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
         }],
         tags: Vec::new(),
         fixable: false,
-        critic_observation: Some(BuiltInCriticObservation::pl606_readpipe(
-            Severity::Harsh,
-            range,
-            message,
-            Some(explanation),
-        )),
+        critic_observation: Some(
+            BuiltInCriticObservation::pl606_readpipe(
+                Severity::Harsh,
+                range,
+                message,
+                Some(explanation.clone()),
+            )
+            .with_suggestion("Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution")
+            .with_related_information(range, explanation),
+        ),
         suggestion: Some(
             "Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution".to_string(),
         ),
@@ -850,7 +868,13 @@ fn push_command_execution_diagnostic(
         }],
         tags: Vec::new(),
         fixable: false,
-        critic_observation: Some(observe(Severity::Harsh, range, message, Some(explanation))),
+        critic_observation: Some(
+            observe(Severity::Harsh, range, message, Some(explanation.clone()))
+                .with_suggestion(
+                    "Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution",
+                )
+                .with_related_information(range, explanation),
+        ),
         suggestion: Some(
             "Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution".to_string(),
         ),

@@ -84,7 +84,17 @@ pub fn check_common_mistakes(
                             message.clone(),
                             Some("Consider using 'defined' check or '//' operator".to_string()),
                         )
-                    };
+                    }
+                    // #12004: the observation carries the ordinary row's
+                    // exact user-visible remediation so retirement cannot
+                    // drop it.
+                    .with_suggestion(
+                        "Guard with 'defined($var)' or use the '//' (defined-or) operator",
+                    )
+                    .with_related_information(
+                        range,
+                        "Consider using 'defined' check or '//' operator".to_string(),
+                    );
                     diagnostics.push(Diagnostic {
                         range,
                         severity: DiagnosticSeverity::Warning,

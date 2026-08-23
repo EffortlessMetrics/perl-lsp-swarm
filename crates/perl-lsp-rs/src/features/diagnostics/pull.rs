@@ -743,7 +743,7 @@ impl PullDiagnosticsProvider {
 
     fn normalized_finding_to_lsp_diagnostic(
         &self,
-        _uri: &Uri,
+        uri: &Uri,
         text: &str,
         finding: &perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding,
     ) -> LspDiagnostic {
@@ -760,14 +760,30 @@ impl PullDiagnosticsProvider {
             "explanation": finding.explanation(),
         }));
 
+        // #12004: render the contributing ordinary producer's user-visible
+        // remediation exactly the way the ordinary-row path renders it.
+        let mut message = finding.message().to_string();
+        if let Some(suggestion) = finding.remediation_suggestion() {
+            message = format!("{message}\nSuggestion: {suggestion}");
+        }
+        let remediation_notes: Vec<RelatedInformation> = finding
+            .remediation_related_information()
+            .iter()
+            .map(|note| RelatedInformation {
+                location: (note.range.start.byte, note.range.end.byte),
+                message: note.message.clone(),
+            })
+            .collect();
+        let related_information = to_lsp_related_information(uri, text, &remediation_notes);
+
         LspDiagnostic {
             range,
             severity,
             code,
             code_description: None,
             source: Some("perl-lsp".to_string()),
-            message: finding.message().to_string(),
-            related_information: None,
+            message,
+            related_information,
             tags: None,
             data,
         }
@@ -2013,9 +2029,13 @@ mod tests {
             })
             .ok_or("expected merged readpipe row")?;
         assert_eq!(readpipe.source.as_deref(), Some("perl-lsp"));
+        // #12004: the merged row renders the retired ordinary twin's
+        // suggestion text exactly as that twin always rendered it.
         assert_eq!(
             readpipe.message,
-            "readpipe() executes a shell command (equivalent to qx//). Ensure input is sanitized."
+            "readpipe() executes a shell command (equivalent to qx//). Ensure input is \
+             sanitized.\nSuggestion: Use open(my $fh, '-|', @cmd) or IPC::Run for safer \
+             command execution"
         );
         assert!(
             !items.iter().any(|diag| {
@@ -2056,7 +2076,7 @@ mod tests {
         assert_eq!(system_exec.source.as_deref(), Some("perl-lsp"));
         assert_eq!(
             system_exec.message,
-            "system() executes a shell command. Ensure input is sanitized."
+            "system() executes a shell command. Ensure input is sanitized.\nSuggestion: Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection"
         );
         assert!(
             items.iter().any(|diag| {
@@ -2427,6 +2447,97 @@ mod tests {
                 })
             }),
             "the native spelling must ride inside the merged row: {items:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pull_merged_system_row_preserves_the_retired_twin_suggestion_verbatim()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #12004: retiring the ordinary overlap twin must not retire its
+        // user-visible remediation. The merged row renders the producer's
+        // exact Suggestion text and related information.
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///overlap_remediation_system.pl".parse()?;
+        let mut context = PullDiagnosticsContext::new();
+        context.critic_engine = CriticEngine::Native;
+        context.native_critic_profile = "strict".to_string();
+
+        let items = get_full_items(provider.get_document_diagnostics_with_context(
+            &uri,
+            "use strict;\nuse warnings;\nsystem('ls -la');\n",
+            None,
+            &context,
+            None,
+        ));
+
+        let pl603_rows: Vec<_> = items
+            .iter()
+            .filter(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL603"),
+                )
+            })
+            .collect();
+        assert_eq!(pl603_rows.len(), 1, "one merged PL603 row: {items:?}");
+        assert!(
+            pl603_rows[0].message.contains(
+                "system() executes a shell command. Ensure input is sanitized.\nSuggestion: Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection",
+            ),
+            "merged message must carry the twin's verbatim Suggestion text: {}",
+            pl603_rows[0].message
+        );
+        let related = pl603_rows[0].related_information.as_deref().unwrap_or_default();
+        assert!(
+            related.iter().any(|info| info.message
+                == "Use the list form system($cmd, @args) to avoid shell injection when arguments come from user input"),
+            "merged row must keep the twin's related information: {related:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pull_merged_undef_comparison_row_preserves_the_retired_twin_suggestion_verbatim()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #12004: the literal-undef PL404 row merges with its native alias;
+        // the ordinary emitter's suggestion text and related information must
+        // survive that merge byte-for-byte on the pull transport too.
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///overlap_remediation_undef.pl".parse()?;
+        let mut context = PullDiagnosticsContext::new();
+        context.critic_engine = CriticEngine::Native;
+        context.native_critic_profile = "strict".to_string();
+
+        let items = get_full_items(provider.get_document_diagnostics_with_context(
+            &uri,
+            "use strict;\nuse warnings;\nif (5 == undef) { }\n",
+            None,
+            &context,
+            None,
+        ));
+
+        let pl404_rows: Vec<_> = items
+            .iter()
+            .filter(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL404"),
+                )
+            })
+            .collect();
+        assert_eq!(pl404_rows.len(), 1, "one merged literal-undef PL404 row: {items:?}");
+        assert!(
+            pl404_rows[0].message.contains(
+                "Using '==' with potentially undefined value -- use 'defined()' to check first\nSuggestion: Guard with 'defined($var)' or use the '//' (defined-or) operator",
+            ),
+            "merged message must carry the twin's verbatim Suggestion text: {}",
+            pl404_rows[0].message
+        );
+        let related = pl404_rows[0].related_information.as_deref().unwrap_or_default();
+        assert!(
+            related
+                .iter()
+                .any(|info| info.message == "Consider using 'defined' check or '//' operator"),
+            "merged row must keep the twin's related information: {related:?}"
         );
         Ok(())
     }

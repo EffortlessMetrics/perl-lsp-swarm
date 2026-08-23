@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use perl_parser_core::position::Range;
 use serde::Serialize;
 
+use super::native::CriticRelatedInformation;
 use super::{
     CriticFindingOrigin, CriticFindingShape, CriticIdentityCategory, CriticIdentityEntry,
     CriticIdentityRegistry, CriticObservedIdentity, Severity,
@@ -97,6 +98,8 @@ pub struct CriticFindingCandidate {
     message: String,
     explanation: Option<String>,
     fix_available: bool,
+    remediation_suggestion: Option<String>,
+    remediation_related_information: Vec<CriticRelatedInformation>,
 }
 
 impl CriticFindingCandidate {
@@ -141,7 +144,25 @@ impl CriticFindingCandidate {
             message: message.into(),
             explanation,
             fix_available,
+            remediation_suggestion: None,
+            remediation_related_information: Vec::new(),
         }
+    }
+
+    /// Attach producer-owned user-visible remediation content (#12004).
+    ///
+    /// Only producers that also own an ordinary diagnostic carry this: it is
+    /// the exact suggestion text and related information the ordinary row
+    /// rendered before the overlap retirement, never derived or invented.
+    #[must_use]
+    pub fn with_remediation(
+        mut self,
+        suggestion: Option<String>,
+        related_information: Vec<CriticRelatedInformation>,
+    ) -> Self {
+        self.remediation_suggestion = suggestion;
+        self.remediation_related_information = related_information;
+        self
     }
 
     /// Checked observed producer identity.
@@ -179,6 +200,18 @@ impl CriticFindingCandidate {
     pub fn explanation(&self) -> Option<&str> {
         self.explanation.as_deref()
     }
+
+    /// Producer-owned suggestion text declared for the ordinary twin row.
+    #[must_use]
+    pub fn remediation_suggestion(&self) -> Option<&str> {
+        self.remediation_suggestion.as_deref()
+    }
+
+    /// Producer-owned related information declared for the ordinary twin row.
+    #[must_use]
+    pub fn remediation_related_information(&self) -> &[CriticRelatedInformation] {
+        &self.remediation_related_information
+    }
 }
 
 /// One producer contribution retained after semantic merge.
@@ -188,6 +221,8 @@ pub struct CriticFindingContributor {
     severity: Severity,
     message: String,
     explanation: Option<String>,
+    remediation_suggestion: Option<String>,
+    remediation_related_information: Vec<CriticRelatedInformation>,
 }
 
 impl CriticFindingContributor {
@@ -197,6 +232,8 @@ impl CriticFindingContributor {
             severity: candidate.severity,
             message: candidate.message.clone(),
             explanation: candidate.explanation.clone(),
+            remediation_suggestion: candidate.remediation_suggestion.clone(),
+            remediation_related_information: candidate.remediation_related_information.clone(),
         }
     }
 
@@ -222,6 +259,18 @@ impl CriticFindingContributor {
     #[must_use]
     pub fn explanation(&self) -> Option<&str> {
         self.explanation.as_deref()
+    }
+
+    /// Producer-owned suggestion text declared for the ordinary twin row.
+    #[must_use]
+    pub fn remediation_suggestion(&self) -> Option<&str> {
+        self.remediation_suggestion.as_deref()
+    }
+
+    /// Producer-owned related information declared for the ordinary twin row.
+    #[must_use]
+    pub fn remediation_related_information(&self) -> &[CriticRelatedInformation] {
+        &self.remediation_related_information
     }
 }
 
@@ -422,6 +471,34 @@ impl NormalizedCriticFinding {
     pub const fn has_available_fix(&self) -> bool {
         self.fix_available
     }
+
+    /// Producer-owned suggestion text retained from the contributing ordinary
+    /// diagnostic (#12004).
+    ///
+    /// Contributors are sorted deterministically by [`Self::finalize`], so the
+    /// first contributor that carries remediation content is arrival-order
+    /// independent. Only built-in overlap producers declare this today.
+    #[must_use]
+    pub fn remediation_suggestion(&self) -> Option<&str> {
+        remediating_contributor(self).and_then(CriticFindingContributor::remediation_suggestion)
+    }
+
+    /// Producer-owned related information retained from the contributing
+    /// ordinary diagnostic (#12004).
+    #[must_use]
+    pub fn remediation_related_information(&self) -> &[CriticRelatedInformation] {
+        remediating_contributor(self)
+            .map_or(&[], CriticFindingContributor::remediation_related_information)
+    }
+}
+
+/// The first contributor of one merged row that declared user-visible
+/// remediation content, under the deterministic contributor order.
+fn remediating_contributor(finding: &NormalizedCriticFinding) -> Option<&CriticFindingContributor> {
+    finding.contributors.iter().find(|contributor| {
+        contributor.remediation_suggestion.is_some()
+            || !contributor.remediation_related_information.is_empty()
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -550,7 +627,8 @@ mod tests {
         normalize_critic_findings,
     };
     use crate::tooling::perl_critic::{
-        CriticFindingOrigin, CriticIdentityRegistry, CriticObservedIdentity, Severity,
+        CriticFindingOrigin, CriticIdentityRegistry, CriticObservedIdentity,
+        CriticRelatedInformation, Severity,
     };
 
     fn source(document: u8, generation: u64) -> CriticSourceIdentity {
@@ -656,6 +734,93 @@ mod tests {
         assert!(normalized[0].contributors().iter().any(|contributor| {
             contributor.identity().origin() == CriticFindingOrigin::NativeCritic
         }));
+    }
+
+    fn remediated_system_candidates(
+        source_identity: CriticSourceIdentity,
+    ) -> Vec<CriticFindingCandidate> {
+        let range = range(10, 20);
+        let built_in = CriticObservedIdentity::built_in_system_call();
+        let native = CriticObservedIdentity::native_system_call();
+        vec![
+            CriticFindingCandidate::new(
+                built_in,
+                source_identity,
+                Severity::Harsh,
+                range,
+                "system() executes a shell command. Ensure input is sanitized.",
+                Some("Use the list form system($cmd, @args) to avoid shell injection".to_string()),
+            )
+            .with_remediation(
+                Some(
+                    "Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection"
+                        .to_string(),
+                ),
+                vec![CriticRelatedInformation {
+                    range,
+                    message: "Use the list form system($cmd, @args) to avoid shell injection"
+                        .to_string(),
+                }],
+            ),
+            CriticFindingCandidate::new(
+                native,
+                source_identity,
+                Severity::Harsh,
+                range,
+                "system() executes a shell command",
+                Some("Use the list form system($cmd, @args) to avoid shell injection".to_string()),
+            ),
+        ]
+    }
+
+    #[test]
+    fn merged_row_retains_the_builtin_twin_remediation_verbatim() {
+        // #12004: retiring the ordinary overlap twin must not retire its
+        // user-visible remediation. The merged row carries the producer's
+        // exact suggestion text and related information.
+        let normalized = normalize_critic_findings(remediated_system_candidates(source(1, 7)));
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(
+            normalized[0].remediation_suggestion(),
+            Some(
+                "Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection"
+            )
+        );
+        let related = normalized[0].remediation_related_information();
+        assert_eq!(related.len(), 1);
+        assert_eq!(
+            related[0].message,
+            "Use the list form system($cmd, @args) to avoid shell injection"
+        );
+        assert_eq!(related[0].range, normalized[0].range);
+        // The content is retained on the contributing ordinary producer too.
+        assert!(normalized[0].contributors().iter().any(|contributor| {
+            contributor.identity().origin() == CriticFindingOrigin::BuiltInDiagnostic
+                && contributor.remediation_suggestion().is_some()
+        }));
+    }
+
+    #[test]
+    fn remediation_selection_is_arrival_order_independent() {
+        let forward = normalize_critic_findings(remediated_system_candidates(source(1, 7)));
+        let mut reversed = remediated_system_candidates(source(1, 7));
+        reversed.reverse();
+        let backward = normalize_critic_findings(reversed);
+
+        assert_eq!(forward, backward);
+        assert_eq!(forward[0].remediation_suggestion(), backward[0].remediation_suggestion());
+        assert_eq!(
+            forward[0].remediation_related_information(),
+            backward[0].remediation_related_information()
+        );
+    }
+
+    #[test]
+    fn rows_without_a_remediating_producer_expose_no_remediation() {
+        let normalized = normalize_critic_findings(strict_alias_candidates());
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(normalized[0].remediation_suggestion(), None);
+        assert!(normalized[0].remediation_related_information().is_empty());
     }
 
     #[test]
