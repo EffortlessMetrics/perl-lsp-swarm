@@ -482,7 +482,9 @@ fn parse_denominator(metadata: &serde_json::Value) -> Result<Denominator> {
         let mut queue = std::collections::VecDeque::new();
         queue.push_back(start.to_string());
         while let Some(current) = queue.pop_front() {
-            let depth = dist[&current];
+            let Some(depth) = dist.get(&current).copied() else {
+                continue;
+            };
             if let Some(list) = parents.get(&current) {
                 for (parent, has_normal) in list {
                     if normal_only && !has_normal {
@@ -741,7 +743,7 @@ fn render_downstream_section(denominator: &Denominator, falsifier_files: &[Strin
     output.push_str("## 7. Derived downstream denominators\n\n");
     output.push_str("Mechanically derived from this matrix; no re-research needed:\n\n");
     output.push_str(&format!(
-        "- **LT02 / #11803 migration population:** {} surviving direct Cargo edges (`adapter_protocol_type`: {}) carrying 2 public nominal re-export anchors (`ServerCapabilities` at perl-lsp-rs-core/src/protocol/capabilities.rs:23, `Location` at perl-lsp-rs-core/src/providers/navigation/mod.rs:58), {} typed-once patch rows, plus SEAM-RUNTIME-DYNAMIC-INLINECOMPLETION as a type-consumer. Doomed edges excluded: {} (`lower_wire_remove_before_switch`, owners #9632/#9893).\n",
+        "- **LT02 / #11803 migration population:** {} surviving direct Cargo edges (`adapter_protocol_type`: {}) carrying 6 public nominal re-export anchors (`ServerCapabilities` at perl-lsp-rs-core/src/protocol/capabilities.rs:23, `Location` at perl-lsp-rs-core/src/providers/navigation/mod.rs:58, `Range` field on pub struct InlineCompletionItem at crates/perl-lsp-rs-core/src/providers/inline_completion/mod.rs:303 - adapter_protocol_type: serialized into inline-completion responses when present, `Command` field on pub struct InlineCompletionItem at crates/perl-lsp-rs-core/src/providers/inline_completion/mod.rs:306 - adapter_protocol_type: same DTO; post-insertion command surface, `Vec<lsp_types::Diagnostic>` return of PerlCriticAnalyzer::to_diagnostics at crates/perl-lsp-rs-core/src/tooling/perl_critic/analyzer.rs:196 - adapter_protocol_type: lsp-compat-gated adapter boundary converting critic violations to diagnostics payloads, `DiagnosticSeverity` return of Severity::to_diagnostic_severity at crates/perl-lsp-rs-core/src/tooling/perl_critic/types.rs:68 - adapter_protocol_type: lsp-compat-gated single source of truth for the perlcritic-to-LSP severity mapping), {} typed-once patch rows, plus SEAM-RUNTIME-DYNAMIC-INLINECOMPLETION as a type-consumer. Doomed edges excluded: {} (`lower_wire_remove_before_switch`, owners #9632/#9893).\n",
         lt02_edges, lt02_adapter_names, typed_once, doomed_edges
     ));
     output.push_str(&format!(
@@ -847,7 +849,9 @@ fn render_matrix(denominator: &Denominator, falsifier_files: &[String]) -> Strin
         output.push_str(" | ");
         output.push_str(&escape_cell(field.value));
         output.push_str(" | ");
-        output.push_str(&escape_cell(field.evidence));
+        output.push_str(&escape_cell(
+            &field.evidence.replace("{EVIDENCE_PIN_DATE}", EVIDENCE_PIN_DATE),
+        ));
         output.push_str(" |\n");
     }
     output.push('\n');
@@ -998,7 +1002,7 @@ fn render_receipt(denominator: &Denominator, falsifier_files: &[String]) -> Resu
         record.push(serde_json::json!({
             "field": field.field,
             "value": field.value,
-            "evidence": field.evidence,
+            "evidence": field.evidence.replace("{EVIDENCE_PIN_DATE}", EVIDENCE_PIN_DATE),
         }));
     }
     let mut candidates = Vec::new();
@@ -1390,6 +1394,28 @@ mod tests {
             render_receipt(&denominator, &falsifiers)?
         );
         Ok(())
+    }
+
+    /// Evidence columns interpolate the pin date at render time; the raw
+    /// `{EVIDENCE_PIN_DATE}` placeholder must never leak into artifacts.
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn evidence_columns_carry_no_raw_placeholder() {
+        let denominator = fixture_denominator();
+        let falsifiers = fixture_falsifiers();
+        let matrix = render_matrix(&denominator, &falsifiers);
+        let receipt =
+            render_receipt(&denominator, &falsifiers).expect("receipt must serialize in tests");
+        for artifact in [&matrix, receipt.as_str()] {
+            assert!(
+                !artifact.contains("{EVIDENCE_PIN_DATE}"),
+                "raw evidence-pin placeholder leaked into generated output"
+            );
+            assert!(
+                artifact.contains(EVIDENCE_PIN_DATE),
+                "interpolated evidence pin date missing from generated output"
+            );
+        }
     }
 
     #[test]

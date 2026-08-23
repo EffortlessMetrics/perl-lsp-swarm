@@ -404,12 +404,12 @@
         "value": "selected_maintained_substrate"
       },
       {
-        "evidence": "crates.io API v1 crates/gen-lsp-types inspected {EVIDENCE_PIN_DATE}; trust-published from GitHub run 30327548194 @ 1e84ee239d093e4933bf3024cd597255090e5813",
+        "evidence": "crates.io API v1 crates/gen-lsp-types inspected 2026-08-22; trust-published from GitHub run 30327548194 @ 1e84ee239d093e4933bf3024cd597255090e5813",
         "field": "package / version / source",
         "value": "gen-lsp-types 0.11.0; crates.io; repo https://github.com/ribru17/gen-lsp-types"
       },
       {
-        "evidence": "SHA-256 of downloaded gen-lsp-types-0.11.0.crate matched the crates.io API checksum exactly ({EVIDENCE_PIN_DATE})",
+        "evidence": "SHA-256 of downloaded gen-lsp-types-0.11.0.crate matched the crates.io API checksum exactly (2026-08-22)",
         "field": "checksum",
         "value": "b64887ac3a8083427ae935a7296db876871582cd57eac077564f8bc18fa49116"
       },
