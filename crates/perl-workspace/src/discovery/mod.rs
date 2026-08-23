@@ -672,6 +672,99 @@ mod tests {
         Ok(())
     }
 
+    fn git_on_path() -> bool {
+        std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+    }
+
+    /// Call-observation for the discovery git spawn: on a root outside any
+    /// git repository, `git ls-files` fails fast and discovery falls back to
+    /// walking. The spawned git gets an explicit null stdin — a git
+    /// inheriting an open, non-console stdin pipe blocks instead of exiting
+    /// on Windows, which stalled background workspace scans until unrelated
+    /// client input arrived. This observes the completion contract (bounded
+    /// time, walk fallback, correct files) end to end through the spawn.
+    #[test]
+    fn git_spawn_completes_on_non_repo_root_without_caller_stdin() -> TestResult {
+        if !git_on_path() {
+            return Ok(());
+        }
+        let tmp = tempfile::tempdir()?;
+        create_file(tmp.path(), "lib/One.pm")?;
+
+        let started = Instant::now();
+        let result = super::discover_perl_files_with_config_and_cancel(
+            tmp.path(),
+            &[] as &[&Path],
+            &DiscoveryConfig::default(),
+            || false,
+        );
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(30),
+            "discovery must complete without waiting on caller input; took {elapsed:?}"
+        );
+        assert_eq!(result.method, DiscoveryMethod::Walk);
+        assert!(!result.cancelled);
+        assert!(result.files.iter().any(|path| path.ends_with("lib/One.pm")));
+
+        Ok(())
+    }
+
+    /// Exact boundary variant for the cancellation checkpoints around the
+    /// spawned git child: a cancellation observed after the spawn kills the
+    /// child and surfaces the cancelled outcome with no files, rather than
+    /// falling through to the walk fallback or blocking on the child.
+    #[test]
+    fn git_discovery_cancelled_during_child_wait_returns_cancelled_result() -> TestResult {
+        if !git_on_path() {
+            return Ok(());
+        }
+        let tmp = tempfile::tempdir()?;
+        create_file(tmp.path(), "lib/One.pm")?;
+
+        // First should_cancel() check (pre-spawn) passes; the next
+        // checkpoint — the child wait loop — cancels.
+        let checks = AtomicUsize::new(0);
+        let result = super::discover_perl_files_with_config_and_cancel(
+            tmp.path(),
+            &[] as &[&Path],
+            &DiscoveryConfig::default(),
+            || checks.fetch_add(1, Ordering::SeqCst) > 0,
+        );
+
+        assert!(result.cancelled, "wait-loop cancellation must surface");
+        assert!(result.files.is_empty(), "cancelled discovery must return no files");
+
+        Ok(())
+    }
+
+    /// Boundary variant for the pre-spawn checkpoint: an immediately
+    /// cancelled discovery never spawns the git child.
+    #[test]
+    fn git_discovery_cancelled_before_spawn_never_discovers() -> TestResult {
+        if !git_on_path() {
+            return Ok(());
+        }
+        let tmp = tempfile::tempdir()?;
+        create_file(tmp.path(), "lib/One.pm")?;
+
+        let result = super::discover_perl_files_with_config_and_cancel(
+            tmp.path(),
+            &[] as &[&Path],
+            &DiscoveryConfig::default(),
+            || true,
+        );
+
+        assert!(result.cancelled);
+        assert!(result.files.is_empty());
+
+        Ok(())
+    }
+
     #[test]
     fn cancellable_discovery_stops_during_walk() -> TestResult {
         let tmp = tempfile::tempdir()?;
