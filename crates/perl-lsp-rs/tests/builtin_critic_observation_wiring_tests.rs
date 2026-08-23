@@ -31,6 +31,7 @@ fn every_admitted_cohort_member_has_a_named_emitter_constructor() {
     let security = production_source("providers/diagnostics/lints/security.rs");
     for constructor in [
         "BuiltInCriticObservation::backtick_exec(",
+        "BuiltInCriticObservation::qx_exec(",
         "BuiltInCriticObservation::system_call(",
         "BuiltInCriticObservation::exec_call(",
         "BuiltInCriticObservation::readpipe_exec(",
@@ -60,6 +61,7 @@ fn emitter_branches_declare_the_critic_severity_literally() {
     let security = production_source("providers/diagnostics/lints/security.rs");
     for (constructor, severity) in [
         ("BuiltInCriticObservation::backtick_exec(", "Severity::Harsh"),
+        ("BuiltInCriticObservation::qx_exec(", "Severity::Harsh"),
         ("BuiltInCriticObservation::system_call(", "Severity::Harsh"),
         ("BuiltInCriticObservation::exec_call(", "Severity::Harsh"),
         ("BuiltInCriticObservation::readpipe_exec(", "Severity::Harsh"),

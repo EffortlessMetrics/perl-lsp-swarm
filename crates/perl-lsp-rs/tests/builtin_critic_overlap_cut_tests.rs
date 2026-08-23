@@ -155,3 +155,29 @@ fn backtick_and_readpipe_retain_separate_canonical_rows() -> Result<(), Box<dyn 
     );
     Ok(())
 }
+
+#[test]
+fn exact_qx_document_yields_one_merged_pl601_row() -> Result<(), Box<dyn std::error::Error>> {
+    let uri: Uri = "file:///cut_qx_doc.pl".parse()?;
+    let content = "my $out = qx(ls -la);\n";
+
+    let provider = PullDiagnosticsProvider::new();
+    let items = items_from_report(provider.get_document_diagnostics_with_context(
+        &uri,
+        content,
+        None,
+        &PullDiagnosticsContext::new(),
+        None,
+    ))?;
+
+    assert_eq!(
+        items_with_code(&items, "PL601").len(),
+        1,
+        "exactly one logical PL601 qx row may exist after the cut: {items:#?}"
+    );
+    assert!(
+        items_with_code(&items, "native.security.qx_readpipe").is_empty(),
+        "the native qx spelling must survive only as a contributor: {items:#?}"
+    );
+    Ok(())
+}

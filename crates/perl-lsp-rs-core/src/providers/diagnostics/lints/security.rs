@@ -323,10 +323,11 @@ fn walk_security_node(
             walk_security_node(block, diagnostics, observations, signal_shadowed);
             signal_shadowed
         }
-        // Backtick strings: the lexer emits backtick and qx command runs as
-        // QuoteCommand tokens; this arm's guard admits only the backtick-
-        // delimited form (`cmd`), whose stored value keeps the backticks.
-        NodeKind::String { value, interpolated: true } if is_backtick_string(value) => {
+        // Backtick and qx strings: both are represented as interpolated
+        // strings, but their stored values retain the delimiter spelling.
+        NodeKind::String { value, interpolated: true }
+            if is_backtick_string(value) || is_qx_string(value) =>
+        {
             diagnostics.push(Diagnostic {
                 range: (node.location.start, node.location.end),
                 severity: DiagnosticSeverity::Warning,
@@ -344,15 +345,25 @@ fn walk_security_node(
                 ),
             });
             // Producer-owned overlap declaration (#11918): this branch observed
-            // the exact PL601 backtick syntax, so it declares both the reviewed
-            // shape and the critic-scale severity here rather than letting
-            // either be reconstructed later from the LSP-scale diagnostic.
-            observations.push(BuiltInCriticObservation::backtick_exec(
-                Severity::Harsh,
-                (node.location.start, node.location.end),
-                "Command execution detected. Ensure input is sanitized.",
-                None,
-            ));
+            // the exact PL601 syntax shape, so it declares both the reviewed
+            // shape and critic-scale severity here rather than reconstructing
+            // either later from the LSP-scale diagnostic.
+            let observation = if is_backtick_string(value) {
+                BuiltInCriticObservation::backtick_exec(
+                    Severity::Harsh,
+                    (node.location.start, node.location.end),
+                    "Command execution detected. Ensure input is sanitized.",
+                    None,
+                )
+            } else {
+                BuiltInCriticObservation::qx_exec(
+                    Severity::Harsh,
+                    (node.location.start, node.location.end),
+                    "Command execution detected. Ensure input is sanitized.",
+                    None,
+                )
+            };
+            observations.push(observation);
             signal_shadowed
         }
         NodeKind::Return { value: Some(value) } => {
@@ -840,11 +851,20 @@ fn check_readpipe(
 }
 
 /// Check if a string value represents a backtick command execution.
-///
-/// The parser stores backtick literals (`` `cmd` ``) and qx(cmd) as
-/// `String { value: "`cmd`", interpolated: true }`.
 fn is_backtick_string(value: &str) -> bool {
     value.starts_with('`') && value.ends_with('`') && value.len() >= 2
+}
+
+/// Check if a string value represents a qx command execution.
+fn is_qx_string(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("qx") else {
+        return false;
+    };
+    rest.chars().find(|ch| !ch.is_whitespace()).is_some_and(is_quote_like_delimiter)
+}
+
+fn is_quote_like_delimiter(delimiter: char) -> bool {
+    !delimiter.is_ascii_alphanumeric() && !delimiter.is_whitespace()
 }
 
 fn shadows_signal_table(node: &Node) -> bool {
@@ -1145,6 +1165,22 @@ mod tests {
         assert_eq!(observations[0].identity().shape(), CriticFindingShape::Backtick);
         assert_eq!(observations[0].severity(), Severity::Harsh);
         assert_eq!(observations[0].range(), diags[0].range);
+
+        #[test]
+        fn qx_string_emits_ordinary_diagnostic_and_qx_shaped_observation() {
+            let source = "my $out = qx(ls -la);";
+            let diags = security_diags(source);
+            assert!(
+                diags.iter().any(|d| d.code.as_deref() == Some("PL601")),
+                "ordinary PL601 must remain: {diags:?}"
+            );
+
+            let observations = security_observations(source);
+            assert_eq!(observations.len(), 1);
+            assert_eq!(observations[0].identity().code(), "PL601");
+            assert_eq!(observations[0].identity().shape(), CriticFindingShape::Qx);
+            assert_eq!(observations[0].severity(), Severity::Harsh);
+        }
     }
 
     #[test]
