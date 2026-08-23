@@ -56,10 +56,10 @@ Backend (perl5db `$VERSION = '1.82'` as shipped with Strawberry Perl 5.42.0,
 
 | ID | Fact | Source |
 |----|------|--------|
-| E1 | The complete perl5db command set contains no `up`, `down`, or `frame`-switching command. Commands are `- . = H S T W c f i l m n p q r s save source t w x y X/V enable disable R rerun` plus wrappers `a A b B e E h L M o O v w W`. | perl5db.pl:2804-2840 (`%cmd_lookup`) |
+| E1 | The complete perl5db command set contains no `up`, `down`, or `frame`-switching command. Commands are `- . = H S T W c f i l m n p q r s save source t w x y X/V enable disable R rerun` plus wrappers `a A b B e E h L M o O v w W`; the `%set` wrapper table only remaps pre-5.8.0 spellings of those same commands and adds none. | perl5db.pl:2804-2840 (`%cmd_lookup`), :4659-4683 (`%set`) |
 | E2 | `f` switches the **file** view, not a frame: "The new f command switches filenames." | perl5db.pl:1885-1953 (quote at :1893) |
 | E3 | `p`/DB::eval evaluates in the stopped frame's context only; usercontext is derived from the immediate `caller` of `DB::DB`. | perl5db.pl:2891 (`local $usercontext = _calc_usercontext($package)`) |
-| E4 | The only shipped primitive that reaches **another frame's** lexicals is `y [levels]`: read-only display via `PadWalker::peek_my(level+2)`, requiring optional XS CPAN module PadWalker ≥ 0.08 and degrading to "PadWalker module not found - please install" when absent. | perl5db.pl:1954-2008 (require :1964, warning :1968, peek_my :1984) |
+| E4 | The only shipped primitive that reaches **another frame's** lexicals is `y [levels]`: read-only display via `PadWalker::peek_my(level+2)`, requiring optional XS CPAN module PadWalker ≥ 0.08 and degrading to "PadWalker module not found - please install" when absent. | perl5db.pl:1954-2005 (require :1964, warning :1968, peek_my :1984) |
 | E5 | perl5db's two PadWalker uses (`y` display, lexical completion) are both read-only; no write-through exists anywhere in perl5db. | perl5db.pl:1984, :9513 |
 | E6 | PadWalker presence is environment-dependent, not core: present (PadWalker 2.5) on local Strawberry 5.42.0; absent on local cygwin-thread-multi 5.42.2 (local probe, 2026-08-24). | local interpreters |
 
