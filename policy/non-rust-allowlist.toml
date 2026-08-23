@@ -2593,3 +2593,35 @@ covered_by = [
 ]
 created = "2026-08-22"
 review_after = "2026-09-22"
+
+[[allow]]
+id = "non-rust-litexl-server-transport"
+path = "clients/lite-xl/upstream/server.lua"
+kind = "editor_extension"
+language = "lua"
+surface = "editor"
+classification = "production"
+owner = "editor/lite-xl"
+reason = "Exact upstream lite-xl-lsp server.lua (base d1432ae, blob 33c8ccae) staged for the Lite XL integration train, carrying the #11151 bounded inbound frame-reader patch: explicit parser state, header/body budgets, strict Content-Length validation, remainder ownership, and typed content-free framing failures."
+covered_by = [
+  "lua clients/lite-xl/tests/server_frame_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-server-frame-tests"
+path = "clients/lite-xl/tests/server_frame_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free inbound-framing suite proving bounded typed frame parsing over a fake process; runs against the staged module, the pristine upstream blob, or any single-behavior mutation for red-first and falsifier checks."
+covered_by = [
+  "lua clients/lite-xl/tests/server_frame_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
