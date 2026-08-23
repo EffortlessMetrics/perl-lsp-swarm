@@ -1115,9 +1115,17 @@ fn position_queries_do_not_cross_file_entity_id_collisions() -> Result<(), Box<d
 
 #[test]
 fn mixed_exact_provenance_degrades_instead_of_answering_exact() -> Result<(), Box<dyn Error>> {
-    // ExactAst beside DesugaredAst: both facts are exact-grade, but their
-    // provenances differ, so the answer must degrade naming the mixed
-    // provenance instead of claiming exact authority.
+    // ExactAst beside DesugaredAst: both rows are exact-grade per
+    // `semantic_provenance_is_exact`, but their provenances differ, so the
+    // answer must degrade naming the mixed provenance instead of claiming
+    // exact authority.
+    //
+    // Analytic falsification: deleting only the `uniform_provenance.is_some()`
+    // conjunct from `exact_eligible` keeps this fixture's other gates true —
+    // one primary shard, Complete snapshot, matching generations, exact-grade
+    // facts, no limitations, File-scoped declaration selection that skips
+    // ambiguity counting — so a mutated adapter would return `Exact` with two
+    // values and both assertions below would fail.
     let mut mixed = shard(Provenance::ExactAst, Confidence::High);
     mixed.entities.push(EntityFact {
         id: EntityId(31),
@@ -1138,7 +1146,7 @@ fn mixed_exact_provenance_degrades_instead_of_answering_exact() -> Result<(), Bo
     assert_eq!(result.value_facts().count(), 2);
     assert!(
         result.evidence().limitations().iter().any(|note| note.contains("mixed_exact_provenance")),
-        "deleting the uniform-exact-provenance guard must turn this test red"
+        "deleting the `uniform_provenance.is_some()` conjunct of exact_eligible must turn this test red"
     );
     Ok(())
 }
