@@ -1,10 +1,13 @@
 pub mod perl_parser
+pub use perl_parser::ErrorCategory
+pub use perl_parser::ErrorClass
 pub use perl_parser::HoverInfo
 pub use perl_parser::IssueKind
 pub use perl_parser::LineEnding
 pub use perl_parser::Node
 pub use perl_parser::NodeKind
 pub use perl_parser::NodeWithTrivia
+pub use perl_parser::ParseDiagnosticAnchor
 pub use perl_parser::ParseError
 pub use perl_parser::ParseOutput
 pub use perl_parser::ParseResult
@@ -15,6 +18,7 @@ pub use perl_parser::PragmaState
 pub use perl_parser::PragmaTracker
 pub use perl_parser::RecoverySalvageClass
 pub use perl_parser::RecoverySalvageProfile
+pub use perl_parser::ResolvedParseDiagnosticAnchor
 pub use perl_parser::ScalarType
 pub use perl_parser::ScopeAnalyzer
 pub use perl_parser::ScopeIssue
@@ -447,12 +451,16 @@ pub fn perl_parser::refactor::workspace_refactor::WorkspaceRefactor::new(index: 
 pub fn perl_parser::refactor::workspace_refactor::WorkspaceRefactor::optimize_imports(&self) -> core::result::Result<perl_parser::refactor::workspace_refactor::RefactorResult, alloc::string::String>
 pub fn perl_parser::refactor::workspace_refactor::WorkspaceRefactor::rename_symbol(&self, old_name: &str, new_name: &str, _file_path: &std::path::Path, _position: (usize, usize)) -> core::result::Result<perl_parser::refactor::workspace_refactor::RefactorResult, perl_parser::refactor::workspace_refactor::RefactorError>
 pub mod perl_parser::core
+pub use perl_parser::core::ErrorCategory
+pub use perl_parser::core::ErrorClass
 pub use perl_parser::core::Node
 pub use perl_parser::core::NodeKind
+pub use perl_parser::core::ParseDiagnosticAnchor
 pub use perl_parser::core::ParseError
 pub use perl_parser::core::ParseOutput
 pub use perl_parser::core::ParseResult
 pub use perl_parser::core::Parser
+pub use perl_parser::core::ResolvedParseDiagnosticAnchor
 pub use perl_parser::core::SourceLocation
 pub use perl_parser::core::engine
 pub use perl_parser::core::error
