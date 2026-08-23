@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "B15-stale-cross-toolchain-receipt",
+  "family": "count_identity_debt_substitution",
+  "purpose": "A stale or cross-SHA/toolchain/policy receipt satisfying a newer candidate breaks currentness binding.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "stale head/toolchain unnoticed",
+      "Path::new(receipt_path).exists()"
+    ],
+    "content": "// consumer accepts any receipt file present:\nfn accept(receipt_path: &str) -> bool {\n    std::path::Path::new(receipt_path).exists() // stale head/toolchain unnoticed\n}\n",
+    "sha256": "17c6cdd479d870cbb1f55c482996e3d579bb7827f9fe0784e300a17f9bc9b6bd"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 10402,
+    "unresolved_reason": "Exact-plan execution and receipt-currentness joins (#10402) are unlanded; kernel records identity fields but nothing consumes them yet."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "stale_receipt_acceptance"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "repository_head",
+      "RustHygieneToolchainV1"
+    ],
+    "note": "Kernel receipts carry head and toolchain identity.",
+    "content": "pub struct RustHygieneReceiptV1 {\n    pub schema_version: String,\n    pub repository_head: String,\n    pub toolchain: RustHygieneToolchainV1,\n    // ...\n}\n",
+    "sha256": "388820f32a18ecfc974cad5d91100679328a859911f17fd9196ad0431ee02b7e"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Identity fields are landed (#9365); acceptance-time comparison remains owned by #10402."
+}
