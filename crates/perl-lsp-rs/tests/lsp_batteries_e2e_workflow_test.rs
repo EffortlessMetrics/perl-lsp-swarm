@@ -149,6 +149,11 @@ my$result=calculate(5,3);
     let edits = format_result.as_array().ok_or("formatting result must be edit array")?;
     assert!(!edits.is_empty(), "native default formatting should return edits");
     let formatted = apply_text_edits(messy_code, edits);
+    // True-EOF policy (#8048/#11873): whole-document replace edits extend through
+    // true EOF, so the formatted result is byte-exact formatter output ending in a
+    // single terminal newline. The previously expected extra trailing "\n" was an
+    // edit-range artifact of pre-#11873 whole-document ranges, not formatter
+    // semantics (stale oracle tracked by #11949).
     assert_eq!(
         formatted,
         concat!(
@@ -158,7 +163,6 @@ my$result=calculate(5,3);
             "    return $x + $y;\n",
             "}\n",
             "my $result = calculate(5, 3);\n",
-            "\n",
         )
     );
 

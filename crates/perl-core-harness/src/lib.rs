@@ -8,6 +8,23 @@
 //! modes. Execute mode is limited to explicit selected base tests.
 
 pub mod artifacts;
+#[path = "target_contracts/contract.rs"]
+pub mod contract;
+#[path = "target_contracts/io.rs"]
+pub mod io;
+#[path = "target_contracts/matrix.rs"]
+pub mod matrix;
+#[path = "target_contracts/model.rs"]
+pub mod model;
+/// Typed contracts for the upstream Perl target topology.
+pub mod target_contracts {
+    pub use super::{contract, io, matrix, model};
+}
+
+#[cfg(test)]
+#[path = "target_contracts/tests.rs"]
+mod target_contract_tests;
+
 mod normalization;
 pub mod public_evidence;
 mod series;
@@ -48,7 +65,7 @@ use series::{read_series_manifest, validate_series_manifest};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self as std_io, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -409,7 +426,7 @@ pub fn boundaries(config: BoundaryRegistryConfig) -> Result<()> {
         fs::write(path, format!("{json}\n"))
             .with_context(|| format!("writing boundary registry report {}", path.display()))?;
     } else if config.report {
-        io::stdout()
+        std_io::stdout()
             .write_all(format!("{json}\n").as_bytes())
             .context("writing boundary registry report")?;
     }

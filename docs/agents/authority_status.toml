@@ -75,7 +75,7 @@ notes = "Short agent contribution route."
 path = "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md"
 status = "current"
 successor = ""
-notes = "PR #6863 landed on main as e9a698285f. The amended specification retired the mandatory-rebase contract itself and now declares that it is the current durable disposition contract; classifying it transitional would demote a current authority."
+notes = "PR #6863 landed on main as e9a698285f. The amended specification retired the mandatory-rebase contract itself and now declares that it is the current durable disposition contract; classifying it transitional would demote a current authority. Amended 2026-08-23 (#11928) with the mergeability-signal disposition for long-running required suites."
 
 [[documents]]
 path = "docs/reference/MAINTAINER_AGENT_DOCTRINE.md"

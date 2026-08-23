@@ -553,11 +553,11 @@ fn test_completion_bare_function_withdraws_module_auto_import_edit()
     let items = completion_items(&response);
     let labels: Vec<&str> = items.iter().filter_map(|item| item["label"].as_str()).collect();
     assert!(
-        !labels.iter().any(|label| *label == "trimmer"),
+        !labels.contains(&"trimmer"),
         "must not return the exact bare `trimmer` candidate after stripping import edits; got: {labels:?}"
     );
     assert!(
-        labels.iter().any(|label| *label == "truncate"),
+        labels.contains(&"truncate"),
         "unrelated built-in completion must remain available in the same request; got: {labels:?}"
     );
 

@@ -1,7 +1,6 @@
 use super::{
     FormatContext, FormatterMode, JsonRpcError, JsonRpcId, LspServer, RequestCleanupGuard, Surface,
-    Value, actual_engine_for_mode, cancellation_token, invalid_params, json, parse_range,
-    req_position,
+    Value, actual_engine_for_mode, cancellation_token, invalid_params, json, req_position,
 };
 
 #[path = "multi_range.rs"]
@@ -62,18 +61,20 @@ impl LspServer {
         self.ensure_not_cancelled(Surface::Range, token.as_ref(), None, None)?;
         let params = params.ok_or_else(|| invalid_params("Missing range-formatting parameters"))?;
         let snapshot = self.admit(Surface::Range, &params)?;
-        let range = parse_range(
-            params
-                .get("range")
-                .ok_or_else(|| invalid_params("Missing required parameter: range"))?,
-            "range",
-        )?;
+        let range_value = params
+            .get("range")
+            .ok_or_else(|| invalid_params("Missing required parameter: range"))?;
+        let admitted = multi_range::admit_requested_range(self, &snapshot, range_value)?;
         self.ensure_not_cancelled(Surface::Range, token.as_ref(), Some(&snapshot), None)?;
 
         let formatter = self.formatter_for(snapshot.config.perltidy.clone(), snapshot.config.mode);
         let context = FormatContext::new(Some(snapshot.uri.clone()), Some(snapshot.generation));
-        let decision =
-            formatter.format_range_decision(&snapshot.text, &range, &snapshot.options, &context);
+        let decision = formatter.format_range_decision(
+            &snapshot.text,
+            &admitted.wire(),
+            &snapshot.options,
+            &context,
+        );
         let decision = match decision {
             Ok(decision) => decision,
             Err(error) => {
