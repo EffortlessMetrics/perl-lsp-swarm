@@ -494,6 +494,7 @@ fn severity_enabled(severity: Severity, config: &CriticConfig) -> bool {
 
 #[cfg(test)]
 mod profile_tests {
+    use perl_tdd_support::must_err;
     use std::str::FromStr;
 
     use super::{MAX_REJECTED_PROFILE_CHARS, NativeCriticProfile, NativeCriticProfileParseError};
@@ -533,8 +534,7 @@ mod profile_tests {
     #[test]
     fn invalid_token_display_escapes_control_characters_without_changing_evidence() {
         let raw = "strict\n\t\u{0007}'";
-        let error =
-            NativeCriticProfile::from_str(raw).expect_err("control-bearing token must fail");
+        let error = must_err(NativeCriticProfile::from_str(raw));
         let rendered = error.to_string();
 
         assert_eq!(error.value(), raw);
@@ -550,7 +550,7 @@ mod profile_tests {
     #[test]
     fn invalid_token_display_is_bounded_while_the_error_retains_the_full_value() {
         let raw = "x".repeat(MAX_REJECTED_PROFILE_CHARS + 32);
-        let error = NativeCriticProfile::from_str(&raw).expect_err("oversized token must fail");
+        let error = must_err(NativeCriticProfile::from_str(&raw));
         let rendered = error.to_string();
 
         assert_eq!(error.value(), raw);

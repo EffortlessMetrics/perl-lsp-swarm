@@ -113,6 +113,9 @@ fn all_reasons() -> Vec<BinaryCompatibilityReason> {
 /// Compile-time exhaustiveness guard for `all_reasons`: a new variant that is
 /// not listed there fails THIS match, so neither the TypeScript projection
 /// ratchet nor the schema-token ratchet can silently go stale.
+// Deliberately uncalled: compiling this match IS the check, so dead_code is
+// expected here and scoped to this guard only.
+#[allow(dead_code)]
 fn every_reason_is_listed_by_all_reasons(specimen: BinaryCompatibilityReason) {
     use BinaryCompatibilityReason::*;
     match specimen {

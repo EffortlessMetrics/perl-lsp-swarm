@@ -3060,7 +3060,7 @@ Tools->import(qw(alpha));
     let provider = CompletionProvider::new_with_index_and_source(&ast, before, Some(index.clone()));
     let before_completions = provider.get_completions_with_path(
         before,
-        before.find("al\n").unwrap() + 2,
+        must_some(before.find("al\n")) + 2,
         Some(importer_uri.as_str()),
     );
     assert!(
@@ -8223,7 +8223,7 @@ sub helper { }
     );
 
     // Constants should have Constant kind
-    let pi = completions.iter().find(|c| c.label == "PI").unwrap();
+    let pi = must_some(completions.iter().find(|c| c.label == "PI"));
     assert_eq!(
         pi.kind,
         crate::providers::completion_item::CompletionItemKind::Constant,
@@ -8770,13 +8770,14 @@ fn block_form_package_at_scope_end_is_main() {
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let table = SymbolExtractor::new().extract(&ast);
-    let scope_end = table
-        .scopes
-        .values()
-        .filter(|scope| scope.kind == ScopeKind::Package)
-        .map(|scope| scope.location.end)
-        .max()
-        .expect("block-form package scope");
+    let scope_end = must_some(
+        table
+            .scopes
+            .values()
+            .filter(|scope| scope.kind == ScopeKind::Package)
+            .map(|scope| scope.location.end)
+            .max(),
+    );
     assert_eq!(
         CompletionContext::detect_current_package(&table, scope_end),
         "main",

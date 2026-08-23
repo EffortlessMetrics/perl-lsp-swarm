@@ -569,7 +569,7 @@ pub fn render_dap_fallback_module(default_features: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_tdd_support::{must, must_some};
+    use perl_tdd_support::{must, must_err, must_some};
     use tempfile::TempDir;
 
     fn sample_catalog() -> Catalog {
@@ -784,9 +784,10 @@ mod tests {
         must(std::fs::write(&workspace, "[meta]\nversion='0.1.0'\nlsp_version='3.18'\n"));
         let missing_override = temp.path().join("missing-features.toml");
 
-        let error =
-            resolve_catalog_source_with_override(&manifest_dir, Some(missing_override.clone()))
-                .expect_err("missing explicit override must be terminal");
+        let error = must_err(resolve_catalog_source_with_override(
+            &manifest_dir,
+            Some(missing_override.clone()),
+        ));
         assert!(matches!(error, CatalogError::MissingOverride(path) if path == missing_override));
     }
 

@@ -887,7 +887,7 @@ mod tests {
     #[test]
     fn module_runtime_literal_calls_emit_module_links() -> Result<(), String> {
         let text = "use_module('Foo::Bar');\nrequire_module(\"Baz::Qux\");\n";
-        let links = compute_links(uri(), &text, &[]);
+        let links = compute_links(uri(), text, &[]);
 
         let [first, second] = links.as_slice() else {
             return Err(format!("expected two links, got {links:?}"));

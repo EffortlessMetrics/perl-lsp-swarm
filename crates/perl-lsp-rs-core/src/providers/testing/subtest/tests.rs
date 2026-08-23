@@ -1,10 +1,11 @@
 //! Tests for Test2 subtest discovery.
 
 use super::*;
+use perl_tdd_support::{must, must_some};
 
 fn discover(source: &str) -> Vec<DiscoveredSubtest> {
     let mut parser = perl_parser::Parser::new(source);
-    let ast = parser.parse().expect("source parses");
+    let ast = must(parser.parse());
     discover_subtests(&ast, source)
 }
 
@@ -118,11 +119,11 @@ fn nearest_subtest_resolves_innermost_at_cursor() {
     let subtests = discover(source);
 
     // Cursor on line 3 (inside inner) resolves to the inner subtest.
-    let inner = nearest_subtest_at_line(&subtests, 3).expect("cursor is inside a subtest");
+    let inner = must_some(nearest_subtest_at_line(&subtests, 3));
     assert_eq!(inner.name, SubtestName::Named("inner".to_string()));
 
     // Cursor on line 1 (inside outer, before inner) resolves to outer.
-    let outer = nearest_subtest_at_line(&subtests, 1).expect("cursor is inside a subtest");
+    let outer = must_some(nearest_subtest_at_line(&subtests, 1));
     assert_eq!(outer.name, SubtestName::Named("outer".to_string()));
 }
 

@@ -187,6 +187,7 @@ pub(crate) fn authority_by_id(id: &str) -> Option<&'static FieldAuthority> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_tdd_support::must_some;
     use std::collections::{BTreeMap, BTreeSet};
 
     const CONTAINER_FIELDS: &[(ConfigOwner, &str)] = &[
@@ -208,8 +209,10 @@ mod tests {
     fn public_fields(struct_name: &str) -> BTreeSet<String> {
         let source = include_str!("../config/mod.rs");
         let marker = format!("pub struct {struct_name} {{");
-        let body = source.split_once(&marker).unwrap_or_else(|| panic!("missing {struct_name}")).1;
-        let body = body.split_once("\n}").unwrap_or_else(|| panic!("unterminated {struct_name}")).0;
+        assert!(source.split_once(&marker).is_some(), "missing {struct_name}");
+        let body = must_some(source.split_once(&marker)).1;
+        assert!(body.split_once("\n}").is_some(), "unterminated {struct_name}");
+        let body = must_some(body.split_once("\n}")).0;
 
         body.lines()
             .filter_map(|line| {
@@ -308,7 +311,8 @@ mod tests {
         ];
 
         for id in restricted {
-            let field = authority_by_id(id).unwrap_or_else(|| panic!("missing {id}"));
+            assert!(authority_by_id(id).is_some(), "missing {id}");
+            let field = must_some(authority_by_id(id));
             assert!(
                 !field.sources.iter().any(|source| matches!(
                     source,

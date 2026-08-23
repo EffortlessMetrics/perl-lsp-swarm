@@ -787,6 +787,19 @@ fn line_ending_kind(source: &str) -> (bool, bool, bool) {
     (has_lf, has_crlf, has_cr)
 }
 
+fn utf16_len(s: &str) -> usize {
+    s.chars().map(|ch| if ch as u32 >= 0x10000 { 2 } else { 1 }).sum()
+}
+
+const fn formatter_mode_name(mode: FormatterMode) -> &'static str {
+    match mode {
+        FormatterMode::Native => "native",
+        FormatterMode::Compat => "compat",
+        FormatterMode::ExternalLegacy => "external-legacy",
+        FormatterMode::Off => "off",
+    }
+}
+
 #[cfg(test)]
 mod decision_projection_tests {
     use super::*;
@@ -823,18 +836,5 @@ mod decision_projection_tests {
             "a failed/not-proven outcome must not emit edits"
         );
         Ok(())
-    }
-}
-
-fn utf16_len(s: &str) -> usize {
-    s.chars().map(|ch| if ch as u32 >= 0x10000 { 2 } else { 1 }).sum()
-}
-
-const fn formatter_mode_name(mode: FormatterMode) -> &'static str {
-    match mode {
-        FormatterMode::Native => "native",
-        FormatterMode::Compat => "compat",
-        FormatterMode::ExternalLegacy => "external-legacy",
-        FormatterMode::Off => "off",
     }
 }

@@ -267,7 +267,7 @@ mod tests {
         assert_eq!(authorities.len(), 1);
         assert_eq!(authorities[0].module, "Foo");
         assert_eq!(authorities[0].symbols, HashSet::from(["bar".to_string()]));
-        assert!(authorities[0].end <= code.find("\nbar").unwrap());
+        assert!(authorities[0].end <= must_some(code.find("\nbar")));
     }
 
     #[test]

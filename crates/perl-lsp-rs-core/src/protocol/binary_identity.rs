@@ -828,6 +828,7 @@ mod tests {
         MAX_IDENTITY_LEN,
     };
     use crate::product_identity::{ArtifactRole, BinaryIdentityInput, BinaryIdentityPacketV1};
+    use perl_tdd_support::{must, must_some};
 
     fn revision(character: char) -> String {
         character.to_string().repeat(40)
@@ -964,7 +965,7 @@ mod tests {
         assert!(!response.redacted, "source payload required a redaction");
         assert_eq!(response.server.build.target, None);
         assert!(response.reasons.contains(&BinaryCompatibilityReason::PayloadNotRedacted));
-        let raw = serde_json::to_string(&response).expect("response serialization must succeed");
+        let raw = must(serde_json::to_string(&response));
         assert!(!raw.contains("/home/user"), "response leaked a private path: {raw}");
     }
 
@@ -981,7 +982,7 @@ mod tests {
     #[test]
     fn unsupported_dap_packet_schema_is_not_exact() {
         let mut state = state();
-        let dap = state.dap.as_mut().expect("fixture carries a DAP packet");
+        let dap = must_some(state.dap.as_mut());
         dap.schema_version = "perl_lsp.binary_identity.v2".to_owned();
         let response = state.respond(request());
         assert_eq!(response.compatibility, BinaryCompatibilityState::NotProven);
