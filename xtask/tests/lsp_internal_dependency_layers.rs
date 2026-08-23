@@ -46,6 +46,7 @@ const LAYERS: &[LayerRow] = &[
     layer!("latency", ObservabilityTest),
     layer!("lifecycle", RuntimeProtocol),
     layer!("notebook", ApplicationServices),
+    layer!("open_buffer_authority_tests", ObservabilityTest),
     layer!("outbound", RuntimeProtocol),
     layer!("parse_worker", ApplicationServices),
     layer!("readiness", ApplicationServices),
@@ -233,6 +234,14 @@ fn every_runtime_module_has_one_layer() {
             row.module
         );
     }
+}
+
+#[test]
+fn open_buffer_authority_tests_keep_the_decided_layer() {
+    assert_eq!(
+        LAYERS.iter().find(|row| row.module == "open_buffer_authority_tests").map(|row| row.layer),
+        Some(Layer::ObservabilityTest)
+    );
 }
 
 #[test]

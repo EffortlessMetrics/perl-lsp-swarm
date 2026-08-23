@@ -140,6 +140,13 @@ const MODULES: &[ModuleRow] = &[
         "#8384"
     ),
     module_row!(
+        "open_buffer_authority_tests",
+        PerlApplication,
+        "perl-lsp-rs",
+        "retain as cfg(test) proof of buffer authority beside its subject",
+        "#8041"
+    ),
+    module_row!(
         "outbound",
         GenericConnection,
         "effortless-lsp",
@@ -532,6 +539,24 @@ fn every_current_runtime_module_has_one_ownership_row() -> Result<()> {
         governed.difference(&discovered).collect::<Vec<_>>()
     );
     Ok(())
+}
+
+#[test]
+fn open_buffer_authority_tests_keep_the_decided_ownership() {
+    assert_eq!(
+        MODULES.iter().find(|row| row.module == "open_buffer_authority_tests").map(|row| (
+            row.responsibility,
+            row.target_owner,
+            row.disposition,
+            row.migration_issue
+        )),
+        Some((
+            Responsibility::PerlApplication,
+            "perl-lsp-rs",
+            "retain as cfg(test) proof of buffer authority beside its subject",
+            "#8041"
+        ))
+    );
 }
 
 #[test]
