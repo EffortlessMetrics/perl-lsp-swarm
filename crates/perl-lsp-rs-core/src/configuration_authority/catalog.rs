@@ -745,20 +745,6 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         ["inlayHints.typeHints"]
     ),
     authority!(
-        "next_edit.enabled",
-        NextEdit.enabled,
-        Global,
-        Boolean,
-        CLIENT_GLOBAL,
-        Validation::Boolean,
-        KeepLastValid,
-        Ordinary,
-        SafeValue,
-        None,
-        &[Consumer::NextEditGate],
-        ["nextEdit.enabled"]
-    ),
-    authority!(
         "telemetry.enabled",
         Server.telemetry_enabled,
         Global,
