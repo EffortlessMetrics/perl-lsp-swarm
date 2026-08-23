@@ -788,36 +788,51 @@ impl LspServer {
 
     /// Whether a document is currently open for `uri`.
     ///
-    /// Resolves through normalized URI keys so watcher-supplied spellings
-    /// match how documents are stored.
+    /// Resolves through the filesystem-aware denominator shared with
+    /// backing-transition recording ([`Self::uri_key_variants`]): percent-
+    /// encoded or otherwise equivalent spellings of the same physical path
+    /// (`uri_to_fs_path` identity) must observe the open document even though
+    /// `DocumentStore::uri_key` preserves percent-encoded path triplets.
     pub(crate) fn document_is_open(&self, uri: &str) -> bool {
+        let uri_keys = self.uri_key_variants(uri);
         let documents = self.documents.lock();
-        self.get_document(&documents, uri).is_some()
+        uri_keys.iter().any(|key| documents.contains_key(key))
     }
 
     /// Record (or overwrite) the backing-file transition for an open
     /// document's URI.
     ///
-    /// Overwriting is deliberate: a later event supersedes earlier ones
-    /// (delete followed by external recreate degrades to ``Changed``,
-    /// whose close-time reload reads whatever currently exists).
+    /// The marker lands under every filesystem-equivalent key so the
+    /// save/close handoff finds it through whichever spelling the open
+    /// document was registered under. Overwriting is deliberate: a later
+    /// event supersedes earlier ones (delete followed by external recreate
+    /// degrades to ``Changed``, whose close-time reload reads whatever
+    /// currently exists).
     pub(crate) fn record_backing_file_transition(
         &self,
         uri: &str,
         transition: BackingFileTransition,
     ) {
-        let key = self.normalize_uri_key(uri);
-        self.backing_file_transitions.lock().insert(key, transition);
+        let mut transitions = self.backing_file_transitions.lock();
+        for key in self.uri_key_variants(uri) {
+            transitions.insert(key, transition.clone());
+        }
     }
 
     /// Take the pending backing-file transition for `uri`, if any.
     ///
     /// Taking consumes the record: each transition is resolved exactly once
     /// by `didSave`/`didClose` so stale markers cannot leak into a successor
-    /// session.
+    /// session. All filesystem-equivalent keys are swept together so one
+    /// consume cannot leave alias-spelled duplicates behind.
     pub(crate) fn take_backing_file_transition(&self, uri: &str) -> Option<BackingFileTransition> {
-        let key = self.normalize_uri_key(uri);
-        self.backing_file_transitions.lock().remove(&key)
+        let keys = self.uri_key_variants(uri);
+        let mut transitions = self.backing_file_transitions.lock();
+        let taken = keys.iter().find_map(|key| transitions.remove(key));
+        for key in &keys {
+            transitions.remove(key);
+        }
+        taken
     }
 
     /// Evict open-document session state for a URI without deleting workspace

@@ -200,6 +200,65 @@ fn did_create_over_open_document_never_indexes_disk_over_buffer() {
 }
 
 #[test]
+fn did_create_via_percent_encoded_alias_never_indexes_disk_over_buffer() {
+    let dir = TempDir::new().expect("tempdir");
+    let uri = file_uri(&dir, "aliased.pl");
+
+    // The client reports the create through an equivalent but textually
+    // different spelling: the filename's first character arrives
+    // percent-encoded (`aliased.pl` → `%61liased.pl`). `uri_to_fs_path`
+    // percent-decodes it to the same physical file, so openness must be
+    // resolved through filesystem identity, not raw URI-key equality.
+    let alias_uri = {
+        let (prefix, name) = uri.rsplit_once('/').expect("file URIs contain path separators");
+        let mut chars = name.chars();
+        let first = chars.next().expect("created file name is non-empty");
+        let rest: String = chars.collect();
+        format!("{prefix}/%{:02X}{rest}", u32::from(first))
+    };
+    assert_ne!(uri, alias_uri, "the alias must be a cross-spelling observation");
+
+    write_file(&dir, "aliased.pl", "package Aliased;\nsub v1_only { }\n1;\n");
+    let server = LspServer::new();
+    did_open(&server, &uri, "package Aliased;\nsub v1_only { }\n1;\n");
+
+    // Unsaved editor edit to v2; the inline commit binds the index to the buffer.
+    did_change_full(&server, &uri, 2, "package Aliased;\nsub v2_only { }\n1;\n");
+    assert_eq!(
+        index_symbols(&server, "v2_only").len(),
+        1,
+        "buffer snapshot committed at the edited generation"
+    );
+
+    // External recreate puts contradicting v3 bytes on disk, then the client
+    // reports the create through the percent-encoded alias spelling.
+    write_file(&dir, "aliased.pl", "package Aliased;\nsub v3_only { }\n1;\n");
+    did_create(&server, &alias_uri);
+
+    assert!(
+        index_symbols(&server, "v3_only").is_empty(),
+        "disk bytes behind an authoritative open buffer must never be indexed \
+         through an encoded didCreateFiles alias (#8041)"
+    );
+    assert_eq!(
+        index_symbols(&server, "v2_only").len(),
+        1,
+        "the last accepted buffer snapshot remains the cross-file authority"
+    );
+    assert_eq!(
+        document_text(&server, &uri).as_deref(),
+        Some("package Aliased;\nsub v2_only { }\n1;\n"),
+        "the open buffer text is untouched by the alias-spelled create"
+    );
+    assert_eq!(
+        server.take_backing_file_transition(&uri),
+        Some(BackingFileTransition::Changed),
+        "the alias-reported divergence must be recorded against the open \
+         document's own identity so save/close complete the handoff"
+    );
+}
+
+#[test]
 fn did_create_of_closed_file_still_indexes_disk_truth() {
     let dir = TempDir::new().expect("tempdir");
     let uri = file_uri(&dir, "fresh_created.pl");
