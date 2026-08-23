@@ -16,6 +16,7 @@ mod client_requests;
 mod constructors;
 pub(crate) mod diagnostic_debounce;
 pub(crate) mod diagnostics;
+mod diagnostics_sink;
 mod dispatch;
 mod document_access;
 /// File discovery abstraction for workspace scanning
@@ -52,6 +53,8 @@ mod workspace_folder;
 #[cfg(feature = "workspace")]
 mod workspace_progress;
 
+#[cfg(test)]
+mod diagnostics_sink_tests;
 #[cfg(test)]
 mod open_buffer_authority_tests;
 
@@ -230,6 +233,12 @@ pub struct LspServer {
     refresh_controller: refresh::RefreshController,
     /// Diagnostic publication debouncer (installed after Arc wrapping in Scheduler::new)
     diagnostic_debouncer: Mutex<Option<diagnostic_debounce::DiagnosticDebouncer>>,
+    /// Accepted-ticket push-diagnostics sink (#11673): per-URI record of the
+    /// last committed `publishDiagnostics` ticket + monotonic sequence. The
+    /// irreversible outbound enqueue for parser-triggered replacements/clears
+    /// happens inside this sink's critical section -- see
+    /// [`diagnostics_sink`].
+    push_diagnostics_sink: diagnostics_sink::PushDiagnosticsSink,
     /// Off-lock async parse worker (#3396 Phase 3), installed after Arc
     /// wrapping in `Scheduler::new` (production) or explicitly by tests
     /// that want to exercise the real async gap. `None` means the

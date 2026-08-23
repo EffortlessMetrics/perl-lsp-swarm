@@ -8,7 +8,11 @@
 use super::*;
 use super::{
     Arc, BuiltInAnalyzer, DiagnosticsProvider, DocumentState, InternalDiagnosticSeverity,
-    JsonRpcError, LspServer, Mutex, Ordering, Value, json, source_path_from_uri,
+    JsonRpcError, LspServer, Mutex, Ordering, Value,
+    diagnostics_sink::{
+        PushDiagnosticIdentity, PushDiagnosticsCommitOutcome, PushDiagnosticsDisposition,
+    },
+    json, source_path_from_uri,
 };
 use crate::features::diagnostics::report_identity::{
     DiagnosticProjectionFragment, PullPositionEncoding, PullReportResultId, compose_report_identity,
@@ -965,19 +969,6 @@ impl LspServer {
                 .collect()
         };
 
-        // Generation-aware staleness guard: if a newer didChange arrived while
-        // diagnostics were being computed, discard this result â€” the debouncer
-        // will fire again for the latest version.
-        if generation.load(Ordering::SeqCst) != gen_at_snapshot {
-            tracing::debug!(
-                uri = %normalized_uri,
-                gen_at_snapshot,
-                current_gen = generation.load(Ordering::SeqCst),
-                "Skipping stale diagnostic publish (generation advanced during computation)"
-            );
-            return;
-        }
-
         tracing::debug!(
             count = lsp_diagnostics.len(),
             uri = %normalized_uri,
@@ -986,13 +977,43 @@ impl LspServer {
             "Publishing diagnostics"
         );
 
-        // Send diagnostics notification with version.
-        // This ensures diagnostics are cleared when all errors are fixed.
-        if let Err(e) = self.notify(
-            "textDocument/publishDiagnostics",
-            publish_diagnostics_params(uri, Some(version), &lsp_diagnostics),
-        ) {
-            tracing::error!(uri, error = %e, "Failed to publish diagnostics");
+        // Accepted-ticket sink boundary (#11673): the irreversible enqueue
+        // re-validates document-instance identity AND accepted generation
+        // under the push-diagnostics sink lock. This replaces the previous
+        // value-only comparison, which passed for a closed-and-reopened
+        // document whose stale instance counter had not moved (close/reopen
+        // ABA) and left the send itself outside any currentness decision.
+        let identity =
+            PushDiagnosticIdentity::for_document(&normalized_uri, &generation, gen_at_snapshot);
+        let disposition = if lsp_diagnostics.is_empty() {
+            PushDiagnosticsDisposition::Clear
+        } else {
+            PushDiagnosticsDisposition::Replacement
+        };
+        let payload = publish_diagnostics_params(uri, Some(version), &lsp_diagnostics);
+        match self.commit_push_diagnostics(&identity, payload, disposition) {
+            PushDiagnosticsCommitOutcome::CommittedCurrent
+            | PushDiagnosticsCommitOutcome::SafeClearCommitted => {}
+            PushDiagnosticsCommitOutcome::RejectedDocumentClosed => tracing::debug!(
+                uri = %normalized_uri,
+                gen_at_snapshot,
+                "Skipping diagnostic publish (document closed before sink boundary)"
+            ),
+            PushDiagnosticsCommitOutcome::RejectedWrongDocumentInstance => tracing::debug!(
+                uri = %normalized_uri,
+                gen_at_snapshot,
+                "Skipping diagnostic publish (document instance replaced before sink boundary)"
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration => tracing::debug!(
+                uri = %normalized_uri,
+                gen_at_snapshot,
+                current_gen = generation.load(Ordering::SeqCst),
+                "Skipping stale diagnostic publish (superseded at sink boundary; \
+                 the debouncer fires again for the latest version)"
+            ),
+            PushDiagnosticsCommitOutcome::OutboundFailure => {
+                tracing::error!(uri, "Failed to publish diagnostics")
+            }
         }
     }
 
@@ -1074,29 +1095,33 @@ impl LspServer {
         let lsp_diagnostics =
             Self::syntax_only_lsp_diagnostics(&parse_errors, &text, &line_starts, false);
 
-        // Generation-aware staleness guard mirrors the full path.
-        if generation.load(Ordering::SeqCst) != gen_at_snapshot {
-            tracing::debug!(
+        // Accepted-ticket sink boundary (#11673): same contract as the full
+        // path -- validate instance + generation at the enqueue, not before.
+        let identity =
+            PushDiagnosticIdentity::for_document(&normalized_uri, &generation, gen_at_snapshot);
+        let payload = publish_diagnostics_params(uri, Some(version), &lsp_diagnostics);
+        match self.commit_push_diagnostics(
+            &identity,
+            payload,
+            PushDiagnosticsDisposition::Replacement,
+        ) {
+            PushDiagnosticsCommitOutcome::CommittedCurrent
+            | PushDiagnosticsCommitOutcome::SafeClearCommitted => {}
+            PushDiagnosticsCommitOutcome::RejectedDocumentClosed
+            | PushDiagnosticsCommitOutcome::RejectedWrongDocumentInstance => tracing::debug!(
+                uri = %normalized_uri,
+                gen_at_snapshot,
+                "Skipping syntax-only diagnostic publish (document gone or replaced)"
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration => tracing::debug!(
                 uri = %normalized_uri,
                 gen_at_snapshot,
                 current_gen = generation.load(Ordering::SeqCst),
-                "Skipping stale syntax-only diagnostic publish (generation advanced)"
-            );
-            return;
-        }
-
-        tracing::debug!(
-            count = lsp_diagnostics.len(),
-            uri = %normalized_uri,
-            version,
-            "Publishing syntax-only diagnostics"
-        );
-
-        if let Err(e) = self.notify(
-            "textDocument/publishDiagnostics",
-            publish_diagnostics_params(uri, Some(version), &lsp_diagnostics),
-        ) {
-            tracing::error!(uri, error = %e, "Failed to publish syntax-only diagnostics");
+                "Skipping stale syntax-only diagnostic publish (superseded at sink boundary)"
+            ),
+            PushDiagnosticsCommitOutcome::OutboundFailure => {
+                tracing::error!(uri, "Failed to publish syntax-only diagnostics")
+            }
         }
     }
 
@@ -1141,16 +1166,29 @@ impl LspServer {
                     doc.version,
                     doc.line_starts.clone(),
                     std::sync::Arc::clone(&doc.text_arc),
+                    std::sync::Arc::clone(&doc.generation),
+                    doc.current_generation(),
                 )
             })
             // lock is released here
         };
-        let Some((parse_errors, version, line_starts, text)) = snapshot else { return };
+        let Some((parse_errors, version, line_starts, text, generation, gen_at_snapshot)) =
+            snapshot
+        else {
+            return;
+        };
 
         // Nothing to fast-publish when there are no parse errors (this also
         // covers the pending-parse gap -- see comment above).
         if parse_errors.is_empty() {
             return;
+        }
+
+        // Test seam mirroring the full path (#11673): lets a falsifier mutate
+        // document state between this snapshot and the sink-boundary enqueue.
+        #[cfg(test)]
+        if let Some(hook) = self.diagnostic_after_snapshot_hook.lock().as_ref() {
+            hook();
         }
 
         let pos16 = |offset: usize| line_starts.offset_to_position(&text, offset);
@@ -1190,15 +1228,48 @@ impl LspServer {
             "Publishing fast parse-error diagnostics"
         );
 
-        if let Err(e) = self.notify(
-            "textDocument/publishDiagnostics",
-            json!({
-                "uri": uri,
-                "version": version,
-                "diagnostics": lsp_diagnostics
-            }),
+        // Accepted-ticket sink boundary (#11673): the fast path previously
+        // enqueued with no commit-time currency check at all -- any wait
+        // between the snapshot above and this send could publish stale-N
+        // errors after N+1 acceptance, or onto a reopened instance of the
+        // same URI.
+        let identity =
+            PushDiagnosticIdentity::for_document(&normalized_uri, &generation, gen_at_snapshot);
+        let payload = json!({
+            "uri": uri,
+            "version": version,
+            "diagnostics": lsp_diagnostics
+        });
+        match self.commit_push_diagnostics(
+            &identity,
+            payload,
+            PushDiagnosticsDisposition::Replacement,
         ) {
-            tracing::error!(uri, error = %e, "Failed to publish fast parse-error diagnostics");
+            PushDiagnosticsCommitOutcome::CommittedCurrent
+            | PushDiagnosticsCommitOutcome::SafeClearCommitted => {}
+            PushDiagnosticsCommitOutcome::RejectedDocumentClosed => tracing::debug!(
+                uri = %normalized_uri,
+                gen_at_snapshot,
+                "Skipping fast parse-error publish (document closed before sink boundary)"
+            ),
+            PushDiagnosticsCommitOutcome::RejectedWrongDocumentInstance => tracing::debug!(
+                uri = %normalized_uri,
+                gen_at_snapshot,
+                "Skipping fast parse-error publish (document instance replaced before \
+                 sink boundary)"
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration => tracing::debug!(
+                uri = %normalized_uri,
+                gen_at_snapshot,
+                current_gen = generation.load(Ordering::SeqCst),
+                "Skipping fast parse-error publish (superseded at sink boundary)"
+            ),
+            PushDiagnosticsCommitOutcome::OutboundFailure => {
+                tracing::error!(
+                    uri,
+                    "Failed to publish fast parse-error diagnostics at sink boundary"
+                );
+            }
         }
     }
 
