@@ -481,7 +481,7 @@ do
   local result = pump(server)
   ok(result == false, "JSON syntax failure also terminates the turn")
   local joined = table.concat(server.log_lines or {}, "\n")
-  ok(joined:find("JSON Parser Error:", 1, true) ~= nil,
+  ok(joined:find("JSON decode failure:", 1, true) ~= nil,
     "JSON syntax failure logged under its own class")
   ok(joined:find("Inbound framing failure:", 1, true) == nil,
     "JSON syntax failure is not reported as a framing failure")

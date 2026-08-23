@@ -27,6 +27,32 @@ local util = require "plugins.lsp.util"
 local diagnostics = require "plugins.lsp.diagnostics"
 local Object = require "core.object"
 
+---Visible truncation marker appended by bounded text excerpts (#11155).
+local BOUNDED_TEXT_MARKER = "...[truncated]"
+
+---Bounded text excerpt with a visible truncation marker (#11155). Default and
+---failure logs use this so error transport text cannot grow without bound.
+local function bound_text(text, limit)
+  text = tostring(text)
+  limit = limit or 200
+  if #text <= limit then
+    return text
+  end
+  return text:sub(1, limit) .. BOUNDED_TEXT_MARKER
+end
+
+---Deterministic 32-bit FNV-1a content digest as eight hex characters
+---(#11155). Pure arithmetic so every runtime family member produces the same
+---value; doubles stay exact because intermediates remain below 2^53. Used to
+---give failure logs content identity without retaining any content.
+local function content_digest(data)
+  local hash = 2166136261
+  for i = 1, #data do
+    hash = (hash * 16777619 + string.byte(data, i)) % 4294967296
+  end
+  return string.format("%08x", hash)
+end
+
 ---@alias lsp.server.callback fun(server: lsp.server, ...)
 ---@alias lsp.server.timeoutcb fun(server: lsp.server, ...)
 ---@alias lsp.server.notificationcb fun(server: lsp.server, params: table)
@@ -69,6 +95,10 @@ local Object = require "core.object"
 ---@field public command table
 ---@field public write_fails integer
 ---@field public write_fails_before_shutdown integer
+-- Explicit opt-in local protocol trace (#11155): when enabled, verbose logs
+-- carry complete protocol payloads and may therefore contain source code,
+-- local paths, configuration values and anything the server emits. Disabled
+-- by default; never enable it for canonical host or CI proof artifacts.
 ---@field public verbose boolean
 ---@field public initialized boolean
 ---@field public hitrate_list table
@@ -162,6 +192,12 @@ Server.MAX_HEADER_BYTES = 16 * 1024
 ---options.max_body_bytes but never disabled.
 ---@type integer Amount of bytes
 Server.MAX_BODY_BYTES = 64 * 1024 * 1024
+
+---Maximum stderr bytes retained by read_errors (#11155). Draining always
+---runs to completion so the child can never block on a full pipe; bytes past
+---this bound are discarded and the truncation is marked visibly.
+---@type integer Amount of bytes
+Server.MAX_STDERR_BYTES = 16 * 1024
 
 ---LSP Docs: /#errorCodes
 Server.error_code = {
@@ -925,7 +961,9 @@ function Server:process_errors(log_errors)
   local errors = self:read_errors(0)
 
   if #errors > 0 and log_errors then
-    self:log("Error: \n'%s'", errors)
+    -- Bounded stderr diagnostic (#11155): a category excerpt with visible
+    -- truncation; full retention is capped inside read_errors.
+    self:log("Server stderr: %s", bound_text(errors, 256))
   end
 
   return errors
@@ -964,7 +1002,14 @@ function Server:send_data(data)
   end
 
   if errmsg then
-    self:log("Error sending data: '%s'\n%s", errmsg, data)
+    -- Bounded outbound diagnostic (#11155): direction, byte count, content
+    -- digest and transport error only, never frame or body content.
+    self:log(
+      "Outbound write failure: bytes=%d digest=%s error=%s",
+      data_len,
+      content_digest(data),
+      bound_text(errmsg)
+    )
   end
 
   return total_written == data_len, errmsg
@@ -1594,7 +1639,7 @@ function Server:read_responses(timeout)
         -- Bounded framing diagnostic: reason and byte counts only (#11151).
         self:log("Inbound framing failure: %s", describe_frame_failure(error_object))
       else
-        self:log("Disconnecting from server:\n%s", tostring(error_object))
+        self:log("Disconnecting from server: %s", bound_text(tostring(error_object)))
       end
       return false
     end
@@ -1609,11 +1654,14 @@ function Server:read_responses(timeout)
         responses[index] = json_data
       else
         responses[index] = nil
+        -- Bounded decode diagnostic (#11155): codec reason, decode offset,
+        -- byte count and content digest; the body itself is never echoed.
         self:log(
-          "JSON Parser Error: %s\n%s\n%s",
+          "JSON decode failure: reason=%s offset=%s bytes=%d digest=%s",
           type(decode_error) == "table" and tostring(decode_error.reason) or "unknown",
-          "-----",
-          data
+          type(decode_error) == "table" and tostring(decode_error.byte_offset) or "?",
+          #data,
+          content_digest(data)
         )
         return false
       end
@@ -1653,6 +1701,9 @@ function Server:read_errors(timeout)
     end
   end
 
+  -- Drain stderr fully so the child can never block on a full pipe, but
+  -- retain only a bounded window (#11155); discarded bytes are marked.
+  local truncated = false
   if timeout == 0 and output ~= "" then
     local new_output = nil
     while new_output ~= "" do
@@ -1661,11 +1712,24 @@ function Server:read_errors(timeout)
         if new_output == nil then
           break
         end
-        output = output .. new_output
+
+        if #output < Server.MAX_STDERR_BYTES then
+          local keep = math.min(#new_output, Server.MAX_STDERR_BYTES - #output)
+          output = output .. new_output:sub(1, keep)
+          if keep < #new_output then
+            truncated = true
+          end
+        else
+          truncated = true
+        end
+
         if inside_coroutine then
           coroutine.yield()
         end
       end
+    end
+    if truncated then
+      output = output .. BOUNDED_TEXT_MARKER
     end
   end
 
