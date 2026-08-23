@@ -214,6 +214,14 @@ fn try_git_discovery(
     let mut child = std::process::Command::new("git")
         .args(GIT_LS_FILES_ARGS)
         .current_dir(root)
+        // `git ls-files` never reads standard input; without an explicit
+        // null stdin the child inherits the server's transport pipe. On
+        // Windows a spawned git that inherits an open, non-console stdin
+        // pipe blocks instead of exiting (observed: `git ls-files` outside
+        // a repository stays alive until the next client write on that
+        // pipe), coupling background scan completion to unrelated client
+        // traffic and stalling the index coordinator in a Building state.
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()?;

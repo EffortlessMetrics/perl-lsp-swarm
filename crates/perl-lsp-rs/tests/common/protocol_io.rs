@@ -318,6 +318,63 @@ pub fn read_notification_method(server: &LspServer, method: &str, dur: Duration)
     None
 }
 
+/// Read the first notification matching `method` AND `params.uri == uri`.
+///
+/// Used to wait for per-document server notifications (for example
+/// `perl-lsp/active-document-ready`) that carry the document URI in their
+/// params. Non-matching buffered messages are preserved for later readers,
+/// mirroring [`read_notification_method`]'s requeue behavior.
+pub fn read_notification_for_uri(
+    server: &LspServer,
+    method: &str,
+    uri: &str,
+    dur: Duration,
+) -> Option<Value> {
+    let deadline = Instant::now() + dur;
+
+    // scan buffered first
+    {
+        let mut pending = server.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let len = pending.len();
+        for _ in 0..len {
+            if let Some(msg) = pending.pop_front() {
+                if notification_matches_uri(&msg, method, uri) {
+                    return Some(msg);
+                }
+                pending.push_back(msg);
+            }
+        }
+    }
+
+    // then poll
+    while Instant::now() < deadline {
+        let recv_result = {
+            let rx = server.rx.lock().unwrap_or_else(|e| e.into_inner());
+            rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        };
+        match recv_result {
+            Ok(msg) => {
+                if notification_matches_uri(&msg, method, uri) {
+                    return Some(msg);
+                }
+                let mut pending = server.pending.lock().unwrap_or_else(|e| e.into_inner());
+                if pending.len() >= PENDING_CAP {
+                    pending.pop_front();
+                }
+                pending.push_back(msg);
+            }
+            Err(_) => break,
+        }
+    }
+    None
+}
+
+fn notification_matches_uri(msg: &Value, method: &str, uri: &str) -> bool {
+    msg.get("id").is_none()
+        && msg.get("method") == Some(&json!(method))
+        && msg.pointer("/params/uri").and_then(Value::as_str) == Some(uri)
+}
+
 /// Drain messages until no traffic for a quiet period (stabilizes CI)
 pub fn drain_until_quiet(server: &LspServer, quiet: Duration, ceiling: Duration) {
     let start = Instant::now();

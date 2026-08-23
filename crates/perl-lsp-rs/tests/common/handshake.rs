@@ -134,6 +134,28 @@ pub fn initialize_lsp_with_capabilities(server: &LspServer, capabilities: Value)
     )
 }
 
+/// Initialize the server with an explicit filesystem workspace root.
+///
+/// Tests that drive virtual (never-on-disk) documents through `didOpen` need
+/// this to keep the server's workspace index isolated: with no root of any
+/// kind, the server deliberately falls back to the process working directory
+/// (lightweight-client compatibility) and bulk-indexes it, racing those tests'
+/// assertions with a real-directory scan and polluting the index with files
+/// unrelated to the scenario under test. Pointing the server at an empty
+/// directory keeps the index populated only by the documents the test opens.
+pub fn initialize_lsp_with_root_path(server: &LspServer, root_path: &str) -> Value {
+    initialize_lsp_with_params(
+        server,
+        json!({
+            "capabilities": {},
+            "clientInfo": {"name":"perl-parser-tests","version":"0"},
+            "rootPath": root_path,
+            "rootUri": null,
+            "workspaceFolders": null
+        }),
+    )
+}
+
 /// Wait for the index-ready notification from the server
 pub fn await_index_ready(server: &LspServer) {
     // Wait for perl-lsp/index-ready notification with a reasonable timeout
