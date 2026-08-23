@@ -204,6 +204,16 @@ impl LspServer {
                     ?disposition,
                     "Committed push diagnostics at sink boundary"
                 );
+                // Attach the required-effect outcome to active-document
+                // parser readiness (#11675): a committed replacement or
+                // clear for this exact ticket is the profile-v1
+                // diagnostics row's accepted terminal outcome.
+                self.attach_active_document_effect(
+                    &identity.normalized_uri,
+                    &identity.document_instance,
+                    identity.generation,
+                    crate::runtime::readiness::CoreEffectKind::ParserDiagnosticsPublication,
+                );
                 match disposition {
                     PushDiagnosticsDisposition::Replacement => {
                         PushDiagnosticsCommitOutcome::CommittedCurrent

@@ -55,6 +55,8 @@ mod workspace_folder;
 mod workspace_progress;
 
 #[cfg(test)]
+mod active_document_readiness_tests;
+#[cfg(test)]
 mod diagnostics_sink_tests;
 #[cfg(test)]
 mod document_symbols_sink_tests;
@@ -435,6 +437,12 @@ pub struct LspServer {
     /// [`document_symbols_sink`]. The committed identity is also the anchor
     /// #6729's document-symbol result-ID row must consume.
     document_symbols_sink: document_symbols_sink::DocumentSymbolsSink,
+    /// Accepted-ticket active-document parser readiness (#11675): one
+    /// generation-owned state per open document, minted only when the exact
+    /// accepted ticket plus every required core effect outcome is current.
+    /// The `perl-lsp/active-document-ready` notification is a projection of
+    /// this state -- see [`readiness`].
+    pub(crate) active_document_readiness: readiness::ActiveDocumentParserReadiness,
     /// Test-only barrier between symbol extraction and the sink-boundary
     /// mutation (#11674 falsifiers).
     #[cfg(test)]
@@ -873,6 +881,8 @@ impl LspServer {
         for key in &uri_keys {
             self.stream_sessions().cancel_for_uri(key);
             self.clear_document_symbols(key);
+            // A closed document has no live readiness claim (#11675).
+            self.remove_active_document_readiness(key);
         }
 
         {
