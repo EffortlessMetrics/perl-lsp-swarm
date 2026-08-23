@@ -1244,6 +1244,9 @@ function lsp.handle_publish_diagnostics(server, params)
     has_session = session ~= nil,
     session_generation = session and session.session_generation or nil,
     version = session and session.version or nil,
+    -- Local patch (#11128): negotiated encoding rides the publication.
+    position_encoding = server.capabilities
+      and server.capabilities.positionEncoding or nil,
   }, params)
 
   if not accepted then
@@ -1261,6 +1264,32 @@ function lsp.handle_publish_diagnostics(server, params)
     and
     util.doc_is_open(abs_filename)
   then
+    -- Local patch (#11128): install the editor-side rendering resolver once
+    -- so delayed rendering resolves the live document and revalidates its
+    -- subjects at execution time.
+    if not diagnostics.render_resolver_installed then
+      diagnostics.set_render_resolver(
+        function(uri)
+          for _, open_doc in ipairs(core.docs) do
+            if open_doc.filename
+              and util.touri(core.project_absolute_path(open_doc.filename)) == uri
+            then
+              return open_doc
+            end
+          end
+          return nil
+        end,
+        function(uri, provider, session_generation, version)
+          local running = lsp.servers_running[provider]
+          if not running then return false end
+          local live = lsp.find_document_session(uri, running)
+          if not live then return false end
+          return live.session_generation == session_generation
+            and live.version == version
+        end
+      )
+      diagnostics.render_resolver_installed = true
+    end
     -- we delay rendering of diagnostics to prevent the constant reporting
     -- of errors while typing.
     diagnostics.lintplus_populate_delayed(filename)
@@ -2405,12 +2434,28 @@ function lsp.view_document_diagnostics(doc)
 
   local diagnostic_labels = { "Error", "Warning", "Info", "Hint" }
 
+  -- Local patch (#11128): list, suggestion and selection positions resolve
+  -- through the same live-document presentation authority as inline
+  -- rendering; closed/unavailable subjects show an explicit unproven
+  -- column instead of raw code units.
+  local function resolve_diagnostic_position(diagnostic)
+    return diagnostics.resolve_range(diagnostic.range, doc, nil)
+  end
+
   local indexes, captions = {}, {}
   for index, diagnostic in pairs(diagnostic_messages) do
-    local line1, col1 = util.toselection(diagnostic.range)
+    local line1, col1 = resolve_diagnostic_position(diagnostic)
+    local position
+    if line1 and col1 then
+      position = tostring(line1) .. ":" .. tostring(col1)
+    elseif line1 then
+      position = tostring(line1) .. ":col not proven"
+    else
+      position = "position unavailable"
+    end
     local label = diagnostic_labels[diagnostic.severity or diagnostics.severity.ERROR]
       .. ": " .. diagnostic.message .. " "
-      .. tostring(line1) .. ":" .. tostring(col1)
+      .. position
     captions[index] = label
     indexes[label] = index
   end
@@ -2419,19 +2464,29 @@ function lsp.view_document_diagnostics(doc)
     submit = function(text, item)
       if item then
         local diagnostic = diagnostic_messages[item.index]
-        local line1, col1 = util.toselection(diagnostic.range, doc)
-        doc:set_selection(line1, col1, line1, col1)
+        local line1, col1 = resolve_diagnostic_position(diagnostic)
+        if line1 and col1 then
+          doc:set_selection(line1, col1, line1, col1)
+        else
+          core.log_quiet(
+            "[LSP] %s navigation dropped (%s)",
+            "view-document-diagnostics",
+            (select(5, resolve_diagnostic_position(diagnostic))) or "stale"
+          )
+        end
       end
     end,
     suggest = function(text)
       local res = common.fuzzy_match(captions, text)
       for i, name in ipairs(res) do
         local diagnostic = diagnostic_messages[indexes[name]]
-        local line1, col1 = util.toselection(diagnostic.range)
+        local line1, col1 = resolve_diagnostic_position(diagnostic)
         res[i] = {
           text = diagnostics.lintplus_kinds[diagnostic.severity or diagnostics.severity.ERROR]
             .. ": " .. diagnostic.message,
-          info = tostring(line1) .. ":" .. tostring(col1),
+          info = line1 and col1
+              and (tostring(line1) .. ":" .. tostring(col1))
+            or "position unavailable",
           index = indexes[name]
         }
       end

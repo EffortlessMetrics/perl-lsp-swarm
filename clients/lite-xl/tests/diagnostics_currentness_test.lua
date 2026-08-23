@@ -593,10 +593,18 @@ do
   ok(#lintplus_calls == 0,
     "A9: cleaned-up subject's delayed timer renders nothing")
 
-  -- A fresh session's timer still renders current content.
+  -- A fresh session's timer still renders current content through the
+  -- #11128 presentation authority (resolver supplies the live document).
+  local live_doc = setmetatable({ lines = { "second here\n" } }, {})
+  if diag.set_render_resolver then
+    diag.set_render_resolver(function(uri) return live_doc end,
+      function(uri, provider, sg, version)
+        return sg == 2 and version == 2
+      end)
+  end
   pub(diag, { generation = 1, session_generation = 2, version = 2 },
     { uri = URI, version = 2, diagnostics = {
-      { range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 1 } }, message = "second", severity = 1 },
+      { range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 6 } }, message = "second", severity = 1 },
     } })
   diag.lintplus_populate_delayed(platform_path("C:/proj/app.pl"))
   timers[#timers].on_timer()
