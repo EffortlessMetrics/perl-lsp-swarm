@@ -70,14 +70,14 @@
       },
       {
         "anchor": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs inlineCompletionProvider injection (lines 87-93); runtime dynamic-client removal at crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs (~lines 781-815)",
-        "current_assumption": "lsp-types 0.97 predates the field; static advertisement patched into JSON, then removed for dynamic-registration clients at initialize time",
+        "current_assumption": "0.97 models the ServerCapabilities field only behind its `proposed` cargo feature (lib.rs ~1954), which this workspace does not select - so the default compiled surface lacks it and the static advertisement is patched into JSON, then removed for dynamic-registration clients at initialize time",
         "disposition": "selected_substrate_generated_type",
         "exit_rule": "patch removed when typed field serializes identically; dynamic-client removal branch must keep byte-identical initialize output",
         "first_falsifier": "tests/lsp_inline_completion_registration_tests.rs; tests/lsp_cap_snap.rs; ripr_seam_proof_* capability negotiation proofs",
         "owner": "#11803 migration (surviving LT02 row); runtime removal seam owned by lifecycle code, not the type switch",
         "protocol_identity": "capabilities.inlineCompletionProvider top-level (LSP 3.18); experimental placement forbidden (negative-claimed)",
         "row_id": "PATCH-INLINECOMPLETION",
-        "substrate_result": "typed once: ServerCapabilities.inline_completion_provider: Option<InlineCompletionProvider>; runtime dynamic-client removal logic is behavioral and stays out of type migration scope"
+        "substrate_result": "typed once by default: ServerCapabilities.inline_completion_provider: Option<InlineCompletionProvider> (verified 0.11.0 structures.rs:6082); runtime dynamic-client removal logic is behavioral and stays out of type migration scope"
       },
       {
         "anchor": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs completionItem.insertTextModes injection (lines 95-105)",
@@ -284,6 +284,96 @@
         }
       ]
     },
+    "schema_deltas": [
+      {
+        "area": "URI representation: default generated String Uri",
+        "candidate_evidence": "0.11.0 src/generated/common.rs:28: plain `pub struct Uri(pub String)` with no parse step",
+        "classification": "public_api_only_difference",
+        "incumbent_evidence": "0.97 src/uri.rs: newtype `Uri(fluent_uri::Uri<String>)` around fluent-uri 0.1.4; parse errors surface as typed Result",
+        "migration_note": "qualified-URI preservation and DocumentUriKey/#8156/#8484 interaction must be proven before choosing; parse fallibility moves from construction-time to trust-the-wire",
+        "row_id": "DELTA-URI-DEFAULT"
+      },
+      {
+        "area": "URI representation: optional `url` feature (url::Url 2.5.8)",
+        "candidate_evidence": "0.11.0 Cargo.toml.orig features.url = [\"dep:url\"]; common.rs:66 type alias",
+        "classification": "schema_equivalent_representation_difference",
+        "incumbent_evidence": "n/a - incumbent has no url-backed mode",
+        "migration_note": "alternative only; feature choice deferred to migration lane with adapter-boundary proof, not import-edit minimization",
+        "row_id": "DELTA-URI-URL"
+      },
+      {
+        "area": "URI representation: optional `fluent-uri` feature (fluent_uri 0.4.1)",
+        "candidate_evidence": "0.11.0 Cargo.toml.orig features.fluent-uri = [\"dep:fluent-uri\"]; common.rs:68 Uri<String>",
+        "classification": "schema_equivalent_representation_difference",
+        "incumbent_evidence": "incumbent pins fluent-uri 0.1.4 internally",
+        "migration_note": "closest wire behavior to incumbent but still a major fluent-uri version jump; same URI submatrix proof obligations as DELTA-URI-DEFAULT",
+        "row_id": "DELTA-URI-FLUENT"
+      },
+      {
+        "area": "ServerCapabilities.type_hierarchy_provider field",
+        "candidate_evidence": "typed Option<TypeHierarchyProvider> at structures.rs:6062",
+        "classification": "incumbent_defect_corrected_by_candidate",
+        "incumbent_evidence": "verified absent from 0.97 default AND proposed surfaces (only TypeHierarchy request types + client capability exist); repo compensates via JSON patch + experimental injection",
+        "migration_note": "PATCH-TYPEHIERARCHY exits when the typed field serializes identically",
+        "row_id": "DELTA-TYPEHIERARCHY-FIELD"
+      },
+      {
+        "area": "DocumentRangeFormattingOptions.ranges_support field (LSP 3.18)",
+        "candidate_evidence": "typed Option<bool> at structures.rs:7113 (+ DocumentRangesFormattingOptions twin :9807)",
+        "classification": "incumbent_defect_corrected_by_candidate",
+        "incumbent_evidence": "verified absent from 0.97 (only document_range_formatting_provider exists); repo hand-patches rangesSupport into JSON",
+        "migration_note": "PATCH-RANGESSUPPORT exits; 3.18 conformance matrix stays advertisement authority",
+        "row_id": "DELTA-RANGESSUPPORT-FIELD"
+      },
+      {
+        "area": "ServerCapabilities.inline_completion_provider field (LSP 3.18)",
+        "candidate_evidence": "typed by default at structures.rs:6082",
+        "classification": "incumbent_defect_corrected_by_candidate",
+        "incumbent_evidence": "present in 0.97 ONLY behind its non-selected `proposed` cargo feature (lib.rs ~1954); default compiled surface lacks it",
+        "migration_note": "candidate removes the proposed-gating hazard without enabling any unstable surface; PATCH-INLINECOMPLETION static half exits",
+        "row_id": "DELTA-INLINECOMPLETION-FIELD"
+      },
+      {
+        "area": "completionProvider.completionItem.insertTextModes server shape",
+        "candidate_evidence": "also NOT modeled in 0.11.0 (InsertTextMode enum + client capability only) - candidate is correct not to model it",
+        "classification": "intentional_repository_extension",
+        "incumbent_evidence": "not modeled in 0.97; repo injects numeric array [1,2] manually (invalid server shape per #2892/#8032)",
+        "migration_note": "invalid_current_protocol_shape: remove under #8032, never migrate as parity (PATCH-INSERTTEXTMODES)",
+        "row_id": "DELTA-INSERTTEXTMODES"
+      },
+      {
+        "area": "stable vs proposed cargo-surface split",
+        "candidate_evidence": "0.11.0 exposes one surface with no proposed/stable split (features: url|fluent-uri only)",
+        "classification": "public_api_only_difference",
+        "incumbent_evidence": "0.97 has a `proposed = []` feature with explicit no-semver guarantee note",
+        "migration_note": "maturity boundary moves fully repository-owned (#7113 validator + admitted-profile ledger); absence of a proposed feature neither advertises proposals nor blocks an admitted generated type",
+        "row_id": "DELTA-STABLE-PROPOSED"
+      },
+      {
+        "area": "unknown enum value tolerance",
+        "candidate_evidence": "open enums throughout: 220 `Custom(...)` variants in enumerations.rs alone (e.g. InsertTextMode::AsIs|AdjustIndentation|Custom(any))",
+        "classification": "schema_equivalent_representation_difference",
+        "incumbent_evidence": "exactly one serde(other) catch-all across 0.97 src (closed enums otherwise)",
+        "migration_note": "wire acceptance for unknown values widens; #7113 validator remains the admission oracle, snapshots stay behavior evidence only",
+        "row_id": "DELTA-UNKNOWN-ENUMS"
+      },
+      {
+        "area": "null vs absent wire states on optional fields",
+        "candidate_evidence": "498 skip_serializing_if = \"Option::is_none\" occurrences in structures.rs; explicit null only where metamodel requires",
+        "classification": "schema_equivalent_representation_difference",
+        "incumbent_evidence": "0.97 uses skip_serializing_if extensively (448 occurrences verified in src)",
+        "migration_note": "distinct wire states preserved on both sides; do not flatten null-vs-absent during migration (#11802 falsifier 8)",
+        "row_id": "DELTA-NULL-ABSENT"
+      },
+      {
+        "area": "request/notification direction types",
+        "candidate_evidence": "dedicated generated requests.rs / notifications.rs modules encoding method direction",
+        "classification": "schema_equivalent_representation_difference",
+        "incumbent_evidence": "0.97 request.rs/notification.rs trait-based declarations",
+        "migration_note": "#8896 route/method dispatch authority unchanged by this inventory; direction typing is a compile-time aid only",
+        "row_id": "DELTA-DIRECTION-MODEL"
+      }
+    ],
     "substrate_record": [
       {
         "evidence": "#11802 maintainer deep-review ruling; first-hand 0.11.0 source/package verification below",

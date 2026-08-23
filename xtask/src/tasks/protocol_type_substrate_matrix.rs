@@ -216,9 +216,9 @@ const CAPABILITY_PATCHES: &[CapabilityPatchRow] = &[
     CapabilityPatchRow {
         row_id: "PATCH-INLINECOMPLETION",
         anchor: "crates/perl-lsp-rs-core/src/protocol/capabilities.rs inlineCompletionProvider injection (lines 87-93); runtime dynamic-client removal at crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs (~lines 781-815)",
-        current_assumption: "lsp-types 0.97 predates the field; static advertisement patched into JSON, then removed for dynamic-registration clients at initialize time",
+        current_assumption: "0.97 models the ServerCapabilities field only behind its `proposed` cargo feature (lib.rs ~1954), which this workspace does not select - so the default compiled surface lacks it and the static advertisement is patched into JSON, then removed for dynamic-registration clients at initialize time",
         protocol_identity: "capabilities.inlineCompletionProvider top-level (LSP 3.18); experimental placement forbidden (negative-claimed)",
-        substrate_result: "typed once: ServerCapabilities.inline_completion_provider: Option<InlineCompletionProvider>; runtime dynamic-client removal logic is behavioral and stays out of type migration scope",
+        substrate_result: "typed once by default: ServerCapabilities.inline_completion_provider: Option<InlineCompletionProvider> (verified 0.11.0 structures.rs:6082); runtime dynamic-client removal logic is behavioral and stays out of type migration scope",
         disposition: "selected_substrate_generated_type",
         owner: "#11803 migration (surviving LT02 row); runtime removal seam owned by lifecycle code, not the type switch",
         exit_rule: "patch removed when typed field serializes identically; dynamic-client removal branch must keep byte-identical initialize output",
@@ -528,6 +528,131 @@ fn parse_denominator(metadata: &serde_json::Value) -> Result<Denominator> {
     Ok(Denominator { edges, transitive })
 }
 
+/// One serialization/API delta between incumbent 0.97 and candidate 0.11.0,
+/// classified against the #7113 schema authority (not candidate-vs-incumbent
+/// snapshots alone).
+struct SchemaDeltaRow {
+    row_id: &'static str,
+    area: &'static str,
+    incumbent_evidence: &'static str,
+    candidate_evidence: &'static str,
+    classification: &'static str,
+    migration_note: &'static str,
+}
+
+const SCHEMA_DELTAS: &[SchemaDeltaRow] = &[
+    SchemaDeltaRow {
+        row_id: "DELTA-URI-DEFAULT",
+        area: "URI representation: default generated String Uri",
+        incumbent_evidence:
+            "0.97 src/uri.rs: newtype `Uri(fluent_uri::Uri<String>)` around fluent-uri 0.1.4; parse errors surface as typed Result",
+        candidate_evidence:
+            "0.11.0 src/generated/common.rs:28: plain `pub struct Uri(pub String)` with no parse step",
+        classification: "public_api_only_difference",
+        migration_note:
+            "qualified-URI preservation and DocumentUriKey/#8156/#8484 interaction must be proven before choosing; parse fallibility moves from construction-time to trust-the-wire",
+    },
+    SchemaDeltaRow {
+        row_id: "DELTA-URI-URL",
+        area: "URI representation: optional `url` feature (url::Url 2.5.8)",
+        incumbent_evidence: "n/a - incumbent has no url-backed mode",
+        candidate_evidence:
+            "0.11.0 Cargo.toml.orig features.url = [\"dep:url\"]; common.rs:66 type alias",
+        classification: "schema_equivalent_representation_difference",
+        migration_note:
+            "alternative only; feature choice deferred to migration lane with adapter-boundary proof, not import-edit minimization",
+    },
+    SchemaDeltaRow {
+        row_id: "DELTA-URI-FLUENT",
+        area: "URI representation: optional `fluent-uri` feature (fluent_uri 0.4.1)",
+        incumbent_evidence: "incumbent pins fluent-uri 0.1.4 internally",
+        candidate_evidence:
+            "0.11.0 Cargo.toml.orig features.fluent-uri = [\"dep:fluent-uri\"]; common.rs:68 Uri<String>",
+        classification: "schema_equivalent_representation_difference",
+        migration_note:
+            "closest wire behavior to incumbent but still a major fluent-uri version jump; same URI submatrix proof obligations as DELTA-URI-DEFAULT",
+    },
+    SchemaDeltaRow {
+        row_id: "DELTA-TYPEHIERARCHY-FIELD",
+        area: "ServerCapabilities.type_hierarchy_provider field",
+        incumbent_evidence:
+            "verified absent from 0.97 default AND proposed surfaces (only TypeHierarchy request types + client capability exist); repo compensates via JSON patch + experimental injection",
+        candidate_evidence: "typed Option<TypeHierarchyProvider> at structures.rs:6062",
+        classification: "incumbent_defect_corrected_by_candidate",
+        migration_note: "PATCH-TYPEHIERARCHY exits when the typed field serializes identically",
+    },
+    SchemaDeltaRow {
+        row_id: "DELTA-RANGESSUPPORT-FIELD",
+        area: "DocumentRangeFormattingOptions.ranges_support field (LSP 3.18)",
+        incumbent_evidence:
+            "verified absent from 0.97 (only document_range_formatting_provider exists); repo hand-patches rangesSupport into JSON",
+        candidate_evidence: "typed Option<bool> at structures.rs:7113 (+ DocumentRangesFormattingOptions twin :9807)",
+        classification: "incumbent_defect_corrected_by_candidate",
+        migration_note: "PATCH-RANGESSUPPORT exits; 3.18 conformance matrix stays advertisement authority",
+    },
+    SchemaDeltaRow {
+        row_id: "DELTA-INLINECOMPLETION-FIELD",
+        area: "ServerCapabilities.inline_completion_provider field (LSP 3.18)",
+        incumbent_evidence:
+            "present in 0.97 ONLY behind its non-selected `proposed` cargo feature (lib.rs ~1954); default compiled surface lacks it",
+        candidate_evidence: "typed by default at structures.rs:6082",
+        classification: "incumbent_defect_corrected_by_candidate",
+        migration_note:
+            "candidate removes the proposed-gating hazard without enabling any unstable surface; PATCH-INLINECOMPLETION static half exits",
+    },
+    SchemaDeltaRow {
+        row_id: "DELTA-INSERTTEXTMODES",
+        area: "completionProvider.completionItem.insertTextModes server shape",
+        incumbent_evidence:
+            "not modeled in 0.97; repo injects numeric array [1,2] manually (invalid server shape per #2892/#8032)",
+        candidate_evidence:
+            "also NOT modeled in 0.11.0 (InsertTextMode enum + client capability only) - candidate is correct not to model it",
+        classification: "intentional_repository_extension",
+        migration_note:
+            "invalid_current_protocol_shape: remove under #8032, never migrate as parity (PATCH-INSERTTEXTMODES)",
+    },
+    SchemaDeltaRow {
+        row_id: "DELTA-STABLE-PROPOSED",
+        area: "stable vs proposed cargo-surface split",
+        incumbent_evidence: "0.97 has a `proposed = []` feature with explicit no-semver guarantee note",
+        candidate_evidence:
+            "0.11.0 exposes one surface with no proposed/stable split (features: url|fluent-uri only)",
+        classification: "public_api_only_difference",
+        migration_note:
+            "maturity boundary moves fully repository-owned (#7113 validator + admitted-profile ledger); absence of a proposed feature neither advertises proposals nor blocks an admitted generated type",
+    },
+    SchemaDeltaRow {
+        row_id: "DELTA-UNKNOWN-ENUMS",
+        area: "unknown enum value tolerance",
+        incumbent_evidence: "exactly one serde(other) catch-all across 0.97 src (closed enums otherwise)",
+        candidate_evidence:
+            "open enums throughout: 220 `Custom(...)` variants in enumerations.rs alone (e.g. InsertTextMode::AsIs|AdjustIndentation|Custom(any))",
+        classification: "schema_equivalent_representation_difference",
+        migration_note:
+            "wire acceptance for unknown values widens; #7113 validator remains the admission oracle, snapshots stay behavior evidence only",
+    },
+    SchemaDeltaRow {
+        row_id: "DELTA-NULL-ABSENT",
+        area: "null vs absent wire states on optional fields",
+        incumbent_evidence: "0.97 uses skip_serializing_if extensively (448 occurrences verified in src)",
+        candidate_evidence:
+            "498 skip_serializing_if = \"Option::is_none\" occurrences in structures.rs; explicit null only where metamodel requires",
+        classification: "schema_equivalent_representation_difference",
+        migration_note:
+            "distinct wire states preserved on both sides; do not flatten null-vs-absent during migration (#11802 falsifier 8)",
+    },
+    SchemaDeltaRow {
+        row_id: "DELTA-DIRECTION-MODEL",
+        area: "request/notification direction types",
+        incumbent_evidence: "0.97 request.rs/notification.rs trait-based declarations",
+        candidate_evidence:
+            "dedicated generated requests.rs / notifications.rs modules encoding method direction",
+        classification: "schema_equivalent_representation_difference",
+        migration_note:
+            "#8896 route/method dispatch authority unchanged by this inventory; direction typing is a compile-time aid only",
+    },
+];
+
 pub fn run(check: bool) -> Result<()> {
     let root = project_root()?;
     let path = root.join(MATRIX_PATH);
@@ -647,6 +772,33 @@ fn render_matrix(denominator: &Denominator) -> String {
     output.push('\n');
 
     output.push_str(&render_denominator_section(denominator));
+
+    output.push_str("## 5. Serialization/API delta matrix vs incumbent 0.97 (classified against #7113 schema authority)\n\n");
+    output.push_str(
+        "Current snapshots are behavior evidence, not target protocol authority. Classifications use the \
+         #11802 corrected vocabulary: incumbent_defect_corrected_by_candidate | candidate_defect | \
+         public_api_only_difference | schema_equivalent_representation_difference | \
+         intentional_repository_extension | not_proven.\n\n",
+    );
+    output.push_str(
+        "| Row ID | Area | Incumbent 0.97 evidence (verified) | Candidate 0.11.0 evidence (verified) | Classification | Migration note |\n",
+    );
+    output.push_str("| --- | --- | --- | --- | --- | --- |\n");
+    for row in SCHEMA_DELTAS {
+        for cell in [
+            row.row_id,
+            row.area,
+            row.incumbent_evidence,
+            row.candidate_evidence,
+            row.classification,
+            row.migration_note,
+        ] {
+            output.push_str("| ");
+            output.push_str(&escape_cell(cell));
+        }
+        output.push_str(" |\n");
+    }
+    output.push('\n');
 
     output
 }
@@ -775,6 +927,17 @@ fn render_receipt(denominator: &Denominator) -> Result<String> {
             "min_hops": row.min_hops,
         })).collect::<Vec<_>>(),
     });
+    let mut deltas = Vec::new();
+    for row in SCHEMA_DELTAS {
+        deltas.push(serde_json::json!({
+            "row_id": row.row_id,
+            "area": row.area,
+            "incumbent_evidence": row.incumbent_evidence,
+            "candidate_evidence": row.candidate_evidence,
+            "classification": row.classification,
+            "migration_note": row.migration_note,
+        }));
+    }
     let receipt = serde_json::json!({
         "schema_version": 1,
         "claim": "11802",
@@ -788,6 +951,7 @@ fn render_receipt(denominator: &Denominator) -> Result<String> {
             "candidates": candidates,
             "capability_patches": patches,
             "cargo_denominator": cargo_denominator,
+            "schema_deltas": deltas,
         },
     });
     let mut pretty = serde_json::to_string_pretty(&receipt)
@@ -1001,6 +1165,34 @@ mod tests {
     }
 
     #[test]
+    fn schema_delta_rows_stay_within_classification_vocabulary() {
+        let allowed = [
+            "incumbent_defect_corrected_by_candidate",
+            "candidate_defect",
+            "public_api_only_difference",
+            "schema_equivalent_representation_difference",
+            "intentional_repository_extension",
+            "not_proven",
+        ];
+        for row in SCHEMA_DELTAS {
+            assert!(
+                allowed.contains(&row.classification),
+                "{} uses non-canonical classification {}",
+                row.row_id,
+                row.classification
+            );
+            assert!(!row.incumbent_evidence.is_empty());
+            assert!(!row.candidate_evidence.is_empty());
+        }
+        // Falsifier 3: a stale "rangesSupport missing" gap must not survive.
+        let ranges = SCHEMA_DELTAS
+            .iter()
+            .find(|row| row.row_id == "DELTA-RANGESSUPPORT-FIELD")
+            .unwrap_or(&SCHEMA_DELTAS[0]);
+        assert_eq!(ranges.classification, "incumbent_defect_corrected_by_candidate");
+    }
+
+    #[test]
     #[allow(clippy::expect_used)]
     fn receipt_is_well_formed_json_with_required_sections() {
         let denominator = fixture_denominator();
@@ -1021,6 +1213,10 @@ mod tests {
         assert_eq!(
             sections["cargo_denominator"]["direct_edges"].as_array().map(Vec::len),
             Some(denominator.edges.len())
+        );
+        assert_eq!(
+            sections["schema_deltas"].as_array().map(Vec::len),
+            Some(SCHEMA_DELTAS.len())
         );
     }
 }
