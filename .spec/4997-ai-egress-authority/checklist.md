@@ -50,12 +50,11 @@ Proof executed on candidate branch `fix/4997-generic-channel-ai-arm`
 - [x] `cargo test -p perl-lsp-rs --features expose_lsp_test_api --test
       lsp_streaming_completion_tests` — 23 passed, including armed progress
       contract and session rotation moved behind the trusted test API
-- [x] `cargo test ... --test lsp_ai_inline_completion_tests` (feature) — 14 passed
+- [x] `RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs --features expose_lsp_test_api --test lsp_ai_inline_completion_tests -- --test-threads=2` — 14 passed
 - [x] `cargo test -p perl-lsp-rs --test lsp_inline_completion_stream_bdd_workflows` — 3 passed
 - [x] `cargo test -p xtask --test zed_settings_behavior` — 8 passed
-- [x] `cargo fmt --all -- --check` (per-package `cargo fmt -p <pkg> -- --check`
-      for perl-lsp-rs-core / perl-lsp-rs / xtask; `--all` trips a Windows
-      command-length limit on this box, exit 206)
+- [x] Per-package `cargo fmt -p <pkg> -- --check` for `perl-lsp-rs-core`, `perl-lsp-rs`, and `xtask` — passed on the original Windows review host
+- [x] `cargo fmt --all -- --check` — passed in hosted Linux review-repair validation; the earlier Windows exit 206 was not treated as proof
 - [x] `cargo clippy -p perl-lsp-rs-core -p perl-lsp-rs --lib --locked -- -D warnings` — clean
 - [x] clippy on touched integration targets
       (`lsp_streaming_completion_tests`, `lsp_inline_completion_stream_bdd_workflows`,

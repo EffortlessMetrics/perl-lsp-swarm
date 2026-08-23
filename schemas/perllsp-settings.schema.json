@@ -173,7 +173,7 @@
         "aiCompletion": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Client-controlled AI completion behavior. Activation, provider/model selection, and endpoint/credential-routing fields are intentionally excluded because no generic LSP settings channel can prove user/machine provenance (#4997, #5684); arrivals are rejected and previously accepted state is preserved.",
+          "description": "Client-controlled AI completion behavior. Endpoint and credential-routing fields are intentionally excluded from this schema (#5684). Activation and provider/model selection fields remain documented but advertise no client transports: no generic LSP settings channel can prove user/machine provenance (#4997), so arrivals are rejected and previously accepted state is preserved.",
           "properties": {
             "enabled": {
               "type": "boolean",

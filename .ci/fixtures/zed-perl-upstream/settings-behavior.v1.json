@@ -52,7 +52,7 @@
       "expected_type": "integer",
       "project_value": 60,
       "zed_value": 120,
-      "observable": "The server configuration trace identifies the nested envelope value and its winning authority; AI activation/selection keys are authority-rejected on this channel (#4997) and client-visible streaming remains a separate feature cell."
+      "observable": "The server configuration trace identifies the nested envelope value and its winning authority. Separate authority tests cover rejection of AI activation and selection keys (#4997)."
     }
   ],
   "precedence_sequence": [

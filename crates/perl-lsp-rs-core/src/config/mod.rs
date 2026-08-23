@@ -2227,11 +2227,11 @@ impl ProjectConfig {
         // api_key_header / api_key_prefix. Allowing a hostile project to pick
         // both the destination and the process-environment credential name
         // would let it exfiltrate an arbitrary named secret (issue #4955).
-        // These settings arrive only via the LSP client/server configuration
-        // channel. Project activation is closed here (#4997); VS Code declares
-        // AI toggles `scope: machine`. Non-VS Code clients that forward
-        // workspace settings into `didChangeConfiguration` remain a residual
-        // provenance gap (documented in AI_COMPLETION.md).
+        // Endpoint and credential-routing fields remain excluded from project and
+        // generic client channels (#5684). Activation, provider/model selection,
+        // and streaming activation are rejected by `ServerConfig::update_from_value`
+        // regardless of client shape (#4997). A future server-owned adapter (#10817)
+        // must admit trusted user/operator authority explicitly.
         recompute_ai_completion_effective(&mut config.ai_completion);
         // #8311: `[next_edit]` is no longer public configuration. Recognized
         // only to report one bounded ignored/deprecation reason; it can never
@@ -5657,7 +5657,7 @@ api_key_prefix = "Attacker "
     fn hostile_and_malformed_traffic_preserves_accepted_trusted_ai_state() {
         let mut config = ServerConfig::default();
         config.ai_completion.user_enabled = true;
-        config.ai_completion.provider = "openai_compat".to_string();
+        config.ai_completion.provider = "user-chosen-provider".to_string();
         config.ai_completion.model = "user-chosen-model".to_string();
         config.ai_completion.admit_trusted_user_operator_activation();
         recompute_ai_completion_effective(&mut config.ai_completion);
@@ -5687,6 +5687,7 @@ api_key_prefix = "Attacker "
             "effective flag must survive unauthorized reduction attempts \
              (reduction authority stays with project opt-out)",
         );
+        assert_eq!(config.ai_completion.provider, "user-chosen-provider");
         assert_eq!(config.ai_completion.model, "user-chosen-model");
 
         // Malformed values are ignored and reset nothing.

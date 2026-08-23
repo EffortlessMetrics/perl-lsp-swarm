@@ -14,8 +14,8 @@ Code settings UI.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `perl-lsp.aiCompletion.enabled` | boolean | `false` | Enable AI-powered inline completions. **Machine scope** — cannot be set per-workspace in `.vscode/settings.json`. |
-| `perl-lsp.aiCompletion.streaming.enabled` | boolean | `true` | Enable progressive streaming (ghost text updates as tokens arrive). Requires `aiCompletion.enabled`. **Machine scope.** |
+| `perl-lsp.aiCompletion.enabled` | boolean | `false` | Reserved machine-scoped extension preference. The extension does not forward trusted activation and generic server arrivals are rejected, so this key cannot currently enable remote AI. |
+| `perl-lsp.aiCompletion.streaming.enabled` | boolean | `true` | Reserved machine-scoped extension preference for a future trusted adapter. It does not currently authorize server streaming. |
 
 Where each field can be set:
 
@@ -67,13 +67,13 @@ client payload.
 
 For editor-agnostic, team-wide policy, add an `[ai_completion]` section to
 `.perl-lsp.toml` at the workspace root. The only honoured project field is
-`enabled = false` (opt-out). Enabling AI or choosing provider/model requires
-user/machine client settings.
+`enabled = false` (opt-out). Enabling AI or choosing provider/model requires the future server-owned trusted
+user/operator adapter; no accepted activation channel exists today.
 
 ```toml
 [ai_completion]
 # Opt-out only: set enabled = false to disable AI for this repo.
-# enabled = true is ignored — AI must be turned on in user/machine settings.
+# enabled = true is ignored — no accepted activation channel exists today.
 enabled = false
 ```
 
@@ -97,14 +97,12 @@ leaves the machine at all (#4997).
 Generic-channel arrivals of these keys are logged with a warning naming the
 ignored setting; previously accepted state is preserved.
 
-> **Activation is user/machine-scoped — and server-enforced.**
-> `perl-lsp.aiCompletion.enabled` and
-> `perl-lsp.aiCompletion.streaming.enabled` are declared `scope: machine` in
-> the VS Code extension, the server ignores project attempts to enable AI,
-> and no generic LSP channel can arm the backend either (issue #4997).
-> A repository can still opt out with `[ai_completion] enabled =
-> false` in `.perl-lsp.toml`. Issue #4998 covers the same provenance gap for
-> include paths.
+> **Activation authority is server-owned and fails closed.**
+> The VS Code keys are machine-scoped defense in depth, but the extension does
+> not forward trusted activation and no generic LSP channel can arm the backend
+> (issue #4997). A repository can still opt out with `[ai_completion]
+> enabled = false` in `.perl-lsp.toml`. Issue #4998 covers the corresponding
+> provenance boundary for include paths.
 
 ## Environment Variables
 
@@ -146,14 +144,12 @@ For Chat Completions endpoints, the request format uses `"stream": true`,
 For Responses endpoints, the request format uses `"stream": true`,
 `instructions`, `input`, `model`, and `max_output_tokens`.
 
-## Example Configuration (VS Code `settings.json`)
+## VS Code activation status
 
-```jsonc
-{
-  // Enable the feature
-  "perl-lsp.aiCompletion.enabled": true
-}
-```
+There is intentionally no `settings.json` example that enables remote AI. The
+machine-scoped extension toggle is not an accepted server activation channel;
+until #10817 supplies a trusted operator adapter, remote construction fails
+closed.
 
 > **Known gap: there is currently no VS Code setting for `endpoint` or the
 > API-key fields, and no accepted channel supplies them to the server.**
@@ -182,6 +178,10 @@ export OPENAI_API_KEY="sk-..."
 ```
 
 ## Streaming vs Buffered Behavior
+
+The following modes describe runtime behavior after a trusted activation adapter
+exists. Generic `streaming.enabled` arrivals are currently rejected and cannot
+authorize either mode.
 
 The server supports two completion delivery modes:
 
@@ -232,7 +232,8 @@ the server falls back to deterministic pattern-based completions when
   concurrent request, rapid typing will hit the rate limiter. The server
   returns `RateLimited` errors silently and falls back to deterministic
   completions.
-- Enable streaming (`streaming.enabled: true`) for lower perceived latency.
+- After the trusted activation adapter lands, streaming may lower perceived
+  latency. Generic `streaming.enabled` settings are currently rejected.
 
 **Rate limiting from the provider**
 
