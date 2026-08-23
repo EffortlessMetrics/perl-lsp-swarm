@@ -227,7 +227,12 @@ pub(crate) const REGISTRY: &[MethodDescriptor] = &[
         EnvelopeKind::Request,
         LifecyclePhase::RequiresInitialized,
     ),
-    c2s("typeHierarchy/prepare", EnvelopeKind::Request, LifecyclePhase::RequiresInitialized),
+    ext(
+        "typeHierarchy/prepare",
+        EnvelopeKind::Request,
+        MethodDirection::ClientToServer,
+        LifecyclePhase::RequiresInitialized,
+    ),
     c2s("typeHierarchy/supertypes", EnvelopeKind::Request, LifecyclePhase::RequiresInitialized),
     c2s("typeHierarchy/subtypes", EnvelopeKind::Request, LifecyclePhase::RequiresInitialized),
     c2s(
@@ -275,7 +280,12 @@ pub(crate) const REGISTRY: &[MethodDescriptor] = &[
     c2s("textDocument/selectionRange", EnvelopeKind::Request, LifecyclePhase::RequiresInitialized),
     // ── Workspace features (client→server) ─────────────────────────────────
     c2s("workspace/symbol", EnvelopeKind::Request, LifecyclePhase::RequiresInitialized),
-    c2s("workspace/symbol/resolve", EnvelopeKind::Request, LifecyclePhase::RequiresInitialized),
+    ext(
+        "workspace/symbol/resolve",
+        EnvelopeKind::Request,
+        MethodDirection::ClientToServer,
+        LifecyclePhase::RequiresInitialized,
+    ),
     c2s("workspace/executeCommand", EnvelopeKind::Request, LifecyclePhase::RequiresInitialized),
     c2s(
         "workspace/textDocumentContent",
@@ -668,11 +678,22 @@ mod tests {
             violations.join("\n")
         );
 
-        // The removed wrong-direction routes must stay out of the table.
+        // The removed wrong-direction routes must stay out of the table. The
+        // second assertion reads the comment-stripped source directly so a
+        // re-added arm cannot hide behind a different line shape than the
+        // arm-head heuristic; comments naming the methods are not routes.
         for banned in ["workspace/applyEdit", "workspace/configuration"] {
             assert!(
                 !routed_methods.contains(banned),
                 "`{banned}` must not return as an inbound application route (#8896)"
+            );
+            let code_only = source
+                .lines()
+                .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+                .collect::<String>();
+            assert!(
+                !code_only.contains(banned),
+                "`{banned}` appears in routing code outside a comment (#8896)"
             );
         }
     }
@@ -690,26 +711,34 @@ mod tests {
         constants
     }
 
-    /// Files containing production outbound send sites. Each `.send_request`,
-    /// `.send_notification`, `.notify`, or `.send_request_internal` call in
-    /// these files must name a registry-classified server→client method of
-    /// the matching envelope kind. An unclassified outbound method fails
-    /// here instead of becoming a stringly-typed call (negative control 4).
-    const OUTBOUND_SCAN_FILES: &[&str] = &[
-        "src/runtime/client_requests.rs",
-        "src/runtime/workspace.rs",
-        "src/runtime/window.rs",
-        "src/runtime/diagnostics.rs",
-        "src/runtime/text_sync.rs",
-        "src/runtime/text_sync/lifecycle.rs",
-        "src/runtime/lifecycle/mod.rs",
-        "src/runtime/lifecycle/workspace.rs",
-        "src/runtime/lifecycle/watchers.rs",
-        "src/runtime/language/streaming.rs",
-        "src/runtime/language/virtual_content.rs",
-        "src/runtime/workspace_progress.rs",
-        "src/runtime/dispatch/lifecycle.rs",
-    ];
+    /// Production Rust files under `src/runtime`, discovered by walking the
+    /// directory (sorted for deterministic diagnostics) so a newly added file
+    /// containing outbound send sites is scanned without extending a
+    /// hand-maintained list. Each `.send_request`, `.send_notification`,
+    /// `.notify`, or `.send_request_internal` call in these files must name a
+    /// registry-classified server→client method of the matching envelope
+    /// kind. An unclassified outbound method fails here instead of becoming
+    /// a stringly-typed call (negative control 4).
+    fn runtime_source_files(manifest_dir: &str) -> Vec<std::path::PathBuf> {
+        fn visit(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            let mut entries: Vec<_> = entries.flatten().collect();
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
+                let path = entry.path();
+                if path.is_dir() {
+                    visit(&path, out);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        visit(&std::path::Path::new(manifest_dir).join("src").join("runtime"), &mut files);
+        files
+    }
 
     /// What a send-call site passes as its method argument.
     enum MethodArg {
@@ -795,8 +824,10 @@ mod tests {
         let mut violations = Vec::new();
         let mut checked_calls = 0usize;
 
-        for relative in OUTBOUND_SCAN_FILES {
-            let path = std::path::Path::new(manifest).join(relative);
+        for path in runtime_source_files(manifest) {
+            let relative = path
+                .strip_prefix(manifest)
+                .map_or_else(|_| path.display().to_string(), |p| p.display().to_string());
             let Ok(source) = std::fs::read_to_string(&path) else {
                 violations.push(format!("{relative}: unreadable"));
                 continue;
@@ -805,12 +836,6 @@ mod tests {
             let lines: Vec<&str> = stripped.lines().collect();
 
             for (line_index, line) in lines.iter().enumerate() {
-                let is_request_call = request_triggers.iter().any(|t| line.contains(t));
-                let is_notification_call = notification_triggers.iter().any(|t| line.contains(t));
-                if !is_request_call && !is_notification_call {
-                    continue;
-                }
-
                 // Concatenate the trigger line plus the following two so
                 // multi-line calls still expose their arguments.
                 let mut window = String::from(*line);
@@ -819,43 +844,50 @@ mod tests {
                     window.push_str(follow);
                 }
 
-                let trigger_end = request_triggers
+                // Scan each trigger occurrence separately so a line carrying
+                // both envelope kinds classifies every call against its own
+                // kind instead of the first trigger's.
+                let mut triggers = Vec::new();
+                for (trigger, kind) in request_triggers
                     .iter()
-                    .chain(notification_triggers.iter())
-                    .filter_map(|t| line.find(t).map(|pos| pos + t.len()))
-                    .min();
-                let Some(trigger_end) = trigger_end else { continue };
-
-                checked_calls += 1;
-                let tail = &window[trigger_end.min(window.len())..];
-                match classify_method_arg(tail, &constants) {
-                    MethodArg::Plumbing => continue,
-                    MethodArg::Unresolved => {
-                        violations.push(format!(
-                            "{relative}: could not extract the method argument of an \
-                             outbound send"
-                        ));
-                        continue;
+                    .map(|t| (*t, EnvelopeKind::Request))
+                    .chain(notification_triggers.iter().map(|t| (*t, EnvelopeKind::Notification)))
+                {
+                    let mut from = 0usize;
+                    while let Some(offset) = line[from..].find(trigger) {
+                        triggers.push((from + offset + trigger.len(), kind));
+                        from += offset + trigger.len();
                     }
-                    MethodArg::Named(method) => {
-                        if method.is_empty() {
+                }
+
+                for (trigger_end, required_kind) in triggers {
+                    checked_calls += 1;
+                    let tail = &window[trigger_end.min(window.len())..];
+                    match classify_method_arg(tail, &constants) {
+                        MethodArg::Plumbing => continue,
+                        MethodArg::Unresolved => {
+                            violations.push(format!(
+                                "{relative}: could not extract the method argument of an \
+                                 outbound send"
+                            ));
                             continue;
                         }
-                        let required_kind = if is_request_call {
-                            EnvelopeKind::Request
-                        } else {
-                            EnvelopeKind::Notification
-                        };
-                        match lookup(&method) {
-                            Some(descriptor)
-                                if descriptor.direction == MethodDirection::ServerToClient
-                                    && descriptor.kind == required_kind => {}
-                            Some(descriptor) => violations.push(format!(
-                                "{relative}: outbound `{method}` is registered {:?}/{:?}",
-                                descriptor.direction, descriptor.kind
-                            )),
-                            None => violations
-                                .push(format!("{relative}: outbound `{method}` is unclassified")),
+                        MethodArg::Named(method) => {
+                            if method.is_empty() {
+                                continue;
+                            }
+                            match lookup(&method) {
+                                Some(descriptor)
+                                    if descriptor.direction == MethodDirection::ServerToClient
+                                        && descriptor.kind == required_kind => {}
+                                Some(descriptor) => violations.push(format!(
+                                    "{relative}: outbound `{method}` is registered {:?}/{:?}",
+                                    descriptor.direction, descriptor.kind
+                                )),
+                                None => violations.push(format!(
+                                    "{relative}: outbound `{method}` is unclassified"
+                                )),
+                            }
                         }
                     }
                 }
