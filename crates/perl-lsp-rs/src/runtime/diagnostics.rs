@@ -229,31 +229,6 @@ impl PullDiagnosticsOrchestrator {
 
     /// Build context from LspServer state.
     pub fn build_context(&self, server: &LspServer, uri: &str) -> PullDiagnosticsContext {
-        // Get config values
-        let (
-            perlcritic_enabled,
-            perlcritic_severity,
-            perlcritic_profile,
-            critic_engine,
-            native_critic_profile,
-            native_critic_include,
-            native_critic_exclude,
-        ) = {
-            let cfg = server.config.lock();
-            (
-                cfg.perlcritic_enabled,
-                cfg.perlcritic_severity,
-                cfg.perlcritic_profile.clone(),
-                cfg.critic_engine,
-                cfg.native_critic_profile.clone(),
-                cfg.native_critic_include.clone(),
-                cfg.native_critic_exclude.clone(),
-            )
-        };
-
-        let profile =
-            perlcritic_profile.and_then(|p| if p.trim().is_empty() { None } else { Some(p) });
-
         // Get workspace root for this document's containing folder (multi-root aware).
         // Falls back to the global root_path when no specific folder matches.
         //
@@ -270,6 +245,35 @@ impl PullDiagnosticsOrchestrator {
         // Absent authority stays absent: the report is then served in full
         // without a reusable result ID instead of minting an unsound one.
         let root_key = workspace_root.as_ref().map(|path| path.to_string_lossy().into_owned());
+
+        // Get config values. The complete accepted critic state (#8253/#9062)
+        // derives through the authority seam in this same single lock scope,
+        // so the native critic service consumes one coherent generation.
+        let (
+            perlcritic_enabled,
+            perlcritic_severity,
+            perlcritic_profile,
+            critic_engine,
+            native_critic_profile,
+            native_critic_include,
+            native_critic_exclude,
+            accepted_critic_state,
+        ) = {
+            let cfg = server.config.lock();
+            (
+                cfg.perlcritic_enabled,
+                cfg.perlcritic_severity,
+                cfg.perlcritic_profile.clone(),
+                cfg.critic_engine,
+                cfg.native_critic_profile.clone(),
+                cfg.native_critic_include.clone(),
+                cfg.native_critic_exclude.clone(),
+                cfg.effective_critic_state(root_key.as_deref()),
+            )
+        };
+
+        let profile =
+            perlcritic_profile.and_then(|p| if p.trim().is_empty() { None } else { Some(p) });
 
         // Get include paths for the document
         let include_paths: Vec<String> = server
@@ -323,6 +327,7 @@ impl PullDiagnosticsOrchestrator {
             markup_message_support,
             identity_root_key: root_key,
             facts_generation,
+            accepted_critic_state,
             projection: DiagnosticProjectionFragment {
                 position_encoding: match position_encoding {
                     crate::textdoc::PosEnc::Utf8 => PullPositionEncoding::Utf8,
@@ -2240,79 +2245,44 @@ impl LspServer {
     ) {
         use perl_lsp_rs_core::providers::diagnostics::take_critic_overlap_observations;
         use perl_lsp_rs_core::tooling::perl_critic::{
-            BuiltInCriticObservation, NativeCriticPolicy, built_in_observation_candidates,
-            native_finding_candidates_with_accounting, normalize_with_native_policy,
+            NativeCriticService, NativeCriticSubject, RunGate,
         };
 
-        let (critic_engine, severity, profile, native_profile, native_include, native_exclude) = {
-            let cfg = self.config.lock();
-            (
-                cfg.critic_engine,
-                cfg.perlcritic_severity,
-                cfg.perlcritic_profile.clone(),
-                cfg.native_critic_profile.clone(),
-                cfg.native_critic_include.clone(),
-                cfg.native_critic_exclude.clone(),
-            )
+        // One immutable accepted-subject snapshot (#9062): derive the complete
+        // accepted critic state through the #8253 authority in a single lock
+        // scope and release the lock before any rule evaluation. No consumer
+        // copies mutable configuration piecemeal anymore.
+        let accepted_state = { self.config.lock().effective_critic_state(None) };
+        let expected_fingerprint = accepted_state.fingerprint();
+        let config = std::sync::Arc::clone(&self.config);
+        let config_is_current = move || {
+            config.lock().effective_critic_state(None).fingerprint() == expected_fingerprint
         };
-        if critic_engine != perl_lsp_rs_core::config::CriticEngine::Native {
+
+        // Core lint emitters that declared a reviewed critic overlap
+        // observation surrender their ordinary diagnostic here (#11918); the
+        // logical row comes out of the same normalization inside the service,
+        // merged with the native alias and carrying both contributor
+        // identities.
+        let overlap_observations = take_critic_overlap_observations(diagnostics);
+
+        let run = NativeCriticService::analyze(NativeCriticSubject {
+            label: subject,
+            source_identity,
+            ast,
+            source: doc_text,
+            accepted_state,
+            overlap_observations,
+            cancellation: RunGate::open(),
+            currentness: RunGate::new(&config_is_current),
+        });
+
+        // A superseded run cannot populate current result storage (#9062):
+        // configuration moved underneath the analysis, so its rows are dropped.
+        if !run.is_publishable() {
             return;
         }
-
-        let severity_threshold = severity.clamp(1, 5);
-        let critic_config = crate::perl_critic::CriticConfig {
-            severity: severity_threshold,
-            profile,
-            include: native_include.clone(),
-            exclude: native_exclude.clone(),
-            ..crate::perl_critic::CriticConfig::default()
-        };
-        let critic_context =
-            crate::perl_critic::CriticContext::new(doc_text, ast.as_ref(), &critic_config);
-        let profile = crate::perl_critic::NativeCriticProfile::parse_legacy(&native_profile)
-            .unwrap_or(crate::perl_critic::NativeCriticProfile::Strict);
-        let registry = crate::perl_critic::NativeCriticRegistry::for_profile_with_config(
-            profile,
-            &critic_config,
-        );
-
-        // Producer outputs enter the canonical normalized set (#7475): checked
-        // identities at collection, alias merge, then policy applied exactly
-        // once post-merge. Findings without a registered producer-owned
-        // identity are rejected here rather than guessed, and every rejection
-        // is accounted for instead of silently vanishing.
-        //
-        // Core lint emitters that declared a reviewed critic overlap
-        // observation surrender their ordinary diagnostic here (#11918): the
-        // logical row comes out of this same normalization, merged with the
-        // native alias and carrying both contributor identities.
-        let overlap_observations: Vec<BuiltInCriticObservation> =
-            take_critic_overlap_observations(diagnostics);
-        let candidates = native_finding_candidates_with_accounting(
-            subject,
-            registry.check_unfiltered(&critic_context),
-            source_identity,
-        )
-        .into_iter()
-        .chain(built_in_observation_candidates(
-            overlap_observations,
-            doc_text,
-            source_identity,
-        ));
-        let suppressions =
-            perl_lsp_rs_core::tooling::perl_critic::CriticSuppressionMap::from_source(doc_text);
-        let policy = NativeCriticPolicy::new(
-            severity_threshold,
-            &native_include,
-            &native_exclude,
-            &suppressions,
-        );
-
-        diagnostics.extend(
-            normalize_with_native_policy(candidates, &policy)
-                .iter()
-                .map(normalized_critic_finding_to_diagnostic),
-        );
+        diagnostics.extend(run.findings.iter().map(normalized_critic_finding_to_diagnostic));
     }
 
     /// Collect external perlcritic diagnostics if the feature is enabled.
@@ -3290,11 +3260,16 @@ mod tests {
     }
 
     #[test]
-    fn native_critic_legacy_profile_carrier_keeps_invalid_case_fallback_strict() {
+    fn accepted_critic_state_normalizes_profile_case_and_whitespace_for_push() {
+        // Intended #8253/#9062 behavior change: the push path no longer
+        // reparses a raw profile carrier with exact-token legacy semantics
+        // (invalid case => strict fallback). The accepted state derivation
+        // normalizes case and surrounding whitespace, so this carrier yields
+        // the recommended profile and the strict-only POD rule stays absent.
         let (server, buf) = make_server_with_capture();
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
         server.config.lock().native_critic_profile = " RECOMMENDED ".to_string();
-        let uri = "file:///native_critic_legacy_profile_test.pl";
+        let uri = "file:///native_critic_normalized_profile_test.pl";
         server
             .test_handle_did_open(Some(json!({
                 "textDocument": {
@@ -3312,8 +3287,8 @@ mod tests {
 
         let text = String::from_utf8(buf.lock().clone()).unwrap_or_default();
         assert!(
-            text.contains("native.documentation.require_pod_sections"),
-            "legacy invalid profile fallback must remain strict; got: {text:?}"
+            !text.contains("native.documentation.require_pod_sections"),
+            "accepted normalization must not widen to the strict profile; got: {text:?}"
         );
     }
 

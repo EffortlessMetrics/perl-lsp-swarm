@@ -1,12 +1,18 @@
-//! Wiring gate for the #7475 critic normalization accounting.
+//! Wiring gate for the #7475 critic normalization accounting and the #9062
+//! native CriticService cutover.
 //!
-//! Both native-critic diagnostic production sites must take their candidates
-//! from [`perl_lsp_rs_core::tooling::perl_critic::
-//! native_finding_candidates_with_accounting`], which logs and counts every
-//! finding rejected for a missing producer disposition. If a site reverts to
-//! bare `native_finding_candidates`, undeclared emission shapes silently
-//! vanish from the product normalized set — this gate turns that regression
-//! red instead.
+//! Both native-critic diagnostic transports must route their evaluation
+//! through [`perl_lsp_rs_core::tooling::perl_critic::NativeCriticService`],
+//! which takes candidates from `native_finding_candidates_with_accounting`,
+//! logging and counting every finding rejected for a missing producer
+//! disposition (#7475). If a transport reverts to composing its own
+//! registry/context/candidate/policy pipeline (#9062), two paths can again
+//! snapshot configuration at different times or flatten metadata differently
+//! — this gate turns that regression red instead.
+//!
+//! The `perl.runCritic` command adapter (`execute_command/provider.rs`) is a
+//! pre-migration consumer whose own cutover is #6969; it is deliberately not
+//! asserted here.
 
 #![expect(
     clippy::panic,
@@ -16,8 +22,21 @@
 use std::fs;
 use std::path::Path;
 
-const ACCOUNTING_ENTRYPOINT: &str = "native_finding_candidates_with_accounting(";
-const UNACCOUNTED_ENTRYPOINT: &str = "native_finding_candidates(";
+const SERVICE_ENTRYPOINT: &str = "NativeCriticService::analyze(";
+const SERVICE_SOURCE_REL: &str = "../../crates/perl-lsp-rs-core/src/tooling/perl_critic/service.rs";
+const MIGRATED_TRANSPORTS: [&str; 2] = ["runtime/diagnostics.rs", "features/diagnostics/pull.rs"];
+
+/// Composition entry points that only the service may call in production.
+/// Anything below would let a consumer rebuild its own producer/filter/
+/// suppression pipeline instead of consuming one shared run.
+const SERVICE_ONLY_COMPOSITION: [&str; 6] = [
+    "native_finding_candidates(",
+    "normalize_with_native_policy(",
+    "NativeCriticPolicy::new(",
+    "for_profile_with_config(",
+    ".check_unfiltered(",
+    "built_in_observation_candidates(",
+];
 
 fn production_source(rel_path: &str) -> String {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -27,56 +46,101 @@ fn production_source(rel_path: &str) -> String {
     })
 }
 
-#[test]
-fn push_diagnostics_native_path_accounts_for_rejected_producer_identities() {
-    let source = production_source("runtime/diagnostics.rs");
-    assert!(
-        source.contains(ACCOUNTING_ENTRYPOINT),
-        "runtime/diagnostics.rs must route native candidates through the accounting entrypoint (#7475)"
-    );
+fn core_service_source() -> String {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let path = manifest_dir.join(SERVICE_SOURCE_REL);
+    fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!("service source {} must be readable: {error}", path.display())
+    })
 }
 
 #[test]
-fn pull_diagnostics_native_path_accounts_for_rejected_producer_identities() {
-    let source = production_source("features/diagnostics/pull.rs");
-    assert!(
-        source.contains(ACCOUNTING_ENTRYPOINT),
-        "features/diagnostics/pull.rs must route native candidates through the accounting entrypoint (#7475)"
-    );
-}
-
-#[test]
-fn no_production_site_uses_the_unaccounted_candidate_entrypoint() {
-    for rel_path in ["runtime/diagnostics.rs", "features/diagnostics/pull.rs"] {
+fn both_transports_route_native_evaluation_through_the_service() {
+    for rel_path in MIGRATED_TRANSPORTS {
         let source = production_source(rel_path);
-        let unaccounted_sites: Vec<usize> = source
-            .match_indices(UNACCOUNTED_ENTRYPOINT)
-            .map(|(offset, _)| offset)
-            .filter(|offset| !source[*offset..].starts_with(ACCOUNTING_ENTRYPOINT))
-            .collect();
         assert!(
-            unaccounted_sites.is_empty(),
-            "{rel_path} bypasses rejection accounting at byte offsets {unaccounted_sites:?} (#7475)"
+            source.contains(SERVICE_ENTRYPOINT),
+            "{rel_path} must route native critic evaluation through NativeCriticService (#9062)"
         );
     }
 }
 
 #[test]
-fn both_transports_feed_built_in_overlap_observations_into_the_seam() {
-    // #11918: the reviewed core-overlap producers reach
-    // `normalize_critic_findings` only if both diagnostic transports extract
-    // emitter-owned observations and chain them with the native candidates.
+fn the_service_owns_candidate_collection_and_policy_composition() {
+    let service = core_service_source();
+    assert!(
+        service.contains(SERVICE_ENTRYPOINT),
+        "NativeCriticService must expose the analyze seam (#9062)"
+    );
+    for composition in SERVICE_ONLY_COMPOSITION {
+        assert!(
+            service.contains(composition),
+            "the service must compose through the settled {composition} seam"
+        );
+    }
+}
+
+#[test]
+fn no_migrated_transport_composes_its_own_native_pipeline() {
+    for rel_path in MIGRATED_TRANSPORTS {
+        let source = production_source(rel_path);
+        for composition in SERVICE_ONLY_COMPOSITION {
+            assert!(
+                !source.contains(composition),
+                "{rel_path} bypasses the one native critic service with `{composition}` (#9062)"
+            );
+        }
+    }
+}
+
+#[test]
+fn rejected_producer_identities_stay_accounted_inside_the_service() {
+    // #7475: findings without a registered producer disposition are logged and
+    // counted, never silently dropped. After the #9062 cutover this accounting
+    // lives exactly once, inside the service every transport shares.
+    let service = core_service_source();
+    assert!(
+        service.contains("account_unresolved_native_identities("),
+        "the service must account rejected producer identities (#7475)"
+    );
+    let unguarded = "native_finding_candidates((";
+    assert!(
+        !production_source(MIGRATED_TRANSPORTS[0]).contains(unguarded)
+            && !production_source(MIGRATED_TRANSPORTS[1]).contains(unguarded),
+        "no migrated transport may collect candidates outside the accounted seam"
+    );
+}
+
+#[test]
+fn both_transports_feed_built_in_overlap_observations_into_the_service() {
+    // #11918/#9062: the reviewed core-overlap producers reach canonical
+    // normalization only if each transport extracts emitter-owned
+    // observations from its core rows and hands them to the service subject.
     // A transport that stops consuming them reverts to duplicate or unmerged
     // rows end-to-end.
-    for rel_path in ["runtime/diagnostics.rs", "features/diagnostics/pull.rs"] {
+    for rel_path in MIGRATED_TRANSPORTS {
         let source = production_source(rel_path);
         assert!(
             source.contains("take_critic_overlap_observations("),
             "{rel_path} must consume emitter-declared overlap observations (#11918)"
         );
         assert!(
-            source.contains("built_in_observation_candidates("),
-            "{rel_path} must convert overlap observations into seam candidates (#11918)"
+            source.contains("overlap_observations"),
+            "{rel_path} must pass overlap observations into the service subject (#9062)"
+        );
+    }
+}
+
+#[test]
+fn superseded_runs_cannot_populate_current_result_storage() {
+    // #9062 publication boundary: every migrated transport must consult the
+    // run's publishability before projecting rows, so late/stale work can
+    // never surface as current.
+    for rel_path in MIGRATED_TRANSPORTS {
+        let source = production_source(rel_path);
+        assert!(
+            source.contains("is_publishable()"),
+            "{rel_path} must check run publishability before publishing (#9062)"
         );
     }
 }

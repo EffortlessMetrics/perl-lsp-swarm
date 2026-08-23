@@ -12,6 +12,7 @@ mod quick_fix;
 mod remediation;
 mod result_identity;
 mod semantic;
+mod service;
 mod types;
 
 pub use analyzer::{CriticAnalyzer, hash_content};
@@ -47,6 +48,10 @@ pub use semantic::{
     account_unresolved_native_identities, built_in_observation_candidates,
     critic_source_identity_for_uri, native_finding_candidates,
     native_finding_candidates_with_accounting, normalize_with_native_policy,
+};
+pub use service::{
+    NativeCriticRun, NativeCriticRunCompleteness, NativeCriticService, NativeCriticSubject,
+    NativeCriticWorkReceipt, RunGate,
 };
 pub use types::{CriticConfig, Severity, Violation};
 

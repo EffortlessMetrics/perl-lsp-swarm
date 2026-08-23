@@ -20,9 +20,7 @@ use crate::util::uri::parse_uri;
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_lsp_rs_core::config::CriticEngine;
 use perl_lsp_rs_core::providers::diagnostics::{parse_error_code, parse_error_severity};
-use perl_lsp_rs_core::tooling::perl_critic::{
-    CriticConfig, CriticContext, NativeCriticProfile, NativeCriticRegistry, Severity,
-};
+use perl_lsp_rs_core::tooling::perl_critic::Severity;
 use perl_module::resolution::use_lib::{
     UseLibOperation, extract_use_lib_operations_with_offsets,
     no_lib_cancelled_paths_from_operations_at_offset,
@@ -90,11 +88,33 @@ pub struct PullDiagnosticsContext {
     /// is live and fresh for this document. `None` encodes the explicit
     /// not-ready/unavailable fact state.
     pub facts_generation: Option<u64>,
+    /// Complete accepted critic state derived through the #8253 authority at
+    /// snapshot time (#9062). This immutable value is the only input the
+    /// native critic service consults; the raw sibling fields above remain
+    /// solely for the pre-migration legacy engine path and report identity.
+    pub accepted_critic_state: perl_lsp_rs_core::config::EffectiveCriticState,
     /// Behavior-bearing negotiated wire-projection state (#7480).
     pub projection: DiagnosticProjectionFragment,
 }
 
 impl PullDiagnosticsContext {
+    /// Derive the accepted critic state through the #8253 authority from one
+    /// coherent raw sibling snapshot (#9062). Used where no live
+    /// `ServerConfig` exists (default/test contexts); every production path
+    /// derives straight from its live configuration.
+    fn accepted_state_from_defaults(
+        enabled: bool,
+        severity: i32,
+        root: Option<&str>,
+    ) -> perl_lsp_rs_core::config::EffectiveCriticState {
+        let config = perl_lsp_rs_core::config::ServerConfig {
+            perlcritic_enabled: enabled,
+            perlcritic_severity: severity.clamp(1, 5) as u8,
+            ..perl_lsp_rs_core::config::ServerConfig::default()
+        };
+        config.effective_critic_state(root)
+    }
+
     /// Create a new empty context with default values.
     pub fn new() -> Self {
         Self {
@@ -110,6 +130,11 @@ impl PullDiagnosticsContext {
             markup_message_support: false,
             identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
             facts_generation: None,
+            accepted_critic_state: Self::accepted_state_from_defaults(
+                true,
+                3,
+                Some(PROVIDER_DEFAULT_ROOT_AUTHORITY),
+            ),
             projection: DiagnosticProjectionFragment {
                 position_encoding: PullPositionEncoding::Utf16,
                 markup_messages: false,
@@ -135,6 +160,11 @@ impl PullDiagnosticsContext {
             markup_message_support: false,
             identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
             facts_generation: None,
+            accepted_critic_state: Self::accepted_state_from_defaults(
+                true,
+                severity,
+                Some(PROVIDER_DEFAULT_ROOT_AUTHORITY),
+            ),
             projection: DiagnosticProjectionFragment {
                 position_encoding: PullPositionEncoding::Utf16,
                 markup_messages: false,
@@ -162,6 +192,11 @@ impl PullDiagnosticsContext {
             markup_message_support: false,
             identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
             facts_generation: None,
+            accepted_critic_state: Self::accepted_state_from_defaults(
+                true,
+                3,
+                Some(PROVIDER_DEFAULT_ROOT_AUTHORITY),
+            ),
             projection: DiagnosticProjectionFragment {
                 position_encoding: PullPositionEncoding::Utf16,
                 markup_messages: false,
@@ -186,6 +221,7 @@ impl std::fmt::Debug for PullDiagnosticsContext {
             .field("markup_message_support", &self.markup_message_support)
             .field("identity_root_key", &self.identity_root_key)
             .field("facts_generation", &self.facts_generation)
+            .field("accepted_critic_state_fingerprint", &self.accepted_critic_state.fingerprint())
             .field("projection", &self.projection)
             .field("workspace_index", &"<WorkspaceIndex>")
             .finish()
@@ -675,6 +711,13 @@ impl PullDiagnosticsProvider {
     }
 
     /// Add native critic policy diagnostics.
+    ///
+    /// Routed through the one protocol-neutral [`NativeCriticService`]
+    /// (#9062). The immutable context carries the complete accepted state
+    /// (#8253), so the service — not this transport — owns registry
+    /// construction, candidate collection, canonical normalization, policy,
+    /// and ordering. This method only extracts emitter-declared overlap
+    /// observations (#11918) and projects the resulting logical rows.
     fn add_native_critic_diagnostics(
         &self,
         uri: &Uri,
@@ -687,57 +730,32 @@ impl PullDiagnosticsProvider {
     ) {
         use perl_lsp_rs_core::providers::diagnostics::take_critic_overlap_observations;
         use perl_lsp_rs_core::tooling::perl_critic::{
-            BuiltInCriticObservation, CriticSuppressionMap, NativeCriticPolicy,
-            built_in_observation_candidates, native_finding_candidates_with_accounting,
-            normalize_with_native_policy,
+            NativeCriticService, NativeCriticSubject, RunGate,
         };
 
-        let severity_threshold = context.perlcritic_severity.clamp(1, 5) as u8;
-        let critic_config = CriticConfig {
-            severity: severity_threshold,
-            profile: context.perlcritic_profile.clone(),
-            include: context.native_critic_include.clone(),
-            exclude: context.native_critic_exclude.clone(),
-            ..CriticConfig::default()
-        };
-        let critic_context = CriticContext::new(content, ast.as_ref(), &critic_config);
-        let profile = NativeCriticProfile::parse_legacy(&context.native_critic_profile)
-            .unwrap_or(NativeCriticProfile::Strict);
-        let registry = NativeCriticRegistry::for_profile_with_config(profile, &critic_config);
-
-        // Producer outputs enter the canonical normalized set (#7475): checked
-        // identities at collection, alias merge, then policy applied exactly
-        // once post-merge. Findings without a registered producer-owned
-        // identity are rejected here rather than guessed, and every rejection
-        // is accounted for instead of silently vanishing.
-        //
         // Core lint emitters that declared a reviewed critic overlap
         // observation surrender their ordinary diagnostic here (#11918): the
-        // logical row comes out of this same normalization, merged with the
-        // native alias and carrying both contributor identities.
-        let overlap_observations: Vec<BuiltInCriticObservation> =
-            take_critic_overlap_observations(core_diagnostics);
-        let candidates = native_finding_candidates_with_accounting(
-            &uri.to_string(),
-            registry.check_unfiltered(&critic_context),
-            source_identity,
-        )
-        .into_iter()
-        .chain(built_in_observation_candidates(
-            overlap_observations,
-            content,
-            source_identity,
-        ));
-        let suppressions = CriticSuppressionMap::from_source(content);
-        let policy = NativeCriticPolicy::new(
-            severity_threshold,
-            &context.native_critic_include,
-            &context.native_critic_exclude,
-            &suppressions,
-        );
+        // logical row comes out of the same normalization inside the service,
+        // merged with the native alias and carrying both contributor
+        // identities.
+        let overlap_observations = take_critic_overlap_observations(core_diagnostics);
 
-        for finding in normalize_with_native_policy(candidates, &policy) {
-            critic_rows.push(self.normalized_finding_to_lsp_diagnostic(uri, content, &finding));
+        let run = NativeCriticService::analyze(NativeCriticSubject {
+            label: &uri.to_string(),
+            source_identity,
+            ast,
+            source: content,
+            accepted_state: context.accepted_critic_state.clone(),
+            overlap_observations,
+            cancellation: RunGate::open(),
+            currentness: RunGate::open(),
+        });
+
+        if !run.is_publishable() {
+            return;
+        }
+        for finding in &run.findings {
+            critic_rows.push(self.normalized_finding_to_lsp_diagnostic(uri, content, finding));
         }
     }
 
@@ -1529,6 +1547,30 @@ fn diagnostic_source(code: Option<&NumberOrString>) -> Option<String> {
 mod tests {
     use super::*;
     use lsp_types::{DocumentDiagnosticReport, NumberOrString};
+    use perl_lsp_rs_core::config::EffectiveCriticState;
+
+    /// Derive an accepted critic state through the #8253 authority from the
+    /// raw siblings a test wants to exercise (#9062). Mirrors exactly what a
+    /// live `ServerConfig` snapshot does in production.
+    fn accepted_state(
+        profile: &str,
+        severity: u8,
+        include: Vec<String>,
+        exclude: Vec<String>,
+    ) -> EffectiveCriticState {
+        let config = perl_lsp_rs_core::config::ServerConfig {
+            native_critic_profile: profile.to_string(),
+            perlcritic_severity: severity,
+            native_critic_include: include,
+            native_critic_exclude: exclude,
+            ..perl_lsp_rs_core::config::ServerConfig::default()
+        };
+        config.effective_critic_state(Some(PROVIDER_DEFAULT_ROOT_AUTHORITY))
+    }
+
+    fn strict_accepted_state(severity: u8) -> EffectiveCriticState {
+        accepted_state("strict", severity, Vec::new(), Vec::new())
+    }
 
     fn get_full_items(report: DocumentDiagnosticReport) -> Vec<lsp_types::Diagnostic> {
         match report {
@@ -1753,6 +1795,7 @@ mod tests {
         let mut context = PullDiagnosticsContext::new();
         context.critic_engine = CriticEngine::Native;
         context.native_critic_profile = "strict".to_string();
+        context.accepted_critic_state = strict_accepted_state(3);
         context.perlcritic_severity = 3;
 
         let items = get_full_items(provider.get_document_diagnostics_with_context(
@@ -2262,13 +2305,20 @@ mod tests {
     }
 
     #[test]
-    fn native_critic_legacy_profile_carrier_keeps_invalid_case_fallback_strict()
+    fn accepted_critic_state_normalizes_profile_case_and_whitespace()
     -> Result<(), Box<dyn std::error::Error>> {
+        // Intended #8253/#9062 behavior change: migrated transports no longer
+        // reparse a raw profile carrier with exact-token legacy semantics
+        // (invalid case => strict fallback). The accepted state derivation
+        // normalizes case and surrounding whitespace, so this carrier yields
+        // the recommended profile: the strict-only unused-lexical rule must
+        // stay absent while native rows keep flowing.
         let provider = PullDiagnosticsProvider::new();
         let uri: Uri = "file:///test.pl".parse()?;
         let mut context = PullDiagnosticsContext::new();
         context.critic_engine = CriticEngine::Native;
         context.native_critic_profile = " RECOMMENDED ".to_string();
+        context.accepted_critic_state = accepted_state(" RECOMMENDED ", 3, Vec::new(), Vec::new());
 
         let items = get_full_items(provider.get_document_diagnostics_with_context(
             &uri,
@@ -2279,12 +2329,12 @@ mod tests {
         ));
 
         assert!(
-            items.iter().any(|diag| {
+            !items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
                     |code| matches!(code, NumberOrString::String(value) if value == "native.variables.unused_lexical"),
                 )
             }),
-            "legacy invalid profile fallback must remain strict: {items:?}"
+            "accepted normalization must not widen to the strict profile: {items:?}"
         );
 
         Ok(())
@@ -2300,6 +2350,12 @@ mod tests {
         context.native_critic_profile = "recommended".to_string();
         context.native_critic_include = vec!["native.testing.require_use_strict".to_string()];
         context.native_critic_exclude = vec!["native.common.assignment_in_condition".to_string()];
+        context.accepted_critic_state = accepted_state(
+            "recommended",
+            3,
+            vec!["native.testing.require_use_strict".to_string()],
+            vec!["native.common.assignment_in_condition".to_string()],
+        );
 
         let items = get_full_items(provider.get_document_diagnostics_with_context(
             &uri,
@@ -2349,6 +2405,12 @@ mod tests {
         context.critic_engine = CriticEngine::Native;
         context.native_critic_profile = "recommended".to_string();
         context.native_critic_include = vec!["native.variables.unused_lexical".to_string()];
+        context.accepted_critic_state = accepted_state(
+            "recommended",
+            3,
+            vec!["native.variables.unused_lexical".to_string()],
+            Vec::new(),
+        );
 
         let items = get_full_items(provider.get_document_diagnostics_with_context(
             &uri,

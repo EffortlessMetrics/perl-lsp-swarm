@@ -576,137 +576,125 @@ impl LspServer {
             // with the problem it resolves. The default native engine publishes
             // `native.*` codes under source "perl-lsp" (built-in diagnostics);
             // the opt-in legacy engine keeps the `Perl::Critic` policy names it
-            // shares with the external tool it emulates. Running the legacy
-            // analyzer
-            // unconditionally (as before) leaked the `Perl::Critic` brand onto
-            // the native product surface and produced quick-fixes whose source +
-            // code never matched the published native diagnostic.
-            // Read the engine and every critic field in ONE lock scope so the
-            // code action is built from a single coherent config snapshot. A
-            // split lock (engine, then the rest) could tear if
-            // didChangeConfiguration lands between the two acquisitions —
-            // "we decided Native" (stale) + a fresh profile/include/exclude — a
-            // state that never coherently existed. This mirrors
-            // `collect_native_critic_diagnostics` in runtime/diagnostics.rs.
-            let (critic_engine, severity, profile, native_profile, native_include, native_exclude) = {
+            // shares with the external tool it emulates (its removal is
+            // #9068's). Running the legacy analyzer unconditionally (as before)
+            // leaked the `Perl::Critic` brand onto the native product surface.
+            //
+            // Read the raw engine decision and derive the complete accepted
+            // critic state (#8253) in ONE lock scope, then release the lock
+            // before any rule evaluation (#9062): the native arm runs through
+            // the one protocol-neutral service over that immutable subject, so
+            // a torn split (stale engine + fresh policy) can never exist and
+            // no consumer composes its own registry/policy pipeline.
+            let (critic_engine, accepted_state) = {
                 let cfg = self.config.lock();
-                (
-                    cfg.critic_engine,
-                    cfg.perlcritic_severity,
-                    cfg.perlcritic_profile.clone(),
-                    cfg.native_critic_profile.clone(),
-                    cfg.native_critic_include.clone(),
-                    cfg.native_critic_exclude.clone(),
-                )
+                (cfg.critic_engine, cfg.effective_critic_state(None))
             };
             match critic_engine {
                 perl_lsp_rs_core::config::CriticEngine::Native => {
-                    let critic_config = crate::perl_critic::CriticConfig {
-                        severity: severity.clamp(1, 5),
-                        profile,
-                        include: native_include,
-                        exclude: native_exclude,
-                        ..crate::perl_critic::CriticConfig::default()
-                    };
-                    let critic_context =
-                        crate::perl_critic::CriticContext::new(&doc.text, ast, &critic_config);
-                    let native_profile =
-                        crate::perl_critic::NativeCriticProfile::parse(&native_profile)
-                            .unwrap_or(crate::perl_critic::NativeCriticProfile::Strict);
-                    let registry =
-                        crate::perl_critic::NativeCriticRegistry::for_profile_with_config(
-                            native_profile,
-                            &critic_config,
-                        );
                     use perl_lsp_rs_core::tooling::perl_critic::{
-                        CriticSuppressionMap, NativeCriticPolicy, critic_source_identity_for_uri,
-                        native_finding_candidates_with_accounting, normalize_with_native_policy,
+                        NativeCriticService, NativeCriticSubject, RunGate,
                     };
 
-                    let raw_findings = registry.check_unfiltered(&critic_context);
-                    let candidates = native_finding_candidates_with_accounting(
-                        uri,
-                        raw_findings.iter().cloned(),
-                        critic_source_identity_for_uri(uri, 0),
-                    );
-                    let suppressions = CriticSuppressionMap::from_source(&doc.text);
-                    let policy = NativeCriticPolicy::new(
-                        severity.clamp(1, 5),
-                        &critic_config.include,
-                        &critic_config.exclude,
-                        &suppressions,
-                    );
+                    let expected_fingerprint = accepted_state.fingerprint();
+                    let config = std::sync::Arc::clone(&self.config);
+                    let config_is_current = move || {
+                        config.lock().effective_critic_state(None).fingerprint()
+                            == expected_fingerprint
+                    };
+                    let source_identity =
+                        perl_lsp_rs_core::tooling::perl_critic::critic_source_identity_for_uri(
+                            uri,
+                            doc.current_generation(),
+                        );
 
-                    for normalized in normalize_with_native_policy(candidates, &policy) {
-                        // Normalization decides whether this logical finding is
-                        // admitted. The raw producer is retained only for its
-                        // existing safe edit and title; no raw finding can
-                        // bypass alias-aware exclusion or suppression.
-                        let Some(finding) = raw_findings.iter().find(|finding| {
-                            finding.range == normalized.range()
-                                && normalized.contributors().iter().any(|contributor| {
-                                    let identity = contributor.identity();
-                                    identity.origin()
-                                        == perl_lsp_rs_core::tooling::perl_critic::CriticFindingOrigin::NativeCritic
-                                        && identity.code() == finding.rule_id
-                                        && identity.shape() == finding.observed_shape
+                    let run = NativeCriticService::analyze(NativeCriticSubject {
+                        label: uri,
+                        source_identity,
+                        ast,
+                        source: &doc.text,
+                        accepted_state: accepted_state.clone(),
+                        overlap_observations: Vec::new(),
+                        cancellation: RunGate::open(),
+                        currentness: RunGate::new(&config_is_current),
+                    });
+
+                    // A superseded run offers no actions this round; the next
+                    // request re-snapshots current state (#9062). A disabled
+                    // accepted state contributes none by configuration (#8253).
+                    if run.is_publishable() {
+                        for normalized in &run.findings {
+                            // Normalization decides whether this logical finding
+                            // is admitted. The raw producer is retained only for
+                            // its existing safe edit and title; no raw finding
+                            // can bypass alias-aware exclusion or suppression.
+                            let Some(finding) = run.producer_findings.iter().find(|finding| {
+                                finding.range == normalized.range()
+                                    && normalized.contributors().iter().any(|contributor| {
+                                        let identity = contributor.identity();
+                                        identity.origin()
+                                            == perl_lsp_rs_core::tooling::perl_critic::CriticFindingOrigin::NativeCritic
+                                            && identity.code() == finding.rule_id
+                                            && identity.shape() == finding.observed_shape
+                                    })
+                            }) else {
+                                continue;
+                            };
+                            // Only findings that carry a Safe automatic edit become
+                            // quick-fixes. Suggested fixes need user confirmation
+                            // (declaration-only renames corrupt references);
+                            // ManualOnly and empty edits are diagnostic-only guidance.
+                            let Some(fix) = finding.fix.as_ref() else {
+                                continue;
+                            };
+                            if fix.safety != crate::perl_critic::FixSafety::Safe
+                                || fix.edits.is_empty()
+                            {
+                                continue;
+                            }
+                            let (start_line, start_char) =
+                                self.offset_to_pos16(doc, finding.range.start.byte);
+                            let (end_line, end_char) =
+                                self.offset_to_pos16(doc, finding.range.end.byte);
+
+                            let edits: Vec<Value> = fix
+                                .edits
+                                .iter()
+                                .map(|edit| {
+                                    let (es_line, es_char) =
+                                        self.offset_to_pos16(doc, edit.range.start.byte);
+                                    let (ee_line, ee_char) =
+                                        self.offset_to_pos16(doc, edit.range.end.byte);
+                                    json!({
+                                        "range": {
+                                            "start": {"line": es_line, "character": es_char},
+                                            "end": {"line": ee_line, "character": ee_char},
+                                        },
+                                        "newText": edit.new_text.clone(),
+                                    })
                                 })
-                        }) else {
-                            continue;
-                        };
-                        // Only findings that carry a Safe automatic edit become
-                        // quick-fixes. Suggested fixes need user confirmation
-                        // (declaration-only renames corrupt references);
-                        // ManualOnly and empty edits are diagnostic-only guidance.
-                        let Some(fix) = finding.fix.as_ref() else {
-                            continue;
-                        };
-                        if fix.safety != crate::perl_critic::FixSafety::Safe || fix.edits.is_empty()
-                        {
-                            continue;
-                        }
-                        let (start_line, start_char) =
-                            self.offset_to_pos16(doc, finding.range.start.byte);
-                        let (end_line, end_char) =
-                            self.offset_to_pos16(doc, finding.range.end.byte);
+                                .collect();
+                            let mut changes = HashMap::new();
+                            changes.insert(uri.to_string(), edits);
 
-                        let edits: Vec<Value> = fix
-                            .edits
-                            .iter()
-                            .map(|edit| {
-                                let (es_line, es_char) =
-                                    self.offset_to_pos16(doc, edit.range.start.byte);
-                                let (ee_line, ee_char) =
-                                    self.offset_to_pos16(doc, edit.range.end.byte);
-                                json!({
+                            code_actions.push(json!({
+                                "title": fix.title.clone(),
+                                "kind": "quickfix",
+                                "diagnostics": [{
                                     "range": {
-                                        "start": {"line": es_line, "character": es_char},
-                                        "end": {"line": ee_line, "character": ee_char},
+                                        "start": {"line": start_line, "character": start_char},
+                                        "end": {"line": end_line, "character": end_char},
                                     },
-                                    "newText": edit.new_text.clone(),
-                                })
-                            })
-                            .collect();
-                        let mut changes = HashMap::new();
-                        changes.insert(uri.to_string(), edits);
-
-                        code_actions.push(json!({
-                            "title": fix.title.clone(),
-                            "kind": "quickfix",
-                            "diagnostics": [{
-                                "range": {
-                                    "start": {"line": start_line, "character": start_char},
-                                    "end": {"line": end_line, "character": end_char},
+                                    "severity": finding.severity.to_diagnostic_severity(),
+                                    "code": finding.rule_id.clone(),
+                                    "source": "perl-lsp",
+                                    "message": finding.message.clone(),
+                                }],
+                                "edit": {
+                                    "changes": changes,
                                 },
-                                "severity": finding.severity.to_diagnostic_severity(),
-                                "code": finding.rule_id.clone(),
-                                "source": "perl-lsp",
-                                "message": finding.message.clone(),
-                            }],
-                            "edit": {
-                                "changes": changes,
-                            },
-                        }));
+                            }));
+                        }
                     }
                 }
                 perl_lsp_rs_core::config::CriticEngine::Legacy => {
