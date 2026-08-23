@@ -51,8 +51,10 @@ the exact tree this bundle lands on:
 - The repository has **no issue-controller tooling**: no role schema, no
   reviewed registry, no `issue_controller_*` contracts, no directory/router,
   no label projection, no metadata planner/applicator, no drift observer.
-- Sixty-eight checked `.spec/` bundles exist under the three-file
-  `SPEC_TEMPLATE.md` convention; none covers the issue-controller programme.
+- Sixty-eight checked `.spec/` bundles existed at this bundle's compilation
+  base under the three-file `SPEC_TEMPLATE.md` convention (a compilation-time
+  observation, not a durable invariant); none covered the issue-controller
+  programme.
 - The programme issues #11681–#11789 are open and **unstarted**: the six
   functional-rail children #11682–#11687 sit under #11681, and the eighteen
   execution leaves #11764–#11785 carry `status:blocked` behind this node (S00).
