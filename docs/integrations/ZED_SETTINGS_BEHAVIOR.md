@@ -32,9 +32,15 @@ It consumes `schemas/perllsp-settings.schema.json` and covers:
 | Enum | `perl.critic.profile` | strict-only diagnostic |
 | Integer | `perl.formatting.maximumLineLength` | formatting output at widths 100 versus 40 |
 | Path/list | `perl.workspace.includePaths` | mutually exclusive module resolution roots |
-| Nested | `perl.aiCompletion.streaming.enabled` | exact winning value in the server configuration trace |
+| Nested | `perl.aiCompletion.streaming.updateDebounceMs` | exact winning value in the server configuration trace |
 
-The nested probe proves configuration ownership only. It does not promote editor-visible AI completion.
+The nested probe proves configuration ownership only. It does not promote
+editor-visible AI completion. AI activation/selection keys (`enabled`,
+`provider`, `model`, `streaming.enabled`) are rejected from every generic
+client channel (#4997), so the probe uses the still-generically-settable
+envelope field `streaming.updateDebounceMs`; a hostile or stale payload
+carrying the authority keys must produce the #4997 rejection warning and no
+state change.
 
 ## Required host roles
 

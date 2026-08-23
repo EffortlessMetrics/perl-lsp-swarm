@@ -47,12 +47,12 @@
     },
     {
       "id": "nested_streaming_setting",
-      "key": "perl.aiCompletion.streaming.enabled",
-      "schema_pointer": "/properties/perl/properties/aiCompletion/properties/streaming/properties/enabled",
-      "expected_type": "boolean",
-      "project_value": true,
-      "zed_value": false,
-      "observable": "The server configuration trace identifies the nested streaming value and its winning authority; client-visible streaming remains a separate feature cell."
+      "key": "perl.aiCompletion.streaming.updateDebounceMs",
+      "schema_pointer": "/properties/perl/properties/aiCompletion/properties/streaming/properties/updateDebounceMs",
+      "expected_type": "integer",
+      "project_value": 60,
+      "zed_value": 120,
+      "observable": "The server configuration trace identifies the nested envelope value and its winning authority; AI activation/selection keys are authority-rejected on this channel (#4997) and client-visible streaming remains a separate feature cell."
     }
   ],
   "precedence_sequence": [

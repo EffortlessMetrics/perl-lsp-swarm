@@ -194,20 +194,75 @@ pub struct NextEditConfig {
     pub enabled: bool,
 }
 
+/// A server-owned activation disposition for credentialed remote AI egress.
+///
+/// This type is deliberately not constructible from any client payload: no LSP
+/// channel (`initializationOptions`, `workspace/didChangeConfiguration`,
+/// `workspace/configuration` results, project files) can prove user/machine
+/// provenance, so generic arrivals never strengthen this disposition (#4997).
+/// Transport position, key spelling, client names, and client-supplied scope
+/// labels confer no authority.
+///
+/// [`AiActivationAuthority::TrustedUserOperator`] is reserved for a future
+/// server-owned operator adapter (#10817) and for tests proving the rule is
+/// not "activation is impossible"; constructing it from client-derived data is
+/// a security defect. Mirrors the [`ExternalIncludePathAuthority`] pattern
+/// landed for external include roots (#4998) so the canonical observation
+/// train (#10807/#10813/#10817) consumes one vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum AiActivationAuthority {
+    /// No accepted trusted-user/operator activation evidence exists. Remote
+    /// backend construction fails closed (#4997).
+    #[default]
+    Unavailable,
+    /// An explicitly trusted user/operator adapter admitted activation.
+    TrustedUserOperator,
+}
+
+impl AiCompletionConfig {
+    /// Admit a trusted user/operator activation (#4997).
+    ///
+    /// The only sanctioned way to make remote AI backend construction eligible.
+    /// Intentionally takes no client-derived arguments: a future server-owned
+    /// adapter (#10817) supplies independently verified user/machine evidence;
+    /// until then only tests and internal fixtures may call this. Passing
+    /// client payload content here is a security defect.
+    pub fn admit_trusted_user_operator_activation(&mut self) {
+        self.activation_authority = AiActivationAuthority::TrustedUserOperator;
+    }
+}
+
 /// Configuration for AI-powered inline completions.
 ///
 /// Disabled by default. When enabled, the server calls an external AI provider
 /// for inline completion suggestions, falling back to deterministic rules on
 /// timeout, error, or when AI is disabled.
+///
+/// Arming the remote backend additionally requires
+/// [`AiActivationAuthority::TrustedUserOperator`]; no current client channel
+/// can supply it (#4997), so remote activation fails closed in production
+/// until the trusted-operator adapter lands (#10817).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AiCompletionConfig {
-    /// Whether the user explicitly enabled AI completions via the LSP client
-    /// configuration channel. Default: false.
+    /// Whether a trusted user/operator activation was admitted (#4997).
+    ///
+    /// Only [`Self::admit_trusted_user_operator_activation`] may set the
+    /// underlying authority to trusted. Generic LSP traffic cannot write this
+    /// field; malformed or absent client values never clear an accepted
+    /// activation either.
+    #[serde(default)]
+    pub activation_authority: AiActivationAuthority,
+    /// Whether trusted user/operator activation requested AI completions.
+    ///
+    /// Generic LSP payloads cannot write this field (#4997); before the
+    /// trusted-operator adapter lands it can only be set by internal fixtures
+    /// and tests. Default: false.
     pub user_enabled: bool,
     /// Whether a workspace/project `.perl-lsp.toml` opted out (`enabled = false`).
     /// Project config may only disable AI, never enable it (issue #4997).
     pub project_opt_out: bool,
-    /// Effective runtime flag: `user_enabled && !project_opt_out`.
+    /// Effective runtime flag: `user_enabled && !project_opt_out`. Arming the
+    /// remote backend further requires a trusted activation authority (#4997).
     pub enabled: bool,
     /// Provider type. Currently only "openai_compat" is supported.
     pub provider: String,
@@ -283,8 +338,11 @@ fn is_http_header_name_byte(byte: u8) -> bool {
 /// Streaming sub-configuration for AI completions.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AiStreamingConfig {
-    /// Whether the user enabled streaming via the LSP client configuration channel.
-    /// Default: true (streaming is on when AI completions are enabled).
+    /// Whether trusted user/operator activation enabled streaming.
+    ///
+    /// Generic LSP payloads cannot write this field (#4997); streaming
+    /// presentation preferences never imply backend authorization. Default:
+    /// true (streaming is on when AI completions are legitimately armed).
     pub user_enabled: bool,
     /// Effective runtime flag, currently mirrors `user_enabled`.
     pub enabled: bool,
@@ -296,6 +354,8 @@ pub struct AiStreamingConfig {
 ///
 /// `enabled` is true only when the user enabled AI and the project did not
 /// opt out. Streaming `enabled` currently mirrors streaming `user_enabled`.
+/// Remote backend construction additionally requires an accepted trusted
+/// activation authority (#4997), enforced at [`crate::config`] consumers.
 pub fn recompute_ai_completion_effective(ai: &mut AiCompletionConfig) {
     ai.enabled = ai.user_enabled && !ai.project_opt_out;
     ai.streaming.enabled = ai.streaming.user_enabled;
@@ -304,6 +364,7 @@ pub fn recompute_ai_completion_effective(ai: &mut AiCompletionConfig) {
 impl Default for AiCompletionConfig {
     fn default() -> Self {
         Self {
+            activation_authority: AiActivationAuthority::Unavailable,
             user_enabled: false,
             project_opt_out: false,
             enabled: false,
@@ -552,11 +613,28 @@ impl ServerConfig {
         }
 
         if let Some(ai) = settings.get("aiCompletion") {
-            if let Some(enabled) = ai.get("enabled").and_then(|v| v.as_bool()) {
-                self.ai_completion.user_enabled = enabled;
+            // Security (#4997): activation and selection authority cannot be
+            // written from any LSP client payload. The same parser serves
+            // initialization options, didChangeConfiguration, and unscoped or
+            // folder-scoped workspace/configuration results, so no arrival
+            // here can prove user/machine provenance. Rejections preserve any
+            // previously accepted trusted state instead of clearing it.
+            if let Some(_enabled) = ai.get("enabled") {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    "ignoring aiCompletion.enabled from a generic LSP settings channel \
+                     (security: #4997): this channel cannot prove user/machine provenance, \
+                     so it can neither arm nor disable remote AI egress"
+                );
             }
-            if let Some(provider) = ai.get("provider").and_then(|v| v.as_str()) {
-                self.ai_completion.provider = provider.to_string();
+            if let Some(provider) = ai.get("provider") {
+                let _ = provider;
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    "ignoring aiCompletion.provider from a generic LSP settings channel \
+                     (security: #4997): backend/egress identity selection requires \
+                     trusted user/operator authority"
+                );
             }
             // Security (#5684): do NOT honour LSP-channel endpoint, apiKeyEnv,
             // apiKeyHeader, or apiKeyPrefix. A hostile workspace could redirect
@@ -573,8 +651,14 @@ impl ServerConfig {
                     "ignoring aiCompletion.endpoint from didChangeConfiguration (security: #5684)"
                 );
             }
-            if let Some(model) = ai.get("model").and_then(|v| v.as_str()) {
-                self.ai_completion.model = model.to_string();
+            if let Some(model) = ai.get("model") {
+                let _ = model;
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    "ignoring aiCompletion.model from a generic LSP settings channel \
+                     (security: #4997): request identity selection requires \
+                     trusted user/operator authority"
+                );
             }
             if let Some(_key_env) = ai.get("apiKeyEnv").and_then(|v| v.as_str()) {
                 tracing::warn!(
@@ -613,8 +697,16 @@ impl ServerConfig {
                 self.ai_completion.local_model_mode = local_model_mode;
             }
             if let Some(streaming) = ai.get("streaming") {
-                if let Some(enabled) = streaming.get("enabled").and_then(|v| v.as_bool()) {
-                    self.ai_completion.streaming.user_enabled = enabled;
+                // Security (#4997): streaming activation follows the same
+                // authority law as backend arming; a generic payload may not
+                // imply authorization either way.
+                if let Some(_enabled) = streaming.get("enabled") {
+                    tracing::warn!(
+                        target: "perl_lsp::config",
+                        "ignoring aiCompletion.streaming.enabled from a generic LSP \
+                         settings channel (security: #4997): streaming preferences \
+                         never imply or revoke remote egress authorization"
+                    );
                 }
                 if let Some(debounce) = streaming.get("updateDebounceMs").and_then(|v| v.as_u64()) {
                     self.ai_completion.streaming.update_debounce_ms = debounce;
@@ -3582,22 +3674,39 @@ profile = "recommended"
         assert_eq!(config.perltidy_block_comment_indentation, Some(1));
         assert!(config.perltidy_extra_args.is_empty());
         assert_eq!(config.perltidy_timeout_secs, 7);
-        assert!(config.ai_completion.enabled);
-        assert!(config.ai_completion.user_enabled);
-        assert_eq!(config.ai_completion.provider, "local");
-        // #5684: endpoint, apiKeyEnv, apiKeyHeader, apiKeyPrefix are NOT
+        // #4997: activation and selection authority cannot be written by any
+        // generic LSP settings channel; previously accepted/default state is
+        // preserved instead of being mutated or cleared.
+        assert!(!config.ai_completion.enabled);
+        assert!(!config.ai_completion.user_enabled);
+        assert_eq!(
+            config.ai_completion.activation_authority,
+            AiActivationAuthority::Unavailable,
+            "generic channel must not admit activation authority",
+        );
+        assert_eq!(
+            config.ai_completion.provider, "openai_compat",
+            "provider from didChangeConfiguration must not select egress identity",
+        );
+        // #5684/#4997: endpoint, apiKeyEnv, apiKeyHeader, apiKeyPrefix are NOT
         // settable via didChangeConfiguration. They remain at defaults.
         assert_eq!(config.ai_completion.endpoint, "");
-        assert_eq!(config.ai_completion.model, "codellama");
+        assert_eq!(
+            config.ai_completion.model, "gpt-4o-mini",
+            "model from didChangeConfiguration must not move request identity",
+        );
         assert_eq!(config.ai_completion.api_key_env, "OPENAI_API_KEY");
         assert_eq!(config.ai_completion.api_key_header, "Authorization");
         assert_eq!(config.ai_completion.api_key_prefix, Some("Bearer".to_string()));
+        // Envelope/presentation fields remain client-settable.
         assert_eq!(config.ai_completion.timeout_ms, 2500);
         assert_eq!(config.ai_completion.max_output_tokens, 128);
         assert_eq!(config.ai_completion.rate_limit_rps, 2.5);
         assert_eq!(config.ai_completion.max_inflight, 3);
         assert!(!config.ai_completion.fallback);
-        assert!(!config.ai_completion.streaming.enabled);
+        // streaming.enabled=false from the generic channel is ignored;
+        // streaming stays at its compiled default (on).
+        assert!(config.ai_completion.streaming.enabled);
         assert_eq!(config.ai_completion.streaming.update_debounce_ms, 125);
 
         config.update_from_value(&serde_json::json!({
@@ -5494,14 +5603,16 @@ api_key_prefix = "Attacker "
         Ok(())
     }
 
-    /// Project config may opt out of AI completions when the user enabled them.
+    /// Project config may opt out of AI completions when a trusted user/operator
+    /// activation enabled them (#4997). The user enable is admitted through the
+    /// internal trusted constructor — the same seam the future server-owned
+    /// operator adapter (#10817) will own — never through a client payload.
     #[test]
     fn project_config_can_opt_out_of_user_enabled_ai_completions() {
         let mut config = ServerConfig::default();
-        config.update_from_value(&serde_json::json!({
-            "aiCompletion": { "enabled": true }
-        }));
-        assert!(config.ai_completion.user_enabled);
+        config.ai_completion.user_enabled = true;
+        config.ai_completion.admit_trusted_user_operator_activation();
+        recompute_ai_completion_effective(&mut config.ai_completion);
         assert!(config.ai_completion.enabled);
 
         let mut project = ProjectConfig::default();
@@ -5515,9 +5626,9 @@ api_key_prefix = "Attacker "
     #[test]
     fn project_opt_out_clears_when_ai_completion_section_removed() {
         let mut config = ServerConfig::default();
-        config.update_from_value(&serde_json::json!({
-            "aiCompletion": { "enabled": true }
-        }));
+        config.ai_completion.user_enabled = true;
+        config.ai_completion.admit_trusted_user_operator_activation();
+        recompute_ai_completion_effective(&mut config.ai_completion);
 
         let mut project = ProjectConfig::default();
         project.ai_completion.enabled = Some(false);
@@ -5532,16 +5643,11 @@ api_key_prefix = "Attacker "
         assert!(config.ai_completion.enabled);
     }
 
-    /// Companion to the regression above: the LSP client/server configuration
-    /// channel (the `aiCompletion` block of `ServerConfig::update_from_value`)
-    /// can still set endpoint/credential fields. This proves the fix closes the
-    /// `.perl-lsp.toml` route rather than disabling the feature.
-    ///
-    /// It asserts nothing about that channel's authority for non-VS Code
-    /// clients. `update_from_value` cannot tell machine, user, workspace, or
-    /// folder settings apart; the VS Code extension closes activation via
-    /// `scope: machine` (#4997), while endpoint/credential user UI remains a
-    /// documented gap.
+    /// Companion to the regression above: endpoint/credential fields are
+    /// rejected on the LSP client/server configuration channel. Activation
+    /// and selection rejection for that same channel is proven by
+    /// `generic_channel_ai_activation_shapes_fail_closed_across_clients`
+    /// below (#4997).
     #[test]
     fn client_configuration_ignores_ai_endpoint_and_credential_fields_from_didChange() {
         let mut config = ServerConfig::default();
@@ -5559,6 +5665,170 @@ api_key_prefix = "Attacker "
         assert_eq!(config.ai_completion.api_key_env, "OPENAI_API_KEY");
         assert_eq!(config.ai_completion.api_key_header, "Authorization");
         assert_eq!(config.ai_completion.api_key_prefix, Some("Bearer".to_string()));
+    }
+
+    /// Security regression (issue #4997): every generic LSP settings shape —
+    /// `workspace/didChangeConfiguration` payloads, `initializationOptions`,
+    /// unscoped `workspace/configuration` results, and per-folder
+    /// `workspace/configuration` results — flows through this one parser, so
+    /// a non-VS-Code client forwarding workspace-derived configuration must
+    /// not be able to arm the remote AI backend or select its request
+    /// identity. All shapes are rejected identically; previously accepted
+    /// state is preserved.
+    #[test]
+    fn generic_channel_ai_activation_shapes_fail_closed_across_clients() {
+        let shapes: Vec<(&str, serde_json::Value)> = vec![
+            (
+                "didChangeConfiguration",
+                serde_json::json!({
+                    "aiCompletion": {
+                        "enabled": true,
+                        "provider": "openai",
+                        "model": "attacker-model",
+                        "streaming": { "enabled": true }
+                    }
+                }),
+            ),
+            ("initializationOptions", serde_json::json!({ "aiCompletion": { "enabled": true } })),
+            (
+                "workspace/configuration unscoped",
+                serde_json::json!({ "aiCompletion": { "enabled": true, "model": "attacker-model" } }),
+            ),
+            (
+                "workspace/configuration folder",
+                serde_json::json!({ "aiCompletion": { "provider": "openai" } }),
+            ),
+        ];
+
+        for (channel, payload) in shapes {
+            let mut config = ServerConfig::default();
+            config.update_from_value(&payload);
+
+            assert!(
+                !config.ai_completion.user_enabled && !config.ai_completion.enabled,
+                "{channel}: generic enablement must not arm user/effective flags",
+            );
+            assert_eq!(
+                config.ai_completion.activation_authority,
+                AiActivationAuthority::Unavailable,
+                "{channel}: generic traffic must not admit activation authority",
+            );
+            assert_eq!(
+                config.ai_completion.provider, "openai_compat",
+                "{channel}: generic provider selection must be rejected",
+            );
+            assert_eq!(
+                config.ai_completion.model, "gpt-4o-mini",
+                "{channel}: generic model selection must be rejected",
+            );
+            // Streaming activation follows the same authority law; the
+            // compiled default stays untouched by generic arrivals.
+            assert!(
+                config.ai_completion.streaming.user_enabled,
+                "{channel}: generic streaming toggle must not change trusted default",
+            );
+        }
+    }
+
+    /// Security regression (issue #4997): hostile or malformed generic traffic
+    /// must never clear an already-accepted trusted activation. A disable
+    /// request from a channel that cannot prove provenance may not silently
+    /// revoke a user/operator decision, and malformed values change nothing.
+    #[test]
+    fn hostile_and_malformed_traffic_preserves_accepted_trusted_ai_state() {
+        let mut config = ServerConfig::default();
+        config.ai_completion.user_enabled = true;
+        config.ai_completion.provider = "openai_compat".to_string();
+        config.ai_completion.model = "user-chosen-model".to_string();
+        config.ai_completion.admit_trusted_user_operator_activation();
+        recompute_ai_completion_effective(&mut config.ai_completion);
+        assert!(config.ai_completion.enabled);
+
+        // Unauthorized disable + selection attempt.
+        config.update_from_value(&serde_json::json!({
+            "aiCompletion": {
+                "enabled": false,
+                "provider": "attacker-provider",
+                "model": "attacker-model",
+                "streaming": { "enabled": false }
+            }
+        }));
+
+        assert_eq!(
+            config.ai_completion.activation_authority,
+            AiActivationAuthority::TrustedUserOperator,
+            "unauthorized traffic must not clear accepted activation authority",
+        );
+        assert!(
+            config.ai_completion.user_enabled,
+            "unauthorized disable must not clear the accepted user enable",
+        );
+        assert!(
+            config.ai_completion.enabled,
+            "effective flag must survive unauthorized reduction attempts \
+             (reduction authority stays with project opt-out)",
+        );
+        assert_eq!(config.ai_completion.model, "user-chosen-model");
+
+        // Malformed values are ignored and reset nothing.
+        config.update_from_value(&serde_json::json!({
+            "aiCompletion": {
+                "enabled": "yes",
+                "provider": 42,
+                "model": true,
+                "streaming": { "enabled": "no" }
+            }
+        }));
+        assert_eq!(
+            config.ai_completion.activation_authority,
+            AiActivationAuthority::TrustedUserOperator,
+            "malformed generic values must not reset trusted state",
+        );
+        assert!(config.ai_completion.enabled);
+    }
+
+    /// Selection authority can never exceed activation authority (#4997):
+    /// provider/model payloads alone admit no activation and select nothing.
+    #[test]
+    fn provider_and_model_selection_cannot_exceed_activation_authority() {
+        let mut config = ServerConfig::default();
+        config.update_from_value(&serde_json::json!({
+            "aiCompletion": { "provider": "openai", "model": "attacker-model" }
+        }));
+
+        assert_eq!(
+            config.ai_completion.activation_authority,
+            AiActivationAuthority::Unavailable,
+            "selection payloads must not manufacture activation authority",
+        );
+        assert!(!config.ai_completion.enabled);
+    }
+
+    /// Positive control for the #4997 gate: the internal trusted constructor
+    /// arms construction eligibility while generic traffic cannot. Without
+    /// this companion the hostile regressions above could pass merely because
+    /// arming became impossible in every direction.
+    #[test]
+    fn trusted_operator_admission_arms_eligibility_generic_traffic_cannot() {
+        let mut trusted = ServerConfig::default();
+        trusted.ai_completion.user_enabled = true;
+        trusted.ai_completion.admit_trusted_user_operator_activation();
+        recompute_ai_completion_effective(&mut trusted.ai_completion);
+        assert!(trusted.ai_completion.enabled);
+        assert_eq!(
+            trusted.ai_completion.activation_authority,
+            AiActivationAuthority::TrustedUserOperator,
+        );
+
+        let mut generic = ServerConfig::default();
+        generic.update_from_value(&serde_json::json!({
+            "aiCompletion": { "enabled": true, "streaming": { "enabled": true } }
+        }));
+        assert_ne!(
+            generic.ai_completion.activation_authority, trusted.ai_completion.activation_authority,
+            "generic channel admission must differ from trusted-operator admission",
+        );
+        assert!(!generic.ai_completion.enabled);
     }
 
     // ── critic include/exclude rule-ID validation ──────────────────────────

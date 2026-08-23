@@ -663,16 +663,29 @@ impl LspServer {
 
     /// Refresh the AI inline-completion backend based on current configuration.
     ///
-    /// When `ai_completion.enabled` is `true` and the API key environment variable
-    /// resolves to a non-empty string, constructs an `OpenAiProvider` and stores it.
-    /// Otherwise clears the backend to `None`, disabling AI completions.
+    /// Construction requires BOTH an effective enabled flag and an accepted
+    /// [`perl_lsp_rs_core::config::AiActivationAuthority::TrustedUserOperator`]
+    /// activation (#4997): a raw `ai_completion.enabled` bit alone is not
+    /// authority, because generic client channels could previously reach it.
+    /// When the API key environment variable resolves to a non-empty string,
+    /// constructs an `OpenAiProvider` and stores it. Otherwise clears the
+    /// backend to `None`, disabling AI completions.
+    ///
+    /// No production channel currently admits trusted activation (the
+    /// server-owned operator adapter is #10817), so remote construction fails
+    /// closed in production; tests admit activation through
+    /// `AiCompletionConfig::admit_trusted_user_operator_activation`.
     ///
     /// Called during initialization (after project config is loaded) and on every
     /// `didChangeConfiguration` notification that touches the `aiCompletion` section.
     pub(crate) fn refresh_ai_backend(&self) {
         let ai_config = self.config.lock().ai_completion.clone();
 
-        if !ai_config.enabled {
+        let trusted_activation = matches!(
+            ai_config.activation_authority,
+            perl_lsp_rs_core::config::AiActivationAuthority::TrustedUserOperator
+        );
+        if !ai_config.enabled || !trusted_activation {
             *self.ai_inline_backend.lock() = None;
             return;
         }
@@ -2095,6 +2108,115 @@ model = "gpt-4"
         Ok(())
     }
 
+    /// Security regression (issue #4997): generic client channels —
+    /// `workspace/didChangeConfiguration` and `initializationOptions` — must
+    /// not arm remote AI egress even when a complete, usable transport
+    /// (endpoint + resolvable credential) is already configured. The oracle
+    /// is zero backend construction with the destination and secret present,
+    /// so the assertion cannot pass for the wrong reason. Provider/model
+    /// payloads must likewise fail to select anything.
+    #[test]
+    fn generic_client_channels_cannot_arm_or_select_ai_backend()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const KEY_ENV: &str = "PERL_LSP_TEST_GENERIC_CHANNEL_KEY";
+        let _env_guard = AiTestEnvGuard::set(KEY_ENV, "generic-channel-key")?;
+
+        let server = LspServer::new();
+        // Preconfigure the transport exactly as a legitimate user-level
+        // setup would, so the only thing that can prevent construction is
+        // missing activation authority.
+        {
+            let mut config = server.config.lock();
+            config.ai_completion.endpoint =
+                "https://connector.example/v1/chat/completions".to_string();
+            config.ai_completion.model = "custom-code-model".to_string();
+            config.ai_completion.api_key_env = KEY_ENV.to_string();
+        }
+
+        let hostile_shapes: Vec<serde_json::Value> = vec![
+            json!({
+                "aiCompletion": {
+                    "enabled": true,
+                    "provider": "openai",
+                    "model": "attacker-model",
+                    "streaming": { "enabled": true }
+                }
+            }),
+            json!({ "aiCompletion": { "enabled": true } }),
+            json!({ "aiCompletion": { "provider": "openai", "model": "attacker-model" } }),
+        ];
+
+        for shape in &hostile_shapes {
+            // didChangeConfiguration shape.
+            server.config.lock().update_from_value(shape);
+            // initializationOptions shape uses the same parser; exercise it
+            // through a fresh payload application to keep both entry points
+            // covered by one matrix.
+            server.refresh_ai_backend();
+
+            let config = server.config.lock();
+            assert!(
+                server.ai_backend().is_none(),
+                "generic payload {shape} must not construct an outbound backend",
+            );
+            assert_eq!(
+                config.ai_completion.activation_authority,
+                perl_lsp_rs_core::config::AiActivationAuthority::Unavailable,
+                "generic payload {shape} must not admit activation authority",
+            );
+            assert!(
+                !config.ai_completion.enabled && !config.ai_completion.user_enabled,
+                "generic payload {shape} must not arm effective or user flags",
+            );
+            assert_eq!(
+                config.ai_completion.provider, "openai_compat",
+                "generic payload {shape} must not select provider",
+            );
+            assert_eq!(
+                config.ai_completion.model, "custom-code-model",
+                "generic payload {shape} must not move the accepted model",
+            );
+        }
+
+        // Hostile traffic must also not clear accepted trusted state.
+        {
+            let mut config = server.config.lock();
+            config.ai_completion.user_enabled = true;
+            config.ai_completion.admit_trusted_user_operator_activation();
+        }
+        server.config.lock().update_from_value(&json!({
+            "aiCompletion": {
+                "enabled": false,
+                "provider": "openai",
+                "model": "attacker-model",
+                "streaming": { "enabled": false }
+            }
+        }));
+        {
+            let config = server.config.lock();
+            assert_eq!(
+                config.ai_completion.activation_authority,
+                perl_lsp_rs_core::config::AiActivationAuthority::TrustedUserOperator,
+                "unauthorized disable traffic must not clear accepted activation",
+            );
+            assert!(
+                config.ai_completion.user_enabled,
+                "unauthorized traffic must not clear the accepted user enable",
+            );
+        }
+        server.refresh_ai_backend();
+        assert!(
+            server.ai_backend().is_some(),
+            "accepted trusted activation with usable transport must still construct",
+        );
+        Ok(())
+    }
+
+    /// Positive control for #4997: a legitimate trusted user/operator
+    /// activation plus a fully configured transport (endpoint + resolvable
+    /// credential) must still construct the backend. Without this companion,
+    /// the hostile-input regressions could be green merely because remote
+    /// construction is impossible in every direction.
     #[test]
     fn refresh_ai_backend_installs_connector_auth_backend() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -2114,6 +2236,7 @@ model = "gpt-4"
                 api_key_prefix: None,
                 ..AiCompletionConfig::default()
             };
+            config.ai_completion.admit_trusted_user_operator_activation();
         }
 
         server.refresh_ai_backend();

@@ -181,11 +181,30 @@
         "aiCompletion": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Client-controlled AI completion behavior. Endpoint and credential-routing fields are intentionally excluded because workspace-delivered LSP settings may not redirect source/secret-bearing requests.",
+          "description": "Client-controlled AI completion behavior. Activation, provider/model selection, and endpoint/credential-routing fields are intentionally excluded because no generic LSP settings channel can prove user/machine provenance (#4997, #5684); arrivals are rejected and previously accepted state is preserved.",
           "properties": {
-            "enabled": { "type": "boolean", "default": false },
-            "provider": { "type": "string", "enum": ["openai_compat"], "default": "openai_compat" },
-            "model": { "type": "string", "default": "gpt-4o-mini" },
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Reserved for a future server-owned trusted user/operator adapter; no client channel currently carries the required authority (#4997), so values are rejected and previously accepted activation is preserved.",
+              "x-perllsp-scope": "machine",
+              "x-perllsp-transports": []
+            },
+            "provider": {
+              "type": "string",
+              "enum": ["openai_compat"],
+              "default": "openai_compat",
+              "description": "Backend/egress identity selection requires trusted user/operator authority (#4997); generic-channel values are rejected.",
+              "x-perllsp-scope": "machine",
+              "x-perllsp-transports": []
+            },
+            "model": {
+              "type": "string",
+              "default": "gpt-4o-mini",
+              "description": "Request identity selection requires trusted user/operator authority (#4997); generic-channel values are rejected.",
+              "x-perllsp-scope": "machine",
+              "x-perllsp-transports": []
+            },
             "timeoutMs": { "type": "integer", "minimum": 0, "default": 1800 },
             "maxOutputTokens": { "type": "integer", "minimum": 1, "default": 64 },
             "rateLimitRps": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
@@ -195,8 +214,15 @@
             "streaming": {
               "type": "object",
               "additionalProperties": false,
+              "description": "Streaming presentation preferences. streaming.enabled follows the same authority law as backend arming (#4997) and is reserved for the future trusted adapter; only updateDebounceMs remains generically settable.",
               "properties": {
-                "enabled": { "type": "boolean", "default": true },
+                "enabled": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Streaming preferences never imply or revoke remote egress authorization (#4997); values from generic channels are rejected.",
+                  "x-perllsp-scope": "machine",
+                  "x-perllsp-transports": []
+                },
                 "updateDebounceMs": { "type": "integer", "minimum": 0, "default": 60 }
               }
             }

@@ -739,9 +739,21 @@ impl LspServer {
     /// Configure AI completion settings directly for test purposes.
     ///
     /// Avoids direct access to `self.config` from integration tests.
+    ///
+    /// Enabling here also admits a trusted user/operator activation (#4997):
+    /// this test-only API stands in for the future server-owned operator
+    /// adapter (#10817), because no client channel can arm remote egress
+    /// anymore. Disabling revokes the activation so tests observe the same
+    /// fail-closed construction gate production uses.
     pub fn test_configure_ai_completion(&self, enabled: bool, fallback: bool) {
         let mut cfg = self.config.lock();
         cfg.ai_completion.user_enabled = enabled;
+        if enabled {
+            cfg.ai_completion.admit_trusted_user_operator_activation();
+        } else {
+            cfg.ai_completion.activation_authority =
+                perl_lsp_rs_core::config::AiActivationAuthority::Unavailable;
+        }
         cfg.ai_completion.fallback = fallback;
         recompute_ai_completion_effective(&mut cfg.ai_completion);
     }

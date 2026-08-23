@@ -294,10 +294,16 @@ mod tests {
     #[test]
     fn client_channels_cannot_override_trusted_command_or_ai_transport_fields() {
         let restricted = [
+            "ai.activation_authority",
             "ai.api_key_env",
             "ai.api_key_header",
             "ai.api_key_prefix",
             "ai.endpoint",
+            "ai.model",
+            "ai.provider",
+            "ai.streaming.effective_enabled",
+            "ai.streaming.user_enabled",
+            "ai.user_enabled",
             "critic.legacy_profile",
             "critic.legacy_theme",
             "formatting.extra_args",
@@ -318,6 +324,52 @@ mod tests {
                 )),
                 "{id} accepts an untrusted client channel: {:?}",
                 field.sources
+            );
+        }
+    }
+
+    /// Recurrence gate for #4997: AI arm/select authority must come only from
+    /// compiled defaults plus trusted user/operator observations — never from
+    /// a project file or any client channel. Restoring `ProjectFile`,
+    /// `InitializationOptions`, `GlobalClientSettings`, or
+    /// `WorkspaceConfiguration` to one of these rows must fail here.
+    #[test]
+    fn ai_arm_and_select_rows_admit_only_trusted_operator_sources() {
+        const ARM_SELECT_ROWS: &[&str] = &[
+            "ai.activation_authority",
+            "ai.model",
+            "ai.provider",
+            "ai.streaming.effective_enabled",
+            "ai.streaming.user_enabled",
+            "ai.user_enabled",
+        ];
+
+        for id in ARM_SELECT_ROWS {
+            let field = authority_by_id(id).unwrap_or_else(|| panic!("missing {id}"));
+            for source in field.sources {
+                assert!(
+                    matches!(
+                        source,
+                        ConfigSource::CompiledDefault | ConfigSource::TrustedUserSettings
+                    ),
+                    "{id} row admits unauthorized source {source:?} (#4997)",
+                );
+            }
+        }
+
+        // The derived effective flag may additionally be reduced by the
+        // project file, but still cannot be armed by any client channel.
+        let effective = authority_by_id("ai.effective_enabled")
+            .unwrap_or_else(|| panic!("missing ai.effective_enabled"));
+        for source in effective.sources {
+            assert!(
+                matches!(
+                    source,
+                    ConfigSource::CompiledDefault
+                        | ConfigSource::ProjectFile
+                        | ConfigSource::TrustedUserSettings
+                ),
+                "ai.effective_enabled admits unauthorized source {source:?} (#4997)",
             );
         }
     }
