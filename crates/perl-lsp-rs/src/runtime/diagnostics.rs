@@ -2377,31 +2377,36 @@ fn dedup_overlapping_diagnostics(diagnostics: &mut Vec<perl_lsp_rs_core::provide
 /// duplicate prevention moved upstream into the normalized critic seam
 /// (#11918).
 ///
-/// These are exactly the reviewed alias pairs of the migrated producer
-/// cohort; every other overlap pair keeps the transport-level coincidence
-/// dedup until its own producers migrate.
+/// The table lists exactly the reviewed alias pairs of the migrated producer
+/// cohort, in both orders: PL404 (literal shape) with the undef-comparison
+/// alias; PL601 with the backtick alias and, for the qx shape, the
+/// qx/readpipe alias; PL606 (readpipe shape) with the qx/readpipe alias; and
+/// PL603/PL604 with the system/exec rule that owns both shapes. Every other
+/// overlap pair keeps the transport-level coincidence dedup until its own
+/// producers migrate, so unrelated rows never lose their existing collapse
+/// behavior to this exemption.
 fn is_upstream_merged_alias_pair(a_code: Option<&str>, b_code: Option<&str>) -> bool {
-    let a_is_pl = matches!(a_code, Some("PL404" | "PL601" | "PL603" | "PL604" | "PL606"));
-    let b_is_pl = matches!(b_code, Some("PL404" | "PL601" | "PL603" | "PL604" | "PL606"));
-    let a_is_native_alias = matches!(
-        a_code,
-        Some(
-            "native.common.undef_comparison"
-                | "native.security.backtick_exec"
-                | "native.security.qx_readpipe"
-                | "native.security.system_exec"
-        )
+    let forward = matches!(
+        (a_code, b_code),
+        (Some("PL404"), Some("native.common.undef_comparison"))
+            | (
+                Some("PL601"),
+                Some("native.security.backtick_exec" | "native.security.qx_readpipe")
+            )
+            | (Some("PL606"), Some("native.security.qx_readpipe"))
+            | (Some("PL603" | "PL604"), Some("native.security.system_exec"))
     );
-    let b_is_native_alias = matches!(
-        b_code,
-        Some(
-            "native.common.undef_comparison"
-                | "native.security.backtick_exec"
-                | "native.security.qx_readpipe"
-                | "native.security.system_exec"
-        )
+    let reverse = matches!(
+        (b_code, a_code),
+        (Some("PL404"), Some("native.common.undef_comparison"))
+            | (
+                Some("PL601"),
+                Some("native.security.backtick_exec" | "native.security.qx_readpipe")
+            )
+            | (Some("PL606"), Some("native.security.qx_readpipe"))
+            | (Some("PL603" | "PL604"), Some("native.security.system_exec"))
     );
-    (a_is_pl && b_is_native_alias) || (b_is_pl && a_is_native_alias)
+    forward || reverse
 }
 
 /// Returns `true` if the code string looks like a native-critic code (not a PL* code).
@@ -4711,5 +4716,40 @@ print \"unreachable\\n\";\n";
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn upstream_merged_alias_exemption_covers_exactly_the_reviewed_pairs() {
+        // #11918: the transport XOR retirement is keyed to the exact reviewed
+        // alias pairs, not a cross-product of cohort codes, so unrelated
+        // overlap pairs keep their pre-existing coincidence dedup.
+        let pl = |code: &'static str| Some(code);
+        for (a, b) in [
+            (pl("PL404"), pl("native.common.undef_comparison")),
+            (pl("PL601"), pl("native.security.backtick_exec")),
+            (pl("PL601"), pl("native.security.qx_readpipe")),
+            (pl("PL606"), pl("native.security.qx_readpipe")),
+            (pl("PL603"), pl("native.security.system_exec")),
+            (pl("PL604"), pl("native.security.system_exec")),
+        ] {
+            assert!(
+                is_upstream_merged_alias_pair(a, b) && is_upstream_merged_alias_pair(b, a),
+                "reviewed alias pair {a:?}/{b:?} must be exempt in both orders"
+            );
+        }
+        for (a, b) in [
+            (pl("PL404"), pl("native.security.system_exec")),
+            (pl("PL603"), pl("native.security.qx_readpipe")),
+            (pl("PL606"), pl("native.security.backtick_exec")),
+            (pl("PL100"), pl("native.security.system_exec")),
+            (pl("PL404"), pl("PL603")),
+            (pl("native.common.undef_comparison"), pl("native.security.system_exec")),
+            (pl("PL603"), None),
+        ] {
+            assert!(
+                !is_upstream_merged_alias_pair(a, b) && !is_upstream_merged_alias_pair(b, a),
+                "unrelated pair {a:?}/{b:?} must keep the transport coincidence dedup"
+            );
+        }
     }
 }
