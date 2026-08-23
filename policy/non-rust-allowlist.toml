@@ -2493,3 +2493,43 @@ covered_by = [
 ]
 created = "2026-08-16"
 review_after = "2026-09-16"
+
+# =============================================================================
+# Lite XL integration train (staged exact upstream client source)
+#
+# Files are classified individually, mirroring clients/sublime convention:
+# a new file below clients/lite-xl fails the inventory check until it is
+# reviewed and classified.
+# =============================================================================
+
+[[allow]]
+id = "non-rust-litexl-json-codec"
+path = "clients/lite-xl/upstream/json.lua"
+kind = "editor_extension"
+language = "lua"
+surface = "editor"
+classification = "production"
+owner = "editor/lite-xl"
+reason = "Exact upstream lite-xl-lsp json.lua (base d1432ae, blob eb36b8fa) staged for the Lite XL integration train, carrying only the #11197 terminal typed-decode-error patch."
+covered_by = [
+  "lua clients/lite-xl/tests/json_decode_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-22"
+review_after = "2026-09-22"
+
+[[allow]]
+id = "non-rust-litexl-json-decode-tests"
+path = "clients/lite-xl/tests/json_decode_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free decode-failure suite proving malformed JSON terminates as one typed error; runs against the staged module or any alternate path for mutation checks."
+covered_by = [
+  "lua clients/lite-xl/tests/json_decode_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-22"
+review_after = "2026-09-22"
