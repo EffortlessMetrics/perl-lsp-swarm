@@ -15,10 +15,19 @@
 -- lack of automatic retention/rotation is a declared limitation. It must
 -- never be enabled for canonical host or CI proof artifacts.
 
+-- Local patch (#11162): window/showDocument URIs are classified before any
+-- display or open action (control characters, malformed percent encoding,
+-- unknown schemes and non-local internal targets fail closed with stable
+-- reasons), external targets launch through argv-only native handoffs with
+-- the target bytes as one inert argument, and the whole prompt/decision/
+-- launch/reveal sequence runs through one testable util.show_document seam.
+-- No shell command string is ever constructed.
+
 local core = require "core"
 local common = require "core.common"
 local config = require "core.config"
 local json = require "plugins.lsp.json"
+local process = require "process"
 
 local util = {}
 
@@ -210,24 +219,172 @@ function util.toselection(range, doc)
   return line1, col1, line2, col2
 end
 
----Opens the given location on a external application.
----@param location string
+---Opens the given location on an external application without shell
+---construction (#11162).
+---
+---The launcher is resolved independently of the target and the target bytes
+---stay one inert argv element, so spaces, quotes, ampersands, semicolons,
+---pipes, percent signs, Unicode and leading dashes can never become launcher
+---syntax. Deprecated shell-like system.exec is not used.
+---@param location string Admitted external URI (see util.EXTERNAL_URI_SCHEMES)
+---@return boolean launched
+---@return string|nil failure_reason
+---@return integer|nil pid Launcher process id when the handoff was accepted
 function util.open_external(location)
-  local filelauncher = ""
+  local admitted, reason = util.classify_uri(location, util.EXTERNAL_URI_SCHEMES)
+  if not admitted then
+    return false, reason
+  end
+
+  local launcher = {}
   if PLATFORM == "Windows" then
-    filelauncher = "start"
+    -- Native protocol handler invocation: argv only, no cmd.exe, no start.
+    launcher = { "rundll32", "url.dll,FileProtocolHandler" }
   elseif PLATFORM == "Mac OS X" then
-    filelauncher = "open"
+    launcher = { "open" }
   else
-    filelauncher = "xdg-open"
+    launcher = { "xdg-open" }
   end
 
-  -- non-Windows platforms need the text quoted (%q)
-  if PLATFORM ~= "Windows" then
-    location = string.format("%q", location)
+  local argv = {}
+  for index, argument in ipairs(launcher) do
+    argv[index] = argument
+  end
+  argv[#argv + 1] = location
+
+  local pid = process.start(argv, {})
+  if not pid then
+    return false, "launch_failed"
   end
 
-  system.exec(filelauncher .. " " .. location)
+  return true, nil, pid
+end
+
+---Reviewed externally openable URI schemes (#11162). Deliberately handled
+---file URIs stay admitted; anything else fails closed instead of being
+---delegated blindly to a shell.
+util.EXTERNAL_URI_SCHEMES = {
+  http = true,
+  https = true,
+  file = true,
+}
+
+---Local/virtual URI classes the client can actually reveal internally
+---(#11162). The first baseline admits local file URIs only; other classes
+---need direct implementation and proof before admission.
+util.INTERNAL_URI_SCHEMES = {
+  file = true,
+}
+
+---Maximum accepted URI length in bytes (#11162). Bounded input keeps every
+---downstream prompt/validation path bounded.
+local MAX_URI_BYTES = 2048
+
+---True when the text carries a percent escape that is not exactly two hex
+---digits (#11162).
+local function has_malformed_percent_encoding(uri)
+  local position = 1
+  while true do
+    local percent = uri:find("%", position, true)
+    if not percent then
+      return false
+    end
+    if uri:sub(percent + 1, percent + 2):match("^%x%x$") == nil then
+      return true
+    end
+    position = percent + 1
+  end
+end
+
+---Classifies one URI against a reviewed scheme admission table (#11162).
+---
+---Syntax is validated before any display or open action: control characters
+---and malformed percent encoding are rejected with stable reasons, and the
+---scheme is matched case-insensitively without rewriting the target bytes.
+---@param uri any Candidate URI from a server-supplied request
+---@param admitted table Set of lowercase admitted scheme names
+---@return boolean ok
+---@return string|nil failure_reason Stable rejection token when not admitted
+---@return string|nil scheme Lowercase admitted scheme when admitted
+function util.classify_uri(uri, admitted)
+  if type(uri) ~= "string" or #uri == 0 then
+    return false, "empty_uri"
+  end
+  if #uri > MAX_URI_BYTES then
+    return false, "uri_above_bound"
+  end
+  for index = 1, #uri do
+    local byte = string.byte(uri, index)
+    if byte < 0x20 or byte == 0x7f then
+      return false, "control_character"
+    end
+  end
+  local scheme = uri:match("^(%a[%w+%.%-]*):")
+  if not scheme then
+    return false, "malformed_uri"
+  end
+  if has_malformed_percent_encoding(uri) then
+    return false, "malformed_percent_encoding"
+  end
+  scheme = scheme:lower()
+  if not admitted[scheme] then
+    return false, "unsupported_scheme"
+  end
+  return true, nil, scheme
+end
+
+---Handles one window/showDocument request through one truthful sequence:
+---classify the URI against the reviewed policy, preserve the exact user
+---decision, launch/reveal through safe seams, and surface one outcome for
+---the exact ShowDocumentResult response (#11162, consumed by #10873).
+---
+---hooks carry the editor-side seams so this sequence stays deterministically
+---testable: confirm(scheme, uri) -> boolean user decision for external
+---targets (the host prompt must display scheme and target verbatim),
+---reveal(uri) -> truthy when the internal document opened, raise() applied
+---after a successful reveal for takeFocus. The init.lua listener wires these
+---to MessageBox.info / core.root_view:open_doc / system.raise_window and
+---feeds the returned outcome to server:push_response unchanged.
+---@param server table LSP server (name used by the host prompt title)
+---@param params table Request params: uri, external, selection, takeFocus
+---@param hooks table|nil Editor seams: confirm, reveal, raise
+---@return boolean success
+---@return string|nil failure_reason Stable token when not successful
+function util.show_document(server, params, hooks)
+  hooks = hooks or {}
+  local uri = params and params.uri
+
+  if params and params.external then
+    local external_ok, external_reason, scheme =
+      util.classify_uri(uri, util.EXTERNAL_URI_SCHEMES)
+    if not external_ok then
+      return false, external_reason
+    end
+    if hooks.confirm and not hooks.confirm(scheme, uri) then
+      return false, "user_declined"
+    end
+    local launched, launch_reason = util.open_external(uri)
+    if not launched then
+      return false, launch_reason or "launch_failed"
+    end
+    return true, nil
+  end
+
+  local internal_ok, internal_reason = util.classify_uri(
+    uri, util.INTERNAL_URI_SCHEMES)
+  if not internal_ok then
+    return false, internal_reason
+  end
+  if not hooks.reveal then
+    return false, "reveal_unavailable"
+  end
+  if not hooks.reveal(uri) then
+    return false, "reveal_failed"
+  end
+  if params and params.takeFocus and hooks.raise then
+    hooks.raise()
+  end
+  return true, nil
 end
 
 ---One-shot flag so trace-file failures never recurse or spam (#11155).

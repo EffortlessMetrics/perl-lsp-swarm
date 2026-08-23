@@ -2634,9 +2634,10 @@ language = "lua"
 surface = "editor"
 classification = "production"
 owner = "editor/lite-xl"
-reason = "Exact upstream lite-xl-lsp util.lua (base d1432ae, blob 588c101a) staged for the Lite XL integration train, carrying the #11155 guarded sensitive-trace patch: log_file append failures warn once without recursion, and the surface is documented as source-bearing with no automatic retention."
+reason = "Exact upstream lite-xl-lsp util.lua (base d1432ae, blob 588c101a) staged for the Lite XL integration train, carrying the #11155 guarded sensitive-trace patch (log_file append failures warn once without recursion, documented source-bearing surface, no automatic retention) and the #11162 shell-free external-launch patch (URI classification policy, argv-only platform launchers, testable show_document sequence)."
 covered_by = [
   "lua clients/lite-xl/tests/server_logging_test.lua",
+  "lua clients/lite-xl/tests/util_show_document_test.lua",
   "cargo xtask check-file-policy",
 ]
 created = "2026-08-23"
@@ -2653,6 +2654,22 @@ owner = "editor/lite-xl"
 reason = "Deterministic canary-based redaction suite proving default failure logs keep actionable identity while source/secret bytes stay out, stderr drains bounded with visible truncation, and the explicit trace stays opt-in, guarded, and immediately stoppable; runs against staged or mutated modules."
 covered_by = [
   "lua clients/lite-xl/tests/server_logging_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-show-document-tests"
+path = "clients/lite-xl/tests/util_show_document_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic argv/scheme falsifier suite proving shell-free external launches across Linux/macOS/Windows shapes, explicit URI dispositions, truthful decline/failure outcomes, and zero shell invocation; runs against the staged module, pristine upstream blob, or a restored shell-construction mutation."
+covered_by = [
+  "lua clients/lite-xl/tests/util_show_document_test.lua",
   "cargo xtask check-file-policy",
 ]
 created = "2026-08-23"

@@ -80,6 +80,16 @@ package.preload["core.common"] = function()
   return {}
 end
 
+---util.lua requires the Lite XL process module for #11162 argv launches;
+---these logging tests never launch anything, so record and refuse.
+package.preload["process"] = function()
+  return {
+    start = function(_, argv)
+      error("unexpected process start in logging test", 0)
+    end
+  }
+end
+
 ---Shared editor config table; tests mutate cfg.plugins.lsp per scenario.
 local cfg = { plugins = { lsp = {} } }
 package.preload["core.config"] = function()
