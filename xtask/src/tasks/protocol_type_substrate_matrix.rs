@@ -693,8 +693,7 @@ fn count_falsifier_files(root: &Path) -> Result<Vec<String>> {
         let contents = fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
         if PATCH_FIELD_NEEDLES.iter().any(|needle| contents.contains(needle))
-            && let Some(relative) =
-                path.strip_prefix(root).ok().and_then(|p| p.to_str())
+            && let Some(relative) = path.strip_prefix(root).ok().and_then(|p| p.to_str())
         {
             matches.insert(relative.replace('\\', "/"));
         }
