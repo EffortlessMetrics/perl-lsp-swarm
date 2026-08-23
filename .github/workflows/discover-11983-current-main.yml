@@ -1,4 +1,4 @@
-name: Discover #11983 current-main conflicts
+name: Rebuild #11983 on current main
 
 on:
   pull_request:
@@ -6,22 +6,23 @@ on:
     types: [opened, synchronize, reopened]
     paths:
       - .github/workflows/discover-11983-current-main.yml
+      - scripts/maintenance/rebuild_11983_current_main.sh
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: discover-11983-${{ github.event.pull_request.number }}
+  group: rebuild-11983-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
-  discover:
+  rebuild:
     if: >-
       github.repository == 'EffortlessMetrics/perl-lsp-swarm' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.head_ref == 'repair/11983-current-main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 120
 
     steps:
       - name: Checkout current-main repair branch
@@ -30,101 +31,5 @@ jobs:
           ref: repair/11983-current-main
           fetch-depth: 0
 
-      - name: Replay conflicted patches and expose second-commit conflicts
-        shell: bash
-        run: |
-          set -uo pipefail
-          git config user.name EffortlessSteven
-          git config user.email git@effortlesssteven.com
-          git fetch origin main fix/11955-withdraw-secondary-format-routes
-          git merge --no-edit origin/main
-
-          source_commit=d174ec1e9845056b8e1a193001ce88a2ea9eaebe
-          parent_commit=470277161c18cd5cfa00e31ea6545e2e7baee461
-          if ! git cherry-pick "$source_commit"; then
-            mapfile -t conflicts < <(git diff --name-only --diff-filter=U | sort)
-            expected=(
-              crates/perl-lsp-rs/src/runtime/language/formatting_policy/tests.rs
-              crates/perl-lsp-rs/src/runtime/text_sync.rs
-              crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs
-              crates/perl-lsp-rs/tests/lsp_batteries_e2e_workflow_test.rs
-            )
-            mapfile -t expected_sorted < <(printf '%s\n' "${expected[@]}" | sort)
-            diff -u <(printf '%s\n' "${expected_sorted[@]}") <(printf '%s\n' "${conflicts[@]}")
-
-            for path in "${conflicts[@]}"; do
-              git checkout --ours -- "$path"
-              patch="/tmp/$(printf '%s' "$path" | tr '/' '_').patch"
-              git diff --binary "$parent_commit" "$source_commit" -- "$path" > "$patch"
-              git apply --reject --recount --whitespace=nowarn "$patch" || true
-            done
-
-            python3 - <<'PY'
-          from pathlib import Path
-
-          def replace_exact(path: str, old: str, new: str) -> None:
-              file = Path(path)
-              text = file.read_text(encoding="utf-8")
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"{path}: expected one current-main anchor, found {count}")
-              file.write_text(text.replace(old, new), encoding="utf-8")
-
-          text_sync = "crates/perl-lsp-rs/src/runtime/text_sync.rs"
-          replace_exact(
-              text_sync,
-              "    Arc, AtomicBool, AtomicU32, CodeFormatter, DocumentState, FormattingOptions, HashMap,\n"
-              "    JsonRpcError, LspServer, Mutex, Node, NonZeroU32, Ordering, Parser, Value,\n",
-              "    Arc, AtomicBool, AtomicU32, DocumentState, HashMap, JsonRpcError, LspServer, Mutex,\n"
-              "    Node, NonZeroU32, Ordering, Parser, Value,\n",
-          )
-
-          lifecycle = "crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs"
-          replace_exact(
-              lifecycle,
-              "    Arc, AtomicU32, CodeFormatter, FormattingOptions, JsonRpcError, LspServer, NonZeroU32, Value,\n"
-              "    invalid_params, json, source_path_from_uri,\n",
-              "    Arc, AtomicU32, JsonRpcError, LspServer, NonZeroU32, Value, invalid_params, json,\n"
-              "    source_path_from_uri,\n",
-          )
-
-          e2e = Path("crates/perl-lsp-rs/tests/lsp_batteries_e2e_workflow_test.rs")
-          e2e_text = e2e.read_text(encoding="utf-8")
-          required = (
-              "// True-EOF policy (#8048/#11873): whole-document replace edits extend through\n"
-              "    // true EOF"
-          )
-          if required not in e2e_text:
-              raise SystemExit("current-main true-EOF formatting oracle is missing")
-          if '"my $result = calculate(5, 3);\\n",\n            "\\n",' in e2e_text:
-              raise SystemExit("stale extra-newline expectation returned")
-
-          rejects = [
-              Path(text_sync + ".rej"),
-              Path(lifecycle + ".rej"),
-              Path(str(e2e) + ".rej"),
-          ]
-          for reject in rejects:
-              if not reject.exists():
-                  raise SystemExit(f"expected accounted-for reject missing: {reject}")
-              reject.unlink()
-          PY
-
-            if find . -name '*.rej' -print -quit | grep -q .; then
-              echo "UNEXPECTED_REJECTED_HUNKS"
-              find . -name '*.rej' -print -exec sh -c 'echo "--- $1"; cat "$1"' _ {} \;
-              exit 1
-            fi
-
-            git add -- "${conflicts[@]}"
-            git cherry-pick --continue
-          fi
-
-          second_commit=0f6a4334eb5a53df54a5ed40103659a63578b6f5
-          if ! git cherry-pick "$second_commit"; then
-            echo "SECOND_COMMIT_CONFLICT $second_commit"
-            git diff --name-only --diff-filter=U | sort | sed 's/^/CONFLICT_FILE /'
-            exit 1
-          fi
-
-          echo "RECONSTRUCTION_APPLIES_CLEANLY"
+      - name: Reconstruct, strengthen, verify, and publish containment candidate
+        run: bash scripts/maintenance/rebuild_11983_current_main.sh
