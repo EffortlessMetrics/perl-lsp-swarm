@@ -58,11 +58,7 @@ jobs:
 
           expected=(
             crates/perl-lsp-rs-core/src/config/mod.rs
-            crates/perl-lsp-rs-core/src/configuration_authority/catalog.rs
-            crates/perl-lsp-rs-core/src/configuration_authority/mod.rs
             crates/perl-lsp-rs-core/tests/perllsp_settings_schema_tests.rs
-            crates/perl-lsp-rs/src/runtime/mod.rs
-            schemas/perllsp-settings.schema.json
           )
           mapfile -t expected_sorted < <(printf '%s\n' "${expected[@]}" | sort)
           if ! diff -u <(printf '%s\n' "${expected_sorted[@]}") <(printf '%s\n' "${conflicts[@]}"); then
