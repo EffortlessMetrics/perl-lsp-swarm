@@ -1,6 +1,6 @@
 # ADR-0040: Generated Feature Catalog Contracts from `features.toml`
 
-**Status**: Accepted
+**Status**: Accepted (amended 2026-08 — see [Amendment](#amendment-2026-08-crate-local-projections-are-generated))
 **Date**: 2026-03-18
 **Decision Makers**: Perl LSP Architecture Team
 **Related**: [ADR-0016](0016-feature-governance.md), [FEATURE_GOVERNANCE.md](../project/FEATURE_GOVERNANCE.md), [`features.toml`](../../features.toml)
@@ -172,3 +172,20 @@ Review this ADR if any of the following become true:
 - [`crates/perl-lsp-rs/src/features/feature_catalog.rs`](../../crates/perl-lsp-rs/src/features/feature_catalog.rs)
 - [`crates/perl-lsp-rs/features_sot.toml`](../../crates/perl-lsp-rs/features_sot.toml)
 - [`features.toml`](../../features.toml)
+
+## Amendment 2026-08: crate-local projections are generated
+
+The "vendored fallback" described above drifted into four independently
+hand-edited forks of `features.toml` with stale rows, stale citations, and
+stale descriptions — exactly the drift this ADR's decision drivers warned
+about. [#7029](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7029)
+amends the decision:
+
+- `features.toml` at the workspace root remains the single hand-edited
+  authority, now also for evidence/claim metadata (direction, capability
+  gate, registration route, ownership, claim strength, evidence policy).
+- Every `crates/*/features_sot.toml` is a byte-exact GENERATED projection of
+  the authority. Regenerate with `cargo xtask feature-sot`; verify with
+  `--check`, which fails closed on any byte drift.
+- The fallback still exists for standalone/packaged builds; it is no longer a
+  maintenance surface.

@@ -14,6 +14,7 @@ use std::path::PathBuf;
 mod allocation_tracker;
 mod cli;
 mod tasks;
+use tasks::feature_sot;
 #[cfg(test)]
 mod test_support;
 mod types;
@@ -152,6 +153,15 @@ enum Commands {
     /// Validate selected LSP 3.18 claim-boundary guardrails.
     #[command(name = "check-lsp-318-claims")]
     CheckLsp318Claims,
+
+    /// Regenerate the authoritative feature-catalog projections (or verify
+    /// them with --check) under the #7029 schema and evidence policy.
+    #[command(name = "feature-sot")]
+    FeatureSot {
+        /// Verify projections and catalog instead of regenerating.
+        #[arg(long)]
+        check: bool,
+    },
 
     /// Generate or check the selected LSP 3.18 conformance matrix.
     #[command(name = "generate-lsp-318-matrix")]
@@ -4086,6 +4096,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckOracleCompare => oracle_runner::run(),
         Commands::CheckSemanticTokenClasses => semantic_token_classes::run(),
         Commands::CheckLsp318Claims => lsp_318_claims::run(),
+        Commands::FeatureSot { check } => feature_sot::run(check),
         Commands::GenerateLsp318Matrix { check } => lsp_318_matrix::run(check),
         Commands::CheckWorkspaceSymbolClasses => workspace_symbol_classes::run(),
         Commands::Goals { command } => match command {

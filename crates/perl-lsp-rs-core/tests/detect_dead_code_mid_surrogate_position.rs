@@ -1,12 +1,16 @@
 //! Call-observation regression test for the mid-surrogate UTF-16 column clamp
 //! in `LineStartsCache::position_to_offset` (fix #2478).
 //!
-//! This test drives `detect_dead_code` — a real production caller of
-//! `LineStartsCache::position_to_offset` — with a symbol whose UTF-16 column
+//! This test drives `detect_dead_code` - a real production caller of
+//! `LineStartsCache::position_to_offset` - with a symbol whose UTF-16 column
 //! lands on the trailing surrogate of an emoji in the source text.  It asserts
 //! that the returned byte offset clamps to the *start* of the codepoint, not
 //! past it.  The assertion would fail if the `uc + ch.len_utf16() > character`
 //! clamp at line_index.rs:87 were reverted to the old `uc >= character` guard.
+
+// Test-only observation helper uses `.expect()` on internal invariants.
+#![allow(clippy::expect_used)]
+
 
 #[cfg(not(target_arch = "wasm32"))]
 mod tests {

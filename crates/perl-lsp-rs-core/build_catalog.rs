@@ -8,29 +8,30 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Feature maturity state.
+/// Feature claim-strength vocabulary (#7029). Mirrors
+/// `perl_lsp_rs_core::feature_catalog::Maturity` for build-time rendering.
 #[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum Maturity {
-    Experimental,
+    Proven,
     Preview,
-    Ga,
     Planned,
-    Production,
+    Unsupported,
+    NotProven,
 }
 
 impl Maturity {
-    pub const fn is_advertised(self) -> bool {
-        matches!(self, Self::Ga | Self::Production)
+    pub const fn is_trackable(self) -> bool {
+        !matches!(self, Self::Planned | Self::Unsupported)
     }
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Experimental => "experimental",
+            Self::Proven => "proven",
             Self::Preview => "preview",
-            Self::Ga => "ga",
             Self::Planned => "planned",
-            Self::Production => "production",
+            Self::Unsupported => "unsupported",
+            Self::NotProven => "not_proven",
         }
     }
 }
@@ -72,11 +73,13 @@ pub struct Catalog {
 }
 
 impl Catalog {
+    /// Advertisement keys on the explicit flag alone (#7029); maturity is a
+    /// claim-strength record, not the binary surface.
     pub fn advertised_feature_ids(&self) -> Vec<&str> {
         let mut ids = self
             .feature
             .iter()
-            .filter(|f| f.advertised && f.maturity.is_advertised())
+            .filter(|f| f.advertised)
             .map(|f| f.id.as_str())
             .collect::<Vec<_>>();
         ids.sort_unstable();
@@ -88,53 +91,22 @@ impl Catalog {
     pub fn trackable_feature_count_for_grid(&self) -> usize {
         self.feature
             .iter()
-            .filter(|feature| feature.maturity != Maturity::Planned && feature.counts_in_coverage)
+            .filter(|feature| feature.maturity.is_trackable() && feature.counts_in_coverage)
             .count()
     }
 
-    /// Advertised trackable count for BDD/compliance grids.
-    /// Excludes entries explicitly marked `counts_in_coverage = false`.
-    pub fn advertised_trackable_count_for_grid(&self) -> usize {
-        self.feature
-            .iter()
-            .filter(|feature| {
-                feature.advertised
-                    && feature.maturity.is_advertised()
-                    && feature.counts_in_coverage
-            })
-            .count()
-    }
-
-    /// Compatibility-only alias for the grid-oriented trackable count.
-    /// This is not a compliance, status, or reporting authority.
-    #[deprecated(note = "compatibility-only; use trackable_feature_count_for_grid")]
-    pub fn trackable_feature_count(&self) -> usize {
-        self.feature
-            .iter()
-            .filter(|feature| feature.maturity != Maturity::Planned)
-            .count()
-    }
-
-    /// Compatibility-only alias for the grid-oriented advertised count.
-    /// This is not a compliance, status, or reporting authority.
-    #[deprecated(note = "compatibility-only; use advertised_trackable_count_for_grid")]
-    pub fn advertised_trackable_count(&self) -> usize {
-        self.feature
-            .iter()
-            .filter(|feature| feature.advertised && feature.maturity.is_advertised())
-            .count()
-    }
-
-    /// Compatibility-only alias for the grid-oriented percentage.
-    /// This is not a compliance, status, or reporting authority.
-    #[deprecated(note = "compatibility-only; use compliance_percent_for_grid")]
-    pub fn compliance_percent(&self) -> f32 {
+    /// Proven share of trackable rows (#7029).
+    pub fn compliance_percent_for_grid(&self) -> f32 {
         let trackable = self.trackable_feature_count_for_grid();
         if trackable == 0 {
             return 0.0;
         }
-        let advertised = self.advertised_trackable_count_for_grid();
-        (advertised as f64 / trackable as f64 * 100.0).round() as f32
+        let proven = self
+            .feature
+            .iter()
+            .filter(|feature| feature.maturity == Maturity::Proven && feature.counts_in_coverage)
+            .count();
+        (proven as f64 / trackable as f64 * 100.0).round() as f32
     }
 
     pub fn validate(&self) -> Result<(), String> {

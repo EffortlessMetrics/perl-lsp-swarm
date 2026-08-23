@@ -76,12 +76,12 @@ fn check_invariants() -> Result<()> {
         }
 
         if feature.advertised
-            && feature.maturity == Maturity::Ga
+            && feature.maturity == Maturity::Proven
             && feature.tests.is_empty()
             && feature.counts_in_coverage
         {
             violations.push(format!(
-                "UNTESTED_GA: {:?} is advertised+GA but has no tests. Either add tests or set counts_in_coverage=false (if it's protocol plumbing).",
+                "UNTESTED_PROVEN: {:?} is advertised+proven but has no tests. Either add tests or set counts_in_coverage=false (if it's protocol plumbing).",
                 feature.id
             ));
         }
@@ -100,16 +100,19 @@ fn check_invariants() -> Result<()> {
     }
 
     let total = catalog.features().len();
-    let ga_advertised =
-        catalog.features().iter().filter(|f| f.advertised && f.maturity == Maturity::Ga).count();
+    let proven_advertised = catalog
+        .features()
+        .iter()
+        .filter(|f| f.advertised && f.maturity == Maturity::Proven)
+        .count();
     let headline_features = catalog
         .features()
         .iter()
-        .filter(|f| f.advertised && f.maturity == Maturity::Ga && f.counts_in_coverage)
+        .filter(|f| f.advertised && f.maturity == Maturity::Proven && f.counts_in_coverage)
         .count();
 
     println!(
-        "Feature invariants OK: {total} features, {ga_advertised} GA+advertised, {headline_features} in headline metric"
+        "Feature invariants OK: {total} features, {proven_advertised} proven+advertised, {headline_features} in headline metric"
     );
     Ok(())
 }
@@ -184,10 +187,13 @@ fn update_lsp_status(catalog: &Catalog) -> Result<()> {
 
         for feature in features {
             let status = match (feature.maturity, feature.advertised) {
-                (Maturity::Ga | Maturity::Production, true) => "✅ Complete",
+                (Maturity::Proven, true) => "✅ Evidence-proven",
                 (Maturity::Preview, true) => "🔧 Preview",
-                (Maturity::Experimental, _) => "⚠️ Experimental",
-                _ => "❌ Not Implemented",
+                (Maturity::NotProven, true) => "🟡 Claimed — evidence pending (#7029)",
+                (Maturity::NotProven, false) => "⚪ Not proven",
+                (Maturity::Planned, _) => "❌ Planned",
+                (Maturity::Unsupported, _) => "🚫 Unsupported",
+                (_, false) => "⚪ Unadvertised",
             };
 
             content.push_str(&format!(
@@ -375,29 +381,25 @@ fn generate_report() -> Result<()> {
 
     let total = catalog.feature.len();
     let advertised = catalog.feature.iter().filter(|f| f.advertised).count();
-    let ga = catalog
-        .feature
-        .iter()
-        .filter(|f| matches!(f.maturity, Maturity::Ga | Maturity::Production) && f.advertised)
-        .count();
-    let preview = catalog
-        .feature
-        .iter()
-        .filter(|f| matches!(f.maturity, Maturity::Preview) && f.advertised)
-        .count();
-    let experimental =
-        catalog.feature.iter().filter(|f| matches!(f.maturity, Maturity::Experimental)).count();
+    let proven = catalog.feature.iter().filter(|f| matches!(f.maturity, Maturity::Proven)).count();
+    let preview =
+        catalog.feature.iter().filter(|f| matches!(f.maturity, Maturity::Preview)).count();
+    let not_proven =
+        catalog.feature.iter().filter(|f| matches!(f.maturity, Maturity::NotProven)).count();
     let planned =
         catalog.feature.iter().filter(|f| matches!(f.maturity, Maturity::Planned)).count();
+    let unsupported =
+        catalog.feature.iter().filter(|f| matches!(f.maturity, Maturity::Unsupported)).count();
 
     println!("\n=== LSP Feature Declaration Report ===");
     println!("Version: {} | LSP: {}", catalog.meta.version, catalog.meta.lsp_version);
     println!("\nOverall declaration counts: {}/{} advertised", advertised, total);
     println!("\nBreakdown:");
-    println!("  GA:           {} features", ga);
-    println!("  Preview:      {} features", preview);
-    println!("  Experimental: {} features", experimental);
-    println!("  Planned:      {} features", planned);
+    println!("  Proven:      {} features", proven);
+    println!("  Preview:     {} features", preview);
+    println!("  Not proven:  {} features", not_proven);
+    println!("  Planned:     {} features", planned);
+    println!("  Unsupported: {} features", unsupported);
 
     println!("\nBy Area:");
     for (area, stats) in area_stats {

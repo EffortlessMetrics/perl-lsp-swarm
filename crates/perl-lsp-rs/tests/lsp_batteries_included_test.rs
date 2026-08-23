@@ -1,7 +1,9 @@
 //! Tests for "batteries included" LSP functionality
 //!
-//! This test validates that perl-lsp provides a complete, production-ready experience
-//! with formatting, linting, and import optimization working out-of-the-box.
+//! This test validates that perl-lsp ships its batteries-included toolchain
+//! (formatting, linting, and import optimization working out-of-the-box).
+//! It is a functional smoke surface, not a maturity or production-readiness
+//! claim; feature claims live in `features.toml` (#7029).
 
 #![cfg(test)]
 

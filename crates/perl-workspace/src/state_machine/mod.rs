@@ -49,7 +49,7 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Enhanced index state with additional production-ready states.
+/// Enhanced index state with additional lifecycle-hardened states.
 ///
 /// Extends the original IndexState with Initializing, Updating, Invalidating,
 /// and Error states for comprehensive lifecycle management.

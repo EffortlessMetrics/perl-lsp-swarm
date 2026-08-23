@@ -25,12 +25,14 @@ pub(super) fn count_lsp_coverage(root: &Path) -> Result<LspCoverage> {
     let catalog = perl_lsp_rs_core::feature_catalog::read_catalog(&features_path)
         .with_context(|| format!("loading {}", features_path.display()))?;
 
-    // UX Coverage: advertised=true, counts_in_coverage!=false, maturity!=planned
+    // UX Coverage: advertised=true, counts_in_coverage!=false, and a claim
+    // strength above `not_proven` (#7029). Planned/unsupported rows stay out.
     let ux_trackable: Vec<_> = catalog
         .feature
         .iter()
         .filter(|f| {
             f.maturity != perl_lsp_rs_core::feature_catalog::Maturity::Planned
+                && f.maturity != perl_lsp_rs_core::feature_catalog::Maturity::Unsupported
                 && f.counts_in_coverage
                 && f.advertised
         })
@@ -41,8 +43,8 @@ pub(super) fn count_lsp_coverage(root: &Path) -> Result<LspCoverage> {
         .filter(|f| {
             matches!(
                 f.maturity,
-                perl_lsp_rs_core::feature_catalog::Maturity::Ga
-                    | perl_lsp_rs_core::feature_catalog::Maturity::Production
+                perl_lsp_rs_core::feature_catalog::Maturity::Proven
+                    | perl_lsp_rs_core::feature_catalog::Maturity::Preview
             )
         })
         .collect();
@@ -65,8 +67,7 @@ pub(super) fn count_lsp_coverage(root: &Path) -> Result<LspCoverage> {
         .filter(|f| {
             matches!(
                 f.maturity,
-                perl_lsp_rs_core::feature_catalog::Maturity::Ga
-                    | perl_lsp_rs_core::feature_catalog::Maturity::Production
+                perl_lsp_rs_core::feature_catalog::Maturity::Proven
                     | perl_lsp_rs_core::feature_catalog::Maturity::Preview
             )
         })
@@ -111,12 +112,12 @@ pub(super) fn generate_lsp_status(
         .to_string();
 
     let lsp_coverage_bullet = format!(
-        "- **Advertised ga/production rows**: {} of {} catalog-tracked advertised rows declare \
-         ga/production (navigation count from `features.toml`)",
+        "- **Advertised proven/preview rows**: {} of {} catalog-tracked advertised rows declare \
+         proven or preview strength (#7029; navigation count from `features.toml`)",
         cov.ux_implemented, cov.ux_total
     );
     let protocol_compliance_bullet = format!(
-        "- **Protocol surface labels**: {} of {} declared rows carry ga/production/preview labels \
+        "- **Protocol surface labels**: {} of {} declared rows carry proven/preview labels \
          (navigation only)",
         cov.protocol_implemented, cov.protocol_total
     );
@@ -301,7 +302,7 @@ mod tests {
             protocol_implemented: 125,
             protocol_total: 125,
         };
-        let table = "| Area | Declared ga/production/preview rows | Total rows |\n\
+        let table = "| Area | Declared proven/preview rows | Total rows |\n\
                      |------|---------------------------|------------|\n\
                      | **Overall** | **125** | **125** |";
         let original = "<!-- BEGIN: LSP_COVERAGE -->\nold\n<!-- END: LSP_COVERAGE -->\n\

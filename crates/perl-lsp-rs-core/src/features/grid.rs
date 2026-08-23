@@ -64,12 +64,11 @@ pub fn to_json_for_all_profiles() -> String {
 /// deriving the numerator independently is how `--info` came to print
 /// `33/60 (53%)`, where the fraction is 55% and only the percentage was right.
 ///
-/// The numerator counts advertised features that are also *trackable* — those
-/// carrying `counts_in_coverage` — which is strictly fewer than the advertised
-/// total.
+/// The numerator counts profile-advertised features whose evidence state is
+/// `proven` (#7029) — advertisement alone never feeds this number.
 pub fn compliance_counts_for_profile(profile: FeatureProfile) -> (usize, usize) {
     let advertised = catalog_advertised_feature_ids(profile);
-    (advertised_trackable_feature_count(&advertised), trackable_feature_count_for_grid())
+    (proven_trackable_feature_count(&advertised), trackable_feature_count_for_grid())
 }
 
 /// Compliance percent for a specific runtime profile, using the same grid semantics.
@@ -82,15 +81,14 @@ pub fn compliance_percent_for_profile(profile: FeatureProfile) -> f32 {
     (covered as f64 / trackable_feature_count as f64 * 100.0).round() as f32
 }
 
-fn advertised_trackable_feature_count(advertised: &[&'static str]) -> usize {
+fn proven_trackable_feature_count(advertised: &[&'static str]) -> usize {
     advertised
         .iter()
         .filter(|&&id| {
             has_feature(id)
-                && all_features()
-                    .iter()
-                    .find(|feature| feature.id == id)
-                    .is_some_and(|feature| feature.counts_in_coverage)
+                && all_features().iter().find(|feature| feature.id == id).is_some_and(|feature| {
+                    feature.maturity == "proven" && feature.counts_in_coverage
+                })
         })
         .count()
 }

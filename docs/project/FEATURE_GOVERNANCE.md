@@ -63,7 +63,15 @@ perl-lsp-rs-core/src/governance  -> stable façade
 perl-lsp / perl-lsp-launcher    -> server and launcher consumers
 ```
 
-### `features.toml` -- the Single Source of Truth
+### `features.toml` -- the Single Authority
+
+`features.toml` at the workspace root is the ONE authority for feature claims:
+IDs, spec versions, directions, capability gates, registration routes,
+ownership, claim strength (maturity), limitations, and evidence policy. The
+crate-local `crates/*/features_sot.toml` files are byte-exact GENERATED
+projections of it (fallbacks for standalone/packaged builds); regenerate with
+`cargo xtask feature-sot` and verify with `--check`. Hand-editing a projection
+is projection drift and fails CI (#7029).
 
 Every feature is declared as a `[[feature]]` entry with these fields:
 
@@ -72,15 +80,31 @@ Every feature is declared as a `[[feature]]` entry with these fields:
 | `id` | Canonical identifier (e.g. `lsp.completion`, `dap.core`) |
 | `spec` | LSP/DAP spec version where the feature was introduced |
 | `area` | Functional grouping: `text_document`, `workspace`, `window`, `notebook`, `debug`, `protocol` |
-| `maturity` | Lifecycle stage: `planned`, `experimental`, `preview`, `ga`, `production` |
-| `advertised` | Whether the server announces this capability to clients |
+| `maturity` | Claim strength: `proven`, `preview`, `planned`, `unsupported`, `not_proven` |
+| `advertised` | Whether the server announces this capability to clients (binary surface; never an evidence claim) |
+| `direction` | Request direction: `client_to_server`, `server_to_client`, `both`, or `missing` |
+| `capability_gate` | Client-capability key that gates the feature, `none`, or `missing` |
+| `registration` | Registration route: `static`, `dynamic`, `none`, or `missing` |
+| `feature_class` | Promotion-policy class (`request_response`, `server_request`, `document_workspace`, `cancellation_progress`, `editor_dependent`, `debug_adapter`) |
+| `impl_owner` | Implementation owner module path or `missing` |
+| `state_owner` | Retained-state owner or `missing`/`none` |
+| `limitations` | Known limitations or `missing` |
+| `claim_boundary` | Claim boundary relative to the upstream spec or `missing` |
 | `counts_in_coverage` | Historical declaration grouping selector; not behavior evidence |
-| `tests` | Paths to test files exercising the feature |
+| `tests` | Paths to test receipts exercising the feature |
+| `evidence` | Classified `[[feature.evidence]]` receipts (`class` + `path`); required for `proven` |
 | `description` | Human-readable summary |
 
 The `[meta]` section records the catalog version and target LSP spec version.
 It must not carry a computed compliance percentage; aggregate declaration
 counts are navigation context only (#6731).
+
+The `[policy]` section defines the recognized evidence classes, which classes
+qualify for `proven`, and the minimum evidence per `feature_class`
+(`[policy.promotion.*]`). A row may claim `maturity = "proven"` only with
+classified evidence receipts that qualify for its class and exist on disk;
+`advertised = true`, an implementation path, or a named test can never promote
+a row by itself.
 
 ## Module Responsibilities
 
@@ -126,79 +150,90 @@ The core crate acts as the bridge between the TOML catalog and the Rust type
 system. At build time, `build.rs` includes the local `build_catalog.rs` module to:
 
 1. Locate `features.toml` (checking `FEATURES_TOML_OVERRIDE` env var, then the
-   workspace root, then a vendored `features_sot.toml` fallback).
-2. Parse and validate the catalog (no empty IDs, no duplicates).
+   workspace root, then the generated `features_sot.toml` projection).
+2. Parse and validate the catalog (no empty IDs, no duplicates; `planned`/
+   `unsupported` rows unadvertised; `proven` requires evidence receipts).
 3. Render a generated Rust module with:
    - `ALL_FEATURES: &[Feature]` -- every feature row as a const array.
-   - `ADVERTISED_LSP_FEATURES: &[&str]` -- IDs for GA/production features with
-     `advertised = true`.
-   - `has_feature()` and `advertised_features()` functions. Any retained
-     `compliance_percent()` helper is not an evidence or reporting authority.
+   - `ADVERTISED_LSP_FEATURES: &[&str]` -- IDs of rows with
+     `advertised = true` (the binary surface, independent of claim strength).
+   - `has_feature()` and `advertised_features()` functions.
 
 This generated module is included via `include!(concat!(env!("OUT_DIR"), "/feature_contracts.rs"))`,
 giving the core crate compile-time access to the complete feature catalog without
 runtime TOML parsing. `governance` and the LSP facade re-export the supported API.
 
-Historical declaration tooling used the following aggregate:
+Generated status reports the evidence-backed proven share:
 
 ```text
-compliance % = advertised_trackable_features / trackable_features * 100
+proven share % = proven_trackable_features / trackable_features * 100
 ```
 
-Where "trackable" means `maturity != planned` and `counts_in_coverage == true`.
-That historical aggregate is retained only as non-authoritative declaration context. It must not
-be presented as current compliance, used to rewrite roadmap/report claims, or
-treated as a substitute for the evidence model owned by #6731.
+Where "trackable" means maturity is neither `planned` nor `unsupported` and
+`counts_in_coverage == true`. Advertisement never feeds this number (#7029).
 Features like protocol lifecycle methods (`lsp.initialize`, `lsp.shutdown`) and
 window notifications set `counts_in_coverage = false` because they are
 infrastructure, not user-facing language features.
 
 ## Feature Lifecycle
 
-A feature progresses through maturity stages:
+A feature progresses through claim-strength stages (#7029 vocabulary):
 
 ### `planned`
 
 The feature is declared in `features.toml` with `maturity = "planned"` and
-`advertised = false`. It does not count toward compliance. This is the starting
-point for tracking work items.
+`advertised = false`. It carries no implementation claim and stays out of
+trackable denominators. This is the starting point for tracking work items.
 
-### `experimental`
+### `unsupported`
 
-An initial implementation exists. The feature may be included in the `all`
-profile for testing but is not advertised in production profiles. It counts
-toward trackable metrics but not advertised metrics.
+Explicitly not implemented and not planned (for example, impossible on the
+host platform, such as DAP `restartFrame` under perl5db). Always
+`advertised = false`.
+
+### `not_proven`
+
+An implementation and/or advertisement exists, but recorded evidence does not
+yet support even preview strength. This is the honest baseline for most rows
+after #7029; runtime PRs earn promotion from here.
 
 ### `preview`
 
-The implementation is functional and under active testing. It may be advertised
-in the `all` profile. Feedback from early adopters can still drive API changes.
+The implementation is functional and exercised by cited suites, but promotion
+awaits validated classified-evidence receipts. May be advertised when the
+binary surface includes it.
 
-### `ga` (General Availability)
+### `proven`
 
-The feature is stable, tested, and advertised to clients. It appears in all
-profiles (including `ga-lock`). Breaking changes require a major version bump.
-This is the target maturity for most LSP capabilities.
-
-### `production`
-
-Equivalent to `ga` for compliance and advertising purposes. Used when a feature
-has been running in production for an extended period with no issues.
+Recorded evidence satisfies the row's `[policy.promotion.<feature_class>]`
+minimum: the row carries `[[feature.evidence]]` receipts whose class qualifies
+(`[policy].classes_qualifying_for_proven`) and whose paths exist. Advertisement
+and test-file names alone never reach this state.
 
 ## How to Add a New LSP Feature
 
 ### Step 1: Declare in `features.toml`
 
-Add a `[[feature]]` entry:
+Add a `[[feature]]` entry with the full #7029 schema (direction, capability
+gate, registration, feature class, ownership, limitations, claim boundary —
+use the explicit value `"missing"` where genuinely unrecorded):
 
 ```toml
 [[feature]]
 id = "lsp.new_feature"
 spec = "LSP 3.18"
 area = "text_document"
-maturity = "preview"
+maturity = "not_proven"
 advertised = false
-tests = ["tests/lsp_new_feature_tests.rs"]
+direction = "client_to_server"
+capability_gate = "textDocument.newFeature"
+registration = "static"
+feature_class = "request_response"
+impl_owner = "perl-lsp-rs-core::providers::new_feature"
+state_owner = "perl-lsp-rs::state::document"
+limitations = "missing"
+claim_boundary = "method-scoped"
+tests = ["crates/perl-lsp-rs/tests/lsp_new_feature_tests.rs"]
 description = "Description of the new feature"
 ```
 
@@ -241,16 +276,22 @@ will track whether the feature has associated test coverage.
 
 ### Step 7: Promote maturity
 
-When the feature is stable, update `features.toml`:
+Promotion is evidence-earned (#7029). To promote a row to `proven`, add
+classified receipts and flip the label in `features.toml`:
 
 ```toml
-maturity = "ga"
+maturity = "proven"
 advertised = true
+
+[[feature.evidence]]
+class = "wire_e2e"        # or "integration" — must qualify for feature_class
+path = "crates/perl-lsp-rs/tests/lsp_new_feature_e2e.rs"
 ```
 
-Then enable it in the `production()` and `ga_lock()` `BuildFlags` constructors.
-Update maturity and advertising declarations only; no computed compliance
-percentage is generated from them.
+The validator (`cargo xtask feature-sot --check`) fails closed when a row
+claims proven without qualifying, existing receipts, so advertisement alone
+can never promote a row. Regenerate the crate projections after any catalog
+edit: `cargo xtask feature-sot`.
 
 ## Dependency Graph
 

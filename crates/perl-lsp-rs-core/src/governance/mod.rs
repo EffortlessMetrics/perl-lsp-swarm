@@ -9,9 +9,9 @@
 
 pub use crate::features::contracts::{
     BddFeatureRow, Feature, FeatureProfileSpec, LSP_VERSION, VERSION, advertised_features,
-    advertised_trackable_feature_count_for_grid, all_features, bdd_feature_rows,
-    caps_from_feature_ids, catalog, compliance_percent, compliance_percent_for_grid,
-    feature_ids_from_caps, feature_profile_specs, has_feature, trackable_feature_count_for_grid,
+    all_features, bdd_feature_rows, caps_from_feature_ids, catalog, compliance_percent,
+    compliance_percent_for_grid, feature_ids_from_caps, feature_profile_specs, has_feature,
+    trackable_feature_count_for_grid,
 };
 pub use crate::features::grid::{
     FEATURE_GRID_COLUMNS, compliance_percent_for_profile, feature_profile_contracts, to_json,

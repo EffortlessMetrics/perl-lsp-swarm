@@ -36,9 +36,13 @@ fn test_advertised_features_match_capabilities() -> Result<(), Box<dyn std::erro
     // Assert with insta snapshot
     assert_yaml_snapshot!("advertised_vs_caps", &snapshot_data);
 
-    // Also verify compliance percentage is reasonable
+    // Also verify the generated status stays evidence-honest (#7029): it must
+    // equal the proven share of trackable rows and can never sit in the old
+    // inflated 95-100% window while rows ship without classified evidence.
     let p = compliance_percent();
-    assert!((95.0..=100.0).contains(&p), "unexpected compliance percent: {}", p);
+    assert!((0.0..=100.0).contains(&p), "unexpected compliance percent: {}", p);
+    assert!(p < 95.0, "generated status must not report an unearned near-100% claim: {p}");
+    assert_eq!(p, perl_lsp_rs_core::features::contracts::compliance_percent_for_grid());
 
     Ok(())
 }

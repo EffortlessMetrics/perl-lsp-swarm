@@ -129,7 +129,8 @@ pub struct BddFeatureRow {
     pub spec: &'static str,
     /// Feature area grouping (e.g., `text_document`, `workspace`).
     pub area: &'static str,
-    /// Maturity level: `experimental`, `preview`, `ga`, `planned`, or `production`.
+    /// Claim strength: `proven`, `preview`, `planned`, `unsupported`, or
+    /// `not_proven` (#7029).
     pub maturity: &'static str,
     /// Whether this feature is advertised to clients.
     pub advertised: bool,
@@ -183,31 +184,37 @@ pub fn lsp_bdd_feature_rows() -> Vec<BddFeatureRow> {
 }
 
 /// Number of BDD rows that participate in coverage accounting.
+///
+/// Rows without an implementation claim (`planned`, `unsupported`) stay out of
+/// the denominator (#7029).
 pub fn trackable_feature_count_for_grid() -> usize {
     all_features()
         .iter()
-        .filter(|feature| feature.maturity != "planned" && feature.counts_in_coverage)
-        .count()
-}
-
-/// Number of advertised BDD rows that participate in coverage accounting.
-pub fn advertised_trackable_feature_count_for_grid() -> usize {
-    all_features()
-        .iter()
         .filter(|feature| {
-            feature.maturity != "planned" && feature.counts_in_coverage && feature.advertised
+            feature.maturity != "planned"
+                && feature.maturity != "unsupported"
+                && feature.counts_in_coverage
         })
         .count()
 }
 
-/// Compliance percentage for the BDD grid (`advertised / trackable`, rounded).
+/// Number of proven BDD rows that participate in coverage accounting.
+pub fn proven_trackable_feature_count_for_grid() -> usize {
+    all_features()
+        .iter()
+        .filter(|feature| feature.maturity == "proven" && feature.counts_in_coverage)
+        .count()
+}
+
+/// Evidence-backed status percentage for the BDD grid: the proven share of
+/// trackable rows (#7029). Advertisement never feeds this number.
 pub fn compliance_percent_for_grid() -> f32 {
     let trackable = trackable_feature_count_for_grid();
     if trackable == 0 {
         return 0.0;
     }
-    let advertised = advertised_trackable_feature_count_for_grid();
-    (advertised as f64 / trackable as f64 * 100.0).round() as f32
+    let proven = proven_trackable_feature_count_for_grid();
+    (proven as f64 / trackable as f64 * 100.0).round() as f32
 }
 
 #[cfg(test)]
@@ -352,9 +359,9 @@ mod tests {
 
     #[test]
     fn all_features_have_valid_maturity() -> Result<(), String> {
-        // Keep this vocabulary aligned with `feature_catalog::Maturity` rather
-        // than accepting arbitrary labels that weaken catalog validation.
-        let valid_maturities = ["experimental", "preview", "ga", "planned", "production"];
+        // Keep this vocabulary aligned with `feature_catalog::Maturity` (#7029)
+        // rather than accepting arbitrary labels that weaken catalog validation.
+        let valid_maturities = ["proven", "preview", "planned", "unsupported", "not_proven"];
         for feature in all_features() {
             if !valid_maturities.contains(&feature.maturity) {
                 return Err(format!(
@@ -452,10 +459,25 @@ mod tests {
     }
 
     #[test]
-    fn advertised_trackable_is_subset_of_trackable() {
+    fn proven_trackable_is_subset_of_trackable() {
         let trackable = trackable_feature_count_for_grid();
-        let advertised = advertised_trackable_feature_count_for_grid();
-        assert!(advertised <= trackable);
+        let proven = proven_trackable_feature_count_for_grid();
+        assert!(proven <= trackable);
+    }
+
+    #[test]
+    fn shipped_catalog_reports_no_inherited_proven_share() {
+        // #7029: the shipped catalog is downgraded to evidence-true claims, so
+        // the generated status must not report a proven share until rows are
+        // promoted with classified evidence receipts.
+        assert_eq!(compliance_percent_for_grid(), 0.0);
+        for feature in all_features() {
+            assert_ne!(
+                feature.maturity, "proven",
+                "row '{}' ships as proven without landed evidence",
+                feature.id
+            );
+        }
     }
 
     #[test]
