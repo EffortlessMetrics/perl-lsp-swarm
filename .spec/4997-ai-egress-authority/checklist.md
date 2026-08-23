@@ -1,7 +1,36 @@
 # #4997 - AI egress activation authority checklist
 
-Proof executed on candidate branch `fix/4997-generic-channel-ai-arm`
+Initial proof was executed on candidate branch `fix/4997-generic-channel-ai-arm`
 (worktree `perl-lsp-swarm-4997`, based on `origin/main@ab3cece9d`).
+
+## Current-main reconstruction receipt — 2026-08-23
+
+- [x] Original reviewed implementation commit
+      `4e3a89b190e259f1265672d89c77b34690654cb3` reconstructed onto
+      `main@1518b76b75e238d1adf1424910760ea5e5f987dc` in PR #12042.
+- [x] Cherry-pick conflict denominator was exactly two current-main files:
+      `config/mod.rs` and `perllsp_settings_schema_tests.rs`; all other
+      implementation files applied mechanically. The three rejected hunks were
+      resolved against current anchors without selecting the stale branch copy.
+- [x] Review findings were applied before publication: generic-channel comment
+      truth, schema transport wording, non-default provider preservation,
+      Zed envelope-field observability, exact feature-gated test command,
+      hosted `cargo fmt --all` receipt, and VS Code activation documentation.
+- [x] Hosted reconstruction run
+      `https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/32662424014`
+      completed successfully and published candidate
+      `c82977abebdf0c8de17fa63004a62c4a87f366ef` only after:
+      `cargo fmt --all -- --check`; both focused rs-core authority tests;
+      generic-schema tests; Zed settings-behavior tests; the transport hostile
+      streaming test; scoped rs-core/server Clippy with `-D warnings`; JSON
+      validation; and `git diff --check`.
+- [x] Both one-shot workflows and both maintenance scripts were removed before
+      the candidate commit. PR #12042 contains only the 17 reviewed product,
+      test, specification, fixture, schema, and documentation files.
+- [ ] Required repository PR workflows are green on the human-authored receipt
+      commit. The workflow-authored candidate produced zero-job
+      `action_required` runs by GitHub design; this receipt commit deliberately
+      retriggers the ordinary base-branch workflows.
 
 ## Production changes
 
