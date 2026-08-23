@@ -57,3 +57,49 @@ Survival-disposition vocabulary (package-neutral):
 | PATCH-RANGESSUPPORT| crates/perl-lsp-rs-core/src/protocol/capabilities.rs documentRangeFormattingProvider rangesSupport injection (lines 79-86)| issue-body claim 'rangesSupport missing' is STALE: verified 0.11.0 structures.rs:7113 DocumentRangeFormattingOptions.ranges_support: Option<bool>| capabilities.documentRangeFormattingProvider.rangesSupport (LSP 3.18 multi-range formatting)| typed once: DocumentRangeFormattingOptions.ranges_support: Option<bool>| selected_substrate_generated_type| #11803 migration (surviving LT02 row)| hand-patched object replaced by typed options struct; 3.18 conformance matrix row stays authoritative for advertisement shape| tests/lsp_caps_contract_shapes.rs rangesSupport pointer assertions; lsp_3_17_lifecycle_tests registration payload |
 | PATCH-INLINECOMPLETION| crates/perl-lsp-rs-core/src/protocol/capabilities.rs inlineCompletionProvider injection (lines 87-93); runtime dynamic-client removal at crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs (~lines 781-815)| lsp-types 0.97 predates the field; static advertisement patched into JSON, then removed for dynamic-registration clients at initialize time| capabilities.inlineCompletionProvider top-level (LSP 3.18); experimental placement forbidden (negative-claimed)| typed once: ServerCapabilities.inline_completion_provider: Option<InlineCompletionProvider>; runtime dynamic-client removal logic is behavioral and stays out of type migration scope| selected_substrate_generated_type| #11803 migration (surviving LT02 row); runtime removal seam owned by lifecycle code, not the type switch| patch removed when typed field serializes identically; dynamic-client removal branch must keep byte-identical initialize output| tests/lsp_inline_completion_registration_tests.rs; tests/lsp_cap_snap.rs; ripr_seam_proof_* capability negotiation proofs |
 | PATCH-INSERTTEXTMODES| crates/perl-lsp-rs-core/src/protocol/capabilities.rs completionItem.insertTextModes injection (lines 95-105)| advertises numeric array [1,2] inside completionProvider.completionItem; that key is NOT a valid server-capability shape (client capability textDocument.completion.insertTextMode is the real negotiation surface) per #2892/#8032| invalid_current_protocol_shape - not a type gap| no substrate equivalent required: verified 0.11.0 models InsertTextMode enum and the client capability but no server-side insertTextModes field| invalid_current_protocol_shape| #8032 single-capability-authority work removes it; explicitly NOT migrated to the selected substrate| remove the injection and its snapshot assertions in the #8032 lane; migration must not carry it forward as parity| tests/lsp_capabilities_contract.rs insertTextModes advertisement assertions (falsifiers flip to removal proofs) |
+
+## 4. Resolved Cargo denominator (live `cargo metadata --all-features --locked` evidence)
+
+Direct declared edges: 7 (2 production, 4 compatibility-gated, 1 dev/test, 0 unclassified). Transitive selecting parents: 26 workspace members (normal-chain vs dev-only-chain below). No external (non-workspace) package resolves the incumbent transitively.
+
+Doomed lower edges are assigned to their removal owners and are NOT part of the #11803 migration population.
+
+| Package | Dep kind | Profile class | Feature gate | Disposition | Removal owner |
+| --- | --- | --- | --- | --- | --- |
+| perl-incremental-parsing| dev| dev_test| -| test_fixture_only| #1421 sequencing; exit when LT02 lands |
+| perl-lsp-rs| normal| production| -| adapter_protocol_type| #11803 migration; crate-level retirement relation #9645 relocates rows to the final product home first |
+| perl-lsp-rs-core| normal| production| -| adapter_protocol_type| #11803 migration; crate-level retirement relation #9645 relocates rows to the final product home first |
+| perl-parser| normal| compatibility_edge| lsp-compat\|lsp-types| lower_wire_remove_before_switch| #9893 |
+| perl-position-tracking| normal| compatibility_edge| lsp-compat\|lsp-types| lower_wire_remove_before_switch| #9632 |
+| perl-tdd-support| normal| compatibility_edge| lsp-compat\|lsp-types| compatibility_with_exit| #1421 sequencing; wire-free dev-test profile proof under #9632 |
+| perl-workspace| normal| compatibility_edge| lsp-compat\|lsp-types| lower_wire_remove_before_switch| #9632 |
+
+| Transitive selecting parent | Reachability | Min hops from lsp-types |
+| --- | --- | --- |
+| perl-ast| normal_chain| 2 |
+| perl-ast-v2| normal_chain| 2 |
+| perl-core-harness| normal_chain| 2 |
+| perl-core-test-runner| normal_chain| 3 |
+| perl-corpus| normal_chain| 2 |
+| perl-dap| normal_chain| 2 |
+| perl-kwalitee| normal_chain| 2 |
+| perl-lexer| normal_chain| 2 |
+| perl-lsp-perltidy| normal_chain| 2 |
+| perl-module| normal_chain| 2 |
+| perl-parser-bench| normal_chain| 2 |
+| perl-parser-comparison| normal_chain| 2 |
+| perl-parser-core| normal_chain| 2 |
+| perl-parser-pest| normal_chain| 2 |
+| perl-pragma| normal_chain| 3 |
+| perl-ripr-facts| normal_chain| 2 |
+| perl-semantic-analyzer| normal_chain| 2 |
+| perl-subprocess-runtime| normal_chain| 2 |
+| perl-symbol| normal_chain| 2 |
+| perl-token| normal_chain| 3 |
+| perl-tree-sitter-compat| normal_chain| 3 |
+| perl-uri| normal_chain| 2 |
+| perl-workspace-core| normal_chain| 3 |
+| perllsp| normal_chain| 2 |
+| tree-sitter-perl-rs| normal_chain| 2 |
+| xtask| normal_chain| 2 |
+

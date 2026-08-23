@@ -23,11 +23,17 @@
 //! this task or its output.
 
 use crate::utils::project_root;
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{Context, ContextCompat, Result, bail};
+use std::collections::BTreeMap;
 use std::fs;
+use std::path::Path;
+use std::process::Command;
 
 pub const MATRIX_PATH: &str = "docs/specs/protocol-type-substrate-matrix.md";
 pub const RECEIPT_PATH: &str = "docs/specs/protocol-type-substrate-matrix.json";
+
+/// The incumbent protocol-type crate whose denominator this task freezes.
+const INCUMBENT_CRATE: &str = "lsp-types";
 
 /// Evidence inspection date for all external registry/source pins below.
 /// A constant (not the wall clock) keeps two consecutive generations
@@ -164,8 +170,7 @@ const CANDIDATES: &[CandidateRow] = &[
         source: "crates.io; workspace dep at root Cargo.toml [workspace.dependencies]",
         state: "incumbent",
         verdict: "retire",
-        rationale:
-            "stays selected only until the migration lane switches; unmaintained lineage motivated #1421. What remains useful (DTO coverage in active adapter paths) is recorded row-by-row in the denominator; incumbent snapshots are behavior evidence, not target authority.",
+        rationale: "stays selected only until the migration lane switches; unmaintained lineage motivated #1421. What remains useful (DTO coverage in active adapter paths) is recorded row-by-row in the denominator; incumbent snapshots are behavior evidence, not target authority.",
     },
     CandidateRow {
         candidate: "ls-types",
@@ -173,8 +178,7 @@ const CANDIDATES: &[CandidateRow] = &[
         source: "GitHub archive notice 2026-08-15",
         state: "rejected_archived_superseded",
         verdict: "candidate_rejected",
-        rationale:
-            "owner named gen-lsp-types as successor; cannot receive selected_maintained_substrate without a new reviewed ruling supplying fork/security/update plan. Issue-body ls-types field vocabulary (typed_ls_types_*) is retired from the canonical schema.",
+        rationale: "owner named gen-lsp-types as successor; cannot receive selected_maintained_substrate without a new reviewed ruling supplying fork/security/update plan. Issue-body ls-types field vocabulary (typed_ls_types_*) is retired from the canonical schema.",
     },
     CandidateRow {
         candidate: "gen-lsp-types",
@@ -182,8 +186,7 @@ const CANDIDATES: &[CandidateRow] = &[
         source: "crates.io checksum b64887ac...; repo ribru17/gen-lsp-types",
         state: "active_successor_candidate",
         verdict: "selected_maintained_substrate",
-        rationale:
-            "first-hand verified: checksum match, edition 2024, official-metamodel generation, typed typeHierarchyProvider/rangesSupport/inlineCompletionProvider, String-default Uri with optional url|fluent-uri, explicit null-vs-absent model, request/notification direction types. Limitations recorded in the substrate record; later LT issues may not independently select another package or feature.",
+        rationale: "first-hand verified: checksum match, edition 2024, official-metamodel generation, typed typeHierarchyProvider/rangesSupport/inlineCompletionProvider, String-default Uri with optional url|fluent-uri, explicit null-vs-absent model, request/notification direction types. Limitations recorded in the substrate record; later LT issues may not independently select another package or feature.",
     },
 ];
 
@@ -234,29 +237,327 @@ const CAPABILITY_PATCHES: &[CapabilityPatchRow] = &[
     },
 ];
 
+// ---------------------------------------------------------------------------
+// Resolved Cargo denominator (live `cargo metadata` evidence, not manifest grep)
+// ---------------------------------------------------------------------------
+
+/// One direct declared dependency edge on the incumbent crate.
+struct EdgeRow {
+    package: String,
+    dep_kind: String,
+    profile_class: &'static str,
+    gate: String,
+    disposition: &'static str,
+    removal_owner: String,
+}
+
+/// One workspace member that reaches the incumbent only transitively.
+struct TransitiveRow {
+    package: String,
+    reachability: &'static str,
+    min_hops: u32,
+}
+
+/// The complete resolved denominator for the incumbent crate.
+#[derive(Default)]
+struct Denominator {
+    edges: Vec<EdgeRow>,
+    transitive: Vec<TransitiveRow>,
+}
+
+/// Static survival policy for known direct edges. Unknown packages classify as
+/// `not_proven` so a new edge surfaces loudly instead of silently passing.
+fn classify_edge(
+    package: &str,
+    dep_kind: &str,
+    optional: bool,
+) -> (&'static str, &'static str, &'static str) {
+    match (package, dep_kind, optional) {
+        ("perl-lsp-rs", "normal", false) | ("perl-lsp-rs-core", "normal", false) => (
+            "production",
+            "adapter_protocol_type",
+            "#11803 migration; crate-level retirement relation #9645 relocates rows to the final product home first",
+        ),
+        ("perl-parser", "normal", true) => {
+            ("compatibility_edge", "lower_wire_remove_before_switch", "#9893")
+        }
+        ("perl-position-tracking", "normal", true) => {
+            ("compatibility_edge", "lower_wire_remove_before_switch", "#9632")
+        }
+        ("perl-workspace", "normal", true) => {
+            ("compatibility_edge", "lower_wire_remove_before_switch", "#9632")
+        }
+        ("perl-tdd-support", "normal", true) => (
+            "compatibility_edge",
+            "compatibility_with_exit",
+            "#1421 sequencing; wire-free dev-test profile proof under #9632",
+        ),
+        ("perl-incremental-parsing", "dev", _) => {
+            ("dev_test", "test_fixture_only", "#1421 sequencing; exit when LT02 lands")
+        }
+        _ => ("not_proven", "not_proven", "unclassified edge; resolve before migration"),
+    }
+}
+
+/// Run `cargo metadata` for the current workspace and return parsed JSON.
+fn load_cargo_metadata(root: &Path) -> Result<serde_json::Value> {
+    let output = Command::new(env!("CARGO"))
+        .current_dir(root)
+        .args(["metadata", "--all-features", "--format-version", "1", "--locked"])
+        .output()
+        .with_context(|| format!("failed to execute cargo metadata in {}", root.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("cargo metadata failed ({}): {}", output.status, stderr.trim());
+    }
+    serde_json::from_slice(&output.stdout).context("failed to parse cargo metadata JSON")
+}
+
+/// Shell out to cargo and derive the full denominator.
+fn collect_denominator(root: &Path) -> Result<Denominator> {
+    let metadata = load_cargo_metadata(root)?;
+    parse_denominator(&metadata)
+}
+
+/// Pure derivation of the denominator from parsed `cargo metadata` output.
+fn parse_denominator(metadata: &serde_json::Value) -> Result<Denominator> {
+    let packages = metadata
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| color_eyre::eyre::eyre!("cargo metadata JSON missing packages array"))?;
+    let resolve = metadata
+        .get("resolve")
+        .and_then(|resolve| resolve.get("nodes"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!("cargo metadata JSON missing resolve.nodes array")
+        })?;
+
+    let mut lsp_ids = Vec::new();
+    let mut feature_activations: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for package in packages {
+        let name = package
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .context("package entry missing name")?;
+        if name == INCUMBENT_CRATE {
+            let id = package
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .context("lsp-types package entry missing id")?;
+            lsp_ids.push(id.to_string());
+        }
+        let mut activations = Vec::new();
+        if let Some(features) = package.get("features").and_then(serde_json::Value::as_object) {
+            for (feature, requires) in features {
+                let mentions_incumbent = requires
+                    .as_array()
+                    .map(|list| {
+                        list.iter().filter_map(serde_json::Value::as_str).any(|req| {
+                            req == INCUMBENT_CRATE || req == format!("dep:{INCUMBENT_CRATE}")
+                        })
+                    })
+                    .unwrap_or(false);
+                if mentions_incumbent {
+                    activations.push(feature.clone());
+                }
+            }
+        }
+        feature_activations.insert(name.to_string(), activations);
+    }
+    if lsp_ids.len() != 1 {
+        bail!(
+            "expected exactly one resolved {} package node, found {}",
+            INCUMBENT_CRATE,
+            lsp_ids.len()
+        );
+    }
+    let lsp_id = lsp_ids.remove(0);
+
+    let mut edges = Vec::new();
+    for package in packages {
+        let name = package
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .context("package entry missing name")?;
+        let dependencies = package
+            .get("dependencies")
+            .and_then(serde_json::Value::as_array)
+            .context("package entry missing dependencies")?;
+        for dep in dependencies {
+            let dep_name = match dep.get("name").and_then(serde_json::Value::as_str) {
+                Some(dep_name) => dep_name,
+                None => continue,
+            };
+            if dep_name != INCUMBENT_CRATE {
+                continue;
+            }
+            // A dev/build/normal declaration only counts when it resolves to the
+            // same incumbent node (name matches are not resolution).
+            let dep_id = dep.get("pkg").and_then(serde_json::Value::as_str).unwrap_or_default();
+            if !dep_id.is_empty() && dep_id != lsp_id {
+                continue;
+            }
+            let dep_kind = dep.get("kind").and_then(serde_json::Value::as_str).unwrap_or("normal");
+            let optional =
+                dep.get("optional").and_then(serde_json::Value::as_bool).unwrap_or(false);
+            let gates = feature_activations.get(name).cloned().unwrap_or_default();
+            let gate = if optional && !gates.is_empty() {
+                gates.join("|")
+            } else if optional {
+                "<undetermined>".to_string()
+            } else {
+                "-".to_string()
+            };
+            let (profile_class, disposition, removal_owner) =
+                classify_edge(name, dep_kind, optional);
+            edges.push(EdgeRow {
+                package: name.to_string(),
+                dep_kind: dep_kind.to_string(),
+                profile_class,
+                gate,
+                disposition,
+                removal_owner: removal_owner.to_string(),
+            });
+        }
+    }
+    edges.sort_by(|a, b| a.package.cmp(&b.package));
+
+    // Reverse reachability over the resolved graph. `min_hops_all` counts hops
+    // through any dependency kind; `min_hops_normal` counts hops that never use
+    // a dev-kind edge. Members reachable only via dev edges are classified as
+    // dev-only-chain.
+    let mut parents_any: BTreeMap<String, Vec<(String, bool)>> = BTreeMap::new();
+    let mut member_names: BTreeMap<String, String> = BTreeMap::new();
+    for node in resolve {
+        let node_id = node
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .context("resolve node missing id")?;
+        let deps = match node.get("deps").and_then(serde_json::Value::as_array) {
+            Some(deps) => deps,
+            None => continue,
+        };
+        for dep in deps {
+            let dep_pkg = match dep.get("pkg").and_then(serde_json::Value::as_str) {
+                Some(dep_pkg) => dep_pkg,
+                None => continue,
+            };
+            let has_normal = dep
+                .get("dep_kinds")
+                .and_then(serde_json::Value::as_array)
+                .map(|kinds| {
+                    kinds.iter().any(|kind| {
+                        kind.get("kind").and_then(serde_json::Value::as_str) != Some("Dev")
+                    })
+                })
+                .unwrap_or(true);
+            parents_any
+                .entry(dep_pkg.to_string())
+                .or_default()
+                .push((node_id.to_string(), has_normal));
+        }
+    }
+    for package in packages {
+        let id = package
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .context("package entry missing id")?;
+        let name = package
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .context("package entry missing name")?;
+        member_names.insert(id.to_string(), name.to_string());
+    }
+
+    fn bfs(
+        start: &str,
+        parents: &BTreeMap<String, Vec<(String, bool)>>,
+        normal_only: bool,
+    ) -> BTreeMap<String, u32> {
+        let mut dist = BTreeMap::new();
+        dist.insert(start.to_string(), 0u32);
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(start.to_string());
+        while let Some(current) = queue.pop_front() {
+            let depth = dist[&current];
+            if let Some(list) = parents.get(&current) {
+                for (parent, has_normal) in list {
+                    if normal_only && !has_normal {
+                        continue;
+                    }
+                    if !dist.contains_key(parent) {
+                        dist.insert(parent.clone(), depth + 1);
+                        queue.push_back(parent.clone());
+                    }
+                }
+            }
+        }
+        dist
+    }
+
+    let dist_any = bfs(&lsp_id, &parents_any, false);
+    let dist_normal = bfs(&lsp_id, &parents_any, true);
+    let direct_packages: Vec<String> = edges.iter().map(|edge| edge.package.clone()).collect();
+
+    let mut transitive = Vec::new();
+    for (id, hops) in &dist_any {
+        if *hops == 0 {
+            continue;
+        }
+        let name = match member_names.get(id) {
+            Some(name) => name,
+            None => continue,
+        };
+        if direct_packages.iter().any(|direct| direct == name) {
+            continue;
+        }
+        let reachability =
+            if dist_normal.contains_key(id) { "normal_chain" } else { "dev_only_chain" };
+        let normal_hops = dist_normal.get(id).copied().unwrap_or(u32::MAX);
+        transitive.push(TransitiveRow {
+            package: name.clone(),
+            reachability,
+            min_hops: (*hops).min(normal_hops),
+        });
+    }
+    transitive.sort_by(|a, b| a.package.cmp(&b.package));
+
+    Ok(Denominator { edges, transitive })
+}
+
 pub fn run(check: bool) -> Result<()> {
     let root = project_root()?;
     let path = root.join(MATRIX_PATH);
     let receipt_path = root.join(RECEIPT_PATH);
-    let generated = render_matrix();
-    let receipt = render_receipt()?;
+    let denominator = collect_denominator(&root)?;
+    let generated = render_matrix(&denominator);
+    let receipt = render_receipt(&denominator)?;
 
     if check {
-        let existing = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", MATRIX_PATH))?;
+        let existing =
+            fs::read_to_string(&path).with_context(|| format!("failed to read {}", MATRIX_PATH))?;
         if normalize_newlines(&existing) != generated {
-            bail!("{} is stale; run `cargo xtask generate-protocol-type-substrate-matrix`", MATRIX_PATH);
+            bail!(
+                "{} is stale; run `cargo xtask generate-protocol-type-substrate-matrix`",
+                MATRIX_PATH
+            );
         }
         let existing_receipt = fs::read_to_string(&receipt_path)
             .with_context(|| format!("failed to read {}", RECEIPT_PATH))?;
         if normalize_newlines(&existing_receipt) != receipt {
-            bail!("{} is stale; run `cargo xtask generate-protocol-type-substrate-matrix`", RECEIPT_PATH);
+            bail!(
+                "{} is stale; run `cargo xtask generate-protocol-type-substrate-matrix`",
+                RECEIPT_PATH
+            );
         }
         println!(
-            "Protocol-type substrate matrix is up to date: {} substrate fields, {} candidates, {} patch rows",
+            "Protocol-type substrate matrix is up to date: {} substrate fields, {} candidates, {} patch rows, {} direct Cargo edges, {} transitive members",
             SUBSTRATE_RECORD.len(),
             CANDIDATES.len(),
-            CAPABILITY_PATCHES.len()
+            CAPABILITY_PATCHES.len(),
+            denominator.edges.len(),
+            denominator.transitive.len()
         );
         return Ok(());
     }
@@ -265,17 +566,19 @@ pub fn run(check: bool) -> Result<()> {
     fs::write(&receipt_path, receipt)
         .with_context(|| format!("failed to write {}", RECEIPT_PATH))?;
     println!(
-        "Wrote {} (+ {} receipt) with {} substrate fields, {} candidates, {} patch rows",
+        "Wrote {} (+ {} receipt) with {} substrate fields, {} candidates, {} patch rows, {} direct Cargo edges, {} transitive members",
         MATRIX_PATH,
         RECEIPT_PATH,
         SUBSTRATE_RECORD.len(),
         CANDIDATES.len(),
-        CAPABILITY_PATCHES.len()
+        CAPABILITY_PATCHES.len(),
+        denominator.edges.len(),
+        denominator.transitive.len()
     );
     Ok(())
 }
 
-fn render_matrix() -> String {
+fn render_matrix(denominator: &Denominator) -> String {
     let mut output = String::new();
     output.push_str("# Protocol-Type Substrate Matrix\n\n");
     output.push_str("Status: generated (inventory-only; no Cargo/API/protocol behavior change)\n");
@@ -339,7 +642,66 @@ fn render_matrix() -> String {
     for row in CAPABILITY_PATCHES {
         push_patch_row(&mut output, row);
     }
+    output.push('\n');
 
+    output.push_str(&render_denominator_section(denominator));
+
+    output
+}
+
+fn render_denominator_section(denominator: &Denominator) -> String {
+    let mut output = String::new();
+    let normal_edges =
+        denominator.edges.iter().filter(|edge| edge.profile_class == "production").count();
+    let compat_edges =
+        denominator.edges.iter().filter(|edge| edge.profile_class == "compatibility_edge").count();
+    let dev_edges =
+        denominator.edges.iter().filter(|edge| edge.profile_class == "dev_test").count();
+    let unclassified_edges =
+        denominator.edges.iter().filter(|edge| edge.profile_class == "not_proven").count();
+
+    output.push_str("## 4. Resolved Cargo denominator (live `cargo metadata --all-features --locked` evidence)\n\n");
+    output.push_str(&format!(
+        "Direct declared edges: {} ({} production, {} compatibility-gated, {} dev/test, {} unclassified). \
+         Transitive selecting parents: {} workspace members (normal-chain vs dev-only-chain below). \
+         No external (non-workspace) package resolves the incumbent transitively.\n\n",
+        denominator.edges.len(),
+        normal_edges,
+        compat_edges,
+        dev_edges,
+        unclassified_edges,
+        denominator.transitive.len()
+    ));
+    output.push_str("Doomed lower edges are assigned to their removal owners and are NOT part of the #11803 migration population.\n\n");
+    output.push_str(
+        "| Package | Dep kind | Profile class | Feature gate | Disposition | Removal owner |\n",
+    );
+    output.push_str("| --- | --- | --- | --- | --- | --- |\n");
+    for edge in &denominator.edges {
+        for cell in [
+            edge.package.as_str(),
+            edge.dep_kind.as_str(),
+            edge.profile_class,
+            edge.gate.as_str(),
+            edge.disposition,
+            edge.removal_owner.as_str(),
+        ] {
+            output.push_str("| ");
+            output.push_str(&escape_cell(cell));
+        }
+        output.push_str(" |\n");
+    }
+    output.push('\n');
+    output.push_str("| Transitive selecting parent | Reachability | Min hops from lsp-types |\n");
+    output.push_str("| --- | --- | --- |\n");
+    for row in &denominator.transitive {
+        for cell in [row.package.as_str(), row.reachability, &row.min_hops.to_string()] {
+            output.push_str("| ");
+            output.push_str(&escape_cell(cell));
+        }
+        output.push_str(" |\n");
+    }
+    output.push('\n');
     output
 }
 
@@ -361,7 +723,7 @@ fn push_patch_row(output: &mut String, row: &CapabilityPatchRow) {
     output.push_str(" |\n");
 }
 
-fn render_receipt() -> Result<String> {
+fn render_receipt(denominator: &Denominator) -> Result<String> {
     let mut record = Vec::new();
     for field in SUBSTRATE_RECORD {
         record.push(serde_json::json!({
@@ -395,6 +757,22 @@ fn render_receipt() -> Result<String> {
             "first_falsifier": row.first_falsifier,
         }));
     }
+    let cargo_denominator = serde_json::json!({
+        "instrument": "cargo metadata --all-features --format-version 1 --locked",
+        "direct_edges": denominator.edges.iter().map(|edge| serde_json::json!({
+            "package": edge.package,
+            "dep_kind": edge.dep_kind,
+            "profile_class": edge.profile_class,
+            "feature_gate": edge.gate,
+            "disposition": edge.disposition,
+            "removal_owner": edge.removal_owner,
+        })).collect::<Vec<_>>(),
+        "transitive_members": denominator.transitive.iter().map(|row| serde_json::json!({
+            "package": row.package,
+            "reachability": row.reachability,
+            "min_hops": row.min_hops,
+        })).collect::<Vec<_>>(),
+    });
     let receipt = serde_json::json!({
         "schema_version": 1,
         "claim": "11802",
@@ -407,6 +785,7 @@ fn render_receipt() -> Result<String> {
             "substrate_record": record,
             "candidates": candidates,
             "capability_patches": patches,
+            "cargo_denominator": cargo_denominator,
         },
     });
     let mut pretty = serde_json::to_string_pretty(&receipt)
@@ -427,9 +806,130 @@ fn normalize_newlines(value: &str) -> String {
 mod tests {
     use super::*;
 
+    fn fixture_denominator() -> Denominator {
+        Denominator {
+            edges: vec![
+                EdgeRow {
+                    package: "perl-incremental-parsing".to_string(),
+                    dep_kind: "dev".to_string(),
+                    profile_class: "dev_test",
+                    gate: "-".to_string(),
+                    disposition: "test_fixture_only",
+                    removal_owner: "#1421 sequencing; exit when LT02 lands".to_string(),
+                },
+                EdgeRow {
+                    package: "perl-lsp-rs-core".to_string(),
+                    dep_kind: "normal".to_string(),
+                    profile_class: "production",
+                    gate: "-".to_string(),
+                    disposition: "adapter_protocol_type",
+                    removal_owner: "#11803 migration; crate-level retirement relation #9645 relocates rows to the final product home first".to_string(),
+                },
+                EdgeRow {
+                    package: "perl-parser".to_string(),
+                    dep_kind: "normal".to_string(),
+                    profile_class: "compatibility_edge",
+                    gate: "lsp-compat".to_string(),
+                    disposition: "lower_wire_remove_before_switch",
+                    removal_owner: "#9893".to_string(),
+                },
+            ],
+            transitive: vec![TransitiveRow {
+                package: "perl-uri".to_string(),
+                reachability: "dev_only_chain",
+                min_hops: 2,
+            }],
+        }
+    }
+
+    /// Minimal synthetic cargo-metadata payload mirroring the real shape:
+    /// packages[] with dependencies[], resolve.nodes[] with deps[]/dep_kinds[].
+    fn fixture_metadata() -> serde_json::Value {
+        serde_json::json!({
+            "packages": [
+                { "id": "registry+lsp", "name": "lsp-types", "version": "0.97.0", "features": {}, "dependencies": [] },
+                {
+                    "id": "path+parser", "name": "perl-parser", "version": "0.17.0",
+                    "features": { "lsp-compat": ["lsp-types"] },
+                    "dependencies": [
+                        { "name": "lsp-types", "pkg": "registry+lsp", "kind": null, "optional": true, "features": [] }
+                    ]
+                },
+                {
+                    "id": "path+adapter", "name": "perl-lsp-rs-core", "version": "0.17.0",
+                    "features": {},
+                    "dependencies": [
+                        { "name": "lsp-types", "pkg": "registry+lsp", "kind": null, "optional": false, "features": [] }
+                    ]
+                },
+                {
+                    "id": "path+uri", "name": "perl-uri", "version": "0.17.0",
+                    "features": {},
+                    "dependencies": [
+                        { "name": "perl-tdd-support", "pkg": "path+tdd", "kind": null, "optional": false, "features": [] }
+                    ]
+                },
+                {
+                    "id": "path+tdd", "name": "perl-tdd-support", "version": "0.17.0",
+                    "features": { "lsp-compat": ["dep:lsp-types", "url"] },
+                    "dependencies": [
+                        { "name": "lsp-types", "pkg": "registry+lsp", "kind": null, "optional": true, "features": [] }
+                    ]
+                }
+            ],
+            "resolve": { "nodes": [
+                { "id": "registry+lsp", "features": [], "deps": [] },
+                { "id": "path+adapter", "features": [], "deps": [ { "pkg": "registry+lsp", "dep_kinds": [ { "kind": null, "target": null } ] } ] },
+                { "id": "path+parser", "features": ["lsp-compat"], "deps": [ { "pkg": "registry+lsp", "dep_kinds": [ { "kind": null, "target": null } ] } ] },
+                { "id": "path+uri", "features": [], "deps": [ { "pkg": "path+tdd", "dep_kinds": [ { "kind": "Dev", "target": null } ] } ] },
+                { "id": "path+tdd", "features": ["lsp-compat"], "deps": [ { "pkg": "registry+lsp", "dep_kinds": [ { "kind": null, "target": null } ] } ] }
+            ] }
+        })
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn denominator_parses_synthetic_metadata() {
+        let parsed = parse_denominator(&fixture_metadata()).expect("synthetic metadata must parse");
+        let names: Vec<&str> = parsed.edges.iter().map(|edge| edge.package.as_str()).collect();
+        assert_eq!(names, vec!["perl-lsp-rs-core", "perl-parser", "perl-tdd-support"]);
+        let parser =
+            parsed.edges.iter().find(|edge| edge.package == "perl-parser").expect("parser edge");
+        assert_eq!(parser.profile_class, "compatibility_edge");
+        assert_eq!(parser.gate, "lsp-compat");
+        assert_eq!(parser.removal_owner, "#9893");
+        // perl-uri reaches lsp-types only through perl-tdd-support's dev edge.
+        assert_eq!(parsed.transitive.len(), 1);
+        assert_eq!(parsed.transitive[0].package, "perl-uri");
+        assert_eq!(parsed.transitive[0].reachability, "dev_only_chain");
+    }
+
+    #[test]
+    fn unknown_edges_classify_not_proven() {
+        let (class, disposition, owner) = classify_edge("some-new-crate", "normal", false);
+        assert_eq!(class, "not_proven");
+        assert_eq!(disposition, "not_proven");
+        assert!(owner.contains("unclassified"));
+    }
+
+    #[test]
+    fn doomed_lower_rows_are_never_migration_population() {
+        for (package, kind, optional) in [
+            ("perl-parser", "normal", true),
+            ("perl-position-tracking", "normal", true),
+            ("perl-workspace", "normal", true),
+        ] {
+            let (_, disposition, _) = classify_edge(package, kind, optional);
+            assert_eq!(
+                disposition, "lower_wire_remove_before_switch",
+                "{package} is doomed lower wire and must not migrate"
+            );
+        }
+    }
+
     #[test]
     fn rendered_matrix_contains_substrate_and_discriminating_rows() {
-        let rendered = render_matrix();
+        let rendered = render_matrix(&fixture_denominator());
         for needle in [
             "gen-lsp-types 0.11.0",
             GLT_CHECKSUM_SHA256,
@@ -437,6 +937,8 @@ mod tests {
             "PATCH-RANGESSUPPORT",
             "PATCH-INSERTTEXTMODES",
             "STALE",
+            "## 4. Resolved Cargo denominator",
+            "lower_wire_remove_before_switch",
         ] {
             assert!(rendered.contains(needle), "matrix missing required content {needle}");
         }
@@ -444,10 +946,12 @@ mod tests {
 
     #[test]
     fn dispositions_are_package_neutral() {
-        let rendered = render_matrix();
-        for legacy in
-            ["typed_ls_types_stable", "typed_ls_types_proposed", "missing_in_ls_types_but_spec_admitted"]
-        {
+        let rendered = render_matrix(&fixture_denominator());
+        for legacy in [
+            "typed_ls_types_stable",
+            "typed_ls_types_proposed",
+            "missing_in_ls_types_but_spec_admitted",
+        ] {
             assert!(
                 !rendered.contains(legacy),
                 "matrix still carries target-specific legacy vocabulary {legacy}"
@@ -488,26 +992,33 @@ mod tests {
 
     #[test]
     fn two_consecutive_renders_are_byte_identical() -> Result<()> {
-        assert_eq!(render_matrix(), render_matrix());
-        assert_eq!(render_receipt()?, render_receipt()?);
+        let denominator = fixture_denominator();
+        assert_eq!(render_matrix(&denominator), render_matrix(&denominator));
+        assert_eq!(render_receipt(&denominator)?, render_receipt(&denominator)?);
         Ok(())
     }
 
     #[test]
     #[allow(clippy::expect_used)]
     fn receipt_is_well_formed_json_with_required_sections() {
-        let receipt = render_receipt().expect("receipt must serialize in tests");
+        let denominator = fixture_denominator();
+        let receipt = render_receipt(&denominator).expect("receipt must serialize in tests");
         let parsed: serde_json::Value = serde_json::from_str(receipt.trim())
             .expect("generated receipt must be well-formed JSON");
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["claim"], "11802");
+        let sections = &parsed["sections"];
         assert_eq!(
-            parsed["sections"]["capability_patches"].as_array().map(Vec::len),
+            sections["capability_patches"].as_array().map(Vec::len),
             Some(CAPABILITY_PATCHES.len())
         );
         assert_eq!(
-            parsed["sections"]["substrate_record"].as_array().map(Vec::len),
+            sections["substrate_record"].as_array().map(Vec::len),
             Some(SUBSTRATE_RECORD.len())
+        );
+        assert_eq!(
+            sections["cargo_denominator"]["direct_edges"].as_array().map(Vec::len),
+            Some(denominator.edges.len())
         );
     }
 }

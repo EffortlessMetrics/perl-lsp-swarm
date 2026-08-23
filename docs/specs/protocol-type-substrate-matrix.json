@@ -91,6 +91,199 @@
         "substrate_result": "no substrate equivalent required: verified 0.11.0 models InsertTextMode enum and the client capability but no server-side insertTextModes field"
       }
     ],
+    "cargo_denominator": {
+      "direct_edges": [
+        {
+          "dep_kind": "dev",
+          "disposition": "test_fixture_only",
+          "feature_gate": "-",
+          "package": "perl-incremental-parsing",
+          "profile_class": "dev_test",
+          "removal_owner": "#1421 sequencing; exit when LT02 lands"
+        },
+        {
+          "dep_kind": "normal",
+          "disposition": "adapter_protocol_type",
+          "feature_gate": "-",
+          "package": "perl-lsp-rs",
+          "profile_class": "production",
+          "removal_owner": "#11803 migration; crate-level retirement relation #9645 relocates rows to the final product home first"
+        },
+        {
+          "dep_kind": "normal",
+          "disposition": "adapter_protocol_type",
+          "feature_gate": "-",
+          "package": "perl-lsp-rs-core",
+          "profile_class": "production",
+          "removal_owner": "#11803 migration; crate-level retirement relation #9645 relocates rows to the final product home first"
+        },
+        {
+          "dep_kind": "normal",
+          "disposition": "lower_wire_remove_before_switch",
+          "feature_gate": "lsp-compat|lsp-types",
+          "package": "perl-parser",
+          "profile_class": "compatibility_edge",
+          "removal_owner": "#9893"
+        },
+        {
+          "dep_kind": "normal",
+          "disposition": "lower_wire_remove_before_switch",
+          "feature_gate": "lsp-compat|lsp-types",
+          "package": "perl-position-tracking",
+          "profile_class": "compatibility_edge",
+          "removal_owner": "#9632"
+        },
+        {
+          "dep_kind": "normal",
+          "disposition": "compatibility_with_exit",
+          "feature_gate": "lsp-compat|lsp-types",
+          "package": "perl-tdd-support",
+          "profile_class": "compatibility_edge",
+          "removal_owner": "#1421 sequencing; wire-free dev-test profile proof under #9632"
+        },
+        {
+          "dep_kind": "normal",
+          "disposition": "lower_wire_remove_before_switch",
+          "feature_gate": "lsp-compat|lsp-types",
+          "package": "perl-workspace",
+          "profile_class": "compatibility_edge",
+          "removal_owner": "#9632"
+        }
+      ],
+      "instrument": "cargo metadata --all-features --format-version 1 --locked",
+      "transitive_members": [
+        {
+          "min_hops": 2,
+          "package": "perl-ast",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "perl-ast-v2",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "perl-core-harness",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 3,
+          "package": "perl-core-test-runner",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "perl-corpus",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "perl-dap",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "perl-kwalitee",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "perl-lexer",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "perl-lsp-perltidy",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "perl-module",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "perl-parser-bench",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "perl-parser-comparison",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "perl-parser-core",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "perl-parser-pest",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 3,
+          "package": "perl-pragma",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "perl-ripr-facts",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "perl-semantic-analyzer",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "perl-subprocess-runtime",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "perl-symbol",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 3,
+          "package": "perl-token",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 3,
+          "package": "perl-tree-sitter-compat",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "perl-uri",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 3,
+          "package": "perl-workspace-core",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "perllsp",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "tree-sitter-perl-rs",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "xtask",
+          "reachability": "normal_chain"
+        }
+      ]
+    },
     "substrate_record": [
       {
         "evidence": "#11802 maintainer deep-review ruling; first-hand 0.11.0 source/package verification below",
