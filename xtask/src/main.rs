@@ -48,7 +48,8 @@ use tasks::{
     native_tooling, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner, parse_rust,
     parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness, perl_kwalitee,
     populate_book, pre_push_plan, prep_crates_io_launch, provider_confidence_matrix,
-    provider_promotion_ledger, publication_facts, publish, publish_closure, publish_manifest_check,
+    provider_promotion_ledger, protocol_type_substrate_matrix, publication_facts, publish,
+    publish_closure, publish_manifest_check,
     publish_receipts, quality_baseline, quality_gate, queue_health, queue_snapshot, receipts,
     release, release_artifact_check, release_evidence, release_notes, release_turnkey,
     repo_hygiene, ripr_evidence, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
@@ -157,6 +158,15 @@ enum Commands {
     #[command(name = "generate-lsp-318-matrix")]
     GenerateLsp318Matrix {
         /// Check that the checked-in matrix matches generated content.
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Generate or check the protocol-type substrate and migration-denominator
+    /// matrix (#11802).
+    #[command(name = "generate-protocol-type-substrate-matrix")]
+    GenerateProtocolTypeSubstrateMatrix {
+        /// Check that the checked-in matrix and receipt match generated content.
         #[arg(long)]
         check: bool,
     },
@@ -4087,6 +4097,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckSemanticTokenClasses => semantic_token_classes::run(),
         Commands::CheckLsp318Claims => lsp_318_claims::run(),
         Commands::GenerateLsp318Matrix { check } => lsp_318_matrix::run(check),
+        Commands::GenerateProtocolTypeSubstrateMatrix { check } => {
+            protocol_type_substrate_matrix::run(check)
+        }
         Commands::CheckWorkspaceSymbolClasses => workspace_symbol_classes::run(),
         Commands::Goals { command } => match command {
             GoalsCommand::Next { program, fixture, json } => goals::next(program, fixture, json),

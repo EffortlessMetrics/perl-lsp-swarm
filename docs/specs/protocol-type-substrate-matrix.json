@@ -1,0 +1,163 @@
+{
+  "claim": "11802",
+  "dispositions_vocabulary": [
+    "lower_wire_remove_before_switch",
+    "adapter_protocol_type",
+    "public_api_break_or_migration",
+    "selected_substrate_generated_type",
+    "selected_substrate_manual_schema_extension",
+    "invalid_current_protocol_shape",
+    "project_extension",
+    "test_fixture_only",
+    "compatibility_with_exit",
+    "retire",
+    "candidate_rejected",
+    "not_proven"
+  ],
+  "evidence_pin_date": "2026-08-22",
+  "generator": "cargo xtask generate-protocol-type-substrate-matrix",
+  "parent_goal": "1421",
+  "schema_version": 1,
+  "sections": {
+    "candidates": [
+      {
+        "candidate": "lsp-types",
+        "rationale": "stays selected only until the migration lane switches; unmaintained lineage motivated #1421. What remains useful (DTO coverage in active adapter paths) is recorded row-by-row in the denominator; incumbent snapshots are behavior evidence, not target authority.",
+        "source": "crates.io; workspace dep at root Cargo.toml [workspace.dependencies]",
+        "state": "incumbent",
+        "verdict": "retire",
+        "version": "0.97.0 (current incumbent)"
+      },
+      {
+        "candidate": "ls-types",
+        "rationale": "owner named gen-lsp-types as successor; cannot receive selected_maintained_substrate without a new reviewed ruling supplying fork/security/update plan. Issue-body ls-types field vocabulary (typed_ls_types_*) is retired from the canonical schema.",
+        "source": "GitHub archive notice 2026-08-15",
+        "state": "rejected_archived_superseded",
+        "verdict": "candidate_rejected",
+        "version": "archived (was 0.0.6-era target)"
+      },
+      {
+        "candidate": "gen-lsp-types",
+        "rationale": "first-hand verified: checksum match, edition 2024, official-metamodel generation, typed typeHierarchyProvider/rangesSupport/inlineCompletionProvider, String-default Uri with optional url|fluent-uri, explicit null-vs-absent model, request/notification direction types. Limitations recorded in the substrate record; later LT issues may not independently select another package or feature.",
+        "source": "crates.io checksum b64887ac...; repo ribru17/gen-lsp-types",
+        "state": "active_successor_candidate",
+        "verdict": "selected_maintained_substrate",
+        "version": "0.11.0"
+      }
+    ],
+    "capability_patches": [
+      {
+        "anchor": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json() typeHierarchyProvider injection (lines 72-77)",
+        "current_assumption": "lsp-types 0.97 ServerCapabilities lacks type_hierarchy_provider; patched into serialized JSON post-hoc; parallel experimental injection in protocol/capabilities/experimental.rs:10 and detection support in capability_map.rs",
+        "disposition": "selected_substrate_generated_type",
+        "exit_rule": "patch and experimental workaround removed together when the adapter serializes the typed field",
+        "first_falsifier": "tests/lsp_caps_contract_shapes.rs typeHierarchyProvider shape assertion population",
+        "owner": "#11803 migration (surviving LT02 row)",
+        "protocol_identity": "initialize result capabilities.typeHierarchyProvider (object form)",
+        "row_id": "PATCH-TYPEHIERARCHY",
+        "substrate_result": "typed once: ServerCapabilities.type_hierarchy_provider: Option<TypeHierarchyProvider>"
+      },
+      {
+        "anchor": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs documentRangeFormattingProvider rangesSupport injection (lines 79-86)",
+        "current_assumption": "issue-body claim 'rangesSupport missing' is STALE: verified 0.11.0 structures.rs:7113 DocumentRangeFormattingOptions.ranges_support: Option<bool>",
+        "disposition": "selected_substrate_generated_type",
+        "exit_rule": "hand-patched object replaced by typed options struct; 3.18 conformance matrix row stays authoritative for advertisement shape",
+        "first_falsifier": "tests/lsp_caps_contract_shapes.rs rangesSupport pointer assertions; lsp_3_17_lifecycle_tests registration payload",
+        "owner": "#11803 migration (surviving LT02 row)",
+        "protocol_identity": "capabilities.documentRangeFormattingProvider.rangesSupport (LSP 3.18 multi-range formatting)",
+        "row_id": "PATCH-RANGESSUPPORT",
+        "substrate_result": "typed once: DocumentRangeFormattingOptions.ranges_support: Option<bool>"
+      },
+      {
+        "anchor": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs inlineCompletionProvider injection (lines 87-93); runtime dynamic-client removal at crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs (~lines 781-815)",
+        "current_assumption": "lsp-types 0.97 predates the field; static advertisement patched into JSON, then removed for dynamic-registration clients at initialize time",
+        "disposition": "selected_substrate_generated_type",
+        "exit_rule": "patch removed when typed field serializes identically; dynamic-client removal branch must keep byte-identical initialize output",
+        "first_falsifier": "tests/lsp_inline_completion_registration_tests.rs; tests/lsp_cap_snap.rs; ripr_seam_proof_* capability negotiation proofs",
+        "owner": "#11803 migration (surviving LT02 row); runtime removal seam owned by lifecycle code, not the type switch",
+        "protocol_identity": "capabilities.inlineCompletionProvider top-level (LSP 3.18); experimental placement forbidden (negative-claimed)",
+        "row_id": "PATCH-INLINECOMPLETION",
+        "substrate_result": "typed once: ServerCapabilities.inline_completion_provider: Option<InlineCompletionProvider>; runtime dynamic-client removal logic is behavioral and stays out of type migration scope"
+      },
+      {
+        "anchor": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs completionItem.insertTextModes injection (lines 95-105)",
+        "current_assumption": "advertises numeric array [1,2] inside completionProvider.completionItem; that key is NOT a valid server-capability shape (client capability textDocument.completion.insertTextMode is the real negotiation surface) per #2892/#8032",
+        "disposition": "invalid_current_protocol_shape",
+        "exit_rule": "remove the injection and its snapshot assertions in the #8032 lane; migration must not carry it forward as parity",
+        "first_falsifier": "tests/lsp_capabilities_contract.rs insertTextModes advertisement assertions (falsifiers flip to removal proofs)",
+        "owner": "#8032 single-capability-authority work removes it; explicitly NOT migrated to the selected substrate",
+        "protocol_identity": "invalid_current_protocol_shape - not a type gap",
+        "row_id": "PATCH-INSERTTEXTMODES",
+        "substrate_result": "no substrate equivalent required: verified 0.11.0 models InsertTextMode enum and the client capability but no server-side insertTextModes field"
+      }
+    ],
+    "substrate_record": [
+      {
+        "evidence": "#11802 maintainer deep-review ruling; first-hand 0.11.0 source/package verification below",
+        "field": "selection verdict",
+        "value": "selected_maintained_substrate"
+      },
+      {
+        "evidence": "crates.io API v1 crates/gen-lsp-types inspected {EVIDENCE_PIN_DATE}; trust-published from GitHub run 30327548194 @ 1e84ee239d093e4933bf3024cd597255090e5813",
+        "field": "package / version / source",
+        "value": "gen-lsp-types 0.11.0; crates.io; repo https://github.com/ribru17/gen-lsp-types"
+      },
+      {
+        "evidence": "SHA-256 of downloaded gen-lsp-types-0.11.0.crate matched the crates.io API checksum exactly ({EVIDENCE_PIN_DATE})",
+        "field": "checksum",
+        "value": "b64887ac3a8083427ae935a7296db876871582cd57eac077564f8bc18fa49116"
+      },
+      {
+        "evidence": "archived ls-types README supersession notice recorded in the #11802 deep review",
+        "field": "maintenance state",
+        "value": "actively maintained successor; predecessor ls-types archived 2026-08-15 naming this crate as replacement"
+      },
+      {
+        "evidence": "crate description and generator pipeline in ribru17/gen-lsp-types; #11802 deep-review external pin",
+        "field": "metamodel / spec source identity",
+        "value": "generated from the official LSP metamodel"
+      },
+      {
+        "evidence": "crates.io trustpub_data for 0.11.0 (run 30327548194, sha 1e84ee2)",
+        "field": "generator identity / reproducibility",
+        "value": "metamodel-codegen inside the upstream repo; published artifacts carry a trust-publish provenance (GitHub Actions run id + commit sha)"
+      },
+      {
+        "evidence": "Cargo.toml.orig inside the verified 0.11.0 .crate payload; crates.io API rust_version=null",
+        "field": "edition / MSRV / dependency graph",
+        "value": "edition 2024; no declared MSRV (rust_version absent from registry metadata); deps serde 1.0.228, serde_json 1.0.150, optional fluent-uri 0.4.1 (serde) or url 2.5.8 (serde)"
+      },
+      {
+        "evidence": "src/generated/common.rs lines 28/66/68 of the verified 0.11.0 payload; #11802 URI submatrix ruling (choose for adapter-boundary preservation, not import-edit minimization)",
+        "field": "URI representation feature",
+        "value": "default String-backed `pub struct Uri(pub String)`; optional features `url` (url::Url) and `fluent-uri` (fluent_uri::Uri<String>); feature choice deferred to the migration lane with #8156/#8484/public-API proof"
+      },
+      {
+        "evidence": "verified 0.11.0 src/generated/structures.rs serde attributes",
+        "field": "null / absent serialization model",
+        "value": "`Option<T>` fields serialize as absent (`skip_serializing_if = \"Option::is_none\"`, 498 occurrences in structures.rs); explicit null appears only where the metamodel demands it - distinct wire states preserved, not flattened"
+      },
+      {
+        "evidence": "verified 0.11.0 src/generated/{requests,notifications}.rs; #11802 falsifier 9",
+        "field": "request / notification direction model",
+        "value": "dedicated requests.rs / notifications.rs modules encode method direction types; route/method authority remains #8896 - unchanged by this inventory"
+      },
+      {
+        "evidence": "0.11.0 Cargo.toml.orig features = url|fluent-uri only; #11802 stable/proposed boundary ruling",
+        "field": "stable / proposed representation model",
+        "value": "single Cargo surface without a stable/proposed feature split; protocol maturity stays repository-owned per admitted profile (#7113 validator + features.toml); generated availability is not stability"
+      },
+      {
+        "evidence": "first-hand Select-String over the verified 0.11.0 src/generated/*.rs",
+        "field": "coverage of current manual patches",
+        "value": "typed `ServerCapabilities.type_hierarchy_provider: Option<TypeHierarchyProvider>` (structures.rs:6062), typed top-level `inline_completion_provider: Option<InlineCompletionProvider>` (:6082), typed `DocumentRangeFormattingOptions.ranges_support: Option<bool>` (:7113); `completionItem.insertTextModes` is NOT modeled server-side (only client-capability InsertTextMode enum exists)"
+      },
+      {
+        "evidence": "registry rust_version=null; upstream policy; #11802 URI submatrix requirements",
+        "field": "known gaps / limitations",
+        "value": "no declared MSRV; zero-ver breaking policy means point releases may break - migration must pin exact version and record an update policy; String Uri default preserves qualifiers but defers parse/serialize semantics to the chosen feature"
+      }
+    ]
+  },
+  "substrate_checksum_sha256": "b64887ac3a8083427ae935a7296db876871582cd57eac077564f8bc18fa49116"
+}
