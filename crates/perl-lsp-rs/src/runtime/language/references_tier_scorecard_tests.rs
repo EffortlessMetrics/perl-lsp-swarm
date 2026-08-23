@@ -205,7 +205,30 @@ use warnings;
         // Called AFTER open_document: did_open already promoted the original
         // coordinator to Ready, so this replacement gives the handler a genuine
         // Partial-access coordinator while the document text is still in the store.
-        server.index_coordinator = Some(Arc::new(IndexCoordinator::new()));
+        //
+        // #11305: an opened document now carries a non-zero accepted generation.
+        // A freshly swapped-in empty index would make every open document
+        // genuinely stale, tripping the cross-file staleness gate instead of
+        // exercising Building-state routing. Re-seed each open document's
+        // committed source into the replacement index at its accepted
+        // generation so the fixture isolates the routing state.
+        let coordinator = Arc::new(IndexCoordinator::new());
+        {
+            let documents = server.documents.lock();
+            for (normalized_uri, doc) in documents.iter() {
+                let Some(commit_gen) = std::num::NonZeroU32::new(doc.current_generation()) else {
+                    continue;
+                };
+                if let Ok(url) = url::Url::parse(normalized_uri) {
+                    let _ = coordinator.index().index_live_file(
+                        url,
+                        doc.text_str().to_string(),
+                        perl_parser::workspace_index::SourceCommit::new(commit_gen),
+                    );
+                }
+            }
+        }
+        server.index_coordinator = Some(coordinator);
     }
 
     fn set_index_ready(_server: &mut LspServer) {

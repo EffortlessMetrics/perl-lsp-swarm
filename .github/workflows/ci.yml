@@ -397,6 +397,26 @@ jobs:
           esac
           exit "$status"
 
+      - name: Capture PR-fast disk pressure
+        if: always()
+        shell: bash
+        run: |
+          # #11943: capture setup and gate failures, including ENOSPC -> ld SIGBUS,
+          # before the runner is discarded. This is advisory evidence only.
+          set +e
+          mkdir -p target/receipts/logs
+          {
+            echo "== $(date -u '+%Y-%m-%dT%H:%M:%SZ') PR-fast disk pressure snapshot =="
+            echo "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-<unset>}"
+            echo "GITHUB_SHA=${GITHUB_SHA:-<unset>}"
+            echo "GITHUB_RUN_ID=${GITHUB_RUN_ID:-<unset>}"
+            echo "GITHUB_RUN_ATTEMPT=${GITHUB_RUN_ATTEMPT:-<unset>}"
+            df -h . "${CARGO_TARGET_DIR:-target}" || true
+            timeout --signal=TERM --kill-after=5s 30s \
+              bash -c 'du -h --max-depth=1 -- "$1" 2>/dev/null | sort -rh | head -n 20' \
+              _ "${CARGO_TARGET_DIR:-target}" || true
+          } >> target/receipts/logs/pr-fast-disk-pressure.log || true
+
       - name: Upload PR-fast receipt
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0

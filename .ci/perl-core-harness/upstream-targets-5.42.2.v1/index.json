@@ -1,0 +1,22 @@
+{
+  "schema_version": "perl_core_harness.target_matrix_index.v1",
+  "perl_version_row": "5.42.2",
+  "perl_requested_ref": "v5.42.2",
+  "perl_resolved_ref": "b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed",
+  "topology_sources": {
+    "Makefile.SH": "8732bb922b4f3365ce48f3979f29b30df850f885",
+    "t/TEST": "60c3f01b66a2c82062dc288aa3d336d5531d3b12",
+    "t/harness": "c038ad3c96a5e3e9450f3d3fe91ba932356ebfa4"
+  },
+  "target_files": [
+    "01-components-a.json",
+    "02-components-b.json",
+    "03-instrument-legacy.json",
+    "04-make.json",
+    "05-manifest.json",
+    "06-optional-platform.json",
+    "07-preparation-selector.json",
+    "08-variants.json"
+  ],
+  "claim_boundary": "Pinned upstream target topology and implementation ownership only; no row is accepted compiler, semantic, execution, platform, or performance evidence without its own series and receipts."
+}
