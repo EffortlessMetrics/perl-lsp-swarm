@@ -17,6 +17,7 @@ use perl_semantic_analyzer::symbol::{SymbolKind, SymbolTable};
 
 use super::super::internal_types::{Diagnostic, RelatedInformation};
 use super::super::walker::walk_node;
+use crate::tooling::perl_critic::{BuiltInCriticObservation, Severity};
 use perl_diagnostics::codes::DiagnosticSeverity;
 
 /// Check for common mistakes
@@ -55,18 +56,51 @@ pub fn check_common_mistakes(
                 if (op == "==" || op == "!=")
                     && (might_be_undef(left, symbol_table) || might_be_undef(right, symbol_table))
                 {
+                    // The emitter chooses the reviewed PL404 shape at the
+                    // syntax branch that observed it (#11918): a literal
+                    // `undef` operand is the literal shape (the reviewed
+                    // native alias `native.common.undef_comparison` covers
+                    // exactly that); an unresolved-variable operand is the
+                    // data-flow shape, which deliberately has no native
+                    // alias and stays a distinct finding.
+                    let literal_undef = matches!(left.kind, NodeKind::Undef)
+                        || matches!(right.kind, NodeKind::Undef);
+                    let range = (n.location.start, n.location.end);
+                    let message = format!(
+                        "Using '{}' with potentially undefined value -- use 'defined()' to check first",
+                        op
+                    );
+                    let observation = if literal_undef {
+                        BuiltInCriticObservation::pl404_literal_undef_comparison(
+                            Severity::Stern,
+                            range,
+                            message.clone(),
+                            Some("Consider using 'defined' check or '//' operator".to_string()),
+                        )
+                    } else {
+                        BuiltInCriticObservation::pl404_potentially_undef_comparison(
+                            Severity::Stern,
+                            range,
+                            message.clone(),
+                            Some("Consider using 'defined' check or '//' operator".to_string()),
+                        )
+                    };
                     diagnostics.push(Diagnostic {
-                        range: (n.location.start, n.location.end),
+                        range,
                         severity: DiagnosticSeverity::Warning,
                         code: Some(DiagnosticCode::NumericComparisonWithUndef.as_str().to_string()),
-                        message: format!("Using '{}' with potentially undefined value -- use 'defined()' to check first", op),
+                        message,
                         related_information: vec![RelatedInformation {
-                            location: (n.location.start, n.location.end),
+                            location: range,
                             message: "Consider using 'defined' check or '//' operator".to_string(),
                         }],
                         tags: Vec::new(),
                         fixable: false,
-                        suggestion: Some("Guard with 'defined($var)' or use the '//' (defined-or) operator".to_string()),
+                        critic_observation: Some(observation),
+                        suggestion: Some(
+                            "Guard with 'defined($var)' or use the '//' (defined-or) operator"
+                                .to_string(),
+                        ),
                     });
                 }
             }
@@ -120,6 +154,7 @@ fn check_bareword_filehandle(
         }],
         tags: Vec::new(),
         fixable: false,
+        critic_observation: None,
         suggestion: Some("Use lexical filehandle: open(my $fh, ... )".to_string()),
     });
 }
@@ -152,6 +187,7 @@ fn check_assignment_in_condition(condition: &Node, diagnostics: &mut Vec<Diagnos
         ],
         tags: Vec::new(),
         fixable: false,
+        critic_observation: None,
         suggestion: Some("Replace '=' with '==' for numeric comparison or 'eq' for string comparison".to_string()),
     });
 }
@@ -340,6 +376,61 @@ mod tests {
                 .all(|info| !info.message.contains('💡') && !info.message.contains('ℹ')),
             "PL403 related information should not use emoji: {:?}",
             pl403.related_information
+        );
+    }
+
+    // --- producer-owned PL404 critic shapes (#11918) ---
+
+    #[test]
+    fn pl404_emitter_declares_the_shape_observed_at_the_branch() {
+        use crate::tooling::perl_critic::CriticFindingShape;
+
+        let literal = common_mistakes_diags("if (5 == undef) { }");
+        let literal_observation = literal
+            .iter()
+            .find(|d| d.code.as_deref() == Some("PL404"))
+            .and_then(|d| d.critic_observation.as_ref())
+            .unwrap_or_else(|| {
+                panic!("literal undef PL404 must carry an observation: {literal:?}")
+            });
+        assert_eq!(
+            literal_observation.identity().shape(),
+            CriticFindingShape::LiteralUndefComparison
+        );
+
+        let dataflow = common_mistakes_diags("if ($undeclared_var == 5) { }");
+        let dataflow_observation = dataflow
+            .iter()
+            .find(|d| d.code.as_deref() == Some("PL404"))
+            .and_then(|d| d.critic_observation.as_ref())
+            .unwrap_or_else(|| panic!("data-flow PL404 must carry an observation: {dataflow:?}"));
+        assert_eq!(
+            dataflow_observation.identity().shape(),
+            CriticFindingShape::PotentiallyUndefComparison
+        );
+    }
+
+    #[test]
+    fn pl404_observations_declare_the_critic_scale_severity_the_producer_owns() {
+        let diags = common_mistakes_diags("if (5 == undef) { }");
+        let observation = diags
+            .iter()
+            .find(|d| d.code.as_deref() == Some("PL404"))
+            .and_then(|d| d.critic_observation.as_ref());
+        let Some(observation) = observation else {
+            panic!("PL404 must carry an observation: {diags:?}")
+        };
+        // Stern matches the reviewed native alias declaration; deriving it
+        // from the LSP Warning instead would be an invented mapping.
+        assert_eq!(observation.severity(), crate::tooling::perl_critic::Severity::Stern);
+    }
+
+    #[test]
+    fn non_overlap_common_mistakes_carry_no_observation() {
+        let diags = common_mistakes_diags("my $x; if ($x = 5) { }");
+        assert!(
+            diags.iter().all(|d| d.critic_observation.is_none()),
+            "PL403 is outside the reviewed overlap cohort: {diags:?}"
         );
     }
 }
