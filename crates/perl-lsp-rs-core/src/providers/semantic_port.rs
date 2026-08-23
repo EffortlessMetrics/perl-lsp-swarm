@@ -26,9 +26,10 @@ pub use model::{
     ProviderQueryFact, ProviderQueryFactRole, ProviderQueryKind, ProviderQueryRequest,
     ProviderQuerySubject, ProviderReadinessRequirement, ProviderReadinessState,
 };
+pub(crate) use model::{semantic_provenance_is_exact, validate_envelope_structure};
 pub use result::*;
 
-use model::{facts_are_related, semantic_provenance_is_exact};
+use model::facts_are_related;
 use perl_semantic_facts::{FactId, SemanticFactEnvelope};
 use std::error::Error;
 use std::fmt;

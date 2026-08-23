@@ -384,7 +384,7 @@ fn did_change_configuration_updates_workspace_settings() -> Result<(), Box<dyn s
     // cleanup panic-safe.
     let root = tempfile::TempDir::new()?;
 
-    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+    (|| -> Result<(), Box<dyn std::error::Error>> {
         let (server, _buffer) = create_test_server();
         let root_uri = url::Url::from_file_path(root.path())
             .map_err(|()| format!("temp root {} is not absolute", root.path().display()))?
@@ -438,9 +438,7 @@ fn did_change_configuration_updates_workspace_settings() -> Result<(), Box<dyn s
         assert!(config.include_paths.contains(&"custom/lib".to_string()));
         assert!(config.include_paths.contains(&"vendor".to_string()));
         Ok(())
-    })();
-
-    result
+    })()
 }
 
 #[test]
