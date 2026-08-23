@@ -1296,3 +1296,242 @@ fn command_rows() -> Vec<SurfaceRow> {
 fn command_rows() -> Vec<SurfaceRow> {
     Vec::new()
 }
+
+// ---------------------------------------------------------------------------
+// RIPR seam discriminators (#9662 repair, PR #11890)
+// ---------------------------------------------------------------------------
+//
+// Each ledger constructor is called directly here and its per-kind
+// disposition algebra is asserted at the source of the data. This keeps
+// every constructor literal statically test-reachable and observed (ripr
+// no_static_path proof) and pins the kind/disposition invariants one layer
+// below the aggregate `coverage_errors` walk.
+
+#[cfg(test)]
+mod ripr_seam_proof {
+    use super::*;
+
+    #[test]
+    fn capability_rows_are_static_capability_fields() {
+        let rows = capability_rows();
+        assert!(!rows.is_empty(), "capability group must not be empty");
+        for row in &rows {
+            assert_eq!(
+                row.kind,
+                SurfaceKind::CapabilityField,
+                "row {} must be a capability field",
+                row.surface_id
+            );
+            assert_eq!(
+                row.disposition,
+                Disposition::Static,
+                "capability row {} must be statically advertised",
+                row.surface_id
+            );
+            assert!(
+                row.surface_id.starts_with("cap."),
+                "capability row id {} must use the cap. prefix",
+                row.surface_id
+            );
+        }
+    }
+
+    #[test]
+    fn mutation_rows_are_static_initialize_time_mutations() {
+        let rows = mutation_rows();
+        assert!(!rows.is_empty(), "mutation group must not be empty");
+        for row in &rows {
+            assert_eq!(
+                row.kind,
+                SurfaceKind::Mutation,
+                "row {} must be a mutation",
+                row.surface_id
+            );
+            assert_eq!(
+                row.disposition,
+                Disposition::Static,
+                "mutation row {} must keep the static disposition",
+                row.surface_id
+            );
+            assert!(
+                row.surface_id.starts_with("mut."),
+                "mutation row id {} must use the mut. prefix",
+                row.surface_id
+            );
+        }
+    }
+
+    #[test]
+    fn registration_rows_follow_the_registration_disposition_algebra() {
+        let rows = registration_rows();
+        assert!(rows.len() >= 3, "registration group must keep its findings");
+        for row in &rows {
+            assert_eq!(
+                row.kind,
+                SurfaceKind::Registration,
+                "row {} must be a registration",
+                row.surface_id
+            );
+            let is_dynamic_registration =
+                row.protocol_field.starts_with("register ") && row.protocol_field.contains('@');
+            let expected = if is_dynamic_registration {
+                Disposition::Dynamic
+            } else {
+                Disposition::Unadvertised
+            };
+            assert_eq!(
+                row.disposition,
+                expected,
+                "registration row {} must match its {} disposition",
+                row.surface_id,
+                if is_dynamic_registration { "dynamic" } else { "unadvertised finding" }
+            );
+        }
+    }
+
+    #[test]
+    fn refresh_rows_are_dynamic_workspace_refresh_requests() {
+        let rows = refresh_rows();
+        assert!(rows.len() >= 7, "refresh group must keep all seven requests");
+        for row in &rows {
+            assert_eq!(
+                row.kind,
+                SurfaceKind::RefreshRequest,
+                "row {} must be a refresh request",
+                row.surface_id
+            );
+            assert_eq!(
+                row.disposition,
+                Disposition::Dynamic,
+                "refresh row {} must be dynamically requested",
+                row.surface_id
+            );
+            assert!(
+                row.protocol_field.starts_with("workspace/")
+                    && row.protocol_field.ends_with("/refresh"),
+                "refresh row {} must name a workspace/*/refresh method, got {}",
+                row.surface_id,
+                row.protocol_field
+            );
+        }
+    }
+
+    #[test]
+    fn suppression_rows_are_unadvertised_suppression_inputs() {
+        let rows = suppression_rows();
+        assert!(!rows.is_empty(), "suppression group must not be empty");
+        for row in &rows {
+            assert_eq!(
+                row.kind,
+                SurfaceKind::Suppression,
+                "row {} must be a suppression",
+                row.surface_id
+            );
+            assert_eq!(
+                row.disposition,
+                Disposition::Unadvertised,
+                "suppression row {} must be unadvertised",
+                row.surface_id
+            );
+            assert!(
+                row.protocol_field.starts_with("initializationOptions.disabledFeatures:")
+                    || row.protocol_field.starts_with("profile:")
+                    || row.protocol_field.starts_with("config:")
+                    || row.protocol_field.starts_with("tool:"),
+                "suppression row {} must name a known suppression input, got {}",
+                row.surface_id,
+                row.protocol_field
+            );
+        }
+    }
+
+    #[test]
+    fn compatibility_rows_are_unadvertised_bounded_exceptions() {
+        let rows = compatibility_rows();
+        assert!(!rows.is_empty(), "compatibility group must not be empty");
+        for row in &rows {
+            assert_eq!(
+                row.kind,
+                SurfaceKind::Compatibility,
+                "row {} must be a compatibility exception",
+                row.surface_id
+            );
+            assert_eq!(
+                row.disposition,
+                Disposition::Unadvertised,
+                "compatibility row {} must be unadvertised",
+                row.surface_id
+            );
+            let boundary = row.compatibility.as_ref().unwrap_or_else(|| {
+                panic!("compatibility row {} must carry a boundary", row.surface_id)
+            });
+            assert!(
+                !boundary.subject.is_empty()
+                    && !boundary.reason.is_empty()
+                    && !boundary.expiry.is_empty(),
+                "compatibility row {} must keep exact subject/reason/expiry",
+                row.surface_id
+            );
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn command_rows_are_exactly_the_supported_command_identities() {
+        let rows = command_rows();
+        let advertised: Vec<&str> = rows
+            .iter()
+            .map(|row| row.protocol_field.strip_prefix("cmd.").unwrap_or(row.protocol_field))
+            .collect();
+        let mut expected: Vec<&str> = crate::protocol::capabilities::SUPPORTED_COMMANDS.to_vec();
+        advertised.iter().for_each(|id| {
+            assert!(expected.contains(id), "command row {} is not in SUPPORTED_COMMANDS", id);
+        });
+        expected.sort_unstable();
+        let mut sorted = advertised.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted, expected,
+            "command rows must be exactly the advertised SUPPORTED_COMMANDS identities"
+        );
+        for row in &rows {
+            assert_eq!(
+                row.disposition,
+                Disposition::Static,
+                "command row {} must be statically advertised",
+                row.surface_id
+            );
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[test]
+    fn command_rows_are_empty_on_wasm() {
+        assert!(
+            command_rows().is_empty(),
+            "wasm target must not advertise execute-command identities"
+        );
+    }
+
+    #[test]
+    fn rows_aggregate_every_group_without_duplicate_ids() {
+        let rows = rows();
+        let expected_len = capability_rows().len()
+            + mutation_rows().len()
+            + registration_rows().len()
+            + refresh_rows().len()
+            + suppression_rows().len()
+            + compatibility_rows().len()
+            + command_rows().len();
+        assert_eq!(
+            rows.len(),
+            expected_len,
+            "aggregated ledger must contain exactly the union of every group"
+        );
+        let mut ids: Vec<&str> = rows.iter().map(|row| row.surface_id).collect();
+        ids.sort_unstable();
+        let before = ids.len();
+        ids.dedup();
+        assert_eq!(ids.len(), before, "ledger surface ids must be unique across groups");
+    }
+}
