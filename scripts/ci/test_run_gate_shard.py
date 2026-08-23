@@ -301,6 +301,21 @@ def fake_sleeping_xtask(root: Path, marker: Path) -> Path:
     return path
 
 
+def extract_gate_shard_runner_step(workflow_text: str) -> str:
+    """Return the body of the "Run merge-gate shard with receipts" step.
+
+    A missing guarded step raises, so callers fail visibly instead of
+    skipping.  A terminal runner step has no subsequent named step; its body
+    then extends to end-of-file (#11950).
+    """
+    start = workflow_text.index("      - name: Run merge-gate shard with receipts")
+    try:
+        end = workflow_text.index("      - name:", start + 1)
+    except ValueError:
+        return workflow_text[start:]
+    return workflow_text[start:end]
+
+
 class RunningFakeProcess:
     def __init__(self) -> None:
         self.pid = 4242
@@ -608,9 +623,7 @@ class GateShardTests(unittest.TestCase):
             ["meta"],
             [name for name, gates in lanes.items() if "source_commit_api_check" in gates],
         )
-        run_start = workflow.index("      - name: Run merge-gate shard with receipts")
-        run_end = workflow.index("      - name:", run_start + 1)
-        runner_step = workflow[run_start:run_end]
+        runner_step = extract_gate_shard_runner_step(workflow)
         invocation_start = runner_step.index("python3 scripts/ci/run_gate_shard.py")
         invocation_end = runner_step.index("          status=$?", invocation_start)
         runner_invocation = runner_step[invocation_start:invocation_end]
@@ -1567,25 +1580,21 @@ class GateShardTests(unittest.TestCase):
             self.skipTest("ci.yml not present in this checkout")
 
         text = workflow.read_text(encoding="utf-8")
-        # Locate the runner step in the workflow.
-        try:
-            run_start = text.index("      - name: Run merge-gate shard with receipts")
-            run_end = text.index("      - name:", run_start + 1)
-        except ValueError:
-            self.skipTest("runner step not found in ci.yml")
+        # A missing runner step must fail here rather than skip: a checkout
+        # that ships ci.yml is expected to run the merge-gate shard (#11950).
+        runner_step = extract_gate_shard_runner_step(text)
+        self.assert_runner_step_gate_policy_contract(runner_step)
 
-        runner_step = text[run_start:run_end]
-
-        # Extract the --gate-policy value from the workflow invocation.
+    def assert_runner_step_gate_policy_contract(self, runner_step: str) -> None:
+        """Feed the step's exact --gate-policy value into build_parser()."""
         match = re.search(r"--gate-policy\s+(\S+)", runner_step)
         self.assertIsNotNone(
             match,
-            "ci.yml runner step must pass --gate-policy to run_gate_shard.py",
+            "runner step must pass --gate-policy to run_gate_shard.py",
         )
         assert match is not None
         workflow_policy_path = match.group(1)
 
-        # Feed the workflow's exact --gate-policy value into the parser.
         parser = shard.build_parser()
         _, unknown = parser.parse_known_args(
             [
@@ -1599,8 +1608,40 @@ class GateShardTests(unittest.TestCase):
         self.assertEqual(
             [],
             unknown,
-            f"--gate-policy {workflow_policy_path!r} from ci.yml is not accepted by build_parser()",
+            f"--gate-policy {workflow_policy_path!r} from the runner step"
+            " is not accepted by build_parser()",
         )
+
+    def test_terminal_runner_step_keeps_gate_policy_contract_checked(self) -> None:
+        """A terminal runner step extends to end-of-file and stays checked.
+
+        Regression control for the combined index() lookup (#11950): when the
+        guarded step is the last named step in the file, the next-step search
+        raised ValueError and the old code skipped as if the step were
+        absent, silently unloading the --gate-policy guard.
+        """
+        terminal_workflow = (
+            "jobs:\n"
+            "  merge-gate-shards:\n"
+            "    steps:\n"
+            "      - name: meta\n"
+            "        run: echo meta\n"
+            "      - name: Run merge-gate shard with receipts\n"
+            "        run: >-\n"
+            "          python3 scripts/ci/run_gate_shard.py\n"
+            "          --gate-policy .ci/gate-policy.yaml\n"
+            "          gate1\n"
+        )
+        runner_step = extract_gate_shard_runner_step(terminal_workflow)
+        self.assertIn("--gate-policy .ci/gate-policy.yaml", runner_step)
+        self.assert_runner_step_gate_policy_contract(runner_step)
+
+    def test_missing_runner_step_fails_instead_of_skipping(self) -> None:
+        """Removing the guarded step must fail extraction visibly (#11950)."""
+        with self.assertRaises(ValueError):
+            extract_gate_shard_runner_step(
+                "jobs:\n  other:\n    steps:\n      - name: meta\n        run: echo meta\n"
+            )
 
 
 if __name__ == "__main__":
