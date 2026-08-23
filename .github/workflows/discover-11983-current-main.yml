@@ -1,0 +1,56 @@
+name: Discover #11983 current-main conflicts
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/discover-11983-current-main.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: discover-11983-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    if: >-
+      github.repository == 'EffortlessMetrics/perl-lsp-swarm' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'repair/11983-current-main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout current-main repair branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: repair/11983-current-main
+          fetch-depth: 0
+
+      - name: Discover exact cherry-pick conflict denominator
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git fetch origin main fix/11955-withdraw-secondary-format-routes
+          git merge-base --is-ancestor origin/main HEAD
+
+          for commit in \
+            d174ec1e9845056b8e1a193001ce88a2ea9eaebe \
+            0f6a4334eb5a53df54a5ed40103659a63578b6f5
+          do
+            if git cherry-pick "$commit"; then
+              echo "CHERRY_PICK_OK $commit"
+              continue
+            fi
+
+            echo "CHERRY_PICK_CONFLICT $commit"
+            git diff --name-only --diff-filter=U | sort | sed 's/^/CONFLICT_FILE /'
+            exit 1
+          done
+
+          echo "NO_CONFLICTS"
