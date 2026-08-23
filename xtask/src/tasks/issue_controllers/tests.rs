@@ -630,6 +630,25 @@ fn live_pr_and_timestamp_tokens_are_rejected() -> Result<()> {
 }
 
 #[test]
+fn live_tokens_hidden_outside_string_values_are_rejected_by_the_byte_scan() -> Result<()> {
+    // Hide a SHA-like token inside a KEY name: the parsed-value walk cannot
+    // see it, so only the raw-byte scan catches it.
+    let mut value = base_value()?;
+    let map =
+        value.as_object_mut().ok_or_else(|| color_eyre::eyre::eyre!("root is not an object"))?;
+    if let Some(limited) = map.remove("limitations") {
+        map.insert("head_4f5bcb334_notes".to_owned(), limited);
+    }
+    let raw = serialize(&value)?;
+    let report = validate_static_bytes(&raw);
+    ensure!(
+        report.diagnostics.iter().any(|d| d.check == "live-state" && d.subject == "manifest bytes"),
+        "raw-byte live-state scan must fire for tokens outside string values"
+    );
+    Ok(())
+}
+
+#[test]
 fn generated_projection_carries_no_live_state() -> Result<()> {
     let raw = base_bytes()?;
     let report = validate_static_bytes(&raw);

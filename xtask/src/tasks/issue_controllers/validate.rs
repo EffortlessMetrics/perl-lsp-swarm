@@ -95,6 +95,7 @@ pub fn validate_static_bytes(raw: &[u8]) -> StaticReport {
     let mut diagnostics = Vec::new();
 
     byte_hygiene(raw, &mut diagnostics);
+    raw_bytes_live_state_scan(raw, &mut diagnostics);
 
     let parsed: Option<serde_json::Value> = match serde_json::from_slice::<serde_json::Value>(raw) {
         Ok(value) => Some(value),
@@ -196,6 +197,29 @@ fn byte_hygiene(raw: &[u8], diagnostics: &mut Vec<Diagnostic>) {
             "manifest bytes".to_owned(),
             "manifest must end with exactly one trailing LF".to_owned(),
         ));
+    }
+}
+
+/// Mirror the parsed-value scan over the exact bytes: SHA-like runs and
+/// timestamps must fail closed even when they hide outside string values
+/// (for example inside a key name).
+fn raw_bytes_live_state_scan(raw: &[u8], diagnostics: &mut Vec<Diagnostic>) {
+    let text = String::from_utf8_lossy(raw);
+    for line in text.lines() {
+        if looks_like_live_sha(line) {
+            diagnostics.push(Diagnostic::new(
+                "live-state",
+                "manifest bytes".to_owned(),
+                format!("possible live SHA token in manifest bytes: {line}"),
+            ));
+        }
+        if looks_like_timestamp(line) {
+            diagnostics.push(Diagnostic::new(
+                "live-state",
+                "manifest bytes".to_owned(),
+                "possible live timestamp in manifest bytes".to_owned(),
+            ));
+        }
     }
 }
 
