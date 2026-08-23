@@ -948,14 +948,15 @@ fn live_dispatch_receipt_carries_canonical_provider_identity()
         !boundary.is_empty(),
         "claim_boundary must be a non-empty explanation; got {boundary:?}"
     );
-    // Per the documented text-sync invariant (`handle_did_open` in
-    // runtime/text_sync.rs), didOpen always starts at generation 0; only a
-    // didChange bumps it. A first-dispatch receipt on a freshly opened
-    // document must therefore carry source_generation == 0, and a
-    // re-dispatch after an edit must carry a positive generation.
+    // Per the documented text-sync invariant (#11305), didOpen mints the
+    // first accepted generation as 1; only a didChange advances it further. A
+    // first-dispatch receipt on a freshly opened document must therefore
+    // carry source_generation == 1, and a re-dispatch after an edit must
+    // carry a strictly larger generation.
     assert_eq!(
-        trace["source_generation"], 0,
-        "source_generation must be 0 for a freshly opened document; got trace={trace}"
+        trace["source_generation"], 1,
+        "source_generation must be the accepted open generation (1) for a \
+         freshly opened document; got trace={trace}"
     );
     server.test_apply_did_change(uri, "my $x = 2;\n", 2)?;
     let edited = server

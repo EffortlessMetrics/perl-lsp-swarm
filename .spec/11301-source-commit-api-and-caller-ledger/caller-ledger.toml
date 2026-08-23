@@ -27,11 +27,32 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 #   crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs
 #     109 -> 110 (+1)
 #   crates/perl-lsp-rs/src/runtime/language/completion.rs 2 -> 4 (+2)
-compatibility_baseline = 704
+# Reconciled 704 -> 697 by #11305 (SRC-03): every open/save compatibility call
+# in runtime/text_sync moved to index_live_file with the document-instance/
+# generation currentness guard, and its fixture callers to
+# index_initial_file (-4 index_file_with_generation at text_sync.rs didOpen +
+# shared post-parse seam and lifecycle.rs #8041 re-cohere + stale-index
+# reconciliation; -3 index_file at lifecycle.rs close-handoff reload ->
+# index_initial_file role rename and two tests.rs fixtures).
+# Burndown 697 -> 696 by #11305 fixture rebaseline (lifted from the closed
+# duplicate #11940 @ 254f0e214): the document_access gen-0 builder fixture
+# dropped one .index_file_with_generation(...) call; the scorecard coordinator
+# re-seed added a canonical index_live_file caller identity (not counted).
+compatibility_baseline = 696
+
+# Structural recurrence control (#11305): files under these prefixes must
+# never call compatibility source APIs at all -- live commits go through
+# index_live_file behind the document-instance/generation oracle. Prefix
+# matching fails closed (any tracked file path beginning with the prefix).
+# Scope note: this ban is PER-FILE and SYNTACTIC (method-name scan of each
+# tracked file). It does not see compatibility calls reached through UFCS,
+# wrappers, or helper indirection in other files; that residual hole closes
+# only at #11312's deletion of the compatibility surface itself.
+compatibility_banned_prefixes = ["crates/perl-lsp-rs/src/runtime/text_sync"]
 
 # Live identity is the URI argument plus an owner-supplied non-zero NonZeroU32
-# generation; #11305 owns didOpen/didSave migration. Exact source paths are the
-# ledger identity. A new caller must be deliberately
+# generation; didOpen/didSave migrated through #11305. Exact source paths are
+# the ledger identity. A new caller must be deliberately
 # added with an owner, role, successor, and removal condition; broad directory
 # globs are intentionally not accepted by the validator.
 caller_paths = [
@@ -51,6 +72,7 @@ caller_paths = [
   "crates/perl-lsp-rs/src/runtime/language/misc.rs",
   "crates/perl-lsp-rs/src/runtime/language/navigation.rs",
   "crates/perl-lsp-rs/src/runtime/language/provider_decision_live_trace_tests.rs",
+  "crates/perl-lsp-rs/src/runtime/language/references_tier_scorecard_tests.rs",
   "crates/perl-lsp-rs/src/runtime/language/rename.rs",
   "crates/perl-lsp-rs/src/runtime/test_api.rs",
   "crates/perl-lsp-rs/src/runtime/text_sync.rs",
@@ -105,11 +127,16 @@ caller_paths = [
 ]
 
 [[owner]]
-prefix = "crates/perl-lsp-rs/src/runtime/text_sync"
-role = "live didOpen/didSave generation path"
-owner = "perl-lsp-rs text synchronization"
-successor = "index_live_file with the #11305 currentness guard"
-removal_condition = "#11305 lands the owner-supplied live commit identity"
+prefix = "crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs"
+# Since #11305 this file holds ZERO compatibility calls: the didSave
+# reconciliation branches commit through index_live_file behind the
+# document-instance/generation oracle, and the close-handoff reload below is
+# the explicit initial-import role. This row remains only because lifecycle.rs
+# still counts as a canonical caller file needing an owner anchor.
+role = "#8041 close-handoff disk reload residual (canonical index_initial_file today)"
+owner = "perl-lsp-rs text synchronization / #8041 open-buffer authority"
+successor = "index_live_file when #8041 defines the closed-file source commit identity"
+removal_condition = "#8041 lands its closed-file live commit identity"
 
 [[owner]]
 prefix = "crates/perl-workspace/tests"
