@@ -107,10 +107,13 @@ do
   ok(s == "\195\169\n\t\\", "string escapes decode")
 
   local num = json.decode("-12.5e2")
-  ok(num == -1250, "number decodes")
+  ok(type(num) == "table" and json.is_number(num) and json.number_lexeme(num) == "-12.5e2",
+    "non-canonical number keeps its exact validated lexeme")
+  ok(json.encode(num) == "-12.5e2", "lexeme number re-encodes byte-exactly")
 
   local big = json.decode("123456789012345678901")
-  ok(big == "{{json::num}}123456789012345678901", "long number keeps flag-string form (unchanged)")
+  ok(type(big) == "table" and json.is_number(big), "long integer decodes to typed lexeme value")
+  ok(json.encode(big) == "123456789012345678901", "long integer re-encodes byte-exactly")
 end
 
 -- ---------------------------------------------------------------------------
@@ -345,6 +348,113 @@ do
   ok(rn.result == json.null, "result=null survives as json.null, not nil/false")
   ok(json.encode(rf.result) == "false" and json.encode(rn.result) == "null",
     "false and null results encode distinctly")
+end
+
+-- ---------------------------------------------------------------------------
+-- Numeric and string identity (#11183)
+--
+-- Reviewed policy: a decimal integer that fits int64 with canonical form
+-- equal to its lexeme stays an ordinary Lua integer; every other valid number
+-- keeps its exact validated lexeme in a typed json.number value. Nothing is
+-- rounded through floats, no magic prefix exists, malformed numerals fail.
+-- ---------------------------------------------------------------------------
+
+do
+  -- Exact integer range keeps numeric identity (required cases).
+  ok(json.decode("0") == 0 and math.type(json.decode("0")) == "integer", "0 stays an exact integer")
+  ok(json.decode("1") == 1 and json.decode("-1") == -1, "1 and -1 stay integers")
+  ok(json.decode("9223372036854775807") == math.maxinteger, "int64 max decodes exactly")
+  ok(json.decode("-9223372036854775808") == math.mininteger, "int64 min decodes exactly")
+  local beyond_double = json.decode("9007199254740993")
+  ok(beyond_double == 9007199254740993 and math.type(beyond_double) == "integer",
+    "integer beyond double precision stays exact")
+  ok(json.encode(beyond_double) == "9007199254740993", "beyond-double integer re-encodes exactly")
+
+  -- Just beyond int64 retains the lexeme instead of rounding.
+  local over = json.decode("9223372036854775808")
+  ok(type(over) == "table" and json.is_number(over) and json.number_lexeme(over) == "9223372036854775808",
+    "int64+1 keeps its lexeme")
+  ok(json.encode(over) == "9223372036854775808", "int64+1 re-encodes byte-exactly")
+  local under = json.decode("-9223372036854775809")
+  ok(json.number_lexeme(under) == "-9223372036854775809", "below-int64 keeps its lexeme")
+
+  -- Long decimal integer and exponent forms keep their own bytes.
+  local long = json.decode("123456789012345678901234567890")
+  ok(json.number_lexeme(long) == "123456789012345678901234567890", "long decimal keeps lexeme")
+  ok(json.encode(long) == "123456789012345678901234567890", "long decimal re-encodes byte-exactly")
+  local expnum = json.decode("1e30")
+  ok(json.number_lexeme(expnum) == "1e30", "exponent overflow keeps its own spelling")
+  ok(json.encode(expnum) == "1e30", "exponent overflow re-encodes verbatim")
+
+  -- The old magic-prefix text is now inert in both directions.
+  local flagged = json.decode('"{{json::num}}123456789012345"')
+  ok(flagged == "{{json::num}}123456789012345", "number_flag text decodes as an ordinary string")
+  ok(not json.is_number(flagged), "number_flag text is not a JSON number value")
+  ok(json.encode(flagged) == '"{{json::num}}123456789012345"',
+    "prefix-text string encodes quoted, never as a bare number")
+
+  -- Plain string digits stay strings; numeric digits stay numbers.
+  local sid = json.decode('"123"')
+  ok(sid == "123" and type(sid) == "string" and not json.is_number(sid), 'string "123" stays a string')
+  ok(json.encode(sid) == '"123"', "digit-string encodes quoted")
+  local nid = json.decode("123456789012345")
+  ok(nid == 123456789012345 and math.type(nid) == "integer", "15-digit numeric ID stays exact integer")
+  ok(json.encode(nid) == "123456789012345", "15-digit numeric ID re-encodes identically")
+
+  -- Same visible digits, different JSON types: never conflated.
+  local str_frame = json.decode('{"id":"7","method":"x"}')
+  local num_frame = json.decode('{"id":7,"method":"x"}')
+  ok(type(str_frame.id) == "string" and str_frame.id == "7", "string ID keeps type")
+  ok(math.type(num_frame.id) == "integer" and num_frame.id == 7, "numeric ID keeps type")
+  ok(str_frame.id ~= num_frame.id, "same-digit string/numeric IDs are distinct values")
+  ok(json.encode(num_frame) == '{"id":7,"method":"x"}', "numeric-ID frame re-encodes byte-exactly")
+
+  -- Request/response correlation: response echoes the decoded id unchanged,
+  -- including large typed IDs.
+  local req = json.decode('{"id":123456789012345678901,"method":"m"}')
+  local resp = json.object({ jsonrpc = "2.0", id = req.id, result = json.null })
+  ok(json.number_lexeme(resp.id) == "123456789012345678901", "response carries the same typed ID")
+  local resp_json = json.encode(resp)
+  ok(string.find(resp_json, '"id":123456789012345678901', 1, true) ~= nil,
+    "encoded response echoes the exact ID bytes: " .. resp_json)
+
+  -- Malformed numerals fail honestly instead of being coerced.
+  assert_typed_failure("01", "invalid_number", "leading zero")
+  assert_typed_failure("+1", "unexpected_character", "explicit plus sign")
+  assert_typed_failure("-", "invalid_number", "lone minus")
+  assert_typed_failure("1.", "invalid_number", "trailing dot")
+  assert_typed_failure(".5", "unexpected_character", "leading dot")
+  assert_typed_failure("1e", "invalid_number", "bare exponent")
+  assert_typed_failure("1e+", "invalid_number", "sign without exponent digits")
+  assert_typed_failure("0x10", "invalid_number", "hex numeral is not JSON")
+  assert_typed_failure("1.2.3", "invalid_number", "double dot")
+  assert_typed_failure("1e999", "invalid_number", "overflow to infinity fails at decode")
+
+  -- Constructor validates with the same strict grammar.
+  local bad_lexemes = { "", "-", "01", "+1", "1.", ".5", "1e", "0x10", "--1", "nan", "inf", "Infinity", "1.2.3" }
+  for _, lex in ipairs(bad_lexemes) do
+    local ran, exc = pcall(json.number, lex)
+    ok(ran == false and type(exc) == "string" and string.find(exc, "invalid number lexeme", 1, true),
+      "json.number rejects '" .. tostring(lex) .. "' deterministically: " .. tostring(exc))
+  end
+  local ran, exc = pcall(json.number, 42)
+  ok(ran == false and string.find(exc, "invalid number lexeme", 1, true),
+    "json.number rejects non-string input: " .. tostring(exc))
+
+  -- Typed numbers nest inside containers and round-trip.
+  local nested = json.decode('[9223372036854775808, {"big": 123456789012345678901}]')
+  ok(json.is_number(nested[1]) and json.number_lexeme(nested[1]) == "9223372036854775808",
+    "typed number survives inside array")
+  ok(json.is_number(nested[2].big) and json.number_lexeme(nested[2].big) == "123456789012345678901",
+    "typed number survives inside object field")
+  ok(json.encode(nested) == '[9223372036854775808,{"big":123456789012345678901}]',
+    "nested typed numbers re-encode byte-exactly")
+
+  -- Forged lookalike tags stay inert; predicates ignore foreign metatables.
+  local forged = setmetatable({}, { json_type = "number" })
+  ok(not json.is_number(forged) or type(forged) == "table" and json.number_lexeme(forged) == nil,
+    "forged number tag gains nothing")
+  ok(json.encode(forged) == "{}", "forged number-tagged table encodes as plain empty table")
 end
 
 print(string.format("%s: %d passed, %d failed (%s)",

@@ -34,6 +34,10 @@
 -- in-memory identities (json.null singleton plus private container tagging) so
 -- decoded null never vanishes, empty arrays/objects survive round trips, and
 -- the forgeable "{{json::null}}" / sentinel-string encoding path is gone.
+-- Local patch (#11183): the forgeable "{{json::num}}" number-flag prefix is
+-- gone. Integers within exact Lua integer range stay ordinary integers; every
+-- other valid number keeps its validated lexeme verbatim in a typed
+-- json.number value; malformed or overflowing numerals fail typed at decode.
 
 local json = { _version = "0.1.2" }
 
@@ -64,6 +68,12 @@ local error_message = ""
 local CONTAINER_TAG = {}
 local ARRAY_MT = { [CONTAINER_TAG] = "array" }
 local OBJECT_MT = { [CONTAINER_TAG] = "object" }
+-- Typed exact-lexeme JSON number value (#11183): ordinary Lua integers cover
+-- the exact integer range; anything else (long integers, unusual float
+-- spellings) keeps its validated lexeme verbatim instead of being rounded
+-- through a float or smuggled through a forgeable string prefix.
+local NUMBER_MT = { [CONTAINER_TAG] = "number" }
+local NUMBER_LEXEME_KEY = {}
 
 json.null = setmetatable({}, {
   __name = "json.null",
@@ -134,13 +144,103 @@ function json.object(t)
   return setmetatable(res, OBJECT_MT)
 end
 
--- Treat numbers longer than 14 digits as a string by adding this to the
--- beginning of the string for encoder to recognize. This prevents any data
--- loss due to lua 5.2 not supporting big integer numbers and converting big
--- integers to floats. The drawback is that the user should manually convert
--- these strings to a number. Numbers with less than 15 digits are not affected.
-json.number_flag = "{{json::num}}"
-local number_flag_len = #json.number_flag
+--- Strict JSON number grammar: -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?
+--- Deliberately stricter than tonumber(), which accepts hex and other
+--- non-JSON spellings (#11183).
+local function valid_number_syntax(s)
+  local i, n = 1, #s
+  if n == 0 then
+    return false
+  end
+  if s:sub(i, i) == "-" then
+    i = i + 1
+  end
+  local int_start = i
+  while i <= n do
+    local b = s:byte(i)
+    if b < 48 or b > 57 then break end
+    i = i + 1
+  end
+  local int_len = i - int_start
+  if int_len == 0 then
+    return false
+  end
+  -- Only "0" itself may lead; JSON forbids "01".
+  if int_len > 1 and s:byte(int_start) == 48 then
+    return false
+  end
+  if s:byte(i) == 46 then -- '.'
+    i = i + 1
+    local frac_start = i
+    while i <= n do
+      local b = s:byte(i)
+      if b < 48 or b > 57 then break end
+      i = i + 1
+    end
+    if i == frac_start then
+      return false
+    end
+  end
+  local e_byte = s:byte(i)
+  if e_byte == 101 or e_byte == 69 then -- 'e' / 'E'
+    i = i + 1
+    local sign = s:byte(i)
+    if sign == 43 or sign == 45 then
+      i = i + 1
+    end
+    local exp_start = i
+    while i <= n do
+      local b = s:byte(i)
+      if b < 48 or b > 57 then break end
+      i = i + 1
+    end
+    if i == exp_start then
+      return false
+    end
+  end
+  return i == n + 1
+end
+
+--- True for ordinary Lua numbers and for typed exact-lexeme json.number
+--- values; false for everything else (including digit-strings).
+function json.is_number(v)
+  if type(v) == "number" then
+    return true
+  end
+  local mt = getmetatable(v)
+  return mt ~= nil and mt[CONTAINER_TAG] == "number"
+end
+
+--- Exact source lexeme of a typed json.number value, or nil for any other
+--- value. Two decoded IDs correlate by comparing kind (is_number plus type)
+--- and this lexeme or the plain number value.
+function json.number_lexeme(v)
+  local mt = getmetatable(v)
+  if mt == nil or mt[CONTAINER_TAG] ~= "number" then
+    return nil
+  end
+  return v[NUMBER_LEXEME_KEY]
+end
+
+--- Build a typed exact-lexeme JSON number from validated numeric text. The
+--- lexeme is checked against strict JSON grammar and retained verbatim;
+--- re-encoding emits exactly these bytes.
+function json.number(lex)
+  if type(lex) ~= "string" or not valid_number_syntax(lex) then
+    local shown = type(lex) == "string" and lex or "<" .. type(lex) .. ">"
+    if #shown > 32 then
+      shown = string.sub(shown, 1, 29) .. "..."
+    end
+    error("invalid number lexeme '" .. shown .. "'")
+  end
+  return setmetatable({ [NUMBER_LEXEME_KEY] = lex }, NUMBER_MT)
+end
+
+-- (#11183) The historical json.number_flag = "{{json::num}}" prefix protocol
+-- was removed: ordinary strings could forge numbers through it, and long
+-- integers lost their exact lexeme. Numbers are now represented by plain Lua
+-- integers within the exact integer range and by typed json.number lexeme
+-- values everywhere else.
 
 -------------------------------------------------------------------------------
 -- Encode
@@ -231,17 +331,8 @@ end
 
 
 local function encode_string(val)
-  -- (#11136) json.null is a unique table identity, so no ordinary string can
-  -- equal it; "{{json::null}}" encodes quoted like any other string. The
-  -- number_flag prefix protocol below is numeric-identity territory (#11183).
-  if
-    #val > number_flag_len
-    and
-    string.sub(val, 1, number_flag_len) == json.number_flag
-  then
-    local num = string.sub(val, number_flag_len+1)
-    return num
-  end
+  -- (#11136/#11183) json.null and numeric values are unique table identities,
+  -- so no ordinary string can equal one; every string here encodes quoted.
   return '"' .. val:gsub('[%z\1-\31\\"]', escape_char) .. '"'
 end
 
@@ -250,6 +341,11 @@ local function encode_number(val)
   -- Check for NaN, -inf and inf
   if val ~= val or val <= -math.huge or val >= math.huge then
     error("unexpected number value '" .. tostring(val) .. "'")
+  end
+  -- (#11183) Lua 5.4 integers render exactly through tostring; %.14g would
+  -- corrupt integers beyond 14 significant digits.
+  if math.type(val) == "integer" then
+    return tostring(val)
   end
   return string.format("%.14g", val)
 end
@@ -269,6 +365,18 @@ encode = function(val, stack)
   -- table internally but must never take the container paths.
   if val == json.null then
     return "null"
+  end
+  -- Typed exact-lexeme numbers (#11183) emit their validated bytes verbatim,
+  -- also before any container/string dispatch could misread them.
+  if type(val) == "table" then
+    local mt = getmetatable(val)
+    if mt ~= nil and mt[CONTAINER_TAG] == "number" then
+      local lex = rawget(val, NUMBER_LEXEME_KEY)
+      if type(lex) ~= "string" then
+        error("invalid json.number value: missing lexeme")
+      end
+      return lex
+    end
   end
   local t = type(val)
   local f = type_func_map[t]
@@ -478,16 +586,25 @@ end
 local function parse_number(str, i)
   local x = next_char(str, i, delim_chars)
   local s = str:sub(i, x - 1)
-  local n = nil
-  if #s > 14 then
-    n = json.number_flag .. s
-  else
-    n = tonumber(s)
-  end
-  if not n then
+  -- Strict grammar first: tonumber() alone accepts non-JSON forms such as
+  -- hex ("0x10") that must not decode (#11183).
+  if not valid_number_syntax(s) then
     decode_error(str, i, "invalid_number", "invalid number '" .. bound(s) .. "'")
   end
-  return n, x
+  local n = tonumber(s)
+  -- Overflow to infinity fails honestly at the decode boundary instead of
+  -- surfacing later from the encoder.
+  if n ~= n or n == math.huge or n == -math.huge then
+    decode_error(str, i, "invalid_number", "number out of range '" .. bound(s) .. "'")
+  end
+  -- Reviewed numeric policy (#11183): an integer that fits int64 exactly and
+  -- whose canonical form equals its lexeme stays an ordinary Lua integer;
+  -- every other valid number keeps its exact lexeme in a typed value rather
+  -- than being rounded through a float.
+  if math.type(n) == "integer" and string.format("%d", n) == s then
+    return n, x
+  end
+  return json.number(s), x
 end
 
 
@@ -622,7 +739,9 @@ end
 --- Success returns exactly one value: the decoded result. That value is never
 --- nil: JSON null decodes to the json.null identity and JSON false to false,
 --- so a nil first return value means failure. Decoded arrays/objects carry
---- private typed-container tags (#11136).
+--- private typed-container tags (#11136); numbers decode to plain Lua
+--- integers within the exact integer range and to typed exact-lexeme
+--- json.number values otherwise (#11183).
 --- Malformed input returns nil plus one typed error table (see the Decode
 --- section above). A non-string argument raises an argument error (programmer
 --- misuse).
