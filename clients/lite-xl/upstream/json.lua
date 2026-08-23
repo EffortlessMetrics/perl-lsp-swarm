@@ -43,6 +43,10 @@
 -- UTF-8; outbound strings are validated before any encoding work. Lone or
 -- malformed surrogates and invalid UTF-8 fail typed instead of producing
 -- invalid bytes.
+-- Local patch (#11186): deterministic structural budgets bound both
+-- directions (nesting depth and per-document node count), so a hostile or
+-- corrupt payload fails typed long before Lua stack exhaustion or unbounded
+-- encode work. Budget errors stay distinct from syntax/circular errors.
 
 local json = { _version = "0.1.2" }
 
@@ -372,6 +376,26 @@ end
 -- values everywhere else.
 
 -------------------------------------------------------------------------------
+-- Structural budgets (#11186)
+--
+-- Reviewed defaults, chosen from real Lite XL LSP/configuration shapes plus a
+-- wide safety margin:
+--   nesting depth 128: the deepest legitimate capability/configuration
+--     payloads observed in LSP practice stay under ~30 levels; 128 is more
+--     than 4x that margin while sitting far below any interpreter recursion
+--     limit (each decoded level costs about two Lua frames).
+--   node count 65536: a large diagnostics/completion batch (thousands of
+--     items at ~20 nodes each) fits with room to spare; hostile tiny-byte
+--     bodies hit the depth bound long before meaningful node counts.
+-- A later large-response observation can raise these with evidence; nothing
+-- in server/workspace input can raise them. Client-configuration wiring may
+-- only lower them and lands with the consumer leaves, not here.
+-------------------------------------------------------------------------------
+
+local DEPTH_LIMIT = 128
+local NODE_LIMIT = 65536
+
+-------------------------------------------------------------------------------
 -- Encode
 -------------------------------------------------------------------------------
 
@@ -398,19 +422,57 @@ local function escape_char(c)
 end
 
 
-local function encode_nil(val)
+-- One shared encode context (#11186): circular-reference stack, container
+-- depth, and a per-document node count. Created fresh per json.encode call,
+-- so concurrent/reentrant calls cannot share budget state.
+local function count_node(st)
+  st.nodes = st.nodes + 1
+  if st.nodes > NODE_LIMIT then
+    error("cannot encode: node count exceeds maximum " .. NODE_LIMIT)
+  end
+end
+
+local function enter_container(st)
+  st.depth = st.depth + 1
+  if st.depth > DEPTH_LIMIT then
+    error("cannot encode: nesting exceeds maximum depth " .. DEPTH_LIMIT)
+  end
+end
+
+local function encode_nil(val, st)
+  count_node(st)
   return "null"
 end
 
 
-local function encode_table(val, stack)
+-- One shared encode context (#11186): circular-reference stack, container
+-- depth, and a per-document node count. Created fresh per json.encode call,
+-- so concurrent/reentrant calls cannot share budget state.
+local function count_node(st)
+  st.nodes = st.nodes + 1
+  if st.nodes > NODE_LIMIT then
+    error("cannot encode: node count exceeds maximum " .. NODE_LIMIT)
+  end
+end
+
+local function enter_container(st)
+  st.depth = st.depth + 1
+  if st.depth > DEPTH_LIMIT then
+    error("cannot encode: nesting exceeds maximum depth " .. DEPTH_LIMIT)
+  end
+end
+
+local function encode_table(val, st)
+  -- Circular reference stays the earliest, distinct structural error.
+  if st.stack[val] then error("circular reference") end
+
+  count_node(st)
+  enter_container(st)
+
+  st.stack[val] = true
+
   local res = {}
-  stack = stack or {}
-
-  -- Circular reference?
-  if stack[val] then error("circular reference") end
-
-  stack[val] = true
+  local out
 
   -- Typed container identity wins over shape guessing (#11136). Untagged
   -- tables keep the upstream heuristic: obvious non-empty array or empty
@@ -432,17 +494,16 @@ local function encode_table(val, stack)
     end
     -- Encode
     for i, v in ipairs(val) do
-      table.insert(res, encode(v, stack))
+      table.insert(res, encode(v, st))
     end
-    stack[val] = nil
     if #res > 0 then
-      return "[" .. table.concat(res, ",") .. "]"
+      out = "[" .. table.concat(res, ",") .. "]"
     elseif tag == "array" then
       -- An explicitly typed empty array keeps its [] identity; an untagged
       -- empty plain table preserves the upstream {} compatibility default.
-      return "[]"
+      out = "[]"
     else
-      return "{}"
+      out = "{}"
     end
 
   else
@@ -451,15 +512,18 @@ local function encode_table(val, stack)
       if type(k) ~= "string" then
         error("invalid table: mixed or invalid key types")
       end
-      table.insert(res, encode(k, stack) .. ":" .. encode(v, stack))
+      table.insert(res, encode(k, st) .. ":" .. encode(v, st))
     end
-    stack[val] = nil
-    return "{" .. table.concat(res, ",") .. "}"
+    out = "{" .. table.concat(res, ",") .. "}"
   end
+
+  st.stack[val] = nil
+  st.depth = st.depth - 1
+  return out
 end
 
 
-local function encode_string(val)
+local function encode_string(val, st)
   -- (#11194) Outbound strings must be valid UTF-8 before any encoding work;
   -- the raise happens before a caller could observe any frame content and
   -- carries only bounded offset metadata, never the string body.
@@ -467,15 +531,17 @@ local function encode_string(val)
   if bad then
     error("cannot encode string: invalid UTF-8 at byte offset " .. bad)
   end
+  count_node(st)
   return '"' .. val:gsub('[%z\1-\31\\"]', escape_char) .. '"'
 end
 
 
-local function encode_number(val)
+local function encode_number(val, st)
   -- Check for NaN, -inf and inf
   if val ~= val or val <= -math.huge or val >= math.huge then
     error("unexpected number value '" .. tostring(val) .. "'")
   end
+  count_node(st)
   -- (#11183) Lua 5.4 integers render exactly through tostring; %.14g would
   -- corrupt integers beyond 14 significant digits.
   if math_type(val) == "integer" then
@@ -485,26 +551,35 @@ local function encode_number(val)
 end
 
 
+local function encode_boolean(val, st)
+  count_node(st)
+  return tostring(val)
+end
+
+
 local type_func_map = {
   [ "nil"     ] = encode_nil,
   [ "table"   ] = encode_table,
   [ "string"  ] = encode_string,
   [ "number"  ] = encode_number,
-  [ "boolean" ] = tostring,
+  [ "boolean" ] = encode_boolean,
 }
 
 
-encode = function(val, stack)
+encode = function(val, st)
   -- The unique null identity encodes as null before table dispatch; it is a
   -- table internally but must never take the container paths.
   if val == json.null then
+    count_node(st)
     return "null"
   end
   -- Typed exact-lexeme numbers (#11183) emit their validated bytes verbatim,
-  -- also before any container/string dispatch could misread them.
+  -- also before any container/string dispatch could misread them. Each is a
+  -- single structural node (#11186).
   if type(val) == "table" then
     local mt = getmetatable(val)
     if mt ~= nil and mt[CONTAINER_TAG] == "number" then
+      count_node(st)
       local lex = rawget(val, NUMBER_LEXEME_KEY)
       if type(lex) ~= "string" then
         error("invalid json.number value: missing lexeme")
@@ -515,14 +590,14 @@ encode = function(val, stack)
   local t = type(val)
   local f = type_func_map[t]
   if f then
-    return f(val, stack)
+    return f(val, st)
   end
   error("unexpected type '" .. t .. "'")
 end
 
 
 function json.encode(val, prettify)
-  local out = ( encode(val) )
+  local out = ( encode(val, { stack = {}, depth = 0, nodes = 0 }) )
   if prettify then
     return json.prettify(out)
   end
@@ -567,6 +642,8 @@ local REASONS = {
   invalid_escape             = true,
   invalid_unicode_escape     = true,
   invalid_utf8               = true,
+  nesting_depth_exceeded     = true,
+  node_count_exceeded        = true,
   invalid_number             = true,
   invalid_literal            = true,
   expected_string_key        = true,
@@ -769,7 +846,13 @@ local function parse_literal(str, i)
 end
 
 
-local function parse_array(str, i)
+local function parse_array(str, i, st)
+  -- (#11186) Check the depth budget before allocating or descending.
+  st.depth = st.depth + 1
+  if st.depth > DEPTH_LIMIT then
+    decode_error(str, i, "nesting_depth_exceeded",
+      "nesting exceeds maximum depth " .. DEPTH_LIMIT)
+  end
   -- (#11136) decoded arrays carry the private array tag so identity, including
   -- the empty case, survives past decode.
   local res = setmetatable({}, ARRAY_MT)
@@ -784,7 +867,7 @@ local function parse_array(str, i)
       break
     end
     -- Read token
-    x, i = parse(str, i)
+    x, i = parse(str, i, st)
     res[n] = x
     n = n + 1
     -- Next token
@@ -796,11 +879,18 @@ local function parse_array(str, i)
       decode_error(str, i - 1, "expected_array_delimiter", "expected ']' or ','")
     end
   end
+  st.depth = st.depth - 1
   return res, i
 end
 
 
-local function parse_object(str, i)
+local function parse_object(str, i, st)
+  -- (#11186) Check the depth budget before allocating or descending.
+  st.depth = st.depth + 1
+  if st.depth > DEPTH_LIMIT then
+    decode_error(str, i, "nesting_depth_exceeded",
+      "nesting exceeds maximum depth " .. DEPTH_LIMIT)
+  end
   -- (#11136) decoded objects carry the private object tag so identity,
   -- including the empty case, survives past decode.
   local res = setmetatable({}, OBJECT_MT)
@@ -817,7 +907,7 @@ local function parse_object(str, i)
     if str:sub(i, i) ~= '"' then
       decode_error(str, i, "expected_string_key", "expected string for key")
     end
-    key, i = parse(str, i)
+    key, i = parse(str, i, st)
     -- Read ':' delimiter
     i = next_char(str, i, space_chars, true)
     if str:sub(i, i) ~= ":" then
@@ -825,7 +915,7 @@ local function parse_object(str, i)
     end
     i = next_char(str, i + 1, space_chars, true)
     -- Read value
-    val, i = parse(str, i)
+    val, i = parse(str, i, st)
     -- Set
     res[key] = val
     -- Next token
@@ -837,6 +927,7 @@ local function parse_object(str, i)
       decode_error(str, i - 1, "expected_object_delimiter", "expected '}' or ','")
     end
   end
+  st.depth = st.depth - 1
   return res, i
 end
 
@@ -862,11 +953,18 @@ local char_func_map = {
 }
 
 
-parse = function(str, idx)
+parse = function(str, idx, st)
+  -- (#11186) Every decoded value consumes exactly one node; the budget is
+  -- checked before any allocation for that value.
+  st.nodes = st.nodes + 1
+  if st.nodes > NODE_LIMIT then
+    decode_error(str, idx, "node_count_exceeded",
+      "node count exceeds maximum " .. NODE_LIMIT)
+  end
   local chr = str:sub(idx, idx)
   local f = char_func_map[chr]
   if f then
-    return f(str, idx)
+    return f(str, idx, st)
   end
   if idx > #str then
     decode_error(str, idx, "unexpected_end_of_input", "unexpected end of input")
@@ -901,7 +999,8 @@ function json.decode(str)
   if type(str) ~= "string" then
     error("expected argument of type string, got " .. type(str))
   end
-  local ok, res, idx = pcall(parse, str, next_char(str, 1, space_chars, true))
+  local ok, res, idx = pcall(parse, str, next_char(str, 1, space_chars, true),
+    { depth = 0, nodes = 0 })
   if not ok then
     if type(res) == "table" and res[DECODE_ERROR_TAG] then
       error_message = res.message

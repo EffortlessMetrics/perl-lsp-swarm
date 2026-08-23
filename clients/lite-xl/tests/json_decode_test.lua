@@ -575,6 +575,147 @@ do
     "nested invalid string fails encode: " .. tostring(exc))
 end
 
+-- ---------------------------------------------------------------------------
+-- Structural depth and node budgets (#11186)
+--
+-- Reviewed defaults: 128 nesting levels and 65536 nodes per document, chosen
+-- from real LSP/configuration shapes with a wide margin and documented in the
+-- codec. Decode failures are typed and positional; encode failures raise once,
+-- deterministically, with no partial frame. Syntax/circular errors stay
+-- distinct from budget errors.
+-- ---------------------------------------------------------------------------
+
+local DEPTH_LIMIT = 128
+local NODE_LIMIT = 65536
+
+local function nested_arrays(n)
+  return string.rep("[", n) .. string.rep("]", n)
+end
+
+local function nested_objects(n)
+  return string.rep('{"a":', n) .. "1" .. string.rep("}", n)
+end
+
+local function nested_mixed(n)
+  local open, close = {}, {}
+  for i = 1, n do
+    if i % 2 == 1 then
+      open[i] = "["
+      close[n - i + 1] = "]"
+    else
+      open[i] = '{"a":'
+      close[n - i + 1] = "}"
+    end
+  end
+  return table.concat(open) .. "1" .. table.concat(close)
+end
+
+do
+  -- Ordinary LSP-shaped payloads decode untouched.
+  local caps = json.decode(
+    '{"capabilities":{"textDocumentSync":1,"completion":{"dynamicRegistration":true,"completionItem":{"snippetSupport":false}}}}')
+  ok(json.is_object(caps) and json.is_object(caps.capabilities.completion),
+    "ordinary capabilities fixture decodes")
+  ok(json.encode(caps.capabilities.completion.completionItem) == '{"snippetSupport":false}',
+    "fixture re-encodes byte-exactly")
+
+  -- Nesting exactly at the accepted boundary passes, in all three shapes.
+  local arr_at = json.decode(nested_arrays(DEPTH_LIMIT))
+  ok(json.is_array(arr_at), "array nesting at boundary decodes")
+  local obj_at = json.decode(nested_objects(DEPTH_LIMIT))
+  ok(json.is_object(obj_at.a.a) or json.is_object(obj_at), "object nesting at boundary decodes")
+  local mix_at = json.decode(nested_mixed(DEPTH_LIMIT))
+  ok(mix_at ~= nil, "mixed nesting at boundary decodes")
+  ok(json.encode(arr_at) == nested_arrays(DEPTH_LIMIT),
+    "boundary-depth value re-encodes byte-exactly")
+
+  -- One level beyond the boundary fails typed in every direction.
+  for _, case in ipairs{
+    { nested_arrays(DEPTH_LIMIT + 1), "arrays" },
+    { nested_objects(DEPTH_LIMIT + 1), "objects" },
+    { nested_mixed(DEPTH_LIMIT + 1), "mixed" },
+  } do
+    local ran, res, err = safe_decode(case[1])
+    ok(ran and res == nil and type(err) == "table"
+      and err.reason == "nesting_depth_exceeded",
+      case[2] .. " nested one past the limit fail typed")
+    ok(err and err.reason == "nesting_depth_exceeded"
+      and string.find(err.message, tostring(DEPTH_LIMIT), 1, true) ~= nil,
+      case[2] .. " depth failure carries the limit in its bounded message")
+    ok(err ~= nil and err.byte_offset ~= nil and err.line ~= nil,
+      case[2] .. " depth failure keeps positional metadata")
+  end
+
+  -- A tiny body with extreme nesting terminates on depth, not on EOF.
+  local ran, res, err = safe_decode(string.rep("[", 5000))
+  ok(ran and res == nil and err.reason == "nesting_depth_exceeded",
+    "tiny-byte extreme nesting hits the depth bound before end-of-input")
+
+  -- Flat container one node beyond budget fails; exactly at budget passes.
+  local elems = {}
+  for i = 1, NODE_LIMIT - 1 do
+    elems[i] = tostring(i % 10)
+  end
+  local flat_at = "[" .. table.concat(elems, ",") .. "]"
+  local fv = json.decode(flat_at)
+  ok(type(fv) == "table" and #fv == NODE_LIMIT - 1, "node count exactly at budget decodes")
+
+  elems[NODE_LIMIT] = "7"
+  local ran, res, err = safe_decode("[" .. table.concat(elems, ",") .. "]")
+  ok(ran and res == nil and err.reason == "node_count_exceeded",
+    "flat container one node beyond budget fails typed")
+end
+
+do
+  -- Encode budgets mirror decode budgets without partial output.
+  local deep = json.array({})
+  for _ = 2, DEPTH_LIMIT do
+    deep = json.array({ deep })
+  end
+  local ran, out = pcall(json.encode, deep)
+  ok(ran, "encoding at the depth boundary succeeds")
+
+  local deep_over = json.array({ deep })
+  ran, out = pcall(json.encode, deep_over)
+  ok(ran == false and type(out) == "string"
+    and string.find(out, "maximum depth " .. DEPTH_LIMIT, 1, true) ~= nil,
+    "encoding one past the depth boundary raises with the limit named: " .. tostring(out))
+
+  local many = {}
+  for i = 1, NODE_LIMIT do
+    many[i] = i % 10
+  end
+  ran, out = pcall(json.encode, json.array(many))
+  ok(ran == false and string.find(out, "node count", 1, true),
+    "encoding one node beyond budget raises: " .. tostring(out))
+
+  many[NODE_LIMIT] = nil
+  ran, out = pcall(json.encode, json.array(many))
+  ok(ran, "encoding exactly at the node budget succeeds")
+
+  -- Large flat strings stay byte-bound, not structure-bound.
+  local big_text = string.rep("aBcD", 16384)
+  ran, out = pcall(json.encode, json.array({ big_text }))
+  ok(ran and #out == #big_text + 4, "large flat string encodes without structural rejection")
+
+  -- Circular detection remains a distinct, earlier error.
+  local cyc = json.array({ 1 })
+  cyc[2] = cyc
+  ran, out = pcall(json.encode, cyc)
+  ok(ran == false and string.find(out, "circular reference", 1, true)
+    and not string.find(out, "depth", 1, true),
+    "cyclic encode stays a distinct circular-reference error: " .. tostring(out))
+
+  -- Budget failures never emit partial content: the raise discards assembly.
+  local sink = 0
+  local ok_run, res = pcall(function()
+    local s = json.encode(json.array({ deep_over, 1 }))
+    sink = #s
+    return s
+  end)
+  ok(ok_run == false and sink == 0, "no partial encode result escapes a failed call")
+end
+
 print(string.format("%s: %d passed, %d failed (%s)",
   module_path, passed, failed, failed == 0 and "OK" or "MUTATION DETECTED"))
 os.exit(failed == 0 and 0 or 1)
