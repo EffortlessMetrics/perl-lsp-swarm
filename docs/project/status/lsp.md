@@ -12,8 +12,8 @@
 ## Computed Metrics
 
 <!-- BEGIN: LSP_METRICS_BULLETS -->
-- **Advertised ga/production rows**: 60 of 60 catalog-tracked advertised rows declare ga/production (navigation count from `features.toml`)
-- **Protocol surface labels**: 123 of 125 declared rows carry ga/production/preview labels (navigation only)
+- **Proven rows**: 59 of 60 catalog-tracked advertised rows currently carry qualifying behavior/integration evidence (evidence-based count from `features.toml`, #7029)
+- **Protocol surface labels**: 122 of 125 declared rows carry proven/preview labels (navigation only)
 - **Evidence state**: not_proven — cells without an exact current behavior-evidence owner render `not_proven`, never inherited green
 
 **Target**: every promoted cell names exact current behavior and subject evidence (#6731)
@@ -22,7 +22,7 @@
 ## Declared Catalog Rows
 
 <!-- BEGIN: COMPLIANCE_TABLE -->
-| Area | Declared ga/production/preview rows | Total rows |
+| Area | Declared proven/preview/not_proven rows | Total rows |
 |------|---------------------------|------------|
 | debug | 22 | 24 |
 | notebook | 2 | 2 |

@@ -57,8 +57,16 @@ fn snapshot_comparable_feature_ids() -> BTreeSet<String> {
     //   `lsp-types` 0.97 lacks the field.
     // - `lsp.inline_completion` is served via proposed/experimental plumbing rather
     //   than a stable `ServerCapabilities` field in this stack.
+    // - `lsp.notebook_cell_execution` is a proposed server-to-client execution
+    //   status notification with no `ServerCapabilities` field to round-trip
+    //   (#7029: main-borne `features verify` drift, reproduced against HEAD).
+    // - `lsp.notebook_document_sync` is preview maturity and fail-closed OFF in
+    //   the production flag profile (#7128), so the runtime capabilities
+    //   snapshot does not carry it even though the All-profile projection does.
     ids.remove("lsp.type_hierarchy");
     ids.remove("lsp.inline_completion");
+    ids.remove("lsp.notebook_cell_execution");
+    ids.remove("lsp.notebook_document_sync");
 
     ids
 }
@@ -76,12 +84,12 @@ fn check_invariants() -> Result<()> {
         }
 
         if feature.advertised
-            && feature.maturity == Maturity::Ga
+            && feature.maturity == Maturity::Proven
             && feature.tests.is_empty()
             && feature.counts_in_coverage
         {
             violations.push(format!(
-                "UNTESTED_GA: {:?} is advertised+GA but has no tests. Either add tests or set counts_in_coverage=false (if it's protocol plumbing).",
+                "UNTESTED_PROVEN: {:?} is advertised+proven but has no test receipts. Either add tests or downgrade maturity (#7029).",
                 feature.id
             ));
         }
@@ -100,16 +108,19 @@ fn check_invariants() -> Result<()> {
     }
 
     let total = catalog.features().len();
-    let ga_advertised =
-        catalog.features().iter().filter(|f| f.advertised && f.maturity == Maturity::Ga).count();
+    let proven_advertised = catalog
+        .features()
+        .iter()
+        .filter(|f| f.advertised && f.maturity == Maturity::Proven)
+        .count();
     let headline_features = catalog
         .features()
         .iter()
-        .filter(|f| f.advertised && f.maturity == Maturity::Ga && f.counts_in_coverage)
+        .filter(|f| f.advertised && f.maturity == Maturity::Proven && f.counts_in_coverage)
         .count();
 
     println!(
-        "Feature invariants OK: {total} features, {ga_advertised} GA+advertised, {headline_features} in headline metric"
+        "Feature invariants OK: {total} features, {proven_advertised} proven+advertised, {headline_features} in headline metric"
     );
     Ok(())
 }
@@ -183,11 +194,12 @@ fn update_lsp_status(catalog: &Catalog) -> Result<()> {
         content.push_str("|---------|------|--------|-------------|\n");
 
         for feature in features {
-            let status = match (feature.maturity, feature.advertised) {
-                (Maturity::Ga | Maturity::Production, true) => "✅ Complete",
-                (Maturity::Preview, true) => "🔧 Preview",
-                (Maturity::Experimental, _) => "⚠️ Experimental",
-                _ => "❌ Not Implemented",
+            let status = match feature.maturity {
+                Maturity::Proven => "✅ Proven",
+                Maturity::Preview => "🔧 Preview",
+                Maturity::NotProven => "⚠️ Not proven (exposed)",
+                Maturity::Unsupported => "🚫 Unsupported",
+                Maturity::Planned => "❌ Planned",
             };
 
             content.push_str(&format!(
@@ -375,18 +387,13 @@ fn generate_report() -> Result<()> {
 
     let total = catalog.feature.len();
     let advertised = catalog.feature.iter().filter(|f| f.advertised).count();
-    let ga = catalog
-        .feature
-        .iter()
-        .filter(|f| matches!(f.maturity, Maturity::Ga | Maturity::Production) && f.advertised)
-        .count();
-    let preview = catalog
-        .feature
-        .iter()
-        .filter(|f| matches!(f.maturity, Maturity::Preview) && f.advertised)
-        .count();
-    let experimental =
-        catalog.feature.iter().filter(|f| matches!(f.maturity, Maturity::Experimental)).count();
+    let proven = catalog.feature.iter().filter(|f| matches!(f.maturity, Maturity::Proven)).count();
+    let preview =
+        catalog.feature.iter().filter(|f| matches!(f.maturity, Maturity::Preview)).count();
+    let not_proven =
+        catalog.feature.iter().filter(|f| matches!(f.maturity, Maturity::NotProven)).count();
+    let unsupported =
+        catalog.feature.iter().filter(|f| matches!(f.maturity, Maturity::Unsupported)).count();
     let planned =
         catalog.feature.iter().filter(|f| matches!(f.maturity, Maturity::Planned)).count();
 
@@ -394,9 +401,10 @@ fn generate_report() -> Result<()> {
     println!("Version: {} | LSP: {}", catalog.meta.version, catalog.meta.lsp_version);
     println!("\nOverall declaration counts: {}/{} advertised", advertised, total);
     println!("\nBreakdown:");
-    println!("  GA:           {} features", ga);
+    println!("  Proven:       {} features", proven);
     println!("  Preview:      {} features", preview);
-    println!("  Experimental: {} features", experimental);
+    println!("  Not proven:   {} features", not_proven);
+    println!("  Unsupported:  {} features", unsupported);
     println!("  Planned:      {} features", planned);
 
     println!("\nBy Area:");

@@ -8,29 +8,30 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Feature maturity state.
+/// Feature maturity state (evidence-based, fail-closed; #7029).
 #[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Maturity {
-    Experimental,
+    Proven,
     Preview,
-    Ga,
     Planned,
-    Production,
+    Unsupported,
+    #[serde(rename = "not_proven")]
+    NotProven,
 }
 
 impl Maturity {
     pub const fn is_advertised(self) -> bool {
-        matches!(self, Self::Ga | Self::Production)
+        matches!(self, Self::Proven | Self::NotProven)
     }
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Experimental => "experimental",
+            Self::Proven => "proven",
             Self::Preview => "preview",
-            Self::Ga => "ga",
             Self::Planned => "planned",
-            Self::Production => "production",
+            Self::Unsupported => "unsupported",
+            Self::NotProven => "not_proven",
         }
     }
 }
@@ -88,7 +89,7 @@ impl Catalog {
     pub fn trackable_feature_count_for_grid(&self) -> usize {
         self.feature
             .iter()
-            .filter(|feature| feature.maturity != Maturity::Planned && feature.counts_in_coverage)
+            .filter(|feature| feature.maturity != Maturity::Planned && feature.maturity != Maturity::Unsupported && feature.counts_in_coverage)
             .count()
     }
 
@@ -111,7 +112,7 @@ impl Catalog {
     pub fn trackable_feature_count(&self) -> usize {
         self.feature
             .iter()
-            .filter(|feature| feature.maturity != Maturity::Planned)
+            .filter(|feature| feature.maturity != Maturity::Planned && feature.maturity != Maturity::Unsupported)
             .count()
     }
 

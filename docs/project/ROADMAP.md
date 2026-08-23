@@ -514,7 +514,7 @@ is open on `master` readiness tracking.
 The LSP declared-catalog table is auto-generated from `features.toml`.
 
 <!-- BEGIN: COMPLIANCE_TABLE -->
-| Area | Declared ga/production/preview rows | Total rows |
+| Area | Declared proven/preview/not_proven rows | Total rows |
 |------|---------------------------|------------|
 | debug | 22 | 24 |
 | notebook | 2 | 2 |

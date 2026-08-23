@@ -25,26 +25,18 @@ pub(super) fn count_lsp_coverage(root: &Path) -> Result<LspCoverage> {
     let catalog = perl_lsp_rs_core::feature_catalog::read_catalog(&features_path)
         .with_context(|| format!("loading {}", features_path.display()))?;
 
-    // UX Coverage: advertised=true, counts_in_coverage!=false, maturity!=planned
+    // UX Coverage: advertised=true, counts_in_coverage!=false, trackable maturity
     let ux_trackable: Vec<_> = catalog
         .feature
         .iter()
-        .filter(|f| {
-            f.maturity != perl_lsp_rs_core::feature_catalog::Maturity::Planned
-                && f.counts_in_coverage
-                && f.advertised
-        })
+        .filter(|f| f.maturity.is_trackable() && f.counts_in_coverage && f.advertised)
         .collect();
 
+    // "Implemented" means evidence-backed (#7029): only rows whose current
+    // qualifying behavior/integration evidence keeps them `proven` count.
     let ux_implemented: Vec<_> = ux_trackable
         .iter()
-        .filter(|f| {
-            matches!(
-                f.maturity,
-                perl_lsp_rs_core::feature_catalog::Maturity::Ga
-                    | perl_lsp_rs_core::feature_catalog::Maturity::Production
-            )
-        })
+        .filter(|f| f.maturity == perl_lsp_rs_core::feature_catalog::Maturity::Proven)
         .collect();
 
     // Protocol surface labels: every catalog feature, regardless of
@@ -65,8 +57,7 @@ pub(super) fn count_lsp_coverage(root: &Path) -> Result<LspCoverage> {
         .filter(|f| {
             matches!(
                 f.maturity,
-                perl_lsp_rs_core::feature_catalog::Maturity::Ga
-                    | perl_lsp_rs_core::feature_catalog::Maturity::Production
+                perl_lsp_rs_core::feature_catalog::Maturity::Proven
                     | perl_lsp_rs_core::feature_catalog::Maturity::Preview
             )
         })
@@ -111,12 +102,12 @@ pub(super) fn generate_lsp_status(
         .to_string();
 
     let lsp_coverage_bullet = format!(
-        "- **Advertised ga/production rows**: {} of {} catalog-tracked advertised rows declare \
-         ga/production (navigation count from `features.toml`)",
+        "- **Proven rows**: {} of {} catalog-tracked advertised rows currently carry qualifying \
+         behavior/integration evidence (evidence-based count from `features.toml`, #7029)",
         cov.ux_implemented, cov.ux_total
     );
     let protocol_compliance_bullet = format!(
-        "- **Protocol surface labels**: {} of {} declared rows carry ga/production/preview labels \
+        "- **Protocol surface labels**: {} of {} declared rows carry proven/preview labels \
          (navigation only)",
         cov.protocol_implemented, cov.protocol_total
     );

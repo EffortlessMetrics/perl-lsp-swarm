@@ -1,0 +1,15 @@
+project: product
+component: Language intelligence
+kind: Changed
+body: >-
+  Reconcile the LSP/DAP feature catalogs into one evidence-honest authority
+  (root `features.toml`) with byte-identical generated projections and drift
+  checks, adopt a proven/preview/planned/unsupported/not_proven maturity
+  taxonomy with per-class promotion policies, mark zero-assertion compliance
+  tests non-qualifying, and downgrade generated status from declaration-count
+  compliance claims to evidence-based counts (#7029).
+time: 2026-08-23T00:00:00Z
+custom:
+  PR: "7029"
+  Slug: feature-catalog-authority
+  Breaking: "no"

@@ -29,42 +29,54 @@ pub struct Meta {
 }
 
 /// Feature maturity state used to drive advertising and tracking behavior.
+///
+/// The vocabulary is evidence-based and fail-closed (#7029): `proven` requires
+/// qualifying behavior/integration evidence on file right now. Exposure
+/// (`advertised = true`) never implies `proven`; rows that are exposed but not
+/// evidenced are `not_proven`.
 #[derive(
     Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
 #[serde(rename_all = "lowercase")]
 pub enum Maturity {
-    /// Early-stage feature.
-    Experimental,
-    /// Feature can be tested but not yet stable.
+    /// Behavior/integration evidence currently qualifies this feature.
+    Proven,
+    /// Usable and advertised as non-final; promotion proof is incomplete.
     Preview,
-    /// Fully released and advertizable feature.
-    Ga,
-    /// Planned work item, not yet implemented or measured.
+    /// Acknowledged surface that is not implemented yet.
     Planned,
-    /// Fully production-ready and typically exposed like GA.
-    Production,
+    /// Explicitly not supported.
+    Unsupported,
+    /// Present/exposed, but required behavior evidence is absent or non-qualifying.
+    #[serde(rename = "not_proven")]
+    NotProven,
 }
 
 impl Maturity {
-    /// Returns `true` when the feature contributes to advertised API coverage.
+    /// Returns `true` when rows with this maturity take part in the compiled
+    /// advertised-feature surface.
+    ///
+    /// This intentionally keeps `not_proven` rows on the wire: downgrading a
+    /// claim must not silently disable an exposed capability (#7029 non-goal:
+    /// no runtime repair). Only `preview`, `planned`, and `unsupported` rows
+    /// stay outside the advertised surface.
     pub const fn is_advertised(self) -> bool {
-        matches!(self, Self::Ga | Self::Production)
+        matches!(self, Self::Proven | Self::NotProven)
     }
 
     /// Returns `true` when the feature participates in the compatibility grid.
     pub const fn is_trackable(self) -> bool {
-        !matches!(self, Self::Planned)
+        !matches!(self, Self::Planned | Self::Unsupported)
     }
 
-    /// Human-readable lowercase label.
+    /// Lowercase label used by generated modules and reports.
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Experimental => "experimental",
+            Self::Proven => "proven",
             Self::Preview => "preview",
-            Self::Ga => "ga",
             Self::Planned => "planned",
-            Self::Production => "production",
+            Self::Unsupported => "unsupported",
+            Self::NotProven => "not_proven",
         }
     }
 }
@@ -115,7 +127,7 @@ impl Catalog {
         &self.feature
     }
 
-    /// IDs for advertised trackable features (GA/production + `advertised = true`).
+    /// IDs for wire-exposed maturities with `advertised = true`.
     pub fn advertised_feature_ids(&self) -> Vec<&str> {
         let mut ids = self
             .feature
@@ -217,11 +229,11 @@ impl Catalog {
             }
 
             match feature.maturity {
-                Maturity::Ga => entry.ga += 1,
-                Maturity::Production => entry.production += 1,
+                Maturity::Proven => entry.proven += 1,
                 Maturity::Preview => entry.preview += 1,
-                Maturity::Experimental => entry.experimental += 1,
                 Maturity::Planned => entry.planned += 1,
+                Maturity::Unsupported => entry.unsupported += 1,
+                Maturity::NotProven => entry.not_proven += 1,
             }
         }
 
@@ -262,22 +274,22 @@ pub struct AreaStats {
     pub total: usize,
     /// Advertised row count in the area.
     pub advertised: usize,
-    /// Experimental count.
-    pub experimental: usize,
+    /// Rows with qualifying evidence on file.
+    pub proven: usize,
     /// Preview count.
     pub preview: usize,
-    /// GA count.
-    pub ga: usize,
-    /// Production count.
-    pub production: usize,
-    /// Planned count.
+    /// Explicitly unsupported count.
+    pub unsupported: usize,
+    /// Exposed rows whose required behavior evidence is absent or non-qualifying.
+    pub not_proven: usize,
+    /// Planned (not yet implemented) count.
     pub planned: usize,
 }
 
 impl AreaStats {
     /// Number of rows eligible for trackability.
     pub const fn trackable(&self) -> usize {
-        self.total - self.planned
+        self.total - self.planned - self.unsupported
     }
 
     /// Advertised ratio in percent for this area.
@@ -455,7 +467,7 @@ pub fn render_lsp_feature_catalog_module(catalog: &Catalog, source_comment: &str
     code.push_str("    /// Functional area for this feature\n");
     code.push_str("    pub area: &'static str,\n");
     code.push_str(
-        "    /// Maturity level (`experimental`, `preview`, `ga`, `planned`, `production`)\n",
+        "    /// Maturity label (`proven`, `preview`, `planned`, `unsupported`, `not_proven`)\n",
     );
     code.push_str("    pub maturity: &'static str,\n");
     code.push_str("    /// Advertised feature flag\n");
@@ -486,14 +498,16 @@ pub fn render_lsp_feature_catalog_module(catalog: &Catalog, source_comment: &str
     }
     code.push_str("];\n\n");
 
-    code.push_str("/// Advertised feature IDs (GA/production and `advertised = true`).\n");
+    code.push_str("/// Advertised feature IDs (`advertised = true` wire-exposed maturities).\n");
     code.push_str("pub const ADVERTISED_LSP_FEATURES: &[&str] = &[\n");
     for id in &advertised {
         code.push_str(&format!("    {:?},\n", id));
     }
     code.push_str("];\n\n");
 
-    code.push_str("/// Returns advertised feature IDs (GA/production and `advertised = true`).\n");
+    code.push_str(
+        "/// Returns advertised feature IDs (`advertised = true` wire-exposed maturities).\n",
+    );
     code.push_str("pub fn advertised_features() -> &'static [&'static str] {\n");
     code.push_str("    ADVERTISED_LSP_FEATURES\n");
     code.push_str("}\n\n");
@@ -513,13 +527,13 @@ pub fn render_navigation_table(catalog: &Catalog) -> String {
     for feature in &catalog.feature {
         let entry = by_area.entry(feature.area.as_str()).or_default();
         entry.1 += 1;
-        if matches!(feature.maturity, Maturity::Ga | Maturity::Production | Maturity::Preview) {
+        if matches!(feature.maturity, Maturity::Proven | Maturity::NotProven | Maturity::Preview) {
             entry.0 += 1;
         }
     }
 
     let mut lines = vec![
-        "| Area | Declared ga/production/preview rows | Total rows |".to_string(),
+        "| Area | Declared proven/preview/not_proven rows | Total rows |".to_string(),
         "|------|---------------------------|------------|".to_string(),
     ];
     let mut declared = 0;
@@ -584,7 +598,7 @@ mod tests {
                     id: "lsp.completion".to_string(),
                     spec: "LSP 3.18".to_string(),
                     area: "text_document".to_string(),
-                    maturity: Maturity::Ga,
+                    maturity: Maturity::Proven,
                     advertised: true,
                     tests: vec!["crates/perl-lsp-rs/tests/completion.rs".to_string()],
                     counts_in_coverage: true,
@@ -614,7 +628,7 @@ mod tests {
                     id: "lsp.references".to_string(),
                     spec: "LSP 3.18".to_string(),
                     area: "workspace".to_string(),
-                    maturity: Maturity::Production,
+                    maturity: Maturity::Proven,
                     advertised: true,
                     tests: vec!["crates/perl-lsp-rs/tests/references.rs".to_string()],
                     counts_in_coverage: true,
@@ -650,7 +664,7 @@ mod tests {
             id: "lsp.compatibility_only".to_string(),
             spec: "LSP 3.18".to_string(),
             area: "text_document".to_string(),
-            maturity: Maturity::Ga,
+            maturity: Maturity::NotProven,
             advertised: true,
             tests: vec![],
             counts_in_coverage: false,
@@ -673,14 +687,14 @@ mod tests {
         let text_doc = must_some(stats.get("text_document"));
         assert_eq!(text_doc.total, 2);
         assert_eq!(text_doc.advertised, 2);
-        assert_eq!(text_doc.ga, 1);
+        assert_eq!(text_doc.proven, 1);
         assert_eq!(text_doc.preview, 1);
-        assert_eq!(text_doc.production, 0);
+        assert_eq!(text_doc.not_proven, 0);
         assert_eq!(text_doc.trackable_coverage_percent(), 100);
 
         let workspace = must_some(stats.get("workspace"));
         assert_eq!(workspace.total, 2);
-        assert_eq!(workspace.production, 1);
+        assert_eq!(workspace.proven, 1);
         assert_eq!(workspace.planned, 1);
         assert_eq!(workspace.trackable(), 1);
         assert_eq!(workspace.trackable_coverage_percent(), 200);
@@ -693,7 +707,7 @@ mod tests {
             id: "lsp.completion".to_string(),
             spec: "LSP 3.18".to_string(),
             area: "text_document".to_string(),
-            maturity: Maturity::Ga,
+            maturity: Maturity::Proven,
             advertised: true,
             tests: vec![],
             counts_in_coverage: true,

@@ -75,11 +75,11 @@ fn test_feature_catalog_module_accessible() {
     use perl_lsp_rs_core::feature_catalog;
 
     // Should have the Maturity enum
-    let _ = feature_catalog::Maturity::Ga;
-    let _ = feature_catalog::Maturity::Production;
-    let _ = feature_catalog::Maturity::Experimental;
+    let _ = feature_catalog::Maturity::Proven;
     let _ = feature_catalog::Maturity::Preview;
     let _ = feature_catalog::Maturity::Planned;
+    let _ = feature_catalog::Maturity::Unsupported;
+    let _ = feature_catalog::Maturity::NotProven;
 
     // Should have key functions
     assert!(!feature_catalog::DEFAULT_DAP_FEATURES.is_empty());

@@ -129,7 +129,7 @@ pub struct BddFeatureRow {
     pub spec: &'static str,
     /// Feature area grouping (e.g., `text_document`, `workspace`).
     pub area: &'static str,
-    /// Maturity level: `experimental`, `preview`, `ga`, `planned`, or `production`.
+    /// Maturity label: `proven`, `preview`, `planned`, `unsupported`, or `not_proven`.
     pub maturity: &'static str,
     /// Whether this feature is advertised to clients.
     pub advertised: bool,
@@ -186,7 +186,11 @@ pub fn lsp_bdd_feature_rows() -> Vec<BddFeatureRow> {
 pub fn trackable_feature_count_for_grid() -> usize {
     all_features()
         .iter()
-        .filter(|feature| feature.maturity != "planned" && feature.counts_in_coverage)
+        .filter(|feature| {
+            feature.maturity != "planned"
+                && feature.maturity != "unsupported"
+                && feature.counts_in_coverage
+        })
         .count()
 }
 
@@ -195,7 +199,10 @@ pub fn advertised_trackable_feature_count_for_grid() -> usize {
     all_features()
         .iter()
         .filter(|feature| {
-            feature.maturity != "planned" && feature.counts_in_coverage && feature.advertised
+            feature.maturity != "planned"
+                && feature.maturity != "unsupported"
+                && feature.counts_in_coverage
+                && feature.advertised
         })
         .count()
 }
@@ -354,7 +361,7 @@ mod tests {
     fn all_features_have_valid_maturity() -> Result<(), String> {
         // Keep this vocabulary aligned with `feature_catalog::Maturity` rather
         // than accepting arbitrary labels that weaken catalog validation.
-        let valid_maturities = ["experimental", "preview", "ga", "planned", "production"];
+        let valid_maturities = ["proven", "preview", "planned", "unsupported", "not_proven"];
         for feature in all_features() {
             if !valid_maturities.contains(&feature.maturity) {
                 return Err(format!(

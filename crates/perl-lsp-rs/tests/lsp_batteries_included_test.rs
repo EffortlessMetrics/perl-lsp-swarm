@@ -1,7 +1,8 @@
 //! Tests for "batteries included" LSP functionality
 //!
-//! This test validates that perl-lsp provides a complete, production-ready experience
-//! with formatting, linting, and import optimization working out-of-the-box.
+//! These tests cover out-of-the-box formatting, linting, and import optimization
+//! behavior. They are feature-level checks, not a production-readiness verdict
+//! (#7029: release claims stay at the public-beta boundary).
 
 #![cfg(test)]
 
