@@ -8718,6 +8718,64 @@ use Data::Dumper;
     }
 
     #[test]
+    fn test_check_limits_prefers_file_count_over_symbol_count() {
+        // Retrospective priority: when legacy over-limit state exceeds BOTH
+        // `max_files` and `max_total_symbols`, the file-count limit must be
+        // reported first. New admissions never reach this state — they are
+        // rejected eagerly (see `test_index_file_rejects_new_files_at_max_files`)
+        // — so the over-limit index is simulated directly, as in the sibling
+        // retrospective tests.
+        let limits = IndexResourceLimits {
+            max_files: 1,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 1,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+
+        let coordinator = IndexCoordinator::with_limits(limits);
+
+        // Two files with one symbol each exceed both budgets
+        // (2 files > 1, 2 symbols > 1). Constructed directly (not via the
+        // `index_file` compatibility surface) so the #11301 ledger's
+        // compatibility-call baseline stays untouched.
+        let legacy_file = FileIndex {
+            source_uri: "file:///legacy-priority.pl".to_string(),
+            symbols: vec![WorkspaceSymbol {
+                name: "legacy_priority".to_string(),
+                kind: SymbolKind::Subroutine,
+                uri: "file:///legacy-priority.pl".to_string(),
+                range: Range {
+                    start: Position { byte: 0, line: 1, column: 1 },
+                    end: Position { byte: 9, line: 1, column: 10 },
+                },
+                qualified_name: None,
+                documentation: None,
+                container_name: None,
+                has_body: true,
+                workspace_folder_uri: None,
+                is_lexical: false,
+            }],
+            ..FileIndex::default()
+        };
+        {
+            let mut files = coordinator.index().files.write();
+            files.insert("file:///legacy-priority-a.pl".to_string(), legacy_file.clone());
+            files.insert("file:///legacy-priority-b.pl".to_string(), legacy_file);
+        }
+
+        let reason = coordinator.check_limits();
+        assert!(
+            matches!(
+                reason,
+                Some(DegradationReason::ResourceLimit { kind: ResourceKind::MaxFiles })
+            ),
+            "Expected MaxFiles when both limits are exceeded, got: {reason:?}"
+        );
+    }
+
+    #[test]
     fn test_check_limits_returns_none_within_bounds() {
         let coordinator = IndexCoordinator::new();
         coordinator.transition_to_ready(0, 0);
