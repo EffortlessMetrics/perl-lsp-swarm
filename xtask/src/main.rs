@@ -44,7 +44,8 @@ use tasks::{
     goals, hardening, hook_checks, ignored_tests, incremental_proof, inject_sha_assets,
     inline_completion_quality, inline_completion_smoke, install_surface_check, integration_proof,
     intent_diff_gate, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
-    memory_trends, merge_ready, methodology_gate, metrics, native_critic, native_format,
+    memory_trends, merge_ready, methodology_gate, metrics, module_train, native_critic,
+    native_format,
     native_product_surface, native_tooling, oracle_fixture_manifest, oracle_receipt_schema,
     oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet,
     perl_core_harness, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
@@ -186,6 +187,16 @@ enum Commands {
     Goals {
         #[command(subcommand)]
         command: GoalsCommand,
+    },
+
+    /// Offline current-tree status and safe parallel frontier over the
+    /// stable `module_train.v1` train graph (#11626 C02, data from #11625).
+    ///
+    /// Reads only the checked-in manifest and local git facts. Performs no
+    /// network or GitHub access, no scheduling, and no mutation.
+    ModuleTrain {
+        #[command(subcommand)]
+        command: ModuleTrainCommand,
     },
 
     /// Capture a GitHub PR queue snapshot for disconnected maintainership.
@@ -3924,6 +3935,30 @@ enum DevexCommand {
 }
 
 #[derive(Subcommand)]
+enum ModuleTrainCommand {
+    /// Project every stable node into its typed exact current-tree state.
+    ///
+    /// Implementation presence stays independent from dependency readiness,
+    /// evidence profiles, and support stages. Nodes without a semantic probe
+    /// in this slice are reported `not_proven`, never guessed.
+    Status {
+        /// Exact tree to bind. This slice accepts `HEAD` only (the current
+        /// checkout); arbitrary-tree checkout is a recorded residual.
+        #[arg(long, default_value = "HEAD")]
+        tree: String,
+    },
+
+    /// Print the safe offline parallel frontier: all and only hard-ready,
+    /// role-valid, conflict-recorded leaves with visible limitations.
+    Next {
+        /// Exact tree to bind. This slice accepts `HEAD` only (the current
+        /// checkout); arbitrary-tree checkout is a recorded residual.
+        #[arg(long, default_value = "HEAD")]
+        tree: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum GoalsCommand {
     /// RETIRED: selects no work and emits a retirement receipt.
     /// The tracked goal portfolio is gone; live GitHub issues, PRs, reviews,
@@ -4148,6 +4183,11 @@ fn run_cli(cli: Cli) -> Result<()> {
             protocol_type_substrate_matrix::run(check)
         }
         Commands::CheckWorkspaceSymbolClasses => workspace_symbol_classes::run(),
+        Commands::ModuleTrain { command } => match command {
+            ModuleTrainCommand::Status { tree } => module_train::run_status(&tree),
+            ModuleTrainCommand::Next { tree } => module_train::run_next(&tree),
+        },
+
         Commands::Goals { command } => match command {
             GoalsCommand::Next { program, fixture, json } => goals::next(program, fixture, json),
             GoalsCommand::Reconcile { program, fixture, json } => {
