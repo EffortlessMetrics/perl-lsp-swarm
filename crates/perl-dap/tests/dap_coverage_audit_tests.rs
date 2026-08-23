@@ -349,6 +349,7 @@ fn test_evaluate_arguments_round_trip() -> Result<(), Box<dyn std::error::Error>
         frame_id: Some(0),
         context: Some("hover".to_string()),
         allow_side_effects: Some(false),
+        format: None,
     };
 
     let json = serde_json::to_string(&args)?;
@@ -1309,6 +1310,7 @@ fn test_set_variable_arguments_round_trip() -> Result<(), Box<dyn std::error::Er
         variables_reference: 100,
         name: "$x".to_string(),
         value: "42".to_string(),
+        format: None,
     };
 
     let json = serde_json::to_string(&args)?;
@@ -1326,6 +1328,7 @@ fn test_set_expression_arguments_round_trip() -> Result<(), Box<dyn std::error::
         expression: "$hash{key}".to_string(),
         value: "\"new value\"".to_string(),
         frame_id: Some(0),
+        format: None,
     };
 
     let json = serde_json::to_string(&args)?;
