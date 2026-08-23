@@ -38,6 +38,11 @@
 -- gone. Integers within exact Lua integer range stay ordinary integers; every
 -- other valid number keeps its validated lexeme verbatim in a typed
 -- json.number value; malformed or overflowing numerals fail typed at decode.
+-- Local patch (#11194): strings carry one strict Unicode contract. Escapes
+-- must be scalars or exact surrogate pairs; raw decoded bytes must be valid
+-- UTF-8; outbound strings are validated before any encoding work. Lone or
+-- malformed surrogates and invalid UTF-8 fail typed instead of producing
+-- invalid bytes.
 
 local json = { _version = "0.1.2" }
 
@@ -256,6 +261,110 @@ function json.number(lex)
   return setmetatable({ [NUMBER_LEXEME_KEY] = lex }, NUMBER_MT)
 end
 
+-------------------------------------------------------------------------------
+-- Unicode scalar and UTF-8 validity (#11194)
+--
+-- One strict contract for both directions: only valid Unicode scalars and
+-- exact surrogate pairs decode; raw decoded bytes must form valid UTF-8
+-- sequences; outbound strings are validated before any encoding work.
+-- Invalid bytes never reach the wire, and failures carry bounded offset
+-- metadata without echoing the whole string.
+-------------------------------------------------------------------------------
+
+local function scalar_to_utf8(n)
+  -- Encodes exactly one valid Unicode scalar value; returns nil for anything
+  -- else (surrogates or values above U+10FFFF). Callers convert nil into a
+  -- typed failure instead of emitting raw invalid bytes.
+  if n < 0 or n > 0x10ffff or (n >= 0xd800 and n <= 0xdfff) then
+    return nil
+  end
+  local f = math.floor
+  if n <= 0x7f then
+    return string.char(n)
+  elseif n <= 0x7ff then
+    return string.char(f(n / 64) + 192, n % 64 + 128)
+  elseif n <= 0xffff then
+    return string.char(f(n / 4096) + 224, f(n % 4096 / 64) + 128, n % 64 + 128)
+  end
+  return string.char(f(n / 262144) + 240, f(n % 262144 / 4096) + 128,
+                     f(n % 4096 / 64) + 128, n % 64 + 128)
+end
+
+--- Length of the valid UTF-8 sequence starting at byte i of s, or nil when
+--- the bytes are a stray continuation, an overlong encoding, a UTF-8 encoding
+--- of a surrogate code point, above U+10FFFF, or a truncated sequence.
+local function utf8_seq_len(s, i)
+  local n = #s
+  local b1 = s:byte(i)
+  local len
+  if b1 >= 0xc2 and b1 <= 0xdf then
+    len = 2 -- c2..df excludes overlong 2-byte forms by construction
+  elseif b1 >= 0xe0 and b1 <= 0xef then
+    len = 3
+  elseif b1 >= 0xf0 and b1 <= 0xf4 then
+    len = 4 -- f5..ff would encode beyond U+10FFFF
+  else
+    return nil
+  end
+  if i + len - 1 > n then
+    return nil -- truncated sequence
+  end
+  local b2 = s:byte(i + 1)
+  if b2 < 0x80 or b2 > 0xbf then
+    return nil
+  end
+  if len == 2 then
+    return 2
+  end
+  if len == 3 then
+    if b1 == 0xe0 and b2 < 0xa0 then
+      return nil -- overlong 3-byte form
+    end
+    if b1 == 0xed and b2 >= 0xa0 then
+      return nil -- UTF-8 encoding of a surrogate code point D800..DFFF
+    end
+    local b3 = s:byte(i + 2)
+    if b3 < 0x80 or b3 > 0xbf then
+      return nil
+    end
+    return 3
+  end
+  if b1 == 0xf0 and b2 < 0x90 then
+    return nil -- overlong 4-byte form
+  end
+  if b1 == 0xf4 and b2 > 0x8f then
+    return nil -- value above U+10FFFF
+  end
+  local b3 = s:byte(i + 2)
+  if b3 < 0x80 or b3 > 0xbf then
+    return nil
+  end
+  local b4 = s:byte(i + 3)
+  if b4 < 0x80 or b4 > 0xbf then
+    return nil
+  end
+  return 4
+end
+
+--- Byte offset of the first invalid UTF-8 sequence in s, or nil when the
+--- entire string is valid.
+local function first_invalid_utf8(s)
+  local i, n = 1, #s
+  while i <= n do
+    local b = s:byte(i)
+    if b < 0x80 then
+      i = i + 1
+    else
+      local len = utf8_seq_len(s, i)
+      if not len then
+        return i
+      end
+      i = i + len
+    end
+  end
+  return nil
+end
+
 -- (#11183) The historical json.number_flag = "{{json::num}}" prefix protocol
 -- was removed: ordinary strings could forge numbers through it, and long
 -- integers lost their exact lexeme. Numbers are now represented by plain Lua
@@ -351,8 +460,13 @@ end
 
 
 local function encode_string(val)
-  -- (#11136/#11183) json.null and numeric values are unique table identities,
-  -- so no ordinary string can equal one; every string here encodes quoted.
+  -- (#11194) Outbound strings must be valid UTF-8 before any encoding work;
+  -- the raise happens before a caller could observe any frame content and
+  -- carries only bounded offset metadata, never the string body.
+  local bad = first_invalid_utf8(val)
+  if bad then
+    error("cannot encode string: invalid UTF-8 at byte offset " .. bad)
+  end
   return '"' .. val:gsub('[%z\1-\31\\"]', escape_char) .. '"'
 end
 
@@ -452,6 +566,7 @@ local REASONS = {
   control_character_in_string= true,
   invalid_escape             = true,
   invalid_unicode_escape     = true,
+  invalid_utf8               = true,
   invalid_number             = true,
   invalid_literal            = true,
   expected_string_key        = true,
@@ -528,38 +643,10 @@ local function next_char(str, idx, set, negate)
   return #str + 1
 end
 
-
-local function codepoint_to_utf8(n, str, idx)
-  -- http://scripts.sil.org/cms/scripts/page.php?site_id=nrsi&id=iws-appendixa
-  local f = math.floor
-  if n <= 0x7f then
-    return string.char(n)
-  elseif n <= 0x7ff then
-    return string.char(f(n / 64) + 192, n % 64 + 128)
-  elseif n <= 0xffff then
-    return string.char(f(n / 4096) + 224, f(n % 4096 / 64) + 128, n % 64 + 128)
-  elseif n <= 0x10ffff then
-    return string.char(f(n / 262144) + 240, f(n % 262144 / 4096) + 128,
-                       f(n % 4096 / 64) + 128, n % 64 + 128)
-  end
-  -- Malformed surrogate composition must be a typed decode failure, never a
-  -- raw Lua exception escaping the codec. Scalar-value validation itself is
-  -- owned by #11194; this only guarantees termination.
-  decode_error(str, idx, "invalid_unicode_escape",
-    string.format("invalid unicode escape composing codepoint '%x'", n))
-end
-
-
-local function parse_unicode_escape(s, str, idx)
-  local n1 = tonumber( s:sub(1, 4),  16 )
-  local n2 = tonumber( s:sub(7, 10), 16 )
-   -- Surrogate pair?
-  if n2 then
-    return codepoint_to_utf8((n1 - 0xd800) * 0x400 + (n2 - 0xdc00) + 0x10000, str, idx)
-  else
-    return codepoint_to_utf8(n1, str, idx)
-  end
-end
+-- (#11194) The old codepoint_to_utf8/parse_unicode_escape pair accepted every
+-- numeric value up to 0x10ffff including lone surrogates and composed any
+-- following \uXXXX as a low half; scalar_to_utf8 plus the strict escape parser
+-- in parse_string replace them.
 
 
 local function parse_string(str, i)
@@ -578,11 +665,45 @@ local function parse_string(str, i)
       j = j + 1
       local c = str:sub(j, j)
       if c == "u" then
-        local hex = str:match("^[dD][89aAbB]%x%x\\u%x%x%x%x", j + 1)
-                 or str:match("^%x%x%x%x", j + 1)
-                 or decode_error(str, j - 1, "invalid_unicode_escape", "invalid unicode escape in string")
-        res = res .. parse_unicode_escape(hex, str, j - 1)
-        j = j + #hex
+        -- (#11194) Strict scalar/pair validation: a lone \uXXXX is accepted
+        -- only as a non-surrogate scalar; high surrogates must pair with an
+        -- immediately following \uDC00..\uDFFF; low surrogates never stand
+        -- alone. Invalid forms fail typed instead of emitting raw bytes.
+        local pos = j + 1 -- first hex digit
+        local h1 = str:match("^%x%x%x%x", pos)
+        if not h1 then
+          decode_error(str, j - 1, "invalid_unicode_escape", "invalid unicode escape in string")
+        end
+        local cp1 = tonumber(h1, 16)
+        local piece
+        if cp1 >= 0xd800 and cp1 <= 0xdbff then
+          local h2
+          if str:sub(pos + 4, pos + 5) == "\\u" then
+            h2 = str:match("^%x%x%x%x", pos + 6)
+          end
+          if not h2 then
+            decode_error(str, j - 1, "invalid_unicode_escape",
+              "high surrogate must be followed by a low surrogate escape")
+          end
+          local cp2 = tonumber(h2, 16)
+          if cp2 < 0xdc00 or cp2 > 0xdfff then
+            decode_error(str, j - 1, "invalid_unicode_escape",
+              "high surrogate followed by non-low escape '" .. bound(h2) .. "'")
+          end
+          piece = scalar_to_utf8(0x10000 + (cp1 - 0xd800) * 0x400 + (cp2 - 0xdc00))
+          j = pos + 9 -- last hex digit of the low escape
+        elseif cp1 >= 0xdc00 and cp1 <= 0xdfff then
+          decode_error(str, j - 1, "invalid_unicode_escape", "lone low surrogate escape")
+        else
+          piece = scalar_to_utf8(cp1)
+          j = pos + 3 -- last hex digit of this escape
+        end
+        -- Unreachable for validated inputs; kept as an honest typed guard.
+        if not piece then
+          decode_error(str, j - 1, "invalid_unicode_escape",
+            string.format("invalid unicode escape composing codepoint '%x'", cp1))
+        end
+        res = res .. piece
       else
         if not escape_chars[c] then
           decode_error(str, j - 1, "invalid_escape", "invalid escape char '" .. bound(c) .. "' in string")
@@ -594,6 +715,16 @@ local function parse_string(str, i)
     elseif x == 34 then -- `"`: End of string
       res = res .. str:sub(k, j - 1)
       return res, j + 1
+
+    elseif x >= 128 then
+      -- (#11194) Raw non-ASCII bytes must form valid UTF-8 sequences. The
+      -- bytes themselves are copied verbatim by the chunk appends above;
+      -- validation only decides whether they may pass.
+      local seq_len = utf8_seq_len(str, j)
+      if not seq_len then
+        decode_error(str, j, "invalid_utf8", "invalid UTF-8 sequence in string")
+      end
+      j = j + seq_len - 1 -- bottom increment lands past the sequence
     end
 
     j = j + 1
