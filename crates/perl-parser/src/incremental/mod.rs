@@ -19,7 +19,6 @@ pub use checkpoint::{LexCheckpoint, ParseCheckpoint, ScopeSnapshot};
 pub use diagnostics::{LexRestartReport, LexRestartStrategy, ReparseResult};
 pub use edit::Edit;
 pub use lex::MAX_STORED_LEX_CHECKPOINTS;
-pub use lex::MAX_STORED_LEX_CHECKPOINTS;
 use reparse::{apply_single_edit, apply_text_edit_to_state, full_reparse};
 pub use snapshot::{
     ParseGeneration, ParseSnapshot, ParseSnapshotStrategy, ParseSnapshotValidationError,
