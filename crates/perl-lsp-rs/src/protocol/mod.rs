@@ -7,3 +7,5 @@
 
 pub use perl_lsp_rs_core::product_identity;
 pub use perl_lsp_rs_core::protocol::*;
+
+pub(crate) mod method_direction;

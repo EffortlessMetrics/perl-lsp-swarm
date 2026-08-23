@@ -979,6 +979,450 @@ fn arb_value_shape() -> impl Strategy<Value = ValueShape> {
     ]
 }
 
+// ── Framework adapter SDK strategies ──────────────────────────────────────
+
+use perl_semantic_facts::framework::{
+    AdapterBudget, AdapterCancellation, AdapterDescriptor, AdapterDetectionInput,
+    AdapterDetectionResult, AdapterDisposition, AdapterId, AdapterInput, AdapterOutcome,
+    AdapterResult, AdapterSourceScope, DetectionAbsenceReason, DetectionAuthorityError,
+    DetectionAuthorityReceipt, DetectionConfigurationEvidence, DetectionConfigurationObservation,
+    DetectionConfigurationValue, DetectionEvidenceClass, DetectionInputIdentity, DetectionOutcome,
+    EmittedFact, FactClass, FactLimitation, FactSink, FactSinkId, ModuleActivationIdentity,
+    ModuleObservationReceipt, ModuleSelectorEvaluation, ModuleSelectorOutcome,
+    ModuleVersionEvidence, UnavailableReason,
+};
+
+fn arb_adapter_id() -> impl Strategy<Value = AdapterId> {
+    any::<u64>().prop_map(AdapterId)
+}
+
+fn arb_fact_sink_id() -> impl Strategy<Value = FactSinkId> {
+    any::<u64>().prop_map(FactSinkId)
+}
+
+fn arb_adapter_disposition() -> impl Strategy<Value = AdapterDisposition> {
+    prop_oneof![
+        Just(AdapterDisposition::Production),
+        Just(AdapterDisposition::Shadow),
+        Just(AdapterDisposition::Experimental),
+    ]
+}
+
+fn arb_detection_configuration_value() -> impl Strategy<Value = DetectionConfigurationValue> {
+    prop_oneof![
+        any::<bool>().prop_map(DetectionConfigurationValue::Boolean),
+        any::<i64>().prop_map(DetectionConfigurationValue::Integer),
+        "[A-Za-z][A-Za-z0-9_:-]{0,20}".prop_map(DetectionConfigurationValue::String),
+    ]
+}
+
+fn arb_detection_configuration_observation()
+-> impl Strategy<Value = DetectionConfigurationObservation> {
+    (
+        "[a-z][a-z0-9_.:-]{2,20}",
+        "sha256:[a-f0-9]{8}",
+        "[a-z][a-z0-9_.:-]{2,30}",
+        arb_detection_configuration_value(),
+        "[a-z][a-z0-9_.:-]{2,20}",
+        arb_source_generation(),
+        "[a-z][a-z0-9_.:-]{2,20}",
+        "[a-z][a-z0-9_.:-]{2,20}",
+    )
+        .prop_map(
+            |(
+                source_identity,
+                source_digest,
+                key,
+                value,
+                scope_identity,
+                generation,
+                provenance,
+                policy_identity,
+            )| {
+                DetectionConfigurationObservation::new(
+                    source_identity,
+                    source_digest,
+                    key,
+                    value,
+                    scope_identity,
+                    generation,
+                    provenance,
+                    policy_identity,
+                )
+            },
+        )
+}
+
+fn arb_detection_configuration_evidence() -> impl Strategy<Value = DetectionConfigurationEvidence> {
+    (
+        arb_detection_configuration_observation(),
+        arb_detection_configuration_value(),
+        "[a-z][a-z0-9_.:-]{2,20}",
+    )
+        .prop_map(|(observation, excluding_value, rule_identity)| {
+            DetectionConfigurationEvidence::new(observation, excluding_value, rule_identity)
+        })
+}
+
+fn arb_adapter_descriptor() -> impl Strategy<Value = AdapterDescriptor> {
+    (
+        (
+            arb_adapter_id(),
+            "[a-z]{3,10}",
+            "[A-Z][a-z]{2,8}",
+            proptest::option::of("[0-9]+\\.[0-9]+"),
+            1u32..=5u32,
+            arb_adapter_disposition(),
+        ),
+        proptest::option::of((
+            "[a-z][a-z0-9_.:-]{2,30}",
+            arb_detection_configuration_value(),
+            "[a-z][a-z0-9_.:-]{2,30}",
+        )),
+    )
+        .prop_map(|((id, name, fw, constraint, schema_version, disposition), exclusion)| {
+            let descriptor =
+                AdapterDescriptor::new(id, name, fw, constraint, schema_version, disposition);
+            match exclusion {
+                Some((key, value, rule)) => {
+                    descriptor.with_configuration_exclusion(key, value, rule)
+                }
+                None => descriptor,
+            }
+        })
+}
+
+fn arb_module_version_evidence() -> impl Strategy<Value = ModuleVersionEvidence> {
+    ("[0-9]+\\.[0-9]+(\\.[0-9]+)?", arb_source_generation())
+        .prop_map(|(version, generation)| ModuleVersionEvidence::new(version, generation))
+}
+
+fn arb_module_activation_identity() -> impl Strategy<Value = ModuleActivationIdentity> {
+    (
+        "[A-Z][a-z]{2,8}((::[A-Z][a-z]{2,6})?)",
+        proptest::option::of(arb_file_id()),
+        arb_source_generation(),
+        proptest::option::of(arb_module_version_evidence()),
+    )
+        .prop_map(|(module_name, file_id, generation, observed)| {
+            let identity = ModuleActivationIdentity::new(module_name, file_id, generation);
+            match observed {
+                Some(evidence) => identity.with_observed_version(evidence),
+                None => identity,
+            }
+        })
+}
+
+fn arb_adapter_cancellation() -> impl Strategy<Value = AdapterCancellation> {
+    any::<bool>().prop_map(|c| {
+        if c { AdapterCancellation::cancelled() } else { AdapterCancellation::active() }
+    })
+}
+
+fn arb_adapter_budget() -> impl Strategy<Value = AdapterBudget> {
+    (1u32..=1000u32, 1u64..=1_048_576u64)
+        .prop_map(|(facts, bytes)| AdapterBudget::new(facts, bytes))
+}
+
+fn arb_detection_evidence_class() -> impl Strategy<Value = DetectionEvidenceClass> {
+    prop_oneof![
+        Just(DetectionEvidenceClass::ResolvedModule),
+        Just(DetectionEvidenceClass::ResolvedImport),
+        Just(DetectionEvidenceClass::ProbableImport),
+        Just(DetectionEvidenceClass::NameOnly),
+    ]
+}
+
+fn arb_module_selector() -> impl Strategy<Value = String> {
+    "[A-Z][a-z]{2,8}((::[A-Z][a-z]{2,6})?)".prop_map(String::from)
+}
+
+fn arb_module_selector_outcome() -> impl Strategy<Value = ModuleSelectorOutcome> {
+    prop_oneof![
+        (arb_module_activation_identity(), arb_detection_evidence_class()).prop_map(
+            |(activation, evidence_class)| ModuleSelectorOutcome::Matched {
+                activation,
+                evidence_class,
+            }
+        ),
+        Just(ModuleSelectorOutcome::Absent),
+        "[a-z ]{4,20}".prop_map(|reason| ModuleSelectorOutcome::Unresolved { reason }),
+        "[a-z ]{4,20}".prop_map(|reason| ModuleSelectorOutcome::Ambiguous { reason }),
+        "[a-z ]{4,20}".prop_map(|reason| ModuleSelectorOutcome::Unavailable { reason }),
+    ]
+}
+
+fn arb_module_selector_evaluation() -> impl Strategy<Value = ModuleSelectorEvaluation> {
+    (arb_module_selector(), arb_module_selector_outcome())
+        .prop_map(|(selector, outcome)| ModuleSelectorEvaluation::new(selector, outcome))
+}
+
+fn arb_module_observation_receipt() -> impl Strategy<Value = ModuleObservationReceipt> {
+    (
+        arb_source_generation(),
+        "[a-f0-9]{8}".prop_map(|s| format!("digest:{s}")),
+        proptest::collection::vec(arb_module_selector_evaluation(), 0..5),
+    )
+        .prop_map(|(generation, content_digest, evaluations)| {
+            ModuleObservationReceipt::new(
+                "module-resolver.v1",
+                "root:prop-fixture",
+                "project-environment.v1",
+                generation,
+                content_digest,
+                evaluations,
+            )
+        })
+}
+
+fn arb_adapter_detection_input() -> impl Strategy<Value = AdapterDetectionInput> {
+    (
+        arb_adapter_descriptor(),
+        arb_module_observation_receipt(),
+        proptest::collection::vec(arb_detection_configuration_observation(), 0..5),
+        "[a-z][a-z0-9_.:-]{2,20}",
+        proptest::option::of(arb_adapter_budget()),
+        arb_adapter_cancellation(),
+    )
+        .prop_map(|(descriptor, observation, configurations, policy, budget, cancel)| {
+            AdapterDetectionInput::new(descriptor, observation, budget, cancel)
+                .with_configuration_observations(configurations)
+                .with_detector_policy_identity(policy)
+        })
+}
+
+fn arb_detection_input_identity() -> impl Strategy<Value = DetectionInputIdentity> {
+    (
+        arb_adapter_descriptor(),
+        arb_module_observation_receipt(),
+        proptest::collection::vec(arb_detection_configuration_observation(), 0..5),
+        "[a-z][a-z0-9_.:-]{2,20}",
+    )
+        .prop_map(|(descriptor, module_observation, configuration_observations, policy)| {
+            AdapterDetectionInput::new(
+                descriptor,
+                module_observation,
+                None,
+                AdapterCancellation::active(),
+            )
+            .with_configuration_observations(configuration_observations)
+            .with_detector_policy_identity(policy)
+            .identity()
+        })
+}
+
+fn arb_detection_absence_reason() -> impl Strategy<Value = DetectionAbsenceReason> {
+    prop_oneof![
+        Just(DetectionAbsenceReason::RequiredModulesMissing),
+        Just(DetectionAbsenceReason::VersionConstraintNotSatisfied),
+        Just(DetectionAbsenceReason::ExcludedByConfiguration),
+    ]
+}
+
+fn arb_unavailable_reason() -> impl Strategy<Value = UnavailableReason> {
+    prop_oneof![
+        Just(UnavailableReason::MissingGeneration),
+        Just(UnavailableReason::NoModulesAvailable),
+        Just(UnavailableReason::InternalError),
+    ]
+}
+
+fn arb_detection_outcome() -> impl Strategy<Value = DetectionOutcome> {
+    prop_oneof![
+        (arb_confidence(), proptest::option::of("[0-9]+\\.[0-9]+")).prop_map(
+            |(confidence, version)| DetectionOutcome::Detected {
+                confidence,
+                framework_version: version,
+            }
+        ),
+        arb_detection_absence_reason().prop_map(|reason| DetectionOutcome::Absent { reason }),
+        proptest::collection::vec("[a-z ]{4,20}", 1..3)
+            .prop_map(|descs| { DetectionOutcome::Conflicting { conflict_descriptions: descs } }),
+        arb_unavailable_reason().prop_map(|reason| DetectionOutcome::Unavailable { reason }),
+        Just(DetectionOutcome::Cancelled),
+        Just(DetectionOutcome::BudgetExhausted),
+        "[a-z ]{4,20}".prop_map(|reason| DetectionOutcome::Unsupported { reason }),
+    ]
+}
+
+fn arb_adapter_detection_result() -> impl Strategy<Value = AdapterDetectionResult> {
+    (
+        arb_adapter_descriptor(),
+        arb_source_generation(),
+        arb_detection_outcome(),
+        proptest::option::of(arb_module_version_evidence()),
+        proptest::option::of(arb_detection_input_identity()),
+        proptest::collection::vec(arb_module_activation_identity(), 0..5),
+        proptest::option::of(arb_detection_configuration_evidence()),
+    )
+        .prop_map(
+            |(
+                desc,
+                project_gen,
+                outcome,
+                version_evidence,
+                input_identity,
+                contributing_modules,
+                configuration_evidence,
+            )| {
+                let mut result = AdapterDetectionResult::new(desc, project_gen, outcome);
+                if let Some(evidence) = version_evidence {
+                    result = result.with_version_evidence(evidence);
+                }
+                result.input_identity = input_identity;
+                result.contributing_modules = contributing_modules;
+                result.configuration_evidence = configuration_evidence;
+                result
+            },
+        )
+}
+
+fn arb_detection_authority_error() -> impl Strategy<Value = DetectionAuthorityError> {
+    prop_oneof![
+        Just(DetectionAuthorityError::UnsupportedSchema),
+        Just(DetectionAuthorityError::NonProduction),
+        Just(DetectionAuthorityError::DescriptorMismatch),
+        Just(DetectionAuthorityError::GenerationMismatch),
+        Just(DetectionAuthorityError::CancelledInput),
+        Just(DetectionAuthorityError::MissingPolicyIdentity),
+        Just(DetectionAuthorityError::InvalidContentDigest),
+        Just(DetectionAuthorityError::InvalidSelectorEvidence),
+        Just(DetectionAuthorityError::InvalidModuleEvidence),
+        Just(DetectionAuthorityError::InvalidConfigurationEvidence),
+        Just(DetectionAuthorityError::MissingInputIdentity),
+        Just(DetectionAuthorityError::InputIdentityMismatch),
+        Just(DetectionAuthorityError::MissingContributingEvidence),
+        Just(DetectionAuthorityError::UnrelatedContributingEvidence),
+        Just(DetectionAuthorityError::InsufficientConfidence),
+        Just(DetectionAuthorityError::IncompleteModuleUniverse),
+        Just(DetectionAuthorityError::RequiredModulePresent),
+        Just(DetectionAuthorityError::InvalidVersionEvidence),
+        Just(DetectionAuthorityError::UnsupportedVersionConstraint),
+        Just(DetectionAuthorityError::VersionConstraintNotSatisfied),
+        Just(DetectionAuthorityError::VersionConstraintSatisfied),
+        Just(DetectionAuthorityError::MissingConfigurationEvidence),
+        Just(DetectionAuthorityError::ConfigurationRuleNotSatisfied),
+        Just(DetectionAuthorityError::NonAuthoritativeOutcome),
+    ]
+}
+
+fn arb_detection_authority_receipt() -> impl Strategy<Value = DetectionAuthorityReceipt> {
+    (arb_adapter_detection_input(), arb_adapter_detection_result())
+        .prop_map(|(input, result)| result.authority_receipt_against(&input))
+}
+
+fn arb_fact_class() -> impl Strategy<Value = FactClass> {
+    prop_oneof![
+        Just(FactClass::GeneratedMembers),
+        Just(FactClass::PackageGraph),
+        Just(FactClass::FrameworkImports),
+        Just(FactClass::Diagnostics),
+        Just(FactClass::Extension),
+    ]
+}
+
+fn arb_adapter_source_scope() -> impl Strategy<Value = AdapterSourceScope> {
+    (
+        arb_file_id(),
+        arb_source_generation(),
+        proptest::option::of("[a-f0-9]{8}".prop_map(|s| format!("digest:{s}"))),
+        proptest::option::of(arb_anchor_id()),
+        proptest::option::of("[A-Z][a-z]{2,8}(::[A-Z][a-z]{2,6})?"),
+    )
+        .prop_map(|(file, source_gen, digest, anchor, pkg)| {
+            AdapterSourceScope::new(file, source_gen, digest, anchor, pkg)
+        })
+}
+
+fn arb_invalidation_dependency() -> impl Strategy<Value = InvalidationDependency> {
+    ("[a-z]{3,8}:[A-Z][a-z]{2,8}", arb_source_generation())
+        .prop_map(|(key, generation)| InvalidationDependency::new(key, generation))
+}
+
+fn arb_adapter_input() -> impl Strategy<Value = AdapterInput> {
+    (
+        arb_adapter_descriptor(),
+        arb_adapter_source_scope(),
+        proptest::collection::vec(arb_fact_class(), 1..4),
+        proptest::collection::vec(arb_invalidation_dependency(), 0..3),
+        proptest::option::of(arb_adapter_budget()),
+        arb_adapter_cancellation(),
+    )
+        .prop_map(|(desc, scope, classes, deps, budget, cancel)| {
+            AdapterInput::new(desc, scope, classes, deps, budget, cancel)
+        })
+}
+
+fn arb_fact_limitation() -> impl Strategy<Value = FactLimitation> {
+    (any::<bool>(), arb_confidence(), "[a-z ]{4,20}").prop_map(
+        |(blocking, confidence, description)| {
+            FactLimitation::new(description, blocking, confidence)
+        },
+    )
+}
+
+fn arb_fact_sink_empty() -> impl Strategy<Value = FactSink> {
+    (arb_fact_sink_id(), arb_adapter_id()).prop_map(|(sid, aid)| FactSink::new(sid, aid))
+}
+
+fn arb_fact_sink() -> impl Strategy<Value = FactSink> {
+    (arb_fact_sink_id(), arb_adapter_id(), proptest::collection::vec(arb_emitted_fact(), 1..3))
+        .prop_map(|(sid, aid, facts)| {
+            let mut sink = FactSink::new(sid, aid);
+            sink.facts = facts;
+            if let Some(bytes) = sink.serialized_payload_bytes() {
+                sink.total_payload_bytes = bytes;
+            }
+            sink
+        })
+}
+
+fn arb_emitted_fact() -> impl Strategy<Value = EmittedFact> {
+    (
+        arb_fact_sink_id(),
+        arb_adapter_id(),
+        arb_provenance(),
+        arb_confidence(),
+        arb_semantic_fact_envelope(),
+        arb_fact_class(),
+        proptest::option::of(arb_fact_limitation()),
+        any::<bool>(),
+        "[A-Z][a-z]{2,8}",
+    )
+        .prop_map(|(sid, aid, prov, conf, env, class, lim, stronger, fw)| {
+            EmittedFact::new(sid, aid, fw, prov, conf, env, class, lim, stronger)
+        })
+}
+
+fn arb_adapter_outcome() -> impl Strategy<Value = AdapterOutcome> {
+    prop_oneof![
+        arb_fact_sink_empty()
+            .prop_map(|sink| AdapterOutcome::Applied { sink, limitations: vec![] }),
+        (arb_fact_sink(), proptest::collection::vec(arb_fact_limitation(), 0..3))
+            .prop_map(|(sink, limitations)| AdapterOutcome::Applied { sink, limitations }),
+        ("[a-z ]{4,20}", proptest::option::of(arb_fact_sink()))
+            .prop_map(|(reason, partial_sink)| AdapterOutcome::Dynamic { reason, partial_sink },),
+        "[a-z ]{4,20}".prop_map(|reason| AdapterOutcome::Unsupported { reason }),
+        proptest::collection::vec("[a-z ]{4,20}", 1..3)
+            .prop_map(|descs| AdapterOutcome::Conflict { conflict_descriptions: descs }),
+        proptest::option::of(arb_fact_sink())
+            .prop_map(|partial_sink| AdapterOutcome::BudgetExhausted { partial_sink }),
+        Just(AdapterOutcome::Cancelled),
+    ]
+}
+
+fn arb_adapter_result() -> impl Strategy<Value = AdapterResult> {
+    (
+        arb_adapter_descriptor(),
+        arb_adapter_source_scope(),
+        arb_source_generation(),
+        arb_adapter_outcome(),
+    )
+        .prop_map(|(desc, scope, invocation_gen, outcome)| {
+            AdapterResult::new(desc, scope, invocation_gen, outcome)
+        })
+}
+
 // ── Property tests ─────────────────────────────────────────────────────────
 
 proptest! {
@@ -1258,5 +1702,142 @@ proptest! {
         let json = serde_json::to_string(&shape).map_err(|e| TestCaseError::fail(e.to_string()))?;
         let decoded: ValueShape = serde_json::from_str(&json).map_err(|e| TestCaseError::fail(e.to_string()))?;
         prop_assert_eq!(&decoded, &shape);
+    }
+
+    // ── Framework adapter SDK types ─────────────────────────────────────────
+
+    #[test]
+    fn fact_limitation_json_roundtrip(lim in arb_fact_limitation()) {
+        let json = serde_json::to_string(&lim).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let decoded: FactLimitation = serde_json::from_str(&json).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(&decoded, &lim);
+    }
+
+    #[test]
+    fn emitted_fact_json_roundtrip(fact in arb_emitted_fact()) {
+        let json = serde_json::to_string(&fact).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let decoded: EmittedFact = serde_json::from_str(&json).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(&decoded, &fact);
+    }
+
+    #[test]
+    fn adapter_descriptor_json_roundtrip(desc in arb_adapter_descriptor()) {
+        let json = serde_json::to_string(&desc).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let decoded: perl_semantic_facts::framework::AdapterDescriptor =
+            serde_json::from_str(&json).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(&decoded, &desc);
+    }
+
+    #[test]
+    fn detection_configuration_value_json_roundtrip(value in arb_detection_configuration_value()) {
+        let json = serde_json::to_string(&value).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let decoded: DetectionConfigurationValue =
+            serde_json::from_str(&json).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(&decoded, &value);
+    }
+
+    #[test]
+    fn detection_configuration_observation_json_roundtrip(
+        observation in arb_detection_configuration_observation()
+    ) {
+        let json = serde_json::to_string(&observation)
+            .map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let decoded: DetectionConfigurationObservation =
+            serde_json::from_str(&json).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(&decoded, &observation);
+    }
+
+    #[test]
+    fn detection_configuration_evidence_json_roundtrip(
+        evidence in arb_detection_configuration_evidence()
+    ) {
+        let json = serde_json::to_string(&evidence)
+            .map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let decoded: DetectionConfigurationEvidence =
+            serde_json::from_str(&json).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(&decoded, &evidence);
+    }
+
+    #[test]
+    fn module_selector_outcome_json_roundtrip(outcome in arb_module_selector_outcome()) {
+        let json = serde_json::to_string(&outcome).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let decoded: ModuleSelectorOutcome =
+            serde_json::from_str(&json).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(&decoded, &outcome);
+    }
+
+    #[test]
+    fn module_selector_evaluation_json_roundtrip(evaluation in arb_module_selector_evaluation()) {
+        let json = serde_json::to_string(&evaluation)
+            .map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let decoded: ModuleSelectorEvaluation =
+            serde_json::from_str(&json).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(&decoded, &evaluation);
+    }
+
+    #[test]
+    fn detection_outcome_json_roundtrip(outcome in arb_detection_outcome()) {
+        let json = serde_json::to_string(&outcome).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let decoded: DetectionOutcome =
+            serde_json::from_str(&json).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(&decoded, &outcome);
+    }
+
+    #[test]
+    fn detection_input_identity_json_roundtrip(identity in arb_detection_input_identity()) {
+        let json = serde_json::to_string(&identity)
+            .map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let decoded: DetectionInputIdentity =
+            serde_json::from_str(&json).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(&decoded, &identity);
+    }
+
+    #[test]
+    fn detection_authority_error_json_roundtrip(error in arb_detection_authority_error()) {
+        let json = serde_json::to_string(&error).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let decoded: DetectionAuthorityError =
+            serde_json::from_str(&json).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(&decoded, &error);
+    }
+
+    #[test]
+    fn detection_authority_receipt_json_roundtrip(receipt in arb_detection_authority_receipt()) {
+        let json = serde_json::to_string(&receipt)
+            .map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let decoded: DetectionAuthorityReceipt =
+            serde_json::from_str(&json).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(&decoded, &receipt);
+    }
+
+    #[test]
+    fn adapter_detection_input_json_roundtrip(input in arb_adapter_detection_input()) {
+        let json = serde_json::to_string(&input).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let decoded: perl_semantic_facts::framework::AdapterDetectionInput =
+            serde_json::from_str(&json).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(&decoded, &input);
+    }
+
+    #[test]
+    fn adapter_detection_result_json_roundtrip(result in arb_adapter_detection_result()) {
+        let json = serde_json::to_string(&result).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let decoded: perl_semantic_facts::framework::AdapterDetectionResult =
+            serde_json::from_str(&json).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(&decoded, &result);
+    }
+
+    #[test]
+    fn adapter_input_json_roundtrip(input in arb_adapter_input()) {
+        let json = serde_json::to_string(&input).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let decoded: perl_semantic_facts::framework::AdapterInput =
+            serde_json::from_str(&json).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(&decoded, &input);
+    }
+
+    #[test]
+    fn adapter_result_json_roundtrip(result in arb_adapter_result()) {
+        let json = serde_json::to_string(&result).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let decoded: perl_semantic_facts::framework::AdapterResult =
+            serde_json::from_str(&json).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(&decoded, &result);
     }
 }

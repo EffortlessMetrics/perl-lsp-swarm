@@ -51,6 +51,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "layer_check": {"lanes": ["pr_smoke"]},
     "published_crate_count_pr_fast": {"lanes": ["pr_smoke"]},
     "release_history_check": {"lanes": ["pr_smoke"]},
+    "source_commit_api_check": {"lanes": ["pr_smoke", "merge_gate_shards"]},
     # Arrived from the release lineage in the reconciliation merge (#4976). The
     # gate was defined in .ci/gate-policy.yaml there but never mapped here, so
     # this validator failed the moment both files met. tier: pr_fast, and it is
@@ -60,6 +61,9 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "unit_scoped": {"lanes": ["pr_smoke"]},
     "check_tests_scoped": {"lanes": ["pr_smoke"]},
     "unit_routed_full": {"lanes": ["pr_smoke"]},
+    # The gate runs inside the existing pr-fast invocation in advisory
+    # `pr-smoke`; it is not a separate workflow or receipt-producing lane.
+    "clippy_tests_kernel": {"lanes": ["pr_smoke"]},
     # Former `inline_completion_contract` (&&-composite, issue #6845) split
     # into four independent gates.  All four remain in the pr_smoke tier lane.
     "inline_completion_registration": {"lanes": ["pr_smoke"]},
@@ -99,6 +103,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "nested_lock_check": {"lanes": ["pr_smoke"]},
     "agent_context_coverage": {"lanes": ["merge_gate_shards"]},
     "non_rust_inventory_check": {"lanes": ["merge_gate_shards"]},
+    "lint_policy": {"lanes": ["merge_gate_shards"]},
     "msrv_authority_sync": {"lanes": ["merge_gate_shards"]},
     "compiler_concept_ledger": {"lanes": ["merge_gate_shards"]},
     "compiler_proof_policy": {"lanes": ["merge_gate_shards"]},

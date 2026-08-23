@@ -618,7 +618,42 @@ impl LspServer {
                             native_profile,
                             &critic_config,
                         );
-                    for finding in registry.check(&critic_context) {
+                    use perl_lsp_rs_core::tooling::perl_critic::{
+                        CriticSuppressionMap, NativeCriticPolicy, critic_source_identity_for_uri,
+                        native_finding_candidates_with_accounting, normalize_with_native_policy,
+                    };
+
+                    let raw_findings = registry.check_unfiltered(&critic_context);
+                    let candidates = native_finding_candidates_with_accounting(
+                        uri,
+                        raw_findings.iter().cloned(),
+                        critic_source_identity_for_uri(uri, 0),
+                    );
+                    let suppressions = CriticSuppressionMap::from_source(&doc.text);
+                    let policy = NativeCriticPolicy::new(
+                        severity.clamp(1, 5),
+                        &critic_config.include,
+                        &critic_config.exclude,
+                        &suppressions,
+                    );
+
+                    for normalized in normalize_with_native_policy(candidates, &policy) {
+                        // Normalization decides whether this logical finding is
+                        // admitted. The raw producer is retained only for its
+                        // existing safe edit and title; no raw finding can
+                        // bypass alias-aware exclusion or suppression.
+                        let Some(finding) = raw_findings.iter().find(|finding| {
+                            finding.range == normalized.range()
+                                && normalized.contributors().iter().any(|contributor| {
+                                    let identity = contributor.identity();
+                                    identity.origin()
+                                        == perl_lsp_rs_core::tooling::perl_critic::CriticFindingOrigin::NativeCritic
+                                        && identity.code() == finding.rule_id
+                                        && identity.shape() == finding.observed_shape
+                                })
+                        }) else {
+                            continue;
+                        };
                         // Only findings that carry a Safe automatic edit become
                         // quick-fixes. Suggested fixes need user confirmation
                         // (declaration-only renames corrupt references);
@@ -840,7 +875,10 @@ impl LspServer {
                         InternalCodeActionKind::RefactorInline => "refactor.inline",
                         InternalCodeActionKind::RefactorRewrite => "refactor.rewrite",
                         InternalCodeActionKind::Source => "source",
-                        InternalCodeActionKind::SourceOrganizeImports => "source.organizeImports",
+                        // `source.organizeImports` is withdrawn (#8305): the
+                        // legacy line-oriented organizer no longer exists, so
+                        // the kind is absent from the internal enum and cannot
+                        // be serialized. Restoration: #8319/#10696.
                         InternalCodeActionKind::SourceFixAll => "source.fixAll",
                         InternalCodeActionKind::SourceModernize => "source.modernize",
                     },
@@ -899,7 +937,8 @@ impl LspServer {
                         InternalCodeActionKind::RefactorInline => "refactor.inline",
                         InternalCodeActionKind::RefactorRewrite => "refactor.rewrite",
                         InternalCodeActionKind::Source => "source",
-                        InternalCodeActionKind::SourceOrganizeImports => "source.organizeImports",
+                        // `source.organizeImports` is withdrawn (#8305); see the
+                        // original-provider mapping above for the restoration path.
                         InternalCodeActionKind::SourceFixAll => "source.fixAll",
                         InternalCodeActionKind::SourceModernize => "source.modernize",
                     },
@@ -1175,16 +1214,14 @@ impl LspServer {
         if let (Some(uri), Some(offset), Some(text)) = data_info
             && let Some(obj) = action.as_object_mut()
         {
-            let edit_range = if offset as usize >= doc.text.len() {
-                let end = self.get_document_end_position(&doc.text);
-                json!({"start": end.clone(), "end": end })
-            } else {
-                let (line, col) = self.offset_to_pos16(doc, offset as usize);
-                json!({
-                    "start": {"line": line, "character": col},
-                    "end": {"line": line, "character": col}
-                })
-            };
+            // True EOF (`insertAt == document length`) projects through the
+            // same UTF-16 mapper as every other offset (#10220). No
+            // byte-column or split-based endpoint authority remains here.
+            let (line, col) = self.offset_to_pos16(doc, offset as usize);
+            let edit_range = json!({
+                "start": {"line": line, "character": col},
+                "end": {"line": line, "character": col}
+            });
 
             obj.insert(
                 "edit".into(),
@@ -1332,6 +1369,7 @@ impl LspServer {
                     suggestion: None,
                     related_information: Vec::new(),
                     tags: Vec::new(),
+                    fixable: false,
                 })
             })
             .collect()

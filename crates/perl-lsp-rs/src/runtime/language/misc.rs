@@ -65,13 +65,13 @@ fn truncate_inlay_hint_label(hint: &mut Value, max_chars: usize) {
 }
 
 #[derive(Debug, Clone)]
-struct SelectedInlineCompletionInfo {
+pub(crate) struct SelectedInlineCompletionInfo {
     range: lsp_types::Range,
     text: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InlineCompletionTriggerKind {
+pub(crate) enum InlineCompletionTriggerKind {
     Invoked,
     Automatic,
     LegacyNoContext,
@@ -167,7 +167,7 @@ fn is_inline_package_method_fragment_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
 }
 
-fn inline_completion_trigger_kind(
+pub(crate) fn inline_completion_trigger_kind(
     params: &Value,
 ) -> Result<InlineCompletionTriggerKind, JsonRpcError> {
     match params.pointer("/context/triggerKind").and_then(Value::as_u64) {
@@ -178,7 +178,7 @@ fn inline_completion_trigger_kind(
     }
 }
 
-fn selected_inline_completion_info(
+pub(crate) fn selected_inline_completion_info(
     params: &Value,
 ) -> Result<Option<SelectedInlineCompletionInfo>, JsonRpcError> {
     let Some(selected) = params.pointer("/context/selectedCompletionInfo") else {
@@ -246,7 +246,7 @@ fn constrain_inline_completions_to_selected_info(
 /// Automatic ghost text is decided by the candidate's evidence rather than by
 /// the shape of its text, so an ordinary Perl continuation backed by a proven
 /// fact can appear while a scaffold or guess stays invoked-only.
-fn finalize_inline_completions(
+pub(crate) fn finalize_inline_completions(
     provider: &InlineCompletionProvider,
     candidates: Vec<EvaluatedInlineCompletionItem>,
     selected: Option<&SelectedInlineCompletionInfo>,
@@ -270,10 +270,77 @@ fn finalize_inline_completions(
 ///
 /// AI text carries no local supporting fact, so it enters finalization as
 /// low-confidence external evidence and is never shown as automatic ghost text.
-fn evaluate_external_backend_items(
+pub(crate) fn evaluate_external_backend_items(
     list: perl_lsp_rs_core::providers::inline_completion::InlineCompletionList,
 ) -> Vec<EvaluatedInlineCompletionItem> {
     list.items.into_iter().map(EvaluatedInlineCompletionItem::from_external_backend).collect()
+}
+
+/// Typed outcome of one external (AI) inline-completion evaluation through the
+/// shared policy seam.
+///
+/// The buffered route and the custom streaming route must reach the same
+/// verdict for the same candidate, so both consume this single helper; a
+/// filtered result is a typed decision (#10005's terminal owner), never an
+/// implicit empty list.
+#[derive(Debug)]
+pub(crate) enum ExternalCompletionOutcome {
+    /// At least one evaluated external candidate survived range, parse-safety,
+    /// selected-completion, and trigger policy.
+    Accepted(perl_lsp_rs_core::providers::inline_completion::InlineCompletionList),
+    /// Nothing survived and the configured fallback asks for the deterministic
+    /// route.
+    FallbackRequired,
+    /// Nothing survived and no fallback is configured; the result is final and
+    /// empty.
+    FinalEmpty,
+}
+
+/// Whether an external (AI) backend may be consulted for this trigger.
+///
+/// Automatic ghost-text requests never make remote calls: external candidates
+/// enter as low-confidence evidence and cannot qualify for automatic display,
+/// so dispatching would only add latency and cost. An automatic custom-stream
+/// request is delegated to the standard route before any backend dispatch.
+pub(crate) fn external_completion_permitted(trigger_kind: InlineCompletionTriggerKind) -> bool {
+    trigger_kind != InlineCompletionTriggerKind::Automatic
+}
+
+/// Evaluate external backend items through the one shared finalization seam:
+/// exact replacement ranges, parse-damage filter, external-evidence wrap,
+/// selected-completion constraint, and trigger policy.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn evaluate_external_candidates(
+    provider: &InlineCompletionProvider,
+    items: Vec<perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem>,
+    text: &str,
+    context: &perl_lsp_rs_core::providers::inline_completion::PreparedInlineCompletionContext,
+    selected: Option<&SelectedInlineCompletionInfo>,
+    trigger_kind: InlineCompletionTriggerKind,
+    line: u32,
+    character: u32,
+    fallback: bool,
+) -> ExternalCompletionOutcome {
+    let list = perl_lsp_rs_core::providers::inline_completion::InlineCompletionList { items };
+    let list = provider.apply_replacement_ranges_for_context(list, context, line, character);
+    let list = provider.filter_parse_safe_items(list, text, line, character);
+    let finalized = finalize_inline_completions(
+        provider,
+        evaluate_external_backend_items(list),
+        selected,
+        trigger_kind,
+        line,
+        character,
+    );
+    if finalized.items.is_empty() {
+        if fallback {
+            ExternalCompletionOutcome::FallbackRequired
+        } else {
+            ExternalCompletionOutcome::FinalEmpty
+        }
+    } else {
+        ExternalCompletionOutcome::Accepted(finalized)
+    }
 }
 
 fn inline_use_module_fragment(prefix: &str) -> Option<&str> {
@@ -983,9 +1050,9 @@ impl LspServer {
             };
             // Automatic requests are deterministic-first: a keystroke-triggered
             // suggestion must not wait on — or pay for — a remote call, and no
-            // external candidate can qualify for automatic display anyway.
-            let consult_backend =
-                ai_enabled && trigger_kind != InlineCompletionTriggerKind::Automatic;
+            // external candidate can qualify for automatic display anyway. The
+            // predicate is shared with the custom streaming route.
+            let consult_backend = ai_enabled && external_completion_permitted(trigger_kind);
             if consult_backend
                 && let Some(context) = provider.prepare_context(&text, line, character)
             {
@@ -993,28 +1060,31 @@ impl LspServer {
                     self.try_ai_inline_completion(&context, ai_max_output_tokens, ai_timeout_ms);
                 match backend_result {
                     Ok(ref items) if !items.is_empty() => {
-                        let list =
-                            perl_lsp_rs_core::providers::inline_completion::InlineCompletionList {
-                                items: items.clone(),
-                            };
-                        let list = provider
-                            .apply_replacement_ranges_for_context(list, &context, line, character);
-                        let list = provider.filter_parse_safe_items(list, &text, line, character);
-                        let list = finalize_inline_completions(
+                        match evaluate_external_candidates(
                             &provider,
-                            evaluate_external_backend_items(list),
+                            items.clone(),
+                            &text,
+                            &context,
                             selected_completion.as_ref(),
                             trigger_kind,
                             line,
                             character,
-                        );
-                        if !list.items.is_empty() || !ai_fallback {
-                            return Ok(Some(serde_json::to_value(list).map_err(|e| {
-                                crate::protocol::internal_error(&format!(
-                                    "Failed to serialize inline completions: {}",
-                                    e
-                                ))
-                            })?));
+                            ai_fallback,
+                        ) {
+                            ExternalCompletionOutcome::Accepted(list) => {
+                                return Ok(Some(serde_json::to_value(list).map_err(|e| {
+                                    crate::protocol::internal_error(&format!(
+                                        "Failed to serialize inline completions: {}",
+                                        e
+                                    ))
+                                })?));
+                            }
+                            ExternalCompletionOutcome::FinalEmpty => {
+                                return Ok(Some(json!({ "items": [] })));
+                            }
+                            ExternalCompletionOutcome::FallbackRequired => {
+                                // Fall through to the deterministic route.
+                            }
                         }
                     }
                     Err(ref e) => {
@@ -1068,7 +1138,41 @@ impl LspServer {
         Ok(Some(json!({ "items": [] })))
     }
 
-    fn inline_completion_environment_for_context(
+    /// Evaluate the deterministic inline-completion route for one request.
+    ///
+    /// Buffered responses, streaming terminal fallbacks, and filtered external
+    /// finals all reach this one helper, so a streamed AI candidate and a
+    /// buffered one receive the same range, safety, selection, and trigger
+    /// verdicts.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn deterministic_inline_items(
+        &self,
+        provider: &InlineCompletionProvider,
+        uri: &str,
+        text: &str,
+        line: u32,
+        character: u32,
+        selected: Option<&SelectedInlineCompletionInfo>,
+        trigger_kind: InlineCompletionTriggerKind,
+    ) -> Vec<perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem> {
+        let environment = provider
+            .prepare_context(text, line, character)
+            .map(|context| {
+                self.inline_completion_environment_for_context(uri, text, line, character, &context)
+            })
+            .unwrap_or_default();
+        finalize_inline_completions(
+            provider,
+            provider.evaluate_inline_completions(text, line, character, &environment),
+            selected,
+            trigger_kind,
+            line,
+            character,
+        )
+        .items
+    }
+
+    pub(crate) fn inline_completion_environment_for_context(
         &self,
         uri: &str,
         text: &str,

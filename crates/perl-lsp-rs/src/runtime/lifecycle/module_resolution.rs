@@ -5,6 +5,8 @@
 #[cfg(test)]
 use super::super::*;
 use super::super::{LspServer, MessageType, md5, normalize_package_separator};
+#[cfg(test)]
+use perl_lsp_rs_core::config::SystemIncProbeOutcome;
 use perl_module::resolution::use_lib::{UseLibPath, resolve_use_lib_paths_from_source};
 use perl_module::resolution::{
     ModuleUriResolution, build_effective_inc_roots,
@@ -412,12 +414,16 @@ fn append_system_inc_paths(
         return;
     }
 
+    append_system_inc_paths_from(config.get_system_inc(), include_paths);
+}
+
+fn append_system_inc_paths_from(system_paths: &[PathBuf], include_paths: &mut Vec<String>) {
     let mut seen: HashSet<String> = include_paths
         .iter()
         .map(|existing| normalized_inc_key(std::path::Path::new(existing)))
         .collect();
 
-    for path in config.get_system_inc() {
+    for path in system_paths {
         let normalized = normalized_inc_key(path);
         if normalized == "." {
             continue;
@@ -431,7 +437,14 @@ fn append_system_inc_paths(
 
 fn normalized_inc_key(path: &std::path::Path) -> String {
     let normalized = path.to_string_lossy().replace('\\', "/");
-    if normalized == "/" { normalized } else { normalized.trim_end_matches('/').to_string() }
+    // Preserve the trailing separator on root forms: POSIX "/" and Windows
+    // drive roots ("C:/") keep theirs, so a drive root never collapses into
+    // the drive-RELATIVE path ("C:" — the drive's current directory, a
+    // different location entirely). Trimming it made the two dedupe as one
+    // include path (#11840 review).
+    let is_root_form = normalized == "/"
+        || (normalized.len() == 3 && normalized.as_bytes()[1] == b':' && normalized.ends_with('/'));
+    if is_root_form { normalized } else { normalized.trim_end_matches('/').to_string() }
 }
 
 impl LspServer {
@@ -735,32 +748,98 @@ mod tests {
         assert_eq!(roots[2].source, "interpreter-startup-inc");
     }
 
+    /// A Windows drive root ("C:\\") and its drive-relative form ("C:") are
+    /// DIFFERENT directories; the dedupe key must keep them distinct instead
+    /// of collapsing both to "C:" (#11840 review).
+    #[test]
+    fn normalized_inc_key_keeps_drive_roots_distinct_from_drive_relative() {
+        assert_ne!(
+            normalized_inc_key(std::path::Path::new("C:\\")),
+            normalized_inc_key(std::path::Path::new("C:")),
+            "drive root must not collapse into the drive-relative path"
+        );
+        assert_eq!(
+            normalized_inc_key(std::path::Path::new(r"C:\site\lib")),
+            normalized_inc_key(std::path::Path::new("C:/site/lib")),
+            "ordinary paths still normalize to one key"
+        );
+    }
+
     #[test]
     fn append_system_inc_paths_skips_dot_and_dedupes_normalized_variants() -> TestResult {
-        let mut config = perl_lsp_rs_core::config::WorkspaceConfig::default();
-        config.use_system_inc = true;
-        config.include_paths = vec!["lib".to_string()];
-
+        // The probe behind `get_system_inc` is bounded by
+        // SYSTEM_INC_PROBE_TIMEOUT (1s). Under a full-suite parallel run —
+        // dozens of tests spawning interpreters — a cold perl start can
+        // transiently exceed that budget and this test false-failed with
+        // `inc_entries == 0` (reproduced 1-in-8 under the 5-package gate
+        // command). Retry only that transient timeout on a fresh config (the
+        // cache would otherwise short-circuit); all other probe outcomes fail
+        // loudly, and the dedupe assertions stay strict on every successful
+        // probe.
         let temp = tempfile::tempdir()?;
         let inc_path = temp.path().join("site_perl");
         std::fs::create_dir_all(&inc_path)?;
-
         let perl_path = std::env::var("PERL").unwrap_or_else(|_| "perl".to_string());
-        config.perl_path = Some(perl_path);
-        config.perl_args = vec![
-            "-I".to_string(),
-            ".".to_string(),
-            "-I".to_string(),
-            inc_path.to_string_lossy().to_string(),
-            "-I".to_string(),
-            format!("{}{}", inc_path.to_string_lossy(), std::path::MAIN_SEPARATOR),
-        ];
 
-        let mut include_paths = vec!["lib".to_string(), ".".to_string()];
-        append_system_inc_paths(&mut config, &mut include_paths);
+        let mut include_paths = Vec::new();
+        for attempt in 1..=3u8 {
+            let mut config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+            config.use_system_inc = true;
+            config.include_paths = vec!["lib".to_string()];
+            config.perl_path = Some(perl_path.clone());
+            config.perl_args = vec![
+                "-I".to_string(),
+                ".".to_string(),
+                "-I".to_string(),
+                inc_path.to_string_lossy().to_string(),
+                "-I".to_string(),
+                format!("{}{}", inc_path.to_string_lossy(), std::path::MAIN_SEPARATOR),
+            ];
+
+            include_paths = vec!["lib".to_string(), ".".to_string()];
+            match config.get_system_inc_probe_outcome() {
+                SystemIncProbeOutcome::TimedOut if attempt < 3 => {
+                    eprintln!("system @INC probe timed out (attempt {attempt}/3); retrying");
+                }
+                SystemIncProbeOutcome::TimedOut => {
+                    return Err("system @INC probe timed out after 3 attempts".into());
+                }
+                SystemIncProbeOutcome::Paths(system_paths) => {
+                    append_system_inc_paths_from(&system_paths, &mut include_paths);
+                    break;
+                }
+                outcome => {
+                    return Err(format!(
+                        "system @INC probe failed with non-retryable outcome: {outcome:?}"
+                    )
+                    .into());
+                }
+            }
+        }
 
         let dot_count = include_paths.iter().filter(|path| path.as_str() == ".").count();
         assert_eq!(dot_count, 1, "dot entry should not be duplicated from system @INC");
+
+        let inc_entries = include_paths
+            .iter()
+            .filter(|path| {
+                normalized_inc_key(std::path::Path::new(path)) == normalized_inc_key(&inc_path)
+            })
+            .count();
+        assert_eq!(inc_entries, 1, "normalized include path should be deduplicated");
+        Ok(())
+    }
+
+    #[test]
+    fn append_system_inc_paths_from_skips_dot_and_dedupes_normalized_variants() -> TestResult {
+        let inc_path = PathBuf::from("site_perl");
+        let system_paths = vec![PathBuf::from("."), inc_path.clone(), PathBuf::from("site_perl/")];
+        let mut include_paths = vec!["lib".to_string(), ".".to_string()];
+
+        append_system_inc_paths_from(&system_paths, &mut include_paths);
+
+        let dot_count = include_paths.iter().filter(|path| path.as_str() == ".").count();
+        assert_eq!(dot_count, 1, "dot entry should not be duplicated");
 
         let inc_entries = include_paths
             .iter()

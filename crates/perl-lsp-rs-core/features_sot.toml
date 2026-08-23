@@ -5,7 +5,6 @@
 [meta]
 version = "0.17.0"
 lsp_version = "3.18"
-compliance_percent = 100  # 119 total features (88 LSP + 24 DAP + 7 perl-lsp extensions), 53/53 advertised
 
 # Text Document Features
 
@@ -105,7 +104,7 @@ area = "text_document"
 maturity = "ga"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_code_actions_tests.rs"]
-description = "Code actions with 9 action kinds: QuickFix (diagnostic fixes for undefined/unused variables, missing strict/warnings, deprecated patterns), Refactor, RefactorExtract (extract variable/subroutine), RefactorInline, RefactorRewrite (C-style for to foreach, postfix if conversion), Source, SourceOrganizeImports, SourceFixAll, SourceModernize (legacy pattern modernization)"
+description = "Code actions with 8 action kinds: QuickFix (diagnostic fixes for undefined/unused variables, missing strict/warnings, deprecated patterns), Refactor, RefactorExtract (extract variable/subroutine), RefactorInline, RefactorRewrite (C-style for to foreach, postfix if conversion), Source, SourceFixAll, SourceModernize (legacy pattern modernization); source.organizeImports is withdrawn (#8305) until a proven cohort lands (#10696)"
 
 [[feature]]
 id = "lsp.code_action_documentation"
@@ -427,7 +426,7 @@ spec = "LSP 3.16"
 area = "workspace"
 maturity = "ga"
 advertised = true
-tests = ["crates/perl-lsp-rs/tests/lsp_3_17_compliance_tests.rs"]
+tests = ["crates/perl-lsp-rs/tests/lsp_moniker_e2e_test.rs"]
 description = "Cross-project symbol identity"
 
 # Window Features
@@ -894,7 +893,7 @@ spec = "LSP 3.17"
 area = "text_document"
 maturity = "ga"
 advertised = true
-tests = ["crates/perl-lsp-rs/tests/lsp_3_17_compliance_tests.rs"]
+tests = ["crates/perl-lsp-rs/tests/lsp_inline_value_e2e_test.rs"]
 description = "Inline values during debugging (LSP inlineValue)"
 
 [[feature]]

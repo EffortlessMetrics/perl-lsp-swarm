@@ -3094,6 +3094,20 @@ pub fn baseline(config: BaselineConfig) -> Result<()> {
         .clone()
         .unwrap_or_else(|| default_baseline_path(config.mode, config.profile));
     let report = read_run_report(&report_path)?;
+    // An absent or nonzero legacy runner terminal status never proves process
+    // completion for parse/compile evidence, however green the file and
+    // assertion counts look (#6884 interim false-green block). Refuse to check
+    // or accept a baseline from it. Execute mode is excluded: its ratcheted
+    // selected-base receipt deliberately records the upstream scheduler's
+    // nonzero exit alongside green runner records (#3451), and replacing that
+    // modeling belongs to the typed terminal taxonomy on #6884.
+    if config.mode != HarnessMode::Execute && report.harness_status != Some(0) {
+        bail!(
+            "perl-core-harness baseline refuses {} with runner terminal status {:?}: process completion is not proven",
+            report_path.display(),
+            report.harness_status
+        );
+    }
     reject_v2_options_without_series(&config)?;
 
     if let Some(series_path) = config.series.as_ref() {
@@ -7170,6 +7184,75 @@ mod tests {
             accepted.file_results.iter().map(|result| result.path.as_str()).collect::<Vec<_>>();
         assert_eq!(paths, vec!["base/lex.t", "base/ok.t"]);
         assert!(raw.ends_with('\n'));
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_refuses_report_without_proven_zero_terminal_status() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        for (name, status) in [("missing-status.json", None), ("nonzero-status.json", Some(7))] {
+            let report_path = temp.path().join(name);
+            let mut report = sample_compile_report();
+            report.harness_status = status;
+            write_run_report(&report_path, &report)?;
+
+            let error = match baseline(BaselineConfig {
+                mode: HarnessMode::Compile,
+                profile: HarnessProfile::Base,
+                report: Some(report_path),
+                baseline: Some(temp.path().join("baseline.json")),
+                accept: false,
+                series: None,
+                previous_baseline: None,
+                boundary_retirements: None,
+                compiler_subject_identity: None,
+                invocation_identity: None,
+                capability_identity: None,
+                environment_identity: None,
+                accepted_transition_id: None,
+                evidence_bundle: None,
+            }) {
+                Ok(()) => {
+                    return Err(color_eyre::eyre::eyre!(
+                        "baseline accepted a report with terminal status {status:?}"
+                    ));
+                }
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains("process completion is not proven"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_keeps_legacy_execute_terminal_semantics() -> TestResult {
+        // The ratcheted selected execute-base receipt deliberately records the
+        // upstream scheduler's nonzero exit alongside green runner records
+        // (#3451); the #6884 terminal-status refusal is scoped to
+        // parse/compile and must not break that flow.
+        let temp = tempfile::tempdir()?;
+        let report_path = temp.path().join("execute.json");
+        let baseline_path = temp.path().join("execute-baseline.json");
+        let report = sample_execute_report();
+        write_run_report(&report_path, &report)?;
+        write_compile_baseline(&baseline_path, &baseline_from_report(&report)?)?;
+
+        baseline(BaselineConfig {
+            mode: HarnessMode::Execute,
+            profile: HarnessProfile::Base,
+            report: Some(report_path),
+            baseline: Some(baseline_path),
+            accept: false,
+            series: None,
+            previous_baseline: None,
+            boundary_retirements: None,
+            compiler_subject_identity: None,
+            invocation_identity: None,
+            capability_identity: None,
+            environment_identity: None,
+            accepted_transition_id: None,
+            evidence_bundle: None,
+        })?;
         Ok(())
     }
 

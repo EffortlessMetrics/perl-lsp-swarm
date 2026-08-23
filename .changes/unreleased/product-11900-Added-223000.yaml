@@ -1,0 +1,20 @@
+project: product
+component: Language intelligence
+kind: Added
+body: >-
+  Add the pure #8048 shift-left seam for formatting: an atomic
+  LF/CRLF/bare-CR final-newline policy module with independent insert/trim
+  semantics and evidence bound to final returned bytes, plus a fallible
+  independent edit-application oracle in UTF-16 and UTF-8-byte encodings that
+  rejects reversed, unreachable, invalid overlapping, and mid-code-point edits
+  instead of clamping them, while accepting distinct same-position zero-width
+  insertions in oracle input order. Both remain offline-only and unwired in
+  production pending the #10237/#10239/#10242 byte-native train; fixtures
+  encode every #8048 negative control including str::lines() trailing-loss,
+  force-LF into CRLF, insert-only collapse, trim-all, partial CRLF split,
+  evidence timing, and no-op normalization.
+time: 2026-08-21T22:30:00Z
+custom:
+  PR: "11900"
+  Slug: final-newline-policy-and-edit-oracle-seam
+  Breaking: "no"

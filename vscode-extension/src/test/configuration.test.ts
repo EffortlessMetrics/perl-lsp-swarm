@@ -394,7 +394,8 @@ describe('package.json contributes', () => {
       expect(commandIds).toContain('perl-lsp.showVersion');
       expect(commandIds).toContain('perl-lsp.showOutput');
       expect(commandIds).toContain('perl-lsp.reinstall');
-      expect(commandIds).toContain('perl-lsp.organizeImports');
+      // perl-lsp.organizeImports is withdrawn (#8305) and must stay absent.
+      expect(commandIds).not.toContain('perl-lsp.organizeImports');
       expect(commandIds).toContain('perl-lsp.runTests');
       expect(commandIds).toContain('perl-lsp.showStatusMenu');
       expect(commandIds).toContain('perl-lsp.showWorkspaceStatus');
@@ -921,7 +922,8 @@ describe('package.json contributes', () => {
       const keybindings = pkg.contributes.keybindings;
       expect(keybindings).toBeDefined();
       const commands = keybindings.map((keybinding) => keybinding.command);
-      expect(commands).toContain('perl-lsp.organizeImports');
+      // perl-lsp.organizeImports is withdrawn (#8305) and must stay absent.
+      expect(commands).not.toContain('perl-lsp.organizeImports');
       expect(commands).toContain('perl-lsp.runTests');
       expect(commands).toContain('perl-lsp.restart');
     });

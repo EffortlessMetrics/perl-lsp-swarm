@@ -10,7 +10,6 @@
 //! - **extract_variable**: Extract selected expression into a named variable
 //! - **extract_subroutine**: Extract code block into a new subroutine
 //! - **loop_conversion**: Convert between loop styles (for/foreach/while)
-//! - **import_management**: Organize and add/remove use statements
 //! - **postfix**: Postfix completion-style actions (e.g., `.if`, `.unless`)
 //! - **error_checking**: Add error handling around expressions
 //! - **helpers**: Shared utilities for text manipulation and position mapping
@@ -21,7 +20,14 @@
 //!
 //! - **refactor.extract**: Extract variable, extract subroutine
 //! - **refactor.rewrite**: Loop conversion, error wrapping
-//! - **source.organizeImports**: Import management
+//!
+//! `source.organizeImports` is intentionally absent: the only implementation was
+//! a destructive line sorter and is withdrawn until #10696 lands a proven cohort.
+//!
+//! "Add missing imports" is intentionally absent (#10690): the hard-coded
+//! function→module spelling table is not candidate identity and not edit
+//! authorization. Restoration requires #790/#8948 to land exact
+//! unresolved-subject selection, exporter proof, and package-aware insertion.
 //!
 //! # Performance Characteristics
 //!
@@ -40,7 +46,6 @@ mod error_checking;
 mod extract_subroutine;
 mod extract_variable;
 mod helpers;
-mod import_management;
 mod loop_conversion;
 mod postfix;
 mod signature_actions;
@@ -92,7 +97,7 @@ impl EnhancedCodeActionsProvider {
         self.collect_signature_actions(ast, ast, normalized_range, &mut actions);
 
         // Global actions (not node-specific)
-        actions.extend(self.get_global_refactorings(ast));
+        actions.extend(self.get_global_refactorings());
 
         actions
     }
@@ -403,19 +408,21 @@ impl EnhancedCodeActionsProvider {
     }
 
     /// Get global refactoring actions
-    fn get_global_refactorings(&self, ast: &Node) -> Vec<CodeAction> {
+    fn get_global_refactorings(&self) -> Vec<CodeAction> {
         let mut actions = Vec::new();
         let helpers = Helpers::new(&self.source, &self.lines);
 
-        // Add missing imports
-        if let Some(action) = import_management::add_missing_imports(ast, &self.source, &helpers) {
-            actions.push(action);
-        }
+        // "Add missing imports" is withdrawn (#10690): the hard-coded
+        // function→module spelling table turned name affinity into an enabled
+        // `use <module>;` edit inserted at a package-blind preamble offset.
+        // Hard-coded affinity is not candidate identity and not edit
+        // authorization; restoration requires #790/#8948.
 
-        // Organize imports
-        if let Some(action) = import_management::organize_imports(ast, &self.source, &helpers) {
-            actions.push(action);
-        }
+        // Organize imports is withdrawn (#8305): the legacy line-oriented
+        // organizer replaced the whole first-to-last import-looking interval
+        // and could destroy executable statements in between. No action may be
+        // offered for `source.organizeImports` until #8319 admits a bounded
+        // source-preserving cohort and #10696 lands the proven cutover.
 
         // Add pragmas
         actions.extend(self.add_recommended_pragmas(&helpers));
@@ -527,7 +534,7 @@ mod tests {
         let ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
         let utf8_action = must_some(actions.iter().find(|a| a.title == "Add UTF-8 support"));
 
         assert_eq!(
@@ -543,7 +550,7 @@ mod tests {
         let ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
         let utf8_action = must_some(actions.iter().find(|a| a.title == "Add UTF-8 support"));
 
         assert_eq!(
@@ -560,7 +567,7 @@ mod tests {
         let ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
         let utf8_action = must_some(actions.iter().find(|a| a.title == "Add UTF-8 support"));
 
         assert_eq!(
@@ -577,7 +584,7 @@ mod tests {
         let ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
 
         assert!(
             !actions.iter().any(|a| a.title == "Add UTF-8 support"),
@@ -593,7 +600,7 @@ mod tests {
         let ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
 
         assert!(
             !actions.iter().any(|a| a.title == "Add UTF-8 support"),
@@ -609,7 +616,7 @@ mod tests {
         let ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
 
         assert!(
             !actions.iter().any(|a| a.title == "Add UTF-8 support"),
@@ -625,7 +632,7 @@ mod tests {
         let ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
         let utf8_action = must_some(actions.iter().find(|a| a.title == "Add UTF-8 support"));
 
         assert_eq!(
@@ -642,7 +649,7 @@ mod tests {
         let ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
         let utf8_action = must_some(actions.iter().find(|a| a.title == "Add UTF-8 support"));
 
         assert_eq!(
@@ -659,7 +666,7 @@ mod tests {
         let ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
         let utf8_action = must_some(actions.iter().find(|a| a.title == "Add UTF-8 support"));
 
         assert_eq!(

@@ -33,6 +33,7 @@
     "release.py",
     "server-manifest.json",
     "sublime-package.json",
+    "tests/test_command_dispatch_contract.py",
     "tests/test_command_receipt.py",
     "tests/test_command_surface.py",
     "tests/test_compatibility.py",

@@ -1893,7 +1893,7 @@ The enhanced executeCommand and code actions integration completes the advertise
 
 ## LSP Feature Status Matrix (*Diataxis: Reference* - Complete feature overview)
 
-The Perl LSP server has achieved **100% user-visible coverage (53/53)** and **100% protocol compliance (97/97)** with comprehensive workspace support:
+The Perl LSP server has achieved **100% user-visible coverage (53/53)** and **100% protocol compliance (97/97)** with comprehensive workspace support (historical declaration; evidence-backed status tracked in #6731):
 
 ### Core LSP Methods (✅ Fully Implemented)
 | Method | Status | Performance | Notes |

@@ -1,0 +1,195 @@
+schema_version = 1
+issue = 11301
+canonical_initial_api = "index_initial_file"
+canonical_initial_batch_api = "index_initial_files_batch"
+canonical_live_api = "index_live_file"
+compatibility_apis = ["index_file", "index_file_str", "index_file_with_generation", "index_files_batch"]
+# compatibility_baseline reconciled 694 -> 702 by #11916 (#11907-era meta-shard
+# redness). Explicit attribution of every added call site, all from reviewed
+# squash-merged PRs (checker-equivalent count, base c754f41c6 = 694):
+#   completion/tests.rs 103 -> 109 (+6): #11874 (#11858 proof-seam tests),
+#     #11862 (#11158 import-edit withdrawal)
+#   runtime/text_sync/lifecycle.rs 1 -> 3 (+2): #11887 (#8895 protocol
+#     validation), #11893 (#8041 open-buffer authority)
+# By API: index_file 590 -> 597 (+7); index_file_with_generation 37 -> 38 (+1).
+# Structural gap: PR CI validates the PR head tree, so a green PR can push
+# post-merge main over this baseline; combined-tree evaluation is tracked on
+# #11916.
+# Burndown 702 -> 701 by #11938 (#8896 containment leaf): removing the
+# reversed-direction `handle_configuration` application arm deleted its
+# `.index_file(url, ...)` re-index call in
+# crates/perl-lsp-rs/src/runtime/workspace.rs (checker-equivalent count on the
+# combined tree, base #11916-era = 702).
+# Growth 701 -> 704 by #11944 (#11937 Variable-class cross-file candidate
+# withdrawal). Explicit attribution of every added call site, all from one
+# reviewed squash-merged PR (checker-equivalent per-file scan over
+# git ls-tree blobs, base 704e872c6 = 701):
+#   crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs
+#     109 -> 110 (+1)
+#   crates/perl-lsp-rs/src/runtime/language/completion.rs 2 -> 4 (+2)
+# Reconciled 704 -> 697 by #11305 (SRC-03): every open/save compatibility call
+# in runtime/text_sync moved to index_live_file with the document-instance/
+# generation currentness guard, and its fixture callers to
+# index_initial_file (-4 index_file_with_generation at text_sync.rs didOpen +
+# shared post-parse seam and lifecycle.rs #8041 re-cohere + stale-index
+# reconciliation; -3 index_file at lifecycle.rs close-handoff reload ->
+# index_initial_file role rename and two tests.rs fixtures).
+# Burndown 697 -> 696 by #11305 fixture rebaseline (lifted from the closed
+# duplicate #11940 @ 254f0e214): the document_access gen-0 builder fixture
+# dropped one .index_file_with_generation(...) call; the scorecard coordinator
+# re-seed added a canonical index_live_file caller identity (not counted).
+compatibility_baseline = 696
+
+# Structural recurrence control (#11305): files under these prefixes must
+# never call compatibility source APIs at all -- live commits go through
+# index_live_file behind the document-instance/generation oracle. Prefix
+# matching fails closed (any tracked file path beginning with the prefix).
+# Scope note: this ban is PER-FILE and SYNTACTIC (method-name scan of each
+# tracked file). It does not see compatibility calls reached through UFCS,
+# wrappers, or helper indirection in other files; that residual hole closes
+# only at #11312's deletion of the compatibility surface itself.
+compatibility_banned_prefixes = ["crates/perl-lsp-rs/src/runtime/text_sync"]
+
+# Live identity is the URI argument plus an owner-supplied non-zero NonZeroU32
+# generation; didOpen/didSave migrated through #11305. Exact source paths are
+# the ledger identity. A new caller must be deliberately
+# added with an owner, role, successor, and removal condition; broad directory
+# globs are intentionally not accepted by the validator.
+caller_paths = [
+  "crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs",
+  "crates/perl-lsp-rs-core/src/providers/completion/completion/workspace.rs",
+  "crates/perl-lsp-rs-core/src/providers/completion/completion_shadow.rs",
+  "crates/perl-lsp-rs-core/src/providers/navigation/definition_shadow.rs",
+  "crates/perl-lsp-rs-core/src/providers/navigation/references_shadow.rs",
+  "crates/perl-lsp-rs-core/tests/detect_dead_code_mid_surrogate_position.rs",
+  "crates/perl-lsp-rs-core/tests/dynamic_callable_integration_tests.rs",
+  "crates/perl-lsp-rs-core/tests/role_conflict_cross_file_wiring_tests.rs",
+  "crates/perl-lsp-rs/src/features/workspace_rename.rs",
+  "crates/perl-lsp-rs/src/runtime/dispatch/workspace/file_preflight.rs",
+  "crates/perl-lsp-rs/src/runtime/document_access.rs",
+  "crates/perl-lsp-rs/src/runtime/language/completion.rs",
+  "crates/perl-lsp-rs/src/runtime/language/hover/signature_help.rs",
+  "crates/perl-lsp-rs/src/runtime/language/misc.rs",
+  "crates/perl-lsp-rs/src/runtime/language/navigation.rs",
+  "crates/perl-lsp-rs/src/runtime/language/provider_decision_live_trace_tests.rs",
+  "crates/perl-lsp-rs/src/runtime/language/references_tier_scorecard_tests.rs",
+  "crates/perl-lsp-rs/src/runtime/language/rename.rs",
+  "crates/perl-lsp-rs/src/runtime/test_api.rs",
+  "crates/perl-lsp-rs/src/runtime/text_sync.rs",
+  "crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs",
+  "crates/perl-lsp-rs/src/runtime/text_sync/tests.rs",
+  "crates/perl-lsp-rs/src/runtime/workspace.rs",
+  "crates/perl-lsp-rs/tests/critical_fixes_tests.rs",
+  "crates/perl-lsp-rs/tests/dynamic_diagnostics_suppression_tests.rs",
+  "crates/perl-lsp-rs/tests/fixtures/mocks/test_infrastructure_mocks.rs",
+  "crates/perl-lsp-rs/tests/lsp_protocol_tests.rs",
+  "crates/perl-lsp-rs/tests/lsp_workspace_index_e2e.rs",
+  "crates/perl-lsp-rs/tests/multi_root_workspace_tests.rs",
+  "crates/perl-lsp-rs/tests/workstream_e_trust_anchor_tests.rs",
+  "crates/perl-parser/src/refactor/refactoring.rs",
+  "crates/perl-parser/src/refactor/scoped_rename_tests.rs",
+  "crates/perl-parser/src/refactor/workspace_refactor.rs",
+  "crates/perl-parser/src/refactor/workspace_rename.rs",
+  "crates/perl-parser/tests/dead_code_detector.rs",
+  "crates/perl-parser/tests/index_lifecycle_tests.rs",
+  "crates/perl-parser/tests/lsp_cancellation_mutation_hardening.rs",
+  "crates/perl-parser/tests/mutation_hardening_tests.rs",
+  "crates/perl-parser/tests/workspace_index_tests.rs",
+  "crates/perl-semantic-analyzer/src/analysis/index.rs",
+  "crates/perl-semantic-analyzer/src/analysis/semantic/query_facade.rs",
+  "crates/perl-semantic-analyzer/tests/ripr_seam_proof_qw_whitespace.rs",
+  "crates/perl-workspace/benches/workspace_index_benchmark.rs",
+  "crates/perl-workspace/src/bin/workspace_memory_profile.rs",
+  "crates/perl-workspace/src/workspace/workspace_index.rs",
+  "crates/perl-workspace/src/workspace_index_utf16_test.rs",
+  "crates/perl-workspace/tests/common/mod.rs",
+  "crates/perl-workspace/tests/comprehensive_unit_tests.rs",
+  "crates/perl-workspace/tests/cross_file_reference_query_tests.rs",
+  "crates/perl-workspace/tests/definition_ambiguity_regression_tests.rs",
+  "crates/perl-workspace/tests/dual_indexing_tests.rs",
+  "crates/perl-workspace/tests/exporter_visibility_bridge_tests.rs",
+  "crates/perl-workspace/tests/fact_shard_lifecycle_tests.rs",
+  "crates/perl-workspace/tests/file_semantic_bundle_tests.rs",
+  "crates/perl-workspace/tests/folder_provenance_tests.rs",
+  "crates/perl-workspace/tests/generated_member_facts.rs",
+  "crates/perl-workspace/tests/interpolated_string_usage_tests.rs",
+  "crates/perl-workspace/tests/legacy_public_api_regression_tests.rs",
+  "crates/perl-workspace/tests/memory_leak_regression.rs",
+  "crates/perl-workspace/tests/memory_profiling_test.rs",
+  "crates/perl-workspace/tests/semantic_real_workspace_baseline.rs",
+  "crates/perl-workspace/tests/short_query_workspace_symbols_bdd.rs",
+  "crates/perl-workspace/tests/surface_workspace_parity.rs",
+  "crates/perl-workspace/tests/test_package_scoped_queries.rs",
+  "crates/perl-workspace/tests/use_lib_fact_tests.rs",
+  "crates/perl-workspace/tests/workspace_scorecard.rs",
+  "xtask/src/tasks/metrics/parser_accuracy.rs",
+  "xtask/src/tasks/semantic_scorecard.rs",
+]
+
+[[owner]]
+prefix = "crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs"
+# Since #11305 this file holds ZERO compatibility calls: the didSave
+# reconciliation branches commit through index_live_file behind the
+# document-instance/generation oracle, and the close-handoff reload below is
+# the explicit initial-import role. This row remains only because lifecycle.rs
+# still counts as a canonical caller file needing an owner anchor.
+role = "#8041 close-handoff disk reload residual (canonical index_initial_file today)"
+owner = "perl-lsp-rs text synchronization / #8041 open-buffer authority"
+successor = "index_live_file when #8041 defines the closed-file source commit identity"
+removal_condition = "#8041 lands its closed-file live commit identity"
+
+[[owner]]
+prefix = "crates/perl-workspace/tests"
+role = "explicit workspace fixture"
+owner = "perl-workspace test fixtures"
+successor = "index_initial_file or index_initial_files_batch"
+removal_condition = "fixture is migrated when its test seam is next edited"
+
+[[owner]]
+prefix = "crates/perl-workspace/src"
+role = "workspace implementation/profile fixture"
+owner = "perl-workspace"
+successor = "index_initial_file or index_initial_files_batch"
+removal_condition = "initial profile and internal tests use canonical initial names"
+
+[[owner]]
+prefix = "crates/perl-workspace/benches"
+role = "workspace benchmark fixture"
+owner = "perl-workspace benchmark owner"
+successor = "index_initial_file or index_initial_files_batch"
+removal_condition = "benchmark contract is next revised"
+
+[[owner]]
+prefix = "crates/perl-parser"
+role = "parser/refactor fixture or file-operation path"
+owner = "perl-parser refactor authority"
+successor = "initial API for fixtures; live API when file-operation currentness is settled"
+removal_condition = "owning refactor/file-operation claim defines its source commit authority"
+
+[[owner]]
+prefix = "crates/perl-lsp-rs"
+role = "LSP/provider or explicit test fixture"
+owner = "perl-lsp-rs caller owner"
+successor = "initial API for fixtures; live API for provider-owned currentness"
+removal_condition = "owning lifecycle/provider claim defines the successor contract"
+
+[[owner]]
+prefix = "crates/perl-lsp-rs-core"
+role = "provider shadow or explicit test fixture"
+owner = "perl-lsp-rs-core provider owner"
+successor = "initial API for fixtures; live API for provider-owned currentness"
+removal_condition = "provider semantics claim supplies a non-zero source commit guard"
+
+[[owner]]
+prefix = "crates/perl-semantic-analyzer"
+role = "semantic analyzer fixture"
+owner = "perl-semantic-analyzer"
+successor = "index_initial_file_str for fixture setup"
+removal_condition = "fixture-only setup is migrated with the next semantic test edit"
+
+[[owner]]
+prefix = "xtask"
+role = "repository validation and scorecard fixture"
+owner = "xtask task owner"
+successor = "index_initial_file_str for fixture setup"
+removal_condition = "task fixture is migrated when its validation contract is next revised"

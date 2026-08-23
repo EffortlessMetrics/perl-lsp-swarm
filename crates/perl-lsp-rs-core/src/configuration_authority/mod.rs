@@ -128,7 +128,6 @@ pub(crate) enum EvidencePolicy {
 pub(crate) enum InvalidationClass {
     None,
     InlayHints,
-    TestRunner,
     Telemetry,
     Diagnostics,
     Formatting,
@@ -142,7 +141,6 @@ pub(crate) enum InvalidationClass {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConfigConsumer {
     InlayHintProvider,
-    TestRunner,
     Telemetry,
     NativeCritic,
     LegacyCritic,
@@ -304,8 +302,6 @@ mod tests {
             "critic.legacy_theme",
             "formatting.extra_args",
             "formatting.profile",
-            "test.command",
-            "test.args",
             "workspace.external_include_paths",
             "workspace.perl_args",
             "workspace.perl_path",

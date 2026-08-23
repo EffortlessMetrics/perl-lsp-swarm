@@ -345,8 +345,16 @@ fn default_write_scopes(workflow: &Value) -> Vec<String> {
     }
 }
 
+fn workflow_on(workflow: &Value) -> Option<&Value> {
+    workflow.as_mapping()?.iter().find_map(|(key, value)| match key {
+        Value::String(key) if key == "on" => Some(value),
+        Value::Bool(true) => Some(value),
+        _ => None,
+    })
+}
+
 fn triggers(workflow: &Value) -> Vec<String> {
-    let Some(on) = workflow.get("on") else {
+    let Some(on) = workflow_on(workflow) else {
         return Vec::new();
     };
     match on {
@@ -379,8 +387,7 @@ fn is_required_style(workflow: &Value) -> bool {
 }
 
 fn pull_request_has_paths_filter(workflow: &Value) -> bool {
-    workflow
-        .get("on")
+    workflow_on(workflow)
         .and_then(Value::as_mapping)
         .and_then(|mapping| mapping.get(Value::String("pull_request".to_string())))
         .and_then(Value::as_mapping)
@@ -697,8 +704,7 @@ fn map_contains_secrets(value: &Value) -> bool {
 fn blanket_cancel_in_progress(workflow: &Value) -> bool {
     let trigger_names = triggers(workflow);
     let has_truth_runs = trigger_names.iter().any(|trigger| trigger == "merge_group")
-        || workflow
-            .get("on")
+        || workflow_on(workflow)
             .and_then(Value::as_mapping)
             .and_then(|mapping| mapping.get(Value::String("push".to_string())))
             .and_then(Value::as_mapping)
@@ -733,8 +739,7 @@ fn blanket_cancel_in_progress(workflow: &Value) -> bool {
 }
 
 fn pull_request_has_label_triggers(workflow: &Value) -> bool {
-    workflow
-        .get("on")
+    workflow_on(workflow)
         .and_then(Value::as_mapping)
         .and_then(|mapping| mapping.get(Value::String("pull_request".to_string())))
         .and_then(Value::as_mapping)

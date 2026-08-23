@@ -264,7 +264,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      actions: read
+      # actions: write is required by the dispatch step (gh workflow run)
+      # raising the required-check workflows on the generated PR (#11731).
+      actions: write
       contents: write
       pull-requests: write
     steps:
@@ -309,6 +311,7 @@ jobs:
           install -m 0644 "$payload" .ci/metrics/ci-lane-history.json
 
       - name: Create lane-history refresh PR
+        id: create-pr
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
         with:
           token: ${{ github.token }}
@@ -330,3 +333,32 @@ jobs:
           add-paths: .ci/metrics/ci-lane-history.json
           signoff: false
           delete-branch: true
+
+      - name: Raise CI on the generated PR
+        # GITHUB_TOKEN-created PRs raise no pull_request events, so the
+        # required-check workflows never fire on their own (#11731, #11707,
+        # #11794). workflow_dispatch is the documented GITHUB_TOKEN exception
+        # to loop prevention: dispatching each workflow on the branch attaches
+        # its check runs to the PR head. The validator is dispatched too, so
+        # the reader-side payload oracle actually runs on the refresh PR.
+        # Ruleset-required contexts still need PR-event runs at merge time —
+        # one run approval plus a reopen nudge; see #11731 for the open
+        # policy decision.
+        if: steps.create-pr.outputs.pull-request-number != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: automation/ci-lane-history
+        run: |
+          # Keep attempting every workflow so one transient dispatch failure
+          # cannot strand the later checks. The final status remains failing
+          # when any dispatch failed.
+          set +e
+          failed=0
+          for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml validate-ci-lane-history.yml; do
+            if gh workflow run "$workflow" --ref "$BRANCH"; then
+              continue
+            fi
+            echo "::error::Failed to dispatch $workflow"
+            failed=1
+          done
+          exit "$failed"

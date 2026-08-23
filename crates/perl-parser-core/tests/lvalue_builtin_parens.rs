@@ -18,17 +18,16 @@ use perl_parser_core::{Node, NodeKind};
 fn first_expression(source: &str) -> Result<Node, Box<dyn std::error::Error>> {
     let ast = parse(source);
     let sexp = ast.to_sexp();
-    let NodeKind::Program { mut statements } = ast.kind else {
+    let NodeKind::Program { mut statements } = ast.into_parts().0 else {
         return Err(format!("expected Program, got {sexp}").into());
     };
     if statements.len() != 1 {
         return Err(format!("expected 1 statement, got {} in {sexp}", statements.len()).into());
     }
     let statement = statements.remove(0);
-    let NodeKind::ExpressionStatement { expression } = statement.kind else {
-        return Err(
-            format!("expected ExpressionStatement, got {}", statement.kind.kind_name()).into()
-        );
+    let statement_kind = statement.kind.kind_name();
+    let NodeKind::ExpressionStatement { expression } = statement.into_parts().0 else {
+        return Err(format!("expected ExpressionStatement, got {statement_kind}").into());
     };
     Ok(*expression)
 }
@@ -46,7 +45,7 @@ fn assert_lvalue_builtin_assignment(
         let ast = parse(source);
         ast.to_sexp()
     };
-    let NodeKind::Assignment { lhs, rhs: _, op } = expr.kind else {
+    let NodeKind::Assignment { lhs, rhs: _, op } = expr.into_parts().0 else {
         return Err(format!(
             "expected Assignment node at top level for `{source}`, \
                  got something else. sexp:\n{sexp}"
@@ -54,7 +53,7 @@ fn assert_lvalue_builtin_assignment(
         .into());
     };
     assert_eq!(op, expected_op, "wrong assignment operator in `{source}`");
-    let NodeKind::FunctionCall { name, args } = lhs.kind else {
+    let NodeKind::FunctionCall { name, args } = lhs.into_parts().0 else {
         return Err(format!(
             "expected FunctionCall lhs for `{source}`, got something else. sexp:\n{sexp}"
         )

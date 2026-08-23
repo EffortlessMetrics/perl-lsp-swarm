@@ -32,7 +32,7 @@ The infrastructure in `perl-incremental-parsing` represents real implementation 
 The full-reparse approach is fast enough for typical Perl files in practice:
 
 - The v3 recursive-descent parser is written in Rust and generally handles small-to-medium files in under a millisecond on modern hardware
-- An AST content cache (`ast_cache`) avoids re-parsing when the same text is seen twice (e.g., on `didSave` after `didChange`)
+- The live server does not retain or reuse an AST-only cache: `didOpen`, `didChange`, and the asynchronous parse-worker route run the full parser for every current document parse, including repeated identical text. This preserves the complete parser outcome, including recovery diagnostics; a complete parse-artifact store is future work.
 - Files larger than the configured size limit (`PERL_LSP_MAX_FILE_SIZE_KB`, default 512 KB) are skipped entirely with no AST
 
 No 65µs or 99.7% node-reuse benchmarks apply to the current LSP path — those numbers were measured against the `perl-incremental-parsing` crate's internal test suite, which is not connected to the server.

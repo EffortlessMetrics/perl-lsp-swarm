@@ -57,6 +57,29 @@ created = "2026-06-01"
 review_after = "2026-07-01"
 expires = "2026-09-30"
 
+# Exact-process organizer-withdrawal receipt: subprocess harness plumbing is not
+# production behavior.
+#
+# The test drives the published `perllsp` binary over stdio and asserts the
+# initialize capability response, filtered and unfiltered code-action results,
+# forged resolve behavior, edit ranges, and clean process shutdown. RIPR's
+# diff-scoped tracer cannot connect the request/response helper plumbing to
+# those assertions and reports 47 reachable-unrevealed seams in this test-only
+# receipt file. Keep the suppression narrow to the four reported plumbing
+# families; the production withdrawal remains covered by the provider,
+# runtime, and exact-process assertions.
+[[suppress]]
+id = "ripr-suppress-organize-imports-withdrawal-process-receipt"
+kind = "test_receipt_surface"
+paths = ["crates/perllsp/tests/lsp_organize_imports_containment_process.rs"]
+classification = ["call_deletion", "error_path", "match_arm", "return_value"]
+owner = "proof-lane"
+issue = "#8305"
+reason = "Issue #8305 adds an exact-process receipt that drives the published perllsp binary over stdio and asserts withdrawal of source.organizeImports from initialize capabilities, filtered and unfiltered code-action responses, forged resolve responses, edit ranges, and process shutdown. RIPR 0.10.0 reports 47 reachable_unrevealed seams in this test-only subprocess harness because it cannot trace request/response helper plumbing into the assertions. The production withdrawal remains covered by provider-level, runtime-level, and exact-process negative assertions. Keep this suppression narrow to the single receipt file and these four reported test-plumbing families; remove when RIPR distinguishes receipt harness plumbing from production behavior."
+created = "2026-08-21"
+review_after = "2026-09-21"
+expires = "2026-10-31"
+
 # -----------------------------------------------------------------------------
 # Inline completion pack contract fixtures: executable receipt matrix, not
 # production behavior. The fixture file added for #1567 records positive and
@@ -2534,3 +2557,58 @@ reason = "The ledger validator's diff-scoped gaps flagged by ripr for the W02 ca
 created = "2026-08-19"
 review_after = "2026-09-19"
 expires = "2026-11-19"
+
+# -----------------------------------------------------------------------------
+# perl-semantic-facts property round-trip test surface (PR #6842 / issue
+# #6820): proptest macro bodies in a newly added test file misclassified as
+# new production seams (ripr#1428).
+#
+# The exact-head diff-scoped RIPR 0.9.0 receipt reports 162 gate-actionable
+# findings for this PR, ALL of them no_static_path inside this single test
+# file: prop_oneof!/proptest! macro bodies and strategy plumbing that the
+# analyzer cannot trace to their covering test oracle. The production SDK the
+# PR adds is not the blocker: crates/perl-semantic-facts/src/framework.rs
+# carries 699 exposed findings and zero no_static_path / reachable_unrevealed
+# findings — RIPR statically connects the crate's test files
+# (bdd_semantic_facts.rs, framework_authority_contract.rs,
+# framework_external_api.rs, prop_json_roundtrip.rs) to the SDK seams.
+#
+# Matcher honesty note: the repository matcher applies suppressions by path
+# and ignores the documentary classification filter, so this exact-path entry
+# truthfully suppresses every diff-scoped finding in this one test file (402
+# total: 162 no_static_path, 17 weakly_exposed, 139 exposed, 78
+# static_unknown, 4 propagation_unknown, 2 infection_unknown), not only the
+# 162 actionable ones. Production findings suppressed are exactly 0; the
+# post-suppression actionable count (reachable_unrevealed + no_static_path)
+# is 0 and the new-gap quality gate passes.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-semantic-facts-prop-roundtrip-test-surface"
+kind = "test_receipt_surface"
+paths = ["crates/perl-semantic-facts/tests/prop_json_roundtrip.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1428"
+reason = "PR #6842 (issue #6820) adds prop_json_roundtrip.rs, a newly added proptest round-trip contract for the framework-adapter SDK wire fields. Exact-head RIPR 0.9.0 reports all 162 gate-actionable findings for the PR as no_static_path inside this test-only file — prop_oneof!/proptest! macro bodies and strategy plumbing the analyzer cannot trace to their covering test oracle, the ripr#1428 test-file class of ripr-suppress-heredoc-queue-contract-test-surface and ripr-suppress-zed-host-compat-test-support. The production SDK is separately proven: crates/perl-semantic-facts/src/framework.rs has 699 exposed findings and zero no_static_path / reachable_unrevealed findings, with static paths through the crate's four test files. The matcher is path-scoped, so this entry truthfully suppresses all 402 diff-scoped findings in this single test file; production findings suppressed are 0 and the post-suppression actionable count is 0. It changes no production path, glob, RIPR parser, or severity threshold."
+created = "2026-08-20"
+review_after = "2026-09-20"
+expires = "2026-09-30"
+removal_criteria = "EffortlessMetrics/ripr#1428 is fixed so proptest macro bodies in newly added test files are not treated as production seams, OR the new-gap gate stops counting diff-scoped test-file seams as blocking, OR an exact-head RIPR artifact no longer reports actionable gaps in this file; then delete or narrow this entry and rerun the RIPR new-gap gate."
+
+# ----------------------------------------------------------------------------
+# Parser-comparison evidence schema branches: the integration schema receipt
+# covers every constructor variant and rejects cross-field false greens, but
+# ripr cannot connect that separate harness to the changed production owner.
+# ----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-parser-comparison-evidence-payload-schema"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-parser-comparison/src/evidence_payload.rs"]
+classification = ["no_static_path", "weakly_exposed"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #10002 (issue #8432) changes the terminal-state one_of branches in parser_comparison_evidence_schema_json. The exact-head enforce-new-ripr receipt currently contains only no_static_path and weakly_exposed findings in this production owner because ripr cannot connect the separate integration harness to the changed schema builder, the documented EffortlessMetrics/ripr#1429 limitation. The focused test crates/perl-parser-comparison/tests/comparison_evidence_schema.rs materially covers the module: machine_schema_accepts_every_constructor_payload_variant validates completed and failed execution, all six observation dispositions, matching/mismatch/non-decisive conformance, while schema_rejects_cross_field_false_greens_and_wrong_nested_reference_kinds and the existing schema tests assert invalid combinations and nested authority rejection. The repository suppression matcher is classification-qualified, so this entry admits only no_static_path and weakly_exposed; its legacy weakly_gripped mapping is treated as reachable_unrevealed and is rejected here. The exact candidate receipt currently contains only those two reported classes; any future receipt with a different class, especially reachable_unrevealed or an actual candidate-specific seam, is an automatic do-not-merge condition requiring removal or narrowing of this entry or a separate evidence-backed review."
+created = "2026-08-21"
+review_after = "2026-09-21"
+expires = "2026-11-21"
+removal_criteria = "EffortlessMetrics/ripr#1429 is fixed or ripr can connect comparison_evidence_schema.rs to evidence_payload.rs; then delete or narrow this entry and rerun the enforce-new-ripr gate. Remove or narrow it immediately if any future receipt reports a class other than no_static_path or weakly_exposed, especially reachable_unrevealed or an actual candidate-specific seam; that condition is automatic do-not-merge unless a separate evidence-backed review justifies the disposition."

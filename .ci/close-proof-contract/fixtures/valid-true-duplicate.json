@@ -1,0 +1,93 @@
+{
+  "schema_version": "close_proof_contract_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts of historical GitHub subjects. The fixture proves schema-level dispositions only; semantic completion evaluation belongs to CP03 (#10382)."
+  },
+  "contract": {
+    "schema_version": "issue_contract.v1",
+    "repository": "effortlessmetrics/perl-lsp-swarm",
+    "issue_number": 9000009,
+    "title": "fix(parser): reject the same malformed delimiter reported again",
+    "kind": "leaf",
+    "required_proof_level": "mechanism",
+    "allowed_close_modes": [
+      "completed",
+      "phase_complete_issue_remains_open",
+      "superseded",
+      "true_duplicate",
+      "not_planned"
+    ],
+    "denominator": [
+      {
+        "row_id": "duplicate-defect.repair.proven",
+        "statement": "The reported defect repair is proven on current main.",
+        "required_proof_level": "mechanism"
+      }
+    ],
+    "negative_controls": [],
+    "mandatory_children": [],
+    "transfer_policy": {
+      "permitted": true,
+      "conditions": [
+        "duplicate shares the governing proposition and desired outcome",
+        "destination contract identity is current at packet generation"
+      ]
+    },
+    "domain_evidence_refs": [],
+    "identity": {
+      "issue_body_digest": "0000000000000000000000000000000000000000000000000000000000895449",
+      "denominator_digest": "4f0d09415d5c9b8fab7faff251ca9cb1950762efd5bcef51cdb7fc5db8705d3a",
+      "accepted_ruling": null
+    }
+  },
+  "cases": [
+    {
+      "case_id": "pr-9000109-true-duplicate",
+      "description": "A valid true duplicate with proposition-level containment in the surviving owner.",
+      "packet": {
+        "schema_version": "issue_close_proof.v1",
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9000009,
+        "requested_close_mode": "true_duplicate",
+        "contract_binding": {
+          "contract_issue_body_digest": "0000000000000000000000000000000000000000000000000000000000895449",
+          "contract_denominator_digest": "4f0d09415d5c9b8fab7faff251ca9cb1950762efd5bcef51cdb7fc5db8705d3a",
+          "accepted_ruling_digest": null
+        },
+        "candidate_pr": 9000109,
+        "landed_subjects": [],
+        "landing_content_proof": [],
+        "established_claims": [],
+        "explicitly_not_established_claims": [],
+        "row_dispositions": {
+          "duplicate-defect.repair.proven": {
+            "disposition": "transferred_to_open_owner",
+            "proposition": "identical malformed-delimiter repair proposition",
+            "destination_repository": "effortlessmetrics/perl-lsp-swarm",
+            "destination_issue": 9000010,
+            "destination_contract_identity": "000000000000000000000000000000000000000000000000000000000089544a",
+            "rationale": "#9000010 owns the same governing proposition and desired outcome; containment is verified against its current contract."
+          }
+        },
+        "negative_control_dispositions": {},
+        "child_dispositions": [],
+        "duplicate_of": {
+          "repository": "effortlessmetrics/perl-lsp-swarm",
+          "number": 9000010
+        },
+        "verdict": {
+          "pr_scope": "pass",
+          "issue_close": "valid",
+          "reasons": [
+            "True-duplicate closure names its target and contains the whole proposition."
+          ]
+        }
+      },
+      "expected_pr_scope": "pass",
+      "expected_issue_close": "valid"
+    }
+  ]
+}

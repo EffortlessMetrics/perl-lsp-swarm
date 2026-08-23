@@ -17,6 +17,29 @@ pub fn keywords() -> &'static [&'static str] {
     LSP_COMPLETION_KEYWORDS
 }
 
+/// Curated priority among keywords: the constructs a user is most likely to
+/// type next at an empty identifier position, in preference order. Keywords
+/// rank within tier 5 by this list first and label second; without it the
+/// tier's ASCII ordering systematically surfaces obscure uppercase keywords
+/// (ADJUST, AUTOLOAD, …) ahead of control flow (#11858).
+const PREFERRED_KEYWORD_ORDER: &[&str] = &[
+    "if", "else", "elsif", "unless", "while", "until", "for", "foreach", "my", "sub", "return",
+    "package", "use", "our", "local", "next", "last", "redo", "do",
+];
+
+/// The control-flow constructs an empty-identifier completion page must
+/// always contain (#11858): page-level reserve targets, label-identified so
+/// the guarantee cannot be satisfied by unrelated items of the same kind.
+pub const FUNDAMENTAL_CONSTRUCT_LABELS: &[&str] =
+    &["if", "else", "elsif", "unless", "while", "until", "for", "foreach", "print", "my", "sub"];
+
+fn keyword_preference(keyword: &str) -> usize {
+    PREFERRED_KEYWORD_ORDER
+        .iter()
+        .position(|preferred| *preferred == keyword)
+        .unwrap_or(PREFERRED_KEYWORD_ORDER.len())
+}
+
 /// Return a brief documentation string for a Perl keyword.
 fn keyword_doc(keyword: &str) -> Option<&'static str> {
     match keyword {
@@ -107,7 +130,15 @@ pub fn add_keyword_completions(
                 insert_text: Some(Cow::Borrowed(insert_text)),
                 // Tier 5: keywords sort after special vars (0_), user vars (1_),
                 // user funcs (2_), core builtins (3_), and workspace symbols (4_).
-                sort_text: Some(Cow::Owned(format!("5_{}", keyword))),
+                // Within the tier, the curated preference order ranks control-flow
+                // constructs ahead of obscure keywords (#11858): with hundreds of
+                // same-tier items beyond a page cap, plain label ordering would
+                // fill any keyword representation with ADJUST-style entries.
+                sort_text: Some(Cow::Owned(format!(
+                    "5_{:02}_{}",
+                    keyword_preference(keyword),
+                    keyword
+                ))),
                 filter_text: Some(Cow::Borrowed(keyword)),
                 additional_edits: vec![],
                 text_edit_range: Some((context.prefix_start, context.position)),

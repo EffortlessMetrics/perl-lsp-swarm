@@ -151,19 +151,37 @@ impl OutboundSender {
     }
 
     /// Send a JSON-RPC notification.
+    ///
+    /// Method-direction admission (#8896 §3): a frame whose method is
+    /// positively registered client→server can only be a reversed-direction
+    /// bug, so it is refused here instead of reaching the client.
     pub fn send_notification(&self, method: &str, params: Value) -> io::Result<()> {
+        if let Some(reason) = crate::protocol::method_direction::outbound_rejection(method) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("outbound notification `{method}` {reason}"),
+            ));
+        }
         self.tx
             .try_send(OutboundMessage::Notification { method: method.to_string(), params })
             .map_err(map_try_send_error)
     }
 
     /// Send a server→client JSON-RPC request.
+    ///
+    /// Method-direction admission (#8896 §3), mirroring [`Self::send_notification`].
     pub(crate) fn send_request(
         &self,
         id: ServerRequestId,
         method: &str,
         params: Value,
     ) -> io::Result<()> {
+        if let Some(reason) = crate::protocol::method_direction::outbound_rejection(method) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("outbound request `{method}` {reason}"),
+            ));
+        }
         self.tx
             .try_send(OutboundMessage::Request { id, method: method.to_string(), params })
             .map_err(map_try_send_error)
@@ -555,5 +573,79 @@ mod tests {
         let (sender, _handle) = spawn_writer(Box::new(std::io::sink()));
         // This compiles only if OutboundSender implements OutboundSink.
         accept_sink(&sender).unwrap();
+    }
+
+    /// #8896 §3: the outbound seam refuses to emit frames whose method is
+    /// positively registered client→server — such a frame can only be a
+    /// reversed-direction bug. Unknown custom names stay tolerated at this
+    /// transport layer; the inventory test forces new literals into the
+    /// registry instead.
+    #[test]
+    fn outbound_admission_refuses_client_to_server_methods() -> Result<(), Box<dyn Error>> {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<OutboundMessage>(4);
+        let sender = OutboundSender { tx };
+        let request_id = ServerRequestId::new(1).ok_or("valid id")?;
+
+        for method in ["initialize", "textDocument/hover", "textDocument/didOpen"] {
+            let request_error =
+                sender.send_request(request_id, method, json!({})).err().ok_or_else(|| {
+                    format!("outbound request `{method}` must be refused by direction admission")
+                })?;
+            assert_eq!(
+                request_error.kind(),
+                io::ErrorKind::InvalidInput,
+                "outbound request `{method}`"
+            );
+            assert!(
+                request_error.to_string().contains("client-to-server"),
+                "outbound `{method}` rejection names the direction boundary: {request_error}"
+            );
+
+            let notification_error =
+                sender.send_notification(method, json!({})).err().ok_or_else(|| {
+                    format!(
+                        "outbound notification `{method}` must be refused by direction admission"
+                    )
+                })?;
+            assert_eq!(notification_error.kind(), io::ErrorKind::InvalidInput);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn outbound_admission_allows_server_to_client_methods() -> Result<(), Box<dyn Error>> {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundMessage>(4);
+        let sender = OutboundSender { tx };
+        let request_id = ServerRequestId::new(7).ok_or("valid id")?;
+
+        sender.send_request(request_id, "workspace/configuration", json!({"items": []}))?;
+        sender.send_notification("window/showMessage", json!({"type": 3, "message": "x"}))?;
+        sender.send_notification("slot/unregistered", json!({}))?;
+        drop(sender);
+
+        let mut frames = Vec::new();
+        while let Ok(message) = rx.try_recv() {
+            match message {
+                OutboundMessage::Request { method, .. } => frames.push(format!("request:{method}")),
+                OutboundMessage::Notification { method, .. } => {
+                    frames.push(format!("notification:{method}"))
+                }
+                OutboundMessage::Response(_) => frames.push("response".to_string()),
+            }
+        }
+
+        assert!(
+            frames.contains(&"request:workspace/configuration".to_string()),
+            "server→client request must pass admission: {frames:?}"
+        );
+        assert!(
+            frames.contains(&"notification:window/showMessage".to_string()),
+            "server→client notification must pass admission: {frames:?}"
+        );
+        assert!(
+            frames.contains(&"notification:slot/unregistered".to_string()),
+            "unknown custom names stay tolerated at the transport seam: {frames:?}"
+        );
+        Ok(())
     }
 }
