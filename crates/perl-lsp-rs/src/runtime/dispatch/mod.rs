@@ -49,12 +49,15 @@ mod cancellation;
 mod experimental;
 mod formatting_policy;
 mod lifecycle;
+mod method_direction;
 mod preflight;
 mod request_cancellation;
 mod response;
 mod routing;
 mod text_document;
 mod workspace;
+
+pub(crate) use method_direction::{EnvelopeKind, outbound_admission};
 
 pub(crate) use cancellation::enhanced_cancelled_response;
 
@@ -93,6 +96,32 @@ mod tests {
             method: method.to_string(),
             params,
         }
+    }
+
+    /// Initialize the server through the real lifecycle so direction tests
+    /// observe post-handshake admission behavior.
+    fn initialize(server: &LspServer) {
+        let init = server.handle_request(request(
+            1,
+            "initialize",
+            Some(json!({
+                "processId": 1,
+                "rootUri": "file:///direction-tests",
+                "capabilities": {}
+            })),
+        ));
+        assert!(init.is_some_and(|response| response.error.is_none()), "initialize must succeed");
+        let initialized = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "initialized".to_string(),
+            params: Some(json!({})),
+        };
+        assert!(server.handle_request(initialized).is_none());
+    }
+
+    fn error_code(response: Option<JsonRpcResponse>) -> Option<i32> {
+        response.and_then(|response| response.error).map(|error| error.code)
     }
 
     #[test]
@@ -329,5 +358,328 @@ mod tests {
             experimental.contains(&handler_gated),
             "handle_slow_operation_dispatch must be gated by {cfg_gate}"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // #8896 method-direction admission: exact-process negative controls.
+    // ------------------------------------------------------------------
+
+    const APPLY_EDIT_URI: &str = "file:///direction-tests/edit-target.pl";
+
+    fn open_edit_target(server: &LspServer) {
+        let did_open = request(
+            10,
+            "textDocument/didOpen",
+            Some(json!({
+                "textDocument": {
+                    "uri": APPLY_EDIT_URI,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "print 'Hello';\nprint 'World';\n"
+                }
+            })),
+        );
+        assert!(server.handle_request(did_open).is_none(), "didOpen is a notification");
+    }
+
+    fn edit_target_state(server: &LspServer) -> Option<(String, i64)> {
+        let documents = server.documents_guard();
+        documents
+            .get(APPLY_EDIT_URI)
+            .map(|document| (document.text.clone(), i64::from(document.version)))
+    }
+
+    /// A client-originated `workspace/applyEdit` request must be answered
+    /// `-32601` and must not reach the removed reversed application handler:
+    /// document text and version show an exact zero delta afterwards.
+    #[test]
+    fn wrong_direction_apply_edit_request_is_rejected_without_document_mutation() {
+        let server = LspServer::new();
+        initialize(&server);
+        open_edit_target(&server);
+        let before = edit_target_state(&server);
+
+        let response = server.handle_request(request(
+            11,
+            "workspace/applyEdit",
+            Some(json!({
+                "edit": { "changes": { APPLY_EDIT_URI: [ {
+                    "range": {
+                        "start": {"line": 0, "character": 6},
+                        "end": {"line": 0, "character": 13}
+                    },
+                    "newText": "\"Modified\""
+                } ] } }}
+            )),
+        ));
+
+        assert_eq!(
+            error_code(response),
+            Some(-32601),
+            "wrong-direction applyEdit must surface as MethodNotFound"
+        );
+        let after = edit_target_state(&server);
+        assert_eq!(
+            before, after,
+            "rejected wrong-direction applyEdit must leave documents untouched"
+        );
+    }
+
+    /// The same reversed method sent without an ID must produce no response
+    /// and no application mutation at all.
+    #[test]
+    fn wrong_direction_apply_edit_notification_is_silently_ignored() {
+        let server = LspServer::new();
+        initialize(&server);
+        open_edit_target(&server);
+        let before = edit_target_state(&server);
+
+        let notification = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "workspace/applyEdit".to_string(),
+            params: Some(json!({ "edit": { "changes": {} } })),
+        };
+        assert!(
+            server.handle_request(notification).is_none(),
+            "wrong-direction notifications must never produce a response"
+        );
+        assert_eq!(before, edit_target_state(&server), "ignored notifications must not mutate");
+    }
+
+    /// A client-sent `workspace/configuration` request must return `-32601`
+    /// instead of being treated as a configuration response, and must leave no
+    /// pending reverse-request state behind.
+    #[test]
+    fn wrong_direction_configuration_request_is_rejected_without_config_effects() {
+        let server = LspServer::new();
+        initialize(&server);
+        let config_before = {
+            let config = server.workspace_config.lock();
+            (
+                config.include_paths.clone(),
+                config.use_system_inc,
+                config.use_perl5lib,
+                config.resolution_timeout_ms,
+            )
+        };
+
+        let response = server.handle_request(request(
+            12,
+            "workspace/configuration",
+            Some(json!({
+                "items": [{ "section": "perl.workspace.includePaths" }]
+            })),
+        ));
+
+        assert_eq!(
+            error_code(response),
+            Some(-32601),
+            "client-sent workspace/configuration must surface as MethodNotFound"
+        );
+        {
+            let config = server.workspace_config.lock();
+            let config_after = (
+                config.include_paths.clone(),
+                config.use_system_inc,
+                config.use_perl5lib,
+                config.resolution_timeout_ms,
+            );
+            assert_eq!(config_after, config_before, "config must be untouched");
+        }
+        assert!(
+            server.pending_workspace_configuration_requests.lock().is_empty(),
+            "a rejected inbound configuration request must not create pending reverse-request state"
+        );
+    }
+
+    /// Client-sent registration requests must never activate or deactivate
+    /// features; both stay MethodNotFound rather than gaining reversed arms.
+    #[test]
+    fn client_sent_registration_requests_cannot_change_features() {
+        let server = LspServer::new();
+        initialize(&server);
+        let caps = server.client_capabilities.lock();
+        let (apply_edit_before, config_support_before, inline_before) = (
+            caps.workspace_apply_edit_support,
+            caps.workspace_configuration_support,
+            caps.inline_completion_dynamic_registration_support,
+        );
+        drop(caps);
+
+        for (index, method) in
+            ["client/registerCapability", "client/unregisterCapability"].into_iter().enumerate()
+        {
+            let response = server.handle_request(request(
+                20 + index as i64,
+                method,
+                Some(json!({ "registrations": [] })),
+            ));
+            assert_eq!(error_code(response), Some(-32601), "{method} must stay MethodNotFound");
+        }
+        let caps = server.client_capabilities.lock();
+        assert_eq!(
+            (
+                caps.workspace_apply_edit_support,
+                caps.workspace_configuration_support,
+                caps.inline_completion_dynamic_registration_support,
+            ),
+            (apply_edit_before, config_support_before, inline_before),
+            "wrong-direction registration traffic must not change negotiated capabilities"
+        );
+    }
+
+    /// Server→client notifications received from the client are ignored with
+    /// no response and no dispatch.
+    #[test]
+    fn server_to_client_notifications_from_the_client_are_ignored() {
+        let server = LspServer::new();
+        initialize(&server);
+        for method in ["window/showMessage", "$/progress", "textDocument/publishDiagnostics"] {
+            let notification = JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: None,
+                method: method.to_string(),
+                params: Some(json!({})),
+            };
+            assert!(
+                server.handle_request(notification).is_none(),
+                "{method} from the client must be silently ignored"
+            );
+        }
+    }
+
+    /// Ordinary client→server routes keep working after the direction gate:
+    /// a provider request answers normally and a settings notification still
+    /// applies its legitimate effect.
+    #[test]
+    fn normal_client_to_server_routes_still_dispatch() -> anyhow::Result<()> {
+        let server = LspServer::new();
+        initialize(&server);
+        open_edit_target(&server);
+
+        let hover = server.handle_request(request(
+            30,
+            "textDocument/hover",
+            Some(json!({
+                "textDocument": { "uri": APPLY_EDIT_URI },
+                "position": { "line": 0, "character": 8 }
+            })),
+        ));
+        anyhow::ensure!(hover.is_some_and(|r| r.error.is_none()), "hover must still answer");
+
+        let formatting_before = server.config.lock().perltidy_enabled;
+        assert!(
+            server
+                .handle_request(JsonRpcRequest {
+                    _jsonrpc: "2.0".to_string(),
+                    id: None,
+                    method: "workspace/didChangeConfiguration".to_string(),
+                    params: Some(json!({
+                        "settings": { "perl": { "formatting": { "enabled": !formatting_before } } }
+                    })),
+                })
+                .is_none()
+        );
+        let formatting_after = server.config.lock().perltidy_enabled;
+        anyhow::ensure!(
+            formatting_after != formatting_before,
+            "didChangeConfiguration must retain its legitimate effect ({formatting_before} → {formatting_after})"
+        );
+        Ok(())
+    }
+
+    /// JSON-RPC responses carry no method and are classified by the transport
+    /// before routing (#7010 owns the registry-owned replacement). Numeric and
+    /// string IDs alike surface as the internal carrier notification — never
+    /// as any standard method entering `route_request`.
+    #[test]
+    fn response_envelopes_are_classified_before_method_routing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_lsp_rs_core::transport::framing::ContentLengthMessageReader;
+
+        let mut wire: Vec<u8> = Vec::new();
+        for body in [
+            r#"{"jsonrpc":"2.0","id":41,"result":{"applied":true}}"#,
+            r#"{"jsonrpc":"2.0","id":"41","result":{"sections":[]}}"#,
+        ] {
+            let framed = perl_lsp_rs_core::transport::frame(body.as_bytes());
+            wire.extend_from_slice(&framed);
+        }
+
+        let mut reader = ContentLengthMessageReader::new();
+        let mut cursor: &[u8] = &wire;
+        let mut seen = Vec::new();
+        while let Some(request) = reader.read_next(&mut cursor)? {
+            seen.push(request.method.clone());
+            // Routing the classified carrier consumes it without emitting a
+            // JSON-RPC response back to the client. A fresh server per frame
+            // keeps this test free of cross-test background state.
+            let server = LspServer::new();
+            initialize(&server);
+            assert!(
+                server.handle_request(request).is_none(),
+                "carrier frame must not produce a response envelope"
+            );
+        }
+        assert_eq!(
+            seen,
+            vec!["$/perl-lsp/clientResponse".to_string(), "$/perl-lsp/clientResponse".to_string()],
+            "numeric and string response IDs must both classify to the carrier, not to standard methods"
+        );
+        Ok(())
+    }
+
+    /// The common outbound request seam fails closed for client→server
+    /// methods: no id is reserved and no frame escapes.
+    #[test]
+    fn outbound_send_request_refuses_client_to_server_methods()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use parking_lot::Mutex;
+        use std::io;
+        use std::io::Write;
+        use std::sync::Arc;
+
+        struct Capture(Arc<Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.lock().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let server = LspServer::with_output(Arc::new(Mutex::new(
+            Box::new(Capture(buffer.clone())) as Box<dyn Write + Send>,
+        )));
+        server.initialized.store(true, Ordering::Release);
+
+        let refused = server.send_request("textDocument/hover", json!({"textDocument": {}}));
+        assert!(
+            matches!(refused, Err(ref error) if error.kind() == io::ErrorKind::InvalidData),
+            "client→server method must be refused at the outbound seam, got {refused:?}"
+        );
+        let admitted = server.send_request("workspace/configuration", json!({"items": []}))?;
+        assert_ne!(admitted.as_i32(), 0, "admitted server→client request keeps its reserved id");
+        let mut frames = String::new();
+        for _ in 0..100 {
+            frames = String::from_utf8(buffer.lock().clone())?;
+            if frames.contains("workspace/configuration") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            !frames.contains("textDocument/hover"),
+            "refused method must never reach the wire: {frames}"
+        );
+        assert!(
+            frames.contains("workspace/configuration"),
+            "legitimate server→client request must still be emitted: {frames}"
+        );
+        Ok(())
     }
 }

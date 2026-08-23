@@ -25,12 +25,8 @@ impl LspServer {
         self.handle_workspace_symbol_resolve(params)
     }
 
-    pub(super) fn handle_configuration_dispatch(
-        &self,
-        params: Option<Value>,
-    ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_configuration(params)
-    }
+    // `handle_configuration_dispatch` was removed by #8896: the standard
+    // `workspace/configuration` method is server→client only.
 
     pub(super) fn handle_did_change_watched_files_dispatch(
         &self,
@@ -107,12 +103,9 @@ impl LspServer {
         self.handle_did_create_files(params)
     }
 
-    pub(super) fn handle_apply_edit_dispatch(
-        &self,
-        params: Option<Value>,
-    ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_apply_edit(params)
-    }
+    // `handle_apply_edit_dispatch` was removed by #8896: the standard
+    // `workspace/applyEdit` method is server→client only, and a client-sent
+    // applyEdit must never mutate documents.
 
     pub(super) fn handle_text_document_content_dispatch(
         &self,

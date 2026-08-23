@@ -1094,6 +1094,15 @@ impl LspServer {
     /// works with both the production `OutboundSender` and test `RecordingSink`
     /// (#5015 PR-3).
     fn notify(&self, method: &str, params: Value) -> io::Result<()> {
+        // #8896: the common outbound seam refuses methods that are not
+        // registered server→client notifications before a frame can be
+        // written.
+        if let Err(error) =
+            dispatch::outbound_admission(method, dispatch::EnvelopeKind::Notification)
+        {
+            tracing::error!(%error, "Refused outbound notification not admitted by method-direction authority");
+            return Err(io::Error::new(io::ErrorKind::InvalidData, error.to_string()));
+        }
         self.outbound_sink().send_notification(method, params)
     }
 

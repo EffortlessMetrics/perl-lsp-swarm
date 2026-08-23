@@ -7,6 +7,7 @@
 #[expect(dead_code, reason = "registry is unwired until #7010 attaches it to LspServer")]
 pub(crate) mod registry;
 
+use super::dispatch::EnvelopeKind;
 use super::{LspServer, Ordering, ServerRequestId, Value, io, json};
 use crate::protocol::methods::WORKSPACE_APPLY_EDIT;
 
@@ -21,6 +22,16 @@ impl LspServer {
     /// the common request seam so a future call site cannot silently
     /// reintroduce a frame while `initialize` is still being handled.
     pub(crate) fn send_request(&self, method: &str, params: Value) -> io::Result<ServerRequestId> {
+        // #8896: the common outbound seam refuses methods that are not
+        // registered server→client requests before an id is reserved or a
+        // frame can be written.
+        if let Err(error) =
+            crate::runtime::dispatch::outbound_admission(method, EnvelopeKind::Request)
+        {
+            tracing::error!(%error, "Refused outbound request not admitted by method-direction authority");
+            return Err(io::Error::new(io::ErrorKind::InvalidData, error.to_string()));
+        }
+
         if !self.initialized.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,

@@ -9,6 +9,7 @@ use super::super::{
     JsonRpcError, JsonRpcId, JsonRpcRequest, LspServer, METHOD_NOT_FOUND, Ordering, Value,
     cancelled_response_with_method, enhanced_error,
 };
+use super::method_direction::{InboundAdmission, inbound_admission};
 use super::response::RoutedResponse;
 use crate::cancellation::GLOBAL_CANCELLATION_REGISTRY;
 
@@ -21,6 +22,28 @@ impl LspServer {
     ) -> RoutedResponse {
         let method = request.method.clone();
         let request_start = std::time::Instant::now();
+
+        // #8896: method-direction admission precedes every application and
+        // lifecycle gate. A registered server→client standard method must
+        // never reach application state from the client side of the
+        // connection, regardless of session phase.
+        match inbound_admission(&method, id.is_some()) {
+            InboundAdmission::RejectRequest => {
+                tracing::debug!(method = %method, "Rejected wrong-direction request");
+                let error = enhanced_error(
+                    METHOD_NOT_FOUND,
+                    &format!("Method '{method}' not found or not supported"),
+                    "method_not_found",
+                    Some(&method),
+                );
+                return RoutedResponse::Handler { id, method, should_respond, result: Err(error) };
+            }
+            InboundAdmission::IgnoreNotification => {
+                tracing::debug!(method = %method, "Ignoring wrong-direction notification");
+                return RoutedResponse::Handler { id, method, should_respond, result: Ok(None) };
+            }
+            InboundAdmission::Admit => {}
+        }
 
         // LSP spec: after shutdown, the server must reject all requests except
         // `exit` with -32600 InvalidRequest (#6103).
@@ -230,7 +253,10 @@ impl LspServer {
             }
             "perl/showAst" => self.handle_show_ast_dispatch(request.params),
             "experimental/testDiscovery" => self.handle_test_discovery_dispatch(request.params),
-            "workspace/configuration" => self.handle_configuration_dispatch(request.params),
+            // `workspace/configuration` is a standard server→client request;
+            // its inbound arm was removed by #8896. Legitimate configuration
+            // flows are outbound requests whose responses arrive through
+            // #7010/#6736 correlation.
             "workspace/didChangeWatchedFiles" => {
                 self.handle_did_change_watched_files_dispatch(request.params)
             }
@@ -253,7 +279,10 @@ impl LspServer {
             "workspace/didDeleteFiles" => self.handle_did_delete_files_dispatch(request.params),
             "workspace/willCreateFiles" => self.handle_will_create_files_dispatch(request.params),
             "workspace/didCreateFiles" => self.handle_did_create_files_dispatch(request.params),
-            "workspace/applyEdit" => self.handle_apply_edit_dispatch(request.params),
+            // `workspace/applyEdit` is a standard server→client request; its
+            // inbound arm was removed by #8896. A client's only legitimate
+            // contribution is a correlated response to the server-originated
+            // request (#7007/#7010/#6724).
             "workspace/textDocumentContent" => {
                 self.handle_text_document_content_dispatch(request.params)
             }

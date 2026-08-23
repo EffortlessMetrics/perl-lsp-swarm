@@ -300,114 +300,74 @@ fn initialize_rejects_double_initialize() -> Result<(), Box<dyn std::error::Erro
 }
 
 // =============================================================================
-// Configuration Request Tests
+// Method-direction contract for workspace/configuration (#8896)
 // =============================================================================
 
-#[test]
-fn configuration_returns_workspace_include_paths() -> Result<(), Box<dyn std::error::Error>> {
-    let (server, _buffer) = create_test_server();
-
-    // Initialize and mark ready
-    initialize_server(&server);
-
-    // Request configuration
-    let result = send_request(
-        &server,
-        "workspace/configuration",
-        Some(JsonRpcId::Integer(2)),
-        json!({
-            "items": [
-                { "section": "perl.workspace.includePaths" }
-            ]
-        }),
-    );
-
-    let items = result.ok_or("Expected configuration result")?;
-    let array = items.as_array().ok_or("Expected array")?;
-    assert_eq!(array.len(), 1);
-
-    // Should return default include paths
-    let paths = array[0].as_array().ok_or("Expected paths array")?;
-    assert!(paths.contains(&json!("lib")));
-    assert!(paths.contains(&json!(".")));
-    assert!(paths.contains(&json!("local/lib/perl5")));
-    Ok(())
+/// Helper returning the full JSON-RPC response so direction tests can assert
+/// exact error codes.
+fn raw_request(
+    server: &LspServer,
+    method: &str,
+    id: Option<JsonRpcId>,
+    params: Value,
+) -> Option<perl_lsp::protocol::JsonRpcResponse> {
+    let req =
+        JsonRpcRequest { _jsonrpc: "2.0".into(), id, method: method.into(), params: Some(params) };
+    server.handle_request(req)
 }
 
-#[test]
-fn configuration_returns_system_inc_disabled() -> Result<(), Box<dyn std::error::Error>> {
+/// `workspace/configuration` is a standard server→client request (#8896): a
+/// client-originated configuration request must be rejected as MethodNotFound
+/// instead of being answered from server state.
+fn assert_inbound_configuration_is_method_not_found() -> Result<(), Box<dyn std::error::Error>> {
     let (server, _buffer) = create_test_server();
-
-    // Initialize and mark ready
     initialize_server(&server);
 
-    // Request configuration
-    let result = send_request(
+    let response = raw_request(
         &server,
         "workspace/configuration",
         Some(JsonRpcId::Integer(2)),
         json!({
             "items": [
-                { "section": "perl.workspace.useSystemInc" }
-            ]
-        }),
-    );
-
-    let items = result.ok_or("Expected configuration result")?;
-    let array = items.as_array().ok_or("Expected array")?;
-    assert_eq!(array[0], json!(false)); // Disabled by default
-    Ok(())
-}
-
-#[test]
-fn configuration_returns_perl5lib_defaults() -> Result<(), Box<dyn std::error::Error>> {
-    let (server, _buffer) = create_test_server();
-
-    initialize_server(&server);
-
-    let result = send_request(
-        &server,
-        "workspace/configuration",
-        Some(JsonRpcId::Integer(2)),
-        json!({
-            "items": [
+                { "section": "perl.workspace.includePaths" },
+                { "section": "perl.workspace.useSystemInc" },
                 { "section": "perl.workspace.usePerl5lib" },
-                { "section": "perl.workspace.perl5libPrecedence" }
-            ]
-        }),
-    );
-
-    let items = result.ok_or("Expected configuration result")?;
-    let array = items.as_array().ok_or("Expected array")?;
-    assert_eq!(array.len(), 2);
-    assert_eq!(array[0], json!(true));
-    assert_eq!(array[1], json!("prepend"));
-    Ok(())
-}
-
-#[test]
-fn configuration_returns_resolution_timeout() -> Result<(), Box<dyn std::error::Error>> {
-    let (server, _buffer) = create_test_server();
-
-    // Initialize and mark ready
-    initialize_server(&server);
-
-    // Request configuration
-    let result = send_request(
-        &server,
-        "workspace/configuration",
-        Some(JsonRpcId::Integer(2)),
-        json!({
-            "items": [
+                { "section": "perl.workspace.perl5libPrecedence" },
                 { "section": "perl.workspace.resolutionTimeout" }
             ]
         }),
-    );
+    )
+    .ok_or("expected a JSON-RPC error response")?;
 
-    let items = result.ok_or("Expected configuration result")?;
-    let array = items.as_array().ok_or("Expected array")?;
-    assert_eq!(array[0], json!(50)); // Default 50ms
+    let error = response.error.ok_or("expected an error payload")?;
+    assert_eq!(error.code, -32601, "wrong-direction configuration must be MethodNotFound");
     Ok(())
+}
+
+#[test]
+fn inbound_configuration_include_paths_readback_is_rejected()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert_inbound_configuration_is_method_not_found()
+}
+
+#[test]
+fn inbound_configuration_system_inc_readback_is_rejected() -> Result<(), Box<dyn std::error::Error>>
+{
+    assert_inbound_configuration_is_method_not_found()
+}
+
+#[test]
+fn inbound_configuration_perl5lib_defaults_are_not_served_inbound()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Defaults remain owned by the `WorkspaceConfig` unit tests above; the
+    // reversed readback route they used to travel is gone.
+    assert_inbound_configuration_is_method_not_found()
+}
+
+#[test]
+fn inbound_configuration_resolution_timeout_is_not_served_inbound()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert_inbound_configuration_is_method_not_found()
 }
 
 // =============================================================================
@@ -415,7 +375,8 @@ fn configuration_returns_resolution_timeout() -> Result<(), Box<dyn std::error::
 // =============================================================================
 
 #[test]
-fn did_change_configuration_updates_workspace_settings() -> Result<(), Box<dyn std::error::Error>> {
+fn did_change_configuration_is_accepted_and_readback_stays_outbound()
+-> Result<(), Box<dyn std::error::Error>> {
     let (server, _buffer) = create_test_server();
 
     // Initialize and mark ready
@@ -439,33 +400,30 @@ fn did_change_configuration_updates_workspace_settings() -> Result<(), Box<dyn s
         })),
     };
 
-    // Process the notification
-    let _ = server.handle_request(req);
+    // The legitimate c2s notification is still accepted silently.
+    assert!(server.handle_request(req).is_none(), "didChangeConfiguration is a notification");
 
-    // Verify configuration was updated by requesting it
-    let result = send_request(
+    // Its settings effects are proven by the in-crate lifecycle suite
+    // (`did_change_configuration_updates_folder_effective_configs`); at this
+    // boundary we pin that the observation channel can no longer be the
+    // reversed inbound configuration request.
+    let response = raw_request(
         &server,
         "workspace/configuration",
         Some(JsonRpcId::Integer(2)),
-        json!({
-            "items": [
-                { "section": "perl.workspace.includePaths" }
-            ]
-        }),
+        json!({ "items": [{ "section": "perl.workspace.includePaths" }] }),
+    )
+    .ok_or("expected a JSON-RPC error response")?;
+    assert_eq!(
+        response.error.map(|error| error.code),
+        Some(-32601),
+        "readback must travel the outbound reverse-request path only"
     );
-
-    let items = result.ok_or("Expected configuration result")?;
-    let array = items.as_array().ok_or("Expected array")?;
-    let paths = array[0].as_array().ok_or("Expected paths array")?;
-
-    // Should now have custom paths
-    assert!(paths.contains(&json!("custom/lib")));
-    assert!(paths.contains(&json!("vendor")));
     Ok(())
 }
 
 #[test]
-fn did_change_configuration_updates_perl5lib_workspace_settings()
+fn did_change_configuration_perl5lib_notification_accepted_without_inbound_readback()
 -> Result<(), Box<dyn std::error::Error>> {
     let (server, _buffer) = create_test_server();
 
@@ -486,9 +444,9 @@ fn did_change_configuration_updates_perl5lib_workspace_settings()
             }
         })),
     };
-    let _ = server.handle_request(req);
+    assert!(server.handle_request(req).is_none(), "didChangeConfiguration is a notification");
 
-    let result = send_request(
+    let response = raw_request(
         &server,
         "workspace/configuration",
         Some(JsonRpcId::Integer(3)),
@@ -498,13 +456,13 @@ fn did_change_configuration_updates_perl5lib_workspace_settings()
                 { "section": "perl.workspace.perl5libPrecedence" }
             ]
         }),
+    )
+    .ok_or("expected a JSON-RPC error response")?;
+    assert_eq!(
+        response.error.map(|error| error.code),
+        Some(-32601),
+        "reversed readback must stay rejected after reconfiguration"
     );
-
-    let items = result.ok_or("Expected configuration result")?;
-    let array = items.as_array().ok_or("Expected array")?;
-    assert_eq!(array.len(), 2);
-    assert_eq!(array[0], json!(false));
-    assert_eq!(array[1], json!("append"));
     Ok(())
 }
 

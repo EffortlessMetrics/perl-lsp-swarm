@@ -1031,7 +1031,7 @@ fn test_will_delete_files_warns_for_cross_file_symbol_usage_without_module_impor
 }
 
 #[test]
-fn test_apply_edit_single_line() -> Result<(), Box<dyn std::error::Error>> {
+fn test_apply_edit_inbound_request_is_method_not_found() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
     // Initialize the server
@@ -1054,7 +1054,9 @@ fn test_apply_edit_single_line() -> Result<(), Box<dyn std::error::Error>> {
     });
     let _ = make_request(&server, "textDocument/didOpen", Some(open_params));
 
-    // Apply an edit
+    // A client-originated workspace/applyEdit is the wrong protocol
+    // direction (#8896): it must surface as MethodNotFound, never as an
+    // applied edit.
     let params = json!({
         "edit": {
             "changes": {
@@ -1071,16 +1073,14 @@ fn test_apply_edit_single_line() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let result = make_request(&server, "workspace/applyEdit", Some(params));
-
-    // Should return success
-    let response = result?.ok_or("expected applyEdit response")?;
-    assert_eq!(response.get("applied"), Some(&json!(true)));
+    let error = make_request(&server, "workspace/applyEdit", Some(params))
+        .expect_err("wrong-direction applyEdit must be rejected");
+    assert!(error.starts_with("-32601:"), "expected MethodNotFound (-32601), got {error}");
     Ok(())
 }
 
 #[test]
-fn test_apply_edit_multi_line() -> Result<(), Box<dyn std::error::Error>> {
+fn test_apply_edit_multi_line_is_method_not_found() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
     // Initialize the server
@@ -1103,7 +1103,7 @@ fn test_apply_edit_multi_line() -> Result<(), Box<dyn std::error::Error>> {
     });
     let _ = make_request(&server, "textDocument/didOpen", Some(open_params));
 
-    // Apply a multi-line edit
+    // Multi-line payloads are equally rejected in the wrong direction.
     let params = json!({
         "edit": {
             "changes": {
@@ -1120,16 +1120,14 @@ fn test_apply_edit_multi_line() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let result = make_request(&server, "workspace/applyEdit", Some(params));
-
-    // Should return success
-    let response = result?.ok_or("expected applyEdit response")?;
-    assert_eq!(response.get("applied"), Some(&json!(true)));
+    let error = make_request(&server, "workspace/applyEdit", Some(params))
+        .expect_err("wrong-direction applyEdit must be rejected");
+    assert!(error.starts_with("-32601:"), "expected MethodNotFound (-32601), got {error}");
     Ok(())
 }
 
 #[test]
-fn test_apply_edit_no_document() -> Result<(), Box<dyn std::error::Error>> {
+fn test_apply_edit_no_document_is_method_not_found() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
     // Initialize the server
@@ -1141,7 +1139,8 @@ fn test_apply_edit_no_document() -> Result<(), Box<dyn std::error::Error>> {
     let _ = make_request(&server, "initialize", Some(init_params));
     send_initialized(&server);
 
-    // Try to apply edit to non-existent document
+    // Direction admission happens before any payload handling, so even an
+    // unknown target document cannot resurrect the reversed route.
     let params = json!({
         "edit": {
             "changes": {
@@ -1158,16 +1157,14 @@ fn test_apply_edit_no_document() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let result = make_request(&server, "workspace/applyEdit", Some(params));
-
-    // Should still return success (edit was "applied" even if document doesn't exist)
-    let response = result?.ok_or("expected applyEdit response")?;
-    assert_eq!(response.get("applied"), Some(&json!(true)));
+    let error = make_request(&server, "workspace/applyEdit", Some(params))
+        .expect_err("wrong-direction applyEdit must be rejected");
+    assert!(error.starts_with("-32601:"), "expected MethodNotFound (-32601), got {error}");
     Ok(())
 }
 
 #[test]
-fn test_apply_edit_invalid_params() -> Result<(), Box<dyn std::error::Error>> {
+fn test_apply_edit_invalid_params_is_method_not_found() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
     // Initialize the server
@@ -1179,15 +1176,12 @@ fn test_apply_edit_invalid_params() -> Result<(), Box<dyn std::error::Error>> {
     let _ = make_request(&server, "initialize", Some(init_params));
     send_initialized(&server);
 
-    // Send invalid params (no edit field)
+    // Direction admission precedes payload validation entirely.
     let params = json!({});
 
-    let result = make_request(&server, "workspace/applyEdit", Some(params));
-
-    // Should return failure
-    let response = result?.ok_or("expected applyEdit response")?;
-    assert_eq!(response.get("applied"), Some(&json!(false)));
-    assert!(response.get("failureReason").is_some());
+    let error = make_request(&server, "workspace/applyEdit", Some(params))
+        .expect_err("wrong-direction applyEdit must be rejected");
+    assert!(error.starts_with("-32601:"), "expected MethodNotFound (-32601), got {error}");
     Ok(())
 }
 
