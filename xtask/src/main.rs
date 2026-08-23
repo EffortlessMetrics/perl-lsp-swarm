@@ -54,8 +54,8 @@ use tasks::{
     repo_hygiene, ripr_evidence, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
     semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
     shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
-    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, unwired_scan,
-    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    swarm_summary, sync_feature_sot, sync_release_docs, targeted_checks, test, test_lsp,
+    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
     validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
@@ -3219,6 +3219,13 @@ enum FeaturesCommand {
 
     /// Generate compliance report
     Report,
+
+    /// Regenerate vendored features_sot.toml projections from features.toml (#7029)
+    SyncSot {
+        /// Fail on byte drift instead of writing (CI gate)
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4948,6 +4955,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             FeaturesCommand::Verify => features::verify(),
             FeaturesCommand::Invariants => features::invariants(),
             FeaturesCommand::Report => features::report(),
+            FeaturesCommand::SyncSot { check } => sync_feature_sot::run(check),
         },
         Commands::Agent { command } => match command {
             AgentCommand::Lease { command } => match command {

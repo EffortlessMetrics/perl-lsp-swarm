@@ -126,12 +126,16 @@ The core crate acts as the bridge between the TOML catalog and the Rust type
 system. At build time, `build.rs` includes the local `build_catalog.rs` module to:
 
 1. Locate `features.toml` (checking `FEATURES_TOML_OVERRIDE` env var, then the
-   workspace root, then a vendored `features_sot.toml` fallback).
+   workspace root, then a vendored `features_sot.toml` fallback; the vendored
+   copies are generated projections of the root authority, regenerated with
+   `cargo xtask features sync-sot` and byte-checked in CI (#7029)).
 2. Parse and validate the catalog (no empty IDs, no duplicates).
 3. Render a generated Rust module with:
    - `ALL_FEATURES: &[Feature]` -- every feature row as a const array.
-   - `ADVERTISED_LSP_FEATURES: &[&str]` -- IDs for GA/production features with
-     `advertised = true`.
+   - `ADVERTISED_LSP_FEATURES: &[&str]` -- IDs for rows with `advertised = true`
+     and a servable maturity (#7029: evidence state never gates advertisement;
+     `proven`, `preview`, and `not_proven` rows stay servable, `planned` and
+     `unsupported` rows do not).
    - `has_feature()` and `advertised_features()` functions. Any retained
      `compliance_percent()` helper is not an evidence or reporting authority.
 

@@ -5,7 +5,7 @@
 //! 2. Get diagnostics (syntax + built-in analyzer)
 //! 3. Apply code actions (add pragmas, organize imports)
 //! 4. Format the document
-//! 5. Verify the final state is production-ready
+//! 5. Verify the final document state is the expected formatted/edited text
 
 #![cfg(test)]
 // Integration tests print diagnostic output for CI troubleshooting; this is

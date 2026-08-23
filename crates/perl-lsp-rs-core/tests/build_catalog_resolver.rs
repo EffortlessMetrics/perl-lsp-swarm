@@ -46,7 +46,7 @@ mod build_catalog {
         let catalog_path = root.path().join("features.toml");
         std::fs::write(
             &catalog_path,
-            "[meta]\nversion = 'test'\nlsp_version = 'test'\ncompliance_percent = 98\n\n[[feature]]\nid = 'test'\nmaturity = 'planned'\n",
+            "[meta]\nversion = 'test'\nlsp_version = 'test'\ncompliance_percent = 98\n\n[[feature]]\nid = 'test'\nmaturity = 'planned'\ndirection = 'client_to_server'\nclass = 'request_response'\nroute = 'missing'\nowner = 'missing'\nstate_owner = 'missing'\n",
         )
         .expect("write catalog with refused aggregate");
 

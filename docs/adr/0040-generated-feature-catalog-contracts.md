@@ -155,6 +155,24 @@ The current implementation uses the following source-backed pattern:
 This ADR intentionally documents the pattern as it exists in the tree today rather than as a
 hypothetical future design.
 
+## 2026-08 Amendment: one authority, generated vendored projections (#7029)
+
+The vendored `features_sot.toml` copies had drifted into four different states
+(125/122/119/119 rows) with no generation or drift check. The amendment keeps
+this ADR's decision and sharpens it:
+
+- the workspace root `features.toml` remains the single catalog authority and
+  the only hand-edited catalog file;
+- every crate-local `features_sot.toml` is a deterministic generated
+  projection (`cargo xtask features sync-sot`), byte-checked in the
+  `lsp-318-claim-guard` workflow, never hand-edited;
+- the catalog also owns the evidence-honest maturity vocabulary
+  (`proven | preview | planned | unsupported | not_proven`), per-class minimum
+  evidence policies, and the required direction/class/route/owner/state-owner
+  dimensions. Advertisement stays decoupled from evidence state: the advertised
+  wire set is `advertised = true` plus a servable maturity, so downgrading a
+  row to `not_proven` records an evidence gap without changing the wire.
+
 ## When to Revisit
 
 Review this ADR if any of the following become true:

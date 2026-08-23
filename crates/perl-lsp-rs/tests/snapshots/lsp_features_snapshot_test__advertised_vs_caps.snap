@@ -22,7 +22,6 @@ caps:
   - lsp.inline_value
   - lsp.linked_editing_range
   - lsp.moniker
-  - lsp.notebook_document_sync
   - lsp.on_type_formatting
   - lsp.pull_diagnostics
   - lsp.range_formatting
@@ -52,11 +51,9 @@ catalog:
   - dap.modules
   - dap.pause
   - dap.restart
-  - dap.restart_frame
   - dap.set_expression
   - dap.source
   - dap.step_in_targets
-  - dap.terminate_threads
   - dap.threads
   - dap.watchpoints
   - experimental.perlInlineCompletionStream
@@ -119,7 +116,6 @@ catalog:
   - lsp.log_message
   - lsp.log_trace
   - lsp.moniker
-  - lsp.notebook_document_sync
   - lsp.on_type_formatting
   - lsp.prepare_rename
   - lsp.progress

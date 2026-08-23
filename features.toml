@@ -1,13 +1,46 @@
-# LSP Feature Catalog - Single Source of Truth
-# This file defines all LSP features and their maturity status
-# Used to generate capabilities, documentation, and compliance reports
-# Aggregate compliance percentages are not declared here: maturity labels are
-# declarations, not behavior evidence (#6731). Generated status renders rows
-# without an exact current evidence owner as not_proven.
+# LSP Feature Catalog - Single Source of Truth (authoritative, #7029)
+# This file is the one catalog authority: IDs, versions, directions, counts,
+# evidence-state (maturity), and per-class evidence policy live here.
+# Build-time consumers (perl-lsp-rs-core, perl-dap) resolve this file first;
+# crate-local features_sot.toml files are generated projections
+# (`cargo xtask sync-feature-sot`) and must not be hand-edited.
+# Aggregate compliance percentages are refused (#6731). Maturity labels are
+# evidence states: `proven` requires cited behavior evidence plus recorded
+# route/owners (#7029); `not_proven` rows record an implemented surface whose
+# citations are declaration-, tolerance-, or comment-only.
 
 [meta]
 version = "0.17.0"
 lsp_version = "3.18"
+
+# Minimum evidence per feature class before `proven` is allowed (#7029).
+# The policy does not require the missing tests to exist yet; executable
+# evidence validation belongs to the follow-up #6731 gate.
+
+[[evidence_policy]]
+class = "request_response"
+min_behavior_tests = 1
+description = "Proven requires at least one cited behavior test asserting the request/response surface; capability-gated rows additionally keep their gate receipts in the lsp-318-claim-guard seam."
+
+[[evidence_policy]]
+class = "server_request"
+min_behavior_tests = 1
+description = "Proven requires a positive wire receipt; client-capability-gated server requests additionally require a negative gate receipt."
+
+[[evidence_policy]]
+class = "document_workspace"
+min_behavior_tests = 1
+description = "Proven requires a behavior test of the notification effect (document state, configuration, or file-event handling), not mere protocol tolerance."
+
+[[evidence_policy]]
+class = "cancellation_progress"
+min_behavior_tests = 1
+description = "Proven requires a behavior test observing the cancellation or progress effect, not mere protocol tolerance."
+
+[[evidence_policy]]
+class = "editor_dependent"
+min_behavior_tests = 1
+description = "Proven additionally requires an editor receipt; without one the row stays preview or not_proven."
 
 # Text Document Features
 
@@ -15,7 +48,12 @@ lsp_version = "3.18"
 id = "lsp.completion"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-lsp-rs/tests/lsp_completion_tests.rs",
@@ -27,33 +65,48 @@ description = "Code completion with 150+ built-in functions, DBI type inference 
 id = "lsp.completion_list_item_defaults_data"
 spec = "LSP 3.18"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "client_capability_gated"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = [
   "crates/perl-lsp-rs/tests/lsp_completion_tests.rs",
   "crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs",
 ]
+counts_in_coverage = false
 description = "Capability-gated CompletionList.itemDefaults.data shared completion-list context"
 
 [[feature]]
 id = "lsp.completion_list_apply_kind"
 spec = "LSP 3.18"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "client_capability_gated"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = [
   "crates/perl-lsp-rs/tests/lsp_completion_tests.rs",
   "crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs",
 ]
+counts_in_coverage = false
 description = "Capability-gated CompletionList.applyKind merge semantics for supported completion-list defaults"
 
 [[feature]]
 id = "lsp.hover"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-lsp-rs/tests/lsp_hover_tests.rs",
@@ -66,7 +119,12 @@ description = "Hover information with POD markdown rendering, XS::Typemap integr
 id = "lsp.signature_help"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_signature_help_tests.rs"]
 description = "Signature help with parameter hints"
@@ -75,7 +133,12 @@ description = "Signature help with parameter hints"
 id = "lsp.definition"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-lsp-rs/tests/lsp_definition_tests.rs",
@@ -88,7 +151,12 @@ description = "Go to definition"
 id = "lsp.declaration"
 spec = "LSP 3.14"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-lsp-rs/tests/lsp_definition_tests.rs",
@@ -101,7 +169,12 @@ description = "Go to declaration"
 id = "lsp.references"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-lsp-rs/tests/lsp_references_tests.rs",
@@ -113,7 +186,12 @@ description = "Find references across workspace"
 id = "lsp.document_symbol"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-lsp-rs/tests/lsp_symbols_tests.rs",
@@ -126,7 +204,12 @@ description = "Document symbols with hierarchy"
 id = "lsp.code_action"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_code_actions_tests.rs"]
 description = "Code actions with 8 action kinds: QuickFix (diagnostic fixes for undefined/unused variables, missing strict/warnings, deprecated patterns), Refactor, RefactorExtract (extract variable/subroutine), RefactorInline, RefactorRewrite (C-style for to foreach, postfix if conversion), Source, SourceFixAll, SourceModernize (legacy pattern modernization); source.organizeImports is withdrawn (#8305) until a proven cohort lands (#10696)"
@@ -135,19 +218,27 @@ description = "Code actions with 8 action kinds: QuickFix (diagnostic fixes for 
 id = "lsp.code_action_documentation"
 spec = "LSP 3.18"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "client_capability_gated"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
+tests = ["crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs"]
 counts_in_coverage = false
-tests = [
-  "crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs",
-]
 description = "Capability-gated CodeActionOptions.documentation entries for documented code-action kinds"
 
 [[feature]]
 id = "lsp.code_lens"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-lsp-rs/tests/lsp_code_lens_tests.rs",
@@ -159,7 +250,12 @@ description = "Code lens with reference counts"
 id = "lsp.formatting"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-lsp-rs/tests/lsp_formatting_tests.rs",
@@ -171,7 +267,12 @@ description = "Native document formatting (external perltidy is an explicit opt-
 id = "lsp.range_formatting"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-lsp-rs/tests/lsp_formatting_tests.rs",
@@ -183,7 +284,12 @@ description = "Range formatting (single range)"
 id = "lsp.ranges_formatting"
 spec = "LSP 3.18"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_formatting_e2e.rs"]
 description = "Multi-range formatting (textDocument/rangesFormatting) (@proposed)"
@@ -192,7 +298,12 @@ description = "Multi-range formatting (textDocument/rangesFormatting) (@proposed
 id = "lsp.on_type_formatting"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_on_type_formatting.rs"]
 description = "On-type formatting with auto-indent"
@@ -201,7 +312,12 @@ description = "On-type formatting with auto-indent"
 id = "lsp.rename"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-lsp-rs/tests/lsp_rename_tests.rs",
@@ -213,7 +329,12 @@ description = "Rename symbol across files"
 id = "lsp.refactoring"
 spec = "perl-lsp"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-parser/src/refactor/workspace_rename.rs",
@@ -231,7 +352,12 @@ description = "Perl-specific refactoring engine (264 tests) providing workspace-
 id = "lsp.document_link"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-lsp-rs-core/src/providers/document_links/mod.rs",
@@ -244,7 +370,12 @@ description = "Document links to use/require modules, relative files, and POD L<
 id = "lsp.folding_range"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-lsp-rs/tests/lsp_folding_ranges_test.rs",
@@ -256,7 +387,12 @@ description = "Folding ranges with fallback"
 id = "lsp.selection_range"
 spec = "LSP 3.15"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-lsp-rs/tests/lsp_selection_range_tests.rs",
@@ -268,16 +404,29 @@ description = "Smart selection expansion"
 id = "lsp.semantic_tokens"
 spec = "LSP 3.16"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-tests = ["crates/perl-lsp-rs/tests/lsp_semantic_tokens.rs", "crates/perl-lsp-rs/tests/lsp_3_17_semantic_tokens_tests.rs"]
+tests = [
+  "crates/perl-lsp-rs/tests/lsp_semantic_tokens.rs",
+  "crates/perl-lsp-rs/tests/lsp_3_17_semantic_tokens_tests.rs",
+]
 description = "Semantic syntax highlighting via 24 token types (namespace, type, class, interface, enum, enumMember, typeParameter, function, method, property, macro, variable, parameter, keyword, modifier, comment, string, number, regexp, operator, plus sql_string/sql_heredoc_keyword/json_heredoc_key for embedded language context, and label for Perl statement/control labels) and 13 modifiers (declaration, definition, readonly, static, deprecated, abstract, async, modification, documentation, defaultLibrary, scalarVariable, arrayVariable, hashVariable). Token pipeline: lexer fast-path classification plus AST overlay for package/subroutine/method/variable/label nodes, with overlap deduplication (longer token wins) and delta-encoded [u32;5] response format (mandatory LSP wire encoding). Supports full (textDocument/semanticTokens/full), range (textDocument/semanticTokens/range), and delta (textDocument/semanticTokens/full/delta) requests; full results carry a resultId and delta requests return minimal prefix/suffix edits against the cached prior result per LSP 3.17"
 
 [[feature]]
 id = "lsp.inlay_hint"
 spec = "LSP 3.17"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_inlay_hints.rs"]
 description = "Inlay hints with parameter-name labels for 14 Perl built-in functions (open, split, substr, push, map, grep, sort, join, sprintf, printf, index, rindex, splice, pack/unpack) and lightweight type labels for literal expressions (Num, Str, Hash, Array, Regex, CodeRef). Hints are range-scoped to the visible editor region and support label.location (jump-to-definition) via resolve; tooltip text deferred to inlayHint/resolve per LSP 3.17"
@@ -286,7 +435,12 @@ description = "Inlay hints with parameter-name labels for 14 Perl built-in funct
 id = "lsp.type_hierarchy"
 spec = "LSP 3.17"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_type_hierarchy_test.rs"]
 description = "Type hierarchy for classes/roles"
@@ -295,7 +449,12 @@ description = "Type hierarchy for classes/roles"
 id = "lsp.call_hierarchy"
 spec = "LSP 3.16"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_call_hierarchy_tests.rs"]
 description = "Call hierarchy navigation"
@@ -304,7 +463,12 @@ description = "Call hierarchy navigation"
 id = "lsp.pull_diagnostics"
 spec = "LSP 3.17"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-lsp-rs/tests/pull_diagnostics_tests.rs",
@@ -317,7 +481,12 @@ description = "Pull model diagnostics"
 id = "lsp.diagnostic.missing_strict"
 spec = "perl-lsp"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs-core/src/providers/diagnostics/lints/strict_warnings.rs"]
 description = "Missing 'use strict' pragma diagnostic (PL100) — warns when .pm/.pl files lack strict enforcement, recognizes framework equivalents (Moo, Moose, Modern::Perl)"
@@ -326,7 +495,12 @@ description = "Missing 'use strict' pragma diagnostic (PL100) — warns when .pm
 id = "lsp.diagnostic.missing_warnings"
 spec = "perl-lsp"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs-core/src/providers/diagnostics/lints/strict_warnings.rs"]
 description = "Missing 'use warnings' pragma diagnostic (PL101) — warns when .pm/.pl files lack warnings enforcement, recognizes framework equivalents (Moo, Moose, Modern::Perl)"
@@ -335,7 +509,12 @@ description = "Missing 'use warnings' pragma diagnostic (PL101) — warns when .
 id = "lsp.diagnostic.phase_scoped_pragmas"
 spec = "perl-lsp"
 area = "text_document"
-maturity = "ga"
+maturity = "not_proven"
+direction = "client_to_server"
+class = "request_response"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/strict_warnings.rs",
@@ -347,7 +526,12 @@ description = "Phase-scoped pragma misconception diagnostics (PL502/PL503) — w
 id = "lsp.diagnostic.unreachable_code"
 spec = "perl-lsp"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs-core/tests/unreachable_code_continue_tests.rs"]
 description = "Unreachable code highlighting (PL406) with DiagnosticTag::Unnecessary — detects code after return/die/exit/croak statements"
@@ -356,7 +540,12 @@ description = "Unreachable code highlighting (PL406) with DiagnosticTag::Unneces
 id = "lsp.diagnostic.unused_variable"
 spec = "perl-lsp"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-lsp-rs/tests/pull_diagnostics_tests.rs",
@@ -369,7 +558,12 @@ description = "Unused variable diagnostics (PL102) via scope analyzer — warns 
 id = "lsp.inline_completion"
 spec = "LSP 3.18"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_inline_completion_tests.rs"]
 description = "Inline AI-powered completions (@proposed)"
@@ -378,7 +572,12 @@ description = "Inline AI-powered completions (@proposed)"
 id = "experimental.perlInlineCompletionStream"
 spec = "perl-lsp"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "client_capability_gated"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_streaming_completion_tests.rs"]
 description = "Streaming inline AI completions via textDocument/perlInlineCompletionStream — delivers incremental completions via $/progress with session and sequence tracking"
@@ -387,7 +586,12 @@ description = "Streaming inline AI completions via textDocument/perlInlineComple
 id = "lsp.type_definition"
 spec = "LSP 3.6"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_type_definition_tests.rs"]
 description = "Go to type definition"
@@ -396,7 +600,12 @@ description = "Go to type definition"
 id = "lsp.implementation"
 spec = "LSP 3.6"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_implementation_tests.rs"]
 description = "Go to implementation"
@@ -405,7 +614,12 @@ description = "Go to implementation"
 id = "lsp.document_color"
 spec = "LSP 3.6"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_color_tests.rs"]
 description = "Color decorators"
@@ -414,7 +628,12 @@ description = "Color decorators"
 id = "lsp.linked_editing_range"
 spec = "LSP 3.16"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_linked_editing_tests.rs"]
 description = "Linked editing of related tokens"
@@ -425,7 +644,12 @@ description = "Linked editing of related tokens"
 id = "lsp.workspace_symbol"
 spec = "LSP 3.0"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_workspace_symbol_tests.rs"]
 description = "Workspace symbol search across all indexed files with substring and prefix matching, proximity-ranked results (search_symbols_ranked prioritises symbols in the active document's package hierarchy), multi-root workspace support (folder_uri attribution per symbol), incremental re-index with content-hash early-exit (unchanged files skip re-parse), stale-index detection and cleanup on file removal, and parse-storm throttling for large batch indexing. Supports searching packages, subroutines, variables, classes, and methods across CPAN-scale workspaces (validated to 10k+ files)"
@@ -434,7 +658,12 @@ description = "Workspace symbol search across all indexed files with substring a
 id = "lsp.workspace_diagnostics"
 spec = "LSP 3.17"
 area = "workspace"
-maturity = "ga"
+maturity = "not_proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-lsp-rs/tests/pull_diagnostics_tests.rs",
@@ -447,7 +676,12 @@ description = "Workspace-wide pull diagnostics"
 id = "lsp.execute_command"
 spec = "LSP 3.0"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_execute_command_tests.rs"]
 description = "Execute commands (native critic, code actions, etc)"
@@ -456,7 +690,12 @@ description = "Execute commands (native critic, code actions, etc)"
 id = "lsp.workspace_folders"
 spec = "LSP 3.6"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "document_workspace"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_workspace_tests.rs"]
 description = "Multi-root workspace support"
@@ -465,7 +704,12 @@ description = "Multi-root workspace support"
 id = "lsp.file_operations"
 spec = "LSP 3.16"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_file_operations_tests.rs"]
 description = "File rename/create/delete tracking"
@@ -474,7 +718,12 @@ description = "File rename/create/delete tracking"
 id = "lsp.workspace_edit"
 spec = "LSP 3.0"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "client_capability_gated"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_workspace_file_ops_tests.rs"]
 description = "Apply workspace-wide edits"
@@ -483,19 +732,27 @@ description = "Apply workspace-wide edits"
 id = "lsp.workspace_edit_snippet_text_edit"
 spec = "LSP 3.18"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "client_capability_gated"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
+tests = ["crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs"]
 counts_in_coverage = false
-tests = [
-  "crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs",
-]
 description = "Capability-gated SnippetTextEdit workspace edits for pragma quick fixes"
 
 [[feature]]
 id = "lsp.moniker"
 spec = "LSP 3.16"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_moniker_e2e_test.rs"]
 description = "Cross-project symbol identity"
@@ -506,7 +763,12 @@ description = "Cross-project symbol identity"
 id = "lsp.progress"
 spec = "LSP 3.0"
 area = "window"
-maturity = "ga"
+maturity = "proven"
+direction = "bidirectional"
+class = "cancellation_progress"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_progress_tests.rs"]
 description = "Progress reporting"
@@ -515,29 +777,44 @@ description = "Progress reporting"
 id = "lsp.show_message"
 spec = "LSP 3.0"
 area = "window"
-maturity = "ga"
+maturity = "not_proven"
+direction = "server_to_client"
+class = "server_request"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
+tests = []
 counts_in_coverage = false
-tests = ["crates/perl-lsp-rs/tests/lsp_3_17_window_tests.rs"]
 description = "Show messages to user"
 
 [[feature]]
 id = "lsp.log_message"
 spec = "LSP 3.0"
 area = "window"
-maturity = "ga"
+maturity = "proven"
+direction = "server_to_client"
+class = "server_request"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
+tests = ["crates/perl-lsp-rs/tests/lsp_window_progress_test.rs"]
 counts_in_coverage = false
-tests = ["crates/perl-lsp-rs/tests/lsp_3_17_window_tests.rs", "crates/perl-lsp-rs/tests/lsp_window_progress_test.rs"]
 description = "Log messages"
 
 [[feature]]
 id = "lsp.work_done_progress"
 spec = "LSP 3.15"
 area = "window"
-maturity = "ga"
+maturity = "not_proven"
+direction = "bidirectional"
+class = "cancellation_progress"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-tests = ["crates/perl-lsp-rs/tests/lsp_3_17_window_tests.rs"]
+tests = []
 description = "Detailed work progress"
 
 # Notebook Features
@@ -547,9 +824,17 @@ id = "lsp.notebook_document_sync"
 spec = "LSP 3.17"
 area = "notebook"
 maturity = "preview"
+direction = "client_to_server"
+class = "editor_dependent"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = false
+tests = [
+  "crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs",
+  "crates/perl-lsp-rs/tests/ripr_seam_proof_notebook_preview_boundary.rs",
+]
 counts_in_coverage = false
-tests = ["crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs", "crates/perl-lsp-rs/tests/ripr_seam_proof_notebook_preview_boundary.rs"]
 description = "Preview implementation evidence only. Limited to in-process lifecycle/store tests; transactional versioning, mixed-language lifecycle, save semantics, cleanup, and real Jupyter/VS Code receipts remain unproven. Promotion owners: #7130 and #7132; this row is not GA evidence for #7032."
 
 [[feature]]
@@ -557,231 +842,389 @@ id = "lsp.notebook_cell_execution"
 spec = "LSP 3.17"
 area = "notebook"
 maturity = "preview"
+direction = "client_to_server"
+class = "editor_dependent"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = false
+tests = [
+  "crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs",
+  "crates/perl-lsp-rs/tests/ripr_seam_proof_notebook_preview_boundary.rs",
+]
 counts_in_coverage = false
-tests = ["crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs", "crates/perl-lsp-rs/tests/ripr_seam_proof_notebook_preview_boundary.rs"]
 description = "Preview metadata tracking only; the LSP server does not execute cells and no editor lifecycle receipt exists. Promotion owners: #7130 and #7132; this row is not GA evidence for #7032."
 
-# Debug Features (DAP)
+# Debug Adapter Features
 
 [[feature]]
 id = "dap.core"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "proven"
+direction = "bidirectional"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
+tests = [
+  "crates/perl-dap/tests/dap_smoke_e2e.rs",
+  "crates/perl-dap/tests/session_lifecycle_tests.rs",
+]
 counts_in_coverage = false
-tests = ["crates/perl-dap/tests/dap_smoke_e2e.rs", "crates/perl-dap/tests/session_lifecycle_tests.rs"]
 description = "Core VS Code debug loop: initialize/launch/configurationDone, break/step, stack/scopes/variables, evaluate/setVariable, disconnect/terminate"
 
 [[feature]]
 id = "dap.breakpoints.basic"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
+tests = [
+  "crates/perl-dap/tests/dap_smoke_e2e.rs",
+  "crates/perl-dap/tests/dap_breakpoint_matrix_tests.rs",
+]
 counts_in_coverage = false
-tests = ["crates/perl-dap/tests/dap_smoke_e2e.rs", "crates/perl-dap/tests/dap_breakpoint_matrix_tests.rs"]
 description = "Verified/unverified source breakpoints with replace semantics and deterministic stopped(reason=breakpoint) behavior"
 
 [[feature]]
 id = "dap.breakpoints.hit_condition"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
+tests = [
+  "crates/perl-dap/tests/dap_breakpoint_matrix_tests.rs",
+  "crates/perl-dap/tests/dap_preview_e2e_receipts.rs",
+]
 counts_in_coverage = false
-tests = ["crates/perl-dap/tests/dap_breakpoint_matrix_tests.rs", "crates/perl-dap/tests/dap_preview_e2e_receipts.rs"]
 description = "Hit-count breakpoints (e.g., >= N, == N, %N) with runtime counter gating"
 
 [[feature]]
 id = "dap.breakpoints.logpoints"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
+tests = [
+  "crates/perl-dap/tests/dap_breakpoint_matrix_tests.rs",
+  "crates/perl-dap/tests/dap_preview_e2e_receipts.rs",
+]
 counts_in_coverage = false
-tests = ["crates/perl-dap/tests/dap_breakpoint_matrix_tests.rs", "crates/perl-dap/tests/dap_preview_e2e_receipts.rs"]
 description = "Logpoint breakpoints (`logMessage`) emit output events and continue execution"
 
 [[feature]]
 id = "dap.exceptions.die"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
+tests = [
+  "crates/perl-dap/tests/dap_comprehensive_test.rs",
+  "crates/perl-dap/tests/dap_preview_e2e_receipts.rs",
+]
 counts_in_coverage = false
-tests = ["crates/perl-dap/tests/dap_comprehensive_test.rs", "crates/perl-dap/tests/dap_preview_e2e_receipts.rs"]
 description = "Exception breakpoint handling for `die`/uncaught exception categories with exceptionInfo support"
 
 [[feature]]
 id = "dap.inline_values"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-dap/tests/dap_comprehensive_test.rs"]
+counts_in_coverage = false
 description = "Inline variable values while debugging (native adapter)"
 
 [[feature]]
 id = "dap.completions"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-dap/tests/dap_completions_tests.rs"]
+counts_in_coverage = false
 description = "Debug console autocomplete with Perl keywords"
 
 [[feature]]
 id = "dap.modules"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-dap/tests/dap_modules_tests.rs"]
+counts_in_coverage = false
 description = "Loaded modules view via %INC inspection"
 
 [[feature]]
 id = "dap.watchpoints"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-dap/tests/dap_watchpoints_tests.rs"]
+counts_in_coverage = false
 description = "Data breakpoints (watchpoints) via Perl debugger w/W commands"
 
 [[feature]]
 id = "dap.exceptions.warn"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-dap/tests/dap_warn_exception_tests.rs"]
+counts_in_coverage = false
 description = "Exception breakpoint handling for warn/carp/cluck warnings"
 
 [[feature]]
 id = "dap.threads"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
+tests = [
+  "crates/perl-dap/tests/dap_adapter_tests.rs",
+  "crates/perl-dap/tests/dap_step_through_tests.rs",
+]
 counts_in_coverage = false
-tests = ["crates/perl-dap/tests/dap_adapter_tests.rs", "crates/perl-dap/tests/dap_step_through_tests.rs"]
 description = "Thread listing (threads request); Perl is single-threaded so returns one synthetic thread"
 
 [[feature]]
 id = "dap.pause"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
+tests = [
+  "crates/perl-dap/tests/control_flow_handlers_tests.rs",
+  "crates/perl-dap/tests/dap_comprehensive_test.rs",
+]
 counts_in_coverage = false
-tests = ["crates/perl-dap/tests/control_flow_handlers_tests.rs", "crates/perl-dap/tests/dap_comprehensive_test.rs"]
 description = "Pause execution of a running debug session"
 
 [[feature]]
 id = "dap.breakpoints.function"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
+tests = [
+  "crates/perl-dap/tests/dap_comprehensive_test.rs",
+  "crates/perl-dap/tests/dap_non_regression_tests.rs",
+]
 counts_in_coverage = false
-tests = ["crates/perl-dap/tests/dap_comprehensive_test.rs", "crates/perl-dap/tests/dap_non_regression_tests.rs"]
 description = "Function breakpoints (setFunctionBreakpoints) by subroutine name"
 
 [[feature]]
 id = "dap.breakpoint_locations"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "not_proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
+tests = [
+  "crates/perl-dap/tests/dap_protocol_compliance_tests.rs",
+  "crates/perl-dap/tests/dap_non_regression_tests.rs",
+]
 counts_in_coverage = false
-tests = ["crates/perl-dap/tests/dap_protocol_compliance_tests.rs", "crates/perl-dap/tests/dap_non_regression_tests.rs"]
 description = "Query valid breakpoint positions within a source range (breakpointLocations)"
 
 [[feature]]
 id = "dap.source"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "not_proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-dap/tests/dap_non_regression_tests.rs"]
+counts_in_coverage = false
 description = "Retrieve source content by reference (source request)"
 
 [[feature]]
 id = "dap.loaded_sources"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "not_proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
+tests = [
+  "crates/perl-dap/tests/dap_protocol_compliance_tests.rs",
+  "crates/perl-dap/tests/dap_non_regression_tests.rs",
+]
 counts_in_coverage = false
-tests = ["crates/perl-dap/tests/dap_protocol_compliance_tests.rs", "crates/perl-dap/tests/dap_non_regression_tests.rs"]
 description = "List all sources loaded in the current debug session (loadedSources)"
 
 [[feature]]
 id = "dap.restart"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "not_proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-dap/tests/dap_non_regression_tests.rs"]
+counts_in_coverage = false
 description = "Restart the debug session (restart request)"
 
 [[feature]]
 id = "dap.set_expression"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-dap/tests/dap_protocol_compliance_tests.rs"]
+counts_in_coverage = false
 description = "Assign a value to an expression in the current scope (setExpression)"
 
 [[feature]]
 id = "dap.cancel"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
+tests = [
+  "crates/perl-dap/tests/dap_protocol_compliance_tests.rs",
+  "crates/perl-dap/tests/dap_step_through_tests.rs",
+]
 counts_in_coverage = false
-tests = ["crates/perl-dap/tests/dap_protocol_compliance_tests.rs", "crates/perl-dap/tests/dap_step_through_tests.rs"]
 description = "Cancel a pending or running request (cancel)"
 
 [[feature]]
 id = "dap.step_in_targets"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
+tests = [
+  "crates/perl-dap/tests/dap_protocol_compliance_tests.rs",
+  "crates/perl-dap/tests/dap_step_through_tests.rs",
+  "crates/perl-dap/tests/dap_capability_advertising_tests.rs",
+]
 counts_in_coverage = false
-tests = ["crates/perl-dap/tests/dap_protocol_compliance_tests.rs", "crates/perl-dap/tests/dap_step_through_tests.rs", "crates/perl-dap/tests/dap_capability_advertising_tests.rs"]
 description = "List callable step-in targets for the current frame (stepInTargets)"
 
 [[feature]]
 id = "dap.goto_targets"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
+tests = [
+  "crates/perl-dap/tests/dap_protocol_compliance_tests.rs",
+  "crates/perl-dap/tests/dap_step_through_tests.rs",
+]
 counts_in_coverage = false
-tests = ["crates/perl-dap/tests/dap_protocol_compliance_tests.rs", "crates/perl-dap/tests/dap_step_through_tests.rs"]
 description = "List valid goto targets for the current frame (gotoTargets)"
 
 [[feature]]
 id = "dap.goto"
 spec = "DAP 1.0"
 area = "debug"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-dap/tests/dap_protocol_compliance_tests.rs"]
+counts_in_coverage = false
 description = "Jump execution to a target location (goto request)"
 
 [[feature]]
@@ -789,9 +1232,17 @@ id = "dap.restart_frame"
 spec = "DAP 1.0"
 area = "debug"
 maturity = "planned"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = false
+tests = [
+  "crates/perl-dap/tests/dap_step_through_tests.rs",
+  "crates/perl-dap/tests/dap_capability_advertising_tests.rs",
+]
 counts_in_coverage = false
-tests = ["crates/perl-dap/tests/dap_step_through_tests.rs", "crates/perl-dap/tests/dap_capability_advertising_tests.rs"]
 description = "Restart execution from the beginning of a stack frame (restartFrame); not implemented for Perl — perl5db has no frame-restart primitive, so the capability is not advertised"
 
 [[feature]]
@@ -799,9 +1250,17 @@ id = "dap.terminate_threads"
 spec = "DAP 1.0"
 area = "debug"
 maturity = "planned"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-dap"
+state_owner = "perl-dap"
 advertised = false
+tests = [
+  "crates/perl-dap/tests/dap_step_through_tests.rs",
+  "crates/perl-dap/tests/dap_capability_advertising_tests.rs",
+]
 counts_in_coverage = false
-tests = ["crates/perl-dap/tests/dap_step_through_tests.rs", "crates/perl-dap/tests/dap_capability_advertising_tests.rs"]
 description = "Terminate one or more threads (terminateThreads); not implemented for Perl — perl5db cannot target individual threads, so the capability is not advertised"
 
 # Protocol / Lifecycle Features
@@ -810,141 +1269,209 @@ description = "Terminate one or more threads (terminateThreads); not implemented
 id = "lsp.initialize"
 spec = "LSP 3.0"
 area = "protocol"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "document_workspace"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_3_17_lifecycle_tests.rs"]
+counts_in_coverage = false
 description = "Initialize handshake"
 
 [[feature]]
 id = "lsp.initialized"
 spec = "LSP 3.0"
 area = "protocol"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "document_workspace"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_3_17_lifecycle_tests.rs"]
+counts_in_coverage = false
 description = "Initialized notification"
 
 [[feature]]
 id = "lsp.shutdown"
 spec = "LSP 3.0"
 area = "protocol"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "document_workspace"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_3_17_lifecycle_tests.rs"]
+counts_in_coverage = false
 description = "Graceful shutdown request"
 
 [[feature]]
 id = "lsp.exit"
 spec = "LSP 3.0"
 area = "protocol"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "document_workspace"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_3_17_lifecycle_tests.rs"]
+counts_in_coverage = false
 description = "Exit notification with proper exit codes"
 
 [[feature]]
 id = "lsp.cancel_request"
 spec = "LSP 3.0"
 area = "protocol"
-maturity = "ga"
+maturity = "not_proven"
+direction = "client_to_server"
+class = "cancellation_progress"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
+tests = []
 counts_in_coverage = false
-tests = ["crates/perl-lsp-rs/tests/lsp_3_17_window_tests.rs"]
 description = "Request cancellation ($/cancelRequest)"
 
 [[feature]]
 id = "lsp.client_register_capability"
 spec = "LSP 3.0"
 area = "protocol"
-maturity = "ga"
+maturity = "proven"
+direction = "server_to_client"
+class = "server_request"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_registration_tests.rs"]
+counts_in_coverage = false
 description = "Dynamic capability registration (server->client)"
 
 [[feature]]
 id = "lsp.client_unregister_capability"
 spec = "LSP 3.0"
 area = "protocol"
-maturity = "ga"
+maturity = "proven"
+direction = "server_to_client"
+class = "server_request"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_registration_tests.rs"]
+counts_in_coverage = false
 description = "Dynamic capability unregistration (server->client)"
 
 [[feature]]
 id = "lsp.set_trace"
 spec = "LSP 3.0"
 area = "protocol"
-maturity = "ga"
+maturity = "not_proven"
+direction = "client_to_server"
+class = "document_workspace"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_trace_tests.rs"]
+counts_in_coverage = false
 description = "Client sets server trace level ($/setTrace)"
 
 [[feature]]
 id = "lsp.log_trace"
 spec = "LSP 3.0"
 area = "protocol"
-maturity = "ga"
+maturity = "not_proven"
+direction = "client_to_server"
+class = "document_workspace"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_trace_tests.rs"]
+counts_in_coverage = false
 description = "Server trace logging ($/logTrace)"
 
-# Text Document Synchronization
+# Text Document Features
 
 [[feature]]
 id = "lsp.text_document_sync"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "document_workspace"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_text_sync_tests.rs"]
+counts_in_coverage = false
 description = "didOpen/didChange/didClose text synchronization"
 
 [[feature]]
 id = "lsp.did_save"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "not_proven"
+direction = "client_to_server"
+class = "document_workspace"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_text_sync_tests.rs"]
+counts_in_coverage = false
 description = "didSave notifications"
 
 [[feature]]
 id = "lsp.will_save"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "not_proven"
+direction = "client_to_server"
+class = "document_workspace"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_text_sync_tests.rs"]
+counts_in_coverage = false
 description = "willSave notifications"
 
 [[feature]]
 id = "lsp.will_save_wait_until"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "not_proven"
+direction = "client_to_server"
+class = "document_workspace"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_text_sync_tests.rs"]
+counts_in_coverage = false
 description = "willSaveWaitUntil request with format-on-save"
-
-# Additional Language Features
 
 [[feature]]
 id = "lsp.document_highlight"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_document_highlight_tests.rs"]
 description = "Document highlights (local references)"
@@ -953,7 +1480,12 @@ description = "Document highlights (local references)"
 id = "lsp.prepare_rename"
 spec = "LSP 3.12"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-lsp-rs/tests/lsp_rename_tests.rs",
@@ -965,7 +1497,12 @@ description = "Validate rename and compute placeholder/range"
 id = "lsp.inline_value"
 spec = "LSP 3.17"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_inline_value_e2e_test.rs"]
 description = "Inline values during debugging (LSP inlineValue)"
@@ -974,18 +1511,26 @@ description = "Inline values during debugging (LSP inlineValue)"
 id = "lsp.color_presentation"
 spec = "LSP 3.6"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_color_tests.rs"]
 description = "Color presentation request (pairs with documentColor)"
-
-# Resolve Routes
 
 [[feature]]
 id = "lsp.completion_item_resolve"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "not_proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_completion_tests.rs"]
 description = "Resolve additional completion item details"
@@ -994,7 +1539,12 @@ description = "Resolve additional completion item details"
 id = "lsp.code_action_resolve"
 spec = "LSP 3.16"
 area = "text_document"
-maturity = "ga"
+maturity = "not_proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_code_actions_tests.rs"]
 description = "Resolve additional code action details"
@@ -1003,7 +1553,12 @@ description = "Resolve additional code action details"
 id = "lsp.code_lens_resolve"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-lsp-rs/tests/lsp_codelens_tests.rs",
@@ -1016,21 +1571,31 @@ description = "Resolve code lens command"
 id = "lsp.code_lens_resolve_support_properties"
 spec = "LSP 3.18"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "client_capability_gated"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = [
   "crates/perl-lsp-rs/tests/lsp_codelens_tests.rs",
   "crates/perl-lsp-rs/tests/lsp_code_lens_tests.rs",
   "crates/perl-lsp-rs/tests/lsp_bdd_workflows.rs",
 ]
+counts_in_coverage = false
 description = "Gate lazy CodeLens command resolution on textDocument.codeLens.resolveSupport.properties"
 
 [[feature]]
 id = "lsp.document_link_resolve"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_document_link_resolve_tests.rs"]
 description = "Resolve deferred module, file, URL, and POD section document link targets"
@@ -1039,220 +1604,326 @@ description = "Resolve deferred module, file, URL, and POD section document link
 id = "lsp.inlay_hint_resolve"
 spec = "LSP 3.17"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_inlay_hint_resolve_tests.rs"]
 description = "Resolve inlay hint label locations"
+
+# Workspace Features
 
 [[feature]]
 id = "lsp.workspace_symbol_resolve"
 spec = "LSP 3.17"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_workspace_symbol_tests.rs"]
 description = "Resolve additional workspace symbol info"
-
-# Refresh Routes (Server -> Client)
 
 [[feature]]
 id = "lsp.code_lens_refresh"
 spec = "LSP 3.16"
 area = "workspace"
-maturity = "ga"
+maturity = "not_proven"
+direction = "server_to_client"
+class = "server_request"
+route = "client_capability_gated"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_refresh_methods_tests.rs"]
+counts_in_coverage = false
 description = "Request client to refresh code lenses"
 
 [[feature]]
 id = "lsp.semantic_tokens_refresh"
 spec = "LSP 3.16"
 area = "workspace"
-maturity = "ga"
+maturity = "not_proven"
+direction = "server_to_client"
+class = "server_request"
+route = "client_capability_gated"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_refresh_methods_tests.rs"]
+counts_in_coverage = false
 description = "Request client to refresh semantic tokens"
 
 [[feature]]
 id = "lsp.inlay_hint_refresh"
 spec = "LSP 3.17"
 area = "workspace"
-maturity = "ga"
+maturity = "not_proven"
+direction = "server_to_client"
+class = "server_request"
+route = "client_capability_gated"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_refresh_methods_tests.rs"]
+counts_in_coverage = false
 description = "Request client to refresh inlay hints"
 
 [[feature]]
 id = "lsp.inline_value_refresh"
 spec = "LSP 3.17"
 area = "workspace"
-maturity = "ga"
+maturity = "not_proven"
+direction = "server_to_client"
+class = "server_request"
+route = "client_capability_gated"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_refresh_methods_tests.rs"]
+counts_in_coverage = false
 description = "Request client to refresh inline values"
 
 [[feature]]
 id = "lsp.diagnostic_refresh"
 spec = "LSP 3.17"
 area = "workspace"
-maturity = "ga"
+maturity = "not_proven"
+direction = "server_to_client"
+class = "server_request"
+route = "client_capability_gated"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_refresh_methods_tests.rs"]
+counts_in_coverage = false
 description = "Request client to refresh pulled diagnostics"
 
 [[feature]]
 id = "lsp.folding_range_refresh"
 spec = "LSP 3.18"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "server_to_client"
+class = "server_request"
+route = "client_capability_gated"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_refresh_methods_tests.rs"]
+counts_in_coverage = false
 description = "Request client to refresh folding ranges (workspace/foldingRange/refresh, @proposed)"
-
-# Workspace Plumbing
 
 [[feature]]
 id = "lsp.configuration"
 spec = "LSP 3.6"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "document_workspace"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_workspace_tests.rs"]
+counts_in_coverage = false
 description = "workspace/configuration request (server->client)"
 
 [[feature]]
 id = "lsp.did_change_configuration"
 spec = "LSP 3.0"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "document_workspace"
+route = "dynamic_registration"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_workspace_tests.rs"]
+counts_in_coverage = false
 description = "workspace/didChangeConfiguration notification"
 
 [[feature]]
 id = "lsp.did_change_watched_files"
 spec = "LSP 3.0"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "document_workspace"
+route = "dynamic_registration"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_workspace_tests.rs"]
+counts_in_coverage = false
 description = "workspace/didChangeWatchedFiles notification"
 
 [[feature]]
 id = "lsp.apply_edit"
 spec = "LSP 3.0"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "server_to_client"
+class = "server_request"
+route = "client_capability_gated"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_workspace_tests.rs"]
+counts_in_coverage = false
 description = "workspace/applyEdit request (server->client)"
 
 [[feature]]
 id = "lsp.apply_edit_metadata"
 spec = "LSP 3.18"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "server_to_client"
+class = "server_request"
+route = "client_capability_gated"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs"]
+counts_in_coverage = false
 description = "Capability-gated ApplyWorkspaceEditParams.metadata label, description, and isRefactoring on server-originated workspace/applyEdit refactoring requests"
+
+# Text Document Features
 
 [[feature]]
 id = "lsp.publish_diagnostics"
 spec = "LSP 3.0"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "server_to_client"
+class = "server_request"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = [
-  "crates/perl-lsp-rs/tests/pull_diagnostics_tests.rs",
-  "crates/perl-lsp-rs/tests/lsp_bdd_workflows.rs",
-  "crates/perl-lsp-ux-tests/tests/ux_scenario_12_diagnostics_strict.rs",
+  "crates/perl-lsp-rs/tests/lsp_protocol_tests.rs",
+  "crates/perl-lsp-rs/tests/dynamic_diagnostics_suppression_tests.rs",
 ]
+counts_in_coverage = false
 description = "Push diagnostics via textDocument/publishDiagnostics"
 
-# Window / Telemetry
+# Window Features
 
 [[feature]]
 id = "lsp.show_message_request"
 spec = "LSP 3.0"
 area = "window"
-maturity = "ga"
+maturity = "proven"
+direction = "server_to_client"
+class = "server_request"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_window_tests.rs"]
+counts_in_coverage = false
 description = "Prompt user with choices (showMessageRequest)"
 
 [[feature]]
 id = "lsp.show_document"
 spec = "LSP 3.16"
 area = "window"
-maturity = "ga"
+maturity = "proven"
+direction = "server_to_client"
+class = "editor_dependent"
+route = "client_capability_gated"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_window_tests.rs"]
+counts_in_coverage = false
 description = "Ask client to open/display a URI (showDocument)"
 
 [[feature]]
 id = "lsp.work_done_progress_create"
 spec = "LSP 3.15"
 area = "window"
-maturity = "ga"
+maturity = "proven"
+direction = "server_to_client"
+class = "server_request"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_window_tests.rs"]
+counts_in_coverage = false
 description = "Create server-initiated work done progress"
 
 [[feature]]
 id = "lsp.work_done_progress_cancel"
 spec = "LSP 3.15"
 area = "window"
-maturity = "ga"
+maturity = "proven"
+direction = "server_to_client"
+class = "server_request"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_window_tests.rs"]
+counts_in_coverage = false
 description = "Client cancels server-initiated work done progress"
 
 [[feature]]
 id = "lsp.telemetry_event"
 spec = "LSP 3.0"
 area = "window"
-maturity = "ga"
+maturity = "proven"
+direction = "server_to_client"
+class = "server_request"
+route = "unsolicited"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_window_tests.rs"]
+counts_in_coverage = false
 description = "Server telemetry events (telemetry/event)"
 
-# LSP 3.18 Additions
+# Text Document Features
 
 [[feature]]
 id = "lsp.diagnostic.markup_message_support"
 spec = "LSP 3.18"
 area = "text_document"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "client_capability_gated"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = [
   "crates/perl-lsp-rs/tests/lsp_diagnostic_enrichment_test.rs",
   "crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs",
 ]
+counts_in_coverage = false
 description = "Markdown-formatted pull diagnostic messages (textDocument.diagnostic.markupMessageSupport) - server emits standard Diagnostic.message MarkupContent and compatibility messageMarkup data only when the client opts in"
+
+# Workspace Features
 
 [[feature]]
 id = "lsp.text_document_content"
 spec = "LSP 3.18"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "request_response"
+route = "client_capability_gated"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = [
   "crates/perl-lsp-rs/tests/lsp_virtual_content_tests.rs",
@@ -1264,19 +1935,27 @@ description = "workspace/textDocumentContent request for perldoc:// virtual docu
 id = "lsp.text_document_content_refresh"
 spec = "LSP 3.18"
 area = "workspace"
-maturity = "ga"
+maturity = "not_proven"
+direction = "server_to_client"
+class = "server_request"
+route = "client_capability_gated"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
-counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_virtual_content_tests.rs"]
+counts_in_coverage = false
 description = "workspace/textDocumentContent/refresh request (@proposed)"
-
-# File Operations (method-level breakdown)
 
 [[feature]]
 id = "lsp.will_create_files"
 spec = "LSP 3.16"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "document_workspace"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_workspace_file_ops_tests.rs"]
 description = "workspace/willCreateFiles request"
@@ -1285,7 +1964,12 @@ description = "workspace/willCreateFiles request"
 id = "lsp.did_create_files"
 spec = "LSP 3.16"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "document_workspace"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_workspace_file_ops_tests.rs"]
 description = "workspace/didCreateFiles notification"
@@ -1294,7 +1978,12 @@ description = "workspace/didCreateFiles notification"
 id = "lsp.will_rename_files"
 spec = "LSP 3.16"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "document_workspace"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_file_operations_tests.rs"]
 description = "workspace/willRenameFiles request"
@@ -1303,7 +1992,12 @@ description = "workspace/willRenameFiles request"
 id = "lsp.did_rename_files"
 spec = "LSP 3.16"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "document_workspace"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_file_operations_tests.rs"]
 description = "workspace/didRenameFiles notification"
@@ -1312,7 +2006,12 @@ description = "workspace/didRenameFiles notification"
 id = "lsp.will_delete_files"
 spec = "LSP 3.16"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "document_workspace"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_workspace_file_ops_tests.rs"]
 description = "workspace/willDeleteFiles request"
@@ -1321,7 +2020,12 @@ description = "workspace/willDeleteFiles request"
 id = "lsp.did_delete_files"
 spec = "LSP 3.16"
 area = "workspace"
-maturity = "ga"
+maturity = "proven"
+direction = "client_to_server"
+class = "document_workspace"
+route = "initialize_capability"
+owner = "perl-lsp-rs"
+state_owner = "perl-lsp-rs::state"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_workspace_file_ops_tests.rs"]
 description = "workspace/didDeleteFiles notification"

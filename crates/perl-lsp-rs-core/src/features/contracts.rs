@@ -354,7 +354,7 @@ mod tests {
     fn all_features_have_valid_maturity() -> Result<(), String> {
         // Keep this vocabulary aligned with `feature_catalog::Maturity` rather
         // than accepting arbitrary labels that weaken catalog validation.
-        let valid_maturities = ["experimental", "preview", "ga", "planned", "production"];
+        let valid_maturities = ["proven", "preview", "planned", "unsupported", "not_proven"];
         for feature in all_features() {
             if !valid_maturities.contains(&feature.maturity) {
                 return Err(format!(
@@ -398,12 +398,17 @@ mod tests {
 
     #[test]
     fn lsp_features_have_bdd_test_receipts() {
+        // #7029: receipts are required exactly where the catalog claims
+        // proven behavior. `not_proven` rows record their missing evidence
+        // explicitly and must not borrow receipts to look promoted.
         for feature in all_features().iter().filter(|feature| feature.id.starts_with("lsp.")) {
-            assert!(
-                !feature.tests.is_empty(),
-                "LSP feature '{}' must include at least one test receipt for BDD grid reporting",
-                feature.id
-            );
+            if feature.maturity == "proven" {
+                assert!(
+                    !feature.tests.is_empty(),
+                    "proven LSP feature '{}' must cite at least one behavior test receipt (#7029)",
+                    feature.id
+                );
+            }
         }
     }
 

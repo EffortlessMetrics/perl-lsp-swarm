@@ -8,31 +8,144 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Feature maturity state.
-#[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+/// Feature maturity state (#7029 evidence-honest vocabulary).
+///
+/// Maturity records evidence state, not wire behavior; advertisement is
+/// decided by `advertised` plus [`Maturity::is_servable`].
+#[derive(
+    Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum Maturity {
-    Experimental,
+    /// Behavior evidence verified against the row's class policy and cited.
+    Proven,
+    /// Implemented behind a documented preview boundary.
     Preview,
-    Ga,
+    /// Acknowledged protocol surface that is not implemented yet.
     Planned,
-    Production,
+    /// Deliberately unsupported surface (negative-gated).
+    Unsupported,
+    /// Implemented surface without qualifying behavior evidence (#7029).
+    NotProven,
 }
 
 impl Maturity {
-    pub const fn is_advertised(self) -> bool {
-        matches!(self, Self::Ga | Self::Production)
+    /// Whether the feature may take part in the advertisement route.
+    pub const fn is_servable(self) -> bool {
+        !matches!(self, Self::Planned | Self::Unsupported)
     }
 
+    /// Human-readable lowercase label.
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Experimental => "experimental",
+            Self::Proven => "proven",
             Self::Preview => "preview",
-            Self::Ga => "ga",
             Self::Planned => "planned",
-            Self::Production => "production",
+            Self::Unsupported => "unsupported",
+            Self::NotProven => "not_proven",
         }
     }
+}
+
+/// Message flow direction for a catalog row (#7029 required dimension).
+#[derive(
+    Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+    /// Client-to-server request/response or notification.
+    ClientToServer,
+    /// Server-to-client request or notification.
+    ServerToClient,
+    /// Both directions.
+    Bidirectional,
+}
+
+impl Direction {
+    /// Human-readable lowercase label.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ClientToServer => "client_to_server",
+            Self::ServerToClient => "server_to_client",
+            Self::Bidirectional => "bidirectional",
+        }
+    }
+}
+
+/// Feature class used to select the promotion policy (#7029).
+#[derive(
+    Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum FeatureClass {
+    /// Client request/response surface.
+    RequestResponse,
+    /// Server-initiated request or push surface.
+    ServerRequest,
+    /// Document/workspace notification surface.
+    DocumentWorkspace,
+    /// Cancellation and progress plumbing (`$/...`).
+    CancellationProgress,
+    /// Surface whose proof depends on an editor receipt.
+    EditorDependent,
+}
+
+impl FeatureClass {
+    /// Human-readable lowercase label.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::RequestResponse => "request_response",
+            Self::ServerRequest => "server_request",
+            Self::DocumentWorkspace => "document_workspace",
+            Self::CancellationProgress => "cancellation_progress",
+            Self::EditorDependent => "editor_dependent",
+        }
+    }
+}
+
+/// How a row's capability/registration route is exposed (#7029).
+#[derive(
+    Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityRoute {
+    /// Advertised through `initialize` server capabilities.
+    InitializeCapability,
+    /// Registered at runtime via `client/registerCapability`.
+    DynamicRegistration,
+    /// Emitted only when the client declares the matching capability.
+    ClientCapabilityGated,
+    /// Always-on push with no capability negotiation.
+    Unsolicited,
+    /// Route not yet recorded; blocks `proven` promotion.
+    Missing,
+}
+
+impl CapabilityRoute {
+    /// Human-readable lowercase label.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::InitializeCapability => "initialize_capability",
+            Self::DynamicRegistration => "dynamic_registration",
+            Self::ClientCapabilityGated => "client_capability_gated",
+            Self::Unsolicited => "unsolicited",
+            Self::Missing => "missing",
+        }
+    }
+}
+
+/// Explicit missing-value token for owner and state-owner fields (#7029).
+pub const MISSING: &str = "missing";
+
+/// Minimum evidence a feature class demands before `proven` is allowed (#7029).
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct EvidencePolicy {
+    /// Feature class this policy governs.
+    pub class: FeatureClass,
+    /// Minimum count of cited behavior-evidence tests for `proven`.
+    pub min_behavior_tests: usize,
+    /// Human-readable policy statement.
+    pub description: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -51,6 +164,11 @@ pub struct Feature {
     #[serde(default)]
     pub area: String,
     pub maturity: Maturity,
+    pub direction: Direction,
+    pub class: FeatureClass,
+    pub route: CapabilityRoute,
+    pub owner: String,
+    pub state_owner: String,
     #[serde(default)]
     pub advertised: bool,
     #[serde(default)]
@@ -68,6 +186,8 @@ fn default_counts_in_coverage() -> bool {
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct Catalog {
     pub meta: Meta,
+    #[serde(default)]
+    pub evidence_policy: Vec<EvidencePolicy>,
     pub feature: Vec<Feature>,
 }
 
@@ -76,7 +196,7 @@ impl Catalog {
         let mut ids = self
             .feature
             .iter()
-            .filter(|f| f.advertised && f.maturity.is_advertised())
+            .filter(|f| f.advertised && f.maturity.is_servable())
             .map(|f| f.id.as_str())
             .collect::<Vec<_>>();
         ids.sort_unstable();
@@ -99,7 +219,7 @@ impl Catalog {
             .iter()
             .filter(|feature| {
                 feature.advertised
-                    && feature.maturity.is_advertised()
+                    && feature.maturity.is_servable()
                     && feature.counts_in_coverage
             })
             .count()
@@ -121,7 +241,7 @@ impl Catalog {
     pub fn advertised_trackable_count(&self) -> usize {
         self.feature
             .iter()
-            .filter(|feature| feature.advertised && feature.maturity.is_advertised())
+            .filter(|feature| feature.advertised && feature.maturity.is_servable())
             .count()
     }
 
@@ -137,6 +257,11 @@ impl Catalog {
         (advertised as f64 / trackable as f64 * 100.0).round() as f32
     }
 
+    /// Policy declared for a feature class, if any.
+    pub fn evidence_policy_for(&self, class: FeatureClass) -> Option<&EvidencePolicy> {
+        self.evidence_policy.iter().find(|policy| policy.class == class)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         let mut seen = BTreeSet::new();
         let mut issues = Vec::new();
@@ -147,6 +272,12 @@ impl Catalog {
                     .to_string(),
             );
         }
+        let mut policy_classes = BTreeSet::new();
+        for policy in &self.evidence_policy {
+            if !policy_classes.insert(policy.class) {
+                issues.push(format!("duplicate evidence policy class: {}", policy.class.label()));
+            }
+        }
         for feature in &self.feature {
             if feature.id.trim().is_empty() {
                 issues.push("feature id must not be empty".to_string());
@@ -154,6 +285,50 @@ impl Catalog {
             }
             if !seen.insert(&feature.id) {
                 issues.push(format!("duplicate feature id: {}", feature.id));
+            }
+            if self.evidence_policy_for(feature.class).is_none() {
+                issues.push(format!(
+                    "feature {}: class {} has no evidence policy",
+                    feature.id,
+                    feature.class.label()
+                ));
+            }
+            if feature.advertised && !feature.maturity.is_servable() {
+                issues.push(format!(
+                    "feature {}: advertised rows cannot be {}",
+                    feature.id,
+                    feature.maturity.label()
+                ));
+            }
+            if feature.maturity == Maturity::Proven {
+                let min = self
+                    .evidence_policy_for(feature.class)
+                    .map_or(1, |policy| policy.min_behavior_tests.max(1));
+                if feature.tests.len() < min {
+                    issues.push(format!(
+                        "feature {}: proven requires at least {} cited behavior test(s) per {} \
+                         policy (#7029); downgrade to not_proven or cite evidence",
+                        feature.id, min, feature.class.label()
+                    ));
+                }
+                if feature.route == CapabilityRoute::Missing {
+                    issues.push(format!(
+                        "feature {}: proven requires a recorded capability route (#7029)",
+                        feature.id
+                    ));
+                }
+                if feature.owner == MISSING {
+                    issues.push(format!(
+                        "feature {}: proven requires a recorded implementation owner (#7029)",
+                        feature.id
+                    ));
+                }
+                if feature.state_owner == MISSING {
+                    issues.push(format!(
+                        "feature {}: proven requires a recorded state owner or stateless (#7029)",
+                        feature.id
+                    ));
+                }
             }
         }
         if issues.is_empty() { Ok(()) } else { Err(issues.join(", ")) }
@@ -299,7 +474,7 @@ pub fn render_lsp_feature_catalog_module(catalog: &Catalog, source_comment: &str
     code.push_str("/// LSP protocol version supported by this parser implementation\n");
     code.push_str(&format!("pub const LSP_VERSION: &str = {:?};\n", catalog.meta.lsp_version));
     code.push_str(
-        "/// Represents a single LSP feature with its metadata and implementation status\n",
+        "/// Represents a single LSP feature with its metadata and evidence state\n",
     );
     code.push_str("#[derive(Debug, Clone)]\n");
     code.push_str("pub struct Feature {\n");
@@ -307,6 +482,11 @@ pub fn render_lsp_feature_catalog_module(catalog: &Catalog, source_comment: &str
     code.push_str("    pub spec: &'static str,\n");
     code.push_str("    pub area: &'static str,\n");
     code.push_str("    pub maturity: &'static str,\n");
+    code.push_str("    pub direction: &'static str,\n");
+    code.push_str("    pub class: &'static str,\n");
+    code.push_str("    pub route: &'static str,\n");
+    code.push_str("    pub owner: &'static str,\n");
+    code.push_str("    pub state_owner: &'static str,\n");
     code.push_str("    pub advertised: bool,\n");
     code.push_str("    pub description: &'static str,\n");
     code.push_str("    pub counts_in_coverage: bool,\n");
@@ -319,6 +499,11 @@ pub fn render_lsp_feature_catalog_module(catalog: &Catalog, source_comment: &str
         code.push_str(&format!("        spec: {:?},\n", feature.spec));
         code.push_str(&format!("        area: {:?},\n", feature.area));
         code.push_str(&format!("        maturity: {:?},\n", feature.maturity.label()));
+        code.push_str(&format!("        direction: {:?},\n", feature.direction.label()));
+        code.push_str(&format!("        class: {:?},\n", feature.class.label()));
+        code.push_str(&format!("        route: {:?},\n", feature.route.label()));
+        code.push_str(&format!("        owner: {:?},\n", feature.owner));
+        code.push_str(&format!("        state_owner: {:?},\n", feature.state_owner));
         code.push_str(&format!("        advertised: {},\n", feature.advertised));
         code.push_str(&format!("        description: {:?},\n", feature.description));
         code.push_str(&format!("        counts_in_coverage: {},\n", feature.counts_in_coverage));

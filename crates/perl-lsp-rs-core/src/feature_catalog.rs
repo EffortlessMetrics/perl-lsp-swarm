@@ -28,28 +28,41 @@ pub struct Meta {
     pub compliance_percent: Option<u32>,
 }
 
-/// Feature maturity state used to drive advertising and tracking behavior.
+/// Feature maturity state (#7029 evidence-honest vocabulary).
+///
+/// Maturity records the *evidence state* of a row, not its wire behavior:
+/// `advertised` plus the [`Maturity::is_servable`] predicate decide the
+/// advertisement route, so a row can be advertised while its evidence state
+/// is [`Maturity::NotProven`]. Advertisement, an implementation path, or a
+/// named test can never independently yield [`Maturity::Proven`]; promotion
+/// requires the per-class evidence policy in [`Catalog::validate`].
 #[derive(
     Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum Maturity {
-    /// Early-stage feature.
-    Experimental,
-    /// Feature can be tested but not yet stable.
+    /// Behavior evidence verified against the row's class policy and cited.
+    Proven,
+    /// Implemented behind a documented preview boundary.
     Preview,
-    /// Fully released and advertizable feature.
-    Ga,
-    /// Planned work item, not yet implemented or measured.
+    /// Acknowledged protocol surface that is not implemented yet.
     Planned,
-    /// Fully production-ready and typically exposed like GA.
-    Production,
+    /// Deliberately unsupported surface (negative-gated).
+    Unsupported,
+    /// Implemented surface without qualifying behavior evidence. Fail-closed
+    /// default for rows whose citations are declaration-, tolerance-, or
+    /// comment-only (#7029).
+    NotProven,
 }
 
 impl Maturity {
-    /// Returns `true` when the feature contributes to advertised API coverage.
-    pub const fn is_advertised(self) -> bool {
-        matches!(self, Self::Ga | Self::Production)
+    /// Returns `true` when the feature may take part in the advertisement
+    /// route (`advertised = true` rows with this maturity are advertised).
+    ///
+    /// Evidence state does not gate advertisement: a [`Maturity::NotProven`]
+    /// row stays advertised while its evidence gap is recorded honestly.
+    pub const fn is_servable(self) -> bool {
+        !matches!(self, Self::Planned | Self::Unsupported)
     }
 
     /// Returns `true` when the feature participates in the compatibility grid.
@@ -60,13 +73,119 @@ impl Maturity {
     /// Human-readable lowercase label.
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Experimental => "experimental",
+            Self::Proven => "proven",
             Self::Preview => "preview",
-            Self::Ga => "ga",
             Self::Planned => "planned",
-            Self::Production => "production",
+            Self::Unsupported => "unsupported",
+            Self::NotProven => "not_proven",
         }
     }
+}
+
+/// Message flow direction for a catalog row (#7029 required dimension).
+#[derive(
+    Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+    /// Client-to-server request/response or notification.
+    ClientToServer,
+    /// Server-to-client request or notification.
+    ServerToClient,
+    /// Both directions (for example full DAP sessions or handshake surfaces).
+    Bidirectional,
+}
+
+impl Direction {
+    /// Human-readable lowercase label.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ClientToServer => "client_to_server",
+            Self::ServerToClient => "server_to_client",
+            Self::Bidirectional => "bidirectional",
+        }
+    }
+}
+
+/// Feature class used to select the promotion policy (#7029).
+#[derive(
+    Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum FeatureClass {
+    /// Client request/response surface.
+    RequestResponse,
+    /// Server-initiated request or push surface.
+    ServerRequest,
+    /// Document/workspace notification surface (sync, configuration, file events).
+    DocumentWorkspace,
+    /// Cancellation and progress plumbing (`$/...`).
+    CancellationProgress,
+    /// Surface whose proof depends on an editor receipt.
+    EditorDependent,
+}
+
+impl FeatureClass {
+    /// Human-readable lowercase label.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::RequestResponse => "request_response",
+            Self::ServerRequest => "server_request",
+            Self::DocumentWorkspace => "document_workspace",
+            Self::CancellationProgress => "cancellation_progress",
+            Self::EditorDependent => "editor_dependent",
+        }
+    }
+}
+
+/// How a row's capability/registration route is exposed (#7029).
+#[derive(
+    Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityRoute {
+    /// Advertised through `initialize` server capabilities.
+    InitializeCapability,
+    /// Registered at runtime via `client/registerCapability`.
+    DynamicRegistration,
+    /// Emitted only when the client declares the matching capability.
+    ClientCapabilityGated,
+    /// Always-on push with no capability negotiation.
+    Unsolicited,
+    /// Route not yet recorded; blocks `proven` promotion.
+    Missing,
+}
+
+impl CapabilityRoute {
+    /// Human-readable lowercase label.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::InitializeCapability => "initialize_capability",
+            Self::DynamicRegistration => "dynamic_registration",
+            Self::ClientCapabilityGated => "client_capability_gated",
+            Self::Unsolicited => "unsolicited",
+            Self::Missing => "missing",
+        }
+    }
+}
+
+/// Explicit missing-value token for owner and state-owner fields (#7029).
+pub const MISSING: &str = "missing";
+/// Explicit stateless token for the state-owner field (#7029).
+pub const STATELESS: &str = "stateless";
+
+/// Minimum evidence a feature class demands before `proven` is allowed
+/// (#7029). Declares the policy without requiring the missing tests to
+/// exist yet; executable evidence validation belongs to the follow-up
+/// #6731 gate.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct EvidencePolicy {
+    /// Feature class this policy governs.
+    pub class: FeatureClass,
+    /// Minimum count of cited behavior-evidence tests for `proven`.
+    pub min_behavior_tests: usize,
+    /// Human-readable policy statement.
+    pub description: String,
 }
 
 /// Per-feature catalog entry.
@@ -80,8 +199,18 @@ pub struct Feature {
     /// Area bucket (`text_document`, `workspace`, `debug`, etc.).
     #[serde(default)]
     pub area: String,
-    /// Maturity state.
+    /// Maturity (evidence state) of the row.
     pub maturity: Maturity,
+    /// Message flow direction (#7029 required dimension).
+    pub direction: Direction,
+    /// Feature class selecting the promotion policy (#7029 required dimension).
+    pub class: FeatureClass,
+    /// Capability/registration route (#7029 required dimension).
+    pub route: CapabilityRoute,
+    /// Implementation owner (crate granularity) or [`MISSING`].
+    pub owner: String,
+    /// Retained-state owner, [`STATELESS`], or [`MISSING`].
+    pub state_owner: String,
     /// Whether this feature is advertised/visible to clients.
     #[serde(default)]
     pub advertised: bool,
@@ -105,6 +234,9 @@ const fn default_counts_in_coverage() -> bool {
 pub struct Catalog {
     /// Shared metadata section.
     pub meta: Meta,
+    /// Minimum-evidence policy per feature class (#7029).
+    #[serde(default)]
+    pub evidence_policy: Vec<EvidencePolicy>,
     /// Ordered feature rows.
     pub feature: Vec<Feature>,
 }
@@ -115,12 +247,20 @@ impl Catalog {
         &self.feature
     }
 
-    /// IDs for advertised trackable features (GA/production + `advertised = true`).
+    /// Policy declared for a feature class, if any.
+    pub fn evidence_policy_for(&self, class: FeatureClass) -> Option<&EvidencePolicy> {
+        self.evidence_policy.iter().find(|policy| policy.class == class)
+    }
+
+    /// IDs for advertised rows (`advertised = true` and a servable maturity).
+    ///
+    /// Advertisement is a wire-surface declaration; it is intentionally
+    /// independent of the evidence state recorded by [`Maturity`] (#7029).
     pub fn advertised_feature_ids(&self) -> Vec<&str> {
         let mut ids = self
             .feature
             .iter()
-            .filter(|feature| feature.advertised && feature.maturity.is_advertised())
+            .filter(|feature| feature.advertised && feature.maturity.is_servable())
             .map(|feature| feature.id.as_str())
             .collect::<Vec<_>>();
         ids.sort_unstable();
@@ -154,7 +294,7 @@ impl Catalog {
         self.feature
             .iter()
             .filter(|feature| {
-                feature.advertised && feature.maturity.is_advertised() && feature.counts_in_coverage
+                feature.advertised && feature.maturity.is_servable() && feature.counts_in_coverage
             })
             .count()
     }
@@ -186,7 +326,7 @@ impl Catalog {
     pub fn advertised_trackable_count(&self) -> usize {
         self.feature
             .iter()
-            .filter(|feature| feature.advertised && feature.maturity.is_advertised())
+            .filter(|feature| feature.advertised && feature.maturity.is_servable())
             .count()
     }
 
@@ -217,11 +357,11 @@ impl Catalog {
             }
 
             match feature.maturity {
-                Maturity::Ga => entry.ga += 1,
-                Maturity::Production => entry.production += 1,
+                Maturity::Proven => entry.proven += 1,
                 Maturity::Preview => entry.preview += 1,
-                Maturity::Experimental => entry.experimental += 1,
                 Maturity::Planned => entry.planned += 1,
+                Maturity::Unsupported => entry.unsupported += 1,
+                Maturity::NotProven => entry.not_proven += 1,
             }
         }
 
@@ -241,6 +381,13 @@ impl Catalog {
             );
         }
 
+        let mut policy_classes = BTreeSet::new();
+        for policy in &self.evidence_policy {
+            if !policy_classes.insert(policy.class) {
+                issues.push(format!("duplicate evidence policy class: {}", policy.class.label()));
+            }
+        }
+
         for feature in &self.feature {
             if feature.id.trim().is_empty() {
                 issues.push("feature id must not be empty".to_string());
@@ -248,6 +395,62 @@ impl Catalog {
             }
             if !seen.insert(&feature.id) {
                 issues.push(format!("duplicate feature id: {}", feature.id));
+            }
+
+            // #7029: every used class must have an explicit promotion policy.
+            if self.evidence_policy_for(feature.class).is_none() {
+                issues.push(format!(
+                    "feature {}: class {} has no evidence policy",
+                    feature.id,
+                    feature.class.label()
+                ));
+            }
+
+            // #7029: advertisement and non-servable maturities are contradictory.
+            if feature.advertised && !feature.maturity.is_servable() {
+                issues.push(format!(
+                    "feature {}: advertised rows cannot be {}",
+                    feature.id,
+                    feature.maturity.label()
+                ));
+            }
+
+            // #7029 fail-closed promotion rule: `advertised = true`, an
+            // implementation path, or a named test cannot independently yield
+            // `proven`. Promotion requires the conjunction of cited behavior
+            // evidence (per class policy), a recorded route, and recorded
+            // owners.
+            if feature.maturity == Maturity::Proven {
+                let min = self
+                    .evidence_policy_for(feature.class)
+                    .map_or(1, |policy| policy.min_behavior_tests.max(1));
+                if feature.tests.len() < min {
+                    issues.push(format!(
+                        "feature {}: proven requires at least {} cited behavior test(s) per {} \
+                         policy (#7029); downgrade to not_proven or cite evidence",
+                        feature.id,
+                        min,
+                        feature.class.label()
+                    ));
+                }
+                if feature.route == CapabilityRoute::Missing {
+                    issues.push(format!(
+                        "feature {}: proven requires a recorded capability route (#7029)",
+                        feature.id
+                    ));
+                }
+                if feature.owner == MISSING {
+                    issues.push(format!(
+                        "feature {}: proven requires a recorded implementation owner (#7029)",
+                        feature.id
+                    ));
+                }
+                if feature.state_owner == MISSING {
+                    issues.push(format!(
+                        "feature {}: proven requires a recorded state owner or stateless (#7029)",
+                        feature.id
+                    ));
+                }
             }
         }
 
@@ -262,16 +465,16 @@ pub struct AreaStats {
     pub total: usize,
     /// Advertised row count in the area.
     pub advertised: usize,
-    /// Experimental count.
-    pub experimental: usize,
     /// Preview count.
     pub preview: usize,
-    /// GA count.
-    pub ga: usize,
-    /// Production count.
-    pub production: usize,
+    /// Proven count.
+    pub proven: usize,
     /// Planned count.
     pub planned: usize,
+    /// Unsupported count.
+    pub unsupported: usize,
+    /// Not-proven count.
+    pub not_proven: usize,
 }
 
 impl AreaStats {
@@ -443,9 +646,7 @@ pub fn render_lsp_feature_catalog_module(catalog: &Catalog, source_comment: &str
     code.push_str(&format!("pub const VERSION: &str = {:?};\n", catalog.meta.version));
     code.push_str("/// LSP protocol version supported by this parser implementation\n");
     code.push_str(&format!("pub const LSP_VERSION: &str = {:?};\n", catalog.meta.lsp_version));
-    code.push_str(
-        "/// Represents a single LSP feature with its metadata and implementation status\n",
-    );
+    code.push_str("/// Represents a single LSP feature with its metadata and evidence state\n");
     code.push_str("#[derive(Debug, Clone)]\n");
     code.push_str("pub struct Feature {\n");
     code.push_str("    /// Unique identifier for this feature\n");
@@ -455,9 +656,19 @@ pub fn render_lsp_feature_catalog_module(catalog: &Catalog, source_comment: &str
     code.push_str("    /// Functional area for this feature\n");
     code.push_str("    pub area: &'static str,\n");
     code.push_str(
-        "    /// Maturity level (`experimental`, `preview`, `ga`, `planned`, `production`)\n",
+        "    /// Evidence state (`proven`, `preview`, `planned`, `unsupported`, `not_proven`)\n",
     );
     code.push_str("    pub maturity: &'static str,\n");
+    code.push_str("    /// Message flow direction\n");
+    code.push_str("    pub direction: &'static str,\n");
+    code.push_str("    /// Feature class selecting the promotion policy\n");
+    code.push_str("    pub class: &'static str,\n");
+    code.push_str("    /// Capability/registration route\n");
+    code.push_str("    pub route: &'static str,\n");
+    code.push_str("    /// Implementation owner (crate granularity) or `missing`\n");
+    code.push_str("    pub owner: &'static str,\n");
+    code.push_str("    /// Retained-state owner, `stateless`, or `missing`\n");
+    code.push_str("    pub state_owner: &'static str,\n");
     code.push_str("    /// Advertised feature flag\n");
     code.push_str("    pub advertised: bool,\n");
     code.push_str("    /// Human-readable description\n");
@@ -478,6 +689,11 @@ pub fn render_lsp_feature_catalog_module(catalog: &Catalog, source_comment: &str
         code.push_str(&format!("        spec: {:?},\n", feature.spec));
         code.push_str(&format!("        area: {:?},\n", feature.area));
         code.push_str(&format!("        maturity: {:?},\n", feature.maturity.label()));
+        code.push_str(&format!("        direction: {:?},\n", feature.direction.label()));
+        code.push_str(&format!("        class: {:?},\n", feature.class.label()));
+        code.push_str(&format!("        route: {:?},\n", feature.route.label()));
+        code.push_str(&format!("        owner: {:?},\n", feature.owner));
+        code.push_str(&format!("        state_owner: {:?},\n", feature.state_owner));
         code.push_str(&format!("        advertised: {},\n", feature.advertised));
         code.push_str(&format!("        description: {:?},\n", feature.description));
         code.push_str(&format!("        counts_in_coverage: {},\n", feature.counts_in_coverage));
@@ -486,14 +702,14 @@ pub fn render_lsp_feature_catalog_module(catalog: &Catalog, source_comment: &str
     }
     code.push_str("];\n\n");
 
-    code.push_str("/// Advertised feature IDs (GA/production and `advertised = true`).\n");
+    code.push_str("/// Advertised feature IDs (`advertised = true` with a servable maturity).\n");
     code.push_str("pub const ADVERTISED_LSP_FEATURES: &[&str] = &[\n");
     for id in &advertised {
         code.push_str(&format!("    {:?},\n", id));
     }
     code.push_str("];\n\n");
 
-    code.push_str("/// Returns advertised feature IDs (GA/production and `advertised = true`).\n");
+    code.push_str("/// Returns advertised feature IDs (`advertised = true`, servable maturity).\n");
     code.push_str("pub fn advertised_features() -> &'static [&'static str] {\n");
     code.push_str("    ADVERTISED_LSP_FEATURES\n");
     code.push_str("}\n\n");
@@ -513,14 +729,14 @@ pub fn render_navigation_table(catalog: &Catalog) -> String {
     for feature in &catalog.feature {
         let entry = by_area.entry(feature.area.as_str()).or_default();
         entry.1 += 1;
-        if matches!(feature.maturity, Maturity::Ga | Maturity::Production | Maturity::Preview) {
+        if matches!(feature.maturity, Maturity::Proven | Maturity::Preview) {
             entry.0 += 1;
         }
     }
 
     let mut lines = vec![
-        "| Area | Declared ga/production/preview rows | Total rows |".to_string(),
-        "|------|---------------------------|------------|".to_string(),
+        "| Area | Declared proven/preview rows | Total rows |".to_string(),
+        "|------|-------------------|------------|".to_string(),
     ];
     let mut declared = 0;
     let mut total = 0;
@@ -579,12 +795,22 @@ mod tests {
                 lsp_version: "3.18".to_string(),
                 compliance_percent: None,
             },
+            evidence_policy: vec![EvidencePolicy {
+                class: FeatureClass::RequestResponse,
+                min_behavior_tests: 1,
+                description: "client request/response needs a behavior test".to_string(),
+            }],
             feature: vec![
                 Feature {
                     id: "lsp.completion".to_string(),
                     spec: "LSP 3.18".to_string(),
                     area: "text_document".to_string(),
-                    maturity: Maturity::Ga,
+                    maturity: Maturity::Proven,
+                    direction: Direction::ClientToServer,
+                    class: FeatureClass::RequestResponse,
+                    route: CapabilityRoute::InitializeCapability,
+                    owner: "perl-lsp-rs".to_string(),
+                    state_owner: "perl-lsp-rs::state".to_string(),
                     advertised: true,
                     tests: vec!["crates/perl-lsp-rs/tests/completion.rs".to_string()],
                     counts_in_coverage: true,
@@ -595,6 +821,11 @@ mod tests {
                     spec: "LSP 3.18".to_string(),
                     area: "text_document".to_string(),
                     maturity: Maturity::Preview,
+                    direction: Direction::ClientToServer,
+                    class: FeatureClass::RequestResponse,
+                    route: CapabilityRoute::InitializeCapability,
+                    owner: "perl-lsp-rs".to_string(),
+                    state_owner: "perl-lsp-rs::state".to_string(),
                     advertised: true,
                     tests: vec!["crates/perl-lsp-rs/tests/semantic_tokens.rs".to_string()],
                     counts_in_coverage: true,
@@ -605,6 +836,11 @@ mod tests {
                     spec: "LSP 3.18".to_string(),
                     area: "workspace".to_string(),
                     maturity: Maturity::Planned,
+                    direction: Direction::ClientToServer,
+                    class: FeatureClass::RequestResponse,
+                    route: CapabilityRoute::Missing,
+                    owner: MISSING.to_string(),
+                    state_owner: MISSING.to_string(),
                     advertised: true,
                     tests: vec![],
                     counts_in_coverage: false,
@@ -614,9 +850,14 @@ mod tests {
                     id: "lsp.references".to_string(),
                     spec: "LSP 3.18".to_string(),
                     area: "workspace".to_string(),
-                    maturity: Maturity::Production,
+                    maturity: Maturity::NotProven,
+                    direction: Direction::ClientToServer,
+                    class: FeatureClass::RequestResponse,
+                    route: CapabilityRoute::InitializeCapability,
+                    owner: "perl-lsp-rs".to_string(),
+                    state_owner: "perl-lsp-rs::state".to_string(),
                     advertised: true,
-                    tests: vec!["crates/perl-lsp-rs/tests/references.rs".to_string()],
+                    tests: vec![],
                     counts_in_coverage: true,
                     description: "References".to_string(),
                 },
@@ -625,9 +866,23 @@ mod tests {
     }
 
     #[test]
-    fn advertised_ids_are_sorted_and_filter_preview_and_planned() {
+    fn advertised_ids_are_sorted_and_exclude_planned_rows() {
         let catalog = sample_catalog();
-        assert_eq!(catalog.advertised_feature_ids(), vec!["lsp.completion", "lsp.references"]);
+        // Advertisement is decoupled from evidence state (#7029): the
+        // not_proven row stays advertised while its evidence gap is recorded.
+        assert_eq!(
+            catalog.advertised_feature_ids(),
+            vec!["lsp.completion", "lsp.references", "lsp.semanticTokens"]
+        );
+    }
+
+    #[test]
+    fn not_proven_rows_remain_advertised_but_are_not_proven() {
+        let catalog = sample_catalog();
+        let references = must_some(catalog.feature.iter().find(|f| f.id == "lsp.references"));
+        assert!(references.advertised);
+        assert_eq!(references.maturity, Maturity::NotProven);
+        assert!(!catalog.advertised_feature_ids().is_empty());
     }
 
     #[test]
@@ -635,11 +890,11 @@ mod tests {
     fn compliance_math_uses_trackable_features_only() {
         let catalog = sample_catalog();
         assert_eq!(catalog.trackable_feature_count_for_grid(), 3);
-        assert_eq!(catalog.advertised_trackable_count_for_grid(), 2);
-        assert_eq!(catalog.compliance_percent_for_grid(), 67.0);
+        assert_eq!(catalog.advertised_trackable_count_for_grid(), 3);
+        assert_eq!(catalog.compliance_percent_for_grid(), 100.0);
         assert_eq!(catalog.trackable_feature_count(), 3);
-        assert_eq!(catalog.advertised_trackable_count(), 2);
-        assert_eq!(catalog.compliance_percent(), 67.0);
+        assert_eq!(catalog.advertised_trackable_count(), 3);
+        assert_eq!(catalog.compliance_percent(), 100.0);
     }
 
     #[test]
@@ -650,7 +905,12 @@ mod tests {
             id: "lsp.compatibility_only".to_string(),
             spec: "LSP 3.18".to_string(),
             area: "text_document".to_string(),
-            maturity: Maturity::Ga,
+            maturity: Maturity::Proven,
+            direction: Direction::ClientToServer,
+            class: FeatureClass::RequestResponse,
+            route: CapabilityRoute::InitializeCapability,
+            owner: "perl-lsp-rs".to_string(),
+            state_owner: STATELESS.to_string(),
             advertised: true,
             tests: vec![],
             counts_in_coverage: false,
@@ -658,11 +918,11 @@ mod tests {
         });
 
         assert_eq!(catalog.trackable_feature_count_for_grid(), 3);
-        assert_eq!(catalog.advertised_trackable_count_for_grid(), 2);
-        assert_eq!(catalog.compliance_percent_for_grid(), 67.0);
+        assert_eq!(catalog.advertised_trackable_count_for_grid(), 3);
+        assert_eq!(catalog.compliance_percent_for_grid(), 100.0);
         assert_eq!(catalog.trackable_feature_count(), 4);
-        assert_eq!(catalog.advertised_trackable_count(), 3);
-        assert_eq!(catalog.compliance_percent(), 75.0);
+        assert_eq!(catalog.advertised_trackable_count(), 4);
+        assert_eq!(catalog.compliance_percent(), 100.0);
     }
 
     #[test]
@@ -673,14 +933,13 @@ mod tests {
         let text_doc = must_some(stats.get("text_document"));
         assert_eq!(text_doc.total, 2);
         assert_eq!(text_doc.advertised, 2);
-        assert_eq!(text_doc.ga, 1);
+        assert_eq!(text_doc.proven, 1);
         assert_eq!(text_doc.preview, 1);
-        assert_eq!(text_doc.production, 0);
         assert_eq!(text_doc.trackable_coverage_percent(), 100);
 
         let workspace = must_some(stats.get("workspace"));
         assert_eq!(workspace.total, 2);
-        assert_eq!(workspace.production, 1);
+        assert_eq!(workspace.not_proven, 1);
         assert_eq!(workspace.planned, 1);
         assert_eq!(workspace.trackable(), 1);
         assert_eq!(workspace.trackable_coverage_percent(), 200);
@@ -693,7 +952,12 @@ mod tests {
             id: "lsp.completion".to_string(),
             spec: "LSP 3.18".to_string(),
             area: "text_document".to_string(),
-            maturity: Maturity::Ga,
+            maturity: Maturity::Proven,
+            direction: Direction::ClientToServer,
+            class: FeatureClass::RequestResponse,
+            route: CapabilityRoute::InitializeCapability,
+            owner: "perl-lsp-rs".to_string(),
+            state_owner: "perl-lsp-rs::state".to_string(),
             advertised: true,
             tests: vec![],
             counts_in_coverage: true,
@@ -723,6 +987,87 @@ mod tests {
         );
         assert!(message.contains("#6731"), "refusal must cite its claim: {message}");
         Ok(())
+    }
+
+    #[test]
+    fn validation_refuses_proven_without_cited_evidence() {
+        // #7029 negative control: advertisement, an implementation path, or a
+        // named test cannot independently yield proven. A proven row with no
+        // cited tests fails validation.
+        let mut catalog = sample_catalog();
+        catalog.feature[0].maturity = Maturity::Proven;
+        catalog.feature[0].tests.clear();
+
+        let err = must_some(catalog.validate().err());
+        assert!(
+            err.to_string().contains("proven requires at least 1 cited behavior test"),
+            "unexpected message: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn validation_refuses_proven_with_missing_route_or_owners() {
+        // #7029 negative control: promotion from advertisement alone must
+        // fail — proven demands a recorded route, owner, and state owner.
+        let mut catalog = sample_catalog();
+        catalog.feature[0].route = CapabilityRoute::Missing;
+        catalog.feature[0].owner = MISSING.to_string();
+        catalog.feature[0].state_owner = MISSING.to_string();
+
+        let message = must_some(catalog.validate().err()).to_string();
+        assert!(
+            message.contains("proven requires a recorded capability route"),
+            "message: {message}"
+        );
+        assert!(
+            message.contains("proven requires a recorded implementation owner"),
+            "message: {message}"
+        );
+        assert!(message.contains("proven requires a recorded state owner"), "message: {message}");
+    }
+
+    #[test]
+    fn validation_refuses_advertised_planned_or_unsupported_rows() {
+        // #7029: a planned or unsupported row cannot carry the advertisement
+        // route; the wire surface and the non-servable maturity contradict.
+        let mut catalog = sample_catalog();
+        catalog.feature[3].maturity = Maturity::Unsupported;
+
+        let message = must_some(catalog.validate().err()).to_string();
+        assert!(message.contains("advertised rows cannot be unsupported"), "message: {message}");
+    }
+
+    #[test]
+    fn validation_refuses_rows_without_a_class_policy() {
+        // #7029: every used feature class must have an explicit promotion
+        // policy, so a new class cannot silently bypass the evidence rules.
+        let mut catalog = sample_catalog();
+        catalog.evidence_policy.clear();
+
+        let message = must_some(catalog.validate().err()).to_string();
+        assert!(message.contains("has no evidence policy"), "message: {message}");
+    }
+
+    #[test]
+    fn parsing_rejects_the_pre_7029_vocabulary() {
+        // #7029 negative control: the pre-PR vocabulary (`ga`, `production`,
+        // `experimental`) must fail to parse, so a stale catalog cannot
+        // silently retain unearned maturity claims.
+        let raw = "[meta]\n\
+                   version = \"0.17.0\"\n\
+                   lsp_version = \"3.18\"\n\
+                   \n\
+                   [[feature]]\n\
+                   id = \"lsp.hover\"\n\
+                   maturity = \"ga\"\n\
+                   direction = \"client_to_server\"\n\
+                   class = \"request_response\"\n\
+                   route = \"initialize_capability\"\n\
+                   owner = \"perl-lsp-rs\"\n\
+                   state_owner = \"perl-lsp-rs::state\"\n";
+        let parsed: Result<Catalog, _> = toml::from_str(raw);
+        assert!(parsed.is_err(), "maturity = \"ga\" must not parse after #7029");
     }
 
     #[test]
@@ -799,8 +1144,12 @@ mod tests {
         assert!(rendered.contains("pub const LSP_VERSION: &str = \"3.18\";"));
         assert!(!rendered.contains("COMPLIANCE_PERCENT"));
         assert!(!rendered.contains("compliance_percent()"));
+        assert!(rendered.contains("maturity: \"proven\""));
+        assert!(rendered.contains("maturity: \"not_proven\""));
+        assert!(rendered.contains("direction: \"client_to_server\""));
+        assert!(rendered.contains("route: \"initialize_capability\""));
         assert!(
-            rendered.contains("pub const ADVERTISED_LSP_FEATURES: &[&str] = &[\n    \"lsp.completion\",\n    \"lsp.references\",\n];")
+            rendered.contains("pub const ADVERTISED_LSP_FEATURES: &[&str] = &[\n    \"lsp.completion\",\n    \"lsp.references\",\n    \"lsp.semanticTokens\",\n];")
         );
 
         let code_action_idx = must_some(rendered.find("id: \"lsp.codeAction\""));
