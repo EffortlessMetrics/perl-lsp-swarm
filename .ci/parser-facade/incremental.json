@@ -139,6 +139,15 @@
       "production_eligible": true
     },
     {
+      "name": "lex::MAX_STORED_LEX_CHECKPOINTS",
+      "classification": "experimental",
+      "disposition": "review",
+      "owner": "#6704",
+      "target_owner": "#6982",
+      "exit_condition": "Replace the public tuning constant with typed strategy policy or make private once #6982 lands.",
+      "production_eligible": false
+    },
+    {
       "name": "perl_line_index::LineIndex",
       "classification": "compatibility_reexport",
       "disposition": "review",

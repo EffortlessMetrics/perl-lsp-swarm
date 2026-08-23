@@ -1040,10 +1040,14 @@ fn test_index_coordinator_check_limits_none_when_ok() {
 fn test_index_coordinator_check_limits_prefers_file_count_over_symbol_count()
 -> Result<(), Box<dyn std::error::Error>> {
     use perl_workspace::workspace::workspace_index::{
-        DegradationReason as IxDegradationReason, IndexPerformanceCaps,
+        DegradationReason as IxDegradationReason, IndexPerformanceCaps, IndexState as IxIndexState,
         ResourceKind as IxResourceKind,
     };
 
+    // Since #4701 (issue #4655) admissions are capped eagerly: a new file
+    // that would exceed `max_files` or the projected `max_total_symbols` is
+    // rejected and the rejection surfaces as a `ResourceLimit` degradation.
+    // With both budgets exhausted, the file-count limit is reported first.
     let limits = IndexResourceLimits {
         max_files: 1,
         max_total_symbols: 1,
@@ -1052,16 +1056,38 @@ fn test_index_coordinator_check_limits_prefers_file_count_over_symbol_count()
     let coord = IndexCoordinator::with_limits_and_caps(limits, IndexPerformanceCaps::default());
     coord.transition_to_ready(0, 0);
 
+    // The first admission is within both budgets and must be accepted; the
+    // second would exceed `max_files` AND the projected `max_total_symbols`
+    // and must be rejected citing the file-count limit (preferred over the
+    // symbol count), surfacing as a MaxFiles degradation.
+    let mut outcomes: Vec<Result<(), String>> = Vec::new();
     for i in 0..2 {
         let uri = Url::parse(&format!("file:///limit_priority_{}.pl", i))?;
-        coord.index().index_file(uri, format!("sub f{} {{ 1 }}", i))?;
+        outcomes.push(coord.index().index_file(uri, format!("sub f{} {{ 1 }}", i)));
     }
-
-    let reason = coord.check_limits().ok_or("limits should be exceeded")?;
+    assert!(outcomes[0].is_ok(), "the within-budget admission must be accepted");
+    let rejection = match &outcomes[1] {
+        Ok(()) => return Err("admission beyond max_files must be rejected".into()),
+        Err(message) => message,
+    };
+    assert!(
+        rejection.contains("max_files=1"),
+        "file-count limit must be preferred over symbol count: {rejection}"
+    );
     assert!(matches!(
-        reason,
-        IxDegradationReason::ResourceLimit { kind: IxResourceKind::MaxFiles }
+        coord.state(),
+        IxIndexState::Degraded {
+            reason: IxDegradationReason::ResourceLimit { kind: IxResourceKind::MaxFiles },
+            ..
+        }
     ));
+
+    // The rejected file was never admitted, so the retrospective
+    // check-limits pass sees the retained index within bounds.
+    assert!(
+        coord.check_limits().is_none(),
+        "a rejected admission must not leave over-limit state for check_limits"
+    );
     Ok(())
 }
 

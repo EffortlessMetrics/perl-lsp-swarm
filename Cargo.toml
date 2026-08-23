@@ -417,12 +417,14 @@ decimal_bitwise_operands = "warn"
 duration_suboptimal_units = "warn"
 needless_type_cast = "warn"
 manual_ilog2 = "warn"
-manual_take = "warn"
+manual_take = "deny"
 unnecessary_trailing_comma = "warn"
 # wildcard_imports: Phase 1 (warn) — measures violations before crate-by-crate fix (#2333).
 wildcard_imports = "warn"
 print_stderr = "deny"
 print_stdout = "deny"
+# same_length_and_capacity: protects raw-parts reconstruction from length/capacity identity errors (#1804).
+same_length_and_capacity = "deny"
 # disallowed_fields: architectural seam protection (#6114).
 # The actual field denylist lives in clippy.toml `disallowed-fields = []`.
 disallowed_fields = "deny"

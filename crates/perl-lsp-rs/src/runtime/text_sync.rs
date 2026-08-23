@@ -12,8 +12,10 @@
 use super::*;
 use super::{
     Arc, AtomicBool, AtomicU32, CodeFormatter, DocumentState, FormattingOptions, HashMap,
-    JsonRpcError, LspServer, Mutex, Node, NonZeroU32, Ordering, Parser, Value, json, parse_worker,
-    source_path_from_uri, workspace_progress,
+    JsonRpcError, LspServer, Mutex, Node, NonZeroU32, Ordering, Parser, Value,
+    diagnostics_sink::{PushDiagnosticIdentity, PushDiagnosticsDisposition},
+    document_symbols_sink::DocumentSymbolIdentity as SymbolsIdentity,
+    json, parse_worker, source_path_from_uri,
 };
 use crate::protocol::invalid_params;
 use crate::state::{DegradationTier, FIRST_ACCEPTED_DOCUMENT_GENERATION, ParsedSnapshot};
@@ -134,18 +136,37 @@ impl LspServer {
                 );
 
                 let normalized_uri = self.normalize_uri_key(uri);
-                self.documents.lock().insert(normalized_uri.clone(), minimal_state(text, version));
+                // Guarded no-parse state still carries document identity
+                // through the push-diagnostics sink (#11673).
+                let guard_state = minimal_state(text, version);
+                let symbols_identity = SymbolsIdentity::for_document(
+                    &normalized_uri,
+                    &guard_state.generation,
+                    guard_state.current_generation(),
+                );
+                let identity = PushDiagnosticIdentity::for_document(
+                    &normalized_uri,
+                    &guard_state.generation,
+                    guard_state.current_generation(),
+                );
+                self.documents.lock().insert(normalized_uri.clone(), guard_state);
+                // Guarded no-parse document: terminal readiness state (#11675).
+                self.mark_active_document_guarded(
+                    &normalized_uri,
+                    &symbols_identity.document_instance,
+                    symbols_identity.generation,
+                    "template_parse_skipped",
+                );
 
-                if let Err(e) = self.notify(
-                    "textDocument/publishDiagnostics",
+                let _outcome = self.commit_push_diagnostics(
+                    &identity,
                     json!({
                         "uri": uri,
                         "diagnostics": []
                     }),
-                ) {
-                    tracing::warn!("Failed to publish diagnostics for {}: {}", uri, e);
-                }
-                self.clear_document_symbols(uri);
+                    PushDiagnosticsDisposition::Clear,
+                );
+                self.clear_document_symbols_for_identity(&symbols_identity);
 
                 return Ok(());
             }
@@ -163,18 +184,35 @@ impl LspServer {
 
                 // Store document state without AST
                 let normalized_uri = self.normalize_uri_key(uri);
-                self.documents.lock().insert(normalized_uri.clone(), minimal_state(text, version));
+                let guard_state = minimal_state(text, version);
+                let symbols_identity = SymbolsIdentity::for_document(
+                    &normalized_uri,
+                    &guard_state.generation,
+                    guard_state.current_generation(),
+                );
+                let identity = PushDiagnosticIdentity::for_document(
+                    &normalized_uri,
+                    &guard_state.generation,
+                    guard_state.current_generation(),
+                );
+                self.documents.lock().insert(normalized_uri.clone(), guard_state);
+                // Guarded no-parse document: terminal readiness state (#11675).
+                self.mark_active_document_guarded(
+                    &normalized_uri,
+                    &symbols_identity.document_instance,
+                    symbols_identity.generation,
+                    "oversize_file_limit",
+                );
 
-                if let Err(e) = self.notify(
-                    "textDocument/publishDiagnostics",
+                let _outcome = self.commit_push_diagnostics(
+                    &identity,
                     json!({
                         "uri": uri,
                         "diagnostics": []
                     }),
-                ) {
-                    tracing::warn!("Failed to publish diagnostics for {}: {}", uri, e);
-                }
-                self.clear_document_symbols(uri);
+                    PushDiagnosticsDisposition::Clear,
+                );
+                self.clear_document_symbols_for_identity(&symbols_identity);
 
                 return Ok(());
             }
@@ -188,10 +226,28 @@ impl LspServer {
                 );
 
                 let normalized_uri = self.normalize_uri_key(uri);
-                self.documents.lock().insert(normalized_uri.clone(), minimal_state(text, version));
+                let guard_state = minimal_state(text, version);
+                let symbols_identity = SymbolsIdentity::for_document(
+                    &normalized_uri,
+                    &guard_state.generation,
+                    guard_state.current_generation(),
+                );
+                let identity = PushDiagnosticIdentity::for_document(
+                    &normalized_uri,
+                    &guard_state.generation,
+                    guard_state.current_generation(),
+                );
+                self.documents.lock().insert(normalized_uri.clone(), guard_state);
+                // Guarded no-parse document: terminal readiness state (#11675).
+                self.mark_active_document_guarded(
+                    &normalized_uri,
+                    &symbols_identity.document_instance,
+                    symbols_identity.generation,
+                    "binary_content",
+                );
 
-                if let Err(e) = self.notify(
-                    "textDocument/publishDiagnostics",
+                let _outcome = self.commit_push_diagnostics(
+                    &identity,
                     json!({
                         "uri": uri,
                         "diagnostics": [{
@@ -204,14 +260,9 @@ impl LspServer {
                             "message": "File appears to contain binary content (null bytes detected). Perl diagnostics are disabled."
                         }]
                     }),
-                ) {
-                    tracing::warn!(
-                        "Failed to publish binary-content diagnostic for {}: {}",
-                        uri,
-                        e
-                    );
-                }
-                self.clear_document_symbols(uri);
+                    PushDiagnosticsDisposition::Replacement,
+                );
+                self.clear_document_symbols_for_identity(&symbols_identity);
 
                 return Ok(());
             }
@@ -312,18 +363,42 @@ impl LspServer {
             // (created above, never edited yet), so this publication always
             // succeeds synchronously.
             let doc_generation = doc_state.current_generation();
+            // Accepted-ticket identity for this open's parse-derived symbol
+            // commit (#11674): the store mutation validates it at the sink
+            // boundary, not merely before the handler section.
+            let symbol_identity =
+                SymbolsIdentity::for_document(&normalized_uri, &generation, doc_generation);
+            // Active-document parser readiness for this exact generation is
+            // installed BEFORE the accepted state lands (#11675): the entry
+            // starts pending and can only advance through the acceptance and
+            // required-effect stages below.
+            self.install_active_document_pending(&normalized_uri, uri, &generation, doc_generation);
             let snapshot = Arc::new(ParsedSnapshot::from_parse_result(
                 doc_generation,
                 text,
                 ast_arc.clone(),
                 errors,
             ));
-            doc_state.publish_parsed_if_current(doc_generation, snapshot);
+            doc_state.publish_parsed_if_current(doc_generation, Arc::clone(&snapshot));
 
             self.documents.lock().insert(normalized_uri.clone(), doc_state);
+            let acceptance_class = if ast_arc.is_none() {
+                crate::runtime::readiness::ParserAcceptanceClass::Failed
+            } else if !snapshot.parse_errors_arc().is_empty() {
+                crate::runtime::readiness::ParserAcceptanceClass::RecoveredOrLimited
+            } else {
+                crate::runtime::readiness::ParserAcceptanceClass::Clean
+            };
+            self.mark_active_document_parser_accepted(
+                &normalized_uri,
+                &generation,
+                doc_generation,
+                acceptance_class,
+                None,
+            );
 
             if let Some(ref ast) = ast_arc {
-                self.reindex_document_symbols(uri, ast, text);
+                self.commit_document_symbols_from_ast(&symbol_identity, ast, text);
                 // Update the workspace-wide index for cross-file features.
                 // Indexing runs in a background task so the handler returns
                 // immediately without blocking on file I/O or symbol extraction.
@@ -340,7 +415,6 @@ impl LspServer {
                     let documents_for_task =
                         parse_worker::DocumentsHandle(Arc::clone(&self.documents));
                     let normalized_uri_owned = normalized_uri.clone();
-                    let outbound = self.outbound.clone();
                     let task_counter = Arc::clone(&self.pending_index_task_count);
                     task_counter.fetch_add(1, Ordering::SeqCst);
 
@@ -368,15 +442,12 @@ impl LspServer {
                         );
                         match committed {
                             Some(SourceCommitOutcome::Accepted | SourceCommitOutcome::NoOp) => {
-                                if generation.load(Ordering::Acquire)
-                                    == FIRST_ACCEPTED_DOCUMENT_GENERATION.get()
-                                {
-                                    workspace_progress::send_active_document_ready_notification(
-                                        &outbound,
-                                        &uri_owned,
-                                        u64::from(FIRST_ACCEPTED_DOCUMENT_GENERATION.get()),
-                                    );
-                                }
+                                // Active-document readiness is minted by the
+                                // accepted-ticket readiness state machine
+                                // (#11675) when the required core effects
+                                // attach -- NOT by this workspace-index
+                                // commit. Workspace-index lifecycle
+                                // bookkeeping below stays here.
                                 if matches!(
                                     coordinator_clone.state(),
                                     IndexState::Building { phase: IndexPhase::Idle, .. }
@@ -435,7 +506,9 @@ impl LspServer {
                     return Ok(());
                 }
             } else {
-                self.clear_document_symbols(uri);
+                // Current parse failure supersedes old exact symbols via the
+                // sink's declared clear policy (#11674).
+                self.clear_document_symbols_for_identity(&symbol_identity);
             }
 
             // Notify coordinator that all work (parse + index) is complete (may trigger recovery)
@@ -611,6 +684,16 @@ impl LspServer {
                 let next_gen = doc_state.generation.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
                 let target_version = version;
 
+                // Pending readiness for the exact replacement generation,
+                // installed before any parse work for it begins (#11675).
+                // Supersedes the prior generation's readiness by construction.
+                self.install_active_document_pending(
+                    &normalized_uri,
+                    uri,
+                    &doc_state.generation,
+                    next_gen,
+                );
+
                 // Apply incremental changes with UTF-16 aware mapping
                 use crate::textdoc::{Doc, PosEnc, apply_changes};
                 use lsp_types::TextDocumentContentChangeEvent;
@@ -673,19 +756,35 @@ impl LspServer {
                         version,
                         doc_state.generation.clone(),
                     );
+                    let symbols_identity = SymbolsIdentity::for_document(
+                        &normalized_uri,
+                        &doc_state.generation,
+                        doc_state.current_generation(),
+                    );
+                    let identity = PushDiagnosticIdentity::for_document(
+                        &normalized_uri,
+                        &doc_state.generation,
+                        doc_state.current_generation(),
+                    );
                     documents.insert(normalized_uri.clone(), doc_state);
+                    // Guarded no-parse document: terminal readiness state (#11675).
+                    self.mark_active_document_guarded(
+                        &normalized_uri,
+                        &symbols_identity.document_instance,
+                        symbols_identity.generation,
+                        "template_parse_skipped",
+                    );
                     drop(documents);
 
-                    if let Err(e) = self.notify(
-                        "textDocument/publishDiagnostics",
+                    let _outcome = self.commit_push_diagnostics(
+                        &identity,
                         json!({
                             "uri": uri,
                             "diagnostics": []
                         }),
-                    ) {
-                        tracing::warn!("Failed to publish diagnostics for {}: {}", uri, e);
-                    }
-                    self.clear_document_symbols(uri);
+                        PushDiagnosticsDisposition::Clear,
+                    );
+                    self.clear_document_symbols_for_identity(&symbols_identity);
 
                     return Ok(());
                 }
@@ -709,19 +808,35 @@ impl LspServer {
                         version,
                         doc_state.generation.clone(),
                     );
+                    let symbols_identity = SymbolsIdentity::for_document(
+                        &normalized_uri,
+                        &doc_state.generation,
+                        doc_state.current_generation(),
+                    );
+                    let identity = PushDiagnosticIdentity::for_document(
+                        &normalized_uri,
+                        &doc_state.generation,
+                        doc_state.current_generation(),
+                    );
                     documents.insert(normalized_uri.clone(), doc_state);
+                    // Guarded no-parse document: terminal readiness state (#11675).
+                    self.mark_active_document_guarded(
+                        &normalized_uri,
+                        &symbols_identity.document_instance,
+                        symbols_identity.generation,
+                        "oversize_file_limit",
+                    );
                     drop(documents);
 
-                    if let Err(e) = self.notify(
-                        "textDocument/publishDiagnostics",
+                    let _outcome = self.commit_push_diagnostics(
+                        &identity,
                         json!({
                             "uri": uri,
                             "diagnostics": []
                         }),
-                    ) {
-                        tracing::warn!("Failed to publish diagnostics for {}: {}", uri, e);
-                    }
-                    self.clear_document_symbols(uri);
+                        PushDiagnosticsDisposition::Clear,
+                    );
+                    self.clear_document_symbols_for_identity(&symbols_identity);
 
                     return Ok(());
                 }
@@ -741,11 +856,28 @@ impl LspServer {
                         version,
                         doc_state.generation.clone(),
                     );
+                    let symbols_identity = SymbolsIdentity::for_document(
+                        &normalized_uri,
+                        &doc_state.generation,
+                        doc_state.current_generation(),
+                    );
+                    let identity = PushDiagnosticIdentity::for_document(
+                        &normalized_uri,
+                        &doc_state.generation,
+                        doc_state.current_generation(),
+                    );
                     documents.insert(normalized_uri.clone(), doc_state);
+                    // Guarded no-parse document: terminal readiness state (#11675).
+                    self.mark_active_document_guarded(
+                        &normalized_uri,
+                        &symbols_identity.document_instance,
+                        symbols_identity.generation,
+                        "binary_content",
+                    );
                     drop(documents);
 
-                    if let Err(e) = self.notify(
-                        "textDocument/publishDiagnostics",
+                    let _outcome = self.commit_push_diagnostics(
+                        &identity,
                         json!({
                             "uri": uri,
                             "diagnostics": [{
@@ -758,14 +890,9 @@ impl LspServer {
                                 "message": "File appears to contain binary content (null bytes detected). Perl diagnostics are disabled."
                             }]
                         }),
-                    ) {
-                        tracing::warn!(
-                            "Failed to publish binary-content diagnostic for {}: {}",
-                            uri,
-                            e
-                        );
-                    }
-                    self.clear_document_symbols(uri);
+                        PushDiagnosticsDisposition::Replacement,
+                    );
+                    self.clear_document_symbols_for_identity(&symbols_identity);
 
                     return Ok(());
                 }
@@ -834,6 +961,14 @@ impl LspServer {
                     // stranding the pending-parse counter (#3618 settle-
                     // before-increment race). `enqueue`'s return value
                     // is no longer needed by this caller.
+                    // Pending readiness for the exact target generation,
+                    // installed before the parse job begins (#11675).
+                    self.install_active_document_pending(
+                        &normalized_uri,
+                        uri,
+                        &generation_handle,
+                        next_gen,
+                    );
                     worker.enqueue(
                         uri.to_string(),
                         normalized_uri,
@@ -1097,6 +1232,21 @@ impl LspServer {
                 let generation_for_index_task = doc_state.generation.clone();
                 let t_commit_start = std::time::Instant::now();
                 documents.insert(normalized_uri.clone(), doc_state);
+                // The synchronous parse published its snapshot: the exact
+                // ticket for this generation is now accepted (#11675).
+                self.mark_active_document_parser_accepted(
+                    &normalized_uri,
+                    &generation_for_index_task,
+                    next_gen,
+                    if snapshot.ast().is_none() {
+                        crate::runtime::readiness::ParserAcceptanceClass::Failed
+                    } else if !snapshot.parse_errors_arc().is_empty() {
+                        crate::runtime::readiness::ParserAcceptanceClass::RecoveredOrLimited
+                    } else {
+                        crate::runtime::readiness::ParserAcceptanceClass::Clean
+                    },
+                    None,
+                );
 
                 // Must drop the lock before calling publish_diagnostics
                 drop(documents);
@@ -1188,12 +1338,42 @@ impl LspServer {
     /// newer edit can still land in.
     pub(crate) fn run_post_parse_side_effects(&self, ticket: parse_worker::PublishedParseTicket) {
         let ast_arc = ticket.snapshot.ast().cloned();
+        // The async worker's publish is the acceptance event for this exact
+        // ticket (#11675); classify the parser outcome for the readiness
+        // state machine. A non-clean degradation tier is carried as the
+        // limitation that keeps recovered results out of exact clean
+        // readiness.
+        let acceptance_limitation = match ticket.snapshot.degradation_tier() {
+            DegradationTier::Full => None,
+            tier => Some(format!("{tier:?}")),
+        };
+        self.mark_active_document_parser_accepted(
+            &self.normalize_uri_key(&ticket.uri),
+            &ticket.document_instance,
+            ticket.generation,
+            if ast_arc.is_none() {
+                crate::runtime::readiness::ParserAcceptanceClass::Failed
+            } else if !ticket.snapshot.parse_errors_arc().is_empty() {
+                crate::runtime::readiness::ParserAcceptanceClass::RecoveredOrLimited
+            } else {
+                crate::runtime::readiness::ParserAcceptanceClass::Clean
+            },
+            acceptance_limitation,
+        );
+        // The outer wrapper below is cheap coalescing only (#11674): the
+        // symbol store mutation itself re-validates this exact ticket at the
+        // document-symbol sink boundary.
+        let symbol_identity = SymbolsIdentity::for_document(
+            &self.normalize_uri_key(&ticket.uri),
+            &ticket.document_instance,
+            ticket.generation,
+        );
 
         let symbols_committed = self.commit_parse_effect_if_current(&ticket, || {
             if let Some(ref ast) = ast_arc {
-                self.reindex_document_symbols(&ticket.uri, ast, &ticket.text);
+                self.commit_document_symbols_from_ast(&symbol_identity, ast, &ticket.text);
             } else {
-                self.clear_document_symbols(&ticket.uri);
+                self.clear_document_symbols_for_identity(&symbol_identity);
             }
         });
 
@@ -1257,35 +1437,38 @@ impl LspServer {
                             // typed API with a non-zero owner generation; raw
                             // zero is structurally unrepresentable here.
                             match NonZeroU32::new(expected_generation) {
-                                Some(commit_generation) => {
-                                    match workspace_index.index_live_file(
-                                        url,
-                                        doc_content,
-                                        SourceCommit::new(commit_generation),
-                                    ) {
-                                        SourceCommitOutcome::Accepted
-                                        | SourceCommitOutcome::NoOp => {}
-                                        SourceCommitOutcome::RejectedStale => tracing::debug!(
-                                            uri = %uri_owned,
-                                            expected_generation,
-                                            "Live index commit rejected stale after newer source won"
-                                        ),
-                                        SourceCommitOutcome::Failed(e) => {
-                                            tracing::warn!(
-                                                "Failed to index file {}: {}",
-                                                uri_owned,
-                                                e
-                                            );
-                                        }
-                                    }
-                                }
-                                None => tracing::warn!(
-                                    uri = %uri_owned,
-                                    "Refusing zero-generation live source commit"
+                                Some(commit_generation) => workspace_index.index_live_file(
+                                    url,
+                                    doc_content,
+                                    SourceCommit::new(commit_generation),
                                 ),
+                                None => {
+                                    tracing::warn!(
+                                        uri = %uri_owned,
+                                        "Refusing zero-generation live source commit"
+                                    );
+                                    SourceCommitOutcome::Failed(
+                                        "zero generation is not a live commit identity".to_string(),
+                                    )
+                                }
                             }
                         },
                     );
+                    // Active-document readiness for this edit's generation
+                    // is minted by the readiness state machine (#11675) when
+                    // its required core effects attach -- not by this
+                    // workspace index commit.
+                    match indexed {
+                        Some(SourceCommitOutcome::RejectedStale) => tracing::debug!(
+                            uri = %uri_owned,
+                            expected_generation,
+                            "Live index commit rejected stale after newer source won"
+                        ),
+                        Some(SourceCommitOutcome::Failed(ref error)) => {
+                            tracing::warn!("Failed to index file {}: {}", uri_owned, error);
+                        }
+                        _ => {}
+                    }
                     if indexed.is_none() {
                         tracing::debug!(
                             uri = %uri_owned,
