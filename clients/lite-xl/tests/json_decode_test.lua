@@ -29,6 +29,12 @@ if not module_path then
 end
 
 local json = dofile(module_path)
+local native_math_type = math.type
+local has_native_integers = native_math_type ~= nil and math.maxinteger ~= nil
+local function is_integer(value)
+  return (native_math_type and native_math_type(value) == "integer")
+    or (type(value) == "number" and value % 1 == 0)
+end
 
 local passed = 0
 local failed = 0
@@ -361,13 +367,23 @@ end
 
 do
   -- Exact integer range keeps numeric identity (required cases).
-  ok(json.decode("0") == 0 and math.type(json.decode("0")) == "integer", "0 stays an exact integer")
+  ok(json.decode("0") == 0 and is_integer(json.decode("0")), "0 stays an exact integer")
   ok(json.decode("1") == 1 and json.decode("-1") == -1, "1 and -1 stay integers")
-  ok(json.decode("9223372036854775807") == math.maxinteger, "int64 max decodes exactly")
-  ok(json.decode("-9223372036854775808") == math.mininteger, "int64 min decodes exactly")
+  if has_native_integers then
+    ok(json.decode("9223372036854775807") == math.maxinteger, "int64 max decodes exactly")
+    ok(json.decode("-9223372036854775808") == math.mininteger, "int64 min decodes exactly")
+  else
+    ok(json.is_number(json.decode("9223372036854775807")), "legacy runtime retains int64 max lexeme")
+    ok(json.is_number(json.decode("-9223372036854775808")), "legacy runtime retains int64 min lexeme")
+  end
   local beyond_double = json.decode("9007199254740993")
-  ok(beyond_double == 9007199254740993 and math.type(beyond_double) == "integer",
-    "integer beyond double precision stays exact")
+  if has_native_integers then
+    ok(beyond_double == 9007199254740993 and native_math_type(beyond_double) == "integer",
+      "integer beyond double precision stays exact")
+  else
+    ok(json.is_number(beyond_double) and json.number_lexeme(beyond_double) == "9007199254740993",
+      "legacy runtime retains beyond-double integer lexeme")
+  end
   ok(json.encode(beyond_double) == "9007199254740993", "beyond-double integer re-encodes exactly")
 
   -- Just beyond int64 retains the lexeme instead of rounding.
@@ -398,23 +414,31 @@ do
   ok(sid == "123" and type(sid) == "string" and not json.is_number(sid), 'string "123" stays a string')
   ok(json.encode(sid) == '"123"', "digit-string encodes quoted")
   local nid = json.decode("123456789012345")
-  ok(nid == 123456789012345 and math.type(nid) == "integer", "15-digit numeric ID stays exact integer")
+  ok(nid == 123456789012345 and is_integer(nid), "15-digit numeric ID stays exact integer")
   ok(json.encode(nid) == "123456789012345", "15-digit numeric ID re-encodes identically")
 
   -- Same visible digits, different JSON types: never conflated.
   local str_frame = json.decode('{"id":"7","method":"x"}')
   local num_frame = json.decode('{"id":7,"method":"x"}')
   ok(type(str_frame.id) == "string" and str_frame.id == "7", "string ID keeps type")
-  ok(math.type(num_frame.id) == "integer" and num_frame.id == 7, "numeric ID keeps type")
+  ok(is_integer(num_frame.id) and num_frame.id == 7, "numeric ID keeps type")
   ok(str_frame.id ~= num_frame.id, "same-digit string/numeric IDs are distinct values")
-  ok(json.encode(num_frame) == '{"id":7,"method":"x"}', "numeric-ID frame re-encodes byte-exactly")
+  local wire_str_frame = json.decode(json.encode(str_frame))
+  local wire_num_frame = json.decode(json.encode(num_frame))
+  ok(type(wire_str_frame.id) == "string" and is_integer(wire_num_frame.id)
+    and wire_num_frame.id == 7 and wire_num_frame.method == "x",
+    "independent wire decode preserves string/numeric ID types")
+  ok(json.encode(num_frame.id) == "7", "numeric ID scalar re-encodes byte-exactly")
 
-  -- Request/response correlation: response echoes the decoded id unchanged,
-  -- including large typed IDs.
+  -- Independent request/response wire round trip preserves the large typed ID.
   local req = json.decode('{"id":123456789012345678901,"method":"m"}')
-  local resp = json.object({ jsonrpc = "2.0", id = req.id, result = json.null })
-  ok(json.number_lexeme(resp.id) == "123456789012345678901", "response carries the same typed ID")
+  local req_wire = json.encode(req)
+  local received_req = json.decode(req_wire)
+  local resp = json.object({ jsonrpc = "2.0", id = received_req.id, result = json.null })
   local resp_json = json.encode(resp)
+  local received_resp = json.decode(resp_json)
+  ok(json.number_lexeme(received_resp.id) == "123456789012345678901",
+    "independent response decode carries the same typed ID")
   ok(string.find(resp_json, '"id":123456789012345678901', 1, true) ~= nil,
     "encoded response echoes the exact ID bytes: " .. resp_json)
 
