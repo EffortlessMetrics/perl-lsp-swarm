@@ -24,6 +24,7 @@ use tasks::dead_code::{DeadCodeConfig, DeadCodeMode};
 use tasks::dependency_hygiene::{DependencyHygieneConfig, DependencyHygieneMode};
 use tasks::gate_policy::GatePolicyProfile;
 use tasks::gates::{GateTier, OutputFormat as GatesOutputFormat};
+use tasks::issue_controllers::IssueControllersCommand;
 use tasks::issue_plan::IssuePlanOutputFormat;
 use tasks::methodology_gate::MethodologyOutputFormat;
 use tasks::targeted_checks::CheckMode;
@@ -43,7 +44,8 @@ use tasks::{
     forensics, gate_receipts, gates, generated_files, github, github_preflight, github_review,
     goals, hardening, hook_checks, ignored_tests, incremental_proof, inject_sha_assets,
     inline_completion_quality, inline_completion_smoke, install_surface_check, integration_proof,
-    intent_diff_gate, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
+    intent_diff_gate, issue_controllers, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix,
+    lsp_ux_smoke,
     memory_trends, merge_ready, methodology_gate, metrics, module_train, native_critic,
     native_format, native_product_surface, native_tooling, oracle_fixture_manifest,
     oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
@@ -294,6 +296,15 @@ enum Commands {
     Integration {
         #[command(subcommand)]
         command: IntegrationCommand,
+    },
+
+    /// Issue-controller train tooling: independent static validation of the
+    /// stable `issue_controller_train.v1` manifest and its checked human
+    /// projection (#11765). Deterministic and offline only.
+    #[command(name = "issue-controllers")]
+    IssueControllers {
+        #[command(subcommand)]
+        command: IssueControllersCommand,
     },
 
     /// Writer admission — read-only pre-admission diagnostic (#3957 W1).
@@ -5340,6 +5351,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 EmacsIntegrationCommand::Train { command } => command,
             },
         }),
+        Commands::IssueControllers { command } => issue_controllers::run(command),
         Commands::WriterAdmission {
             branch,
             base,
