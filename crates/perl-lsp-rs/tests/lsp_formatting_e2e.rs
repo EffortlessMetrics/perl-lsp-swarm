@@ -234,3 +234,61 @@ sub third{my$c=3;return$c;}\n\
     client.shutdown()?;
     Ok(())
 }
+
+/// Withdrawal control (#11955): `textDocument/onTypeFormatting` refuses at the
+/// exact `perllsp --stdio` boundary for every trigger shape, and the refusal
+/// leaves the document observable unchanged via the still-live manual route.
+#[test]
+fn withdrawn_on_type_formatting_refuses_at_process_boundary()
+-> Result<(), Box<dyn std::error::Error>> {
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
+    let uri = "file:///on-type.pl";
+    let source = "sub first{my$a=1;return$a;}\n";
+
+    client.did_open(uri, "perl", source)?;
+
+    for (ch, line, character) in [("{", 0, 27), ("}", 0, 27), ("\n", 0, 27)] {
+        let response = client.request(
+            "textDocument/onTypeFormatting",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": line, "character": character},
+                "ch": ch,
+                "options": {"tabSize": 4, "insertSpaces": true}
+            }),
+        )?;
+
+        let error = response
+            .get("error")
+            .ok_or("withdrawn onTypeFormatting must return an error, not a result")?;
+        assert_eq!(error["code"], -32601, "refusal must be MethodNotFound (-32601)");
+        assert!(
+            response.get("result").is_none(),
+            "a refusal must not carry a successful edit payload"
+        );
+    }
+
+    // Manual whole-document formatting still sees the original bytes.
+    let manual = client.request(
+        "textDocument/formatting",
+        json!({
+            "textDocument": {"uri": uri},
+            "options": {"tabSize": 4, "insertSpaces": true}
+        }),
+    )?;
+    let edits = manual["result"]
+        .as_array()
+        .ok_or("manual whole-document formatting should still return an edit array")?;
+    assert!(!edits.is_empty(), "manual whole-document formatting must remain available");
+    let edit_text = edits.first().ok_or("edits array should have at least one element")?["newText"]
+        .as_str()
+        .ok_or("Edit should have newText")?;
+    assert!(
+        edit_text.contains("my $a = 1"),
+        "manual formatting must observe the original source bytes"
+    );
+
+    client.shutdown()?;
+    Ok(())
+}
