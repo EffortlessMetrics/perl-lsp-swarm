@@ -42,11 +42,11 @@ const invalidExternalConfigurations: Array<[Record<string, unknown>, string]> = 
         kind: 'ptkdb',
         mode: 'listen',
         control: 'mirror',
-        host: '192.0.2.10',
+        host: '127.0.0.1',
         port: 0,
       },
     },
-    'listen mode requires a loopback host',
+    'mode="listen" is not wired yet',
   ],
   [{ debuggerBackend: 'ptkdb-bootstrap' }, 'does not yet wire'],
   [{ externalDebugger: { mode: 'connect', port: 13604 } }, 'requires debuggerBackend="external"'],
@@ -82,15 +82,6 @@ describe('external debugger claim boundary', () => {
             host: '127.0.0.1',
             port: 13604,
           },
-        }),
-      ),
-    ).toBeUndefined();
-
-    expect(
-      externalDebuggerConfigurationError(
-        asDebugConfiguration({
-          debuggerBackend: 'external',
-          externalDebugger: { mode: 'listen', control: 'mirror', port: 0 },
         }),
       ),
     ).toBeUndefined();

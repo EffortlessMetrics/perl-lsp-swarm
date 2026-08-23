@@ -418,11 +418,6 @@ function isConnectablePort(port: unknown): port is number {
   return typeof port === 'number' && Number.isInteger(port) && port > 0 && port <= 65535;
 }
 
-function isLoopbackListenHost(host: string): boolean {
-  const normalized = host.toLowerCase();
-  return normalized === 'localhost' || normalized === '127.0.0.1';
-}
-
 function hasOwn(object: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(object, key);
 }
@@ -529,13 +524,13 @@ export function externalDebuggerConfigurationError(
   }
 
   if (mode === 'listen') {
-    if (!isLoopbackListenHost(host)) {
-      return 'externalDebugger listen mode requires a loopback host (localhost or 127.0.0.1)';
-    }
-    if (external.port !== undefined && external.port !== 0 && !isConnectablePort(external.port)) {
-      return 'externalDebugger listen mode requires port 0 or a port in 1..=65535';
-    }
-    return undefined;
+    // Rejected at configuration time (#7313 review): perl-dap mints the
+    // session token internally and deliberately never logs it, so a peer
+    // started separately by the operator can never present the authenticated
+    // `peer/hello`. Until a credential-delivery path exists, keep this mode
+    // out of the advertised surface instead of letting the session hang until
+    // the handshake timeout.
+    return 'externalDebugger mode="listen" is not wired yet: perl-dap cannot deliver the peer session token to a separately launched debugger';
   }
 
   if (mode === 'launchPeer') {

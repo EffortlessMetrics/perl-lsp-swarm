@@ -246,15 +246,13 @@
                     "type": "string",
                     "enum": [
                       "connect",
-                      "listen",
                       "launchPeer"
                     ],
                     "enumDescriptions": [
                       "Experimental mirror rendezvous: perl-dap connects to a peer already listening at host:port; stock ptkdb compatibility is not proven",
-                      "Experimental mirror rendezvous: perl-dap listens on a loopback host for the peer to connect; stock ptkdb compatibility is not proven",
                       "Launching a peer is not implemented and is rejected"
                     ],
-                    "description": "How the experimental live peer rendezvous occurs. Connect and loopback listen are mirror-only; launchPeer is rejected.",
+                    "description": "How the experimental live peer rendezvous occurs. Connect is mirror-only; listen and launchPeer are rejected until the peer session token can be delivered to a separately launched peer.",
                     "default": "connect"
                   },
                   "control": {
@@ -269,7 +267,7 @@
                   },
                   "host": {
                     "type": "string",
-                    "description": "Peer host for connect mode; listen mode requires a loopback host",
+                    "description": "Peer host for connect mode",
                     "default": "127.0.0.1"
                   },
                   "port": {

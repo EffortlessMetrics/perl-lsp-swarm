@@ -450,12 +450,21 @@ impl ExternalDebuggerPeerBackend {
     }
 
     fn negotiated_caps(&self) -> DebugBackendCapabilities {
-        // `.as_ref()` borrows the inner Option so we do not depend on the
-        // `Copy` derive to read it out of the guard.
-        lock(&self.shared.peer_caps)
+        let mut caps = lock(&self.shared.peer_caps)
             .as_ref()
             .map(|c| c.to_backend_capabilities())
-            .unwrap_or_else(DebugBackendCapabilities::none)
+            .unwrap_or_else(DebugBackendCapabilities::none);
+        // The host-bound control mode wins over anything the peer claimed in
+        // its hello, so a rejected escalation can never leak into the
+        // capability view advertised to the editor (#7313 review).
+        caps.control_mode = self.control_mode;
+        caps
+    }
+
+    /// Control mode the peer claimed during its handshake, before host-side
+    /// ownership is applied.
+    fn peer_claimed_control_mode(&self) -> ControlMode {
+        lock(&self.shared.peer_caps).as_ref().map(|c| c.control_mode).unwrap_or_default()
     }
 
     /// Guard a control command against negotiated capabilities so the backend
@@ -485,7 +494,18 @@ impl DebugBackend for ExternalDebuggerPeerBackend {
 
     fn initialize(&mut self, _params: InitializeBackendParams) -> BackendResult<()> {
         self.await_handshake()?;
-        self.control_mode = self.negotiated_caps().control_mode;
+        // Mirror ownership is enforced at the handshake (#7313 review): the
+        // session was bound to a host-selected control mode, so a peer that
+        // claims a different one in `peer/hello` is rejected instead of the
+        // backend silently adopting whatever ownership it announced.
+        let claimed = self.peer_claimed_control_mode();
+        if claimed != self.control_mode {
+            return Err(BackendError::Unsupported(format!(
+                "peer negotiated {claimed:?} control mode; this session is bound \
+                 to {:?}, which cannot be escalated by the peer",
+                self.control_mode
+            )));
+        }
         Ok(())
     }
 
@@ -1247,6 +1267,35 @@ mod tests {
         backend.initialize(InitializeBackendParams::default()).expect("handshake");
         let err = backend.continue_thread(ThreadId(1)).expect_err("should reject");
         assert!(matches!(err, BackendError::Unsupported(_)));
+        drop(backend);
+        let _ = peer.join();
+    }
+
+    #[test]
+    fn initialize_rejects_peer_control_mode_escalation() {
+        // A peer that claims a non-mirror control mode in `peer/hello` must be
+        // rejected at initialize instead of the host silently adopting the
+        // escalated ownership (mirror ownership enforced at handshake; #7313).
+        let (listener, addr) = bind_ephemeral();
+        let caps = PeerReportedCapabilities {
+            can_step: true,
+            control_mode: ControlMode::DapControlled,
+            ..Default::default()
+        };
+        let peer = spawn_fake_peer(addr, caps, |_req| None);
+        let mut backend = accept_backend(listener);
+        let err = backend
+            .initialize(InitializeBackendParams::default())
+            .expect_err("peer control-mode escalation must be rejected");
+        assert!(
+            matches!(err, BackendError::Unsupported(_)),
+            "expected an unsupported-mode rejection, got {err:?}"
+        );
+        assert_eq!(
+            backend.capabilities().control_mode,
+            ControlMode::Mirror,
+            "the session must not adopt the peer's claimed control mode"
+        );
         drop(backend);
         let _ = peer.join();
     }
