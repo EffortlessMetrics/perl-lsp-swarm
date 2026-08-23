@@ -6,18 +6,18 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11456 |
-| Rust-family files | 3497 |
-| Non-Rust files | 7959 |
-| Allowlisted | 5686 |
+| Total tracked files | 11464 |
+| Rust-family files | 3503 |
+| Non-Rust files | 7961 |
+| Allowlisted | 5688 |
 | Unclassified | 2273 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 403 |
-| documentation | 2652 |
+| config | 404 |
+| documentation | 2653 |
 | generated | 2 |
 | production | 314 |
 | test | 1843 |
@@ -2856,6 +2856,7 @@
 | `.github/workflows/installer-bootstrap-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/installer-checksum-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/installer-powershell-checksum-contract.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/issue-controller-train-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/legacy-authority-banners.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/lsp-318-claim-guard.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/merge-gate-target.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -3047,6 +3048,7 @@
 | `.spec/11764-controller-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11764-controller-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11764-controller-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11764-controller-train-graph/train.projection.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11770-emacs-train-revisions/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11770-emacs-train-revisions/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11770-emacs-train-revisions/context.md` | documentation | `non-rust-root-governance-docs` | docs |

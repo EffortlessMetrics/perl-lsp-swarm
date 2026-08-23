@@ -80,7 +80,11 @@ pub fn render_projection(
         let _ = writeln!(out, "- {source} --{class}--> {target}");
     }
 
-    out.push('\n');
+    // Exactly one trailing newline: the last edge line already ends with LF,
+    // and `git diff --check` rejects a blank line at EOF.
+    while out.ends_with("\n\n") {
+        out.pop();
+    }
     out
 }
 
