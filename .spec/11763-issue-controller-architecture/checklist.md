@@ -62,11 +62,12 @@ invent a generated receipt or claim a missing tool passed. From the candidate
 worktree root, run the following PowerShell 7 checker twice after the four
 files are complete. The checker asserts:
 
-1. the union of the committed candidate patch (`origin/main..HEAD`), the
-   staged index, the unstaged worktree, and NUL-delimited porcelain paths —
-   including untracked files — equals exactly the four bundle paths (it fails
-   closed on a malformed status record or a rename/copy record without its
-   second path);
+1. the union of the committed candidate patch (`merge-base(origin/main, HEAD)..HEAD`,
+   which stays the candidate's own patch even if `origin/main` advances
+   mid-flight because a sibling lane fetched), the staged index, the unstaged
+   worktree, and NUL-delimited porcelain paths — including untracked files —
+   equals exactly the four bundle paths (it fails closed on a malformed status
+   record or a rename/copy record without its second path);
 2. every required canonical heading exists, and load-bearing contract terms
    are present **section-bound** in `context.md` (roles inside the role law,
    the nine non-substitution rows inside the truth-plane law, five numbered
@@ -110,7 +111,9 @@ for ($i = 0; $i -lt $records.Count; $i++) {
     $found.Add([string]$records[++$i])
   }
 }
-$committed = @(& git diff --name-only 'origin/main..HEAD')
+$mergeBase = @(& git merge-base origin/main HEAD)
+if ($LASTEXITCODE -ne 0 -or $mergeBase.Count -ne 1) { throw 'git merge-base failed' }
+$committed = @(& git diff --name-only "$($mergeBase[0])..HEAD")
 if ($LASTEXITCODE -ne 0) { throw 'git diff committed range failed' }
 $staged = @(& git diff --cached --name-only)
 if ($LASTEXITCODE -ne 0) { throw 'git diff staged failed' }
