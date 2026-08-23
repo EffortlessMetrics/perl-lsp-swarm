@@ -317,13 +317,13 @@ impl Catalog {
                         feature.id
                     ));
                 }
-                if feature.owner == MISSING {
+                if feature.owner == MISSING || feature.owner.trim().is_empty() {
                     issues.push(format!(
                         "feature {}: proven requires a recorded implementation owner (#7029)",
                         feature.id
                     ));
                 }
-                if feature.state_owner == MISSING {
+                if feature.state_owner == MISSING || feature.state_owner.trim().is_empty() {
                     issues.push(format!(
                         "feature {}: proven requires a recorded state owner or stateless (#7029)",
                         feature.id

@@ -40,6 +40,19 @@ pub fn render_projection(authority_text: &str) -> Result<String> {
     Ok(format!("{PROJECTION_HEADER}\n{}", &authority_text[body_start..]))
 }
 
+/// Whether a projection file no longer matches the rendered authority.
+///
+/// A missing file (`NotFound`) counts as drift rather than an error: the
+/// check mode reports it and the regeneration mode writes it, so deleting a
+/// projection or adding a crate cannot wedge the generator.
+fn projection_has_drift(current: &std::io::Result<String>, projection: &str) -> Result<bool> {
+    match current {
+        Ok(content) => Ok(content != projection),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(e) => Err(eyre!("reading projection: {e}")),
+    }
+}
+
 /// Regenerate (`check = false`) or verify (`check = true`) all projections.
 pub fn run(check: bool) -> Result<()> {
     let root = project_root()?;
@@ -57,9 +70,8 @@ pub fn run(check: bool) -> Result<()> {
     let mut drifted: Vec<String> = Vec::new();
     for relative in VENDORED_PROJECTIONS {
         let path = root.join(relative);
-        let current =
-            fs::read_to_string(&path).map_err(|e| eyre!("reading {}: {e}", path.display()))?;
-        if current == projection {
+        let current = fs::read_to_string(&path);
+        if !projection_has_drift(&current, &projection)? {
             continue;
         }
         if check {
@@ -120,6 +132,24 @@ mod tests {
 
     /// #7029 negative control: the check mode must fail when a projection
     /// no longer matches the authority it claims to project.
+    /// Review repair: a missing projection file is drift, not an abort, so
+    /// regeneration can restore a deleted projection or seed a new crate.
+    #[test]
+    fn missing_projection_counts_as_drift_not_error() {
+        let missing = std::io::Result::<String>::Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "gone",
+        ));
+        assert!(projection_has_drift(&missing, "anything").unwrap_or(false));
+    }
+
+    #[test]
+    fn matching_and_drifted_projections_classify_correctly() {
+        let ok = std::io::Result::Ok("same".to_string());
+        assert!(!projection_has_drift(&ok, "same").unwrap_or(true));
+        assert!(projection_has_drift(&ok, "different").unwrap_or(false));
+    }
+
     #[test]
     fn check_mode_fails_on_drifted_projection() -> Result<()> {
         let authority = "[meta]\nversion = \"0.17.0\"\n";

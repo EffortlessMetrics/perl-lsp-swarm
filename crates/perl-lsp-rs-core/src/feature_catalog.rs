@@ -439,13 +439,13 @@ impl Catalog {
                         feature.id
                     ));
                 }
-                if feature.owner == MISSING {
+                if feature.owner == MISSING || feature.owner.trim().is_empty() {
                     issues.push(format!(
                         "feature {}: proven requires a recorded implementation owner (#7029)",
                         feature.id
                     ));
                 }
-                if feature.state_owner == MISSING {
+                if feature.state_owner == MISSING || feature.state_owner.trim().is_empty() {
                     issues.push(format!(
                         "feature {}: proven requires a recorded state owner or stateless (#7029)",
                         feature.id
@@ -1016,6 +1016,7 @@ mod tests {
         catalog.feature[0].state_owner = MISSING.to_string();
 
         let message = must_some(catalog.validate().err()).to_string();
+
         assert!(
             message.contains("proven requires a recorded capability route"),
             "message: {message}"
@@ -1025,6 +1026,21 @@ mod tests {
             "message: {message}"
         );
         assert!(message.contains("proven requires a recorded state owner"), "message: {message}");
+
+        // Review repair: empty or whitespace-only owners must not slip past
+        // the missing-token check (#7029).
+        let mut blank = sample_catalog();
+        blank.feature[0].owner = "  ".to_string();
+        blank.feature[0].state_owner = String::new();
+        let message = must_some(blank.validate().err()).to_string();
+        assert!(
+            message.contains("proven requires a recorded implementation owner"),
+            "blank owner must be refused: {message}"
+        );
+        assert!(
+            message.contains("proven requires a recorded state owner"),
+            "empty state owner must be refused: {message}"
+        );
     }
 
     #[test]
