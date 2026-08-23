@@ -268,6 +268,9 @@ impl ReachabilityFactFamilyId {
 pub enum ReachabilityContractError {
     /// An opaque identity, stage, family, or profile value was empty.
     EmptyIdentity,
+    /// The tracker's budget profile does not match the subject's declared
+    /// work-budget profile identity.
+    BudgetProfileMismatch,
     /// A free-form string was supplied where a closed operation kind is
     /// required; unknown kinds fail closed.
     UnknownOperationKind(String),
@@ -317,6 +320,9 @@ impl std::fmt::Display for ReachabilityContractError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::EmptyIdentity => write!(f, "an opaque reachability identity was empty"),
+            Self::BudgetProfileMismatch => {
+                write!(f, "the budget profile does not match the subject's declared profile")
+            }
             Self::UnknownOperationKind(name) => {
                 write!(f, "unknown reachability operation kind `{name}`")
             }

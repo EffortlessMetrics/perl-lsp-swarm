@@ -844,6 +844,29 @@ fn receipt_is_deterministic_under_input_order_permutation() -> Result<(), Box<dy
 }
 
 #[test]
+fn tracker_rejects_a_budget_from_a_different_profile() -> Result<(), Box<dyn Error>> {
+    let mismatched_budget = ReachabilityWorkBudget::for_tests(
+        ReachabilityProfileId::new("another-profile")?,
+        ReachabilityOperationKind::SccCondensation,
+        ReachabilityWorkDimension::NodesAdmitted,
+        100,
+    )?;
+    assert_eq!(
+        contract_error(ReachabilityWorkTracker::new(subject()?, mismatched_budget))?,
+        ReachabilityContractError::BudgetProfileMismatch
+    );
+    // The matching profile still starts cleanly.
+    assert!(
+        ReachabilityWorkTracker::new(
+            subject()?,
+            budget(ReachabilityWorkDimension::NodesAdmitted, 100)?
+        )
+        .is_ok()
+    );
+    Ok(())
+}
+
+#[test]
 fn tracker_resets_across_repeated_operations() -> Result<(), Box<dyn Error>> {
     let dimension = ReachabilityWorkDimension::NodesAdmitted;
     let mut first = new_tracker(dimension, 5)?;

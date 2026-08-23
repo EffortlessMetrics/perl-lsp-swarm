@@ -186,7 +186,7 @@ impl ReachabilityWorkTracker {
     ///
     /// # Errors
     ///
-    /// Returns [`ReachabilityContractError::EmptyIdentity`] when the
+    /// Returns [`ReachabilityContractError::BudgetProfileMismatch`] when the
     /// tracker's budget profile does not match the subject's declared
     /// work-budget profile identity.
     pub fn new(
@@ -194,7 +194,7 @@ impl ReachabilityWorkTracker {
         budget: ReachabilityWorkBudget,
     ) -> Result<Self, ReachabilityContractError> {
         if subject.budget_profile_id() != budget.profile_id() {
-            return Err(ReachabilityContractError::EmptyIdentity);
+            return Err(ReachabilityContractError::BudgetProfileMismatch);
         }
         Ok(Self {
             subject,
