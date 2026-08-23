@@ -99,7 +99,7 @@ impl ResultCode {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RuleId {
     PhaseTerminal,
     ExplicitlyNotProven,
@@ -144,6 +144,25 @@ impl RuleId {
             Self::PredecessorSuccessorCollapse,
             Self::ProofLevelContradiction,
         ]
+    }
+}
+
+/// Rule activation for the mutation controls. Production always evaluates with
+/// every contradiction rule enabled; the focused suite disables exactly one
+/// rule at a time to prove each immutable fixture disposition depends on that
+/// rule, so a guard removed from the evaluator cannot keep its fixture green.
+#[derive(Clone, Copy)]
+struct RuleGate {
+    disabled: Option<RuleId>,
+}
+
+impl RuleGate {
+    fn all_rules() -> Self {
+        Self { disabled: None }
+    }
+
+    fn enabled(self, rule: RuleId) -> bool {
+        self.disabled != Some(rule)
     }
 }
 
@@ -426,6 +445,10 @@ fn validate_fixture(fixture: &Fixture) -> Result<()> {
 }
 
 fn evaluate_fixture(fixture: &Fixture) -> Result<Report> {
+    evaluate_fixture_with_rules(fixture, RuleGate::all_rules())
+}
+
+fn evaluate_fixture_with_rules(fixture: &Fixture, rules: RuleGate) -> Result<Report> {
     let pull = PullRequestSubject {
         repository: canonical_repository(&fixture.repository)?,
         number: fixture.pull_request.number,
@@ -445,11 +468,15 @@ fn evaluate_fixture(fixture: &Fixture) -> Result<Report> {
             }),
         );
     }
-    evaluate(&pull, |key| {
-        issues.get(key).cloned().unwrap_or_else(|| {
-            IssueEvidence::Unavailable("fixture omitted the referenced issue".to_string())
-        })
-    })
+    evaluate_with_rules(
+        &pull,
+        |key| {
+            issues.get(key).cloned().unwrap_or_else(|| {
+                IssueEvidence::Unavailable("fixture omitted the referenced issue".to_string())
+            })
+        },
+        rules,
+    )
 }
 
 fn verify_expected(report: &Report, expected: &FixtureExpected) -> Result<()> {
@@ -487,7 +514,18 @@ fn verify_expected(report: &Report, expected: &FixtureExpected) -> Result<()> {
     Ok(())
 }
 
-fn evaluate<F>(pull: &PullRequestSubject, mut issue_lookup: F) -> Result<Report>
+fn evaluate<F>(pull: &PullRequestSubject, issue_lookup: F) -> Result<Report>
+where
+    F: FnMut(&IssueKey) -> IssueEvidence,
+{
+    evaluate_with_rules(pull, issue_lookup, RuleGate::all_rules())
+}
+
+fn evaluate_with_rules<F>(
+    pull: &PullRequestSubject,
+    mut issue_lookup: F,
+    rules: RuleGate,
+) -> Result<Report>
 where
     F: FnMut(&IssueKey) -> IssueEvidence,
 {
@@ -509,7 +547,7 @@ where
     let mut rows = Vec::with_capacity(relation_count);
     for relation in relations {
         let evidence = issue_lookup(&relation.key);
-        rows.push(evaluate_relation(pull, &sections, relation_count, relation, evidence));
+        rows.push(evaluate_relation(pull, &sections, relation_count, relation, evidence, rules));
     }
 
     let aggregate_code = rows
@@ -536,6 +574,7 @@ fn evaluate_relation(
     relation_count: usize,
     relation: ClosingRelation,
     evidence: IssueEvidence,
+    rules: RuleGate,
 ) -> RelationResult {
     let unavailable = |code: ResultCode, reason: String| RelationResult {
         repository: relation.key.repository.clone(),
@@ -595,7 +634,8 @@ fn evaluate_relation(
         || references_issue(&controlling, &relation.key, &pull.repository)
         || references_issue(&claim_boundary, &relation.key, &pull.repository);
 
-    if issue_is_controller(&issue)
+    if rules.enabled(RuleId::ControllerPacketMissing)
+        && issue_is_controller(&issue)
         && !has_semantic_close_packet(sections, &relation.key, &pull.repository)
     {
         return failed_row(
@@ -607,7 +647,9 @@ fn evaluate_relation(
         );
     }
 
-    if issue_names_pull_as_historical_predecessor(&issue.body, pull.number) {
+    if rules.enabled(RuleId::PredecessorSuccessorCollapse)
+        && issue_names_pull_as_historical_predecessor(&issue.body, pull.number)
+    {
         return failed_row(
             &relation,
             ResultCode::FailPredecessorSuccessorCollapse,
@@ -617,7 +659,9 @@ fn evaluate_relation(
         );
     }
 
-    if proof_level_is_explicitly_excluded(sections, &issue_sections) {
+    if rules.enabled(RuleId::ProofLevelContradiction)
+        && proof_level_is_explicitly_excluded(sections, &issue_sections)
+    {
         return failed_row(
             &relation,
             ResultCode::FailProofLevelContradiction,
@@ -628,7 +672,9 @@ fn evaluate_relation(
     }
 
     let remaining = section_text(sections, &[SectionKind::RemainingWork]);
-    if references_issue(&remaining, &relation.key, &pull.repository) {
+    if rules.enabled(RuleId::RemainingSameIssue)
+        && references_issue(&remaining, &relation.key, &pull.repository)
+    {
         return failed_row(
             &relation,
             ResultCode::FailRemainingWorkSameIssue,
@@ -638,7 +684,7 @@ fn evaluate_relation(
         );
     }
 
-    if scoped_to_issue && !issue_is_phase_leaf(&issue) {
+    if rules.enabled(RuleId::PhaseTerminal) && scoped_to_issue && !issue_is_phase_leaf(&issue) {
         let phase_text = format!(
             "{}\n{}",
             relation_scoped_section_text(
@@ -668,7 +714,10 @@ fn evaluate_relation(
         &relation.key,
         &pull.repository,
     );
-    if scoped_to_issue && explicitly_not_proven_required_work(&explicitly_unproven_text) {
+    if rules.enabled(RuleId::ExplicitlyNotProven)
+        && scoped_to_issue
+        && explicitly_not_proven_required_work(&explicitly_unproven_text)
+    {
         return failed_row(
             &relation,
             ResultCode::FailExplicitUnprovenRequiredWork,
@@ -1545,5 +1594,77 @@ mod tests {
         }"#;
         let parsed = serde_json::from_str::<Fixture>(raw);
         assert!(parsed.is_err());
+    }
+
+    /// Mutation controls (#10413 negative controls): disabling exactly one
+    /// contradiction rule must change the named immutable fixture's
+    /// disposition, so the strict expected-code comparison would go red if the
+    /// guard were removed or weakened in the evaluator.
+    #[test]
+    fn mutation_controls_prove_each_rule_owns_its_fixture_disposition() -> Result<()> {
+        let controls = [
+            (RuleId::PhaseTerminal, "invalid-phase-terminal-5023-5001"),
+            (RuleId::RemainingSameIssue, "invalid-partial-slice-6239-5016"),
+            (RuleId::PredecessorSuccessorCollapse, "invalid-predecessor-successor-5968-5231"),
+            (RuleId::ProofLevelContradiction, "invalid-proof-level-6282-5901"),
+            (RuleId::ControllerPacketMissing, "invalid-controller-no-packet"),
+            (RuleId::ExplicitlyNotProven, "invalid-explicit-unproven"),
+        ];
+        for (rule, name) in controls {
+            let raw = FIXTURES
+                .iter()
+                .find(|(fixture_name, _)| *fixture_name == name)
+                .map(|(_, raw)| *raw)
+                .with_context(|| {
+                    format!("locating embedded fixture {name} for mutation control")
+                })?;
+            let fixture: Fixture =
+                serde_json::from_str(raw).with_context(|| format!("parsing fixture {name}"))?;
+
+            let intact = evaluate_fixture(&fixture)?;
+            verify_expected(&intact, &fixture.expected)
+                .with_context(|| format!("control side of mutation fixture {name}"))?;
+            assert!(
+                intact.aggregate_code.is_failure(),
+                "mutation fixture {name} must fail with every rule enabled"
+            );
+
+            let mutated = evaluate_fixture_with_rules(&fixture, RuleGate { disabled: Some(rule) })?;
+            assert_ne!(
+                mutated.aggregate_code,
+                intact.aggregate_code,
+                "disabling {} left the {name} disposition unchanged; the mutation control does not discriminate",
+                rule.as_str()
+            );
+        }
+        Ok(())
+    }
+
+    /// Child counts and completion prose outside the `Governing contract`
+    /// section are never a semantic close packet; only an explicit packet
+    /// reference in that section releases a controller terminal relation.
+    #[test]
+    fn controller_child_counts_or_prose_are_not_a_semantic_close_packet() -> Result<()> {
+        let current_repository = "effortlessmetrics/perl-lsp-swarm";
+        let key = IssueKey { repository: current_repository.into(), number: 8035 };
+
+        let boundary_prose = parse_sections(
+            "## Claim Boundary\nAll 12 child leaves reconciled; #8035 is complete per fan-in totals.\n\nCloses #8035\n",
+            MAX_PR_BODY_BYTES,
+        )?;
+        assert!(!has_semantic_close_packet(&boundary_prose, &key, current_repository));
+
+        let summary_prose = parse_sections(
+            "## Summary\n12/12 children landed, closing #8035 with complete counts.\n",
+            MAX_PR_BODY_BYTES,
+        )?;
+        assert!(!has_semantic_close_packet(&summary_prose, &key, current_repository));
+
+        let packet = parse_sections(
+            "## Governing contract\nSemantic close packet for #8035: `.spec/8035/issue-close-proof.json`.\n",
+            MAX_PR_BODY_BYTES,
+        )?;
+        assert!(has_semantic_close_packet(&packet, &key, current_repository));
+        Ok(())
     }
 }

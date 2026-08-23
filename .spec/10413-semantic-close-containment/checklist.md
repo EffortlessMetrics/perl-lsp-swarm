@@ -24,11 +24,11 @@
 
 ## Negative controls
 
-- [ ] Removing a phase contradiction changes the #5023 fixture result.
-- [ ] Ignoring Remaining work changes the #6239 fixture result.
-- [ ] Treating predecessor deletion as successor retirement changes the #5968 fixture result.
-- [ ] Flattening packaged/presentation exclusion changes the #6282 fixture result.
-- [ ] Treating controller child count or prose as a packet changes the controller fixture result.
+- [x] Removing a phase contradiction changes the #5023 fixture result. Proven by `mutation_controls_prove_each_rule_owns_its_fixture_disposition`, which disables `CP00-PHASE-TERMINAL` alone and requires the #5023 aggregate disposition to change.
+- [x] Ignoring Remaining work changes the #6239 fixture result. Same control with `CP00-REMAINING-SAME-ISSUE` disabled against `invalid-partial-slice-6239-5016`.
+- [x] Treating predecessor deletion as successor retirement changes the #5968 fixture result. Same control with `CP00-PREDECESSOR-SUCCESSOR-COLLAPSE` disabled against `invalid-predecessor-successor-5968-5231`.
+- [x] Flattening packaged/presentation exclusion changes the #6282 fixture result. Same control with `CP00-PROOF-LEVEL-CONTRADICTION` disabled against `invalid-proof-level-6282-5901`.
+- [x] Treating controller child count or prose as a packet changes the controller fixture result. Same control with `CP00-CONTROLLER-PACKET-MISSING` disabled against `invalid-controller-no-packet`, plus `controller_child_counts_or_prose_are_not_a_semantic_close_packet`, which proves child counts and completion prose outside `Governing contract` are never a packet.
 - [x] Scanning fenced or quoted examples would make the no-terminal fixture fail.
 - [x] Executing hostile metadata would create a marker file; the test proves none appears.
 - [x] Oversized input fails closed.
@@ -47,16 +47,18 @@
 
 ## Review
 
-- [ ] GitHub relation review challenges closing-keyword parsing and ignored examples.
-- [ ] Claim-boundary review challenges false positives and the Phase-1 leaf exception.
-- [ ] Security review treats every metadata field as hostile.
-- [ ] Cost review verifies no-keyword early exit and hard bounds.
-- [ ] Retirement review confirms no permanent second semantic policy engine.
-- [ ] Mutation review disables every contradiction independently.
+Differentiated review record, 2026-08-23, against `main@915daa765` plus this change:
+
+- [x] GitHub relation review challenges closing-keyword parsing and ignored examples. Keyword set matches GitHub's supported terminal keywords (close/fix/resolve inflections, optional colon, `#N`, `owner/repo#N`, issue URL), and fences (including longer-fence and trailing-text closers) plus blockquotes (including lazy continuation) are excluded per the accepted parser ruling. Known bounded false negative: a closing keyword GitHub still honors inside a blockquote stays invisible to CP00; quoted template examples are pervasive in repository PR bodies and CP00 is advisory, so the high-confidence-only tradeoff stands and full relation surface retires to CP03.
+- [x] Claim-boundary review challenges false positives and the Phase-1 leaf exception. The phase-leaf exception requires explicit issue-side phase markers (`valid-phase-leaf-2624`), multi-relation rows stay independent through `Controlling issue`/`Claim Boundary` scoping, and word-level triggers (for example `partial` in negated prose) can only produce an advisory failure with an exact `Advances`/`Refs` replacement — no merge authority, no semantic claim.
+- [x] Security review treats every metadata field as hostile. The only subprocess is `gh api` with a charset-validated `owner/name` endpoint and a `u64` issue number; no shell, path, or workflow interpolation of PR/issue text; receipts sanitize control characters and cap bytes so candidate text cannot forge log lines; every input bound bails to `INSTRUMENT_FAILURE`/`NOT_PROVEN_GITHUB` (exit 3); the workflow pins checkout to the event base SHA (regex plus `rev-parse` proof), fetches the PR head only as an inert object, sets `persist-credentials: false`, and grants read-only permissions.
+- [x] Cost review verifies no-keyword early exit and hard bounds. A PR without a terminal relation exits after the bounded relation scan with zero issue lookups (proven live: 2026-08-23 runs print `no automatic closing relation; issue/domain lookup skipped`), and live evaluation performs at most one cached `gh api` call per unique relation under `MAX_RELATIONS`.
+- [x] Retirement review confirms no permanent second semantic policy engine. Every rule carries a tested CP03 retirement mapping, the immutable fixtures remain the canonical replay corpus for CP03/CP04, and CP00 joins only stable PR sections plus exact issue classification lines — no semantic completion inference is admitted.
+- [x] Mutation review disables every contradiction independently. `mutation_controls_prove_each_rule_owns_its_fixture_disposition` disables each of the six rules in isolation and requires the named fixture's aggregate disposition to change, so removing or weakening any single guard turns the strict expected-code comparison red; the packet-strictness control covers the controller prose/child-count loosening.
 
 ## Retirement
 
-- [ ] CP03/CP04 replay every immutable fixture with equal-or-stronger invalid-close rejection and valid-close acceptance.
-- [ ] Required semantic preflight is current.
+- [ ] CP03/CP04 replay every immutable fixture with equal-or-stronger invalid-close rejection and valid-close acceptance. Blocked on the CP03/CP04 train (#10381–#10384); the handoff stays recorded in the #10413 closeout and the fixtures remain the canonical corpus.
+- [ ] Required semantic preflight is current. Owned by the CP01–CP05 train under #10168; not a CP00 close condition (2026-08-22T23:10Z boundary ruling).
 - [x] The CP00 workflow is absent from this evaluator/fixture prerequisite; fixtures remain in the canonical corpus.
-- [ ] The base-owned trusted-base enforcement workflow is verified live before any required-promotion decision is claimed.
+- [x] The base-owned trusted-base enforcement workflow is verified live before any required-promotion decision is claimed. Verified on real `pull_request_target` events 2026-08-23T02:13Z–08:26Z: fast-path runs print `no automatic closing relation; issue/domain lookup skipped` (for example run 32627901280 on PR #11986), and a terminal-relation run performed the live issue lookup and emitted an independent row (`PASS_NO_HIGH_CONFIDENCE_CONTRADICTION ... #6660 line 32`, run 32625188223 on PR #6766). No required-promotion decision has been made; that review stays under #10168.
