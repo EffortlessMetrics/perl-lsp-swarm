@@ -28,6 +28,28 @@ A lint cannot appear in two states. A Cargo lint without a ledger entry fails, a
 
 The policy governs the lint levels inherited by production and test targets. Its maintained enforcement surface is the required workspace `--lib` gate, the production `--bins` gate, and the explicitly listed all-targets kernel cohort; that cohort is intentionally non-exhaustive. This document therefore does not claim that every test target is currently checked by the strict Clippy gate. Test failures within the enforced surface should use `Result`, `?`, or repository assertion helpers that preserve the underlying error. The old Clippy test-carveout keys are not accepted policy and cannot return through `clippy.toml`.
 
+### Target-kind lint contract (#11736)
+
+A governed lint applies to every target kind unless this section rules otherwise for a named pairing. The decided matrix:
+
+| governed lints | lib / bins (incl. `#[cfg(test)]`) | benches | `tests/` + `examples/` |
+|---|---|---|---|
+| `print_stdout`, `print_stderr` | deny | deny | **intentional** |
+| `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`, `dbg_macro` | deny | deny | deny |
+| `disallowed_fields` and every catalogued warn-level style/correctness lint | unchanged level | unchanged level | unchanged level |
+
+Rationale: a direct `print!` in an integration test or example is intentional diagnostics or demonstrated CLI behavior; the `print_*` denial reasons scope to library output discipline, which these targets do not have. The panic family stays denied everywhere because `[policy] panic_free_tests = true` is settled contract: test failures must flow through typed results or repository assertion helpers (`perl-test-must`), not unchecked collapse or aborts.
+
+The intentional pairings are encoded at source, not by config or gate flags. A `tests/` or `examples/` file whose direct printing is intentional carries a file-scoped reasoned expectation:
+
+```rust
+#![expect(clippy::print_stdout, reason = "This example demonstrates CLI output; tracing is not available in examples.")]
+```
+
+This keeps the single uniform `-D warnings` kernel command, preserves production enforcement locally as well as in CI, and self-ratchets through `unfulfilled_lint_expectations` when the printing goes away. Bare `#[allow]`, `clippy.toml` test-carveout keys (still banned under `[policy] allow_test_carveouts = false`), and blanket `-A clippy::print_*` gate tiers are all rejected mechanisms for this pairing: gate flags leak onto the production units compiled by the same invocation and defeat narrow suppression governance.
+
+Kernel cohort admission protocol (#11736): a crate outside the cohort is admitted only when its current measured residual is zero — every finding is either repaired or ruled intentional above — proven by rerunning the exact kernel command locally before extending the selector. Crates with remaining findings are named repair tranches on #11736 with per-lint counts; they join through the same protocol in later increments. The census method that produces those counts runs per-crate `cargo clippy --locked --keep-going --message-format=json` over disjoint unit sets (`--lib --bins`, then `--tests --benches --examples`) with governed lints downgraded to warn, so no dependency failure can mask downstream findings.
+
 The tracked catalog covers five broad families:
 
 1. **Panic and silent-failure control:** unchecked `Result`/`Option` collapse, discarded futures, ignored `must_use` work, and hidden errors.
