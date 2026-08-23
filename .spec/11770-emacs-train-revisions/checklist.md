@@ -13,10 +13,12 @@ building or executing any tooling beyond the embedded checker.
   validation throw (regression 14 carries both a parsed-value and a raw-byte
   control), the acceptance-bullet mutation classes beyond the numbered list
   (sequence tampering, unknown semantic class, permitted automatic
-  execution, kind misclassification) must carry their own controls, plus an
-  order-invariance canonicalization control — twenty controls in total.
+  execution, kind misclassification, wiring undercoverage, incorporation
+  claiming a node, adoption-rule drift) must carry their own controls, plus
+  an order-invariance canonicalization control — twenty-three controls in
+  total.
 - **Verify:** temporarily weakening a law shows a control failing to reject;
-  against the real validator all twenty reject.
+  against the real validator all twenty-three reject.
 
 ### Step 2: Create the revision ledger
 
@@ -90,12 +92,13 @@ The repository has no executable Emacs train validator (the xtask operations nam
    manifest successor set, every acceptance cell maps to exactly one
    declared owner or explicit retirement, every unique work item drains to
    a declared owner or explicit retirement, insert wiring matches manifest
-   edges with exact classes, the incorporation stays a separate train, the
+   edges with exact classes and covers exactly the subject manifest
+   dependents, the incorporation stays a separate train, the
    retarget after-state matches the manifest bytes including the canonical
    adoption rule, metadata-only entries invalidate nothing, material
    entries carry typed invalidations and exact-controller synchronization,
    and every entry forbids automatic execution;
-5. all fourteen revision regressions reject through twenty fail-closed
+5. all fourteen revision regressions reject through twenty-three fail-closed
    in-memory mutation controls (regression 14 carries a value-level and a
    byte-level control; the acceptance-bullet mutation classes carry four
    more), including the order-invariance control whose rejected subject is
@@ -476,6 +479,13 @@ function Invoke-LedgerValidation {
         $declared[[string]$w.to] = $true
       }
       if ($addedNodes.Count -lt 1) { throw "insert entry must add at least one node at $($e.entry_id)" }
+      if ($r.kind -ceq 'node') {
+        $wantDeps = @($tables.byId[$subjectRef].successors | Sort-Object -Unique)
+        $gotDeps = @($wiring | ForEach-Object { [string]$_.to } | Sort-Object -Unique)
+        if (($wantDeps -join ',') -cne ($gotDeps -join ',')) {
+          throw "insert wiring must cover exactly the subject manifest dependents at $($e.entry_id): wiring=[$($gotDeps -join ',')] dependents=[$($wantDeps -join ',')]"
+        }
+      }
     }
 
     # decompose: exact split wiring and fan-in reachability
@@ -733,6 +743,20 @@ Invoke-NegativeControl 'A03-automatic-mutation-permitted' { param($d)
 Invoke-NegativeControl 'A04-kind-misclassified' { param($d)
   (Find-Entry $d 'REV-002').revision_kind = 'supersede'
 }
+# regression 15: an insert under-reports its blast radius by dropping one
+# declared governance edge while the manifest dependents stay wired
+Invoke-NegativeControl 'R15-wiring-undercoverage' { param($d)
+  $e = Find-Entry $d 'REV-008'
+  $e.graph_effect.wiring = @($e.graph_effect.wiring | Where-Object { $_.to -cne 'PROD' })
+}
+# regression 16: an incorporation silently absorbs child-train nodes
+Invoke-NegativeControl 'A05-incorporate-claims-node' { param($d)
+  (Find-Entry $d 'REV-009').graph_effect.added_nodes = @('SPEC_PUB')
+}
+# regression 17: the retarget's canonical adoption rule drifts from the manifest
+Invoke-NegativeControl 'A06-adoption-rule-drift' { param($d)
+  (Find-Entry $d 'REV-010').graph_effect.after_state.adoption_rule.candidate_pull = 9999
+}
 
 # order-invariance control: the canonical digest must not move with the order
 # of the ledger's unordered inner collections (entry order itself is semantic
@@ -753,13 +777,13 @@ $shuffledDigest = Invoke-LedgerValidation $shuffled $manifestDoc
 if ($shuffledDigest -cne $orderDigest) { throw 'order-invariance control failed: canonical digest changed with input order' }
 $controls.Add('ORDER-CANONICAL-DIGEST')
 
-# Twenty fail-closed mutation controls cover the fourteen revision
+# Twenty-three fail-closed mutation controls cover the fourteen revision
 # regressions (regression 14 carries both a value-level and a byte-level
-# control), the four acceptance-bullet mutation classes beyond the numbered
-# list (sequence tampering, unknown semantic class, permitted automatic
-# execution, kind misclassification), and the order-invariance
-# canonicalization control.
-if ($controls.Count -ne 20) { throw "expected 20 negative controls, ran $($controls.Count)" }
+# control), the acceptance-bullet mutation classes beyond the numbered list
+# (sequence tampering, unknown semantic class, permitted automatic execution,
+# kind misclassification, wiring undercoverage, incorporation claiming a node,
+# adoption-rule drift), and the order-invariance canonicalization control.
+if ($controls.Count -ne 23) { throw "expected 23 negative controls, ran $($controls.Count)" }
 
 # --- bundle markdown structure ---
 function Get-SectionBody {
@@ -791,7 +815,7 @@ for ($i = 0; $i -lt 14; $i++) {
   if ($falsifierRows[$i] -notmatch [regex]::Escape('rejected')) { throw "falsifier row $($i + 1) lacks a rejected verdict" }
 }
 foreach ($term in @('emacs_train_revision.v1','#10918','#11770','#11375','revisions.ledger.json',
-                    'twenty controls','ten frozen movements')) {
+                    'twenty-three controls','ten frozen movements')) {
   if (-not ($acceptanceText -match [regex]::Escape($term))) { throw "missing acceptance contract term: $term" }
 }
 
@@ -805,7 +829,7 @@ foreach ($p in $paths) {
 $fingerprint = [BitConverter]::ToString($sha2.ComputeHash($allBytes.ToArray())) -replace '-', ''
 $sha2.Dispose()
 Write-Output "SPEC_11770_STRUCTURAL_CHECK=PASS"
-Write-Output "SPEC_11770_NEGATIVE_CONTROLS=20/20"
+Write-Output "SPEC_11770_NEGATIVE_CONTROLS=23/23"
 Write-Output "SPEC_11770_LEDGER_SHA256=$ledgerDigest"
 Write-Output "SPEC_11770_BUNDLE_SHA256=$fingerprint"
 ```
@@ -815,7 +839,7 @@ Write-Output "SPEC_11770_BUNDLE_SHA256=$fingerprint"
 Run the checker twice. Requirements for a valid proof:
 
 1. both runs print `SPEC_11770_STRUCTURAL_CHECK=PASS`;
-2. both runs print `SPEC_11770_NEGATIVE_CONTROLS=20/20`;
+2. both runs print `SPEC_11770_NEGATIVE_CONTROLS=23/23`;
 3. both runs print the same `SPEC_11770_LEDGER_SHA256` and
    `SPEC_11770_BUNDLE_SHA256` fingerprints;
 4. the full captured output of both runs is byte-identical;
@@ -830,8 +854,9 @@ The structural checker proves ledger shape, vocabulary discipline, the
 append-only law with frozen ten-movement coverage, ledger-vs-manifest
 reference resolution, decomposition wiring and fan-in reachability against
 the consumed `emacs_train.v1` manifest, cell exclusivity and work drain,
-insert wiring with exact classes, the incorporation boundary, the retarget
-after-state match including the canonical adoption rule, metadata
+insert wiring with exact classes and exact dependent coverage, the
+incorporation boundary, the retarget after-state match including the
+canonical adoption rule, metadata
 neutrality, typed invalidation and exact-controller synchronization, the
 no-automatic-mutation law, durable-byte hygiene, fail-closed behavior of
 all fourteen revision regressions, order-invariant canonicalization, and
@@ -858,6 +883,10 @@ papered over.
 - The ledger's entry order is semantic (append-only); only the inner
   collections (successors, cells, work, wiring, invalidations,
   synchronization) are unordered for canonicalization.
+- Future movements append new entries and extend the checker's frozen
+  movement-coverage table in the same change; existing entries are never
+  edited. The frozen table is the initial-state proof, not a cap on the
+  ledger.
 - The `supersede` kind is schema-present but unused by the initial ledger;
   a future manifest version must drain every cell and work item through it.
 - If a downstream check can only pass by weakening a law here, stop and

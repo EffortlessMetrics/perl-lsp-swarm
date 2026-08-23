@@ -73,9 +73,10 @@ executed as an in-memory negative control by the embedded checker in
 Regression 14 carries two controls (a parsed-value injection and a raw-byte
 injection); the acceptance-bullet mutation classes beyond the numbered list
 (sequence tampering, unknown semantic class, permitted automatic execution,
-kind misclassification) carry their own controls; and an order-invariance
+kind misclassification, wiring undercoverage, incorporation claiming a node,
+adoption-rule drift) carry their own controls; and an order-invariance
 canonicalization control runs whose rejected subject is an order-sensitive
-canonicalization — twenty controls in total.
+canonicalization — twenty-three controls in total.
 
 | # | Falsifier mutation | Kind | Required verdict | First discriminating control |
 |---:|---|---|---|---|
@@ -110,7 +111,8 @@ This bundle makes Emacs train revision governance durable: the versioned
 `emacs_train_revision.v1` ledger schema, the initial append-only ledger
 recording the ten frozen material movements with identity preservation and
 typed invalidation semantics, cross-validation against the stable
-`emacs_train.v1` manifest, and twenty fail-closed negative controls with
+`emacs_train.v1` manifest, and twenty-three fail-closed negative controls
+with
 a two-run determinism proof. It does not prove that the offline diff,
 change-check or impact operations named by #11770 exist or pass (unbuilt
 tooling, a separate claim), that the recorded movements are the complete
