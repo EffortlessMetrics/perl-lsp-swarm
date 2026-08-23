@@ -6015,57 +6015,57 @@
         {
           "target": "P11A",
           "class": "hard",
-          "provenance": "#11624 body header required children"
+          "provenance": "#11624 body header subject substrate"
         },
         {
           "target": "P11B",
           "class": "hard",
-          "provenance": "#11625 body canonical graph P11"
+          "provenance": "#11624 body header required children"
         },
         {
           "target": "P11C",
           "class": "hard",
-          "provenance": "#11625 body canonical graph P11"
+          "provenance": "#11624 body header required children"
         },
         {
           "target": "P11D",
           "class": "hard",
-          "provenance": "#11625 body canonical graph P11"
+          "provenance": "#11624 body header required children"
         },
         {
           "target": "P11E",
           "class": "hard",
-          "provenance": "#11625 body canonical graph P11"
+          "provenance": "#11624 body header required children"
         },
         {
           "target": "EVID",
           "class": "evidence",
-          "provenance": "#11624 body header required children"
+          "provenance": "#11624 body header evidence authority"
         },
         {
           "target": "E00A",
           "class": "evidence",
-          "provenance": "#11624 body header required children"
+          "provenance": "#11624 body header evidence authority"
         },
         {
           "target": "E00B",
           "class": "evidence",
-          "provenance": "#11624 body header required children"
+          "provenance": "#11624 body header evidence authority"
         },
         {
           "target": "E00C",
           "class": "evidence",
-          "provenance": "#11624 body header required children"
+          "provenance": "#11624 body header evidence authority"
         },
         {
           "target": "E00D",
           "class": "evidence",
-          "provenance": "#11624 body header required children"
+          "provenance": "#11624 body header evidence authority"
         },
         {
           "target": "E00E",
           "class": "evidence",
-          "provenance": "#11624 body header required children"
+          "provenance": "#11624 body header evidence authority"
         }
       ],
       "claim_ceiling": "Fan-in validation only over the complete child denominator; executes no scenarios, infers no pass from issue state and earns no support truth.",
