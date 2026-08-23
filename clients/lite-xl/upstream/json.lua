@@ -445,23 +445,6 @@ local function encode_nil(val, st)
 end
 
 
--- One shared encode context (#11186): circular-reference stack, container
--- depth, and a per-document node count. Created fresh per json.encode call,
--- so concurrent/reentrant calls cannot share budget state.
-local function count_node(st)
-  st.nodes = st.nodes + 1
-  if st.nodes > NODE_LIMIT then
-    error("cannot encode: node count exceeds maximum " .. NODE_LIMIT)
-  end
-end
-
-local function enter_container(st)
-  st.depth = st.depth + 1
-  if st.depth > DEPTH_LIMIT then
-    error("cannot encode: nesting exceeds maximum depth " .. DEPTH_LIMIT)
-  end
-end
-
 local function encode_table(val, st)
   -- Circular reference stays the earliest, distinct structural error.
   if st.stack[val] then error("circular reference") end
