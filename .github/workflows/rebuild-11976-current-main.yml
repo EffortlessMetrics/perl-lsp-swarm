@@ -1,0 +1,118 @@
+name: Rebuild PR #11976 on current main
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/rebuild-11976-current-main.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rebuild-11976-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    if: >-
+      github.repository == 'EffortlessMetrics/perl-lsp-swarm' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'repair/11976-current-main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repair branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: repair/11976-current-main
+          fetch-depth: 0
+
+      - name: Configure repository identity
+        run: |
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+
+      - name: Fetch the reviewed implementation source
+        run: |
+          git fetch origin fix/4997-generic-channel-ai-arm
+          git cat-file -e 4e3a89b190e259f1265672d89c77b34690654cb3^{commit}
+
+      - name: Cherry-pick non-conflicting work and reapply conflicted file patches
+        shell: bash
+        run: |
+          set -uo pipefail
+          source_commit=4e3a89b190e259f1265672d89c77b34690654cb3
+          parent_commit=$(git rev-parse "${source_commit}^")
+
+          if git cherry-pick "$source_commit"; then
+            echo "Original implementation cherry-picked without conflicts."
+            exit 0
+          fi
+
+          mapfile -t conflicts < <(git diff --name-only --diff-filter=U | sort)
+          printf 'Conflicted files:\n'
+          printf '  %s\n' "${conflicts[@]}"
+
+          expected=(
+            crates/perl-lsp-rs-core/src/config/mod.rs
+            crates/perl-lsp-rs-core/src/configuration_authority/catalog.rs
+            crates/perl-lsp-rs-core/src/configuration_authority/mod.rs
+            crates/perl-lsp-rs-core/tests/perllsp_settings_schema_tests.rs
+            crates/perl-lsp-rs/src/runtime/mod.rs
+            schemas/perllsp-settings.schema.json
+          )
+          mapfile -t expected_sorted < <(printf '%s\n' "${expected[@]}" | sort)
+          if ! diff -u <(printf '%s\n' "${expected_sorted[@]}") <(printf '%s\n' "${conflicts[@]}"); then
+            echo "Unexpected conflict denominator; refusing an unreviewed merge." >&2
+            exit 1
+          fi
+
+          for path in "${conflicts[@]}"; do
+            git checkout --ours -- "$path"
+            patch="/tmp/$(printf '%s' "$path" | tr '/' '_').patch"
+            git diff --binary "$parent_commit" "$source_commit" -- "$path" > "$patch"
+            git apply --reject --recount --whitespace=nowarn "$patch" || true
+          done
+
+          if find . -name '*.rej' -print -quit | grep -q .; then
+            echo "Rejected hunks require explicit current-main resolution:" >&2
+            find . -name '*.rej' -print -exec sh -c 'echo "--- $1"; cat "$1"' _ {} \;
+            exit 1
+          fi
+
+          git add -- "${conflicts[@]}"
+          git cherry-pick --continue
+
+      - name: Apply reviewed truth/proof repairs
+        run: |
+          git show origin/fix/4997-generic-channel-ai-arm:scripts/maintenance/address_11976_review.py > /tmp/address_11976_review.py
+          python3 /tmp/address_11976_review.py
+
+      - name: Format and validate focused security contracts
+        run: |
+          cargo fmt --all
+          cargo fmt --all -- --check
+          python3 -m json.tool schemas/perllsp-settings.schema.json >/dev/null
+          python3 -m json.tool .ci/fixtures/zed-perl-upstream/settings-behavior.v1.json >/dev/null
+          cargo test -p perl-lsp-rs-core hostile_and_malformed_traffic_preserves_accepted_trusted_ai_state --locked
+          cargo test -p perl-lsp-rs-core generic_channel_ai_activation_shapes_fail_closed_across_clients --locked
+          cargo test -p perl-lsp-rs-core --test perllsp_settings_schema_tests --locked
+          cargo test -p xtask --test zed_settings_behavior --locked
+          cargo test -p perl-lsp-rs --test lsp_streaming_completion_tests --locked hostile_generic
+          cargo clippy -p perl-lsp-rs-core -p perl-lsp-rs --lib --locked -- -D warnings
+          git diff --check
+
+      - name: Publish rebuilt candidate and retire one-shot workflow
+        env:
+          BRANCH: repair/11976-current-main
+        run: |
+          git rm -- .github/workflows/rebuild-11976-current-main.yml
+          git add -A
+          git diff --cached --check
+          if ! git diff --cached --quiet; then
+            git commit -m 'fix(ai-completion): address security review on current main (#4997)'
+          fi
+          git push origin HEAD:"$BRANCH"
