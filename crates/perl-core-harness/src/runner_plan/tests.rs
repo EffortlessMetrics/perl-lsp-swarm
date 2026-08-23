@@ -11,7 +11,7 @@ use crate::io::read_matrix;
 use crate::runner_model::{
     MembershipParityStatus, RunnerKind, RunnerPlan, RunnerScheduling, SourceForm,
 };
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, bail};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -346,5 +346,170 @@ fn duplicate_raw_discovery_is_structurally_invalid() -> Result<()> {
         RunnerScheduling::default(),
     );
     assert!(result.is_err());
+    Ok(())
+}
+
+#[test]
+fn absent_target_is_named_by_plan_builder() -> Result<()> {
+    let matrix = matrix()?;
+    let Err(error) = build_runner_plan(
+        &matrix,
+        "no_such_target",
+        RunnerKind::Test,
+        b"t/base/if.t\n",
+        RunnerScheduling::default(),
+    ) else {
+        bail!("absent target must be rejected");
+    };
+    assert_eq!(error, "target matrix has no target no_such_target");
+    Ok(())
+}
+
+#[test]
+fn non_physical_targets_cannot_build_runner_plans() -> Result<()> {
+    let matrix = matrix()?;
+    for target_id in ["prep_test", "instrument_valgrind", "legacy_custom_core_test"] {
+        let Err(error) = build_runner_plan(
+            &matrix,
+            target_id,
+            RunnerKind::Test,
+            b"t/base/if.t\n",
+            RunnerScheduling::default(),
+        ) else {
+            bail!("non-physical target {target_id} must be rejected");
+        };
+        assert_eq!(error, format!("target {target_id} is not a physical runner population"));
+    }
+    Ok(())
+}
+
+#[test]
+fn environment_variants_inherit_base_selection_and_authority_chain() -> Result<()> {
+    let matrix = matrix()?;
+    let raw = b"t/base/if.t\n";
+
+    let harness_variant = build_runner_plan(
+        &matrix,
+        "make_test_harness_choose",
+        RunnerKind::Harness,
+        raw,
+        RunnerScheduling::default(),
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    assert_eq!(harness_variant.canonical_selection_entrypoint, "t/harness");
+    assert!(
+        !harness_variant
+            .limitations
+            .iter()
+            .any(|value| value == "alternate_runner_requires_membership_parity_evidence")
+    );
+
+    let notty_as_test = build_runner_plan(
+        &matrix,
+        "make_test_harness_notty",
+        RunnerKind::Test,
+        raw,
+        RunnerScheduling::default(),
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    assert_eq!(notty_as_test.canonical_selection_entrypoint, "t/harness");
+    assert!(
+        notty_as_test
+            .limitations
+            .iter()
+            .any(|value| value == "alternate_runner_requires_membership_parity_evidence")
+    );
+
+    let notty_as_harness = build_runner_plan(
+        &matrix,
+        "make_test_harness_notty",
+        RunnerKind::Harness,
+        raw,
+        RunnerScheduling::default(),
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    assert!(
+        !notty_as_harness
+            .limitations
+            .iter()
+            .any(|value| value == "alternate_runner_requires_membership_parity_evidence")
+    );
+    Ok(())
+}
+
+#[test]
+fn script_form_allowance_rejects_test_pl_and_variant_inherits_base_forms() -> Result<()> {
+    let matrix = matrix()?;
+
+    let Err(dot_t_only) = build_runner_plan(
+        &matrix,
+        "component_base",
+        RunnerKind::Test,
+        b"cpan/Foo/test.pl\n",
+        RunnerScheduling::default(),
+    ) else {
+        bail!("dot_t-only targets must reject test.pl discovery");
+    };
+    assert_eq!(
+        dot_t_only,
+        "target component_base does not allow source form TestPl for cpan/Foo/test.pl"
+    );
+
+    let utf8_inherits_forms = build_runner_plan(
+        &matrix,
+        "variant_utf8",
+        RunnerKind::Test,
+        b"cpan/Foo/test.pl\n",
+        RunnerScheduling::default(),
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    assert_eq!(utf8_inherits_forms.source_items[0].source_form, SourceForm::TestPl);
+    Ok(())
+}
+
+#[test]
+fn parity_limitation_presence_is_enforced_exactly() -> Result<()> {
+    use crate::compare::validate_runner_parity;
+
+    const MEMBERSHIP_DIFFERS: &str = "normalized_membership_differs";
+    const SAME_RUNNER: &str = "same_runner_comparison_cannot_establish_cross_runner_parity";
+
+    let matrix = matrix()?;
+    let left = base_plan(&matrix, RunnerKind::Test, b"t/base/cond.t\nt/base/if.t\n")?;
+    let right = base_plan(&matrix, RunnerKind::Harness, b"t/base/if.t\n")?;
+    let differing =
+        compare_runner_plans(&left, &right).map_err(|error| color_eyre::eyre::eyre!(error))?;
+    assert!(differing.limitations.iter().any(|value| value == MEMBERSHIP_DIFFERS));
+    validate_runner_parity(&differing).map_err(|error| color_eyre::eyre::eyre!(error))?;
+
+    let mut stripped = differing.clone();
+    stripped.limitations.retain(|value| value != MEMBERSHIP_DIFFERS);
+    let Err(missing_error) = validate_runner_parity(&stripped) else {
+        bail!("missing required limitation must be rejected");
+    };
+    assert_eq!(
+        missing_error,
+        format!("runner parity is missing required limitation {MEMBERSHIP_DIFFERS}")
+    );
+
+    let same = compare_runner_plans(
+        &left,
+        &base_plan(&matrix, RunnerKind::Test, b"t/base/cond.t\nt/base/if.t\n")?,
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    assert!(same.limitations.iter().any(|value| value == SAME_RUNNER));
+    assert!(!same.limitations.iter().any(|value| value == MEMBERSHIP_DIFFERS));
+    validate_runner_parity(&same).map_err(|error| color_eyre::eyre::eyre!(error))?;
+
+    let mut injected = same.clone();
+    injected.limitations.push(MEMBERSHIP_DIFFERS.to_string());
+    injected.limitations.sort();
+    let Err(injected_error) = validate_runner_parity(&injected) else {
+        bail!("inapplicable limitation must be rejected");
+    };
+    assert_eq!(
+        injected_error,
+        format!("runner parity retains inapplicable limitation {MEMBERSHIP_DIFFERS}")
+    );
     Ok(())
 }

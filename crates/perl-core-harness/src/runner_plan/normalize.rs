@@ -158,4 +158,23 @@ mod tests {
         assert!(matches_selector("lib/attributes.t", &selector));
         assert!(!matches_selector("lib/Config/Perl/V.t", &selector));
     }
+
+    #[test]
+    fn unsupported_discovery_source_form_is_named_with_expected_forms() {
+        let Err(error) = normalize_source_item("t/base/readme.txt") else {
+            panic!("non-.t and non-test.pl discovery must be rejected");
+        };
+        assert_eq!(
+            error,
+            "unsupported discovery source form for t/base/readme.txt; expected .t or test.pl"
+        );
+
+        let Err(error) = normalize_source_item("lib/x/notes.md") else {
+            panic!("root-lib markdown discovery must be rejected");
+        };
+        assert_eq!(
+            error,
+            "unsupported discovery source form for lib/x/notes.md; expected .t or test.pl"
+        );
+    }
 }

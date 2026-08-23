@@ -2668,3 +2668,75 @@ created = "2026-08-23"
 review_after = "2026-09-23"
 expires = "2026-11-23"
 removal_criteria = "EffortlessMetrics/ripr#1429 is fixed so diff-scoped analysis connects sibling cfg(test) modules and tests/ harnesses to production owners, or targeted mutation replaces this advisory path for target contracts; then delete this entry and rerun the enforce-new-ripr gate. Remove or narrow it immediately if a future receipt reports any class outside no_static_path / reachable_unrevealed / weakly_gripped in this file, or an actionable seam the listed oracles demonstrably do not observe; that condition is automatic do-not-merge unless a separate evidence-backed review justifies the disposition."
+
+# ----------------------------------------------------------------------------
+# Runner-plan CLI wrapper, selection assembly, parity enforcement, and
+# discovery normalization: exact-oracle proof exists but ripr cannot associate
+# it, and two seams are validator-guarded defensive arms.
+#
+# PR #6772/#6662 adds perl-core-harness-runner-plan plus the shared
+# src/runner_plan/{build,compare,normalize}.rs modules. The enforce-new-ripr
+# receipt at head b2def2d7d (local ripr 0.9.0 against origin/main f1e74db90,
+# mirroring CI run 32630804488 whose 40 actionable findings dropped to 28 after
+# the focused-proof commit) reports the residue as 27 no_static_path plus 1
+# reachable_unrevealed across these four production files, while every reported
+# seam is materially covered by exact-oracle focused tests added in the same
+# commit:
+#   - tests/runner_plan_cli.rs spawns the binary over the pinned target-matrix
+#     bundle: missing-command and per-command argument-count usage bails,
+#     unsupported command/scheduling-option naming, --jobs positive-integer
+#     contract (zero and non-numeric), --property key=value shape and duplicate
+#     rejection, exact build stdout ("runner plan valid: ..."), declared
+#     scheduling (--asap/--jobs/--state-ordering/--property) observed inside
+#     the written plan JSON, exact compare stdout ("runner parity valid: ...
+#     status=Parity") with report content assertions, check-plan and
+#     check-parity happy paths plus forged-entry rejections;
+#   - shared src/runner_plan/tests.rs asserts absent_target_is_named_by_plan_
+#     builder (find_target miss message), non_physical_targets_cannot_build_
+#     runner_plans (all three non-physical kinds with exact messages),
+#     environment_variants_inherit_base_selection_and_authority_chain (variant
+#     arm, two-level authority recursion, alternate-runner limitation both
+#     polarities), script_form_allowance_rejects_test_pl_and_variant_inherits_
+#     base_forms (source-form gate and empty-forms inheritance), and
+#     parity_limitation_presence_is_enforced_exactly (require_exact_limitation
+#     required-present, required-absent, and both error arms);
+#   - normalize's own cfg(test) module asserts the unsupported-source-form
+#     rejection message exactly and the same message is reached end-to-end via
+#     the CLI-level dot_t-only fixture.
+#
+# The analyzer still reports no_static_path because it cannot connect the
+# integration harness in tests/ nor sibling cfg(test) modules to these
+# production owners (documented EffortlessMetrics/ripr#1429 and #1428
+# association limitations); normalize's embedded oracle is associated but its
+# observation strength on the changed line remains unrecognized
+# (reachable_unrevealed). Two flagged arms are additionally unreachable through
+# any validated matrix: build.rs effective_selection's missing-base error and
+# effective_selection_authority's missing-selection-authority error can only
+# fire for shapes that UpstreamTargetMatrix::validate already rejects
+# (validate_environment_variant requires variant_of; validate_physical and
+# validate_selector_variant require selection_authority), and
+# build_runner_plan validates before either helper runs.
+#
+# The matcher is classification-qualified: this entry admits only
+# no_static_path and reachable_unrevealed (including the weakly_gripped
+# canonicalization). Any other reported class in these files is an automatic
+# do-not-merge condition requiring removal or narrowing of this entry or a
+# separate evidence-backed review.
+# ----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-runner-plan-static-tracing"
+kind = "predicate_infection_untraceable"
+paths = [
+  "crates/perl-core-harness/src/bin/perl-core-harness-runner-plan.rs",
+  "crates/perl-core-harness/src/runner_plan/build.rs",
+  "crates/perl-core-harness/src/runner_plan/compare.rs",
+  "crates/perl-core-harness/src/runner_plan/normalize.rs",
+]
+classification = ["no_static_path", "reachable_unrevealed", "weakly_gripped"]
+owner = "proof-lane"
+issue = "#6662"
+reason = "PR #6772 (issue #6662) adds the perl-core-harness-runner-plan CLI and its shared runner_plan modules. The enforce-new-ripr receipt at head b2def2d7d reports the 28-finding residue (27 no_static_path, 1 reachable_unrevealed) in these four production files even though the same commit adds exact-oracle proof for every reported seam: tests/runner_plan_cli.rs drives the real binary over the pinned bundle (usage and argument-count bails, scheduling flag parsing incl. zero/non-numeric jobs and duplicate properties, exact build/compare stdout lines, written plan and parity receipts, forged-receipt rejections); shared runner_plan/tests.rs pins find_target miss naming, all three non-physical-kind rejections, environment-variant inheritance with two-level authority recursion and alternate-runner limitation polarity, source-form allowance and base-form inheritance, and require_exact_limitation present/absent/error arms; normalize's embedded tests pin the unsupported-source-form message. The static path remains unreported because of documented EffortlessMetrics/ripr#1429 and #1428 test-to-owner association limitations, and two arms (effective_selection missing base, effective_selection_authority missing selection authority) are additionally unreachable behind UpstreamTargetMatrix::validate, which rejects those shapes before build_runner_plan reaches them. This entry admits exactly no_static_path, reachable_unrevealed, and the weakly_gripped canonicalization; any other class is do-not-merge until re-dispositioned."
+created = "2026-08-23"
+review_after = "2026-09-23"
+expires = "2026-11-23"
+removal_criteria = "EffortlessMetrics/ripr#1429 connects diff-scoped analysis to tests/ harnesses and sibling cfg(test) modules; then delete this entry and rerun the enforce-new-ripr gate expecting the existing focused proof to clear the seams without it. Remove or narrow it immediately if a receipt reports any class outside no_static_path / reachable_unrevealed / weakly_gripped in these files, if the listed oracles stop covering a reported seam, or if target-contract validation drift makes the two guarded arms reachable through read_matrix; those conditions are automatic do-not-merge unless a separate evidence-backed review justifies the disposition."
