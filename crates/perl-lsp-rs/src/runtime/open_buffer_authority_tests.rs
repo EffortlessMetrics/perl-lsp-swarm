@@ -6,10 +6,6 @@
 //! contradicting disk bytes, and `didSave`/`didClose` complete the handoff
 //! deterministically.
 #![expect(
-    clippy::unwrap_used,
-    reason = "test-only policy proof: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
-#![expect(
     clippy::expect_used,
     reason = "test-only policy proof: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
 )]
