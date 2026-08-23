@@ -822,13 +822,18 @@ fn reject_duplicate_fact_ids(
 }
 
 fn distinct_candidate_count(facts: &[ProviderQueryFact]) -> usize {
+    // Entity ids are shard-local, so candidates are distinguished by the same
+    // file-qualified identity the adapters bind targets with: same-numbered
+    // entities in different shards are distinct candidates.
     facts
         .iter()
         .filter(|fact| {
             (fact.role().is_selector() || fact.role().is_supporting())
                 && fact.envelope().kind != SemanticFactKind::Boundary
         })
-        .filter_map(|fact| fact.envelope().entity_id)
+        .filter_map(|fact| {
+            fact.envelope().entity_id.map(|entity_id| (fact.envelope().anchor.file_id, entity_id))
+        })
         .collect::<BTreeSet<_>>()
         .len()
 }

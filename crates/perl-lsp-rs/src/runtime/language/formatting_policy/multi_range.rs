@@ -25,7 +25,7 @@ impl PositionRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct NormalizedRange {
+pub(super) struct NormalizedRange {
     start: PositionRecord,
     end: PositionRecord,
 }
@@ -35,7 +35,7 @@ impl NormalizedRange {
         Self { start, end }
     }
 
-    fn wire(&self) -> WireRange {
+    pub(super) fn wire(&self) -> WireRange {
         WireRange::new(
             WirePosition::new(self.start.line, self.start.character),
             WirePosition::new(self.end.line, self.end.character),
@@ -106,8 +106,8 @@ impl PlanError {
         )
     }
 
-    fn reversed_range(original_index: usize) -> Self {
-        Self::new("reversed_range", format!("ranges[{original_index}] ends before it starts"))
+    fn reversed_range(label: impl std::fmt::Display) -> Self {
+        Self::new("reversed_range", format!("{label} ends before it starts"))
     }
 
     fn duplicate_range(right: usize, left: usize) -> Self {
@@ -128,7 +128,7 @@ impl PlanError {
 
     fn error_kind(&self) -> &'static str {
         if self.json_rpc_code() == -32602 {
-            "invalid_multi_range_plan"
+            "invalid_format_range_plan"
         } else {
             "formatting_outcome_contract"
         }
@@ -206,23 +206,33 @@ impl SourceGeometry {
     }
 }
 
+fn admit_wire_range(
+    geometry: &SourceGeometry,
+    source: &str,
+    value: &Value,
+    label: &str,
+) -> Result<NormalizedRange, PlanError> {
+    let wire = parse_range(value, label)
+        .map_err(|error| PlanError::new("invalid_range", error.message))?;
+    let start_byte = geometry.byte_offset(source, wire.start.line, wire.start.character)?;
+    let end_byte = geometry.byte_offset(source, wire.end.line, wire.end.character)?;
+    if end_byte < start_byte {
+        return Err(PlanError::reversed_range(label));
+    }
+    Ok(NormalizedRange::between(
+        PositionRecord::at(wire.start.line, wire.start.character, start_byte),
+        PositionRecord::at(wire.end.line, wire.end.character, end_byte),
+    ))
+}
+
 fn build_plan(source: &str, ranges: &[Value]) -> Result<RangePlan, PlanError> {
     let geometry = SourceGeometry::new(source);
     let requested_ranges = ranges.to_vec();
     let mut normalized_ranges = Vec::with_capacity(ranges.len());
 
     for (original_index, value) in ranges.iter().enumerate() {
-        let wire = parse_range(value, &format!("ranges[{original_index}]"))
-            .map_err(|error| PlanError::new("invalid_range", error.message))?;
-        let start_byte = geometry.byte_offset(source, wire.start.line, wire.start.character)?;
-        let end_byte = geometry.byte_offset(source, wire.end.line, wire.end.character)?;
-        if end_byte < start_byte {
-            return Err(PlanError::reversed_range(original_index));
-        }
-        let normalized = NormalizedRange::between(
-            PositionRecord::at(wire.start.line, wire.start.character, start_byte),
-            PositionRecord::at(wire.end.line, wire.end.character, end_byte),
-        );
+        let normalized =
+            admit_wire_range(&geometry, source, value, &format!("ranges[{original_index}]"))?;
         normalized_ranges.push(AdmittedRange::new(original_index, normalized));
     }
 
@@ -270,6 +280,19 @@ fn build_plan(source: &str, ranges: &[Value]) -> Result<RangePlan, PlanError> {
         range_provenance,
         plan_digest: digest(&format!("multi-range-plan-v1|{canonical}")),
     })
+}
+
+/// Admit one requested wire range through the exact mapping the multi-range
+/// plan builder uses, so `textDocument/rangeFormatting` and a one-element
+/// `textDocument/rangesFormatting` request share one admission vocabulary.
+pub(super) fn admit_requested_range(
+    server: &LspServer,
+    snapshot: &Snapshot,
+    range_value: &Value,
+) -> Result<NormalizedRange, JsonRpcError> {
+    let geometry = SourceGeometry::new(&snapshot.text);
+    admit_wire_range(&geometry, &snapshot.text, range_value, "range")
+        .map_err(|error| plan_error(server, snapshot, error, None))
 }
 
 #[derive(Debug)]
@@ -978,7 +1001,10 @@ mod tests {
             PlanError::outside_line(0, 99, 4).message.contains("outside line 0"),
             "outside-line constructor must keep discriminant text"
         );
-        assert_eq!(PlanError::reversed_range(0).message, "ranges[0] ends before it starts");
+        assert_eq!(
+            PlanError::reversed_range("ranges[0]").message,
+            "ranges[0] ends before it starts"
+        );
         assert_eq!(PlanError::duplicate_range(1, 0).message, "ranges[1] duplicates ranges[0]");
         assert_eq!(PlanError::overlapping_ranges(1, 0).message, "ranges[1] overlaps ranges[0]");
     }
@@ -1022,7 +1048,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let invalid = PlanError::new("invalid_position", "outside document");
         assert_eq!(invalid.json_rpc_code(), -32602);
-        assert_eq!(invalid.error_kind(), "invalid_multi_range_plan");
+        assert_eq!(invalid.error_kind(), "invalid_format_range_plan");
 
         let conflict = PlanError::new("edit_conflict", "formatter edits overlap");
         assert_eq!(conflict.json_rpc_code(), -32603);

@@ -1471,6 +1471,137 @@ class GateShardTests(unittest.TestCase):
             [row["result"] for row in summary["gates"]],
         )
 
+    def test_build_parser_registers_gate_policy_argument(self) -> None:
+        """Regression guard: build_parser() must declare --gate-policy or workflow shards fail.
+
+        The hosted CI gate-shard workflow invokes::
+
+            python3 scripts/ci/run_gate_shard.py --gate-policy .ci/gate-policy.yaml ...
+
+        If build_parser() ever loses that argument (for example, because an in-flight
+        PR branch carries a stale copy of the script), every runner shard exits with
+        "unrecognized arguments: --gate-policy <gate-name>" before executing any gate,
+        making the CI evidence unavailable (see issue #11925).
+
+        By asserting the parser's declared options here, the ci-gate-self-tests shard
+        catches the incompatibility at the earliest shared authority — in the base
+        branch, before any merge — rather than at hosted shard execution time.
+        """
+        parser = shard.build_parser()
+
+        # Supplying --gate-policy must produce no unrecognised tokens.
+        _, unknown = parser.parse_known_args(
+            [
+                "--xtask", "target/debug/xtask",
+                "--receipt-dir", "receipts",
+                "--summary", "summary.json",
+                "--gate-policy", ".ci/gate-policy.yaml",
+                "gate1",
+            ]
+        )
+        self.assertEqual(
+            [],
+            unknown,
+            "--gate-policy must be a registered argument so the workflow invocation is accepted",
+        )
+
+        # The argument must be resolved as a Path (not a plain string) to match
+        # the path-rebasing logic in main().
+        parsed, _ = parser.parse_known_args(
+            [
+                "--xtask", "target/debug/xtask",
+                "--receipt-dir", "receipts",
+                "--summary", "summary.json",
+                "--gate-policy", "custom/policy.yaml",
+                "gate1",
+            ]
+        )
+        self.assertIsInstance(
+            parsed.gate_policy,
+            Path,
+            "--gate-policy must be typed as Path",
+        )
+        self.assertEqual(
+            Path("custom/policy.yaml"),
+            parsed.gate_policy,
+        )
+
+    def test_build_parser_gate_policy_defaults_to_canonical_ci_path(self) -> None:
+        """build_parser() default for --gate-policy must match the workflow's hard-coded path.
+
+        The CI workflow passes ``--gate-policy .ci/gate-policy.yaml`` on every shard
+        invocation.  This test asserts two things at once:
+
+        1. The flag is optional (a default exists, so callers that omit it still work).
+        2. The default is the canonical path ``Path(".ci/gate-policy.yaml")``, which is
+           what the workflow would use when the flag is provided but the value matches
+           the default — confirming that the two stay in sync even if the explicit flag
+           is later dropped from the workflow or defaulted differently in the script.
+        """
+        parser = shard.build_parser()
+        parsed, _ = parser.parse_known_args(
+            [
+                "--xtask", "target/debug/xtask",
+                "--receipt-dir", "receipts",
+                "--summary", "summary.json",
+                "gate1",
+            ]
+        )
+        self.assertEqual(
+            Path(".ci/gate-policy.yaml"),
+            parsed.gate_policy,
+            "--gate-policy default must be Path('.ci/gate-policy.yaml') to match the workflow",
+        )
+
+    def test_workflow_and_parser_agree_on_gate_policy_flag(self) -> None:
+        """The gate-policy flag passed by the CI workflow must be accepted by build_parser().
+
+        This test reads the exact --gate-policy invocation from the workflow YAML and
+        feeds it into the argument parser, confirming the two sources of truth stay
+        compatible as the repository evolves.  It is the direct regression guard for
+        issue #11925, where a stale PR branch had a parser that did not accept
+        --gate-policy, breaking every hosted shard before any gate ran.
+        """
+        workflow = REPO_ROOT / ".github/workflows/ci.yml"
+        if not workflow.is_file():
+            self.skipTest("ci.yml not present in this checkout")
+
+        text = workflow.read_text(encoding="utf-8")
+        # Locate the runner step in the workflow.
+        try:
+            run_start = text.index("      - name: Run merge-gate shard with receipts")
+            run_end = text.index("      - name:", run_start + 1)
+        except ValueError:
+            self.skipTest("runner step not found in ci.yml")
+
+        runner_step = text[run_start:run_end]
+
+        # Extract the --gate-policy value from the workflow invocation.
+        match = re.search(r"--gate-policy\s+(\S+)", runner_step)
+        self.assertIsNotNone(
+            match,
+            "ci.yml runner step must pass --gate-policy to run_gate_shard.py",
+        )
+        assert match is not None
+        workflow_policy_path = match.group(1)
+
+        # Feed the workflow's exact --gate-policy value into the parser.
+        parser = shard.build_parser()
+        _, unknown = parser.parse_known_args(
+            [
+                "--xtask", "target/debug/xtask",
+                "--receipt-dir", "receipts",
+                "--summary", "summary.json",
+                "--gate-policy", workflow_policy_path,
+                "gate1",
+            ]
+        )
+        self.assertEqual(
+            [],
+            unknown,
+            f"--gate-policy {workflow_policy_path!r} from ci.yml is not accepted by build_parser()",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

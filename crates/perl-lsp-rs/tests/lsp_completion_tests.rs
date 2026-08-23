@@ -702,9 +702,10 @@ fn test_empty_prefix_completion() -> Result<(), Box<dyn std::error::Error>> {
         labels.len()
     );
     assert!(labels.iter().any(|l| l.starts_with("print")));
-    // #11858 remainder: document-variable emission at empty prefix — zero
-    // $-labels arrive in some launch shapes (the symbol table reaches the
-    // provider empty); tracked on the issue, not covered by the reserve.
+    // Document variables declared in the file must appear at empty prefix.
+    // Fixed in #11858: the completion handler now uses `latest_parsed()` as a
+    // fallback when `current_parsed()` returns None (e.g. a brief generation
+    // mismatch between the workspace indexer and the completion request).
     assert!(labels.contains(&"$var".to_string()));
     assert!(labels.contains(&"test".to_string()));
 
