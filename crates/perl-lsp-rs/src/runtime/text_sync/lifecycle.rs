@@ -177,15 +177,25 @@ impl LspServer {
             // original path on save, which must regain its own facts.
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             {
-                // Read generation, document-instance handle, and text in a
-                // SINGLE lock to avoid TOCTOU. The non-zero requirement is
-                // applied here so generation zero (minimal/no-parse documents)
-                // can never cross a live source commit.
+                // Read generation, document-instance handle, and -- only when
+                // a commit is actually warranted -- the text in a SINGLE lock
+                // to avoid TOCTOU. The staleness gate runs inside the lock
+                // scope so the common up-to-date save does not pay the
+                // full-text clone. The non-zero requirement is applied here
+                // so generation zero (minimal/no-parse documents) can never
+                // cross a live source commit.
                 let doc_info = {
-                    let documents = self.documents.lock();
+                    let documents = self.documents_guard();
                     self.get_document(&documents, &normalized_uri).and_then(|d| {
                         let doc_gen_val = NonZeroU32::new(d.current_generation())?;
-                        Some((doc_gen_val, d.generation.clone(), d.text_str().to_string()))
+                        let needs_commit = backing_transition.is_some()
+                            || self.coordinator().is_some_and(|coordinator| {
+                                coordinator
+                                    .index()
+                                    .is_index_generation_stale(&normalized_uri, doc_gen_val.get())
+                            });
+                        needs_commit
+                            .then(|| (doc_gen_val, d.generation.clone(), d.text_str().to_string()))
                     })
                 };
                 if let Some((doc_gen_val, instance, text)) = doc_info
