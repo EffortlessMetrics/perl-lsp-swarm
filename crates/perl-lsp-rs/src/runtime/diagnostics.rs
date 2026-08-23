@@ -2089,6 +2089,14 @@ impl LspServer {
             registry.check_unfiltered(&critic_context),
             source_identity,
         );
+
+        // Reviewed core-overlap producers declare their checked critic
+        // observations at emission (#11918); they join the native candidates
+        // in this single normalization call so an alias pair becomes one
+        // logical row before LSP projection.
+        let builtin_candidates = builtin_critic_overlap_candidates(ast, doc_text, source_identity);
+        let all_candidates = candidates.into_iter().chain(builtin_candidates);
+
         let suppressions =
             perl_lsp_rs_core::tooling::perl_critic::CriticSuppressionMap::from_source(doc_text);
         let policy = NativeCriticPolicy::new(
@@ -2097,12 +2105,26 @@ impl LspServer {
             &native_exclude,
             &suppressions,
         );
+        let normalized = normalize_with_native_policy(all_candidates, &policy);
 
-        diagnostics.extend(
-            normalize_with_native_policy(candidates, &policy)
-                .iter()
-                .map(normalized_critic_finding_to_diagnostic),
-        );
+        // A surviving merged row supersedes its ordinary built-in twin: the
+        // row's presentation comes from that twin (built-in origin wins
+        // presentation precedence), so publishing both would duplicate one
+        // proposition. Removal keys come from producer-declared contributor
+        // identities and exact ranges — never from severity or message
+        // coincidence. If policy filtered the merged row out, nothing is
+        // removed and the ordinary diagnostic stands as before.
+        let promoted =
+            perl_lsp_rs_core::tooling::perl_critic::surviving_builtin_promotions(&normalized);
+        diagnostics.retain(|diagnostic| {
+            !promoted.contains(&(
+                diagnostic.code.clone().unwrap_or_default(),
+                diagnostic.range.0,
+                diagnostic.range.1,
+            ))
+        });
+
+        diagnostics.extend(normalized.iter().map(normalized_critic_finding_to_diagnostic));
     }
 
     /// Collect external perlcritic diagnostics if the feature is enabled.
@@ -2436,6 +2458,23 @@ fn push_diagnostic_source(code: Option<&str>) -> &'static str {
         }
         _ => "perl-lsp",
     }
+}
+
+/// Convert checked built-in critic overlap observations into normalization
+/// candidates bound to one exact logical source/generation (#11918).
+///
+/// The observations come from the same lint emitter branches that produce the
+/// ordinary core diagnostics; this function only binds them to the source
+/// identity shared with the native candidates of the same generation.
+fn builtin_critic_overlap_candidates(
+    ast: &std::sync::Arc<perl_parser::ast::Node>,
+    doc_text: &str,
+    source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
+) -> Vec<perl_lsp_rs_core::tooling::perl_critic::CriticFindingCandidate> {
+    perl_lsp_rs_core::providers::diagnostics::builtin_critic_overlap_observations(ast, doc_text)
+        .into_iter()
+        .map(|observation| observation.into_candidate(doc_text, source_identity))
+        .collect()
 }
 
 /// Convert one normalized logical critic finding to an internal diagnostic.

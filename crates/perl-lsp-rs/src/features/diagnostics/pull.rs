@@ -362,6 +362,8 @@ impl PullDiagnosticsProvider {
                 );
 
                 // Wire workspace semantic queries when available (pull-text path).
+                // The base diagnostics stay in the internal working type until
+                // the critic cut has retired superseded overlap twins (#11918).
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
                 let base_diagnostics: Vec<_> = {
                     let semantic_diags =
@@ -382,40 +384,36 @@ impl PullDiagnosticsProvider {
                                 },
                             )
                         });
-                    semantic_diags
-                        .unwrap_or_else(|| {
-                            provider.get_diagnostics_with_path(
-                                &ast,
-                                &parse_errors,
-                                content,
-                                Some(&resolver),
-                                &search_paths,
-                                source_path.as_deref(),
-                            )
-                        })
-                        .into_iter()
-                        .map(|d| self.to_lsp_diagnostic_with_context(uri, content, d, context))
-                        .collect()
+                    semantic_diags.unwrap_or_else(|| {
+                        provider.get_diagnostics_with_path(
+                            &ast,
+                            &parse_errors,
+                            content,
+                            Some(&resolver),
+                            &search_paths,
+                            source_path.as_deref(),
+                        )
+                    })
                 };
                 #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-                let base_diagnostics: Vec<_> = provider
-                    .get_diagnostics_with_path(
-                        &ast,
-                        &parse_errors,
-                        content,
-                        Some(&resolver),
-                        &search_paths,
-                        source_path.as_deref(),
-                    )
-                    .into_iter()
-                    .map(|d| self.to_lsp_diagnostic_with_context(uri, content, d, context))
-                    .collect();
+                let base_diagnostics: Vec<_> = provider.get_diagnostics_with_path(
+                    &ast,
+                    &parse_errors,
+                    content,
+                    Some(&resolver),
+                    &search_paths,
+                    source_path.as_deref(),
+                );
 
-                let mut diagnostics = base_diagnostics;
+                let mut internal = base_diagnostics;
 
                 let critic_generation =
                     doc_state.map(|state| state.current_generation()).unwrap_or(0);
-                self.add_policy_critic_diagnostics(
+                // One critic normalization call per source/generation; the
+                // surviving merged rows retire their ordinary built-in twins
+                // before conversion so an alias pair stays one logical
+                // product row (#11918). Base rows keep their original order.
+                let critic_rows = self.policy_critic_rows_with_promotions(
                     uri,
                     &ast,
                     content,
@@ -424,8 +422,14 @@ impl PullDiagnosticsProvider {
                         &uri.to_string(),
                         critic_generation,
                     ),
-                    &mut diagnostics,
+                    &mut internal,
                 );
+
+                let mut diagnostics = internal
+                    .into_iter()
+                    .map(|d| self.to_lsp_diagnostic_with_context(uri, content, d, context))
+                    .collect::<Vec<_>>();
+                diagnostics.extend(critic_rows);
 
                 diagnostics
             }
@@ -543,29 +547,51 @@ impl PullDiagnosticsProvider {
         effective_paths
     }
 
-    /// Add configured policy critic diagnostics.
-    fn add_policy_critic_diagnostics(
+    /// Produce configured policy critic rows while retiring superseded
+    /// built-in overlap twins from the internal base set (#11918).
+    ///
+    /// For the native engine, checked built-in critic overlap observations
+    /// join the native candidates in one normalization call; every surviving
+    /// merged row removes its ordinary built-in twin (matched by the
+    /// producer-declared contributor code and exact byte range) so an alias
+    /// pair becomes exactly one logical product row before LSP projection.
+    fn policy_critic_rows_with_promotions(
         &self,
         uri: &Uri,
         ast: &std::sync::Arc<perl_parser::ast::Node>,
         content: &str,
         context: &PullDiagnosticsContext,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
-        diagnostics: &mut Vec<LspDiagnostic>,
-    ) {
+        internal_base: &mut Vec<InternalDiagnostic>,
+    ) -> Vec<LspDiagnostic> {
         match context.critic_engine {
             CriticEngine::Legacy => {
-                self.add_builtin_critic_diagnostics(uri, ast, content, diagnostics);
+                let mut diagnostics = Vec::new();
+                self.add_builtin_critic_diagnostics(uri, ast, content, &mut diagnostics);
+                diagnostics
             }
             CriticEngine::Native => {
-                self.add_native_critic_diagnostics(
+                let (rows, promoted) = self.native_critic_rows_and_promotions(
                     uri,
                     ast,
                     content,
                     context,
                     source_identity,
-                    diagnostics,
                 );
+                // A surviving merged row supersedes its ordinary built-in
+                // twin: built-in origin wins presentation precedence, so the
+                // merged row carries that twin's code and message. Removal
+                // keys come from producer-declared identities and exact
+                // ranges — never severity or message coincidence. If policy
+                // filtered a merged row out, its ordinary diagnostic stands.
+                internal_base.retain(|diagnostic| {
+                    !promoted.contains(&(
+                        diagnostic.code.clone().unwrap_or_default(),
+                        diagnostic.range.0,
+                        diagnostic.range.1,
+                    ))
+                });
+                rows
             }
         }
     }
@@ -611,15 +637,17 @@ impl PullDiagnosticsProvider {
     }
 
     /// Add native critic policy diagnostics.
-    fn add_native_critic_diagnostics(
+    ///
+    /// Returns the converted merged rows plus the exact ordinary-diagnostic
+    /// keys superseded by surviving built-in contributors (#11918).
+    fn native_critic_rows_and_promotions(
         &self,
         uri: &Uri,
         ast: &std::sync::Arc<perl_parser::ast::Node>,
         content: &str,
         context: &PullDiagnosticsContext,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
-        diagnostics: &mut Vec<LspDiagnostic>,
-    ) {
+    ) -> (Vec<LspDiagnostic>, std::collections::HashSet<(String, usize, usize)>) {
         use perl_lsp_rs_core::tooling::perl_critic::{
             CriticSuppressionMap, NativeCriticPolicy, native_finding_candidates_with_accounting,
             normalize_with_native_policy,
@@ -648,6 +676,19 @@ impl PullDiagnosticsProvider {
             registry.check_unfiltered(&critic_context),
             source_identity,
         );
+
+        // Reviewed core-overlap producers declare their checked critic
+        // observations at emission (#11918); they join the native candidates
+        // in this single normalization call.
+        let builtin_candidates: Vec<_> =
+            perl_lsp_rs_core::providers::diagnostics::builtin_critic_overlap_observations(
+                ast, content,
+            )
+            .into_iter()
+            .map(|observation| observation.into_candidate(content, source_identity))
+            .collect();
+        let all_candidates = candidates.into_iter().chain(builtin_candidates);
+
         let suppressions = CriticSuppressionMap::from_source(content);
         let policy = NativeCriticPolicy::new(
             severity_threshold,
@@ -655,10 +696,15 @@ impl PullDiagnosticsProvider {
             &context.native_critic_exclude,
             &suppressions,
         );
+        let normalized = normalize_with_native_policy(all_candidates, &policy);
+        let promoted =
+            perl_lsp_rs_core::tooling::perl_critic::surviving_builtin_promotions(&normalized);
 
-        for finding in normalize_with_native_policy(candidates, &policy) {
-            diagnostics.push(self.normalized_finding_to_lsp_diagnostic(uri, content, &finding));
-        }
+        let rows = normalized
+            .iter()
+            .map(|finding| self.normalized_finding_to_lsp_diagnostic(uri, content, finding))
+            .collect();
+        (rows, promoted)
     }
 
     fn normalized_finding_to_lsp_diagnostic(
@@ -753,6 +799,8 @@ impl PullDiagnosticsProvider {
             let uri_str = uri.to_string();
 
             // Wire workspace semantic queries when available (pull-state path).
+            // The base diagnostics stay in the internal working type until the
+            // critic cut has retired superseded overlap twins (#11918).
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             let base_diagnostics: Vec<_> = {
                 let semantic_diags = context.workspace_index.as_ref().and_then(|workspace_index| {
@@ -769,38 +817,34 @@ impl PullDiagnosticsProvider {
                         )
                     })
                 });
-                semantic_diags
-                    .unwrap_or_else(|| {
-                        provider.get_diagnostics_with_path(
-                            ast,
-                            parse_errors,
-                            &doc_state.text,
-                            Some(&resolver),
-                            &search_paths,
-                            source_path.as_deref(),
-                        )
-                    })
-                    .into_iter()
-                    .map(|d| self.to_lsp_diagnostic_with_context(uri, &doc_state.text, d, context))
-                    .collect()
+                semantic_diags.unwrap_or_else(|| {
+                    provider.get_diagnostics_with_path(
+                        ast,
+                        parse_errors,
+                        &doc_state.text,
+                        Some(&resolver),
+                        &search_paths,
+                        source_path.as_deref(),
+                    )
+                })
             };
             #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-            let base_diagnostics: Vec<_> = provider
-                .get_diagnostics_with_path(
-                    ast,
-                    parse_errors,
-                    &doc_state.text,
-                    Some(&resolver),
-                    &search_paths,
-                    source_path.as_deref(),
-                )
-                .into_iter()
-                .map(|d| self.to_lsp_diagnostic_with_context(uri, &doc_state.text, d, context))
-                .collect();
+            let base_diagnostics: Vec<_> = provider.get_diagnostics_with_path(
+                ast,
+                parse_errors,
+                &doc_state.text,
+                Some(&resolver),
+                &search_paths,
+                source_path.as_deref(),
+            );
 
-            let mut diagnostics = base_diagnostics;
+            let mut internal = base_diagnostics;
 
-            self.add_policy_critic_diagnostics(
+            // One critic normalization call per source/generation; surviving
+            // merged rows retire their ordinary built-in twins before
+            // conversion so an alias pair stays one logical product row
+            // (#11918). Base rows keep their original order.
+            let critic_rows = self.policy_critic_rows_with_promotions(
                 uri,
                 ast,
                 &doc_state.text,
@@ -809,8 +853,14 @@ impl PullDiagnosticsProvider {
                     &uri.to_string(),
                     doc_state.current_generation(),
                 ),
-                &mut diagnostics,
+                &mut internal,
             );
+
+            let mut diagnostics = internal
+                .into_iter()
+                .map(|d| self.to_lsp_diagnostic_with_context(uri, &doc_state.text, d, context))
+                .collect::<Vec<_>>();
+            diagnostics.extend(critic_rows);
 
             // Add dead code diagnostics from workspace-wide symbol analysis
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]

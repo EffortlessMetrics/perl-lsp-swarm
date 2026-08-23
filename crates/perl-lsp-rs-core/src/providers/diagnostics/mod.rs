@@ -21,6 +21,8 @@
 //! let ctx = PullDiagnosticsContext { /* ... */ };
 //! ```
 
+/// Checked built-in critic overlap observation collection (#11918)
+mod builtin_critic_overlap;
 /// Dead code detection
 #[cfg(not(target_arch = "wasm32"))]
 mod dead_code;
@@ -52,6 +54,7 @@ pub mod scope;
 /// AST walker utilities
 mod walker;
 
+pub use builtin_critic_overlap::builtin_critic_overlap_observations;
 pub use diagnostics::{DiagnosticsProvider, build_parse_error_hint};
 pub use heredoc_antipatterns::detect_heredoc_antipatterns;
 pub use internal_types::{Diagnostic, DiagnosticTag, RelatedInformation};

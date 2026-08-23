@@ -204,6 +204,32 @@ pub fn account_unresolved_native_identities(
     unresolved.len()
 }
 
+/// Exact ordinary-diagnostic keys superseded by surviving built-in
+/// contributors of merged rows (#11918).
+///
+/// Only built-in-origin contributors whose merged logical row survived policy
+/// are returned, keyed by their producer-declared code and exact byte range.
+/// Consumers use these keys to retire the superseded ordinary diagnostic twin;
+/// matching never consults severity, message, or range coincidence alone.
+#[must_use]
+pub fn surviving_builtin_promotions(
+    normalized: &[NormalizedCriticFinding],
+) -> std::collections::HashSet<(String, usize, usize)> {
+    let mut promoted = std::collections::HashSet::new();
+    for finding in normalized {
+        for contributor in finding.contributors() {
+            if contributor.identity().origin() == CriticFindingOrigin::BuiltInDiagnostic {
+                promoted.insert((
+                    contributor.identity().code().to_string(),
+                    finding.range().start.byte,
+                    finding.range().end.byte,
+                ));
+            }
+        }
+    }
+    promoted
+}
+
 /// Normalize candidates and apply native policy exactly once post-merge.
 ///
 /// Order: canonical alias merge, then severity threshold, then

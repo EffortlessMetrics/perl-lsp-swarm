@@ -21,6 +21,7 @@ use perl_diagnostics::codes::DiagnosticCode;
 use perl_parser_core::ast::{Node, NodeKind};
 
 use super::super::internal_types::{Diagnostic, RelatedInformation};
+use crate::tooling::perl_critic::{BuiltInCriticObservation, Severity};
 use perl_diagnostics::codes::DiagnosticSeverity;
 
 /// Check for security anti-patterns
@@ -31,7 +32,23 @@ use perl_diagnostics::codes::DiagnosticSeverity;
 /// - Backtick/qx command execution (ensure input is sanitized)
 /// - Global signal-handler assignment to `$SIG{__DIE__}` / `$SIG{__WARN__}`
 pub fn check_security(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
-    walk_security_node(node, diagnostics, false);
+    let mut observations = Vec::new();
+    check_security_with_observations(node, diagnostics, &mut observations);
+}
+
+/// Check for security anti-patterns while also emitting checked built-in
+/// critic overlap observations (#11918).
+///
+/// Each admitted overlap emission produces its existing ordinary diagnostic
+/// unchanged plus an optional [`BuiltInCriticObservation`] whose critic
+/// identity, reviewed shape, and critic-scale severity are declared at this
+/// branch — never derived from the diagnostic severity scale.
+pub(crate) fn check_security_with_observations(
+    node: &Node,
+    diagnostics: &mut Vec<Diagnostic>,
+    observations: &mut Vec<BuiltInCriticObservation>,
+) {
+    walk_security_node(node, diagnostics, observations, false);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,36 +66,39 @@ struct SignalHandlerTarget {
 fn walk_security_node(
     node: &Node,
     diagnostics: &mut Vec<Diagnostic>,
+    observations: &mut Vec<BuiltInCriticObservation>,
     signal_shadowed: bool,
 ) -> bool {
     match &node.kind {
         NodeKind::Program { statements } => {
             let mut current_shadowed = signal_shadowed;
             for stmt in statements {
-                current_shadowed = walk_security_node(stmt, diagnostics, current_shadowed);
+                current_shadowed =
+                    walk_security_node(stmt, diagnostics, observations, current_shadowed);
             }
             current_shadowed
         }
         NodeKind::Block { statements } => {
             let mut block_shadowed = signal_shadowed;
             for stmt in statements {
-                block_shadowed = walk_security_node(stmt, diagnostics, block_shadowed);
+                block_shadowed =
+                    walk_security_node(stmt, diagnostics, observations, block_shadowed);
             }
             signal_shadowed
         }
         NodeKind::ExpressionStatement { expression } => {
-            walk_security_node(expression, diagnostics, signal_shadowed);
+            walk_security_node(expression, diagnostics, observations, signal_shadowed);
             signal_shadowed
         }
         NodeKind::Assignment { lhs, rhs, .. } => {
             check_global_signal_handler_assignment(lhs, node, diagnostics, signal_shadowed);
-            walk_security_node(lhs, diagnostics, signal_shadowed);
-            walk_security_node(rhs, diagnostics, signal_shadowed);
+            walk_security_node(lhs, diagnostics, observations, signal_shadowed);
+            walk_security_node(rhs, diagnostics, observations, signal_shadowed);
             signal_shadowed
         }
         NodeKind::VariableDeclaration { declarator, variable, initializer, .. } => {
             if let Some(init) = initializer {
-                walk_security_node(init, diagnostics, signal_shadowed);
+                walk_security_node(init, diagnostics, observations, signal_shadowed);
             }
 
             let mut updated_shadowed = signal_shadowed;
@@ -87,18 +107,18 @@ fn walk_security_node(
             }
 
             if declarator != "local" {
-                walk_security_node(variable, diagnostics, signal_shadowed);
+                walk_security_node(variable, diagnostics, observations, signal_shadowed);
             }
             updated_shadowed
         }
         NodeKind::VariableListDeclaration { declarator, variables, initializer, .. } => {
             if let Some(init) = initializer {
-                walk_security_node(init, diagnostics, signal_shadowed);
+                walk_security_node(init, diagnostics, observations, signal_shadowed);
             }
 
             if declarator != "local" {
                 for variable in variables {
-                    walk_security_node(variable, diagnostics, signal_shadowed);
+                    walk_security_node(variable, diagnostics, observations, signal_shadowed);
                 }
             }
 
@@ -113,95 +133,99 @@ fn walk_security_node(
         NodeKind::NestedVariableList { items } => {
             // Recurse into nested variable list items for security analysis.
             for item in items {
-                walk_security_node(item, diagnostics, signal_shadowed);
+                walk_security_node(item, diagnostics, observations, signal_shadowed);
             }
             signal_shadowed
         }
         NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
-            walk_security_node(condition, diagnostics, signal_shadowed);
-            walk_security_node(then_branch, diagnostics, signal_shadowed);
+            walk_security_node(condition, diagnostics, observations, signal_shadowed);
+            walk_security_node(then_branch, diagnostics, observations, signal_shadowed);
             for (condition, branch) in elsif_branches {
-                walk_security_node(condition, diagnostics, signal_shadowed);
-                walk_security_node(branch, diagnostics, signal_shadowed);
+                walk_security_node(condition, diagnostics, observations, signal_shadowed);
+                walk_security_node(branch, diagnostics, observations, signal_shadowed);
             }
             if let Some(branch) = else_branch {
-                walk_security_node(branch, diagnostics, signal_shadowed);
+                walk_security_node(branch, diagnostics, observations, signal_shadowed);
             }
             signal_shadowed
         }
         NodeKind::While { condition, body, .. } => {
-            walk_security_node(condition, diagnostics, signal_shadowed);
-            walk_security_node(body, diagnostics, signal_shadowed);
+            walk_security_node(condition, diagnostics, observations, signal_shadowed);
+            walk_security_node(body, diagnostics, observations, signal_shadowed);
             signal_shadowed
         }
         NodeKind::For { init, condition, update, body, continue_block } => {
             let mut loop_shadowed = signal_shadowed;
             if let Some(init) = init {
-                loop_shadowed = walk_security_node(init, diagnostics, loop_shadowed);
+                loop_shadowed = walk_security_node(init, diagnostics, observations, loop_shadowed);
             }
             if let Some(condition) = condition {
-                walk_security_node(condition, diagnostics, loop_shadowed);
+                walk_security_node(condition, diagnostics, observations, loop_shadowed);
             }
             if let Some(update) = update {
-                walk_security_node(update, diagnostics, loop_shadowed);
+                walk_security_node(update, diagnostics, observations, loop_shadowed);
             }
-            walk_security_node(body, diagnostics, loop_shadowed);
+            walk_security_node(body, diagnostics, observations, loop_shadowed);
             if let Some(continue_block) = continue_block {
-                walk_security_node(continue_block, diagnostics, loop_shadowed);
+                walk_security_node(continue_block, diagnostics, observations, loop_shadowed);
             }
             signal_shadowed
         }
         NodeKind::Foreach { variable, list, body, continue_block } => {
-            let mut loop_shadowed = walk_security_node(variable, diagnostics, signal_shadowed);
+            let mut loop_shadowed =
+                walk_security_node(variable, diagnostics, observations, signal_shadowed);
             if shadows_signal_table(variable) {
                 loop_shadowed = true;
             }
-            walk_security_node(list, diagnostics, signal_shadowed);
-            walk_security_node(body, diagnostics, loop_shadowed);
+            walk_security_node(list, diagnostics, observations, signal_shadowed);
+            walk_security_node(body, diagnostics, observations, loop_shadowed);
             if let Some(continue_block) = continue_block {
-                walk_security_node(continue_block, diagnostics, loop_shadowed);
+                walk_security_node(continue_block, diagnostics, observations, loop_shadowed);
             }
             signal_shadowed
         }
         NodeKind::Given { expr, body } => {
-            walk_security_node(expr, diagnostics, signal_shadowed);
-            walk_security_node(body, diagnostics, signal_shadowed);
+            walk_security_node(expr, diagnostics, observations, signal_shadowed);
+            walk_security_node(body, diagnostics, observations, signal_shadowed);
             signal_shadowed
         }
         NodeKind::When { condition, body } => {
-            walk_security_node(condition, diagnostics, signal_shadowed);
-            walk_security_node(body, diagnostics, signal_shadowed);
+            walk_security_node(condition, diagnostics, observations, signal_shadowed);
+            walk_security_node(body, diagnostics, observations, signal_shadowed);
             signal_shadowed
         }
         NodeKind::Default { body } => {
-            walk_security_node(body, diagnostics, signal_shadowed);
+            walk_security_node(body, diagnostics, observations, signal_shadowed);
             signal_shadowed
         }
         NodeKind::StatementModifier { statement, condition, .. } => {
-            walk_security_node(statement, diagnostics, signal_shadowed);
-            walk_security_node(condition, diagnostics, signal_shadowed);
+            walk_security_node(statement, diagnostics, observations, signal_shadowed);
+            walk_security_node(condition, diagnostics, observations, signal_shadowed);
             signal_shadowed
         }
         NodeKind::Subroutine { signature, body, .. } => {
             let mut sub_shadowed = signal_shadowed;
             if let Some(signature) = signature {
-                sub_shadowed = walk_security_node(signature, diagnostics, sub_shadowed);
+                sub_shadowed =
+                    walk_security_node(signature, diagnostics, observations, sub_shadowed);
             }
-            walk_security_node(body, diagnostics, sub_shadowed);
+            walk_security_node(body, diagnostics, observations, sub_shadowed);
             signal_shadowed
         }
         NodeKind::Method { signature, body, .. } => {
             let mut method_shadowed = signal_shadowed;
             if let Some(signature) = signature {
-                method_shadowed = walk_security_node(signature, diagnostics, method_shadowed);
+                method_shadowed =
+                    walk_security_node(signature, diagnostics, observations, method_shadowed);
             }
-            walk_security_node(body, diagnostics, method_shadowed);
+            walk_security_node(body, diagnostics, observations, method_shadowed);
             signal_shadowed
         }
         NodeKind::Signature { parameters } => {
             let mut signature_shadowed = signal_shadowed;
             for parameter in parameters {
-                signature_shadowed = walk_security_node(parameter, diagnostics, signature_shadowed);
+                signature_shadowed =
+                    walk_security_node(parameter, diagnostics, observations, signature_shadowed);
             }
             signature_shadowed
         }
@@ -210,97 +234,98 @@ fn walk_security_node(
         | NodeKind::NamedParameter { variable, .. } => {
             let updated_shadowed =
                 if shadows_signal_table(variable) { true } else { signal_shadowed };
-            walk_security_node(variable, diagnostics, signal_shadowed);
+            walk_security_node(variable, diagnostics, observations, signal_shadowed);
             updated_shadowed
         }
         NodeKind::OptionalParameter { variable, default_value } => {
-            walk_security_node(default_value, diagnostics, signal_shadowed);
+            walk_security_node(default_value, diagnostics, observations, signal_shadowed);
             let updated_shadowed =
                 if shadows_signal_table(variable) { true } else { signal_shadowed };
-            walk_security_node(variable, diagnostics, signal_shadowed);
+            walk_security_node(variable, diagnostics, observations, signal_shadowed);
             updated_shadowed
         }
         NodeKind::Package { block: Some(block), .. }
         | NodeKind::PhaseBlock { block, .. }
         | NodeKind::Class { body: block, .. } => {
-            walk_security_node(block, diagnostics, signal_shadowed);
+            walk_security_node(block, diagnostics, observations, signal_shadowed);
             signal_shadowed
         }
         NodeKind::Try { body, catch_blocks, finally_block } => {
-            walk_security_node(body, diagnostics, signal_shadowed);
+            walk_security_node(body, diagnostics, observations, signal_shadowed);
             for (_, catch_body) in catch_blocks {
-                walk_security_node(catch_body, diagnostics, signal_shadowed);
+                walk_security_node(catch_body, diagnostics, observations, signal_shadowed);
             }
             if let Some(finally_block) = finally_block {
-                walk_security_node(finally_block, diagnostics, signal_shadowed);
+                walk_security_node(finally_block, diagnostics, observations, signal_shadowed);
             }
             signal_shadowed
         }
         NodeKind::Binary { left, right, .. } => {
-            walk_security_node(left, diagnostics, signal_shadowed);
-            walk_security_node(right, diagnostics, signal_shadowed);
+            walk_security_node(left, diagnostics, observations, signal_shadowed);
+            walk_security_node(right, diagnostics, observations, signal_shadowed);
             signal_shadowed
         }
         NodeKind::ArraySlice { target, indices } => {
-            walk_security_node(target, diagnostics, signal_shadowed);
-            walk_security_node(indices, diagnostics, signal_shadowed);
+            walk_security_node(target, diagnostics, observations, signal_shadowed);
+            walk_security_node(indices, diagnostics, observations, signal_shadowed);
             signal_shadowed
         }
         NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => {
-            walk_security_node(target, diagnostics, signal_shadowed);
-            walk_security_node(keys, diagnostics, signal_shadowed);
+            walk_security_node(target, diagnostics, observations, signal_shadowed);
+            walk_security_node(keys, diagnostics, observations, signal_shadowed);
             signal_shadowed
         }
         NodeKind::ChainedComparison { operands, .. } => {
             for operand in operands {
-                walk_security_node(operand, diagnostics, signal_shadowed);
+                walk_security_node(operand, diagnostics, observations, signal_shadowed);
             }
             signal_shadowed
         }
         NodeKind::Ternary { condition, then_expr, else_expr } => {
-            walk_security_node(condition, diagnostics, signal_shadowed);
-            walk_security_node(then_expr, diagnostics, signal_shadowed);
-            walk_security_node(else_expr, diagnostics, signal_shadowed);
+            walk_security_node(condition, diagnostics, observations, signal_shadowed);
+            walk_security_node(then_expr, diagnostics, observations, signal_shadowed);
+            walk_security_node(else_expr, diagnostics, observations, signal_shadowed);
             signal_shadowed
         }
         NodeKind::Unary { operand, .. } => {
-            walk_security_node(operand, diagnostics, signal_shadowed);
+            walk_security_node(operand, diagnostics, observations, signal_shadowed);
             signal_shadowed
         }
         NodeKind::VariableWithAttributes { variable, .. } => {
-            walk_security_node(variable, diagnostics, signal_shadowed);
+            walk_security_node(variable, diagnostics, observations, signal_shadowed);
             signal_shadowed
         }
         NodeKind::FunctionCall { name, args } | NodeKind::AmperCall { name, args } => {
             check_two_arg_open(name, args, node, diagnostics);
             check_string_eval(name, args, node, diagnostics);
-            check_system_call(name, node, diagnostics);
-            check_exec_call(name, node, diagnostics);
+            check_system_call(name, node, diagnostics, observations);
+            check_exec_call(name, node, diagnostics, observations);
             check_pipe_open(name, args, node, diagnostics);
-            check_readpipe(name, node, diagnostics);
+            check_readpipe(name, node, diagnostics, observations);
             for arg in args {
-                walk_security_node(arg, diagnostics, signal_shadowed);
+                walk_security_node(arg, diagnostics, observations, signal_shadowed);
             }
             signal_shadowed
         }
         NodeKind::IndirectCall { object, args, .. } | NodeKind::MethodCall { object, args, .. } => {
-            walk_security_node(object, diagnostics, signal_shadowed);
+            walk_security_node(object, diagnostics, observations, signal_shadowed);
             for arg in args {
-                walk_security_node(arg, diagnostics, signal_shadowed);
+                walk_security_node(arg, diagnostics, observations, signal_shadowed);
             }
             signal_shadowed
         }
         NodeKind::Eval { block } => {
             check_eval_node(block, node, diagnostics);
-            walk_security_node(block, diagnostics, signal_shadowed);
+            walk_security_node(block, diagnostics, observations, signal_shadowed);
             signal_shadowed
         }
         NodeKind::Defer { block } => {
-            walk_security_node(block, diagnostics, signal_shadowed);
+            walk_security_node(block, diagnostics, observations, signal_shadowed);
             signal_shadowed
         }
-        // Backtick strings: the parser stores `cmd` and qx(cmd) as
-        // String { value: "`cmd`", interpolated: true }
+        // Backtick strings: the lexer emits backtick and qx command runs as
+        // QuoteCommand tokens; this arm's guard admits only the backtick-
+        // delimited form (`cmd`), whose stored value keeps the backticks.
         NodeKind::String { value, interpolated: true } if is_backtick_string(value) => {
             diagnostics.push(Diagnostic {
                 range: (node.location.start, node.location.end),
@@ -318,19 +343,29 @@ fn walk_security_node(
                         .to_string(),
                 ),
             });
+            // Producer-owned overlap declaration (#11918): this branch observed
+            // the exact PL601 backtick syntax, so it declares both the reviewed
+            // shape and the critic-scale severity here rather than letting
+            // either be reconstructed later from the LSP-scale diagnostic.
+            observations.push(BuiltInCriticObservation::backtick_exec(
+                Severity::Harsh,
+                (node.location.start, node.location.end),
+                "Command execution detected. Ensure input is sanitized.",
+                None,
+            ));
             signal_shadowed
         }
         NodeKind::Return { value: Some(value) } => {
-            walk_security_node(value, diagnostics, signal_shadowed);
+            walk_security_node(value, diagnostics, observations, signal_shadowed);
             signal_shadowed
         }
         NodeKind::Return { value: None } => signal_shadowed,
         NodeKind::LabeledStatement { statement, .. } => {
-            walk_security_node(statement, diagnostics, signal_shadowed);
+            walk_security_node(statement, diagnostics, observations, signal_shadowed);
             signal_shadowed
         }
         NodeKind::Error { partial: Some(partial), .. } => {
-            walk_security_node(partial, diagnostics, signal_shadowed);
+            walk_security_node(partial, diagnostics, observations, signal_shadowed);
             signal_shadowed
         }
         NodeKind::Heredoc { .. }
@@ -371,7 +406,8 @@ fn walk_security_node(
         _ => {
             let mut current_shadowed = signal_shadowed;
             node.for_each_child(|child| {
-                current_shadowed = walk_security_node(child, diagnostics, current_shadowed);
+                current_shadowed =
+                    walk_security_node(child, diagnostics, observations, current_shadowed);
             });
             current_shadowed
         }
@@ -595,7 +631,12 @@ fn check_string_eval(name: &str, args: &[Node], node: &Node, diagnostics: &mut V
 /// `system("cmd")` or `system("cmd", @args)` executes a shell command.
 /// The list form `system($cmd, @args)` is safer (avoids shell injection),
 /// but we flag all uses to prompt developers to consider the security context.
-fn check_system_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
+fn check_system_call(
+    name: &str,
+    node: &Node,
+    diagnostics: &mut Vec<Diagnostic>,
+    observations: &mut Vec<BuiltInCriticObservation>,
+) {
     if name != "system" {
         return;
     }
@@ -616,6 +657,15 @@ fn check_system_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>)
                 .to_string(),
         ),
     });
+    // Producer-owned overlap declaration (#11918): the branch that observed
+    // the `system` call declares its reviewed shape and critic-scale severity
+    // directly; neither is derived from the diagnostic above.
+    observations.push(BuiltInCriticObservation::system_call(
+        Severity::Harsh,
+        (node.location.start, node.location.end),
+        "system() executes a shell command. Ensure input is sanitized.",
+        None,
+    ));
 }
 
 /// Detect `exec()` calls.
@@ -623,7 +673,12 @@ fn check_system_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>)
 /// `exec("cmd")` replaces the current process with a shell command.
 /// The list form `exec($cmd, @args)` is safer (avoids shell injection),
 /// but we flag all uses to prompt developers to consider the security context.
-fn check_exec_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
+fn check_exec_call(
+    name: &str,
+    node: &Node,
+    diagnostics: &mut Vec<Diagnostic>,
+    observations: &mut Vec<BuiltInCriticObservation>,
+) {
     if name != "exec" {
         return;
     }
@@ -644,6 +699,14 @@ fn check_exec_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                 .to_string(),
         ),
     });
+    // Producer-owned overlap declaration (#11918): declared at the observing
+    // branch, never derived from the LSP-scale diagnostic severity.
+    observations.push(BuiltInCriticObservation::exec_call(
+        Severity::Harsh,
+        (node.location.start, node.location.end),
+        "exec() replaces the current process with a shell command. Ensure input is sanitized.",
+        None,
+    ));
 }
 
 /// Detect pipe-open patterns.
@@ -740,7 +803,12 @@ fn is_pipe_two_arg_string(node: &Node) -> bool {
 /// executing a shell command. Backtick strings are already caught via
 /// the `NodeKind::String` branch (PL601); this check covers the explicit
 /// function call form.
-fn check_readpipe(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
+fn check_readpipe(
+    name: &str,
+    node: &Node,
+    diagnostics: &mut Vec<Diagnostic>,
+    observations: &mut Vec<BuiltInCriticObservation>,
+) {
     if name != "readpipe" {
         return;
     }
@@ -761,6 +829,14 @@ fn check_readpipe(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                 .to_string(),
         ),
     });
+    // Producer-owned overlap declaration (#11918): declared at the observing
+    // branch, never derived from the LSP-scale diagnostic severity.
+    observations.push(BuiltInCriticObservation::readpipe_exec(
+        Severity::Harsh,
+        (node.location.start, node.location.end),
+        "readpipe() executes a shell command (equivalent to qx//). Ensure input is sanitized.",
+        None,
+    ));
 }
 
 /// Check if a string value represents a backtick command execution.
@@ -793,8 +869,9 @@ fn shadows_signal_table(node: &Node) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tooling::perl_critic::{CriticFindingOrigin, CriticFindingShape};
     use perl_parser::Parser;
-    use perl_tdd_support::must;
+    use perl_tdd_support::{must, must_some};
 
     fn security_diags(source: &str) -> Vec<Diagnostic> {
         let ast = must(Parser::new(source).parse());
@@ -988,6 +1065,86 @@ mod tests {
             diags.iter().any(|d| d.code.as_deref() == Some("PL606")),
             "readpipe() should be flagged as PL606: {diags:?}"
         );
+    }
+
+    // --- #11918 producer-owned overlap observations ---
+
+    fn security_observations(source: &str) -> Vec<BuiltInCriticObservation> {
+        let ast = must(Parser::new(source).parse());
+        let mut diags = vec![];
+        let mut observations = vec![];
+        check_security_with_observations(&ast, &mut diags, &mut observations);
+        assert!(!diags.is_empty(), "the cohort source must still fire ordinary diagnostics");
+        observations
+    }
+
+    #[test]
+    fn system_call_emits_ordinary_diagnostic_and_checked_observation() {
+        let source = r#"system("ls -la");"#;
+        let diags = security_diags(source);
+        let pl603 = must_some(diags.iter().find(|d| d.code.as_deref() == Some("PL603")));
+        assert_eq!(pl603.severity, DiagnosticSeverity::Warning);
+
+        let observations = security_observations(source);
+        assert_eq!(observations.len(), 1);
+        let observation = &observations[0];
+        assert_eq!(observation.identity().origin(), CriticFindingOrigin::BuiltInDiagnostic);
+        assert_eq!(observation.identity().code(), "PL603");
+        assert_eq!(observation.identity().shape(), CriticFindingShape::SystemCall);
+        // Declared independently at the emission branch; never mapped from
+        // the LSP WARNING above.
+        assert_eq!(observation.severity(), Severity::Harsh);
+        assert_eq!(observation.range(), pl603.range);
+    }
+
+    #[test]
+    fn exec_call_emits_ordinary_diagnostic_and_checked_observation() {
+        let source = r#"exec("ls -la");"#;
+        let diags = security_diags(source);
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("PL604")),
+            "ordinary PL604 must remain: {diags:?}"
+        );
+
+        let observations = security_observations(source);
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].identity().code(), "PL604");
+        assert_eq!(observations[0].identity().shape(), CriticFindingShape::ExecCall);
+        assert_eq!(observations[0].severity(), Severity::Harsh);
+        assert_eq!(observations[0].range(), diags[0].range);
+    }
+
+    #[test]
+    fn readpipe_call_emits_ordinary_diagnostic_and_checked_observation() {
+        let source = r#"my $out = readpipe("ls -la");"#;
+        let diags = security_diags(source);
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("PL606")),
+            "ordinary PL606 must remain: {diags:?}"
+        );
+
+        let observations = security_observations(source);
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].identity().code(), "PL606");
+        assert_eq!(observations[0].identity().shape(), CriticFindingShape::Readpipe);
+        assert_eq!(observations[0].severity(), Severity::Harsh);
+    }
+
+    #[test]
+    fn backtick_string_emits_ordinary_diagnostic_and_backtick_shaped_observation() {
+        let source = "my $out = `ls -la`;";
+        let diags = security_diags(source);
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("PL601")),
+            "ordinary PL601 must remain: {diags:?}"
+        );
+
+        let observations = security_observations(source);
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].identity().code(), "PL601");
+        assert_eq!(observations[0].identity().shape(), CriticFindingShape::Backtick);
+        assert_eq!(observations[0].severity(), Severity::Harsh);
+        assert_eq!(observations[0].range(), diags[0].range);
     }
 
     #[test]

@@ -17,6 +17,7 @@ use perl_semantic_analyzer::symbol::{SymbolKind, SymbolTable};
 
 use super::super::internal_types::{Diagnostic, RelatedInformation};
 use super::super::walker::walk_node;
+use crate::tooling::perl_critic::{BuiltInCriticObservation, Severity};
 use perl_diagnostics::codes::DiagnosticSeverity;
 
 /// Check for common mistakes
@@ -28,6 +29,23 @@ pub fn check_common_mistakes(
     node: &Node,
     symbol_table: &SymbolTable,
     diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut observations = Vec::new();
+    check_common_mistakes_with_observations(node, symbol_table, diagnostics, &mut observations);
+}
+
+/// Check for common mistakes while also emitting checked built-in critic
+/// overlap observations (#11918).
+///
+/// Each admitted overlap emission produces its existing ordinary diagnostic
+/// unchanged plus an optional [`BuiltInCriticObservation`] whose critic
+/// identity, reviewed shape, and critic-scale severity are declared at this
+/// branch — never derived from the diagnostic severity scale.
+pub(crate) fn check_common_mistakes_with_observations(
+    node: &Node,
+    symbol_table: &SymbolTable,
+    diagnostics: &mut Vec<Diagnostic>,
+    observations: &mut Vec<BuiltInCriticObservation>,
 ) {
     walk_node(node, &mut |n| {
         match &n.kind {
@@ -68,6 +86,35 @@ pub fn check_common_mistakes(
                         fixable: false,
                         suggestion: Some("Guard with 'defined($var)' or use the '//' (defined-or) operator".to_string()),
                     });
+                    // Producer-owned overlap declaration (#11918): this branch
+                    // observed the exact PL404 syntax shape, so it chooses the
+                    // reviewed shape and declares the critic-scale severity
+                    // here rather than letting either be reconstructed later
+                    // from the LSP-scale diagnostic.
+                    let is_literal_undef = matches!(
+                        (&left.kind, &right.kind),
+                        (NodeKind::Undef, _) | (_, NodeKind::Undef)
+                    );
+                    let observation = if is_literal_undef {
+                        BuiltInCriticObservation::literal_undef_comparison(
+                            Severity::Stern,
+                            (n.location.start, n.location.end),
+                            format!(
+                                "Using '{op}' with potentially undefined value -- use 'defined()' to check first"
+                            ),
+                            None,
+                        )
+                    } else {
+                        BuiltInCriticObservation::potentially_undef_comparison(
+                            Severity::Stern,
+                            (n.location.start, n.location.end),
+                            format!(
+                                "Using '{op}' with potentially undefined value -- use 'defined()' to check first"
+                            ),
+                            None,
+                        )
+                    };
+                    observations.push(observation);
                 }
             }
             NodeKind::FunctionCall { name, args } => {
@@ -177,6 +224,7 @@ fn might_be_undef(node: &Node, symbol_table: &SymbolTable) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tooling::perl_critic::{CriticFindingOrigin, CriticFindingShape};
     use perl_parser_core::parser::Parser;
     use perl_semantic_analyzer::analysis::symbol::SymbolExtractor;
     use perl_tdd_support::{must, must_some};
@@ -341,5 +389,78 @@ mod tests {
             "PL403 related information should not use emoji: {:?}",
             pl403.related_information
         );
+    }
+
+    // --- #11918 producer-owned overlap observations ---
+
+    fn common_mistakes_observations(source: &str) -> Vec<BuiltInCriticObservation> {
+        let ast = must(Parser::new(source).parse());
+        let symbol_table = SymbolExtractor::new_with_source(source).extract(&ast);
+        let mut diagnostics = Vec::new();
+        let mut observations = Vec::new();
+        check_common_mistakes_with_observations(
+            &ast,
+            &symbol_table,
+            &mut diagnostics,
+            &mut observations,
+        );
+        assert!(!diagnostics.is_empty(), "the cohort source must still fire ordinary diagnostics");
+        observations
+    }
+
+    #[test]
+    fn literal_undef_comparison_emits_checked_literal_shaped_observation() {
+        let source = "if (undef == 5) { }";
+        let diags = common_mistakes_diags(source);
+        let pl404 = must_some(diags.iter().find(|d| d.code.as_deref() == Some("PL404")));
+        assert_eq!(pl404.severity, DiagnosticSeverity::Warning);
+
+        let observations = common_mistakes_observations(source);
+        assert_eq!(observations.len(), 1);
+        let observation = &observations[0];
+        assert_eq!(observation.identity().origin(), CriticFindingOrigin::BuiltInDiagnostic);
+        assert_eq!(observation.identity().code(), "PL404");
+        assert_eq!(observation.identity().shape(), CriticFindingShape::LiteralUndefComparison);
+        // Declared independently at the emission branch; never mapped from
+        // the LSP WARNING above.
+        assert_eq!(observation.severity(), Severity::Stern);
+        assert_eq!(observation.range(), pl404.range);
+        assert_eq!(observation.message(), pl404.message);
+    }
+
+    #[test]
+    fn potentially_undef_comparison_emits_checked_potentially_undef_shaped_observation() {
+        let source = "sub is_five { if ($y == 5) { } }";
+        let diags = common_mistakes_diags(source);
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("PL404")),
+            "ordinary PL404 must remain for undeclared operands: {diags:?}"
+        );
+
+        let observations = common_mistakes_observations(source);
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].identity().code(), "PL404");
+        assert_eq!(
+            observations[0].identity().shape(),
+            CriticFindingShape::PotentiallyUndefComparison
+        );
+        assert_eq!(observations[0].severity(), Severity::Stern);
+    }
+
+    #[test]
+    fn declared_scalar_comparison_still_emits_nothing_for_either_value() {
+        let source = "my $x = 10; if ($x == 5) { }";
+        let ast = must(Parser::new(source).parse());
+        let symbol_table = SymbolExtractor::new_with_source(source).extract(&ast);
+        let mut diagnostics = Vec::new();
+        let mut observations = Vec::new();
+        check_common_mistakes_with_observations(
+            &ast,
+            &symbol_table,
+            &mut diagnostics,
+            &mut observations,
+        );
+        assert!(diagnostics.is_empty(), "no ordinary PL404 may fire: {diagnostics:?}");
+        assert!(observations.is_empty(), "no observation may fire without its ordinary twin");
     }
 }

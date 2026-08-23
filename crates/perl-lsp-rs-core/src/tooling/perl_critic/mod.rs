@@ -5,6 +5,7 @@
 
 mod analyzer;
 mod built_in;
+mod built_in_observation;
 mod identity;
 mod native;
 mod normalized;
@@ -16,6 +17,7 @@ mod types;
 
 pub use analyzer::{CriticAnalyzer, hash_content};
 pub use built_in::{BuiltInAnalyzer, Policy};
+pub use built_in_observation::BuiltInCriticObservation;
 pub use identity::{
     CRITIC_IDENTITY_SCHEMA_VERSION, CriticAlias, CriticFindingOrigin, CriticFindingShape,
     CriticIdentityCategory, CriticIdentityDisposition, CriticIdentityEntry, CriticIdentityRegistry,
@@ -46,6 +48,7 @@ pub use semantic::{
     NativeCriticPolicy, UnresolvedNativeFindingIdentity, account_unresolved_native_identities,
     critic_source_identity_for_uri, native_finding_candidates,
     native_finding_candidates_with_accounting, normalize_with_native_policy,
+    surviving_builtin_promotions,
 };
 pub use types::{CriticConfig, Severity, Violation};
 
