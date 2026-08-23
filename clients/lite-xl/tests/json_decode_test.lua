@@ -32,8 +32,12 @@ local json = dofile(module_path)
 local native_math_type = math.type
 local has_native_integers = native_math_type ~= nil and math.maxinteger ~= nil
 local function is_integer(value)
-  return (native_math_type and native_math_type(value) == "integer")
-    or (type(value) == "number" and value % 1 == 0)
+  if native_math_type then
+    return native_math_type(value) == "integer"
+  end
+  -- Legacy runtimes have no integer subtype; integral doubles are the
+  -- closest available check.
+  return type(value) == "number" and value % 1 == 0
 end
 
 local passed = 0
@@ -476,7 +480,7 @@ do
 
   -- Forged lookalike tags stay inert; predicates ignore foreign metatables.
   local forged = setmetatable({}, { json_type = "number" })
-  ok(not json.is_number(forged) or type(forged) == "table" and json.number_lexeme(forged) == nil,
+  ok(not json.is_number(forged) and json.number_lexeme(forged) == nil,
     "forged number tag gains nothing")
   ok(json.encode(forged) == "{}", "forged number-tagged table encodes as plain empty table")
 end
