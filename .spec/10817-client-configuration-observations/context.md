@@ -21,18 +21,18 @@ adapter could observe it:
    (runtime/workspace/configuration_response.rs:51-63). The surviving value
    retains no session/request/generation/provenance identity.
 2. `workspace/didChangeConfiguration` is one imperative route
-   (runtime/workspace.rs:1311-1470): parse → mutate `ServerConfig` (:1349) →
-   reset critic state (:1370-1375) → mutate `WorkspaceConfig` with global-channel
-   authority (:1378-1397) → mutate global limits (:1399-1402) → rebuild every
-   folder's effective config with global-channel authority (:1436-1453) → clear
-   AI warning state, re-arm the AI backend, and refresh clients (:1460-1468).
+   (runtime/workspace.rs:1358-1534): parse → mutate `ServerConfig` (:1396) →
+   reset critic state (:1417-1422) → mutate `WorkspaceConfig` with global-channel
+   authority (:1424-1446) → mutate global limits (:1448-1451) → rebuild every
+   folder's effective config with global-channel authority (:1458-1513) → clear
+   AI warning state, re-arm the AI backend, and refresh clients (:1516-1527).
    Publication/consumer effects are inseparable from observation today.
 3. `workspace/configuration` responses arrive through the method-shaped
    compatibility notification `$/perl-lsp/clientResponse`
    (dispatch/routing.rs:243-246) into an ad-hoc pending map whose entries carry
    only `folder_uris`, `includes_global_item`, and `created_at`
    (runtime/types.rs:91-98). Response array position is treated as scope
-   (configuration_response.rs:37-38, :87): slot zero becomes "global" settings,
+   (configuration_response.rs:48, :111): slot zero becomes "global" settings,
    `folder_results_start + idx` becomes folder settings.
 4. The existing `ServerRequestRegistry`
    (crates/perl-lsp-rs/src/runtime/client_requests/registry.rs) does not own
@@ -72,9 +72,9 @@ post-wake builder starts from reviewed ground.
 |---|---|---|---|---|
 | R1 | `initializationOptions.perl` | lifecycle/capabilities.rs:705-725 | `ServerConfig::update_from_value` (:715), `WorkspaceConfig::update_from_value` (:719), `LSP_LIMITS::update_from_value` (:722); raw clone stored (:724) | adapter emits `initialization_options` observation before any setter; raw store becomes adapter input only |
 | R2 | init-options replay at folder setup | lifecycle/workspace.rs:166-181 | `effective_config.update_from_value(init_opts)` (:170) | consumes R1 observation through generation assembly; no reparse of raw transport |
-| R3 | `didChangeConfiguration` | runtime/workspace.rs:1311-1460 | config (:1349), critic invalidation (:1370-1375), workspace_config global-authority update (:1381-1387), limits (:1400-1402), per-folder rebuild (:1409+) | adapter emits `client_did_change_global` observation; publication/invalidation moves to downstream owner |
+| R3 | `didChangeConfiguration` | runtime/workspace.rs:1358-1534 | config (:1396), critic invalidation (:1417-1422), workspace_config global-authority update (:1424-1446), limits (:1448-1451), per-folder rebuild (:1458-1513) | adapter emits `client_did_change_global` observation; publication/invalidation moves to downstream owner |
 | R4 | unscoped + per-root pull | request construction runtime/workspace.rs:261-319; response routing dispatch/routing.rs:243-246 → handle_client_response runtime/workspace.rs:322-369 | pending map insert/remove (:286-318, :330); typed early returns for stale/error/non-array (:334-358) | requests register in #7010 server-request registry; responses classified by real envelope correlation |
-| R5 | response application | configuration_response.rs:29-100 | limits from slot 0 (:40-44); per-folder default→init replay→project→global→folder layering (:46-99); wholesale `effective_workspace_config` replacement (:97) | adapters emit `configuration_unscoped_client` / `configuration_per_root_workspace_configuration` observations; precedence stays with #10387 |
+| R5 | response application | configuration_response.rs:29-100 | limits from slot 0 (:51-55); per-folder default→init replay→project→global→folder layering (:46-99); wholesale `effective_workspace_config` replacement (:128) | adapters emit `configuration_unscoped_client` / `configuration_per_root_workspace_configuration` observations; precedence stays with #10387 |
 | R6 | pending identity | runtime/types.rs:91-98 | n/a (data only) | replaced by registry-bound slot identity (connection, request id, slot index, root/generation) |
 
 Classification rule for every row: migrated fields may keep raw parsers only as
@@ -87,16 +87,16 @@ consumer cannot move in the same PR.
 
 | Field family | Current authority state on main | Owner |
 |---|---|---|
-| AI enable/provider/model | `ai_completion.user_enabled` seam (config/mod.rs:556); workspace-supplied `enabled=true` cannot set it (test at config/mod.rs:5264-5265); arming via `refresh_ai_backend` (runtime/mod.rs:630-665) | #4997 open; machine-scope egress containment landed via #11861 |
+| AI enable/provider/model | `ai_completion.user_enabled` seam (config/mod.rs:556); workspace-supplied `enabled=true` cannot set it (test at config/mod.rs:5477-5485); arming via `refresh_ai_backend` (runtime/mod.rs:672) | #4997 open; machine-scope egress containment landed via #11861 |
 | AI endpoint/apiKey/apiKeyPrefix | already refused on client channel since #5684/#5703 | closed |
-| externalIncludePaths | fail-closed default; accepted only when `apply_external_include_paths=true` (global/machine channel) via `WorkspaceConfigUpdateContext` (config/mod.rs:1420-1473) | #4998 closed |
-| testRunner command/args/timeout | removed from client authority by #11845; absence proven by `server_config_update_from_value_ignores_removed_test_runner_authority` (config/mod.rs:3338) and `handle_client_response_ignores_removed_test_runner_authority` (lifecycle/workspace.rs:977); recorded migration-only, not an observation field | #10136 closed |
+| externalIncludePaths | fail-closed default; accepted only when `apply_external_include_paths=true` (global/machine channel) via `WorkspaceConfigUpdateContext` (config/mod.rs:1524-1590) | #4998 closed |
+| testRunner command/args/timeout | removed from client authority by #11845; absence proven by `server_config_update_from_value_ignores_removed_test_runner_authority` (config/mod.rs:3452) and `handle_client_response_ignores_removed_test_runner_authority` (lifecycle/workspace.rs:977); recorded migration-only, not an observation field | #10136 closed |
 | formatter engine/profile/args | generic external formatter settings contained by #11864; native default (config/mod.rs:351) | #5001 closed |
 | runtime limits | global `LSP_LIMITS` mutated from init options, didChangeConfiguration, and unscoped slot 0 | #7479 / #10917 open (child of this train) |
 
 Note: line references in older residual comments have drifted — #4997's cited
 `config/mod.rs:555` is now :556 and the cited runtime arming site is now inside
-`refresh_ai_backend` (runtime/mod.rs:630-665). This packet's receipts are pinned
+`refresh_ai_backend` (runtime/mod.rs:672). This packet's receipts are pinned
 to `main@ab3cece9d`.
 
 The adapter records the field authority's admission result; it does not recreate
@@ -134,7 +134,7 @@ seam both review rulings warn against.
 - PR #11885 (`b628879e`, #6736) proved transactional configuration precedence and
   reconfiguration effects — establishes the observable behavior baseline this
   contract must not regress.
-- `WorkspaceConfigUpdateContext` (config/mod.rs:1105+, :1445) is the closest
+- `WorkspaceConfigUpdateContext` (config/mod.rs:1176, :1546) is the closest
   existing shape for context-carrying updates; the future adapters generalize
   this pattern rather than replace it.
 - `ServerRequestRegistry` (runtime/client_requests/registry.rs) provides

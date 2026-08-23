@@ -38,7 +38,7 @@ Each names the current source boundary it will bind after wake.
 | Contract | Source document + section | How this packet satisfies it |
 |---|---|---|
 | CFGOBS-C01 initializationOptions observed before mutation | issue #10817 ruling A; inventory R1/R2 | adapter disposition recorded for capabilities.rs:705-725 and replay sites |
-| CFGOBS-C02 didChangeConfiguration observed before mutation | ruling A; inventory R3 | imperative route decomposed in workspace.rs:1311-1470 disposition |
+| CFGOBS-C02 didChangeConfiguration observed before mutation | ruling A; inventory R3 | imperative route decomposed in workspace.rs:1358-1534 disposition |
 | CFGOBS-C03 unscoped result classified generic, never trusted | ruling C; inventory R5 | slot-0 position cannot manufacture `trusted_user_operator`; fixture F2 |
 | CFGOBS-C04 per-root result binds exact request/slot/root/generation | ruling D; inventory R4/R6 | registry-bound identity replaces types.rs:91-98 pending tuple; fixture F3 |
 | CFGOBS-C05 short/null/malformed result remains typed | ruling B; inventory R4 | per-slot failure states enumerated; fixture F5 |

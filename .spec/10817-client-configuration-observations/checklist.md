@@ -32,7 +32,7 @@
 ### Step 3: Initialization-options + didChange adapters
 
 - **File:** perl-lsp-rs-core config observation surface (#10813 types);
-  wiring in lifecycle/capabilities.rs:705-725 and runtime/workspace.rs:1311-1470
+  wiring in lifecycle/capabilities.rs:705-725 and runtime/workspace.rs:1358-1534
 - **Details:** observation created before any effective-state call; raw parsers
   become forwarding parsers returning typed field observations for migrated fields.
 - **Depends on:** Steps 0–2.
@@ -84,7 +84,7 @@ git diff --check
 ## Deterministic checking of this packet (valid now, before wake)
 
 ```bash
-for f in context.md acceptance.md checklist.md; do if not exist ".spec\10817-client-configuration-observations\%f" exit /b 1; done
+for f in context.md acceptance.md checklist.md; do [ -f ".spec/10817-client-configuration-observations/$f" ] || exit 1; done
 rg -c "CFGOBS-C(0[1-9]|1[0-7])" .spec/10817-client-configuration-observations/acceptance.md   # expect >= 17 rows
 rg -n "main@ab3cece9d" .spec/10817-client-configuration-observations/context.md               # pinned evidence base
 git diff --check
@@ -120,5 +120,5 @@ boundaries (#10818), accepted store, precedence/publication/consumer invalidatio
   cap are useful bounded behavior; preserve their semantics in the registry-bound
   replacement unless #7010 supersedes them.
 - Some clients send didChangeConfiguration settings without the top-level `perl`
-  key (workspace.rs:1317-1322 dual-shape acceptance); the adapter must keep both
+  key (workspace.rs:1311-1319 dual-shape acceptance); the adapter must keep both
   shapes classified honestly rather than widening authority.
