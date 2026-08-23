@@ -78,9 +78,11 @@ All fourteen required graph regressions of #10918, fixed order, as they bind
 this manifest. Every mutation is executed as an in-memory negative control by
 the embedded checker in `checklist.md`; a conformant checker must reject each
 one deterministically. Falsifier 12 carries two controls (a parsed-value
-injection and a raw-byte injection); an order-invariance canonicalization
-control runs as a sixteenth control whose rejected subject is an
-order-sensitive canonicalization, not the shuffled input itself.
+injection and a raw-byte injection); the acceptance-bullet mutation classes
+beyond the numbered list (stage inflation, duplicate owner, hard cycle,
+controller selection) carry their own controls; and an order-invariance
+canonicalization control runs whose rejected subject is an order-sensitive
+canonicalization, not the shuffled input itself — twenty controls in total.
 
 | # | Falsifier mutation | Kind | Required verdict | First discriminating control |
 |---:|---|---|---|---|

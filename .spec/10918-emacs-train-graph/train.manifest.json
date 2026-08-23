@@ -1323,7 +1323,8 @@
         "invalidation triggers"
       ],
       "limitations": [
-        "No edge of the corrected functional DAG names this policy as a DAG member; it stays a typed evidence authority."
+        "No edge of the corrected functional DAG names this policy as a DAG member; it stays a typed evidence authority.",
+        "OD5 (Emacs lifecycle-proof routing details under the generic proof-routing authority) is routed here and not decided by this manifest."
       ]
     },
     {
@@ -1349,7 +1350,7 @@
           "provenance": "E00 context.md durable dependency ordering"
         }
       ],
-      "claim_ceiling": "Subject identity machinery only; manifest identity is intended input, never runtime proof.",
+      "claim_ceiling": "Subject identity machinery only; manifest identity is intended input, never runtime proof; no journey, profile or support claim.",
       "writer": {
         "conflict_key": "emacs.subject_manifest_core",
         "parallel_group": "A",

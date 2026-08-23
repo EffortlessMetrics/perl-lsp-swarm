@@ -11,8 +11,10 @@ building or executing any tooling beyond the embedded checker.
 - **Change:** Before the manifest is declared valid, the fourteen required
   graph regressions of #10918 must exist as in-memory mutations that each
   make validation throw (regression 12 carries both a parsed-value and a
-  raw-byte control), plus an order-invariance canonicalization control —
-  sixteen controls in total.
+  raw-byte control), the acceptance-bullet mutation classes beyond the
+  numbered list (stage inflation, duplicate owner, hard cycle, controller
+  selection) must carry their own controls, plus an order-invariance
+  canonicalization control — twenty controls in total.
 - **Verify:** temporarily weakening the validator shows a control failing to
   reject; against the real validator all sixteen reject.
 
@@ -94,9 +96,10 @@ The checker asserts:
    child-train references, external-authorization gate law, semantic path
    neutrality, and all 121 graph-law edges present with exactly their
    declared classes while all 24 forbidden edges stay absent;
-4. all fourteen #10918 graph regressions reject through sixteen fail-closed
+4. all fourteen #10918 graph regressions reject through twenty fail-closed
    in-memory mutation controls (regression 12 carries a value-level and a
-   byte-level control), including the order-invariance control whose
+   byte-level control; the acceptance-bullet mutation classes carry four
+   more), including the order-invariance control whose
    rejected subject is an order-sensitive canonicalization: the canonical
    semantic digest of a shuffled document equals the digest of the original;
    schema-identifier comparison is ordinal (case-sensitive) and all
@@ -632,6 +635,21 @@ function Invoke-TrainValidation {
   if ([string]$byId['POLICY'].train_role -cne 'evidence_policy') { throw 'POLICY (#9375) must keep the evidence_policy role' }
   if ([string]$byId['POLICY'].claim_ceiling -notmatch 'receipt or support authority') { throw 'POLICY must explicitly renounce receipt and support authority' }
 
+  # stage-ceiling law (#10918 acceptance: stage-inflation mutations must fail):
+  # subjects earn no support claim, profiles prove shapes only, host passes are
+  # never public artifacts, and public replays earn no registry completion.
+  $STAGE_CEILING_LAWS = @(
+    @{ nodes = @('SUBJ_CORE','SUBJ_E','SUBJ_L'); pattern = 'support claim' },
+    @{ nodes = @('PROF_E','PROF_L'); pattern = 'negotiation and result shapes only' },
+    @{ nodes = @('HOST_E29','HOST_E30','HOST_E_REL','HOST_E_SRC','HOST_L_REL','HOST_L_SRC'); pattern = 'never a public artifact' },
+    @{ nodes = @('PUB_E_B','PUB_E_R','PUB_L_R'); pattern = 'registry completion' }
+  )
+  foreach ($law in $STAGE_CEILING_LAWS) {
+    foreach ($sid in $law.nodes) {
+      if ([string]$byId[$sid].claim_ceiling -notmatch $law.pattern) { throw "stage ceiling inflation at ${sid}: the claim ceiling must bound ($($law.pattern))" }
+    }
+  }
+
   # successors must be exactly the derived reverse edge set (bidirectional traceability)
   $derived = New-OrdinalTable
   foreach ($id in $EXPECTED_NODES.Keys) { $derived[$id] = [System.Collections.Generic.List[string]]::new() }
@@ -744,6 +762,13 @@ Invoke-NegativeControl 'R13-spec-duplicated' { param($d) (Find-Node $d 'SUBJ_FAN
 # regression 14: a current source file becomes stable semantic identity
 Invoke-NegativeControl 'R14-source-path-identity' { param($d) (Find-Node $d 'SUBJ_CORE').allowed_components += 'crates/perl-lsp/src/subject.rs' }
 
+# acceptance-bullet mutation classes beyond the numbered regressions:
+# stage inflation, duplicate owner, hard cycle and controller selection
+Invoke-NegativeControl 'A01-stage-inflation' { param($d) (Find-Node $d 'HOST_E30').claim_ceiling = 'local passes promote the public artifact directly' }
+Invoke-NegativeControl 'A02-duplicate-owner' { param($d) (Find-Node $d 'HOST_E_REL').authority_after = (Find-Node $d 'HOST_E29').authority_after }
+Invoke-NegativeControl 'A03-hard-cycle' { param($d) (Find-Node $d 'PROF_E').dependencies += [pscustomobject]@{ target = 'HOST_E29'; class = 'hard'; provenance = '#10918 body corrected functional DAG' } }
+Invoke-NegativeControl 'A04-controller-buildable' { param($d) (Find-Node $d 'CTRL').buildable = $true }
+
 # order-invariance control: the canonical digest must not move with input order
 $orderDigest = $semanticDigest
 $shuffled = Copy-Doc $doc
@@ -757,11 +782,13 @@ $shuffledDigest = Invoke-TrainValidation $shuffled
 if ($shuffledDigest -cne $orderDigest) { throw 'order-invariance control failed: canonical digest changed with input order' }
 $controls.Add('ORDER-CANONICAL-DIGEST')
 
-# Sixteen fail-closed mutation controls cover the fourteen #10918 graph
-# regressions; regression 12 carries both a value-level and a byte-level
-# control, and the order-invariance canonicalization control runs as the
-# sixteenth.
-if ($controls.Count -ne 16) { throw "expected 16 negative controls, ran $($controls.Count)" }
+# Twenty fail-closed mutation controls cover the fourteen #10918 graph
+# regressions (regression 12 carries both a value-level and a byte-level
+# control), the four acceptance-bullet mutation classes beyond the numbered
+# list (stage inflation, duplicate owner, hard cycle, controller selection;
+# false total-order and candidate-node are already exercised by R02 and R01),
+# and the order-invariance canonicalization control.
+if ($controls.Count -ne 20) { throw "expected 20 negative controls, ran $($controls.Count)" }
 
 # --- bundle markdown structure ---
 function Get-SectionBody {
@@ -808,7 +835,7 @@ foreach ($p in $paths) {
 $fingerprint = [BitConverter]::ToString($sha2.ComputeHash($allBytes.ToArray())) -replace '-', ''
 $sha2.Dispose()
 Write-Output "SPEC_10918_STRUCTURAL_CHECK=PASS"
-Write-Output "SPEC_10918_NEGATIVE_CONTROLS=16/16"
+Write-Output "SPEC_10918_NEGATIVE_CONTROLS=20/20"
 Write-Output "SPEC_10918_SEMANTIC_SHA256=$semanticDigest"
 Write-Output "SPEC_10918_BUNDLE_SHA256=$fingerprint"
 ```
@@ -818,7 +845,7 @@ Write-Output "SPEC_10918_BUNDLE_SHA256=$fingerprint"
 Run the checker twice. Requirements for a valid proof:
 
 1. both runs print `SPEC_10918_STRUCTURAL_CHECK=PASS`;
-2. both runs print `SPEC_10918_NEGATIVE_CONTROLS=16/16`;
+2. both runs print `SPEC_10918_NEGATIVE_CONTROLS=20/20`;
 3. both runs print the same `SPEC_10918_SEMANTIC_SHA256` and
    `SPEC_10918_BUNDLE_SHA256` fingerprints;
 4. the full captured output of both runs is byte-identical;
