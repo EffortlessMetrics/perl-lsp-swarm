@@ -5,7 +5,7 @@
 //! (perl-dead-code, perl-refactoring, perl-incremental-parsing).
 //! Wave Final PR B reduces from 34 to 31 (feature-catalog, lsp-config, content-length-framing).
 //! This test verifies:
-//! 1. Baseline file exists and has correct value (31)
+//! 1. Baseline file exists and matches the live publish-allowlist entry count
 //! 2. Actual cargo metadata published count matches baseline
 //! 3. Baseline ratchet is enforced (no accidental regressions)
 
@@ -18,15 +18,47 @@ fn workspace_root() -> PathBuf {
     PathBuf::from(manifest_dir).join("..").join("..")
 }
 
-/// Count entries in the root `[workspace.metadata.publish.allow]` array — the live
-/// published-crate count, which the baseline file must match. Derived, not hard-coded.
-fn published_allowlist_count(root: &std::path::Path) -> std::io::Result<usize> {
+/// Extract the crate names in the root `[workspace.metadata.publish.allow]` array —
+/// the live published set, which the baseline file must match. Derived, not hard-coded.
+///
+/// The allowlist is densely commented: most entries sit beside a `#` note recording
+/// where an absorbed crate went. Those comments are not entries, and one of them
+/// quotes an ADR section name (`PLSP-ADR-0006 "Scope boundary"`), so counting quotes
+/// across the whole block over-reports by one per quoted phrase. Strip each line's
+/// comment before reading its entry, and return the names so failures show which
+/// rows drifted instead of only a diverging count. Any line carrying quotes that is
+/// not exactly one `"crate-name",` entry is rejected loudly, so house-style
+/// deviations (inline arrays, multiple entries per line) cannot silently shift the
+/// count.
+fn published_allowlist_entries(root: &std::path::Path) -> std::io::Result<Vec<String>> {
     let root_toml = fs::read_to_string(root.join("Cargo.toml"))?;
     let section = root_toml.split("[workspace.metadata.publish]").nth(1).unwrap_or("");
     let allow_start = section.find("allow = [").unwrap_or(0);
     let allow = &section[allow_start..];
-    let allow_end = allow.find(']').unwrap_or(allow.len());
-    Ok(allow[..allow_end].matches('"').count() / 2)
+    let code_only = allow
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let allow_end = code_only.find(']').unwrap_or(code_only.len());
+    let mut entries = Vec::new();
+    for line in code_only[..allow_end].lines() {
+        let entry_line = line.trim();
+        if !entry_line.contains('"') {
+            continue;
+        }
+        if entry_line.matches('"').count() != 2 || !entry_line.starts_with('"') {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "unparseable publish-allowlist line (expected exactly one \"crate-name\", \
+                     entry per line): {line:?}"
+                ),
+            ));
+        }
+        entries.push(entry_line.trim_end_matches(',').trim().trim_matches('"').to_string());
+    }
+    Ok(entries)
 }
 
 #[test]
@@ -37,11 +69,17 @@ fn g3_baseline_file_matches_allowlist() -> Result<(), Box<dyn std::error::Error>
     let content = fs::read_to_string(&baseline_path)?;
     let baseline: usize =
         content.trim().parse().map_err(|_| "baseline count should be parseable as an integer")?;
-    let allowlist = published_allowlist_count(&root)?;
+    let entries = published_allowlist_entries(&root)?;
+    let allowlist = entries.len();
+    assert!(
+        entries.iter().all(|name| !name.trim().is_empty()),
+        "publish allowlist parsed an empty entry name — parser or Cargo.toml broke: {entries:?}"
+    );
 
     assert_eq!(
         baseline, allowlist,
-        "baseline ({baseline}) must match the publish allowlist entry count ({allowlist})"
+        "baseline ({baseline}) must match the publish allowlist entry count ({allowlist}) — \
+         parsed allowlist entries: {entries:?}"
     );
 
     Ok(())

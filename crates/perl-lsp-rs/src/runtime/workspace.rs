@@ -9,10 +9,10 @@
 //! - **Building/Degraded state**: Open document search only (partial results)
 
 use super::{
-    AtomicBool, AtomicI32, GLOBAL_CANCELLATION_REGISTRY, IndexCoordinator, JsonRpcError, JsonRpcId,
-    LspServer, LspWorkspaceSymbol, Mutex, Ordering, PendingWorkspaceConfigurationRequest,
-    PerlLspCancellationToken, ServerRequestId, Value, WorkspaceFolderState,
-    best_workspace_folder_for_doc, json, outbound, uri_to_fs_path,
+    AtomicBool, AtomicI32, BackingFileTransition, GLOBAL_CANCELLATION_REGISTRY, IndexCoordinator,
+    JsonRpcError, JsonRpcId, LspServer, LspWorkspaceSymbol, Mutex, Ordering,
+    PendingWorkspaceConfigurationRequest, PerlLspCancellationToken, ServerRequestId, Value,
+    WorkspaceFolderState, best_workspace_folder_for_doc, json, outbound, uri_to_fs_path,
 };
 #[cfg(feature = "workspace")]
 use crate::runtime::readiness::{
@@ -107,7 +107,7 @@ use crate::util::read_text_file_with_encoding;
 use perl_workspace::monitoring::{IndexingPhase, WorkspaceIndexingReceipt};
 
 #[cfg(feature = "workspace")]
-fn read_watched_file_content(uri: &str, purpose: &str) -> Option<String> {
+pub(crate) fn read_watched_file_content(uri: &str, purpose: &str) -> Option<String> {
     uri_to_fs_path(uri).and_then(|path| match read_text_file_with_encoding(&path) {
         Ok(content) => Some(content),
         Err(e) => {
@@ -1179,129 +1179,6 @@ impl LspServer {
         // Return the original symbol if we couldn't enhance it
         Ok(Some(json!(symbol)))
     }
-
-    /// Handle workspace/configuration request
-    ///
-    /// Supports both direct array format and ConfigurationParams with items property
-    pub(super) fn handle_configuration(
-        &self,
-        params: Option<Value>,
-    ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            // Support both direct array format and ConfigurationParams with items property
-            let items =
-                params.get("items").and_then(|i| i.as_array()).or_else(|| params.as_array());
-
-            if let Some(items) = items {
-                let mut results = Vec::new();
-
-                for item in items {
-                    if let Some(section) = item.get("section").and_then(|s| s.as_str()) {
-                        tracing::debug!(section, "Configuration requested");
-
-                        // Handle workspace configuration sections
-                        let value = if section.starts_with("perl.workspace.") {
-                            let workspace_config = self.workspace_config.lock();
-                            match section {
-                                "perl.workspace.includePaths" => {
-                                    json!(workspace_config.include_paths)
-                                }
-                                "perl.workspace.discoveryExtensions" => {
-                                    json!(workspace_config.discovery_extra_extensions)
-                                }
-                                "perl.workspace.discoverySkippedDirs" => {
-                                    json!(workspace_config.discovery_extra_skipped_dirs)
-                                }
-                                "perl.workspace.useSystemInc" => {
-                                    json!(workspace_config.use_system_inc)
-                                }
-                                "perl.workspace.usePerl5lib" => {
-                                    json!(workspace_config.use_perl5lib)
-                                }
-                                "perl.workspace.perl5libPrecedence" => {
-                                    let precedence = match workspace_config.perl5lib_precedence {
-                                        perl_lsp_rs_core::config::Perl5LibPrecedence::Prepend => {
-                                            "prepend"
-                                        }
-                                        perl_lsp_rs_core::config::Perl5LibPrecedence::Append => {
-                                            "append"
-                                        }
-                                    };
-                                    json!(precedence)
-                                }
-                                "perl.workspace.resolutionTimeout" => {
-                                    json!(workspace_config.resolution_timeout_ms)
-                                }
-                                _ => json!(null),
-                            }
-                        } else {
-                            let config = self.config.lock();
-                            match section {
-                                "perl.inlayHints.enabled" => json!(config.inlay_hints_enabled),
-                                "perl.inlayHints.parameterHints" => {
-                                    json!(config.inlay_hints_parameter_hints)
-                                }
-                                "perl.inlayHints.typeHints" => json!(config.inlay_hints_type_hints),
-                                "perl.inlayHints.chainedHints" => {
-                                    json!(config.inlay_hints_chained_hints)
-                                }
-                                "perl.inlayHints.maxLength" => json!(config.inlay_hints_max_length),
-                                "perl.formatting.enabled" => json!(config.perltidy_enabled),
-                                "perl.formatting.engine" => {
-                                    let engine = match config.formatting_engine {
-                                        perl_lsp_rs_core::config::FormatterMode::Native => "native",
-                                        perl_lsp_rs_core::config::FormatterMode::Compat => "compat",
-                                        perl_lsp_rs_core::config::FormatterMode::ExternalLegacy => {
-                                            "external-perltidy"
-                                        }
-                                        perl_lsp_rs_core::config::FormatterMode::Off => "off",
-                                    };
-                                    json!(engine)
-                                }
-                                "perl.formatting.profile" => json!(config.perltidy_profile),
-                                "perl.formatting.maximumLineLength" => {
-                                    json!(config.perltidy_maximum_line_length)
-                                }
-                                "perl.formatting.indentColumns" => {
-                                    json!(config.perltidy_indent_columns)
-                                }
-                                "perl.formatting.tabs" => json!(config.perltidy_tabs),
-                                "perl.formatting.openingBraceOnNewLine" => {
-                                    json!(config.perltidy_opening_brace_on_new_line)
-                                }
-                                "perl.formatting.cuddledElse" => {
-                                    json!(config.perltidy_cuddled_else)
-                                }
-                                "perl.formatting.spaceAfterKeyword" => {
-                                    json!(config.perltidy_space_after_keyword)
-                                }
-                                "perl.formatting.addTrailingCommas" => {
-                                    json!(config.perltidy_add_trailing_commas)
-                                }
-                                "perl.formatting.verticalAlignment" => {
-                                    json!(config.perltidy_vertical_alignment)
-                                }
-                                "perl.formatting.blockCommentIndentation" => {
-                                    json!(config.perltidy_block_comment_indentation)
-                                }
-                                "perl.formatting.extraArgs" => json!(config.perltidy_extra_args),
-                                "perl.formatting.timeoutSecs" => {
-                                    json!(config.perltidy_timeout_secs)
-                                }
-                                _ => json!(null),
-                            }
-                        };
-
-                        results.push(value);
-                    }
-                }
-
-                return Ok(Some(json!(results)));
-            }
-        }
-
-        Ok(Some(json!([])))
-    }
 }
 
 /// Extract the perl-specific settings object from a configuration payload.
@@ -1584,8 +1461,11 @@ impl LspServer {
                     // (git checkout, formatter rewrites, etc.) coalesce into a
                     // single batch rather than triggering many sequential file reads.
                     if !self.schedule_file_watcher_uri(&uri) {
-                        // No debouncer installed (unit-test path) — fall through to
-                        // immediate synchronous processing.
+                        // `false` means the event was NOT queued: no debouncer
+                        // is installed (unit-test path), or the coalescer
+                        // reported Overflowed/Unavailable/ShuttingDown (#8064).
+                        // Either way, fall through to immediate synchronous
+                        // processing so degraded modes never lose events.
                         self.process_file_watcher_uri_immediate(&uri);
                     }
                 }
@@ -1614,7 +1494,32 @@ impl LspServer {
     ///
     /// Shared implementation used by both the debounced batch path and the
     /// immediate fall-through path when no debouncer is installed.
+    ///
+    /// Open-buffer authority (#8041): the source-authority decision happens
+    /// BEFORE any index or cache mutation. When a document is open for `uri`,
+    /// its editor buffer is the only authoritative input — disk bytes are
+    /// neither read nor indexed, so cross-file facts can never derive from a
+    /// snapshot that contradicts the open buffer. The divergence is recorded
+    /// so save/close complete the handoff deterministically.
+    ///
+    /// The check is repeated after the disk read: the debouncer thread can
+    /// race a concurrent `didOpen`, and an openness snapshot taken before a
+    /// blocking file read is stale by the time the mutation would run. A
+    /// false "closed" verdict here would index disk bytes behind a freshly
+    /// installed buffer; skipping instead loses at most one disk refresh for
+    /// a genuinely closed file, which the next watcher event or scan
+    /// recovers.
     fn process_file_watcher_uri_immediate(&self, uri: &str) {
+        if self.document_is_open(uri) {
+            self.record_backing_file_transition(uri, BackingFileTransition::Changed);
+            tracing::debug!(
+                "File watcher event for open document {} — buffer remains authoritative; \
+                 disk re-index skipped (#8041)",
+                uri
+            );
+            return;
+        }
+
         // Notify coordinator of pending change
         #[cfg(feature = "workspace")]
         if let Some(coordinator) = self.coordinator() {
@@ -1632,6 +1537,19 @@ impl LspServer {
                 loaded_content = read_watched_file_content(uri, "re-indexing");
             }
 
+            if self.document_is_open(uri) {
+                self.record_backing_file_transition(uri, BackingFileTransition::Changed);
+                tracing::debug!(
+                    "Document {} opened while watcher content was in flight — \
+                     buffer remains authoritative; disk re-index skipped (#8041)",
+                    uri
+                );
+                if let Some(coordinator) = self.coordinator() {
+                    coordinator.notify_parse_complete(uri);
+                }
+                return;
+            }
+
             let workspace_index = coordinator.index();
             if let Ok(url) = url::Url::parse(uri)
                 && let Some(content) = loaded_content.as_ref()
@@ -1647,28 +1565,9 @@ impl LspServer {
             }
         }
 
-        // For open documents, do NOT overwrite doc.text or bump doc.version.
-        // The document map is authoritative for open files — the editor's
-        // didChange notifications drive the content. Overwriting from disk
-        // clobbers unsaved user edits and the blind version+1 can cause
-        // subsequent didChange to be silently dropped as stale. (#5112, #5040)
-        //
-        // The workspace index above was already re-indexed from disk, which
-        // is sufficient for cross-file features. The document map stays as-is.
-        #[cfg(feature = "workspace")]
-        {
-            let document_is_open = {
-                let documents = self.documents.lock();
-                self.get_document(&documents, uri).is_some()
-            };
-
-            if document_is_open {
-                tracing::debug!(
-                    "File watcher change for open document {} — skipping in-memory overwrite (document map is authoritative)",
-                    uri
-                );
-            }
-        }
+        // Open documents never reach this point: both authority checks above
+        // return early, so everything below runs only for closed (disk-backed)
+        // files.
 
         // Notify coordinator that file processing is complete
         #[cfg(feature = "workspace")]
@@ -1909,6 +1808,21 @@ impl LspServer {
 
                 tracing::debug!("File renamed: {} -> {}", old_uri, new_uri);
 
+                // Open-buffer authority (#8041): `didRenameFiles` is client
+                // FILE-operation authority, not document lifecycle authority.
+                // An open document instance stays bound to its original URI;
+                // only the backing-path handoff is recorded here, and it is
+                // resolved by the client's own didSave/didClose/didOpen
+                // lifecycle. Silently retargeting the buffer would change its
+                // identity without that authority.
+                let old_document_open = self.document_is_open(&old_uri);
+                if old_document_open {
+                    self.record_backing_file_transition(
+                        &old_uri,
+                        BackingFileTransition::RenamedOrMoved { new_uri: new_uri.clone() },
+                    );
+                }
+
                 // Update the index for the renamed file
                 // Note: Mutation operation - use coordinator with lifecycle tracking
                 #[cfg(feature = "workspace")]
@@ -1916,11 +1830,15 @@ impl LspServer {
                     coordinator.notify_change(&old_uri);
                     coordinator.notify_change(&new_uri);
 
-                    // Remove old file from index
+                    // Remove old file from index so old/new identities never
+                    // coexist as current workspace facts.
                     coordinator.index().remove_file(&old_uri);
 
-                    // Index new file if it's a Perl file
+                    // Index new file if it's a Perl file. When a document is
+                    // open at the new URI, its buffer — not disk bytes — is
+                    // authoritative for that subject, so skip disk indexing.
                     if is_perl_source_uri(&new_uri)
+                        && !self.document_is_open(&new_uri)
                         && let Some(path) = uri_to_fs_path(&new_uri)
                     {
                         match read_text_file_with_encoding(&path) {
@@ -1952,13 +1870,9 @@ impl LspServer {
                     coordinator.notify_parse_complete(&new_uri);
                 }
 
-                // Update document store
-                {
-                    let mut documents = self.documents.lock();
-                    if let Some(doc) = documents.remove(&old_uri) {
-                        documents.insert(new_uri.clone(), doc);
-                    }
-                }
+                // No document-store mutation here (#8041): the open buffer
+                // keeps its URI and instance until the client's own document
+                // lifecycle (didOpen/didClose) resolves the rename handoff.
             }
 
             // Trigger client refresh after file renames
@@ -2465,122 +2379,6 @@ impl LspServer {
             }
         });
     }
-
-    /// Handle workspace/applyEdit request
-    pub(super) fn handle_apply_edit(
-        &self,
-        params: Option<Value>,
-    ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            let Some(edit) = params.get("edit") else {
-                return Ok(Some(
-                    json!({"applied": false, "failureReason": "Missing 'edit' field"}),
-                ));
-            };
-
-            tracing::debug!("Applying workspace edit");
-
-            // Apply changes to each document
-            if let Some(changes) = edit["changes"].as_object() {
-                for (uri, edits) in changes {
-                    if let Some(edits) = edits.as_array() {
-                        let mut documents = self.documents.lock();
-                        if let Some(doc) = self.get_document_mut(&mut documents, uri) {
-                            // Apply edits in reverse order to maintain positions
-                            let mut sorted_edits = edits.clone();
-                            sorted_edits.sort_by(|a, b| {
-                                let a_line = a["range"]["start"]["line"].as_u64().unwrap_or(0);
-                                let b_line = b["range"]["start"]["line"].as_u64().unwrap_or(0);
-                                b_line.cmp(&a_line)
-                            });
-
-                            for edit in sorted_edits {
-                                if let Some(new_text) = edit["newText"].as_str() {
-                                    let start_line =
-                                        edit["range"]["start"]["line"].as_u64().unwrap_or(0)
-                                            as usize;
-                                    let start_char =
-                                        edit["range"]["start"]["character"].as_u64().unwrap_or(0)
-                                            as usize;
-                                    let end_line =
-                                        edit["range"]["end"]["line"].as_u64().unwrap_or(0) as usize;
-                                    let end_char =
-                                        edit["range"]["end"]["character"].as_u64().unwrap_or(0)
-                                            as usize;
-
-                                    // Apply the edit to the document content
-                                    let lines: Vec<String> =
-                                        doc.text.lines().map(String::from).collect();
-                                    let mut new_lines = Vec::new();
-
-                                    // Copy lines before the edit
-                                    for i in 0..start_line {
-                                        new_lines.push(lines[i].clone());
-                                    }
-
-                                    // Apply the edit
-                                    if start_line == end_line {
-                                        let line = &lines[start_line];
-                                        let new_line = format!(
-                                            "{}{}{}",
-                                            &line[..start_char.min(line.len())],
-                                            new_text,
-                                            &line[end_char.min(line.len())..]
-                                        );
-                                        new_lines.push(new_line);
-                                    } else {
-                                        // Multi-line edit
-                                        let first_line = &lines[start_line];
-                                        let last_line = &lines[end_line];
-                                        let new_line = format!(
-                                            "{}{}{}",
-                                            &first_line[..start_char.min(first_line.len())],
-                                            new_text,
-                                            &last_line[end_char.min(last_line.len())..]
-                                        );
-                                        new_lines.push(new_line);
-                                    }
-
-                                    // Copy lines after the edit
-                                    for i in (end_line + 1)..lines.len() {
-                                        new_lines.push(lines[i].clone());
-                                    }
-
-                                    doc.text = new_lines.join("\n");
-                                    doc.version += 1;
-                                }
-                            }
-
-                            // Re-index the file after changes
-                            // Note: Mutation operation - use coordinator with lifecycle tracking
-                            #[cfg(feature = "workspace")]
-                            if let Some(coordinator) = self.coordinator() {
-                                coordinator.notify_change(uri);
-                                if let Ok(url) = url::Url::parse(uri)
-                                    && let Err(e) = coordinator
-                                        .index()
-                                        .index_file(url, doc.text_arc.to_string())
-                                {
-                                    tracing::warn!("Failed to re-index file {}: {}", uri, e);
-                                }
-                                coordinator.notify_parse_complete(uri);
-                            }
-
-                            // Invalidate the cached parse (see the
-                            // generation-bump comment above; `parsed` is
-                            // private -- state::ParsedSnapshot).
-                            doc.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        }
-                    }
-                }
-            }
-
-            // Return success
-            return Ok(Some(json!({"applied": true})));
-        }
-
-        Ok(Some(json!({"applied": false, "failureReason": "Invalid parameters"})))
-    }
 }
 
 #[cfg(feature = "workspace")]
@@ -2903,7 +2701,7 @@ mod tests {
     #![allow(clippy::expect_used)]
     #[cfg(feature = "workspace")]
     use super::WORKSPACE_INDEX_PROGRESS_TOKEN;
-    use super::{LspServer, module_name_appears_in_text};
+    use super::{BackingFileTransition, LspServer, module_name_appears_in_text};
     #[cfg(feature = "workspace")]
     use crate::cancellation::{GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken};
     #[cfg(feature = "workspace")]
@@ -3352,7 +3150,7 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn watched_file_deleted_clears_raw_and_normalized_uri_state()
+    fn watched_delete_resolves_raw_uri_spelling_under_open_buffer_authority()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let dir = tempfile::tempdir()?;
@@ -3390,24 +3188,48 @@ mod tests {
             assert!(coordinator.index().document_store().get(&normalized_uri).is_some());
         }
 
+        // The delete arrives under a non-canonical URI spelling while the
+        // document is open: backing-file authority is dropped for every key
+        // spelling, but the open buffer and its session survive (#8041).
         server.handle_did_change_watched_files(Some(json!({
             "changes": [
                 { "uri": raw_uri, "type": 3 }
             ]
         })))?;
 
-        assert!(in_flight_token.load(std::sync::atomic::Ordering::Relaxed));
-        let after = server.memory_state_snapshot();
-        assert_eq!(after.documents, 0);
-        assert_eq!(after.open_text_bytes, 0);
-        assert_eq!(after.parse_cancel_flags, 0);
-        assert_eq!(after.stream_sessions, 0);
+        assert!(
+            !in_flight_token.load(std::sync::atomic::Ordering::Relaxed),
+            "the open document's parse token must survive the external delete"
+        );
+        let after_delete = server.memory_state_snapshot();
+        assert_eq!(after_delete.documents, 1, "open buffer survives the watched delete");
+        assert!(after_delete.open_text_bytes > 0);
+        assert_eq!(after_delete.parse_cancel_flags, 1);
+        assert_eq!(after_delete.stream_sessions, 1);
         if let Some(coordinator) = server.coordinator() {
             assert!(coordinator.index().file_symbols(&normalized_uri).is_empty());
             assert!(coordinator.index().file_symbols(&raw_uri).is_empty());
             assert!(coordinator.index().document_store().get(&normalized_uri).is_none());
             assert!(coordinator.index().document_store().get(&raw_uri).is_none());
         }
+        assert_eq!(
+            server.take_backing_file_transition(&raw_uri),
+            Some(BackingFileTransition::Deleted),
+            "the transition resolves regardless of the spelling it arrived under"
+        );
+
+        // didClose completes the handoff: with the backing file gone the
+        // remaining subject state clears for both spellings.
+        server.handle_did_close(Some(json!({
+            "textDocument": { "uri": raw_uri }
+        })))?;
+
+        assert!(in_flight_token.load(std::sync::atomic::Ordering::Relaxed));
+        let after_close = server.memory_state_snapshot();
+        assert_eq!(after_close.documents, 0);
+        assert_eq!(after_close.open_text_bytes, 0);
+        assert_eq!(after_close.parse_cancel_flags, 0);
+        assert_eq!(after_close.stream_sessions, 0);
 
         Ok(())
     }
@@ -3514,16 +3336,22 @@ mod tests {
         }
 
         let memory = server.memory_state_snapshot();
-        assert_eq!(memory.documents, 0);
-        assert_eq!(memory.open_text_bytes, 0);
-        assert_eq!(memory.parse_cancel_flags, 0);
-        assert_eq!(memory.stream_sessions, 0);
+        // Open-buffer authority (#8041): the watched deletes drop each open
+        // document's backing-file facts but must not evict the buffers, so
+        // every per-document session survives until didClose/didSave.
+        assert_eq!(memory.documents, uris.len());
+        assert!(memory.open_text_bytes > 0);
+        assert_eq!(memory.parse_cancel_flags, uris.len());
+        assert_eq!(memory.stream_sessions, uris.len());
         assert_eq!(memory.pending_index_tasks, 0);
         assert_eq!(server.runtime_pressure_snapshot().file_watcher_pending_uris, 0);
 
         if let Some(coordinator) = server.coordinator() {
             for uri in &uris {
-                assert!(coordinator.index().file_symbols(uri).is_empty());
+                assert!(
+                    coordinator.index().file_symbols(uri).is_empty(),
+                    "stale disk-backed symbols for {uri} must be gone after delete"
+                );
                 assert!(coordinator.index().document_store().get(uri).is_none());
             }
         }

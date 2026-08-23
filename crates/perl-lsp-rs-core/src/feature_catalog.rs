@@ -21,7 +21,9 @@ pub struct Meta {
     pub version: String,
     /// LSP version this catalog was built against.
     pub lsp_version: String,
-    /// Optional tracked compliance percentage from the catalog source.
+    /// Declared aggregate compliance percentage. Refused by [`Catalog::validate`]
+    /// since #6731: a declaration-count percentage is not behavior evidence and
+    /// must not re-enter the authoritative catalog.
     #[serde(default)]
     pub compliance_percent: Option<u32>,
 }
@@ -50,7 +52,7 @@ impl Maturity {
         matches!(self, Self::Ga | Self::Production)
     }
 
-    /// Returns `true` when the feature should be considered in compliance math.
+    /// Returns `true` when the feature participates in the compatibility grid.
     pub const fn is_trackable(self) -> bool {
         !matches!(self, Self::Planned)
     }
@@ -137,19 +139,6 @@ impl Catalog {
         ids
     }
 
-    /// Trackable feature count (`maturity != planned`).
-    pub fn trackable_feature_count(&self) -> usize {
-        self.feature.iter().filter(|feature| feature.maturity.is_trackable()).count()
-    }
-
-    /// Advertised trackable count.
-    pub fn advertised_trackable_count(&self) -> usize {
-        self.feature
-            .iter()
-            .filter(|feature| feature.advertised && feature.maturity.is_advertised())
-            .count()
-    }
-
     /// Trackable feature count for BDD/compliance grids.
     /// Excludes entries explicitly marked `counts_in_coverage = false`.
     pub fn trackable_feature_count_for_grid(&self) -> usize {
@@ -180,7 +169,33 @@ impl Catalog {
         (advertised as f64 / trackable as f64 * 100.0).round() as f32
     }
 
-    /// Compliance percentage calculated as advertised(trackable) / trackable.
+    /// Compatibility-only alias for [`Self::trackable_feature_count_for_grid`].
+    ///
+    /// This name is retained for existing catalog consumers. It is not a
+    /// compliance, status, or reporting authority.
+    #[deprecated(note = "compatibility-only; use trackable_feature_count_for_grid")]
+    pub fn trackable_feature_count(&self) -> usize {
+        self.feature.iter().filter(|feature| feature.maturity.is_trackable()).count()
+    }
+
+    /// Compatibility-only alias for [`Self::advertised_trackable_count_for_grid`].
+    ///
+    /// This name is retained for existing catalog consumers. It is not a
+    /// compliance, status, or reporting authority.
+    #[deprecated(note = "compatibility-only; use advertised_trackable_count_for_grid")]
+    pub fn advertised_trackable_count(&self) -> usize {
+        self.feature
+            .iter()
+            .filter(|feature| feature.advertised && feature.maturity.is_advertised())
+            .count()
+    }
+
+    /// Pre-#6731 compatibility percentage using the compatibility count aliases.
+    ///
+    /// This name is retained for existing catalog consumers. It is not a
+    /// compliance, status, or reporting authority.
+    #[deprecated(note = "compatibility-only; use compliance_percent_for_grid")]
+    #[allow(deprecated)]
     pub fn compliance_percent(&self) -> f32 {
         let trackable = self.trackable_feature_count();
         if trackable == 0 {
@@ -217,6 +232,14 @@ impl Catalog {
     pub fn validate(&self) -> Result<(), CatalogError> {
         let mut seen = BTreeSet::new();
         let mut issues = Vec::new();
+
+        if self.meta.compliance_percent.is_some() {
+            issues.push(
+                "meta.compliance_percent is refused (#6731): a declaration-count aggregate \
+                 is not behavior evidence; generated status renders evidence state instead"
+                    .to_string(),
+            );
+        }
 
         for feature in &self.feature {
             if feature.id.trim().is_empty() {
@@ -282,6 +305,10 @@ pub enum CatalogError {
     #[error("features catalog not found for manifest dir: {0}")]
     MissingSource(PathBuf),
 
+    /// An explicitly configured override path does not exist.
+    #[error("FEATURES_TOML_OVERRIDE path does not exist: {0}")]
+    MissingOverride(PathBuf),
+
     /// I/O failure while reading the catalog source.
     #[error("failed to read features catalog: {0}")]
     Io(#[from] std::io::Error),
@@ -299,7 +326,9 @@ impl perl_parser_core::ErrorClass for CatalogError {
     fn error_class(&self) -> perl_parser_core::ErrorCategory {
         match self {
             // File system / infrastructure issues.
-            Self::MissingSource(_) | Self::Io(_) => perl_parser_core::ErrorCategory::Infra,
+            Self::MissingSource(_) | Self::MissingOverride(_) | Self::Io(_) => {
+                perl_parser_core::ErrorCategory::Infra
+            }
             // The catalog is our own build artifact — a parse or validation
             // failure means we shipped a broken catalog, which is our bug.
             Self::Parse(_) | Self::Validation(_) => perl_parser_core::ErrorCategory::Bug,
@@ -340,11 +369,21 @@ pub enum CatalogSourceKind {
 
 /// Resolve catalog path using workspace-first lookup and override support.
 pub fn resolve_catalog_source(manifest_dir: &Path) -> Result<CatalogSource, CatalogError> {
-    if let Ok(override_path) = env::var("FEATURES_TOML_OVERRIDE") {
-        let override_path = PathBuf::from(override_path);
-        if override_path.exists() {
-            return Ok(CatalogSource { path: override_path, kind: CatalogSourceKind::Override });
+    resolve_catalog_source_with_override(
+        manifest_dir,
+        env::var_os("FEATURES_TOML_OVERRIDE").map(PathBuf::from),
+    )
+}
+
+fn resolve_catalog_source_with_override(
+    manifest_dir: &Path,
+    override_path: Option<PathBuf>,
+) -> Result<CatalogSource, CatalogError> {
+    if let Some(override_path) = override_path {
+        if !override_path.exists() {
+            return Err(CatalogError::MissingOverride(override_path));
         }
+        return Ok(CatalogSource { path: override_path, kind: CatalogSourceKind::Override });
     }
 
     let local_workspace_candidate = manifest_dir.join("features.toml");
@@ -404,12 +443,6 @@ pub fn render_lsp_feature_catalog_module(catalog: &Catalog, source_comment: &str
     code.push_str(&format!("pub const VERSION: &str = {:?};\n", catalog.meta.version));
     code.push_str("/// LSP protocol version supported by this parser implementation\n");
     code.push_str(&format!("pub const LSP_VERSION: &str = {:?};\n", catalog.meta.lsp_version));
-    code.push_str("/// Compliance percentage of advertised GA features vs trackable features\n");
-    code.push_str(&format!(
-        "pub const COMPLIANCE_PERCENT: f32 = {:.2};\n\n",
-        catalog.compliance_percent()
-    ));
-
     code.push_str(
         "/// Represents a single LSP feature with its metadata and implementation status\n",
     );
@@ -470,12 +503,40 @@ pub fn render_lsp_feature_catalog_module(catalog: &Catalog, source_comment: &str
     code.push_str("    ADVERTISED_LSP_FEATURES.contains(&id)\n");
     code.push_str("}\n\n");
 
-    code.push_str("/// Returns the current LSP compliance percentage as a float.\n");
-    code.push_str("pub fn compliance_percent() -> f32 {\n");
-    code.push_str("    COMPLIANCE_PERCENT\n");
-    code.push_str("}\n");
-
     code
+}
+
+/// Render the catalog's declaration-only navigation table.
+pub fn render_navigation_table(catalog: &Catalog) -> String {
+    let mut by_area: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+
+    for feature in &catalog.feature {
+        let entry = by_area.entry(feature.area.as_str()).or_default();
+        entry.1 += 1;
+        if matches!(feature.maturity, Maturity::Ga | Maturity::Production | Maturity::Preview) {
+            entry.0 += 1;
+        }
+    }
+
+    let mut lines = vec![
+        "| Area | Declared ga/production/preview rows | Total rows |".to_string(),
+        "|------|---------------------------|------------|".to_string(),
+    ];
+    let mut declared = 0;
+    let mut total = 0;
+    for (area, (area_declared, area_total)) in by_area {
+        lines.push(format!("| {area} | {area_declared} | {area_total} |"));
+        declared += area_declared;
+        total += area_total;
+    }
+    lines.push(format!("| **Overall** | **{declared}** | **{total}** |"));
+    lines.push(String::new());
+    lines.push(
+        "Counts are navigation only (#6731): maturity labels are declarations without per-row \
+         behavior-evidence ownership."
+            .to_string(),
+    );
+    lines.join("\n")
 }
 
 /// Render DAP runtime module source.
@@ -503,33 +564,6 @@ pub fn render_dap_feature_catalog_module(ids: &[&str]) -> String {
 /// Render fallback DAP catalog for offline or error cases.
 pub fn render_dap_fallback_module(default_features: &[&str]) -> String {
     render_dap_feature_catalog_module(default_features)
-}
-
-/// Minimal fallback module for build failures in `perl-lsp`.
-pub fn render_lsp_fallback_module() -> String {
-    let mut code = String::new();
-    code.push_str("// Auto-generated minimal catalog - features.toml not found\n\n");
-    code.push_str("pub struct Feature {\n");
-    code.push_str("    pub id: &'static str,\n");
-    code.push_str("    pub spec: &'static str,\n");
-    code.push_str("    pub area: &'static str,\n");
-    code.push_str("    pub maturity: &'static str,\n");
-    code.push_str("    pub advertised: bool,\n");
-    code.push_str("    pub description: &'static str,\n");
-    code.push_str("    pub counts_in_coverage: bool,\n");
-    code.push_str("    pub tests: &'static [&'static str],\n");
-    code.push_str("}\n");
-    code.push_str("pub const VERSION: &str = \"0.10.0\";\n");
-    code.push_str("pub const LSP_VERSION: &str = \"3.18\";\n");
-    code.push_str("pub const COMPLIANCE_PERCENT: f32 = 0.0;\n");
-    code.push_str("pub const ALL_FEATURES: &[Feature] = &[];\n");
-    code.push_str("pub const ADVERTISED_LSP_FEATURES: &[&str] = &[];\n");
-    code.push_str(
-        "pub fn advertised_features() -> &'static [&'static str] { ADVERTISED_LSP_FEATURES }\n",
-    );
-    code.push_str("pub fn has_feature(_id: &str) -> bool { false }\n");
-    code.push_str("pub fn compliance_percent() -> f32 { 0.0 }\n");
-    code
 }
 
 #[cfg(test)]
@@ -597,14 +631,38 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn compliance_math_uses_trackable_features_only() {
         let catalog = sample_catalog();
-        assert_eq!(catalog.trackable_feature_count(), 3);
-        assert_eq!(catalog.advertised_trackable_count(), 2);
-        assert_eq!(catalog.compliance_percent(), 67.0);
         assert_eq!(catalog.trackable_feature_count_for_grid(), 3);
         assert_eq!(catalog.advertised_trackable_count_for_grid(), 2);
         assert_eq!(catalog.compliance_percent_for_grid(), 67.0);
+        assert_eq!(catalog.trackable_feature_count(), 3);
+        assert_eq!(catalog.advertised_trackable_count(), 2);
+        assert_eq!(catalog.compliance_percent(), 67.0);
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn compatibility_compliance_preserves_pre_6731_counts() {
+        let mut catalog = sample_catalog();
+        catalog.feature.push(Feature {
+            id: "lsp.compatibility_only".to_string(),
+            spec: "LSP 3.18".to_string(),
+            area: "text_document".to_string(),
+            maturity: Maturity::Ga,
+            advertised: true,
+            tests: vec![],
+            counts_in_coverage: false,
+            description: "Compatibility-only catalog row".to_string(),
+        });
+
+        assert_eq!(catalog.trackable_feature_count_for_grid(), 3);
+        assert_eq!(catalog.advertised_trackable_count_for_grid(), 2);
+        assert_eq!(catalog.compliance_percent_for_grid(), 67.0);
+        assert_eq!(catalog.trackable_feature_count(), 4);
+        assert_eq!(catalog.advertised_trackable_count(), 3);
+        assert_eq!(catalog.compliance_percent(), 75.0);
     }
 
     #[test]
@@ -649,6 +707,55 @@ mod tests {
     }
 
     #[test]
+    fn validation_refuses_declared_aggregate_compliance_percent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #6731 recurrence control: a declared aggregate percentage in the
+        // catalog must fail validation instead of silently re-entering
+        // authoritative status as a compliance claim.
+        let mut catalog = sample_catalog();
+        catalog.meta.compliance_percent = Some(98);
+
+        let err = catalog.validate().err().ok_or("declared aggregate must fail validation")?;
+        let message = err.to_string();
+        assert!(
+            message.contains("meta.compliance_percent is refused"),
+            "unexpected refusal message: {message}"
+        );
+        assert!(message.contains("#6731"), "refusal must cite its claim: {message}");
+        Ok(())
+    }
+
+    #[test]
+    fn shipped_vendored_catalogs_pass_validation_without_declared_percent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #6731 recurrence control: every crate-local features_sot.toml that a
+        // standalone/packaged build can resolve to must still parse and pass
+        // validation. A reintroduced meta.compliance_percent fails here instead
+        // of poisoning vendored builds into silent zero-feature advertisement.
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .ok_or("cannot resolve workspace root from CARGO_MANIFEST_DIR")?;
+        let catalog_files = [
+            "crates/perl-lsp-rs/features_sot.toml",
+            "crates/perl-lsp-rs-core/features_sot.toml",
+            "crates/perl-parser/features_sot.toml",
+            "crates/perl-dap/features_sot.toml",
+        ];
+        for relative in catalog_files {
+            let path = workspace_root.join(relative);
+            let raw = fs::read_to_string(&path).map_err(|e| format!("reading {relative}: {e}"))?;
+            assert!(
+                !raw.contains("compliance_percent"),
+                "{relative} must not declare meta.compliance_percent (#6731)"
+            );
+            let catalog = read_catalog(&path).map_err(|e| format!("parsing {relative}: {e}"))?;
+            catalog.validate().map_err(|e| format!("validating {relative}: {e}"))?;
+        }
+        Ok(())
+    }
+
+    #[test]
     fn resolve_catalog_source_prefers_workspace_then_vendored() {
         let temp = must(TempDir::new());
         let manifest_dir = temp.path().join("crates/perl-lsp-rs-core");
@@ -669,13 +776,29 @@ mod tests {
     }
 
     #[test]
+    fn resolve_catalog_source_rejects_missing_explicit_override() {
+        let temp = must(TempDir::new());
+        let manifest_dir = temp.path().join("crates/perl-lsp-rs-core");
+        must(std::fs::create_dir_all(&manifest_dir));
+        let workspace = temp.path().join("features.toml");
+        must(std::fs::write(&workspace, "[meta]\nversion='0.1.0'\nlsp_version='3.18'\n"));
+        let missing_override = temp.path().join("missing-features.toml");
+
+        let error =
+            resolve_catalog_source_with_override(&manifest_dir, Some(missing_override.clone()))
+                .expect_err("missing explicit override must be terminal");
+        assert!(matches!(error, CatalogError::MissingOverride(path) if path == missing_override));
+    }
+
+    #[test]
     fn render_lsp_module_sorts_features_and_emits_expected_constants() {
         let catalog = sample_catalog();
         let rendered = render_lsp_feature_catalog_module(&catalog, "// source: test\n");
 
         assert!(rendered.contains("pub const VERSION: &str = \"0.42.0\";"));
         assert!(rendered.contains("pub const LSP_VERSION: &str = \"3.18\";"));
-        assert!(rendered.contains("pub const COMPLIANCE_PERCENT: f32 = 67.00;"));
+        assert!(!rendered.contains("COMPLIANCE_PERCENT"));
+        assert!(!rendered.contains("compliance_percent()"));
         assert!(
             rendered.contains("pub const ADVERTISED_LSP_FEATURES: &[&str] = &[\n    \"lsp.completion\",\n    \"lsp.references\",\n];")
         );

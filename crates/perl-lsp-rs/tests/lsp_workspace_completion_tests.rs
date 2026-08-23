@@ -82,6 +82,15 @@ fn await_open_processing(server: &common::LspServer) {
     drain_until_quiet(server, Duration::from_millis(50), Duration::from_millis(500));
 }
 
+fn is_bare_completion_item(item: &serde_json::Value, bare_name: &str) -> bool {
+    item.get("textEdit")
+        .and_then(|edit| edit.get("newText"))
+        .and_then(|text| text.as_str())
+        .or_else(|| item.get("insertText").and_then(|text| text.as_str()))
+        .or_else(|| item.get("label").and_then(|label| label.as_str()))
+        == Some(bare_name)
+}
+
 /// Wait for the workspace index to incorporate a freshly opened module.
 ///
 /// After `textDocument/didOpen` for a module file, the server dispatches a
@@ -482,10 +491,11 @@ tri
 }
 
 /// Test that completing an unimported workspace subroutine attaches an
-/// `additionalTextEdits` entry inserting the required `use Module;` statement
-/// (issue #1694 — next-edit auto-import closure).
+/// Workspace completion must not serialize an import edit derived from the
+/// indexed symbol's containing module (issue #11158 containment boundary).
 #[test]
-fn test_completion_bare_function_auto_imports_module() -> Result<(), Box<dyn std::error::Error>> {
+fn test_completion_bare_function_withdraws_module_auto_import_edit()
+-> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
     initialize_lsp(&server);
 
@@ -507,7 +517,9 @@ fn test_completion_bare_function_auto_imports_module() -> Result<(), Box<dyn std
     );
     await_open_processing(&server);
 
-    // Script does NOT import StringUtils — accepting the completion should add it.
+    // Script does NOT import StringUtils. A bare `trimmer` candidate would be
+    // unsafe because accepting it leaves a broken primary after any import
+    // edit is stripped.
     let script_uri = "file:///workspace/needs_import.pl";
     send_notification(
         &server,
@@ -519,7 +531,7 @@ fn test_completion_bare_function_auto_imports_module() -> Result<(), Box<dyn std
                     "uri": script_uri,
                     "languageId": "perl",
                     "version": 1,
-                    "text": "use strict;\ntrimm\n"
+                    "text": "use strict;\ntrimm\ntr"
                 }
             }
         }),
@@ -533,28 +545,147 @@ fn test_completion_bare_function_auto_imports_module() -> Result<(), Box<dyn std
             "method": "textDocument/completion",
             "params": {
                 "textDocument": { "uri": script_uri },
-                "position": { "line": 1, "character": 5 }
+                "position": { "line": 2, "character": 2 }
             }
         }),
     );
 
     let items = completion_items(&response);
-    let trimmer = items
-        .iter()
-        .find(|item| item["label"].as_str().is_some_and(|l| l.contains("trimmer")))
-        .ok_or_else(|| {
-            format!(
-                "expected a `trimmer` workspace completion; got: {:?}",
-                items.iter().filter_map(|i| i["label"].as_str()).collect::<Vec<_>>()
-            )
-        })?;
-
-    let edits = trimmer["additionalTextEdits"]
-        .as_array()
-        .ok_or("trimmer completion should carry a serialized additionalTextEdits array")?;
+    let labels: Vec<&str> = items.iter().filter_map(|item| item["label"].as_str()).collect();
     assert!(
-        edits.iter().any(|e| e["newText"].as_str() == Some("use StringUtils;\n")),
-        "completion should auto-insert `use StringUtils;`; got additionalTextEdits: {edits:?}"
+        !labels.iter().any(|label| *label == "trimmer"),
+        "must not return the exact bare `trimmer` candidate after stripping import edits; got: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|label| *label == "truncate"),
+        "unrelated built-in completion must remain available in the same request; got: {labels:?}"
+    );
+
+    Ok(())
+}
+
+/// Runtime `require` plus an explicit `import` call is not a file-wide
+/// visibility authority for the legacy bare-candidate guard. In particular,
+/// a completion before the runtime import must not receive that authority.
+#[test]
+fn test_completion_runtime_import_does_not_grant_file_wide_bare_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = start_lsp_server();
+    initialize_lsp(&server);
+
+    let module_uri = "file:///workspace/Foo.pm";
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": module_uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "package Foo;\nour @EXPORT = qw(bar);\nsub bar { }\n1;\n"
+                }
+            }
+        }),
+    );
+    await_open_processing(&server);
+
+    let script_uri = "file:///workspace/runtime_import.pl";
+    let source = "bar\nrequire Foo; Foo->import(qw(bar));\nbar";
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": script_uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": source
+                }
+            }
+        }),
+    );
+    await_open_processing(&server);
+
+    let before_response = send_request(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": script_uri },
+                "position": { "line": 0, "character": 3 }
+            }
+        }),
+    );
+
+    let before_items = completion_items(&before_response);
+    assert!(
+        !before_items.iter().any(|item| is_bare_completion_item(item, "bar")),
+        "runtime import later in the file must not authorize an earlier bare `bar` completion: {before_items:?}"
+    );
+
+    let after_response = send_request(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": script_uri },
+                "position": { "line": 2, "character": 3 }
+            }
+        }),
+    );
+
+    let after_items = completion_items(&after_response);
+    let qualified_item = after_items
+        .iter()
+        .find(|item| item.get("label").and_then(|label| label.as_str()) == Some("Foo::bar"))
+        .ok_or("later runtime import should preserve the qualified `Foo::bar` completion")?;
+    assert_eq!(qualified_item.get("insertText").and_then(|text| text.as_str()), Some("bar"));
+    assert!(
+        qualified_item.get("additionalTextEdits").is_none(),
+        "qualified runtime-import completion must not synthesize an import edit: {qualified_item:?}"
+    );
+
+    let explicit_use_source = "use Foo qw(bar);\nbar";
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": { "uri": script_uri, "version": 2 },
+                "contentChanges": [{ "text": explicit_use_source }]
+            }
+        }),
+    );
+    await_open_processing(&server);
+
+    let explicit_response = send_request(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": script_uri },
+                "position": { "line": 1, "character": 3 }
+            }
+        }),
+    );
+
+    let explicit_items = completion_items(&explicit_response);
+    let item = explicit_items
+        .iter()
+        .find(|item| item.get("label").and_then(|label| label.as_str()) == Some("bar"))
+        .ok_or("explicit use should return the bare `bar` completion")?;
+    assert_eq!(item.get("insertText").and_then(|text| text.as_str()), Some("bar"));
+    assert!(
+        item.get("additionalTextEdits").is_none(),
+        "explicit-use completion must not synthesize additional edits: {item:?}"
     );
 
     Ok(())
@@ -747,6 +878,78 @@ fn test_object_method_completion_replaces_typed_method_prefix()
     let mut completed_line = source_line.to_string();
     completed_line.replace_range(9..source_line.len(), "register_command()");
     assert_eq!(completed_line, "$object->register_command()");
+
+    Ok(())
+}
+
+/// Verify that workspace method candidates survive a typed method prefix.
+///
+/// Method context must be detected from an arrow receiver with a partially
+/// typed identifier (`$obj->co`), not only from text ending exactly at `->`;
+/// otherwise the runtime workspace fallback withdraws its method candidates
+/// after the first typed character (#11158 review).
+#[test]
+fn test_workspace_method_candidates_survive_typed_method_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = start_lsp_server();
+    initialize_lsp(&server);
+
+    let module_uri = "file:///workspace/TypedPrefix.pm";
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": module_uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "package TypedPrefix;\nsub connect_stream { }\n1;\n"
+                }
+            }
+        }),
+    );
+    await_module_indexed(&server);
+
+    // The receiver has no static evidence: `load_object()` resolves to nothing
+    // and the script never imports TypedPrefix, so only the runtime workspace
+    // method fallback can supply `connect_stream`.
+    let script_uri = "file:///workspace/typed_prefix.pl";
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": script_uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $obj = load_object();\n$obj->co"
+                }
+            }
+        }),
+    );
+    await_open_processing(&server);
+
+    let response = send_request(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": script_uri },
+                "position": { "line": 1, "character": 8 }
+            }
+        }),
+    );
+
+    let items = completion_items(&response);
+    assert!(
+        items.iter().any(|item| item["label"].as_str() == Some("connect_stream")),
+        "workspace method candidate must survive a typed prefix after '->'; got: {items:?}"
+    );
 
     Ok(())
 }

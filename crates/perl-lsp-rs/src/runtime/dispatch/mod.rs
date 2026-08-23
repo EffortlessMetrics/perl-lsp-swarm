@@ -330,4 +330,143 @@ mod tests {
             "handle_slow_operation_dispatch must be gated by {cfg_gate}"
         );
     }
+
+    fn notification(method: &str, params: Option<Value>) -> JsonRpcRequest {
+        JsonRpcRequest { _jsonrpc: "2.0".to_string(), id: None, method: method.to_string(), params }
+    }
+
+    fn initialized_server() -> LspServer {
+        let server = LspServer::new();
+        let init = server.handle_request(request(1, "initialize", Some(json!({}))));
+        assert!(init.is_some_and(|response| response.error.is_none()), "initialize must succeed");
+        let _ = server.handle_request(notification("initialized", Some(json!({}))));
+        server
+    }
+
+    // ==================== method direction containment (#8896) ====================
+    //
+    // `workspace/configuration` and `workspace/applyEdit` are standard
+    // server→client requests. They must have no client→server application
+    // route: wrong-direction traffic falls through to MethodNotFound (-32601)
+    // for requests, and is dropped without response or state change when sent
+    // as a notification.
+
+    #[test]
+    fn client_sent_workspace_configuration_request_is_method_not_found() {
+        let server = initialized_server();
+
+        let response = server.handle_request(request(
+            2,
+            "workspace/configuration",
+            Some(json!({"items": [{"section": "perl"}]})),
+        ));
+
+        let code = response.and_then(|r| r.error).map(|e| e.code);
+        assert_eq!(code, Some(-32601), "wrong-direction request must be MethodNotFound");
+    }
+
+    #[test]
+    fn client_sent_workspace_apply_edit_cannot_mutate_documents()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = initialized_server();
+        let uri = "file:///direction-gate-apply-edit.pl";
+        server
+            .test_apply_did_open(uri, "print 'before';\n", 1)
+            .map_err(|error| std::io::Error::other(format!("didOpen failed: {error:?}")))?;
+
+        let response = server.handle_request(request(
+            2,
+            "workspace/applyEdit",
+            Some(json!({
+                "edit": {"changes": {
+                    (uri): [{
+                        "range": {
+                            "start": {"line": 0, "character": 6},
+                            "end": {"line": 0, "character": 13}
+                        },
+                        "newText": "\"after\""
+                    }]
+                }}
+            })),
+        ));
+        let code = response.and_then(|r| r.error).map(|e| e.code);
+        assert_eq!(code, Some(-32601), "wrong-direction applyEdit must be MethodNotFound");
+
+        let documents = server.documents.lock();
+        let document = documents.get(uri).ok_or("opened document must remain registered")?;
+        assert_eq!(document.text, "print 'before';\n", "document text must not change");
+        assert_eq!(document.version, 1, "document version must not change");
+        Ok(())
+    }
+
+    #[test]
+    fn wrong_direction_notifications_are_dropped_without_response_or_mutation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = initialized_server();
+        let uri = "file:///direction-gate-notification.pl";
+        server
+            .test_apply_did_open(uri, "print 'before';\n", 1)
+            .map_err(|error| std::io::Error::other(format!("didOpen failed: {error:?}")))?;
+
+        let configuration = server.handle_request(notification(
+            "workspace/configuration",
+            Some(json!({
+                "items": [{"section": "perl"}]
+            })),
+        ));
+        assert!(configuration.is_none(), "wrong-direction notification gets no response");
+
+        let edit = server.handle_request(notification(
+            "workspace/applyEdit",
+            Some(json!({
+                "edit": {"changes": {(uri): [{"range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 6}
+                }, "newText": "warn 'x'"}]}}
+            })),
+        ));
+        assert!(edit.is_none(), "wrong-direction notification gets no response");
+
+        let documents = server.documents.lock();
+        let document = documents.get(uri).ok_or("opened document must remain registered")?;
+        assert_eq!(document.text, "print 'before';\n", "document text must not change");
+        assert_eq!(document.version, 1, "document version must not change");
+        Ok(())
+    }
+
+    #[test]
+    fn client_sent_registration_requests_stay_method_not_found() {
+        let server = initialized_server();
+
+        for method in ["client/registerCapability", "client/unregisterCapability"] {
+            let response =
+                server.handle_request(request(2, method, Some(json!({"registrations": []}))));
+            let code = response.and_then(|r| r.error).map(|e| e.code);
+            assert_eq!(
+                code,
+                Some(-32601),
+                "client-bound registration request `{method}` must never activate features"
+            );
+        }
+    }
+
+    #[test]
+    fn legitimate_client_to_server_traffic_still_dispatches() {
+        let server = initialized_server();
+
+        let changed = server.handle_request(notification(
+            "workspace/didChangeConfiguration",
+            Some(json!({
+                "settings": {"perl": {}}
+            })),
+        ));
+        assert!(changed.is_none(), "legitimate c2s notification handled without response");
+
+        let resolved = server.handle_request(request(
+            2,
+            "completionItem/resolve",
+            Some(json!({"label": "sprintf"})),
+        ));
+        assert!(resolved.is_some_and(|response| response.error.is_none()));
+    }
 }

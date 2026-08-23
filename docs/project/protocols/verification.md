@@ -24,20 +24,22 @@ Manual editor smoke test: diagnostics, completion, hover, go-to-definition, rena
 
 ## Metric Definitions
 
-**LSP Metrics** (computed from `features.toml` by `scripts/update-current-status.py`):
+**LSP Metrics** (computed from `features.toml` by `cargo xtask update-status`):
 
 | Metric | Formula | Meaning |
 | --- | --- | --- |
-| **LSP Coverage (user-visible)** | `implemented / trackable` where `counts_in_coverage != false` | Headline metric |
-| **Protocol Compliance** | `implemented / trackable` (all features) | Wire-level completeness |
+| **LSP catalog rows (navigation)** | declaration counts from `features.toml` maturity/advertised labels | Navigation only — a declaration count is not behavior proof (#6731) |
+
+Since #6731 the generated LSP status publishes no coverage/compliance percentage
+and no passing verdict: rows without an exact current behavior-evidence owner
+render `not_proven`, never inherited green. Behavior-backed GA/compliance claims
+are owned by #6731's evidence model.
 
 Key terms:
 
-- `implemented` (coverage): Features with `maturity in (ga, production)`
-- `trackable` (coverage): Features where `advertised = true`, `maturity != planned`, and `counts_in_coverage != false`
-- `implemented` (protocol): Features with `maturity in (ga, production, preview)`
-- `trackable` (protocol): Features where `maturity != planned`
-- `counts_in_coverage = false`: Protocol plumbing that would otherwise inflate coverage artificially
+- `declared ga/production`: Features with `maturity in (ga, production)`
+- `declared ga/production/preview`: Features with `maturity in (ga, production, preview)` (protocol-surface denominator includes every catalog row)
+- `counts_in_coverage = false`: Rows excluded from compatibility-grid accounting; protocol-surface navigation still includes every catalog row
 
 **Other Metrics**:
 

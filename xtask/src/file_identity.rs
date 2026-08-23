@@ -37,13 +37,25 @@ pub fn windows_file_identity(path: &Path) -> Result<Option<WindowsFileIdentity>>
     use winapi::um::winnt::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, HANDLE};
 
     let display_path = path.display().to_string();
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .wrap_err_with(|| format!("reading file identity metadata {display_path}"));
+        }
+    }
+
     let file = match std::fs::OpenOptions::new()
         .access_mode(0)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .open(path)
     {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        // `symlink_metadata` above proved that the path itself existed. A
+        // subsequent NotFound therefore means that the target disappeared or
+        // that this is a dangling symlink, so the identity is unknown and the
+        // caller must fail closed instead of treating it as an absent source.
         Err(error) => {
             return Err(error).wrap_err_with(|| format!("opening file identity {display_path}"));
         }

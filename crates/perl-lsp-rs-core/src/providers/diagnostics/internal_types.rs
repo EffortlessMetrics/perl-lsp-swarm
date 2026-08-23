@@ -32,6 +32,8 @@ pub struct Diagnostic {
     pub tags: Vec<DiagnosticTag>,
     /// Optional short suggestion for how to fix the issue.
     pub suggestion: Option<String>,
+    /// Whether the producer has a currently available safe remediation.
+    pub fixable: bool,
 }
 
 /// Failure converting the migration-only provider diagnostic into the canonical type.
@@ -78,8 +80,16 @@ impl TryFrom<Diagnostic> for perl_diagnostics::Diagnostic {
     type Error = DiagnosticConversionError;
 
     fn try_from(inner: Diagnostic) -> Result<Self, Self::Error> {
-        let Diagnostic { range, severity, code, message, related_information, tags, suggestion: _ } =
-            inner;
+        let Diagnostic {
+            range,
+            severity,
+            code,
+            message,
+            related_information,
+            tags,
+            suggestion: _,
+            fixable: _,
+        } = inner;
 
         let code_text = code.ok_or(DiagnosticConversionError::MissingCode)?;
         let code = parse_diagnostic_code(&code_text)
@@ -140,6 +150,7 @@ impl Diagnostic {
             related_information: Vec::new(),
             tags: Vec::new(),
             suggestion: None,
+            fixable: false,
         }
     }
 
