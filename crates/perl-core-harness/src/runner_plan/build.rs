@@ -13,6 +13,8 @@ use std::collections::BTreeSet;
 
 const INVOCATION_LIMITATION: &str = "per_file_upstream_scan_and_effective_invocation_not_captured";
 const SCHEDULING_DECLARATION_LIMITATION: &str = "scheduling_inputs_are_declared_not_observed";
+const DISCOVERY_DECLARATION_LIMITATION: &str =
+    "raw_discovery_stream_is_declared_input_not_observed_runner_output";
 const DIRECT_FALLBACK_LIMITATION: &str = "direct_fallback_missing_upstream_selection_context";
 const ALTERNATE_RUNNER_LIMITATION: &str = "alternate_runner_requires_membership_parity_evidence";
 
@@ -64,8 +66,11 @@ pub(crate) fn build_runner_plan(
     normalized_membership.sort();
     let target_contract_digest = sha256_json(&entry.contract)?;
     let raw_discovery_digest = sha256_bytes(raw_discovery);
-    let mut limitations =
-        vec![INVOCATION_LIMITATION.to_string(), SCHEDULING_DECLARATION_LIMITATION.to_string()];
+    let mut limitations = vec![
+        INVOCATION_LIMITATION.to_string(),
+        SCHEDULING_DECLARATION_LIMITATION.to_string(),
+        DISCOVERY_DECLARATION_LIMITATION.to_string(),
+    ];
     if runner == RunnerKind::DirectFallback {
         limitations.push(DIRECT_FALLBACK_LIMITATION.to_string());
     } else if !runner_matches_authority(runner, canonical_authority.kind) {
@@ -88,7 +93,7 @@ pub(crate) fn build_runner_plan(
         scheduling,
         invocation_capture: InvocationCaptureStatus::NotProven,
         limitations,
-        claim_boundary: "normalized target membership and declared runner scheduling inputs only; observed scheduling state, per-file upstream _scan_test invocation, and compiler/runtime results are not proved".to_string(),
+        claim_boundary: "normalized target membership derived from one caller-declared discovery stream and declared runner scheduling inputs only; which upstream runner produced the discovery bytes, observed scheduling state, per-file upstream _scan_test invocation, and compiler/runtime results are not proved".to_string(),
     };
     validate_runner_plan(&plan)?;
     Ok(plan)
@@ -169,6 +174,13 @@ pub(crate) fn validate_runner_plan(plan: &RunnerPlan) -> Result<(), String> {
     if !has_limitation(&plan.limitations, SCHEDULING_DECLARATION_LIMITATION) {
         return Err("runner plan must classify scheduling inputs as declared rather than observed"
             .to_string());
+    }
+    if !has_limitation(&plan.limitations, DISCOVERY_DECLARATION_LIMITATION) {
+        return Err(
+            "runner plan must classify its raw discovery stream as a declared input rather than \
+             observed runner output"
+                .to_string(),
+        );
     }
     match plan.runner {
         RunnerKind::DirectFallback => {

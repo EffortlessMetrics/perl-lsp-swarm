@@ -12,6 +12,8 @@ const INVOCATION_COMPARISON_LIMITATION: &str =
     "per_file_upstream_scan_and_effective_invocation_not_compared";
 const SCHEDULING_COMPARISON_LIMITATION: &str =
     "scheduling_equality_compares_declared_inputs_not_observed_runner_state";
+const DISCOVERY_COMPARISON_LIMITATION: &str =
+    "membership_parity_compares_declared_discovery_streams_not_observed_runner_output";
 const DIRECT_FALLBACK_PARITY_LIMITATION: &str =
     "direct_fallback_cannot_establish_upstream_runner_parity";
 const SAME_RUNNER_PARITY_LIMITATION: &str =
@@ -50,6 +52,7 @@ pub(crate) fn compare_runner_plans(
     let mut limitations = vec![
         INVOCATION_COMPARISON_LIMITATION.to_string(),
         SCHEDULING_COMPARISON_LIMITATION.to_string(),
+        DISCOVERY_COMPARISON_LIMITATION.to_string(),
     ];
     if has_direct_fallback {
         limitations.push(DIRECT_FALLBACK_PARITY_LIMITATION.to_string());
@@ -80,7 +83,7 @@ pub(crate) fn compare_runner_plans(
         scheduling_equal: left.scheduling == right.scheduling,
         invocation_capture: InvocationCaptureStatus::NotProven,
         limitations,
-        claim_boundary: "content-bound normalized target membership parity only; order and equality of declared scheduling inputs remain separate, observed runner scheduling state is not proved, and per-file upstream _scan_test invocation is not proved".to_string(),
+        claim_boundary: "content-bound normalized membership parity between caller-declared discovery streams only; order and equality of declared scheduling inputs remain separate, which upstream runner produced either stream is not proved, observed runner scheduling state is not proved, and per-file upstream _scan_test invocation is not proved".to_string(),
     };
     validate_runner_parity(&report)?;
     Ok(report)
@@ -128,6 +131,13 @@ pub(crate) fn validate_runner_parity(report: &RunnerParityReport) -> Result<(), 
     if !has_limitation(&report.limitations, SCHEDULING_COMPARISON_LIMITATION) {
         return Err("runner parity must classify scheduling equality as declared-input comparison"
             .to_string());
+    }
+    if !has_limitation(&report.limitations, DISCOVERY_COMPARISON_LIMITATION) {
+        return Err(
+            "runner parity must classify its membership comparison as a comparison between \
+             declared discovery streams rather than observed runner output"
+                .to_string(),
+        );
     }
 
     let has_difference = !report.missing_from_right.is_empty() || !report.extra_in_right.is_empty();

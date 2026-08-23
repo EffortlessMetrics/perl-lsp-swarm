@@ -248,6 +248,60 @@ fn scheduling_limitations_are_mandatory() -> Result<()> {
 }
 
 #[test]
+fn copied_discovery_stream_cannot_claim_runner_observation() -> Result<()> {
+    let matrix = matrix()?;
+    // One hand-written byte stream is built once as `test` and once as the
+    // copied discovery of a `harness` plan. Membership parity between the two
+    // declared streams remains provable, but no receipt may claim that either
+    // upstream runner produced or observed these bytes.
+    let copied_raw = b"t/base/cond.t\nt/base/if.t\n";
+    let test_plan = base_plan(&matrix, RunnerKind::Test, copied_raw)?;
+    let harness_plan = build_runner_plan(
+        &matrix,
+        "component_base",
+        RunnerKind::Harness,
+        copied_raw,
+        RunnerScheduling::default(),
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    assert_eq!(test_plan.raw_discovery_digest, harness_plan.raw_discovery_digest);
+    assert!(
+        test_plan
+            .limitations
+            .iter()
+            .any(|value| value
+                == "raw_discovery_stream_is_declared_input_not_observed_runner_output")
+    );
+    assert!(
+        harness_plan
+            .limitations
+            .iter()
+            .any(|value| value
+                == "raw_discovery_stream_is_declared_input_not_observed_runner_output")
+    );
+
+    let parity = compare_runner_plans(&test_plan, &harness_plan)
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    assert_eq!(parity.membership_status, MembershipParityStatus::Parity);
+    assert!(parity.limitations.iter().any(|value| {
+        value == "membership_parity_compares_declared_discovery_streams_not_observed_runner_output"
+    }));
+
+    let mut forged_plan = test_plan;
+    forged_plan.limitations.retain(|value| {
+        value != "raw_discovery_stream_is_declared_input_not_observed_runner_output"
+    });
+    assert!(validate_runner_plan(&forged_plan).is_err());
+
+    let mut forged_report = parity;
+    forged_report.limitations.retain(|value| {
+        value != "membership_parity_compares_declared_discovery_streams_not_observed_runner_output"
+    });
+    assert!(validate_runner_parity(&forged_report).is_err());
+    Ok(())
+}
+
+#[test]
 fn plan_digest_binds_canonical_typed_content_not_json_spelling() -> Result<()> {
     let matrix = matrix()?;
     let plan = base_plan(&matrix, RunnerKind::Test, b"t/base/if.t\n")?;

@@ -1,8 +1,8 @@
 # Upstream Perl runner membership parity
 
-The target matrix defines what an upstream Perl target means. A runner plan records what one exact runner selected from one exact raw-discovery stream for that target.
+The target matrix defines what an upstream Perl target means. A runner plan records what one declared runner selected from one caller-declared raw-discovery byte stream for that target; it does not prove that the named runner produced those bytes.
 
-This slice proves normalized membership and preserves runner order and **declared scheduling inputs** as separate facts. It does **not** observe the scheduling state actually used by the runner or capture the effective per-file invocation produced by upstream `_scan_test`; every plan and comparison therefore carries explicit limitations for both boundaries.
+This slice proves normalized membership and preserves runner order and **declared scheduling inputs** as separate facts. It does **not** observe the scheduling state actually used by the runner, prove which upstream runner produced a given raw-discovery byte stream, or capture the effective per-file invocation produced by upstream `_scan_test`; every plan and comparison therefore carries explicit limitations for all three boundaries. A raw-discovery stream is a **caller-declared input**: the same hand-written bytes can be declared for both runners, and the receipts never upgrade that declaration into an observation.
 
 ## Build a runner plan
 
@@ -42,6 +42,7 @@ The plan binds:
 - sorted unique membership;
 - declared scheduling inputs;
 - the mandatory `scheduling_inputs_are_declared_not_observed` limitation;
+- the mandatory `raw_discovery_stream_is_declared_input_not_observed_runner_output` limitation;
 - direct-fallback and alternate-runner limitations;
 - the explicit per-file invocation claim boundary.
 
@@ -80,6 +81,8 @@ The command authority-checks both plans before comparing them. The parity receip
 
 Runner order and declared scheduling inputs may differ and remain visible through `order_equal` and `scheduling_equal`. The latter means only that the two serialized declarations are equal; every parity receipt must carry `scheduling_equality_compares_declared_inputs_not_observed_runner_state`.
 
+Every parity receipt must also carry `membership_parity_compares_declared_discovery_streams_not_observed_runner_output`: a `parity` result establishes that the two caller-declared streams select the same normalized membership for one target contract, not that the named upstream runners produced or executed those memberships. A copied stream declared for both runners therefore still validates as `parity`, and stripping this limitation from any plan or report fails validation.
+
 ## Authority-check a parity receipt
 
 ```bash
@@ -97,7 +100,7 @@ This rebuilds both plans from their authorities, recomputes the comparison, and 
 
 ## Current claim boundary
 
-This mechanism does not invoke `t/TEST`, `t/harness`, Make, or Perl. It does not observe effective runner scheduling, replace `profile_runner_args`, publish a comparison series, move an accepted baseline, or claim effective invocation parity.
+This mechanism does not invoke `t/TEST`, `t/harness`, Make, or Perl. It does not observe effective runner scheduling, prove the upstream production identity of any raw-discovery stream, replace `profile_runner_args`, publish a comparison series, move an accepted baseline, or claim effective invocation parity. Binding a discovery stream to a versioned runner-produced observation receipt (command, upstream source identity, completion status, and stdout bytes) is future work, not a property of this receipt.
 
 The next runner slice must capture or derive upstream `_scan_test` facts for every selected file, including:
 
@@ -108,6 +111,7 @@ The next runner slice must capture or derive upstream `_scan_test` facts for eve
 - shebang `-t`/`-T` and variant precedence;
 - UTF/deparse source transformation identity;
 - direct-fallback missing context;
+- runner-produced discovery observation receipts that bind a stream to the runner, entrypoint, upstream source identity, exact invocation, completion status, and stdout bytes that produced it;
 - runner-produced scheduling observations where scheduling claims are needed.
 
 Until that evidence exists, membership parity is useful but insufficient for runner equivalence or compiler-result movement.
