@@ -36,10 +36,20 @@ use perl_parser::position::offset_to_utf16_line_col;
 use perl_parser::util::code_slice;
 
 // Import core diagnostics types from perl-lsp-providers (via parent module re-export)
+use super::report_identity::{
+    DiagnosticProjectionFragment, PullPositionEncoding, PullReportResultId, compose_report_identity,
+};
 use super::{
     Diagnostic as InternalDiagnostic, DiagnosticSeverity as InternalDiagnosticSeverity,
     DiagnosticTag as InternalDiagnosticTag, DiagnosticsProvider, RelatedInformation,
 };
+
+/// Root authority assumed by contexts built without an explicit workspace
+/// binding. The convenience constructors define their own complete (degenerate)
+/// report-subject scope so equal inputs stay deterministic; production paths
+/// always bind the real owning folder or leave the authority explicitly absent
+/// (fail-closed, full-report-without-ID).
+const PROVIDER_DEFAULT_ROOT_AUTHORITY: &str = "perl-lsp:pull-provider-default-root";
 
 /// Context for pull diagnostics operations.
 ///
@@ -71,6 +81,17 @@ pub struct PullDiagnosticsContext {
     /// Optional workspace index for dead code detection
     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
     pub workspace_index: Option<std::sync::Arc<perl_workspace::workspace_index::WorkspaceIndex>>,
+    /// Owning folder/root authority key binding this document's report subject.
+    ///
+    /// `None` means no root authority could be established: the report stays
+    /// valid but can never carry a reusable result ID (#7480).
+    pub identity_root_key: Option<String>,
+    /// Current project-fact (workspace index) generation, when the fact tier
+    /// is live and fresh for this document. `None` encodes the explicit
+    /// not-ready/unavailable fact state.
+    pub facts_generation: Option<u64>,
+    /// Behavior-bearing negotiated wire-projection state (#7480).
+    pub projection: DiagnosticProjectionFragment,
 }
 
 impl PullDiagnosticsContext {
@@ -87,6 +108,12 @@ impl PullDiagnosticsContext {
             workspace_root: None,
             include_paths: Vec::new(),
             markup_message_support: false,
+            identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
+            facts_generation: None,
+            projection: DiagnosticProjectionFragment {
+                position_encoding: PullPositionEncoding::Utf16,
+                markup_messages: false,
+            },
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             workspace_index: None,
         }
@@ -106,6 +133,12 @@ impl PullDiagnosticsContext {
             workspace_root: None,
             include_paths: Vec::new(),
             markup_message_support: false,
+            identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
+            facts_generation: None,
+            projection: DiagnosticProjectionFragment {
+                position_encoding: PullPositionEncoding::Utf16,
+                markup_messages: false,
+            },
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             workspace_index: None,
         }
@@ -127,6 +160,12 @@ impl PullDiagnosticsContext {
             workspace_root: None,
             include_paths: Vec::new(),
             markup_message_support: false,
+            identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
+            facts_generation: None,
+            projection: DiagnosticProjectionFragment {
+                position_encoding: PullPositionEncoding::Utf16,
+                markup_messages: false,
+            },
             workspace_index: Some(index),
         }
     }
@@ -145,6 +184,9 @@ impl std::fmt::Debug for PullDiagnosticsContext {
             .field("workspace_root", &self.workspace_root)
             .field("include_paths", &self.include_paths)
             .field("markup_message_support", &self.markup_message_support)
+            .field("identity_root_key", &self.identity_root_key)
+            .field("facts_generation", &self.facts_generation)
+            .field("projection", &self.projection)
             .field("workspace_index", &"<WorkspaceIndex>")
             .finish()
     }
@@ -194,9 +236,22 @@ impl PullDiagnosticsProvider {
         context: &PullDiagnosticsContext,
         doc_state: Option<&DocumentState>,
     ) -> DocumentDiagnosticReport {
-        let result_id = format!("{:x}", md5::compute(content));
-        if previous_result_id.as_deref() == Some(&result_id) {
-            return self.build_unchanged_report(result_id);
+        let result_id = compose_report_identity(
+            &uri.to_string(),
+            content,
+            doc_state.map(DocumentState::current_generation).map(u64::from),
+            context,
+            true,
+        );
+
+        // `Unchanged` only for a prior ID that parses under the current schema
+        // and equals the complete current report subject (#7480).
+        let unchanged_prior = previous_result_id
+            .as_deref()
+            .and_then(PullReportResultId::from_wire)
+            .filter(|prior| result_id.as_ref() == Some(prior));
+        if let Some(prior) = unchanged_prior {
+            return self.build_unchanged_report(prior.into_string());
         }
 
         let diagnostics =
@@ -228,34 +283,32 @@ impl PullDiagnosticsProvider {
             let uri = parse_uri(uri_str);
             let prev_id = prev_ids.get(&uri).cloned();
 
-            let result_id = format!("{:x}", md5::compute(&doc_state.text));
-            let report = if prev_id.as_deref() == Some(&result_id) {
-                self.build_unchanged_report(result_id)
-            } else if doc_state.current_parsed().is_none() {
-                // Pending-parse gap (#3396 PR4): the document's text generation
-                // is ahead of the last published parse snapshot, so
-                // `collect_diagnostics_for_state_with_context` would report an
-                // empty diagnostics set computed from no current-generation
-                // AST at all -- a false "nothing wrong" claim that would
-                // replace whatever the client is currently displaying for
-                // this file. When we know the client's last resultId, tell it
-                // nothing changed (keep displaying what it has) instead of
-                // asserting freshness we don't have. With no known prior
-                // result there is nothing cached client-side to protect, so
-                // fall through to the normal (still-safe, just possibly
-                // AST-less) computation.
-                match prev_id {
-                    Some(id) => self.build_unchanged_report(id),
-                    None => {
-                        let diagnostics = self
-                            .collect_diagnostics_for_state_with_context(&uri, doc_state, context);
-                        self.build_full_report(result_id, diagnostics)
-                    }
+            // A pending-parse gap (#3396 PR4) is an explicit not-ready subject:
+            // the report stays full but never carries a reusable ID, so it can
+            // never be echoed back as `Unchanged` (#7480).
+            let ready = doc_state.current_parsed().is_some();
+            let result_id = compose_report_identity(
+                uri_str,
+                &doc_state.text,
+                Some(u64::from(doc_state.current_generation())),
+                context,
+                ready,
+            );
+
+            let unchanged_prior = if ready { prev_id.as_deref() } else { None }
+                .and_then(PullReportResultId::from_wire)
+                .filter(|prior| result_id.as_ref() == Some(prior));
+
+            let report = match unchanged_prior {
+                Some(prior) => self.build_unchanged_report(prior.into_string()),
+                None => {
+                    // Without readiness the composed identity is suppressed so
+                    // the not-ready subject cannot be cached client-side.
+                    let reusable_id = ready.then_some(result_id).flatten();
+                    let diagnostics =
+                        self.collect_diagnostics_for_state_with_context(&uri, doc_state, context);
+                    self.build_full_report(reusable_id, diagnostics)
                 }
-            } else {
-                let diagnostics =
-                    self.collect_diagnostics_for_state_with_context(&uri, doc_state, context);
-                self.build_full_report(result_id, diagnostics)
             };
 
             items.push(self.to_workspace_report(uri, Some(doc_state.version), report));
@@ -278,7 +331,9 @@ impl PullDiagnosticsProvider {
 
             for (uri_str, content) in chunk {
                 let uri = parse_uri(uri_str);
-                let result_id = format!("{:x}", md5::compute(content));
+                // Partial workspace progress items use the same per-document
+                // identity authority as document and full workspace reports.
+                let result_id = compose_report_identity(uri_str, content, None, context, true);
                 // For partial results, we need to parse the content
                 let diagnostics =
                     self.collect_diagnostics_for_text_with_context(&uri, content, context, None);
@@ -863,13 +918,15 @@ impl PullDiagnosticsProvider {
 
     fn build_full_report(
         &self,
-        result_id: String,
+        result_id: Option<PullReportResultId>,
         diagnostics: Vec<LspDiagnostic>,
     ) -> DocumentDiagnosticReport {
         DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
             related_documents: None,
             full_document_diagnostic_report: FullDocumentDiagnosticReport {
-                result_id: Some(result_id),
+                // `None` is the honest full report for a valid-but-not-reusable
+                // subject (#7480): LSP result IDs are optional.
+                result_id: result_id.map(PullReportResultId::into_string),
                 items: diagnostics,
             },
         })
@@ -2305,21 +2362,23 @@ mod tests {
         Ok(())
     }
 
-    // ── pending-parse gap (#3396 PR4) ─────────────────────────────────────
+    // ── pending-parse gap (#3396 PR4 / #7480) ─────────────────────────────
     //
     // `get_workspace_diagnostics_with_context` is not reachable from the live
     // `workspace/diagnostic` JSON-RPC dispatch today (the hand-rolled
     // `LspServer::handle_workspace_diagnostic` in `runtime/diagnostics.rs`
     // handles that request directly and is exercised in
     // `tests/pull_diagnostics_freshness_tests.rs`). It remains public API on
-    // `PullDiagnosticsProvider`, so it must uphold the same pending-parse
-    // policy: a `DocumentState` with no current-generation `ParsedSnapshot`
-    // must never be reported as a false-fresh empty/full diagnostics set.
+    // `PullDiagnosticsProvider`, so it must uphold the pending-parse policy:
+    // a `DocumentState` with no current-generation `ParsedSnapshot` is an
+    // explicitly not-ready subject — its report is returned in full but never
+    // carries a reusable result ID and never comes back as `Unchanged`,
+    // even when the client echoes a known prior ID.
     // `DocumentState::new` never publishes a snapshot, so `current_parsed()`
     // is `None` by construction -- exactly the gap state.
 
     #[test]
-    fn workspace_diagnostics_reports_unchanged_for_gapped_doc_with_known_result_id()
+    fn workspace_diagnostics_returns_full_without_result_id_for_gapped_doc_with_known_prior()
     -> Result<(), Box<dyn std::error::Error>> {
         let doc = DocumentState::new("my $x = 1;\n", 1);
         assert!(doc.current_parsed().is_none(), "fresh DocumentState must have no snapshot yet");
@@ -2333,16 +2392,16 @@ mod tests {
         let report = provider.get_workspace_diagnostics(&documents, previous_result_ids);
         assert_eq!(report.items.len(), 1);
         match &report.items[0] {
-            WorkspaceDocumentDiagnosticReport::Unchanged(unchanged) => {
-                assert_eq!(
-                    unchanged.unchanged_document_diagnostic_report.result_id, "stale-result-id",
-                    "gap with a known previous resultId must echo it back unchanged"
+            WorkspaceDocumentDiagnosticReport::Full(full) => {
+                assert!(
+                    full.full_document_diagnostic_report.result_id.is_none(),
+                    "a not-ready (gapped) subject must not receive a reusable resultId"
                 );
                 Ok(())
             }
             other => Err(format!(
-                "expected Unchanged report for a pending-parse-gap document with a known \
-                 previous resultId, got: {other:?}"
+                "expected a Full report without resultId for a pending-parse-gap document \
+                 with a known prior ID, got: {other:?}"
             )
             .into()),
         }
@@ -2363,16 +2422,266 @@ mod tests {
         match &report.items[0] {
             WorkspaceDocumentDiagnosticReport::Full(full) => {
                 assert!(
+                    full.full_document_diagnostic_report.result_id.is_none(),
+                    "a not-ready (gapped) subject must not receive a reusable resultId"
+                );
+                assert!(
                     full.full_document_diagnostic_report.items.is_empty(),
                     "no current-generation AST means no diagnostics can be computed"
                 );
                 Ok(())
             }
             other => Err(format!(
-                "expected a (empty) Full report when there is no previous resultId to \
-                 protect, got: {other:?}"
+                "expected a (empty) Full report without resultId when there is no previous \
+                 resultId to protect, got: {other:?}"
             )
             .into()),
         }
+    }
+
+    // ── complete-subject result identity (#7480) ──────────────────────────
+
+    fn full_result_id(report: &DocumentDiagnosticReport) -> Option<String> {
+        match report {
+            DocumentDiagnosticReport::Full(full) => {
+                full.full_document_diagnostic_report.result_id.clone()
+            }
+            DocumentDiagnosticReport::Unchanged(unchanged) => {
+                Some(unchanged.unchanged_document_diagnostic_report.result_id.clone())
+            }
+        }
+    }
+
+    /// Exact same complete subject/profile → deterministic same ID and a valid
+    /// `Unchanged` on the next pull (#7480 fixture).
+    #[test]
+    fn pull_document_unchanged_for_identical_complete_subject()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///identity_stable.pl".parse()?;
+        let context = PullDiagnosticsContext::new();
+
+        let first = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $x = 1;\n",
+            None,
+            &context,
+            None,
+        );
+        let result_id = full_result_id(&first).ok_or("full report must carry a reusable ID")?;
+
+        let second = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $x = 1;\n",
+            Some(result_id.clone()),
+            &context,
+            None,
+        );
+        match &second {
+            DocumentDiagnosticReport::Unchanged(unchanged) => {
+                assert_eq!(
+                    unchanged.unchanged_document_diagnostic_report.result_id, result_id,
+                    "unchanged response must echo the composed subject ID"
+                );
+            }
+            other => Err(format!("expected Unchanged for identical subject, got: {other:?}"))?,
+        }
+
+        Ok(())
+    }
+
+    /// Source-identical but later document instance (generation advance) is a
+    /// different subject than the pre-edit instance (#7480 fixture).
+    #[test]
+    fn pull_document_full_after_generation_advance_with_identical_bytes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///identity_generation.pl".parse()?;
+        let context = PullDiagnosticsContext::new();
+
+        let before = DocumentState::new("my $x = 1;\n", 1);
+        let first = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $x = 1;\n",
+            None,
+            &context,
+            Some(&before),
+        );
+        let before_id = full_result_id(&first).ok_or("expected reusable ID before edit")?;
+
+        // Simulate edit + revert to identical bytes: generation advanced.
+        let after = DocumentState::new("my $y = 9;\nmy $x = 1;\n", 3);
+        let second = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $y = 9;\nmy $x = 1;\n",
+            Some(before_id.clone()),
+            &context,
+            Some(&after),
+        );
+        let after_id =
+            full_result_id(&second).ok_or("edited content must produce a fresh reusable ID")?;
+        assert_ne!(before_id, after_id, "a source edit must supersede the prior result");
+
+        Ok(())
+    }
+
+    /// Behavior-bearing configuration movement over unchanged bytes must move
+    /// the ID (negative control: keeping the old ID would authorize false
+    /// `Unchanged`) (#7480 fixture/negative control).
+    #[test]
+    fn pull_document_supersedes_on_config_movement_over_unchanged_bytes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///identity_config.pl".parse()?;
+        let mut context = PullDiagnosticsContext::new();
+
+        let first = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $x = 1;\n",
+            None,
+            &context,
+            None,
+        );
+        let baseline_id = full_result_id(&first).ok_or("expected reusable baseline ID")?;
+
+        // Severity movement with identical bytes.
+        context.perlcritic_severity = 4;
+        let severity_moved = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $x = 1;\n",
+            Some(baseline_id.clone()),
+            &context,
+            None,
+        );
+        let severity_id =
+            full_result_id(&severity_moved).ok_or("config-moved report must stay reusable")?;
+        assert_ne!(
+            baseline_id, severity_id,
+            "accepted-config movement must invalidate the prior result ID"
+        );
+
+        // Negotiated projection movement (markup support) with identical bytes.
+        let mut context = PullDiagnosticsContext::new();
+        context.projection.markup_messages = true;
+        let markup_moved = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $x = 1;\n",
+            Some(severity_id.clone()),
+            &context,
+            None,
+        );
+        assert!(matches!(markup_moved, DocumentDiagnosticReport::Full(_)));
+        assert_ne!(
+            Some(severity_id),
+            full_result_id(&markup_moved),
+            "projection-profile movement must invalidate the prior result ID"
+        );
+
+        Ok(())
+    }
+
+    /// Include/resolver environment movement over unchanged bytes must move
+    /// the ID (#7480 fixture).
+    #[test]
+    fn pull_document_supersedes_on_resolver_environment_movement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///identity_resolver.pl".parse()?;
+        let mut context = PullDiagnosticsContext::new();
+
+        let first = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $x = 1;\n",
+            None,
+            &context,
+            None,
+        );
+        let baseline_id = full_result_id(&first).ok_or("expected reusable baseline ID")?;
+
+        context.include_paths = vec!["/opt/site/lib".to_string()];
+        let moved = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $x = 1;\n",
+            Some(baseline_id),
+            &context,
+            None,
+        );
+
+        assert_ne!(
+            PullDiagnosticsContext::new().include_paths,
+            context.include_paths,
+            "fixture must actually move the resolver environment"
+        );
+        assert!(
+            matches!(moved, DocumentDiagnosticReport::Full(_)),
+            "resolver-environment movement must supersede, never return Unchanged"
+        );
+
+        Ok(())
+    }
+
+    /// A prior ID minted under a foreign/older scheme never authorizes
+    /// `Unchanged`, even over identical bytes (#7480 fixture/negative control).
+    #[test]
+    fn pull_document_treats_foreign_schema_prior_as_full() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///identity_foreign_prior.pl".parse()?;
+        let context = PullDiagnosticsContext::new();
+
+        let report = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $x = 1;\n",
+            Some("5d41402abc4b2a76b9719d911017c592".to_string()),
+            &context,
+            None,
+        );
+
+        assert!(
+            matches!(report, DocumentDiagnosticReport::Full(_)),
+            "an unknown-schema prior ID must produce full, not unchanged"
+        );
+
+        Ok(())
+    }
+
+    /// Document and partial-workspace transports mint identical per-document
+    /// IDs through the same identity authority (#7480 fixture).
+    #[test]
+    fn document_and_workspace_transports_share_per_document_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri_str = "file:///identity_shared.pl";
+        let uri: Uri = uri_str.parse()?;
+        let content = "my $x = 1;\n";
+        let context = PullDiagnosticsContext::new();
+
+        let document_report =
+            provider.get_document_diagnostics_with_context(&uri, content, None, &context, None);
+        let document_id =
+            full_result_id(&document_report).ok_or("document transport must mint a reusable ID")?;
+
+        let partial = provider.get_workspace_diagnostics_partial_with_context(
+            &[(uri_str.into(), content.into())],
+            8,
+            &context,
+        );
+        let [chunk] = partial.as_slice() else {
+            return Err("expected exactly one partial chunk".into());
+        };
+        let [item] = chunk.items.as_slice() else {
+            return Err("expected exactly one partial item".into());
+        };
+        let WorkspaceDocumentDiagnosticReport::Full(workspace_full) = item else {
+            return Err(format!("expected workspace Full report, got: {item:?}").into());
+        };
+
+        assert_eq!(
+            workspace_full.full_document_diagnostic_report.result_id.as_deref(),
+            Some(document_id.as_str()),
+            "workspace partial items must reuse the document identity authority"
+        );
+
+        Ok(())
     }
 }
