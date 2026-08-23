@@ -299,4 +299,51 @@ mod tests {
         assert_tokens_equal(state.tokens(), &fresh_tokens(state.source()));
         Ok(())
     }
+
+    #[test]
+    fn missing_stored_checkpoints_fall_back_to_prefix_replay_with_honest_receipt() -> Result<()> {
+        let source = "my $x = 1; my $y = 2;";
+        let start = source.find("= 2").ok_or_else(|| anyhow::anyhow!("literal missing"))? + 2;
+        let edit = Edit {
+            start_byte: start,
+            old_end_byte: start + 1,
+            new_end_byte: start + 1,
+            new_text: "9".to_string(),
+        };
+
+        // Byte-0 anchor invariant.
+        let anchored = IncrementalState::new(source.to_string());
+        let origin = anchored
+            .stored_lex_checkpoints()
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("origin checkpoint is missing"))?;
+        assert_eq!(origin.summary.byte, 0, "origin checkpoint must anchor byte 0");
+        let old_digest = ContentDigest::of_bytes(source.as_bytes());
+        assert!(
+            origin.prepare_for_edit(source, &old_digest, &edit).is_some(),
+            "a stored checkpoint at byte 0 always qualifies for selection"
+        );
+
+        // Negative control: a fabricating restart that hardcoded the stored
+        // strategy or reported zero replayed bytes must fail here.
+        let mut state = IncrementalState::new(source.to_string());
+        let tokens = state.tokens().to_vec();
+        let summaries = state.lex_checkpoints().to_vec();
+        state.replace_lex_state(tokens, summaries, Vec::new());
+        assert_eq!(state.stored_lex_checkpoint_count(), 0);
+
+        let result = apply_single_edit(&mut state, &edit)?;
+
+        assert_eq!(result.lex_restart.strategy, LexRestartStrategy::LiveCheckpointToEof);
+        assert!(
+            result.lex_restart.restart_byte > 0,
+            "fallback restart must replay a real old-source prefix"
+        );
+        assert_eq!(
+            result.lex_restart.old_prefix_bytes_replayed, result.lex_restart.restart_byte,
+            "fallback receipt must report every replayed prefix byte"
+        );
+        assert_tokens_equal(state.tokens(), &fresh_tokens(state.source()));
+        Ok(())
+    }
 }
