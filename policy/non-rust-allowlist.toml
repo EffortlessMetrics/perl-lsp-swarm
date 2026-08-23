@@ -2660,6 +2660,38 @@ created = "2026-08-23"
 review_after = "2026-09-23"
 
 [[allow]]
+id = "non-rust-litexl-diagnostics-store"
+path = "clients/lite-xl/upstream/diagnostics.lua"
+kind = "editor_extension"
+language = "lua"
+surface = "editor"
+classification = "production"
+owner = "editor/lite-xl"
+reason = "Exact upstream lite-xl-lsp diagnostics.lua (base d1432ae, blob c06bec49) staged for the Lite XL integration train, carrying the #11124 generation-bound publication patch: provider/server-generation/document-session/version admission with typed dispositions, deterministic source-attributed projection, and lifecycle-bound cleanup."
+covered_by = [
+  "lua clients/lite-xl/tests/diagnostics_currentness_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-diagnostics-currentness-tests"
+path = "clients/lite-xl/tests/diagnostics_currentness_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free push-diagnostics currentness suite proving stale/future/old-generation rejections, complementary provider composition, unversioned not-proven dispositions, generation-bound delayed rendering, and lifecycle cleanup; runs against the staged modules or the pristine blobs for red-first checks."
+covered_by = [
+  "lua clients/lite-xl/tests/diagnostics_currentness_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
 id = "non-rust-litexl-server-frame-tests"
 path = "clients/lite-xl/tests/server_frame_test.lua"
 kind = "editor_extension_test"

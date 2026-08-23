@@ -252,7 +252,8 @@ function lsp.get_document_session(doc, server)
 end
 
 ---Terminate one live session (#11115). Its pending change queue dies with
----it: queued-but-unsent batches of a dead session can never publish.
+---it: queued-but-unsent batches of a dead session can never publish, and
+---its retained diagnostics are invalidated together with it (#11124).
 ---@param doc core.doc
 ---@param server lsp.server
 function lsp.terminate_document_session(doc, server)
@@ -262,6 +263,9 @@ function lsp.terminate_document_session(doc, server)
   if session then
     session.open_state = "closed"
     session.pending_changes = {}
+    -- Local patch (#11124): lifecycle cleanup removes exactly this
+    -- subject's retained publications.
+    diagnostics.close_session(session.uri, session.session_generation)
     by_server[server] = nil
   end
   if not next(by_server) then
@@ -291,6 +295,9 @@ function lsp.create_document_session(doc, server, uri)
   -- Persist the process generation on first admission so every later
   -- subject of this instance carries the identical identity (#11115/#11108).
   server.generation = server.generation or lsp.next_server_generation()
+  -- Local patch (#11124): refresh provider liveness so held publications
+  -- from replaced processes are recognized as dead.
+  diagnostics.note_provider(server.name, server.generation)
   local previous_generation = document_session_open_counters[uri] or 0
   local session = {
     server_generation = server.generation,
@@ -1141,37 +1148,8 @@ function lsp.start_server(filename, project_directory)
         -- Register/unregister diagnostic messages
         client:add_message_listener(
           "textDocument/publishDiagnostics",
-          function(server, params)
-            local abs_filename = util.tofilename(params.uri)
-            local filename = core.normalize_to_project_dir(abs_filename)
-
-            if server.verbose then
-              core.log_quiet(
-                "["..server.name.."] %s diagnostics for:  %s",
-                filename,
-                params.diagnostics and #params.diagnostics or 0
-              )
-            end
-
-            if params.diagnostics and #params.diagnostics > 0 then
-              local added = diagnostics.add(filename, params.diagnostics)
-
-              if
-                added and diagnostics.lintplus_found
-                and
-                config.plugins.lsp.show_diagnostics
-                and
-                util.doc_is_open(abs_filename)
-              then
-                -- we delay rendering of diagnostics for 2 seconds to prevent
-                -- the constant reporting of errors while typing.
-                diagnostics.lintplus_populate_delayed(filename)
-              end
-            else
-              diagnostics.clear(filename)
-              diagnostics.lintplus_clear_messages(filename)
-            end
-          end
+          -- Local patch (#11124): one named production seam (#11108 style).
+          lsp.handle_publish_diagnostics
         )
 
         -- Register/unregister diagnostic messages
@@ -1224,6 +1202,71 @@ function lsp.start_server(filename, project_directory)
   end
 end
 
+---Return the live open-document session bound to one canonical URI and
+---running server instance, or nil (#11124).
+---@param uri string
+---@param server lsp.server
+---@return lsp.document.session|nil
+function lsp.find_document_session(uri, server)
+  for _, by_server in pairs(lsp.document_sessions) do
+    local session = by_server[server]
+    if session and session.uri == uri then
+      return session
+    end
+  end
+  return nil
+end
+
+---Handle one textDocument/publishDiagnostics notification through the
+---generation-bound publication store (#11124). Extracted as a named seam so
+---the exact production body is directly provable; the listener inside
+---lsp.start_server only registers it.
+---@param server lsp.server
+---@param params table PublishDiagnosticsParams
+function lsp.handle_publish_diagnostics(server, params)
+  local abs_filename = util.tofilename(params.uri)
+  local filename = core.normalize_to_project_dir(abs_filename)
+
+  if server.verbose then
+    core.log_quiet(
+      "["..server.name.."] %s diagnostics for:  %s",
+      filename,
+      params.diagnostics and #params.diagnostics or 0
+    )
+  end
+
+  -- Local patch (#11124): admit the publication against its exact subject
+  -- before anything becomes visible or clears state.
+  local session = lsp.find_document_session(params.uri, server)
+  local accepted, disposition = diagnostics.publish({
+    provider = server.name,
+    generation = server.generation or 0,
+    has_session = session ~= nil,
+    session_generation = session and session.session_generation or nil,
+    version = session and session.version or nil,
+  }, params)
+
+  if not accepted then
+    core.log_quiet(
+      "[LSP] %s publication dropped (%s)",
+      "textDocument/publishDiagnostics", disposition or "stale"
+    )
+    return
+  end
+
+  if
+    diagnostics.lintplus_found
+    and
+    config.plugins.lsp.show_diagnostics
+    and
+    util.doc_is_open(abs_filename)
+  then
+    -- we delay rendering of diagnostics to prevent the constant reporting
+    -- of errors while typing.
+    diagnostics.lintplus_populate_delayed(filename)
+  end
+end
+
 ---Stops all running servers.
 function lsp.stop_servers()
   for name, _ in pairs(lsp.servers) do
@@ -1240,6 +1283,9 @@ function lsp.stop_servers()
            lsp.terminate_document_session(doc, exiting)
          end
        end
+       -- Local patch (#11124): the exiting provider loses all visible
+       -- ownership; a replacement starts from an empty set.
+       diagnostics.retire_provider(exiting.name)
        lsp.servers_running = util.table_remove_key(lsp.servers_running, name)
     end
   end
