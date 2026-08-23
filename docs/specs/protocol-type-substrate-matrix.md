@@ -1,0 +1,139 @@
+# Protocol-Type Substrate Matrix
+
+Status: generated (inventory-only; no Cargo/API/protocol behavior change)
+Owner: perl-lsp maintainers
+Generator: `cargo xtask generate-protocol-type-substrate-matrix`
+Check: `cargo xtask generate-protocol-type-substrate-matrix --check`
+Authority: issue #11802 as corrected by the maintainer deep-review comment (ls-types archived 2026-08-15; gen-lsp-types 0.11.0 is the live candidate). External evidence pins inspected 2026-08-22.
+
+This matrix freezes the protocol-type denominator for #1421. It records one selected-substrate record and the discriminating capability-patch rows. Stable vs proposed vs project-extension maturity stays repository-owned (#7113 validator, features.toml); generated type availability never implies protocol stability.
+
+Survival-disposition vocabulary (package-neutral):
+
+- `lower_wire_remove_before_switch`
+- `adapter_protocol_type`
+- `public_api_break_or_migration`
+- `selected_substrate_generated_type`
+- `selected_substrate_manual_schema_extension`
+- `invalid_current_protocol_shape`
+- `project_extension`
+- `test_fixture_only`
+- `compatibility_with_exit`
+- `retire`
+- `candidate_rejected`
+- `not_proven`
+
+## 1. Selected-substrate record: gen-lsp-types 0.11.0
+
+| Field | Value | Evidence |
+| --- | --- | --- |
+| selection verdict | selected_maintained_substrate | #11802 maintainer deep-review ruling; first-hand 0.11.0 source/package verification below |
+| package / version / source | gen-lsp-types 0.11.0; crates.io; repo https://github.com/ribru17/gen-lsp-types | crates.io API v1 crates/gen-lsp-types inspected {EVIDENCE_PIN_DATE}; trust-published from GitHub run 30327548194 @ 1e84ee239d093e4933bf3024cd597255090e5813 |
+| checksum | b64887ac3a8083427ae935a7296db876871582cd57eac077564f8bc18fa49116 | SHA-256 of downloaded gen-lsp-types-0.11.0.crate matched the crates.io API checksum exactly ({EVIDENCE_PIN_DATE}) |
+| maintenance state | actively maintained successor; predecessor ls-types archived 2026-08-15 naming this crate as replacement | archived ls-types README supersession notice recorded in the #11802 deep review |
+| metamodel / spec source identity | generated from the official LSP metamodel | crate description and generator pipeline in ribru17/gen-lsp-types; #11802 deep-review external pin |
+| generator identity / reproducibility | metamodel-codegen inside the upstream repo; published artifacts carry a trust-publish provenance (GitHub Actions run id + commit sha) | crates.io trustpub_data for 0.11.0 (run 30327548194, sha 1e84ee2) |
+| edition / MSRV / dependency graph | edition 2024; no declared MSRV (rust_version absent from registry metadata); deps serde 1.0.228, serde_json 1.0.150, optional fluent-uri 0.4.1 (serde) or url 2.5.8 (serde) | Cargo.toml.orig inside the verified 0.11.0 .crate payload; crates.io API rust_version=null |
+| URI representation feature | default String-backed `pub struct Uri(pub String)`; optional features `url` (url::Url) and `fluent-uri` (fluent_uri::Uri<String>); feature choice deferred to the migration lane with #8156/#8484/public-API proof | src/generated/common.rs lines 28/66/68 of the verified 0.11.0 payload; #11802 URI submatrix ruling (choose for adapter-boundary preservation, not import-edit minimization) |
+| null / absent serialization model | `Option<T>` fields serialize as absent (`skip_serializing_if = "Option::is_none"` carried on 498 lines of structures.rs); explicit null appears only where the metamodel demands it - distinct wire states preserved, not flattened | verified 0.11.0 src/generated/structures.rs serde attributes |
+| request / notification direction model | dedicated requests.rs / notifications.rs modules encode method direction types; route/method authority remains #8896 - unchanged by this inventory | verified 0.11.0 src/generated/{requests,notifications}.rs; #11802 falsifier 9 |
+| stable / proposed representation model | single Cargo surface without a stable/proposed feature split; protocol maturity stays repository-owned per admitted profile (#7113 validator + features.toml); generated availability is not stability | 0.11.0 Cargo.toml.orig features = url\|fluent-uri only; #11802 stable/proposed boundary ruling |
+| coverage of current manual patches | typed `ServerCapabilities.type_hierarchy_provider: Option<TypeHierarchyProvider>` (structures.rs:6062), typed top-level `inline_completion_provider: Option<InlineCompletionProvider>` (:6082), typed `DocumentRangeFormattingOptions.ranges_support: Option<bool>` (:7113); `completionItem.insertTextModes` is NOT modeled server-side (only client-capability InsertTextMode enum exists) | first-hand Select-String over the verified 0.11.0 src/generated/*.rs |
+| known gaps / limitations | no declared MSRV; zero-ver breaking policy means point releases may break - migration must pin exact version and record an update policy; String Uri default preserves qualifiers but defers parse/serialize semantics to the chosen feature | registry rust_version=null; upstream policy; #11802 URI submatrix requirements |
+
+## 2. Candidate set evaluation
+
+| Candidate | Version | Source | State | Verdict | Rationale |
+| --- | --- | --- | --- | --- | --- |
+| lsp-types | 0.97.0 (current incumbent) | crates.io; workspace dep at root Cargo.toml [workspace.dependencies] | incumbent | retire | stays selected only until the migration lane switches; unmaintained lineage motivated #1421. What remains useful (DTO coverage in active adapter paths) is recorded row-by-row in the denominator; incumbent snapshots are behavior evidence, not target authority. |
+| ls-types | archived (was 0.0.6-era target) | GitHub archive notice 2026-08-15 | rejected_archived_superseded | candidate_rejected | owner named gen-lsp-types as successor; cannot receive selected_maintained_substrate without a new reviewed ruling supplying fork/security/update plan. Issue-body ls-types field vocabulary (typed_ls_types_*) is retired from the canonical schema. |
+| gen-lsp-types | 0.11.0 | crates.io checksum b64887ac...; repo ribru17/gen-lsp-types | active_successor_candidate | selected_maintained_substrate | first-hand verified: checksum match, edition 2024, official-metamodel generation, typed typeHierarchyProvider/rangesSupport/inlineCompletionProvider, String-default Uri with optional url\|fluent-uri, explicit null-vs-absent model, request/notification direction types. Limitations recorded in the substrate record; later LT issues may not independently select another package or feature. |
+
+## 3. Discriminating capability-patch rows
+
+| Row ID | Anchor | Current assumption | Protocol identity | Selected-substrate result | Disposition | Owner | Exit rule | First falsifier |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| PATCH-TYPEHIERARCHY| crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json() typeHierarchyProvider injection (lines 72-77)| lsp-types 0.97 ServerCapabilities lacks type_hierarchy_provider; patched into serialized JSON post-hoc; parallel experimental injection in protocol/capabilities/experimental.rs:10 and detection support in capability_map.rs| initialize result capabilities.typeHierarchyProvider (object form)| typed once: ServerCapabilities.type_hierarchy_provider: Option<TypeHierarchyProvider>| selected_substrate_generated_type| #11803 migration (surviving LT02 row)| patch and experimental workaround removed together when the adapter serializes the typed field| tests/lsp_caps_contract_shapes.rs typeHierarchyProvider shape assertion population |
+| PATCH-RANGESSUPPORT| crates/perl-lsp-rs-core/src/protocol/capabilities.rs documentRangeFormattingProvider rangesSupport injection (lines 79-86)| issue-body claim 'rangesSupport missing' is STALE: verified 0.11.0 structures.rs:7113 DocumentRangeFormattingOptions.ranges_support: Option<bool>| capabilities.documentRangeFormattingProvider.rangesSupport (LSP 3.18 multi-range formatting)| typed once: DocumentRangeFormattingOptions.ranges_support: Option<bool>| selected_substrate_generated_type| #11803 migration (surviving LT02 row)| hand-patched object replaced by typed options struct; 3.18 conformance matrix row stays authoritative for advertisement shape| tests/lsp_caps_contract_shapes.rs rangesSupport pointer assertions; lsp_3_17_lifecycle_tests registration payload |
+| PATCH-INLINECOMPLETION| crates/perl-lsp-rs-core/src/protocol/capabilities.rs inlineCompletionProvider injection (lines 87-93); runtime dynamic-client removal at crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs (~lines 781-815)| 0.97 models the ServerCapabilities field only behind its `proposed` cargo feature (lib.rs ~1954), which this workspace does not select - so the default compiled surface lacks it and the static advertisement is patched into JSON, then removed for dynamic-registration clients at initialize time| capabilities.inlineCompletionProvider top-level (LSP 3.18); experimental placement forbidden (negative-claimed)| typed once by default: ServerCapabilities.inline_completion_provider: Option<InlineCompletionProvider> (verified 0.11.0 structures.rs:6082); runtime dynamic-client removal logic is behavioral and stays out of type migration scope| selected_substrate_generated_type| #11803 migration (surviving LT02 row); runtime removal seam owned by lifecycle code, not the type switch| patch removed when typed field serializes identically; dynamic-client removal branch must keep byte-identical initialize output| tests/lsp_inline_completion_registration_tests.rs; tests/lsp_cap_snap.rs; ripr_seam_proof_* capability negotiation proofs |
+| PATCH-INSERTTEXTMODES| crates/perl-lsp-rs-core/src/protocol/capabilities.rs completionItem.insertTextModes injection (lines 95-105)| advertises numeric array [1,2] inside completionProvider.completionItem; that key is NOT a valid server-capability shape (client capability textDocument.completion.insertTextMode is the real negotiation surface) per #2892/#8032| invalid_current_protocol_shape - not a type gap| no substrate equivalent required: verified 0.11.0 models InsertTextMode enum and the client capability but no server-side insertTextModes field| invalid_current_protocol_shape| #8032 single-capability-authority work removes it; explicitly NOT migrated to the selected substrate| remove the injection and its snapshot assertions in the #8032 lane; migration must not carry it forward as parity| tests/lsp_capabilities_contract.rs insertTextModes advertisement assertions (falsifiers flip to removal proofs) |
+
+## 4. Resolved Cargo denominator (live `cargo metadata --all-features --locked` evidence)
+
+Direct declared edges: 7 (2 production, 4 compatibility-gated, 1 dev/test, 0 unclassified). Transitive selecting parents: 26 workspace members (normal-chain vs dev-only-chain below). No external (non-workspace) package resolves the incumbent transitively.
+
+Doomed lower edges are assigned to their removal owners and are NOT part of the #11803 migration population.
+
+| Package | Dep kind | Profile class | Feature gate | Disposition | Removal owner |
+| --- | --- | --- | --- | --- | --- |
+| perl-incremental-parsing| dev| dev_test| -| test_fixture_only| #1421 sequencing; exit when LT02 lands |
+| perl-lsp-rs| normal| production| -| adapter_protocol_type| #11803 migration; crate-level retirement relation #9645 relocates rows to the final product home first |
+| perl-lsp-rs-core| normal| production| -| adapter_protocol_type| #11803 migration; crate-level retirement relation #9645 relocates rows to the final product home first |
+| perl-parser| normal| compatibility_edge| lsp-compat\|lsp-types| lower_wire_remove_before_switch| #9893 |
+| perl-position-tracking| normal| compatibility_edge| lsp-compat\|lsp-types| lower_wire_remove_before_switch| #9632 |
+| perl-tdd-support| normal| compatibility_edge| lsp-compat\|lsp-types| compatibility_with_exit| #1421 sequencing; wire-free dev-test profile proof under #9632 |
+| perl-workspace| normal| compatibility_edge| lsp-compat\|lsp-types| lower_wire_remove_before_switch| #9632 |
+
+| Transitive selecting parent | Reachability | Min hops from lsp-types |
+| --- | --- | --- |
+| perl-ast| normal_chain| 2 |
+| perl-ast-v2| normal_chain| 2 |
+| perl-core-harness| dev_only_chain| 2 |
+| perl-core-test-runner| normal_chain| 3 |
+| perl-corpus| dev_only_chain| 2 |
+| perl-dap| normal_chain| 2 |
+| perl-kwalitee| dev_only_chain| 2 |
+| perl-lexer| normal_chain| 2 |
+| perl-lsp-perltidy| normal_chain| 2 |
+| perl-module| normal_chain| 2 |
+| perl-parser-bench| normal_chain| 2 |
+| perl-parser-comparison| normal_chain| 2 |
+| perl-parser-core| normal_chain| 2 |
+| perl-parser-pest| dev_only_chain| 2 |
+| perl-pragma| normal_chain| 3 |
+| perl-ripr-facts| normal_chain| 2 |
+| perl-semantic-analyzer| normal_chain| 2 |
+| perl-subprocess-runtime| dev_only_chain| 2 |
+| perl-symbol| normal_chain| 2 |
+| perl-token| dev_only_chain| 3 |
+| perl-tree-sitter-compat| normal_chain| 3 |
+| perl-uri| dev_only_chain| 2 |
+| perl-workspace-core| normal_chain| 3 |
+| perllsp| normal_chain| 2 |
+| tree-sitter-perl-rs| normal_chain| 2 |
+| xtask| normal_chain| 2 |
+
+## 5. Serialization/API delta matrix vs incumbent 0.97 (classified against #7113 schema authority)
+
+Current snapshots are behavior evidence, not target protocol authority. Classifications use the #11802 corrected vocabulary: incumbent_defect_corrected_by_candidate | candidate_defect | public_api_only_difference | schema_equivalent_representation_difference | intentional_repository_extension | not_proven.
+
+| Row ID | Area | Incumbent 0.97 evidence (verified) | Candidate 0.11.0 evidence (verified) | Classification | Migration note |
+| --- | --- | --- | --- | --- | --- |
+| DELTA-URI-DEFAULT| URI representation: default generated String Uri| 0.97 src/uri.rs: newtype `Uri(fluent_uri::Uri<String>)` around fluent-uri 0.1.4; parse errors surface as typed Result| 0.11.0 src/generated/common.rs:28: plain `pub struct Uri(pub String)` with no parse step| public_api_only_difference| qualified-URI preservation and DocumentUriKey/#8156/#8484 interaction must be proven before choosing; parse fallibility moves from construction-time to trust-the-wire |
+| DELTA-URI-URL| URI representation: optional `url` feature (url::Url 2.5.8)| n/a - incumbent has no url-backed mode| 0.11.0 Cargo.toml.orig features.url = ["dep:url"]; common.rs:66 type alias| schema_equivalent_representation_difference| alternative only; feature choice deferred to migration lane with adapter-boundary proof, not import-edit minimization |
+| DELTA-URI-FLUENT| URI representation: optional `fluent-uri` feature (fluent_uri 0.4.1)| incumbent pins fluent-uri 0.1.4 internally| 0.11.0 Cargo.toml.orig features.fluent-uri = ["dep:fluent-uri"]; common.rs:68 Uri<String>| schema_equivalent_representation_difference| closest wire behavior to incumbent but still a major fluent-uri version jump; same URI submatrix proof obligations as DELTA-URI-DEFAULT |
+| DELTA-TYPEHIERARCHY-FIELD| ServerCapabilities.type_hierarchy_provider field| verified absent from 0.97 default AND proposed surfaces (only TypeHierarchy request types + client capability exist); repo compensates via JSON patch + experimental injection| typed Option<TypeHierarchyProvider> at structures.rs:6062| incumbent_defect_corrected_by_candidate| PATCH-TYPEHIERARCHY exits when the typed field serializes identically |
+| DELTA-RANGESSUPPORT-FIELD| DocumentRangeFormattingOptions.ranges_support field (LSP 3.18)| verified absent from 0.97 (only document_range_formatting_provider exists); repo hand-patches rangesSupport into JSON| typed Option<bool> at structures.rs:7113 (+ DocumentRangesFormattingOptions twin :9807)| incumbent_defect_corrected_by_candidate| PATCH-RANGESSUPPORT exits; 3.18 conformance matrix stays advertisement authority |
+| DELTA-INLINECOMPLETION-FIELD| ServerCapabilities.inline_completion_provider field (LSP 3.18)| present in 0.97 ONLY behind its non-selected `proposed` cargo feature (lib.rs ~1954); default compiled surface lacks it| typed by default at structures.rs:6082| incumbent_defect_corrected_by_candidate| candidate removes the proposed-gating hazard without enabling any unstable surface; PATCH-INLINECOMPLETION static half exits |
+| DELTA-INSERTTEXTMODES| completionProvider.completionItem.insertTextModes server shape| not modeled in 0.97; repo injects numeric array [1,2] manually (invalid server shape per #2892/#8032)| also NOT modeled in 0.11.0 (InsertTextMode enum + client capability only) - candidate is correct not to model it| intentional_repository_extension| invalid_current_protocol_shape: remove under #8032, never migrate as parity (PATCH-INSERTTEXTMODES) |
+| DELTA-STABLE-PROPOSED| stable vs proposed cargo-surface split| 0.97 has a `proposed = []` feature with explicit no-semver guarantee note| 0.11.0 exposes one surface with no proposed/stable split (features: url\|fluent-uri only)| public_api_only_difference| maturity boundary moves fully repository-owned (#7113 validator + admitted-profile ledger); absence of a proposed feature neither advertises proposals nor blocks an admitted generated type |
+| DELTA-UNKNOWN-ENUMS| unknown enum value tolerance| exactly one serde(other) catch-all across 0.97 src (closed enums otherwise)| open enums throughout: `Custom` variants appear on 220 lines of enumerations.rs alone (e.g. InsertTextMode::AsIs\|AdjustIndentation\|Custom(any))| schema_equivalent_representation_difference| wire acceptance for unknown values widens; #7113 validator remains the admission oracle, snapshots stay behavior evidence only |
+| DELTA-NULL-ABSENT| null vs absent wire states on optional fields| skip_serializing_if carried on 448 lines across 0.97 src| 498 skip_serializing_if = "Option::is_none" occurrences in structures.rs; explicit null only where metamodel requires| schema_equivalent_representation_difference| distinct wire states preserved on both sides; do not flatten null-vs-absent during migration (#11802 falsifier 8) |
+| DELTA-DIRECTION-MODEL| request/notification direction types| 0.97 request.rs/notification.rs trait-based declarations| dedicated generated requests.rs / notifications.rs modules encoding method direction| schema_equivalent_representation_difference| #8896 route/method dispatch authority unchanged by this inventory; direction typing is a compile-time aid only |
+
+## 6. Manual-extension registry (beyond section 3 patch rows)
+
+| Row ID | Anchor | Seam behavior | Disposition | Owner |
+| --- | --- | --- | --- | --- |
+| SEAM-EXPERIMENTAL-TYPEHIERARCHY| crates/perl-lsp-rs-core/src/protocol/capabilities/experimental.rs:10 insert_experimental_capability| injects experimental.typeHierarchyProvider=true into the typed ServerCapabilities.experimental value because the default 0.97 surface cannot carry the typed field; detection support in capability_map.rs reads it back| selected_substrate_manual_schema_extension| #11803 removes the workaround when the adapter serializes the typed field; keep negative gate for experimental.inlineCompletionProvider |
+| SEAM-CAPMAP-DETECTION| crates/perl-lsp-rs-core/src/capability_map.rs feature_ids_from_caps experimental readback (test pin ~line 505)| maps client capability objects back to feature ids, including the type-hierarchy-via-experimental workaround path| compatibility_with_exit| #11803 exit together with SEAM-EXPERIMENTAL-TYPEHIERARCHY; detection of real typed fields replaces the workaround branch |
+| SEAM-RUNTIME-DYNAMIC-INLINECOMPLETION| crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs dynamic-client removal (~lines 781-815)| strips top-level inlineCompletionProvider from initialize output when the client opts into dynamic registration; behavioral protocol logic independent of which crate supplies the type| adapter_protocol_type| stays in lifecycle code through LT02/LT03; only its input type changes with #11803 |
+
+## 7. Derived downstream denominators
+
+Mechanically derived from this matrix; no re-research needed:
+
+- **LT02 / #11803 migration population:** 2 surviving direct Cargo edges (`adapter_protocol_type`: perl-lsp-rs, perl-lsp-rs-core) carrying 2 public nominal re-export anchors (`ServerCapabilities` at perl-lsp-rs-core/src/protocol/capabilities.rs:23, `Location` at perl-lsp-rs-core/src/providers/navigation/mod.rs:58), 3 typed-once patch rows, plus SEAM-RUNTIME-DYNAMIC-INLINECOMPLETION as a type-consumer. Doomed edges excluded: 3 (`lower_wire_remove_before_switch`, owners #9632/#9893).
+- **LT03 / #11804 representation convergence:** 7 manual-extension rows total (4 patches + 3 seams), 11 serialization-delta rows to converge, URI submatrix decision (DELTA-URI-DEFAULT/URL/FLUENT) with #8156/#8484 proof obligations.
+- **LT04 / #11805 proof closure:** 15 snapshot/contract falsifier files currently assert patched bytes (mechanically counted under crates/*/tests against needles: typeHierarchyProvider, rangesSupport, inlineCompletionProvider, insertTextModes). Wire-neutrality guards stay authoritative: crates/perl-workspace-core/tests/dependency_contract.rs (forbids lsp-types below the adapter) and the perl-ripr-facts manifest contract comment (deliberately avoids perl-workspace because it transitively pulls lsp-types).
+- Changing any needle, patch row, or seam above must flip the matching falsifier population; a silent zero-count is `not_proven`, never green.
