@@ -104,6 +104,51 @@ collision-resistance guarantees SHA-256 provides, the `Digest`/`*Id` types are
 the single place to change, and the `fnv64:`/`sha256:` prefix already
 distinguishes them. **Decision recorded, not deferred.**
 
+### Scope boundary: `source_identity.v1`
+
+*Amended 2026-08-15 (issue #7652). The FNV-1a decision above is unchanged; this
+section states what it does and does not govern.*
+
+The decision above governs **workspace-local fact identity** — the `FileId`,
+`PackageId`, and `SymbolId` values `perl-workspace-core` mints while extracting
+a `ProjectModel`. Those IDs are derived within one extraction run, compared
+within one process, and never need to survive as durable cross-repository
+references.
+
+It does **not** govern `source_identity.v1`, the durable source/project/content
+identity vocabulary specified in #4835 and implemented by
+`crates/perl-source-identity`. That vocabulary answers a different question —
+*which project, root, logical source, and exact content revision is this,
+across machines, checkouts, and time* — and carries requirements the
+workspace-local IDs do not:
+
+| | `perl-workspace-core` IDs | `source_identity.v1` |
+|---|---|---|
+| Lifetime | one extraction run | durable, cross-repository |
+| Compared across machines | no | yes |
+| Adversarial collision matters | no | yes |
+| Digest | FNV-1a 64 (`fnv64:`) | SHA-256 (`sha256:`) |
+
+FNV-1a is a non-cryptographic hash with no collision-resistance claim, so it
+cannot satisfy #7652's requirement to "use a reviewed collision-resistant digest
+for durable cross-repository identity". The two algorithms coexist without
+ambiguity because both wire forms are explicitly prefixed — exactly the
+migration seam this ADR anticipated.
+
+**Owner:** `perl-source-identity` owns `source_identity.v1`.
+`perl-workspace-core` was considered and rejected as the owner: it depends on
+`perl-parser-core`, which places it above the layer #7652 requires the owner to
+sit below. `perl-source-identity` is a Tier-1 leaf whose only job is
+source/project/content/origin identity; its closure is `serde` + `sha2` and is
+mechanically enforced by `crates/perl-source-identity/tests/dependency_contract.rs`
+and registered in the workspace publish allowlist.
+
+**Not aliases.** `perl-workspace-core`'s `FileId` and
+`source_identity.v1`'s `LogicalSourceId` are distinct types with distinct
+construction inputs and lifetimes. No adapter between them exists yet; per
+#7652 one may be added only when #7604 has mapped the proposition. Consumer
+migration (#7604, #7614, #7619, #7620, #7204, DAP) is tracked separately.
+
 ## Consequences
 
 - New consumers (Kwalitee, tree-sitter-compat, future test-facts) build on one

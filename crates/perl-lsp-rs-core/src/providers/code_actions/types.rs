@@ -71,8 +71,6 @@ pub enum CodeActionKind {
     RefactorRewrite,
     /// Source code organization action
     Source,
-    /// Organize imports action
-    SourceOrganizeImports,
     /// Fix all issues action
     SourceFixAll,
     /// Modernize Perl code action

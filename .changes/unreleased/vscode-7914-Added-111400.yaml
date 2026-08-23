@@ -1,0 +1,9 @@
+project: vscode
+component: Packaging and distribution
+kind: Added
+body: Added the internal managed-startup decision policy that separates local binary readiness from update-metadata availability. No user-visible startup behavior changes until a later slice consumes it.
+time: 2026-08-13T11:14:00Z
+custom:
+  PR: 7914
+  Slug: vscode-offline-managed-startup-policy
+  Breaking: "no"

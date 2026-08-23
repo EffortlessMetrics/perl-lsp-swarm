@@ -5,13 +5,12 @@
 //! completion for `->` expressions, and general cross-file symbol completion.
 
 use super::{
-    auto_import,
     context::CompletionContext,
     items::{CompletionItem, CompletionItemKind, InsertTextFormat},
 };
 use crate::providers::completion::module_scan_cache::{ModuleCompletionScanCache, ScanCacheKey};
+use perl_lexer::{PerlLexer, TokenType};
 use perl_module::path::module_name_to_path;
-use perl_parser_core::SourceLocation;
 use perl_semantic_analyzer::{
     Node, NodeKind, Parser,
     receiver_facts::{
@@ -19,6 +18,7 @@ use perl_semantic_analyzer::{
         ReceiverKind, receiver_fact_for_method_call,
     },
     semantic::SemanticModel,
+    symbol::SymbolTable,
     type_facts::TypeEvidence,
     type_inference::{PerlType, TypeInferenceEngine},
 };
@@ -33,7 +33,7 @@ use perl_workspace::semantic::{
     references::ReferenceIndex,
 };
 use perl_workspace::workspace_index::{
-    SymbolKind as WsSymbolKind, VarKind, WorkspaceIndex, WorkspaceSymbol,
+    SymbolKind as WsSymbolKind, WorkspaceIndex, WorkspaceSymbol,
 };
 use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
@@ -43,43 +43,18 @@ use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-/// Build the `additionalTextEdits` auto-import entry for a workspace symbol
-/// completion.
-///
-/// Inserts `use Module;` when the symbol's defining module is known and is not
-/// already imported in `source`. Returns an empty vector for file-local symbols
-/// (no container module) or for modules already present, mirroring the
-/// auto-import behavior already applied to method completions.
-///
-/// No edit is produced for the implicit `main` package or for symbols defined
-/// in the document's own `current_package`, since those need no `use` line.
-pub(super) fn workspace_auto_import_edits(
-    source: &str,
-    module: Option<&str>,
-    current_package: &str,
-) -> Vec<(SourceLocation, String)> {
-    module
-        .filter(|name| !name.is_empty() && *name != "main" && *name != current_package)
-        .and_then(|name| auto_import::build_auto_import_edit(source, name))
-        .map(|edit| vec![edit])
-        .unwrap_or_default()
-}
-
 /// Add workspace symbol completions for functions and variables
 ///
 /// Queries the workspace index to provide completions for symbols from other files.
 /// Uses the `import_map` to promote imported symbols and downrank explicitly
 /// not-imported symbols for import-aware sort ordering.
 ///
-/// `source` is the current document text, used to generate `additionalTextEdits`
-/// that auto-insert the required `use Module;` statement when completing an
-/// unimported workspace subroutine, variable, or constant.
 pub fn add_workspace_symbol_completions(
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
-    source: &str,
     workspace_index: &Option<Arc<WorkspaceIndex>>,
     import_map: &HashMap<String, HashSet<String>>,
+    used_modules: &HashSet<String>,
 ) {
     // Only proceed if we have a workspace index
     let Some(index) = workspace_index else {
@@ -113,6 +88,16 @@ pub fn add_workspace_symbol_completions(
                 // Determine sort priority and detail based on import map
                 let label = symbol.qualified_name.as_ref().unwrap_or(&symbol.name).clone();
                 let module = symbol.container_name.as_deref().unwrap_or("");
+                // Bare insertion is only truthful when the defining namespace
+                // is already visible. Import synthesis is withdrawn (#11158).
+                if !workspace_symbol_visible_without_import(
+                    &symbol,
+                    context,
+                    import_map,
+                    used_modules,
+                ) {
+                    continue;
+                }
 
                 let (sort_prefix, detail) = match import_map.get(module) {
                     None => {
@@ -154,54 +139,33 @@ pub fn add_workspace_symbol_completions(
                     kind: CompletionItemKind::Function,
                     detail: Some(Cow::Owned(detail)),
                     documentation: symbol.documentation.clone().map(Cow::Owned),
-                    additional_edits: workspace_auto_import_edits(
-                        source,
-                        symbol.container_name.as_deref(),
-                        &context.current_package,
-                    ),
-                    text_edit_range: Some((context.prefix_start, context.position)),
-                    commit_characters: None,
-                    insert_text_format: InsertTextFormat::PlainText,
-                    label_details: None,
-                });
-            }
-            WsSymbolKind::Variable(var_kind) => {
-                // Add variable completion with appropriate sigil
-                let sigil = match var_kind {
-                    VarKind::Scalar => "$",
-                    VarKind::Array => "@",
-                    VarKind::Hash => "%",
-                };
-
-                let label = if let Some(ref qname) = symbol.qualified_name {
-                    format!("{}{}", sigil, qname)
-                } else {
-                    format!("{}{}", sigil, symbol.name)
-                };
-
-                // Only suggest if the prefix matches (considering sigil)
-                if !label.starts_with(&context.prefix) {
-                    continue;
-                }
-
-                completions.push(CompletionItem {
-                    insert_text: Some(Cow::Owned(label.clone())),
-                    sort_text: Some(Cow::Owned(format!("4_{}", label))), // Tier 4: after core builtins
-                    filter_text: Some(Cow::Owned(label.clone())),
-                    label: Cow::Owned(label),
-                    kind: CompletionItemKind::Variable,
-                    detail: symbol
-                        .container_name
-                        .clone()
-                        .or_else(|| Some("workspace".to_string()))
-                        .map(Cow::Owned),
-                    documentation: symbol.documentation.clone().map(Cow::Owned),
                     additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
                     insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
                 });
+            }
+            WsSymbolKind::Variable(_) => {
+                // Unreachable, and deliberately left empty rather than gated.
+                //
+                // Every workspace variable candidate is spelled with a leading
+                // sigil, so only a sigil-prefixed request could ever match one.
+                // `complete_sigil_context` (`request/dispatch.rs`) intercepts
+                // every `$`/`@`/`%` prefix and always returns, so
+                // `complete_general_context` — the sole caller of this function
+                // — never runs for one; an empty prefix returns above. The arm
+                // that used to stand here could therefore only fire when called
+                // directly, and did so wrongly: `symbol.name` already carries
+                // its sigil, so the unqualified branch emitted `$$name`.
+                //
+                // Variable candidates are owned by the sigil path (in-file and
+                // `Pkg::`-qualified) and by the runtime workspace fallback,
+                // which qualifies cross-file package variables and withdraws
+                // cross-file lexicals (issue #11937).
+                // `sigil_prefixed_requests_never_reach_the_workspace_symbol_pass`
+                // pins that interception: if it fails, add a gated arm here
+                // rather than restoring the previous emission.
             }
             WsSymbolKind::Package => {
                 // Add package completion — tier 4 (workspace, after core builtins)
@@ -223,6 +187,14 @@ pub fn add_workspace_symbol_completions(
             }
             WsSymbolKind::Constant => {
                 // Add constant completion — tier 4 (workspace, after core builtins)
+                if !workspace_symbol_visible_without_import(
+                    &symbol,
+                    context,
+                    import_map,
+                    used_modules,
+                ) {
+                    continue;
+                }
                 let name = &symbol.name;
                 completions.push(CompletionItem {
                     label: Cow::Owned(name.clone()),
@@ -236,11 +208,7 @@ pub fn add_workspace_symbol_completions(
                     insert_text: Some(Cow::Owned(name.clone())),
                     sort_text: Some(Cow::Owned(format!("4_{name}"))),
                     filter_text: Some(Cow::Owned(name.clone())),
-                    additional_edits: workspace_auto_import_edits(
-                        source,
-                        symbol.container_name.as_deref(),
-                        &context.current_package,
-                    ),
+                    additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
                     insert_text_format: InsertTextFormat::PlainText,
@@ -248,7 +216,16 @@ pub fn add_workspace_symbol_completions(
                 });
             }
             WsSymbolKind::Export => {
-                // Add exported symbol completion
+                // An export is only safe as a bare insertion when its defining
+                // module is already visible in the current document.
+                if !workspace_symbol_visible_without_import(
+                    &symbol,
+                    context,
+                    import_map,
+                    used_modules,
+                ) {
+                    continue;
+                }
                 let name = &symbol.name;
                 completions.push(CompletionItem {
                     label: Cow::Owned(name.clone()),
@@ -272,6 +249,28 @@ pub fn add_workspace_symbol_completions(
     }
 }
 
+fn workspace_symbol_visible_without_import(
+    symbol: &WorkspaceSymbol,
+    context: &CompletionContext,
+    import_map: &HashMap<String, HashSet<String>>,
+    used_modules: &HashSet<String>,
+) -> bool {
+    let module = symbol
+        .container_name
+        .as_deref()
+        .or_else(|| {
+            symbol.qualified_name.as_deref().and_then(|qualified| {
+                qualified.strip_suffix(&symbol.name).and_then(|prefix| prefix.strip_suffix("::"))
+            })
+        })
+        .unwrap_or("");
+    module.is_empty()
+        || module == "main"
+        || module == context.current_package
+        || (used_modules.contains(module)
+            && import_map.get(module).is_some_and(|symbols| symbols.contains(&symbol.name)))
+}
+
 /// Add live compiler visible-symbol completions for imported/exported symbols.
 ///
 /// This is intentionally narrower than the shadow/cutover proof helpers:
@@ -284,6 +283,8 @@ pub fn add_visible_symbol_completions(
     context: &CompletionContext,
     workspace_index: &Option<Arc<WorkspaceIndex>>,
     filepath: Option<&str>,
+    import_map: &HashMap<String, HashSet<String>>,
+    used_modules: &HashSet<String>,
 ) {
     if context.prefix.is_empty() || context.prefix.starts_with(['$', '@', '%', '&']) {
         return;
@@ -308,6 +309,7 @@ pub fn add_visible_symbol_completions(
     for symbol in visible_symbols
         .into_iter()
         .filter(is_live_visible_completion_candidate)
+        .filter(|symbol| visible_symbol_has_import_authority(symbol, import_map, used_modules))
         .filter(|symbol| symbol.name.starts_with(&context.prefix))
     {
         let source_module = symbol.context.as_ref().and_then(|context| {
@@ -332,6 +334,43 @@ pub fn add_visible_symbol_completions(
             label_details: None,
         });
     }
+}
+
+/// A compiler visibility fact with a module origin is usable as a bare
+/// completion only when the request document makes that module visible.
+///
+/// The semantic query can expose export facts from an indexed module even when
+/// the current file has not imported that module. Qualified workspace
+/// completions remain responsible for that unimported case; this producer must
+/// not promote the same symbol to a bare insertion without import authority.
+fn visible_symbol_has_import_authority(
+    symbol: &VisibleSymbol,
+    import_map: &HashMap<String, HashSet<String>>,
+    used_modules: &HashSet<String>,
+) -> bool {
+    let Some(module) = symbol.context.as_ref().and_then(|context| context.source_module.as_deref())
+    else {
+        return true;
+    };
+
+    if !used_modules.contains(module) {
+        return false;
+    }
+
+    // `visible_symbols_at` emits `DefaultExport` facts only when the request
+    // document's import of this module is a bare `use module;` form and the
+    // symbol is a member of that module's `@EXPORT`, position-gated to the
+    // query point (perl-workspace semantic visibility + ExportSet facts).
+    // That compiler fact already proves default-import visibility, and the
+    // buffer import map deliberately records no row for a bare `use`. An
+    // explicit list (`use module qw(...)`, including `qw()`) replaces those
+    // defaults, so only exact membership from an explicit row can still
+    // authorize.
+    if matches!(symbol.source, VisibleSymbolSource::DefaultExport) {
+        return import_map.get(module).is_none_or(|imported| imported.contains(&symbol.name));
+    }
+
+    import_map.get(module).is_some_and(|symbols| symbols.contains(&symbol.name))
 }
 
 fn is_live_visible_completion_candidate(symbol: &VisibleSymbol) -> bool {
@@ -967,6 +1006,17 @@ pub(super) enum ReceiverEvidence {
     /// Static hash slot, e.g. `$services{db}->`, resolved through a fresh
     /// source-backed receiver fact.
     HashSlotFact(String),
+    /// Receiver resolved to two or more distinct candidate packages from a
+    /// union-typed variable (e.g. `$obj : Foo | Bar`).  All candidate
+    /// packages are exposed so completion can offer methods from every arm.
+    ///
+    /// The primary `package` in the underlying [`ReceiverFact`] is the first
+    /// union arm; `candidate_packages` carries the full ordered set.
+    ///
+    /// Confidence is high for all arms (union inference is source-backed);
+    /// fallback state is `Fallback` because the exact package cannot be
+    /// narrowed to a single type at the call site.
+    UnionCandidates(Vec<String>),
     /// No receiver evidence found, OR a positively-detected dynamic form
     /// (e.g. `bless {}, $class`, expression-tail class, nested call,
     /// Positively-detected dynamic / fail-closed receiver form — e.g.
@@ -984,8 +1034,9 @@ pub(super) enum ReceiverEvidence {
 }
 
 impl ReceiverEvidence {
-    /// Returns the inferred receiver package, if any. `Dynamic` and
-    /// `Unknown` both return `None`.
+    /// Returns the inferred receiver package, if any. `Dynamic`, `Unknown`,
+    /// and `UnionCandidates` all return `None` — use
+    /// [`candidate_packages`](Self::candidate_packages) for union receivers.
     pub(super) fn package(&self) -> Option<&str> {
         match self {
             Self::StaticPackage(p)
@@ -995,7 +1046,21 @@ impl ReceiverEvidence {
             | Self::TypeEngine(p)
             | Self::ObjectFact(p)
             | Self::HashSlotFact(p) => Some(p.as_str()),
-            Self::Dynamic | Self::Unknown => None,
+            Self::UnionCandidates(_) | Self::Dynamic | Self::Unknown => None,
+        }
+    }
+
+    /// Returns the full list of candidate packages for union receivers.
+    ///
+    /// For `UnionCandidates` returns all packages in declaration order.
+    /// For all other variants (including `StaticPackage`, `ObjectFact`,
+    /// `Dynamic`, and `Unknown`) returns an empty slice.
+    /// Use [`package`](Self::package) to get the single package for
+    /// non-union evidence.
+    pub(super) fn candidate_packages(&self) -> &[String] {
+        match self {
+            Self::UnionCandidates(packages) => packages.as_slice(),
+            _ => &[],
         }
     }
 
@@ -1008,9 +1073,9 @@ impl ReceiverEvidence {
 
     /// Returns the confidence level for this evidence kind, using the
     /// shared `perl_semantic_facts::Confidence` vocabulary so the rest of
-    /// the semantic stack speaks the same language. `Dynamic` and
-    /// `Unknown` return `None` — there is no confidence when there is
-    /// no exact evidence.
+    /// the semantic stack speaks the same language. `Dynamic`, `Unknown`,
+    /// and `UnionCandidates` return `None` — there is no single-package
+    /// confidence for a multi-candidate receiver.
     ///
     /// Today the production method-completion callsite reads this only
     /// to decide medium-confidence labelling on detail text (#7925
@@ -1023,15 +1088,15 @@ impl ReceiverEvidence {
             }
             Self::ObjectFact(_) | Self::HashSlotFact(_) => Some(Confidence::High),
             Self::LiteralBless(_) | Self::TypeEngine(_) => Some(Confidence::Medium),
-            Self::Dynamic | Self::Unknown => None,
+            Self::UnionCandidates(_) | Self::Dynamic | Self::Unknown => None,
         }
     }
 
     /// Short, user-facing suffix describing the evidence source, suitable
-    /// for appending to a `CompletionItem.detail` string. `Dynamic` and
-    /// `Unknown` return `None` — when there is no exact evidence, there
-    /// is nothing to label. Issue #7918: explanatory only, no ranking /
-    /// inclusion change.
+    /// for appending to a `CompletionItem.detail` string. `Dynamic`,
+    /// `Unknown`, and `UnionCandidates` return `None` — when there is no
+    /// exact evidence, there is nothing to label. Issue #7918: explanatory
+    /// only, no ranking / inclusion change.
     pub(super) fn detail_suffix(&self) -> Option<&'static str> {
         match self {
             Self::StaticPackage(_) => Some("receiver: static package"),
@@ -1041,6 +1106,7 @@ impl ReceiverEvidence {
             Self::TypeEngine(_) => Some("receiver: type engine"),
             Self::ObjectFact(_) => Some("receiver: source-backed object"),
             Self::HashSlotFact(_) => Some("receiver: hash slot"),
+            Self::UnionCandidates(_) => Some("receiver: union candidates"),
             Self::Dynamic | Self::Unknown => None,
         }
     }
@@ -1070,10 +1136,20 @@ pub(super) fn detail_with_evidence(base: String, evidence: &ReceiverEvidence) ->
 /// inherited workspace resolution. Finally falls back to text-pattern
 /// inference. This keeps literal bless and hash-slot evidence authoritative
 /// while preserving the inherited receiver path.
+#[cfg(test)]
 pub(super) fn classify_receiver(
     context: &CompletionContext,
     source: &str,
     type_engine: Option<&TypeInferenceEngine>,
+) -> ReceiverEvidence {
+    classify_receiver_with_symbol_table(context, source, type_engine, None)
+}
+
+pub(super) fn classify_receiver_with_symbol_table(
+    context: &CompletionContext,
+    source: &str,
+    type_engine: Option<&TypeInferenceEngine>,
+    symbol_table: Option<&SymbolTable>,
 ) -> ReceiverEvidence {
     if let Some(evidence) = source_backed_receiver_fact_evidence(context, source, type_engine) {
         if matches!(evidence, ReceiverEvidence::SelfOrThis(_))
@@ -1086,7 +1162,7 @@ pub(super) fn classify_receiver(
     if let Some(pkg) = type_engine_receiver(context, type_engine) {
         return ReceiverEvidence::TypeEngine(pkg);
     }
-    classify_text_pattern_receiver(context, source)
+    classify_text_pattern_receiver_with_symbol_table(context, source, symbol_table)
 }
 
 fn source_backed_receiver_fact_evidence(
@@ -1173,6 +1249,19 @@ fn exact_receiver_fact_evidence(fact: &ReceiverFact) -> Option<ReceiverEvidence>
         return Some(ReceiverEvidence::LiteralBless(package));
     }
 
+    // Union receivers: two or more candidate packages from a union-typed variable.
+    // These are source-backed and fresh but cannot claim `Exact` fallback state
+    // because the call-site type is ambiguous. Route them to `UnionCandidates`
+    // so the completion dispatch can offer methods from every arm (#9500).
+    if fact.is_union_receiver()
+        && fact.freshness == ReceiverFactFreshness::Fresh
+        && fact.dynamic_boundary.is_none()
+        && fact.source_range.is_some()
+        && fact.confidence == Confidence::High
+    {
+        return Some(ReceiverEvidence::UnionCandidates(fact.candidate_packages.clone()));
+    }
+
     if fact.confidence != Confidence::High
         || fact.freshness != ReceiverFactFreshness::Fresh
         || fact.fallback_state != ReceiverFallbackState::Exact
@@ -1225,12 +1314,120 @@ fn type_engine_receiver(
     }
 }
 
+pub(super) fn receiver_package_from_context_or_source(
+    context: &CompletionContext,
+    source: &str,
+) -> Option<String> {
+    if !context.current_package.is_empty() && context.current_package != "main" {
+        return Some(context.current_package.clone());
+    }
+
+    let position = context.position.min(source.len());
+    let mut parser = Parser::new(source);
+    if let Ok(ast) = parser.parse() {
+        let analyzer =
+            perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, source);
+        return receiver_package_from_symbol_table_or_source(
+            context,
+            source,
+            analyzer.symbol_table(),
+        );
+    }
+
+    source_package_fallback(source, position)
+}
+
+pub(super) fn receiver_package_from_symbol_table_or_source(
+    context: &CompletionContext,
+    source: &str,
+    symbol_table: &SymbolTable,
+) -> Option<String> {
+    if !context.current_package.is_empty() && context.current_package != "main" {
+        return Some(context.current_package.clone());
+    }
+
+    let position = context.position.min(source.len());
+    let current = CompletionContext::detect_current_package(symbol_table, position);
+    if current != "main" {
+        return Some(current);
+    }
+
+    source_package_fallback(source, position)
+}
+
+pub(super) fn source_package_fallback(source: &str, position: usize) -> Option<String> {
+    let prefix = source.get(..position)?;
+    let mut lexer = PerlLexer::new(prefix);
+    let mut current = "main".to_string();
+    let mut brace_depth = 0usize;
+    let mut package_blocks: Vec<(usize, String)> = Vec::new();
+    let mut package_name: Option<String> = None;
+    let mut in_package_declaration = false;
+
+    while let Some(token) = lexer.next_token() {
+        match &token.token_type {
+            TokenType::Keyword(name) if name.as_ref() == "package" => {
+                package_name = None;
+                in_package_declaration = true;
+            }
+            TokenType::Identifier(name) if in_package_declaration && package_name.is_none() => {
+                package_name = Some(name.to_string());
+            }
+            TokenType::LeftBrace if in_package_declaration => {
+                let Some(package) = package_name.take() else {
+                    in_package_declaration = false;
+                    brace_depth = brace_depth.saturating_add(1);
+                    continue;
+                };
+                let previous = current.clone();
+                current = package;
+                brace_depth = brace_depth.saturating_add(1);
+                package_blocks.push((brace_depth, previous));
+                in_package_declaration = false;
+            }
+            TokenType::Semicolon if in_package_declaration => {
+                if let Some(package) = package_name.take() {
+                    current = package;
+                }
+                in_package_declaration = false;
+            }
+            TokenType::LeftBrace => {
+                brace_depth = brace_depth.saturating_add(1);
+            }
+            TokenType::RightBrace => {
+                brace_depth = brace_depth.saturating_sub(1);
+                while let Some((depth, _)) = package_blocks.last() {
+                    if *depth <= brace_depth {
+                        break;
+                    }
+                    let Some((_, previous)) = package_blocks.pop() else {
+                        break;
+                    };
+                    current = previous;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (current != "main").then_some(current)
+}
+
 /// Text-pattern arm of [`classify_receiver`]. Looks for `Foo->method`
 /// (static), `$self->` / `$this->` (self), `my $x = Foo->new` (constructor
 /// assignment), and `my $x = bless ..., "Foo"` (literal bless).
+#[cfg(test)]
 pub(super) fn classify_text_pattern_receiver(
     context: &CompletionContext,
     source: &str,
+) -> ReceiverEvidence {
+    classify_text_pattern_receiver_with_symbol_table(context, source, None)
+}
+
+pub(super) fn classify_text_pattern_receiver_with_symbol_table(
+    context: &CompletionContext,
+    source: &str,
+    symbol_table: Option<&SymbolTable>,
 ) -> ReceiverEvidence {
     let arrow_prefix = context.receiver_prefix().trim_end_matches("->");
 
@@ -1252,10 +1449,14 @@ pub(super) fn classify_text_pattern_receiver(
     // analyser already sets correctly from the surrounding `package`
     // declaration.
     if matches!(arrow_prefix, "$self" | "$this")
-        && !context.current_package.is_empty()
-        && context.current_package != "main"
+        && let Some(package) = match symbol_table {
+            Some(symbol_table) => {
+                receiver_package_from_symbol_table_or_source(context, source, symbol_table)
+            }
+            None => receiver_package_from_context_or_source(context, source),
+        }
     {
-        return ReceiverEvidence::SelfOrThis(context.current_package.clone());
+        return ReceiverEvidence::SelfOrThis(package);
     }
 
     // Case 2: Variable method call like `$obj->meth` — try to find the
@@ -1624,6 +1825,7 @@ pub fn add_workspace_method_completions(
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
     source: &str,
+    symbol_table: &SymbolTable,
     type_engine: Option<&TypeInferenceEngine>,
     workspace_index: &Option<Arc<WorkspaceIndex>>,
     used_modules: &HashSet<String>,
@@ -1639,7 +1841,19 @@ pub fn add_workspace_method_completions(
     // Prefer semantic receiver facts only when they meet the narrow live pilot
     // bar. Medium, dynamic, unknown, and unsupported facts fall back through the
     // existing receiver classifier instead of suppressing legacy behavior.
-    let evidence = classify_receiver(context, source, type_engine);
+    let evidence =
+        classify_receiver_with_symbol_table(context, source, type_engine, Some(symbol_table));
+
+    // Union receivers: offer methods from every candidate package (#9500).
+    // Methods shared across arms are deduplicated; the first arm's definition wins.
+    // Use the `candidate_packages` accessor so the dispatch stays decoupled from
+    // the enum variant's internals.
+    let union_packages = evidence.candidate_packages();
+    if !union_packages.is_empty() {
+        add_union_receiver_method_completions(completions, context, source, index, union_packages);
+        return;
+    }
+
     let Some(package_name) = evidence.package().map(str::to_string) else {
         // No exact receiver package. Trigger bounded Unknown-receiver
         // fallback (#7929) only for `Unknown` evidence; `Dynamic` stays
@@ -1657,8 +1871,6 @@ pub fn add_workspace_method_completions(
     // (parents + roles). Child methods take priority.
     let members = collect_all_package_members_with_source(index, &package_name, source);
 
-    // Build an auto-import edit once for all methods from this package.
-    let auto_import_edit = auto_import::build_auto_import_edit(source, &package_name);
     let method_symbols = {
         let existing_labels: HashSet<&str> =
             completions.iter().map(|item| item.label.as_ref()).collect();
@@ -1673,16 +1885,12 @@ pub fn add_workspace_method_completions(
         &package_name,
         method_prefix,
         &method_symbols,
-        auto_import_edit.as_ref(),
         &evidence,
     ) {
         return;
     }
 
     for symbol in method_symbols {
-        let additional_edits =
-            auto_import_edit.as_ref().map(|e| vec![e.clone()]).unwrap_or_default();
-
         // Show which package actually defines the method for inherited completions
         let defining_pkg = symbol.container_name.as_deref().unwrap_or(package_name.as_str());
         let base_detail = if defining_pkg == package_name {
@@ -1717,13 +1925,125 @@ pub fn add_workspace_method_completions(
             insert_text: Some(Cow::Owned(format!("{}()", symbol.name))),
             sort_text: Some(Cow::Owned(format!("{method_tier}_{}", symbol.name))), // tier 2=own, 3=inherited, after local (tier 1)
             filter_text: Some(Cow::Owned(symbol.name.clone())),
-            additional_edits,
+            additional_edits: vec![],
             text_edit_range: Some((context.method_text_edit_start(source), context.position)),
             commit_characters: None,
             insert_text_format: InsertTextFormat::PlainText,
             label_details: None,
         });
     }
+}
+
+/// Union-aware method completion for [`ReceiverEvidence::UnionCandidates`] (#9500).
+///
+/// When the receiver type is a union (e.g. `my $obj : Foo | Bar`), the
+/// `candidate_packages` field of the underlying [`ReceiverFact`] exposes every
+/// distinct object package from the union.  This function queries each package
+/// and its `@ISA` ancestor chain, deduplicates methods by name (first
+/// occurrence wins), and offers them all with a sort tier that reflects
+/// source-backed high-confidence evidence.
+///
+/// Sort tiers used:
+/// - `2u_<name>` — method found in every union arm (shared interface)
+/// - `3u_<name>` — method found in at least one arm (partial interface)
+///
+/// This preserves the proven tier-ordering invariant (tiers 1–4 for
+/// exact-receiver, tier 5–6 for low-confidence fallback).
+fn add_union_receiver_method_completions(
+    completions: &mut Vec<CompletionItem>,
+    context: &CompletionContext,
+    source: &str,
+    index: &WorkspaceIndex,
+    packages: &[String],
+) {
+    let method_prefix = context.prefix.rsplit("->").next().unwrap_or("");
+    // Snapshot existing labels before any push to avoid borrow conflicts.
+    let existing_labels: HashSet<String> =
+        completions.iter().map(|item| item.label.as_ref().to_string()).collect();
+    let mut emitted: HashSet<String> = HashSet::new();
+
+    // Gather methods per package so we can determine "shared across all arms".
+    let per_package_methods: Vec<HashSet<String>> = packages
+        .iter()
+        .map(|pkg| {
+            collect_all_package_members(index, pkg)
+                .into_iter()
+                .filter(|s| matches!(s.kind, WsSymbolKind::Subroutine | WsSymbolKind::Method))
+                .filter(|s| method_prefix.is_empty() || s.name.starts_with(method_prefix))
+                .map(|s| s.name)
+                .collect()
+        })
+        .collect();
+
+    let all_method_names: HashSet<String> =
+        per_package_methods.iter().flat_map(|set| set.iter().cloned()).collect();
+
+    let shared_methods: HashSet<&String> = all_method_names
+        .iter()
+        .filter(|name| per_package_methods.iter().all(|set| set.contains(*name)))
+        .collect();
+
+    // Collect into pending first (mirrors add_unknown_receiver_fallback pattern)
+    // so we do not hold any borrow on `completions` while pushing.
+    let mut pending: Vec<CompletionItem> = Vec::new();
+
+    // Emit one completion per method, iterating packages in declaration order
+    // so the first arm's definition wins for the detail label.
+    for package_name in packages {
+        let members = collect_all_package_members_with_source(index, package_name, source);
+        for symbol in &members {
+            if !matches!(symbol.kind, WsSymbolKind::Subroutine | WsSymbolKind::Method) {
+                continue;
+            }
+            if !method_prefix.is_empty() && !symbol.name.starts_with(method_prefix) {
+                continue;
+            }
+            if existing_labels.contains(symbol.name.as_str()) {
+                continue;
+            }
+            if !emitted.insert(symbol.name.clone()) {
+                continue;
+            }
+
+            let defining_pkg = symbol.container_name.as_deref().unwrap_or(package_name.as_str());
+            let arms_label = packages.join(" | ");
+            let detail = if shared_methods.contains(&symbol.name) {
+                format!("shared method ({arms_label}) — receiver: union candidates")
+            } else {
+                format!("method from {defining_pkg} ({arms_label}) — receiver: union candidates")
+            };
+
+            // Shared-interface methods rank above partial-interface ones.
+            let sort_tier = if shared_methods.contains(&symbol.name) { "2u" } else { "3u" };
+
+            pending.push(CompletionItem {
+                label: Cow::Owned(symbol.name.clone()),
+                kind: CompletionItemKind::Function,
+                detail: Some(Cow::Owned(detail)),
+                documentation: symbol
+                    .documentation
+                    .clone()
+                    .or_else(|| {
+                        Some(format!(
+                            "Method `{}::{}` — union receiver `{}`.",
+                            defining_pkg,
+                            symbol.name,
+                            packages.join(" | ")
+                        ))
+                    })
+                    .map(Cow::Owned),
+                insert_text: Some(Cow::Owned(format!("{}()", symbol.name))),
+                sort_text: Some(Cow::Owned(format!("{sort_tier}_{}", symbol.name))),
+                filter_text: Some(Cow::Owned(symbol.name.clone())),
+                additional_edits: vec![],
+                text_edit_range: Some((context.method_text_edit_start(source), context.position)),
+                commit_characters: None,
+                insert_text_format: InsertTextFormat::PlainText,
+                label_details: None,
+            });
+        }
+    }
+    completions.extend(pending);
 }
 
 /// Bounded low-confidence fallback for method completion when receiver
@@ -1799,11 +2119,7 @@ fn add_unknown_receiver_fallback(
                 // (existing tiers 1–4) and below other tier-5 catch-alls.
                 sort_text: Some(Cow::Owned(format!("6_{}", symbol.name))),
                 filter_text: Some(Cow::Owned(symbol.name.clone())),
-                additional_edits: workspace_auto_import_edits(
-                    source,
-                    Some(defining_pkg),
-                    &context.current_package,
-                ),
+                additional_edits: vec![],
                 text_edit_range: Some((context.method_text_edit_start(source), context.position)),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
@@ -1834,7 +2150,6 @@ fn add_semantic_method_completions(
     package_name: &str,
     method_prefix: &str,
     method_symbols: &[&WorkspaceSymbol],
-    auto_import_edit: Option<&(SourceLocation, String)>,
     evidence: &ReceiverEvidence,
 ) -> bool {
     let legacy_names = method_symbol_names(method_symbols);
@@ -1872,7 +2187,6 @@ fn add_semantic_method_completions(
             continue;
         }
 
-        let additional_edits = auto_import_edit.map(|e| vec![e.clone()]).unwrap_or_default();
         completions.push(CompletionItem {
             label: Cow::Owned(candidate.display_name.clone()),
             kind: CompletionItemKind::Function,
@@ -1888,7 +2202,7 @@ fn add_semantic_method_completions(
                 candidate.display_name
             ))),
             filter_text: Some(Cow::Owned(candidate.display_name.clone())),
-            additional_edits,
+            additional_edits: vec![],
             text_edit_range: Some(method_text_edit_range),
             commit_characters: None,
             insert_text_format: InsertTextFormat::PlainText,
@@ -2135,13 +2449,13 @@ fn semantic_file_id(uri: &str) -> FileId {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::items_after_test_module,
-    reason = "policy:#2064: visible-symbol completion tests stay beside their filter seam"
-)]
 mod visible_symbol_completion_tests {
-    use super::{VisibleSymbol, VisibleSymbolSource, is_live_visible_completion_candidate};
-    use perl_semantic_facts::{Confidence, EntityId};
+    use super::{
+        VisibleSymbol, VisibleSymbolSource, is_live_visible_completion_candidate,
+        visible_symbol_has_import_authority,
+    };
+    use perl_semantic_facts::{Confidence, EntityId, VisibleSymbolContext};
+    use std::collections::{HashMap, HashSet};
 
     fn visible(source: VisibleSymbolSource, confidence: Confidence) -> VisibleSymbol {
         VisibleSymbol {
@@ -2184,6 +2498,117 @@ mod visible_symbol_completion_tests {
             VisibleSymbolSource::LocalLexical,
             Confidence::High,
         )));
+    }
+
+    #[test]
+    fn explicit_runtime_import_without_use_module_entry_is_not_authority() {
+        let symbol = VisibleSymbol {
+            name: "bar".to_string(),
+            entity_id: Some(EntityId(1)),
+            source: VisibleSymbolSource::ExplicitImport,
+            confidence: Confidence::High,
+            context: Some(VisibleSymbolContext::new(Some("Foo".to_string()), None, None)),
+        };
+        let import_map = HashMap::from([("Foo".to_string(), HashSet::from(["bar".to_string()]))]);
+
+        assert!(!visible_symbol_has_import_authority(&symbol, &import_map, &HashSet::new()));
+    }
+
+    fn default_export_symbol(name: &str) -> VisibleSymbol {
+        VisibleSymbol {
+            name: name.to_string(),
+            entity_id: Some(EntityId(1)),
+            source: VisibleSymbolSource::DefaultExport,
+            confidence: Confidence::High,
+            context: Some(VisibleSymbolContext::new(Some("Foo".to_string()), None, None)),
+        }
+    }
+
+    /// A bare `use Foo;` records no import-map row; the compiler's
+    /// `DefaultExport` fact is the authority for default-import visibility
+    /// (#11158 preservation row).
+    #[test]
+    fn default_export_with_bare_use_is_authorized() {
+        assert!(visible_symbol_has_import_authority(
+            &default_export_symbol("defaulted"),
+            &HashMap::new(),
+            &HashSet::from(["Foo".to_string()]),
+        ));
+    }
+
+    /// `use Foo ();` records an explicit empty-set row that replaces default
+    /// imports; a `DefaultExport` fact must not survive it.
+    #[test]
+    fn default_export_with_explicit_empty_list_is_denied() {
+        let import_map = HashMap::from([("Foo".to_string(), HashSet::new())]);
+
+        assert!(!visible_symbol_has_import_authority(
+            &default_export_symbol("defaulted"),
+            &import_map,
+            &HashSet::from(["Foo".to_string()]),
+        ));
+    }
+
+    /// An explicit list without this symbol replaces default imports.
+    #[test]
+    fn default_export_with_explicit_list_excluding_symbol_is_denied() {
+        let import_map = HashMap::from([("Foo".to_string(), HashSet::from(["other".to_string()]))]);
+
+        assert!(!visible_symbol_has_import_authority(
+            &default_export_symbol("defaulted"),
+            &import_map,
+            &HashSet::from(["Foo".to_string()]),
+        ));
+    }
+
+    /// An explicit list naming this symbol still authorizes it.
+    #[test]
+    fn default_export_with_exact_membership_is_authorized() {
+        let import_map =
+            HashMap::from([("Foo".to_string(), HashSet::from(["defaulted".to_string()]))]);
+
+        assert!(visible_symbol_has_import_authority(
+            &default_export_symbol("defaulted"),
+            &import_map,
+            &HashSet::from(["Foo".to_string()]),
+        ));
+    }
+
+    /// The document must reference the module at all: export facts from an
+    /// indexed but unimported module stay non-authoritative (#11158).
+    #[test]
+    fn default_export_without_module_reference_is_denied() {
+        assert!(!visible_symbol_has_import_authority(
+            &default_export_symbol("defaulted"),
+            &HashMap::new(),
+            &HashSet::new(),
+        ));
+    }
+
+    /// Non-default sources keep exact-row membership as their authority;
+    /// module presence alone never authorizes an arbitrary member (#11158).
+    #[test]
+    fn explicit_import_still_requires_exact_row_membership() {
+        let symbol = VisibleSymbol {
+            name: "imported_fn".to_string(),
+            entity_id: Some(EntityId(2)),
+            source: VisibleSymbolSource::ExplicitImport,
+            confidence: Confidence::High,
+            context: Some(VisibleSymbolContext::new(Some("Foo".to_string()), None, None)),
+        };
+
+        assert!(!visible_symbol_has_import_authority(
+            &symbol,
+            &HashMap::new(),
+            &HashSet::from(["Foo".to_string()]),
+        ));
+        let import_map =
+            HashMap::from([("Foo".to_string(), HashSet::from(["imported_fn".to_string()]))]);
+        assert!(visible_symbol_has_import_authority(
+            &symbol,
+            &import_map,
+            &HashSet::from(["Foo".to_string()]),
+        ));
     }
 }
 
@@ -2278,12 +2703,10 @@ fn collect_all_package_members_with_source(
                     };
 
                     if let Some(model) =
-                        perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(
-                            &ast, &text,
-                        )
-                        .class_models
-                        .into_iter()
-                        .find(|model| model.name == pkg)
+                        perl_semantic_analyzer::class_model::ClassModelBuilder::new()
+                            .build(&ast)
+                            .into_iter()
+                            .find(|model| model.name == pkg)
                     {
                         return (model.parents.clone(), model.roles.clone(), model.mro);
                     }
@@ -2430,4 +2853,192 @@ fn find_assignment_eq(line: &str) -> Option<usize> {
         return Some(i);
     }
     None
+}
+
+#[cfg(test)]
+mod collect_all_tests {
+    use super::*;
+    use perl_tdd_support::must;
+    use perl_workspace::workspace::workspace_index::WorkspaceIndex;
+    use std::sync::Arc;
+    use url::Url;
+
+    fn inherited_moo_parent_index() -> Arc<WorkspaceIndex> {
+        let index = Arc::new(WorkspaceIndex::new());
+        let parent_uri = must(Url::parse("file:///workspace/Parent.pm"));
+        must(
+            index.index_file(
+                parent_uri,
+                r#"package Parent;
+use Moo;
+has 'name' => (is => 'ro', isa => 'Str');
+has 'status' => (
+    is => 'rw',
+    predicate => 1,
+    builder => 1,
+    clearer => 1,
+);
+1;
+"#
+                .to_string(),
+            ),
+        );
+        index
+    }
+
+    #[test]
+    fn collect_all_follows_parent_generated_members() {
+        let index = inherited_moo_parent_index();
+        assert!(index.has_symbols(), "parent-only Moo index should be populated");
+        let child_source = r#"
+package Child;
+use Moo;
+use parent 'Parent';
+
+sub greet {
+    my $self = shift;
+    $self->
+}
+"#;
+        let members =
+            collect_all_package_members_with_source(index.as_ref(), "Child", child_source);
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            names.contains(&"name"),
+            "expected inherited generated reader from Parent, got {names:?}"
+        );
+    }
+}
+
+/// Tests for union-receiver method completion (#9500).
+///
+/// These tests exercise `add_union_receiver_method_completions` directly.
+/// The discriminating test `union_receiver_surfaces_methods_from_second_arm`
+/// verifies that dropping any union arm would cause a test failure — the
+/// contract required by #9500.
+#[cfg(test)]
+mod union_receiver_method_completion_tests {
+    use super::*;
+    use perl_tdd_support::must;
+    use perl_workspace::workspace::workspace_index::WorkspaceIndex;
+    use std::sync::Arc;
+    use url::Url;
+
+    /// Index with `Foo` (has `shared_method` + `foo_only`) and
+    /// `Bar` (has `shared_method` + `bar_only`).
+    fn two_package_index() -> Arc<WorkspaceIndex> {
+        let index = Arc::new(WorkspaceIndex::new());
+
+        let foo_uri = must(Url::parse("file:///workspace/Foo.pm"));
+        must(index.index_file(
+            foo_uri,
+            "package Foo;\nsub shared_method { }\nsub foo_only { }\n1;\n".to_string(),
+        ));
+
+        let bar_uri = must(Url::parse("file:///workspace/Bar.pm"));
+        must(index.index_file(
+            bar_uri,
+            "package Bar;\nsub shared_method { }\nsub bar_only { }\n1;\n".to_string(),
+        ));
+
+        index
+    }
+
+    fn arrow_context(source: &str) -> CompletionContext {
+        let position = source.len();
+        CompletionContext {
+            position,
+            trigger_character: Some('>'),
+            in_string: false,
+            in_regex: false,
+            in_comment: false,
+            in_use_statement: false,
+            current_package: "main".to_string(),
+            prefix: source.to_string(),
+            prefix_start: 0,
+            cursor_scope_id: 0,
+        }
+    }
+
+    /// Discriminating test for #9500: if the second union arm is dropped,
+    /// `bar_only` would be absent from the completions.
+    #[test]
+    fn union_receiver_surfaces_methods_from_second_arm() {
+        let index = two_package_index();
+        let source = "$obj->";
+        let context = arrow_context(source);
+        let mut completions: Vec<CompletionItem> = Vec::new();
+
+        add_union_receiver_method_completions(
+            &mut completions,
+            &context,
+            source,
+            &index,
+            &["Foo".to_string(), "Bar".to_string()],
+        );
+
+        let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
+
+        assert!(labels.contains(&"shared_method"), "shared_method should appear; got {labels:?}");
+        assert!(labels.contains(&"foo_only"), "foo_only (Foo arm) should appear; got {labels:?}");
+        // This assertion would FAIL if the second union candidate were dropped.
+        assert!(
+            labels.contains(&"bar_only"),
+            "bar_only (Bar arm, second candidate) should appear; got {labels:?}"
+        );
+    }
+
+    /// Shared methods must not appear more than once even though both arms define them.
+    #[test]
+    fn union_receiver_deduplicates_shared_method() {
+        let index = two_package_index();
+        let source = "$obj->";
+        let context = arrow_context(source);
+        let mut completions: Vec<CompletionItem> = Vec::new();
+
+        add_union_receiver_method_completions(
+            &mut completions,
+            &context,
+            source,
+            &index,
+            &["Foo".to_string(), "Bar".to_string()],
+        );
+
+        let count = completions.iter().filter(|c| c.label.as_ref() == "shared_method").count();
+        assert_eq!(count, 1, "shared_method should appear exactly once, not duplicated");
+    }
+
+    /// Shared-interface methods (in every arm) must rank above partial-interface
+    /// methods (in at least one arm) via sort tiers `2u_` vs `3u_`.
+    #[test]
+    fn shared_method_gets_shared_sort_tier_and_partial_gets_partial_tier() {
+        let index = two_package_index();
+        let source = "$obj->";
+        let context = arrow_context(source);
+        let mut completions: Vec<CompletionItem> = Vec::new();
+
+        add_union_receiver_method_completions(
+            &mut completions,
+            &context,
+            source,
+            &index,
+            &["Foo".to_string(), "Bar".to_string()],
+        );
+
+        let shared = completions.iter().find(|c| c.label.as_ref() == "shared_method");
+        let partial = completions.iter().find(|c| c.label.as_ref() == "foo_only");
+
+        let shared_sort = shared.and_then(|c| c.sort_text.as_ref()).map(|s| s.as_ref().to_string());
+        let partial_sort =
+            partial.and_then(|c| c.sort_text.as_ref()).map(|s| s.as_ref().to_string());
+
+        assert!(
+            shared_sort.as_deref().is_some_and(|s| s.starts_with("2u_")),
+            "shared_method should have sort tier 2u_, got {shared_sort:?}"
+        );
+        assert!(
+            partial_sort.as_deref().is_some_and(|s| s.starts_with("3u_")),
+            "foo_only should have sort tier 3u_, got {partial_sort:?}"
+        );
+    }
 }

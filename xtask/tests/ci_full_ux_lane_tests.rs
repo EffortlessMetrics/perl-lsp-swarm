@@ -51,13 +51,13 @@ fn test_ux_tests_recipe_builds_and_exports_binary() -> Result<(), Box<dyn std::e
     let ux_tests_body = &ux_tests_body[..next_recipe];
 
     assert!(
-        ux_tests_body.contains("cargo build -p perl-lsp-rs --bin perl-lsp"),
-        "ux-tests must build the perl-lsp binary explicitly so local runs do not depend on a \
+        ux_tests_body.contains("cargo build -p perllsp --bin perllsp"),
+        "ux-tests must build the perllsp binary explicitly so local runs do not depend on a \
          prebuilt artifact.\nCurrent ux-tests recipe:\n{}",
         ux_tests_body
     );
     assert!(
-        ux_tests_body.contains("PERL_LSP_BIN={{justfile_directory()}}/target/debug/perl-lsp"),
+        ux_tests_body.contains("PERL_LSP_BIN={{justfile_directory()}}/target/debug/perllsp"),
         "ux-tests must export an absolute PERL_LSP_BIN rooted at the justfile so the harness \
          does not depend on the crate working directory.\n\
          Current ux-tests recipe:\n{}",

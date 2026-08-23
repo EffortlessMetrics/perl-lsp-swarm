@@ -1,0 +1,118 @@
+{
+  "schema_version": 3,
+  "owner_issue": 6701,
+  "canonical": {
+    "module": "incremental",
+    "path": "perl_parser::incremental",
+    "entry_points": [
+      "Edit",
+      "IncrementalState",
+      "apply_edits"
+    ],
+    "production_eligible": false,
+    "eligibility_blockers": [
+      6704,
+      6710,
+      6714,
+      2327
+    ],
+    "decision": "The state/edit/apply_edits surface is the single implementation target for parser-incremental correctness work. Canonical identifies ownership; it does not claim production readiness or LSP eligibility."
+  },
+  "compatibility": {
+    "package": "perl-incremental-parsing",
+    "status": "compatibility",
+    "implementation_owner": "perl-parser",
+    "behavior_authority": false,
+    "exit_issue": 6701
+  },
+  "lower_tier": [
+    {
+      "package": "perl-parser-core",
+      "module": "incremental",
+      "path": "perl_parser_core::incremental",
+      "status": "lower_tier_kernel",
+      "entry_points": [
+        "IncrementalEdit",
+        "IncrementalState",
+        "IncrementalState::reparse"
+      ],
+      "behavior_authority": false,
+      "production_eligible": false,
+      "allowed_consumers": [
+        {
+          "symbol": "tree_sitter_perl_rs::Parser::parse_with_old_tree",
+          "source_path": "crates/tree-sitter-perl-rs/src/lib.rs"
+        }
+      ],
+      "next_action": "route_behind_canonical_or_retire_after_differential_proof",
+      "owner_issue": 6707,
+      "decision": "This active public token-replay kernel is explicitly inventoried because the tree-sitter compatibility facade consumes it. It may supply an implementation technique, but it cannot independently establish native parser-incremental behavior or production eligibility."
+    }
+  ],
+  "modules": [
+    {
+      "module": "incremental_advanced_reuse",
+      "status": "internal",
+      "public_reexport": true,
+      "production_eligible": false,
+      "next_action": "privatize_or_retain_as_analysis_only",
+      "owner_issue": 6707
+    },
+    {
+      "module": "incremental_checkpoint",
+      "status": "experimental",
+      "public_reexport": true,
+      "production_eligible": false,
+      "next_action": "decide_real_continuation_or_retire",
+      "owner_issue": 6734
+    },
+    {
+      "module": "incremental_document",
+      "status": "experimental",
+      "public_reexport": true,
+      "production_eligible": false,
+      "next_action": "migrate_unique_proof_then_privatize_or_retire",
+      "owner_issue": 6701
+    },
+    {
+      "module": "incremental_edit",
+      "status": "internal",
+      "public_reexport": true,
+      "production_eligible": false,
+      "next_action": "fold_into_canonical_edit_contract_or_privatize",
+      "owner_issue": 6701
+    },
+    {
+      "module": "incremental_handler_v2",
+      "status": "retire",
+      "public_reexport": true,
+      "production_eligible": false,
+      "next_action": "remove_after_documented_compatibility_boundary",
+      "owner_issue": 6701
+    },
+    {
+      "module": "incremental_integration",
+      "status": "experimental",
+      "public_reexport": true,
+      "production_eligible": false,
+      "next_action": "migrate_unique_proof_then_privatize_or_retire",
+      "owner_issue": 6701
+    },
+    {
+      "module": "incremental_simple",
+      "status": "experimental",
+      "public_reexport": true,
+      "production_eligible": false,
+      "next_action": "migrate_unique_proof_then_privatize_or_retire",
+      "owner_issue": 6701
+    },
+    {
+      "module": "incremental_v2",
+      "status": "experimental",
+      "public_reexport": true,
+      "production_eligible": false,
+      "next_action": "retain_only_for_comparison_until_unique_proof_is_migrated",
+      "owner_issue": 6707
+    }
+  ]
+}

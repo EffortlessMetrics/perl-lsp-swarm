@@ -324,6 +324,21 @@ fn transform_offset(offset: usize, start: usize, old_len: usize, new_len: usize)
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::transform_offset;
+
+    #[test]
+    fn transform_offset_boundaries_and_overlap() {
+        assert_eq!(transform_offset(9, 10, 5, 8), Some(9));
+        assert_eq!(transform_offset(10, 10, 5, 8), Some(10));
+        assert_eq!(transform_offset(11, 10, 5, 8), None);
+        assert_eq!(transform_offset(14, 10, 5, 8), None);
+        assert_eq!(transform_offset(15, 10, 5, 8), Some(18));
+        assert_eq!(transform_offset(20, 10, 5, 8), Some(23));
+    }
+}
+
 fn offset_is_valid(input: &str, offset: usize) -> bool {
     offset <= input.len() && input.is_char_boundary(offset)
 }
@@ -356,7 +371,8 @@ pub trait Checkpointable {
 
     /// Restore mutable replay state into a lexer for the target input.
     ///
-    /// The target lexer retains its configured recovery policy.
+    /// Checkpointed recovery flags, including `qw_recovery_enabled`, are
+    /// restored as replay state.
     fn restore(&mut self, checkpoint: &LexerCheckpoint);
 
     /// Check whether every source-relative checkpoint offset is valid.

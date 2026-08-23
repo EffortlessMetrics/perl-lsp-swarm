@@ -1,0 +1,12 @@
+project: product
+component: Language intelligence
+kind: Changed
+body: >-
+  Derive PL406 unreachable-code diagnostics from typed local control-flow
+  summaries so complete terminating branches close fallthrough while nested,
+  dynamic, and partially proven paths remain conservative.
+time: 2026-08-15T20:15:00Z
+custom:
+  PR: "10004"
+  Slug: typed-pl406-flow
+  Breaking: "no"

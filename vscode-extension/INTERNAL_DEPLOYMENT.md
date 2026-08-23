@@ -29,7 +29,7 @@ The simplest approach for internal deployment.
    cargo install --path crates/perllsp
    ```
 
-2. **Configure VS Code** workspace settings (`.vscode/settings.json`):
+2. **Configure VS Code** User settings (`Preferences: Open User Settings (JSON)`):
 
    ```json
    {
@@ -37,6 +37,11 @@ The simplest approach for internal deployment.
      "perl-lsp.autoDownload": false
    }
    ```
+
+   `perl-lsp.serverPath` and `perl-lsp.autoDownload` are `scope: "machine"`, so
+   VS Code ignores them in `.vscode/settings.json` or a `.code-workspace` file.
+   Distribute them through User/Machine settings — for example a managed
+   settings profile — not through a repository.
 
 3. **Package and distribute extension**:
 
@@ -97,7 +102,8 @@ Host binaries on an internal web server for automatic distribution.
    }
    ```
 
-3. **Configure VS Code** workspace settings:
+3. **Configure VS Code** User settings — `downloadBaseUrl` and `versionTag` are
+   machine-scoped too, so a repository cannot supply them:
    ```json
    {
      "perl-lsp.autoDownload": true,
@@ -152,7 +158,7 @@ Package the binary directly with the extension.
    npx vsce package
    ```
 
-4. **Configure workspace** (optional - binaries auto-detected):
+4. **Configure User settings** (optional - binaries auto-detected):
    ```json
    {
      "perl-lsp.autoDownload": false
@@ -173,17 +179,28 @@ Package the binary directly with the extension.
 
 ## Team Configuration
 
-Copy the provided `.vscode/settings.json` to your project root and customize:
+Workspace-scoped settings belong in your project's `.vscode/settings.json`:
 
 ```json
 {
-  "perl-lsp.serverPath": "/path/to/your/perllsp",
-  "perl-lsp.autoDownload": false,
   "perl-lsp.enableSemanticTokens": true,
-  "perl-lsp.enableFormatting": true,
   "perl-lsp.includePaths": ["lib", "local/lib/perl5", "vendor/lib"]
 }
 ```
+
+Binary selection and download policy are machine-scoped and must go in User
+settings instead:
+
+```json
+{
+  "perl-lsp.serverPath": "/usr/local/bin/perllsp",
+  "perl-lsp.autoDownload": false
+}
+```
+
+This repository's own `.vscode/settings.json` is deliberately product-neutral
+and is not a template to copy. See
+[`docs/contributing/VS_CODE_LOCAL_SERVER.md`](../docs/contributing/VS_CODE_LOCAL_SERVER.md).
 
 ## Binary Building
 

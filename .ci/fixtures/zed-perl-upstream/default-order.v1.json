@@ -1,0 +1,70 @@
+{
+  "schema_version": "zed_default_order_contract.v1",
+  "issue": 7992,
+  "programme": 7759,
+  "defaults_packet": ".ci/fixtures/zed-perl-upstream/zed-core/manifest.toml",
+  "host_receipt_schema": "zed_host_compat.v1",
+  "host_evidence_stage": "exact_source_dev_extension",
+  "provider_identities": {
+    "default": "perlnavigator-server",
+    "tree_sitter_perl": "perl-lsp",
+    "effortlessmetrics": "perllsp"
+  },
+  "candidate_order": [
+    "perlnavigator-server",
+    "!perl-lsp",
+    "!perllsp",
+    "..."
+  ],
+  "matrix": [
+    {
+      "id": "current_defaults_public_extension",
+      "defaults": "current",
+      "extension": "public_0_4_0",
+      "purpose": "Capture the current baseline without creating a new support claim."
+    },
+    {
+      "id": "candidate_defaults_public_extension",
+      "defaults": "candidate",
+      "extension": "public_0_4_0",
+      "purpose": "Determine whether an unknown negated perllsp ID remains harmless before the extension registers it."
+    },
+    {
+      "id": "current_defaults_candidate_extension",
+      "defaults": "current",
+      "extension": "candidate_three_server",
+      "purpose": "Determine whether the candidate extension creates a noisy or unsafe interval before the default order ships."
+    },
+    {
+      "id": "candidate_defaults_candidate_extension",
+      "defaults": "candidate",
+      "extension": "candidate_three_server",
+      "purpose": "Prove the intended final combination: Perl Navigator only by default and both alternatives selectable."
+    }
+  ],
+  "selection_cases": [
+    "default_only",
+    "select_perllsp",
+    "select_perl_lsp",
+    "deliberate_multi_server",
+    "missing_selected_server",
+    "ellipsis_preserves_user_registration"
+  ],
+  "rulings": [
+    "zed_defaults_first_safe",
+    "extension_first_required",
+    "coordinated_release_required"
+  ],
+  "ruling_algorithm": {
+    "candidate_defaults_public_extension_quiet": "zed_defaults_first_safe",
+    "candidate_defaults_public_extension_noisy_and_current_defaults_candidate_extension_quiet": "extension_first_required",
+    "both_intermediate_combinations_noisy": "coordinated_release_required"
+  },
+  "claim_boundary": {
+    "static_patch": "proven_by_7908",
+    "host_compatibility": "not_run",
+    "publication_order": "unresolved",
+    "full_zed_support": "not_proven",
+    "public_registry": "not_proven"
+  }
+}

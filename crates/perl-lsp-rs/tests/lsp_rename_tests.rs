@@ -378,16 +378,16 @@ fn test_rename_capability_advertised() -> TestResult {
     );
 
     // If renameProvider is an object, check for prepareProvider support
-    if let Some(rp) = rename_provider {
-        if rp.is_object() {
-            let has_prepare = rp.get("prepareProvider");
-            if let Some(prepare) = has_prepare {
-                assert!(
-                    prepare.is_boolean(),
-                    "prepareProvider should be a boolean, got: {:?}",
-                    prepare
-                );
-            }
+    if let Some(rp) = rename_provider
+        && rp.is_object()
+    {
+        let has_prepare = rp.get("prepareProvider");
+        if let Some(prepare) = has_prepare {
+            assert!(
+                prepare.is_boolean(),
+                "prepareProvider should be a boolean, got: {:?}",
+                prepare
+            );
         }
     }
 
@@ -431,12 +431,12 @@ sub caller {
         assert!(response.is_object(), "rename should return a WorkspaceEdit, got: {:?}", response);
 
         // If changes exist, verify the edit structure
-        if let Some(changes) = response.get("changes") {
-            if let Some(uri_edits) = changes.get(doc_uri) {
-                let edits = uri_edits.as_array().ok_or("edits should be an array")?;
-                // Should rename both the declaration and the call site
-                assert!(!edits.is_empty(), "Should have edits for subroutine rename");
-            }
+        if let Some(changes) = response.get("changes")
+            && let Some(uri_edits) = changes.get(doc_uri)
+        {
+            let edits = uri_edits.as_array().ok_or("edits should be an array")?;
+            // Should rename both the declaration and the call site
+            assert!(!edits.is_empty(), "Should have edits for subroutine rename");
         }
     }
 
@@ -486,15 +486,15 @@ fn test_rename_mismatched_sigil_is_rejected() -> TestResult {
         }
         Ok(response) => {
             // If it didn't error, the edits must not contain the mismatched sigil.
-            if let Some(changes) = response.get("changes").and_then(|v| v.as_object()) {
-                if let Some(edits) = changes.get(doc_uri).and_then(|v| v.as_array()) {
-                    for edit in edits {
-                        let new_text = edit["newText"].as_str().unwrap_or("");
-                        assert!(
-                            !new_text.starts_with('@'),
-                            "mismatched-sigil rename must not produce @-prefixed edits, got: {new_text}"
-                        );
-                    }
+            if let Some(changes) = response.get("changes").and_then(|v| v.as_object())
+                && let Some(edits) = changes.get(doc_uri).and_then(|v| v.as_array())
+            {
+                for edit in edits {
+                    let new_text = edit["newText"].as_str().unwrap_or("");
+                    assert!(
+                        !new_text.starts_with('@'),
+                        "mismatched-sigil rename must not produce @-prefixed edits, got: {new_text}"
+                    );
                 }
             }
         }
@@ -634,22 +634,22 @@ fn test_rename_array_preserves_at_sigil() -> TestResult {
         }),
     )?;
 
-    if let Some(changes) = response.get("changes").and_then(|v| v.as_object()) {
-        if let Some(edits) = changes.get(doc_uri).and_then(|v| v.as_array()) {
-            assert!(!edits.is_empty(), "array rename should produce edits");
-            for edit in edits {
-                let new_text = edit["newText"].as_str().unwrap_or("");
-                // `@values` or bare `values` after workspace-rename-edit adjustments
-                // — whichever comes back must be `@`-sigiled, never `$`.
-                assert!(
-                    new_text.starts_with('@') || new_text == "values",
-                    "array rename must preserve or omit `@` sigil, never swap to `$`, got: {new_text}"
-                );
-                assert!(
-                    !new_text.starts_with('$'),
-                    "array rename must NOT produce a `$`-prefixed edit: {new_text}"
-                );
-            }
+    if let Some(changes) = response.get("changes").and_then(|v| v.as_object())
+        && let Some(edits) = changes.get(doc_uri).and_then(|v| v.as_array())
+    {
+        assert!(!edits.is_empty(), "array rename should produce edits");
+        for edit in edits {
+            let new_text = edit["newText"].as_str().unwrap_or("");
+            // `@values` or bare `values` after workspace-rename-edit adjustments
+            // — whichever comes back must be `@`-sigiled, never `$`.
+            assert!(
+                new_text.starts_with('@') || new_text == "values",
+                "array rename must preserve or omit `@` sigil, never swap to `$`, got: {new_text}"
+            );
+            assert!(
+                !new_text.starts_with('$'),
+                "array rename must NOT produce a `$`-prefixed edit: {new_text}"
+            );
         }
     }
 
@@ -682,15 +682,15 @@ fn test_rename_array_bare_infers_at_sigil() -> TestResult {
         }),
     )?;
 
-    if let Some(changes) = response.get("changes").and_then(|v| v.as_object()) {
-        if let Some(edits) = changes.get(doc_uri).and_then(|v| v.as_array()) {
-            for edit in edits {
-                let new_text = edit["newText"].as_str().unwrap_or("");
-                assert!(
-                    !new_text.starts_with('$') && !new_text.starts_with('%'),
-                    "bare-name array rename must not accidentally get wrong sigil, got: {new_text}"
-                );
-            }
+    if let Some(changes) = response.get("changes").and_then(|v| v.as_object())
+        && let Some(edits) = changes.get(doc_uri).and_then(|v| v.as_array())
+    {
+        for edit in edits {
+            let new_text = edit["newText"].as_str().unwrap_or("");
+            assert!(
+                !new_text.starts_with('$') && !new_text.starts_with('%'),
+                "bare-name array rename must not accidentally get wrong sigil, got: {new_text}"
+            );
         }
     }
 
@@ -723,15 +723,14 @@ fn test_rename_out_of_bounds() -> TestResult {
         .unwrap_or(json!(null));
 
     // Should return null or an empty WorkspaceEdit for out-of-bounds
-    if !response.is_null() {
-        if let Some(changes) = response.get("changes") {
-            if changes.is_object() {
-                // Empty changes map is acceptable
-                let change_map = changes.as_object().ok_or("changes should be an object")?;
-                // May or may not have entries
-                let _ = change_map;
-            }
-        }
+    if !response.is_null()
+        && let Some(changes) = response.get("changes")
+        && changes.is_object()
+    {
+        // Empty changes map is acceptable
+        let change_map = changes.as_object().ok_or("changes should be an object")?;
+        // May or may not have entries
+        let _ = change_map;
     }
 
     Ok(())
@@ -889,21 +888,21 @@ fn test_rename_variable_to_keyword_allowed() -> TestResult {
     match result {
         Ok(response) => {
             // Rename should succeed: there must be at least one edit producing `$if` or `if`.
-            if let Some(changes) = response.get("changes").and_then(|v| v.as_object()) {
-                if let Some(edits) = changes.get(doc_uri).and_then(|v| v.as_array()) {
-                    assert!(
-                        !edits.is_empty(),
-                        "renaming variable to keyword name `$if` should produce edits"
-                    );
-                    let found_if = edits.iter().any(|edit| {
-                        let new_text = edit["newText"].as_str().unwrap_or("");
-                        new_text == "$if" || new_text == "if"
-                    });
-                    assert!(
-                        found_if,
-                        "at least one edit must reference `$if` or bare `if`, got: {edits:?}"
-                    );
-                }
+            if let Some(changes) = response.get("changes").and_then(|v| v.as_object())
+                && let Some(edits) = changes.get(doc_uri).and_then(|v| v.as_array())
+            {
+                assert!(
+                    !edits.is_empty(),
+                    "renaming variable to keyword name `$if` should produce edits"
+                );
+                let found_if = edits.iter().any(|edit| {
+                    let new_text = edit["newText"].as_str().unwrap_or("");
+                    new_text == "$if" || new_text == "if"
+                });
+                assert!(
+                    found_if,
+                    "at least one edit must reference `$if` or bare `if`, got: {edits:?}"
+                );
             }
         }
         Err(e) => {

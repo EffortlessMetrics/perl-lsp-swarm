@@ -10,7 +10,6 @@ This document provides a comprehensive reference for all perl-lsp configuration 
 - [Configuration Options](#configuration-options)
   - [Workspace Settings](#workspace-settings)
   - [Inlay Hints](#inlay-hints)
-  - [Test Runner](#test-runner)
   - [Resource Limits](#resource-limits)
   - [DAP Configuration](#dap-settings)
   - [Environment Variables](#environment-variables)
@@ -40,7 +39,6 @@ The perl-lsp server configuration is hierarchical, with all settings nested unde
   "perl": {
     "workspace": { ... },
     "inlayHints": { ... },
-    "testRunner": { ... },
     "limits": { ... }
   }
 }
@@ -93,9 +91,6 @@ Debug Adapter Protocol configuration is *not* part of this `perl.*` namespace â€
         },
         "inlayHints": {
           "$ref": "#/definitions/inlayHints"
-        },
-        "testRunner": {
-          "$ref": "#/definitions/testRunner"
         },
         "formatting": {
           "$ref": "#/definitions/formatting"
@@ -188,41 +183,9 @@ Debug Adapter Protocol configuration is *not* part of this `perl.*` namespace â€
       },
       "additionalProperties": false
     },
-    "testRunner": {
-      "type": "object",
-      "description": "Test runner configuration",
-      "properties": {
-        "enabled": {
-          "type": "boolean",
-          "description": "Enable the integrated test runner",
-          "default": true
-        },
-        "command": {
-          "type": "string",
-          "description": "Command to run tests",
-          "default": "perl"
-        },
-        "args": {
-          "type": "array",
-          "description": "Additional arguments to pass to the test command",
-          "items": {
-            "type": "string"
-          },
-          "default": []
-        },
-        "timeout": {
-          "type": "number",
-          "description": "Maximum time (ms) to wait for test execution",
-          "minimum": 1000,
-          "maximum": 300000,
-          "default": 60000
-        }
-      },
-      "additionalProperties": false
-    },
     "formatting": {
       "type": "object",
-      "description": "Native-first formatter configuration. The default engine is native; external perltidy is explicit compatibility mode.",
+      "description": "Native-first formatter configuration for generic LSP client settings. External perltidy remains project-configured.",
       "properties": {
         "enabled": {
           "type": "boolean",
@@ -231,13 +194,9 @@ Debug Adapter Protocol configuration is *not* part of this `perl.*` namespace â€
         },
         "engine": {
           "type": "string",
-          "description": "Formatter engine: native, compat/perltidy-compat, external-perltidy/external-legacy/perltidy, or off/disabled/none",
-          "enum": ["native", "compat", "perltidy-compat", "external-perltidy", "external-legacy", "perltidy", "off", "disabled", "none"],
+          "description": "Formatter engine for generic LSP client settings: native, compat, or off",
+          "enum": ["native", "compat", "off"],
           "default": "native"
-        },
-        "perltidy_profile": {
-          "type": "string",
-          "description": "Path to a .perltidyrc profile used for compatibility reporting or explicit external mode"
         },
         "perltidy_maximum_line_length": {
           "type": "integer",
@@ -796,117 +755,6 @@ Maximum length of inlay hint text before truncation.
 
 ---
 
-### Test Runner
-
-Configuration for integrated test execution.
-
-#### `perl.testRunner.enabled`
-
-| Property | Value |
-|----------|-------|
-| Type | `boolean` |
-| Default | `true` |
-| Source | `crates/perl-lsp-rs-core/src/config/mod.rs` |
-
-Enable the integrated test runner.
-
-**Example:**
-
-```json
-{
-  "perl": {
-    "testRunner": {
-      "enabled": true
-    }
-  }
-}
-```
-
-#### `perl.testRunner.command`
-
-| Property | Value |
-|----------|-------|
-| Type | `string` |
-| Default | `"perl"` |
-| Source | `crates/perl-lsp-rs-core/src/config/mod.rs` |
-
-Command to run tests.
-
-**Example:**
-
-```json
-{
-  "perl": {
-    "testRunner": {
-      "command": "prove"
-    }
-  }
-}
-```
-
-**Validation Rules:**
-- Must be valid executable name or path
-- Must be in system PATH
-
-#### `perl.testRunner.args`
-
-| Property | Value |
-|----------|-------|
-| Type | `string[]` |
-| Default | `[]` |
-| Maximum | 20 items |
-| Source | `crates/perl-lsp-rs-core/src/config/mod.rs` |
-
-Additional arguments to pass to the test command.
-
-**Example:**
-
-```json
-{
-  "perl": {
-    "testRunner": {
-      "command": "prove",
-      "args": ["-l", "-v", "--timer"]
-    }
-  }
-}
-```
-
-**Validation Rules:**
-- Each argument must be a valid string
-- Maximum 20 arguments to prevent command injection
-
-#### `perl.testRunner.timeout`
-
-| Property | Value |
-|----------|-------|
-| Type | `number` (milliseconds) |
-| Default | `60000` |
-| Minimum | `1000` |
-| Maximum | `300000` |
-| Source | `crates/perl-lsp-rs-core/src/config/mod.rs` |
-
-Maximum time to wait for test execution.
-
-**Example:**
-
-```json
-{
-  "perl": {
-    "testRunner": {
-      "timeout": 120000
-    }
-  }
-}
-```
-
-**Validation Rules:**
-- Must be positive integer
-- Values below 1000ms may timeout on slow tests
-- Values above 300000ms (5 minutes) may cause UI freezes
-
----
-
 ### Resource Limits
 
 Configuration for bounded behavior and performance tuning.
@@ -1316,12 +1164,6 @@ export PERL5LIB="/path/to/lib:/another/path"
       "typeHints": true,
       "chainedHints": true,
       "maxLength": 50
-    },
-    "testRunner": {
-      "enabled": true,
-      "command": "prove",
-      "args": ["-l", "-v", "--timer"],
-      "timeout": 120000
     },
     "limits": {
       "workspaceSymbolCap": 500,

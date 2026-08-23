@@ -381,6 +381,14 @@ impl TypeInferenceEngine {
         fact
     }
 
+    /// Sets a source-backed fact in the engine's global environment.
+    ///
+    /// This is useful for provider integrations that receive richer facts from
+    /// an upstream semantic pass than the local expression walk can derive.
+    pub fn set_variable_fact(&mut self, name: String, fact: TypeFact) {
+        self.global_env.set_variable_fact(name, fact);
+    }
+
     /// Infer type for a single node
     fn infer_node(
         &mut self,
@@ -761,6 +769,28 @@ impl TypeInferenceEngine {
             }),
             NodeKind::VariableWithAttributes { variable, .. } => {
                 self.infer_expr_fact_in_env(variable, env)
+            }
+            NodeKind::Ternary { then_expr, else_expr, .. } => {
+                let then_fact = self.infer_expr_fact_in_env(then_expr, env);
+                let else_fact = self.infer_expr_fact_in_env(else_expr, env);
+
+                if then_fact.confidence == Confidence::High
+                    && else_fact.confidence == Confidence::High
+                    && then_fact.dynamic_boundary.is_none()
+                    && else_fact.dynamic_boundary.is_none()
+                    && is_object_only_type(&then_fact.ty)
+                    && is_object_only_type(&else_fact.ty)
+                {
+                    let mut fact = TypeFact::new(
+                        PerlType::Union(vec![then_fact.ty.clone(), else_fact.ty.clone()]),
+                        Confidence::High,
+                    );
+                    fact.evidence.extend(then_fact.evidence);
+                    fact.evidence.extend(else_fact.evidence);
+                    fact
+                } else {
+                    TypeFact::unknown()
+                }
             }
             NodeKind::ArrayLiteral { elements } => self.array_literal_fact(elements, env),
             NodeKind::HashLiteral { pairs } => self.hash_literal_fact(pairs, env),
@@ -1686,6 +1716,15 @@ fn object_package_from_type(ty: &PerlType) -> Option<String> {
         PerlType::Reference(inner) => object_package_from_type(inner),
         PerlType::Union(types) => types.iter().find_map(object_package_from_type),
         _ => None,
+    }
+}
+
+fn is_object_only_type(ty: &PerlType) -> bool {
+    match ty {
+        PerlType::Object(_) => true,
+        PerlType::Reference(inner) => is_object_only_type(inner),
+        PerlType::Union(types) => !types.is_empty() && types.iter().all(is_object_only_type),
+        _ => false,
     }
 }
 

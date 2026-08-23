@@ -5,22 +5,23 @@
 //!
 //! - Protocol type serde round-trips (AC5)
 //! - DapMessage serialization/deserialization
-//! - DapServer/DapConfig construction and mode handling
+//! - Native DapServer/DapConfig construction and mode handling
 //! - BreakpointStore edge cases (is_empty, hit outcomes, edit adjustments)
 //! - BreakpointRecord::to_protocol fidelity
 //! - Inline value edge cases
-//! - TcpAttachConfig builder ergonomics
+//! - Launch/attach configuration boundaries
 //! - Feature catalog runtime queries
 
 use perl_dap::breakpoints::{BreakpointRecord, BreakpointStore};
 use perl_dap::protocol::*;
 use perl_dap::{
-    AttachConfiguration, DapConfig, DapMessage, DapMode, DapServer, DebugAdapter,
-    LaunchConfiguration,
+    AttachConfiguration, DapConfig, DapMessage, DapMode, DapServer, DapSocketBindError,
+    DebugAdapter, LaunchConfiguration,
 };
 use serde_json::json;
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{self, Write};
+use std::net::TcpListener;
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
 
@@ -57,7 +58,6 @@ fn test_request_without_arguments() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let json = serde_json::to_string(&request)?;
-    // arguments should be omitted from JSON
     assert!(!json.contains("arguments"), "None arguments should be skipped in serialization");
 
     let deserialized: Request = serde_json::from_str(&json)?;
@@ -170,7 +170,6 @@ fn test_source_breakpoint_minimal() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let json = serde_json::to_string(&bp)?;
-    // Optional fields should be omitted
     assert!(!json.contains("column"));
     assert!(!json.contains("condition"));
     assert!(!json.contains("hitCondition"));
@@ -447,7 +446,6 @@ fn test_control_flow_arguments_round_trip() -> Result<(), Box<dyn std::error::Er
     let step_out_args = StepOutArguments { thread_id: 1 };
     let pause_args = PauseArguments { thread_id: 1 };
 
-    // Verify each round-trips correctly
     let json = serde_json::to_string(&continue_args)?;
     let c: ContinueArguments = serde_json::from_str(&json)?;
     assert_eq!(c.thread_id, 1);
@@ -794,7 +792,7 @@ fn test_dap_message_response_error_serde() -> Result<(), Box<dyn std::error::Err
 }
 
 // ============================================================================
-// DapServer / DapConfig / DapMode tests
+// Native DapServer / DapConfig / DapMode tests
 // ============================================================================
 
 #[test]
@@ -804,19 +802,11 @@ fn test_dap_mode_default_is_native() {
 }
 
 #[test]
-fn test_dap_mode_equality() {
-    assert_eq!(DapMode::Native, DapMode::Native);
-    assert_eq!(DapMode::Bridge, DapMode::Bridge);
-    assert_ne!(DapMode::Native, DapMode::Bridge);
-}
-
-#[test]
 fn test_dap_mode_clone_and_debug() {
-    let mode = DapMode::Bridge;
+    let mode = DapMode::Native;
     let cloned = mode.clone();
-    assert_eq!(cloned, DapMode::Bridge);
-    let debug_str = format!("{:?}", mode);
-    assert!(debug_str.contains("Bridge"));
+    assert_eq!(cloned, DapMode::Native);
+    assert_eq!(format!("{mode:?}"), "Native");
 }
 
 #[test]
@@ -833,28 +823,22 @@ fn test_dap_server_creation_native() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_dap_server_creation_bridge() -> Result<(), Box<dyn std::error::Error>> {
+fn native_socket_preserves_bind_error_identity() -> Result<(), Box<dyn std::error::Error>> {
+    let occupied = TcpListener::bind(("127.0.0.1", 0))?;
+    let port = occupied.local_addr()?.port();
     let config =
-        DapConfig { log_level: "debug".to_string(), mode: DapMode::Bridge, workspace_root: None };
-    let server = DapServer::new(config)?;
-    assert_eq!(server.config.mode, DapMode::Bridge);
-    assert!(server.config.workspace_root.is_none());
-    Ok(())
-}
-
-#[test]
-fn test_dap_server_socket_rejects_bridge_mode() -> Result<(), Box<dyn std::error::Error>> {
-    let config =
-        DapConfig { log_level: "info".to_string(), mode: DapMode::Bridge, workspace_root: None };
+        DapConfig { log_level: "info".to_string(), mode: DapMode::Native, workspace_root: None };
     let mut server = DapServer::new(config)?;
-    let result = server.run_socket(0);
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(
-        err.to_string().contains("not supported in bridge mode"),
-        "Expected bridge mode error, got: {}",
-        err
-    );
+
+    let error = server.run_socket(port).expect_err("occupied port must fail before accept");
+    let marker = error
+        .downcast_ref::<DapSocketBindError>()
+        .ok_or_else(|| io::Error::other("missing DAP bind marker"))?;
+    assert_eq!(marker.port, port);
+    let source = error
+        .downcast_ref::<io::Error>()
+        .ok_or_else(|| io::Error::other("missing underlying io error"))?;
+    assert_eq!(source.kind(), io::ErrorKind::AddrInUse);
     Ok(())
 }
 
@@ -977,7 +961,6 @@ fn test_breakpoint_hit_outcome_default() {
 #[test]
 fn test_register_breakpoint_hit_no_match() {
     let store = BreakpointStore::new();
-    // No breakpoints registered at all
     let outcome = store.register_breakpoint_hit("/some/file.pl", 10);
     assert!(!outcome.matched);
     assert!(!outcome.should_stop);
@@ -987,7 +970,6 @@ fn test_register_breakpoint_hit_no_match() {
 #[test]
 fn test_register_breakpoint_hit_unverified_breakpoint_not_matched() {
     let store = BreakpointStore::new();
-    // Set a breakpoint on a file that doesn't exist (will be unverified)
     let args = SetBreakpointsArguments {
         source: Source { path: Some("/nonexistent/file.pl".to_string()), name: None },
         breakpoints: Some(vec![SourceBreakpoint {
@@ -1003,7 +985,6 @@ fn test_register_breakpoint_hit_unverified_breakpoint_not_matched() {
     assert!(!bps.is_empty());
     assert!(!bps[0].verified);
 
-    // Hitting the line should not match because breakpoint is unverified
     let outcome = store.register_breakpoint_hit("/nonexistent/file.pl", 10);
     assert!(!outcome.matched);
 }
@@ -1012,7 +993,6 @@ fn test_register_breakpoint_hit_unverified_breakpoint_not_matched() {
 fn test_adjust_breakpoints_for_edit_negative_delta_clamps_to_one() {
     let store = BreakpointStore::new();
 
-    // Use set_breakpoints with a real temp file
     let (_file, source_path) = create_test_perl_file();
     let args = SetBreakpointsArguments {
         source: Source { path: Some(source_path.clone()), name: None },
@@ -1027,11 +1007,9 @@ fn test_adjust_breakpoints_for_edit_negative_delta_clamps_to_one() {
     };
     store.set_breakpoints(&args);
 
-    // Removing 10 lines at line 2 should push bp from line 5 down to clamped value
     store.adjust_breakpoints_for_edit(&source_path, 2, -10);
     let bps = store.get_breakpoints(&source_path);
     assert_eq!(bps.len(), 1);
-    // Line 5 - 10 = -5, clamped to 1
     assert_eq!(bps[0].line, 1);
     assert!(!bps[0].verified, "Breakpoint should be invalidated by edit");
     assert!(
@@ -1125,7 +1103,6 @@ fn test_inline_values_empty_source() {
 #[test]
 fn test_inline_values_out_of_range() {
     let source = "my $x = 1;\nmy $y = 2;\n";
-    // Start line beyond file length
     let values = perl_dap::inline_values::collect_inline_values(source, 100, 200);
     assert!(values.is_empty());
 }
@@ -1145,9 +1122,7 @@ fn test_inline_values_line_and_column_are_one_based() {
     let source = "my $x = 1;\n";
     let values = perl_dap::inline_values::collect_inline_values(source, 1, 1);
     assert!(!values.is_empty());
-    // line should be 1-based
     assert!(values.iter().all(|v| v.line >= 1));
-    // column should be 1-based
     assert!(values.iter().all(|v| v.column >= 1));
 }
 
@@ -1155,9 +1130,6 @@ fn test_inline_values_line_and_column_are_one_based() {
 fn test_inline_values_no_variables() {
     let source = "use strict;\nuse warnings;\n# comment\n";
     let values = perl_dap::inline_values::collect_inline_values(source, 1, 3);
-    // These lines have no scalar variables to extract
-    // (use strict/warnings might match $_ or other patterns depending on regex)
-    // Just verify it doesn't panic
     let _ = values;
 }
 
@@ -1168,7 +1140,6 @@ fn test_inline_values_no_variables() {
 #[test]
 fn test_debug_adapter_new() {
     let _adapter = DebugAdapter::new();
-    // Just verify it constructs successfully without panic
 }
 
 // ============================================================================
@@ -1262,7 +1233,6 @@ fn test_attach_config_min_valid_port() -> Result<(), Box<dyn std::error::Error>>
 
 #[test]
 fn test_attach_config_boundary_timeout() -> Result<(), Box<dyn std::error::Error>> {
-    // Exactly 300000 (5 minutes) should be valid
     let config = AttachConfiguration {
         host: "localhost".to_string(),
         port: 13603,
@@ -1271,7 +1241,6 @@ fn test_attach_config_boundary_timeout() -> Result<(), Box<dyn std::error::Error
     };
     config.validate()?;
 
-    // 300001 should fail
     let config = AttachConfiguration {
         host: "localhost".to_string(),
         port: 13603,
@@ -1604,7 +1573,6 @@ fn test_scope_includes_pagination_hints() -> Result<(), Box<dyn std::error::Erro
     assert_eq!(deserialized.named_variables, Some(5));
     assert_eq!(deserialized.indexed_variables, Some(0));
 
-    // Verify optional fields are skipped when None
     let scope_without_hints = Scope {
         name: "Globals".to_string(),
         presentation_hint: None,
@@ -1615,7 +1583,6 @@ fn test_scope_includes_pagination_hints() -> Result<(), Box<dyn std::error::Erro
     };
 
     let json_without = serde_json::to_string(&scope_without_hints)?;
-    // Verify the JSON doesn't contain these fields when None
     assert!(!json_without.contains("namedVariables"));
     assert!(!json_without.contains("indexedVariables"));
 

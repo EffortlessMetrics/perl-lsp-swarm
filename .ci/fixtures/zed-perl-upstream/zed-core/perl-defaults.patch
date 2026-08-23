@@ -1,0 +1,14 @@
+diff --git a/assets/settings/default.json b/assets/settings/default.json
+index a03ad88742..0000000000 100644
+--- a/assets/settings/default.json
++++ b/assets/settings/default.json
+@@ -2322,6 +2322,9 @@
+         "allowed": true,
+       },
+     },
++    "Perl": {
++      "language_servers": ["perlnavigator-server", "!perl-lsp", "!perllsp", "..."],
++    },
+     "PHP": {
+       "language_servers": ["phpactor", "!intelephense", "!phptools", "!phpantom", "..."],
+       "prettier": {

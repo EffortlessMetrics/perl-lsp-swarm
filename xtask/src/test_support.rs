@@ -43,7 +43,10 @@ impl FakeCargo {
         fs::write(
             &metadata_path,
             format!(
-                "{{\"packages\":[{{\"id\":\"fake 0.1.0 (path+file:///fake)\",\"name\":\"fake\",\"manifest_path\":{manifest_json}}}],\"workspace_members\":[\"fake 0.1.0 (path+file:///fake)\"]}}"
+                // `edition` mirrors the fake manifest above. Real `cargo metadata`
+                // emits it for every package, and staged formatting reads it to
+                // pass `rustfmt --edition` (bare rustfmt would default to 2015).
+                "{{\"packages\":[{{\"id\":\"fake 0.1.0 (path+file:///fake)\",\"name\":\"fake\",\"manifest_path\":{manifest_json},\"edition\":\"2024\"}}],\"workspace_members\":[\"fake 0.1.0 (path+file:///fake)\"]}}"
             ),
         )
         .context("write fake metadata")?;

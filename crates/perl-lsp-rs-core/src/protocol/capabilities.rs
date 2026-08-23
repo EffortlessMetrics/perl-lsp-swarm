@@ -497,17 +497,16 @@ mod tests {
     /// advertising it would make clients send requests the server cannot handle.
     /// `source.modernize` must appear: it was added in PR #5384 but was missing
     /// from the JSON fixtures until they were regenerated (#5357).
+    /// `source.organizeImports` must NOT appear (#8305): its only implementation
+    /// was a destructive line-oriented sorter, withdrawn from every request
+    /// path; advertisement may return only with the proven #10696 cohort.
     ///
     /// The expected list intentionally duplicates `sections.rs::code_action_kinds`
     /// rather than sharing a constant — divergence between the two is the thing
     /// this test is meant to catch.
     #[test]
     fn code_action_kinds_include_exact_advertised_set() {
-        let flags = BuildFlags {
-            code_actions: true,
-            source_organize_imports: true,
-            ..BuildFlags::default()
-        };
+        let flags = BuildFlags { code_actions: true, ..BuildFlags::default() };
         let caps = capabilities_for(flags);
 
         let kinds: Vec<String> = match caps.code_action_provider.as_ref() {
@@ -524,7 +523,6 @@ mod tests {
         // Duplicate the full ordered list from sections.rs::code_action_kinds().
         let expected: &[&str] = &[
             "quickfix",
-            "source.organizeImports",
             "refactor",
             "refactor.extract",
             "refactor.rewrite",
@@ -537,6 +535,35 @@ mod tests {
             "codeActionKinds must match the exact ordered list — extra kinds (e.g. \
              refactor.inline) or omissions (e.g. source.modernize) break client filtering"
         );
+    }
+
+    /// `source.organizeImports` is withdrawn (#8305): no build profile may
+    /// advertise it while the destructive line-oriented sorter has no proven
+    /// replacement. Restoration (#8319/#10696) must re-introduce advertisement
+    /// together with a working implementation.
+    #[test]
+    fn withdrawn_organizer_kind_is_absent_from_every_profile() {
+        for (profile, flags) in [
+            ("default", BuildFlags::default()),
+            ("production", BuildFlags::production()),
+            ("ga_lock", BuildFlags::ga_lock()),
+            ("all", BuildFlags::all()),
+        ] {
+            let caps = capabilities_for(flags);
+            let kinds: Vec<String> = match caps.code_action_provider.as_ref() {
+                Some(CodeActionProviderCapability::Options(opts)) => opts
+                    .code_action_kinds
+                    .as_ref()
+                    .map(|kinds| kinds.iter().map(|k| k.as_str().to_string()).collect())
+                    .unwrap_or_default(),
+                // Absent provider advertises nothing — also acceptable.
+                _ => Vec::new(),
+            };
+            assert!(
+                !kinds.iter().any(|kind| kind == "source.organizeImports"),
+                "{profile} profile must not advertise source.organizeImports; got {kinds:?}"
+            );
+        }
     }
 
     /// Pin the `signatureHelpProvider.triggerCharacters` as `["(", ","]`.
@@ -789,11 +816,7 @@ mod tests {
     /// (both must appear), so a targeted test catches if one is dropped.
     #[test]
     fn code_action_source_fix_all_and_quickfix_are_both_present() {
-        let flags = BuildFlags {
-            code_actions: true,
-            source_organize_imports: true,
-            ..BuildFlags::default()
-        };
+        let flags = BuildFlags { code_actions: true, ..BuildFlags::default() };
         let caps = capabilities_for(flags);
 
         let kinds: Vec<String> = match caps.code_action_provider.as_ref() {

@@ -128,7 +128,12 @@ but no shipped rule uses them.)
   the full catalog under any profile), remembering that a non-empty `include`
   runs *only* the listed rules. To run the whole strict set instead, set
   `[critic] profile = "strict"` and `exclude` the ones you don't want.
-- Suppress inline: a `## no critic` comment on the offending line.
+- Suppress inline with a `## no critic <rule ids>` comment. The directive opens
+  at its own line and stays open until a `## use critic` comment closes it, or
+  until the end of the file if nothing closes it. It never applies to findings
+  above itself, so placing one on the offending line also suppresses every later
+  matching finding in the file — close it with `## use critic` to bound the
+  region. This is a native contract, not Perl::Critic statement-scoped parity.
 
 ## Related
 

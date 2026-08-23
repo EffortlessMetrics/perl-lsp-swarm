@@ -23,15 +23,16 @@ mod tests {
     /// Helper: parse code and return the first statement's expression node.
     fn first_expr(code: &str) -> Node {
         let ast = parse_program(code);
-        match ast.kind {
-            NodeKind::Program { mut statements } if !statements.is_empty() => {
+        let sexp = ast.to_sexp();
+        match ast.into_parts() {
+            (NodeKind::Program { mut statements }, _) if !statements.is_empty() => {
                 let stmt = statements.swap_remove(0);
-                match stmt.kind {
+                match stmt.into_parts().0 {
                     NodeKind::ExpressionStatement { expression } => *expression,
                     other => panic!("Expected ExpressionStatement, got: {}", other.kind_name()),
                 }
             }
-            _ => panic!("Expected Program with statements, got: {}", ast.to_sexp()),
+            _ => panic!("Expected Program with statements, got: {sexp}"),
         }
     }
 

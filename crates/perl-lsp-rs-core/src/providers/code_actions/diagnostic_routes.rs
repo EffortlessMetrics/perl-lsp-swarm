@@ -109,8 +109,11 @@ fn quick_fixes_for_diagnostic(
         // PL109: Unquoted bareword
         c if c == DiagnosticCode::UnquotedBareword.as_str() => {
             actions.extend(quick_fixes::fix_bareword(source, &qf_diag));
-            // Also offer an import action when the bareword resolves to a known module.
-            actions.extend(quick_fixes::fix_import_for_bareword_function(source, &qf_diag));
+            // The name-affinity import fix is withdrawn (#10690): a PL109
+            // presentation does not prove an importable callable, and the
+            // hard-coded spelling table is not edit authorization. Quote and
+            // filehandle fixes above keep their own contracts; restoration
+            // requires #790/#8948.
         }
         // PL001: General parse error (stable code)
         // PL002: Syntax error — same quick-fix routing as PL001
@@ -210,10 +213,11 @@ fn quick_fixes_for_diagnostic(
         c if c == DiagnosticCode::DuplicateHashKey.as_str() => {
             actions.extend(quick_fixes::fix_duplicate_hash_keys(source, &qf_diag));
         }
-        // PL700: Unused import
-        c if c == DiagnosticCode::UnusedImport.as_str() => {
-            actions.extend(quick_fixes::fix_unused_import(source, &qf_diag));
-        }
+        // PL700: Unused import — withdrawn (#11079). Diagnostic prose, code,
+        // range, or line shape grants no import-edit authority until the
+        // exact replacement trains land (#1719 explicit-symbol removal,
+        // #8322 complete module-load assessment). The diagnostic remains an
+        // advisory-only surface.
         // PL501: Deprecated $[ array base variable
         c if c == DiagnosticCode::DeprecatedArrayBase.as_str() => {
             actions.extend(quick_fixes::fix_deprecated_array_base(source, &qf_diag));
@@ -254,6 +258,7 @@ mod tests {
             related_information: Vec::new(),
             tags: Vec::new(),
             suggestion: None,
+            fixable: false,
         }
     }
 

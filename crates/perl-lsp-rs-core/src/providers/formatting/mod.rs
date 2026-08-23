@@ -1,29 +1,13 @@
-//! LSP formatting provider for Perl
+//! LSP formatting provider for Perl.
 //!
-//! This crate provides code formatting functionality for Perl using perltidy.
-//!
-//! ## Features
-//!
-//! - Perltidy integration
-//! - Configurable formatting options
-//! - LSP protocol compatibility
-//!
-//! ## Usage
-//!
-//! ```rust,ignore
-//! use perl_lsp_formatting::{FormattingProvider, PerlTidyConfig};
-//! use perl_lsp_tooling::OsSubprocessRuntime;
-//!
-//! let runtime = OsSubprocessRuntime::new();
-//! let config = PerlTidyConfig::default();
-//! let provider = FormattingProvider::new(runtime).with_perltidy_config(config);
-//! let formatted = provider.format_document(source, &options)?;
-//! ```
+//! Native formatting is the default. External Perl::Tidy remains an explicit
+//! compatibility adapter. Callers that need to distinguish no-change from
+//! refusal or failure should consume [`FormattingDecision`].
 
 #[allow(clippy::module_inception)]
 mod formatting;
 
 pub use formatting::{
-    FormatPosition, FormatRange, FormatTextEdit, FormattedDocument, FormattingError,
-    FormattingOptions, FormattingProvider, PerlTidyConfig,
+    FormatPosition, FormatRange, FormatTextEdit, FormattedDocument, FormattingDecision,
+    FormattingError, FormattingOptions, FormattingProvider, PerlTidyConfig,
 };

@@ -7,6 +7,7 @@ mod diagnostics;
 mod edit;
 mod lex;
 mod reparse;
+mod snapshot;
 mod state;
 mod strategy;
 
@@ -18,11 +19,21 @@ pub use checkpoint::{LexCheckpoint, ParseCheckpoint, ScopeSnapshot};
 pub use diagnostics::{LexRestartReport, LexRestartStrategy, ReparseResult};
 pub use edit::Edit;
 pub use lex::MAX_STORED_LEX_CHECKPOINTS;
+pub use lex::MAX_STORED_LEX_CHECKPOINTS;
 use reparse::{apply_single_edit, apply_text_edit_to_state, full_reparse};
+pub use snapshot::{
+    ParseGeneration, ParseSnapshot, ParseSnapshotStrategy, ParseSnapshotValidationError,
+    ParseTerminalDisposition,
+};
 pub use state::IncrementalState;
 pub use strategy::MAX_EDIT_SIZE;
 
+// Keep the raw engine private; the public facade normalizes complete-tree accounting.
+/// Canonical advanced-reuse analyzer and public accounting types.
+#[path = "incremental_advanced_reuse_facade.rs"]
 pub mod incremental_advanced_reuse;
+#[path = "incremental_advanced_reuse.rs"]
+mod incremental_advanced_reuse_engine;
 #[cfg(test)]
 mod incremental_boundary_regressions;
 pub mod incremental_checkpoint;
@@ -103,7 +114,7 @@ fn unchanged_result(state: &IncrementalState) -> ReparseResult {
     };
     ReparseResult {
         changed_ranges: Vec::new(),
-        parse_output: state.parse_output().clone(),
+        snapshot: state.snapshot().clone(),
         diagnostics: Vec::new(),
         lex_restart,
         reparsed_bytes: 0,
@@ -137,6 +148,8 @@ pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<Repar
         return Ok(unchanged_result(state));
     }
 
+    // Edits use coordinates from the same old source generation. Applying them
+    // from the end preserves every earlier coordinate without offset adjustment.
     let mut sorted_edits = edits.to_vec();
     sorted_edits.sort_by_key(|edit| edit.start_byte);
     sorted_edits.reverse();
@@ -152,17 +165,23 @@ pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<Repar
             return full_reparse_after_edits(state, &sorted_edits);
         }
 
+        // Work on a candidate generation. A token-path failure may happen after
+        // mutating source or token state; no partial generation is published.
         let mut candidate = state.clone();
         let reparse = match apply_single_edit(&mut candidate, edit) {
             Ok(reparse) => reparse,
             Err(_) => return full_reparse_after_edits(state, &sorted_edits),
         };
 
-        candidate.refresh_parse_output();
+        // The token fast path does not define a second parser-output contract.
+        // Refresh from the same recovery-aware parser entry point used by a
+        // fresh parse, then report the complete parser work truthfully.
+        candidate
+            .refresh_parse_output(ParseSnapshotStrategy::IncrementalTokenRestartThenFullParse)?;
         let reused_tokens = reparse.lex_restart.reused_tokens();
         let result = ReparseResult {
             changed_ranges: vec![reparse.range],
-            parse_output: candidate.parse_output().clone(),
+            snapshot: candidate.snapshot().clone(),
             diagnostics: vec![],
             lex_restart: reparse.lex_restart,
             reparsed_bytes: candidate.source().len(),
@@ -172,6 +191,9 @@ pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<Repar
         *state = candidate;
         Ok(result)
     } else {
+        // Multi-edit batches already finish with a complete parser invocation.
+        // Apply the whole validated batch first rather than publishing a prefix
+        // when one intermediate token-restart attempt fails.
         full_reparse_after_edits(state, &sorted_edits)
     }
 }

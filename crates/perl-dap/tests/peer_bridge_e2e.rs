@@ -16,7 +16,9 @@ use std::net::{TcpListener, TcpStream};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use perl_dap::backend::capabilities::ControlMode;
 use perl_dap::backend::external_peer::ExternalDebuggerPeerBackend;
+use perl_dap::backend::peer_launch::PeerListenEndpoint;
 use perl_dap::backend::{DapPeerBridge, run_external_peer_session};
 use perl_dap::debug_adapter::DapMessage;
 use perl_dap::peer_protocol::message::{
@@ -33,7 +35,7 @@ use perl_lsp_rs_core::transport::{ContentLengthFramer, frame};
 
 /// A fake ptkdb peer: connects to `addr`, sends hello, answers debugger/*
 /// requests, and — on `debugger/continue` — emits a `debugger/stopped` event.
-fn spawn_fake_peer(addr: std::net::SocketAddr) -> JoinHandle<()> {
+fn spawn_fake_peer(addr: std::net::SocketAddr, token: Option<String>) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let stream = match TcpStream::connect(addr) {
             Ok(s) => s,
@@ -62,7 +64,7 @@ fn spawn_fake_peer(addr: std::net::SocketAddr) -> JoinHandle<()> {
                 peer: "FakePtkdb".to_string(),
                 peer_version: Some("0.1".to_string()),
                 protocol_version: PROTOCOL_VERSION.to_string(),
-                token: None,
+                token,
                 capabilities: caps,
             })
             .ok(),
@@ -257,13 +259,19 @@ fn find_event<'a>(msgs: &'a [DapMessage], name: &str) -> Option<&'a DapMessage> 
 #[test]
 fn full_dap_session_drives_the_live_peer_backend() -> Result<(), Box<dyn std::error::Error>> {
     // Fake ptkdb peer listens; the backend connects to it.
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    let peer = spawn_fake_peer(addr);
+    let (listener, endpoint) =
+        PeerListenEndpoint::bind("127.0.0.1", 0, ControlMode::Mirror).expect("bind");
+    let addr = endpoint.addr;
+    let token = endpoint.session_token();
+    let credential = endpoint.session_credential();
+    let peer = spawn_fake_peer(addr, Some(token.clone()));
     let (stream, _) = listener.accept().expect("accept");
-    let backend =
-        ExternalDebuggerPeerBackend::from_connected_stream(stream, Duration::from_secs(5))
-            .expect("backend");
+    let backend = ExternalDebuggerPeerBackend::from_connected_stream_with_token(
+        stream,
+        Duration::from_secs(5),
+        credential,
+    )
+    .expect("backend");
 
     let mut bridge = DapPeerBridge::new(Box::new(backend));
 
@@ -338,9 +346,12 @@ fn full_dap_session_drives_the_live_peer_backend() -> Result<(), Box<dyn std::er
 #[test]
 fn run_external_peer_session_serves_dap_over_a_socket() {
     // Fake ptkdb peer (peer side) and an editor listener (editor side).
-    let peer_listener = TcpListener::bind(("127.0.0.1", 0)).expect("peer bind");
-    let peer_addr = peer_listener.local_addr().expect("peer addr");
-    let peer = spawn_fake_peer(peer_addr);
+    let (peer_listener, endpoint) =
+        PeerListenEndpoint::bind("127.0.0.1", 0, ControlMode::Mirror).expect("peer bind");
+    let peer_addr = endpoint.addr;
+    let peer_token = endpoint.session_token();
+    let peer_credential = endpoint.session_credential();
+    let peer = spawn_fake_peer(peer_addr, Some(peer_token.clone()));
 
     let editor_listener = TcpListener::bind(("127.0.0.1", 0)).expect("editor bind");
     let editor_addr = editor_listener.local_addr().expect("editor addr");
@@ -348,9 +359,12 @@ fn run_external_peer_session_serves_dap_over_a_socket() {
     // Server side: accept the peer, build the bridge, accept the editor, run.
     let server = std::thread::spawn(move || {
         let (peer_stream, _) = peer_listener.accept().expect("accept peer");
-        let backend =
-            ExternalDebuggerPeerBackend::from_connected_stream(peer_stream, Duration::from_secs(5))
-                .expect("backend");
+        let backend = ExternalDebuggerPeerBackend::from_connected_stream_with_token(
+            peer_stream,
+            Duration::from_secs(5),
+            peer_credential,
+        )
+        .expect("backend");
         let bridge = DapPeerBridge::new(Box::new(backend));
         let (editor, _) = editor_listener.accept().expect("accept editor");
         let _ = run_external_peer_session(editor, bridge, Duration::from_millis(50));
@@ -409,18 +423,24 @@ fn socket_session_recovers_from_a_leading_malformed_frame() {
     // A malformed frame arriving before a valid request must NOT tear down the
     // whole socket session: the framer discards just the bad header block, and
     // the driver keeps parsing the well-formed `initialize` that follows.
-    let peer_listener = TcpListener::bind(("127.0.0.1", 0)).expect("peer bind");
-    let peer_addr = peer_listener.local_addr().expect("peer addr");
-    let peer = spawn_fake_peer(peer_addr);
+    let (peer_listener, endpoint) =
+        PeerListenEndpoint::bind("127.0.0.1", 0, ControlMode::Mirror).expect("peer bind");
+    let peer_addr = endpoint.addr;
+    let peer_token = endpoint.session_token();
+    let peer_credential = endpoint.session_credential();
+    let peer = spawn_fake_peer(peer_addr, Some(peer_token.clone()));
 
     let editor_listener = TcpListener::bind(("127.0.0.1", 0)).expect("editor bind");
     let editor_addr = editor_listener.local_addr().expect("editor addr");
 
     let server = std::thread::spawn(move || {
         let (peer_stream, _) = peer_listener.accept().expect("accept peer");
-        let backend =
-            ExternalDebuggerPeerBackend::from_connected_stream(peer_stream, Duration::from_secs(5))
-                .expect("backend");
+        let backend = ExternalDebuggerPeerBackend::from_connected_stream_with_token(
+            peer_stream,
+            Duration::from_secs(5),
+            peer_credential,
+        )
+        .expect("backend");
         let bridge = DapPeerBridge::new(Box::new(backend));
         let (editor, _) = editor_listener.accept().expect("accept editor");
         let _ = run_external_peer_session(editor, bridge, Duration::from_millis(50));

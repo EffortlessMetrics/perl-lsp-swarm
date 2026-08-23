@@ -93,7 +93,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--json-out", type=Path)
     parser.add_argument("--csv-out", type=Path)
-    parser.add_argument("--binary", default=os.environ.get("BINARY", "./target/release/perl-lsp"))
+    parser.add_argument("--binary", default=os.environ.get("BINARY", "./target/release/perllsp"))
     parser.add_argument("--n-files", type=int, default=env_int("N_FILES", 500))
     parser.add_argument("--n-changes", type=int, default=env_int("N_CHANGES", 10))
     parser.add_argument(

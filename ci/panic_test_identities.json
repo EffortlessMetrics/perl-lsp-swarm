@@ -1080,6 +1080,258 @@
       "selector_identity": "invocation:d32cc74f7339487d:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/backend/external_peer.rs",
+      "enclosing_test_or_function": "legacy_listen_constructor_fails_before_binding",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(_) => panic!(\"legacy unauthenticated listen must fail closed\"),",
+      "selector_identity": "invocation:a7b82f19753a4134:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic confirming that a legacy unauthenticated network listener constructor fails closed; panics when the precondition is unexpectedly satisfied.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
+      "enclosing_test_or_function": "text_document_sync_advertises_full_sync_and_open_close",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected TextDocumentSyncCapability::Options, got {other:?}\"),",
+      "selector_identity": "invocation:6cafbb2df5d77115:occurrence:1",
+      "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
+      "enclosing_test_or_function": "code_action_kinds_include_exact_advertised_set",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected CodeActionProviderCapability::Options, got {other:?}\"),",
+      "selector_identity": "invocation:f1d18438aa488814:occurrence:1",
+      "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
+      "enclosing_test_or_function": "semantic_token_types_are_exact_ordered_list",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!( \"expected SemanticTokensServerCapabilities::SemanticTokensOptions, got {other:?}\" ),",
+      "selector_identity": "invocation:817273e04338d1a7:occurrence:1",
+      "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
+      "enclosing_test_or_function": "semantic_token_modifiers_are_exact_ordered_list",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!( \"expected SemanticTokensServerCapabilities::SemanticTokensOptions, got {other:?}\" ),",
+      "selector_identity": "invocation:817273e04338d1a7:occurrence:1",
+      "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
+      "enclosing_test_or_function": "document_symbol_provider_advertised_when_enabled",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!( \"documentSymbolProvider must be true when document_symbol is enabled, \\ not false\" );",
+      "selector_identity": "invocation:23b043b4cfa4f4c0:occurrence:1",
+      "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
+      "enclosing_test_or_function": "document_symbol_provider_advertised_when_enabled",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!( \"documentSymbolProvider must be Some(true) when document_symbol is enabled, \\ got {other:?}\" ),",
+      "selector_identity": "invocation:32c47ff326522f9a:occurrence:1",
+      "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
+      "enclosing_test_or_function": "workspace_symbol_provider_advertises_resolve_when_enabled",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!( \"expected workspaceSymbolProvider to use the Options variant (with \\ resolveProvider), not the simple boolean variant, when \\ workspace_symbol_resolve is enabled\" );",
+      "selector_identity": "invocation:192d81fed2a20e08:occurrence:1",
+      "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
+      "enclosing_test_or_function": "workspace_symbol_provider_advertises_resolve_when_enabled",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!( \"workspaceSymbolProvider must be advertised when workspace_symbol_resolve \\ is enabled\" );",
+      "selector_identity": "invocation:f08a319190540d26:occurrence:1",
+      "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
+      "enclosing_test_or_function": "code_action_source_fix_all_and_quickfix_are_both_present",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected CodeActionProviderCapability::Options, got {other:?}\"),",
+      "selector_identity": "invocation:f1d18438aa488814:occurrence:1",
+      "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/providers/semantic_tokens/semantic_tokens.rs",
+      "enclosing_test_or_function": "first_var_mods",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"no `${name}` variable token found in source: {source:?}\");",
+      "selector_identity": "invocation:e386df44afef8864:occurrence:1",
+      "accepted_reason": "Intentional test-helper diagnostic; panics when no semantic token matching the named variable is found in the computed output, which means the test fixture did not produce the token under inspection.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs/src/runtime/outbound.rs",
+      "enclosing_test_or_function": "send_diagnostics_notification",
+      "macro_family": "panic!",
+      "normalized_snippet": "_ => panic!(\"expected Notification, got something else\"),",
+      "selector_identity": "invocation:70599f6eb32abb14:occurrence:1",
+      "accepted_reason": "Intentional test assertion diagnostic for an unexpected outbound message type; panics when the recording sink receives a message of the wrong variant in the checked notification test.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/indirect_object_tests.rs",
+      "enclosing_test_or_function": "first_statement",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"Expected Program node, got {other:?}\"),",
+      "selector_identity": "invocation:a6178b1355a08a46:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST node kind; panics when the parse result does not match the expected node type, which is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/indirect_object_tests.rs",
+      "enclosing_test_or_function": "test_builtin_indirect_syntax",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"Expected IndirectCall node, got {other:?}\"),",
+      "selector_identity": "invocation:08e0278948e59fa0:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST node kind; panics when the parse result does not match the expected node type, which is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/indirect_object_tests.rs",
+      "enclosing_test_or_function": "test_new_indirect_syntax",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"Expected IndirectCall node, got {other:?}\"),",
+      "selector_identity": "invocation:08e0278948e59fa0:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST node kind; panics when the parse result does not match the expected node type, which is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/indirect_object_tests.rs",
+      "enclosing_test_or_function": "test_unknown_lowercase_name_is_function_call",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"Unknown lowercase names must remain FunctionCall nodes, got {other:?}\")",
+      "selector_identity": "invocation:769aff763b012802:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST node kind; panics when the parse result does not match the expected node type, which is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/indirect_object_tests.rs",
+      "enclosing_test_or_function": "test_parenthesized_expression_statement_span_keeps_closer",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"Expected ExpressionStatement node, got {other:?}\"),",
+      "selector_identity": "invocation:e1a7e807d2ede787:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST node kind; panics when the parse result does not match the expected node type, which is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/indirect_object_tests.rs",
+      "enclosing_test_or_function": "test_parenthesized_builtin_call_span_keeps_closer",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"Expected ExpressionStatement node, got {other:?}\"),",
+      "selector_identity": "invocation:e1a7e807d2ede787:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST node kind; panics when the parse result does not match the expected node type, which is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/indirect_object_tests.rs",
+      "enclosing_test_or_function": "test_parenthesized_builtin_call_span_keeps_closer",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"Expected FunctionCall node, got {other:?}\"),",
+      "selector_identity": "invocation:5566d763aae85d6a:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST node kind; panics when the parse result does not match the expected node type, which is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/indirect_object_tests.rs",
+      "enclosing_test_or_function": "test_unparenthesized_builtin_call_span_covers_argument",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"Expected ExpressionStatement node, got {other:?}\"),",
+      "selector_identity": "invocation:e1a7e807d2ede787:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST node kind; panics when the parse result does not match the expected node type, which is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/indirect_object_tests.rs",
+      "enclosing_test_or_function": "test_unparenthesized_builtin_call_span_covers_argument",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"Expected FunctionCall node, got {other:?}\"),",
+      "selector_identity": "invocation:5566d763aae85d6a:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST node kind; panics when the parse result does not match the expected node type, which is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/indirect_object_tests.rs",
+      "enclosing_test_or_function": "test_require_call_span_covers_string_argument",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"Expected ExpressionStatement node, got {other:?}\"),",
+      "selector_identity": "invocation:e1a7e807d2ede787:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST node kind; panics when the parse result does not match the expected node type, which is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/indirect_object_tests.rs",
+      "enclosing_test_or_function": "test_require_call_span_covers_string_argument",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"Expected FunctionCall node, got {other:?}\"),",
+      "selector_identity": "invocation:5566d763aae85d6a:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST node kind; panics when the parse result does not match the expected node type, which is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/indirect_object_tests.rs",
+      "enclosing_test_or_function": "test_unknown_lowercase_name_preserves_nested_arguments",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"Expected FunctionCall node, got {other:?}\"),",
+      "selector_identity": "invocation:5566d763aae85d6a:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST node kind; panics when the parse result does not match the expected node type, which is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/indirect_object_tests.rs",
+      "enclosing_test_or_function": "test_unknown_lowercase_name_inside_control_flow_is_function_call",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"Expected If node, got {other:?}\"),",
+      "selector_identity": "invocation:39d9b2c92609e49b:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST node kind; panics when the parse result does not match the expected node type, which is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/indirect_object_tests.rs",
+      "enclosing_test_or_function": "test_unknown_lowercase_name_inside_control_flow_is_function_call",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"Expected Block node, got {other:?}\"),",
+      "selector_identity": "invocation:36217d2eb079c7d9:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST node kind; panics when the parse result does not match the expected node type, which is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/indirect_object_tests.rs",
+      "enclosing_test_or_function": "test_unknown_lowercase_name_inside_control_flow_is_function_call",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"Expected FunctionCall node in block, got {other:?}\"),",
+      "selector_identity": "invocation:cc43777f569d8964:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST node kind; panics when the parse result does not match the expected node type, which is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/pr_convergence_contract.rs",
+      "enclosing_test_or_function": "accepted_spec_has_closed_semantic_model",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"PLSP-SPEC-0006: {error}\");",
+      "selector_identity": "invocation:d0d9aee06d608317:occurrence:1",
+      "accepted_reason": "Intentional specification-compliance assertion; panics with a structured PLSP-SPEC code when the closed semantic model required by the convergence contract cannot be parsed or validated.",
+      "state": "active"
     }
   ]
 }

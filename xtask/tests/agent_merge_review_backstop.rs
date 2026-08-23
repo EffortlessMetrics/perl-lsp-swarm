@@ -1,3 +1,6 @@
+// Integration test: `expect()` carries the assertion message on fixture
+// parsing. The workspace-wide deny is a production-code rule.
+#![allow(clippy::expect_used)]
 //! Regression contract for the provider-native review backstop in issue #6060.
 
 use std::fs;

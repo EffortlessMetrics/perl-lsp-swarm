@@ -1,0 +1,9 @@
+project: product
+component: Documentation
+kind: Changed
+body: Align Neovim setup and status docs with actual-client, distribution, and capability evidence.
+time: 2026-08-13T10:40:00Z
+custom:
+  PR: "7867"
+  Slug: neovim-evidence-docs
+  Breaking: "no"

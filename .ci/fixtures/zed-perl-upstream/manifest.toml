@@ -1,0 +1,32 @@
+schema_version = "zed-perllsp-submission.v1"
+status = "submission_ready_not_proven"
+issue = 7759
+
+upstream_repository = "tree-sitter-perl/zed-perl"
+upstream_base = "eb27a19e69fed8a041b706b23a1f42fbafb29fd8"
+zed_repository = "zed-industries/zed"
+
+server_id = "perllsp"
+binary = "perllsp"
+arguments = ["--stdio"]
+release_repository = "EffortlessMetrics/perl-lsp"
+
+managed_targets = [
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-musl",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+]
+
+unsupported_managed_targets = [
+  "aarch64-pc-windows-msvc",
+]
+
+copied_files = [
+  "README.md",
+  "extension.toml",
+  "src/perl.rs",
+  "languages/perl/config.toml",
+  "languages/perl/semantic_token_rules.json",
+]

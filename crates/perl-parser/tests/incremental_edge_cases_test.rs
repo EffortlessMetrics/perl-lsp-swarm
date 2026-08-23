@@ -518,29 +518,40 @@ fn test_memory_pressure_scenarios() -> TestResult {
 fn test_rapid_fire_edits() -> TestResult {
     println!("\n⚡ Testing rapid fire edits...");
 
-    let base_source = "my $counter = 0; my $result = $counter * 2;";
+    // The only literal digit in the base source is the counter value itself.
+    // `create_value_edit` rewrites via `str::replace`, which substitutes every
+    // occurrence, while the `Edit` it returns describes only the first — so a
+    // second literal (the old `* 2`) would desynchronise the edit from the text
+    // it claims to describe.
+    let base_source = "my $counter = 0; my $result = $counter + $counter;";
     let mut parser = IncrementalParserV2::new();
     parser.parse(base_source)?;
 
     let mut cumulative_time = 0u128;
     let mut all_results = Vec::new();
 
+    // Each edit applies to the generation the previous edit produced, not to the
+    // original text. Re-deriving every edit from `base_source` looked for a value
+    // that was no longer present from the third iteration onward.
+    let mut current_source = base_source.to_string();
+
     // Simulate rapid typing by making many small edits in quick succession
     for i in 0..50 {
-        let old_val = if i == 0 { "0" } else { &(i - 1).to_string() };
+        let old_val = if i == 0 { "0".to_string() } else { (i - 1).to_string() };
         let new_val = i.to_string();
 
         let (new_source, edit) =
-            IncrementalTestUtils::create_value_edit(base_source, old_val, &new_val);
+            IncrementalTestUtils::create_value_edit(&current_source, &old_val, &new_val);
 
         let start = Instant::now();
         let result = IncrementalTestUtils::measure_incremental_parse(
             &mut parser,
-            base_source,
+            &current_source,
             edit,
             &new_source,
         );
         let parse_time = start.elapsed();
+        current_source = new_source;
 
         cumulative_time += parse_time.as_micros();
         all_results.push((i, parse_time.as_micros(), result.nodes_reused, result.nodes_reparsed));

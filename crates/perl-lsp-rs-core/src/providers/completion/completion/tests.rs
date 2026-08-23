@@ -1,6 +1,7 @@
 use super::*;
 use crate::providers::file_completion::CWD_LOCK as FILE_COMPLETION_CWD_LOCK;
 use perl_parser_core::Parser;
+use perl_semantic_analyzer::analysis::symbol::{ScopeKind, SymbolExtractor};
 use perl_tdd_support::{must, must_some};
 use perl_workspace::workspace_index::WorkspaceIndex;
 use std::fs;
@@ -45,6 +46,191 @@ $c
 
     assert!(completions.iter().any(|c| c.label == "$count"));
     assert!(completions.iter().any(|c| c.label == "$counter"));
+}
+
+fn union_receiver_workspace_index() -> Result<Arc<WorkspaceIndex>, Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/Foo.pm")?,
+        "package Foo;\nsub shared_method { }\nsub foo_only { }\n1;\n".to_string(),
+    )?;
+    index.index_file(
+        Url::parse("file:///workspace/Bar.pm")?,
+        "package Bar;\nsub shared_method { }\nsub bar_only { }\n1;\n".to_string(),
+    )?;
+    Ok(index)
+}
+
+fn object_receiver_fact(
+    ty: perl_semantic_analyzer::analysis::type_inference::PerlType,
+) -> perl_semantic_analyzer::analysis::type_facts::TypeFact {
+    use perl_semantic_analyzer::analysis::type_facts::TypeEvidence;
+    use perl_semantic_analyzer::analysis::type_facts::TypeFact;
+
+    let mut fact = TypeFact::new(ty, perl_semantic_facts::Confidence::High);
+    fact.evidence = vec![TypeEvidence::WorkspaceSymbol { package: "Foo".to_string() }];
+    fact
+}
+
+fn completion_provider(source: &str) -> Result<CompletionProvider, Box<dyn std::error::Error>> {
+    let mut parser = Parser::new(source);
+    let ast = parser.parse()?;
+    let index = union_receiver_workspace_index()?;
+    Ok(CompletionProvider::new_with_index_and_source(&ast, source, Some(index)))
+}
+
+fn completion_provider_with_receiver_fact(
+    source: &str,
+    receiver_fact: Option<perl_semantic_analyzer::analysis::type_facts::TypeFact>,
+) -> Result<CompletionProvider, Box<dyn std::error::Error>> {
+    let mut provider = completion_provider(source)?;
+
+    if let Some(fact) = receiver_fact {
+        let engine =
+            provider.type_engine.as_mut().ok_or("workspace provider has no type engine")?;
+        engine.set_variable_fact("obj".to_string(), fact);
+    }
+
+    Ok(provider)
+}
+
+fn custom_union_method_labels(completions: &[CompletionItem]) -> Vec<&str> {
+    completions
+        .iter()
+        .filter(|item| matches!(item.label.as_ref(), "shared_method" | "foo_only" | "bar_only"))
+        .map(|item| item.label.as_ref())
+        .collect()
+}
+
+#[test]
+fn production_completion_routes_inferred_union_receiver_to_workspace_methods()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The provider's normal AST inference derives this union from the two
+    // source-backed constructor branches; no test-only fact injection is used.
+    let source = "my $obj = 1 ? Foo->new() : Bar->new();\n$obj->";
+    let provider = completion_provider(source)?;
+    let completions = provider.get_completions(source, source.len());
+
+    let shared: Vec<_> = completions.iter().filter(|item| item.label == "shared_method").collect();
+    let foo_only = completions.iter().find(|item| item.label == "foo_only");
+    let bar_only = completions.iter().find(|item| item.label == "bar_only");
+
+    assert_eq!(shared.len(), 1, "shared union method must be deduplicated");
+    assert!(foo_only.is_some(), "Foo-only method must be offered");
+    assert!(
+        bar_only.is_some(),
+        "Bar-only method proves the second union arm reached production dispatch"
+    );
+
+    let shared_sort = shared[0].sort_text.as_deref().unwrap_or_default();
+    let foo_sort = foo_only.and_then(|item| item.sort_text.as_deref()).unwrap_or_default();
+    assert!(
+        shared_sort.starts_with("2u_"),
+        "shared method should use shared tier, got {shared_sort:?}"
+    );
+    assert!(
+        foo_sort.starts_with("3u_"),
+        "partial method should use partial tier, got {foo_sort:?}"
+    );
+    assert!(
+        shared[0]
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("receiver: union candidates")),
+        "production completion should expose the UnionCandidates evidence route"
+    );
+    Ok(())
+}
+
+#[test]
+fn production_completion_single_package_receiver_does_not_use_union_route()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_semantic_analyzer::analysis::type_inference::PerlType;
+
+    let fact = object_receiver_fact(PerlType::Object("Foo".to_string()));
+    let source = "my $obj;\n$obj->";
+    let provider = completion_provider_with_receiver_fact(source, Some(fact))?;
+    let completions = provider.get_completions(source, source.len());
+    let labels = custom_union_method_labels(&completions);
+
+    assert!(labels.contains(&"foo_only"), "single-package Foo receiver should keep Foo methods");
+    assert!(!labels.contains(&"bar_only"), "single-package receiver must not surface Bar methods");
+    assert!(
+        completions.iter().filter(|item| item.label == "shared_method").all(|item| {
+            !item.detail.as_deref().unwrap_or_default().contains("receiver: union candidates")
+        }),
+        "single-package receiver must not use UnionCandidates evidence"
+    );
+    Ok(())
+}
+
+#[test]
+fn production_completion_unknown_receiver_stays_bounded() -> Result<(), Box<dyn std::error::Error>>
+{
+    let source = "my $obj;\n$obj->";
+    let provider = completion_provider_with_receiver_fact(source, None)?;
+    let completions = provider.get_completions(source, source.len());
+
+    assert!(
+        custom_union_method_labels(&completions).is_empty(),
+        "unknown receiver must not borrow methods from unrelated indexed packages"
+    );
+    Ok(())
+}
+
+#[test]
+fn production_completion_dynamic_receiver_stays_fail_closed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = "my $class = $name;\nmy $obj = bless {}, $class;\n$obj->";
+    let provider = completion_provider_with_receiver_fact(source, None)?;
+    let completions = provider.get_completions(source, source.len());
+
+    assert!(
+        custom_union_method_labels(&completions).is_empty(),
+        "dynamic bless receiver must not use union or unknown fallback methods"
+    );
+    Ok(())
+}
+
+#[test]
+fn production_completion_object_plus_non_object_union_is_not_a_union_receiver()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_semantic_analyzer::analysis::type_inference::PerlType;
+
+    let fact = object_receiver_fact(PerlType::Union(vec![
+        PerlType::Object("Foo".to_string()),
+        PerlType::Scalar(perl_semantic_analyzer::analysis::type_inference::ScalarType::String),
+    ]));
+    let source = "my $obj;\n$obj->";
+    let provider = completion_provider_with_receiver_fact(source, Some(fact))?;
+    let completions = provider.get_completions(source, source.len());
+
+    assert!(
+        custom_union_method_labels(&completions).is_empty(),
+        "object-plus-non-object union must not claim a precise union receiver"
+    );
+    Ok(())
+}
+
+#[test]
+fn production_completion_mixed_multi_object_union_stays_fail_closed()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_semantic_analyzer::analysis::type_inference::{PerlType, ScalarType};
+
+    let fact = object_receiver_fact(PerlType::Union(vec![
+        PerlType::Object("Foo".to_string()),
+        PerlType::Object("Bar".to_string()),
+        PerlType::Scalar(ScalarType::String),
+    ]));
+    let source = "my $obj;\n$obj->";
+    let provider = completion_provider_with_receiver_fact(source, Some(fact))?;
+    let completions = provider.get_completions(source, source.len());
+
+    assert!(
+        custom_union_method_labels(&completions).is_empty(),
+        "mixed union with multiple object arms must not dispatch object methods"
+    );
+    Ok(())
 }
 
 #[test]
@@ -2847,6 +3033,77 @@ al"#;
     Ok(())
 }
 
+#[test]
+fn runtime_import_visible_symbol_is_position_gated_and_has_no_edits()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/lib/Tools.pm")?,
+        r#"package Tools;
+use Exporter 'import';
+our @EXPORT_OK = qw(alpha);
+sub alpha { }
+1;
+"#
+        .to_string(),
+    )?;
+
+    let importer_uri = Url::parse("file:///workspace/runtime.pl")?;
+    let before = r#"package App;
+require Tools;
+al
+Tools->import(qw(alpha));
+"#;
+    index.index_file(importer_uri.clone(), before.to_string())?;
+    let mut parser = Parser::new(before);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, before, Some(index.clone()));
+    let before_completions = provider.get_completions_with_path(
+        before,
+        before.find("al\n").unwrap() + 2,
+        Some(importer_uri.as_str()),
+    );
+    assert!(
+        !before_completions.iter().any(|item| item.label == "alpha"),
+        "runtime import must not authorize a bare symbol before the import call"
+    );
+
+    let after = r#"package App;
+require Tools;
+Tools->import(qw(alpha));
+al
+"#;
+    index.index_file(importer_uri.clone(), after.to_string())?;
+    let mut parser = Parser::new(after);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, after, Some(index));
+    let completions =
+        provider.get_completions_with_path(after, after.len() - 1, Some(importer_uri.as_str()));
+    let alpha = must_some(completions.iter().find(|item| item.label == "alpha"));
+    assert!(alpha.additional_edits.is_empty());
+    Ok(())
+}
+
+#[test]
+fn require_only_does_not_authorize_bare_visible_symbol() -> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/lib/Tools.pm")?,
+        "package Tools;\nsub alpha { }\n1;\n".to_string(),
+    )?;
+    let importer_uri = Url::parse("file:///workspace/require_only.pl")?;
+    let code = "package App;\nrequire Tools;\nal\n";
+    index.index_file(importer_uri.clone(), code.to_string())?;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
+    let completions =
+        provider.get_completions_with_path(code, code.len() - 1, Some(importer_uri.as_str()));
+
+    assert!(!completions.iter().any(|item| item.label == "alpha"));
+    Ok(())
+}
+
 // -------------------------------------------------------------------------
 // Unknown-receiver bounded fallback (issue #7929, outcome A)
 //
@@ -3337,7 +3594,11 @@ sub bark { }
 // ordering — they assert on the evidence variant and confidence level.
 // -------------------------------------------------------------------------
 
-use super::workspace::{ReceiverEvidence, classify_receiver, classify_text_pattern_receiver};
+use super::workspace::{
+    ReceiverEvidence, classify_receiver, classify_text_pattern_receiver,
+    receiver_package_from_context_or_source, receiver_package_from_symbol_table_or_source,
+    source_package_fallback,
+};
 use perl_semantic_analyzer::type_inference::TypeInferenceEngine;
 use perl_semantic_facts::Confidence;
 
@@ -3354,6 +3615,82 @@ fn ctx_for(prefix: &str, current_package: &str, source_position: usize) -> Compl
         prefix_start: source_position.saturating_sub(prefix.len()),
         cursor_scope_id: 0,
     }
+}
+
+#[test]
+fn source_package_fallback_respects_closed_package_block() {
+    let source = r#"package Outer;
+package Inner {
+    sub inner {}
+}
+sub inspect {
+    my $self = shift;
+    $self->"#;
+    let context = ctx_for("$self->", "main", source.len());
+
+    assert_eq!(
+        receiver_package_from_context_or_source(&context, source).as_deref(),
+        Some("Outer"),
+        "a closed block-form package must not leak as the active source package"
+    );
+}
+
+#[test]
+fn receiver_package_reuses_prebuilt_symbol_table() {
+    let valid_source = "package Child;\nsub inspect {\n    my $self = shift;\n    $self->\n}\n";
+    let mut parser = perl_semantic_analyzer::Parser::new(valid_source);
+    let ast = must(parser.parse());
+    let analyzer =
+        perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, valid_source);
+
+    let incomplete_source = "package Child;\nsub inspect {\n    my $self = shift;\n    $self->";
+    let context = ctx_for("$self->", "main", incomplete_source.len());
+
+    assert_eq!(
+        receiver_package_from_symbol_table_or_source(
+            &context,
+            incomplete_source,
+            analyzer.symbol_table(),
+        )
+        .as_deref(),
+        Some("Child"),
+        "the prebuilt symbol table should resolve the package before source fallback"
+    );
+}
+
+#[test]
+fn source_package_fallback_ignores_non_code_braces() {
+    let source = r#"package Outer;
+package Inner {
+    sub inner {}
+}
+my $literal = "}";
+my $pattern = qr/\{ \}/;
+# {
+my $body = <<'EOF';
+}
+{
+EOF
+sub inspect {
+    my $self = shift;
+    $self->"#;
+
+    assert_eq!(
+        source_package_fallback(source, source.len()).as_deref(),
+        Some("Outer"),
+        "strings, regexes, comments, and heredocs must not change package scope"
+    );
+}
+
+#[test]
+fn source_package_fallback_restores_main_after_delayed_block_brace() {
+    let source = "package Foo\n{\n    sub inner {}\n}\nmy $self = shift;\n$self->";
+
+    assert_eq!(
+        source_package_fallback(source, source.len()),
+        None,
+        "a block package whose opening brace is delayed must end at its closing brace"
+    );
 }
 
 #[test]
@@ -3727,26 +4064,15 @@ fn test_use_statement_skips_past_module_name_at_qw() -> Result<(), Box<dyn std::
 }
 
 // -------------------------------------------------------------------------
-// Auto-import additionalTextEdits for workspace symbol completions (#1694)
+// Import-edit withdrawal and workspace completion containment (#11158)
 //
-// Completing an unimported workspace subroutine, variable, or constant should
-// attach an `additionalTextEdits` entry inserting the required `use Module;`
-// statement, matching the behavior already provided for method completions.
+// Completion providers must not synthesize `use` edits. Bare candidates are
+// omitted unless their namespace is already visible; qualified insertions remain.
 // -------------------------------------------------------------------------
 
-/// Find the auto-import edit text on the completion item whose label matches
-/// `label`, if any.
-fn auto_import_edit_text<'a>(completions: &'a [CompletionItem], label: &str) -> Option<&'a str> {
-    completions
-        .iter()
-        .find(|c| c.label == label)?
-        .additional_edits
-        .first()
-        .map(|(_, text)| text.as_str())
-}
-
 #[test]
-fn workspace_subroutine_completion_auto_imports_module() -> Result<(), Box<dyn std::error::Error>> {
+fn workspace_subroutine_completion_omits_unimported_bare_symbol()
+-> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
     index.index_file(
         Url::parse("file:///lib/Foo.pm")?,
@@ -3758,15 +4084,20 @@ fn workspace_subroutine_completion_auto_imports_module() -> Result<(), Box<dyn s
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
     let completions = provider.get_completions(code, code.len());
 
-    // Workspace subroutine completions are labelled by qualified name.
-    let edit = auto_import_edit_text(&completions, "Foo::barker")
-        .ok_or("expected `Foo::barker` workspace subroutine completion with an auto-import edit")?;
-    assert_eq!(edit, "use Foo;\n", "should auto-insert `use Foo;` for unimported subroutine");
+    assert!(
+        !completions.iter().any(|c| c.label == "barker"),
+        "bare unimported workspace subroutine must be omitted; qualified completion may remain"
+    );
+    assert!(
+        !completions.iter().any(|c| c.label == "Foo::barker"),
+        "unimported workspace subroutine must not leak an unsafe qualified label"
+    );
     Ok(())
 }
 
 #[test]
-fn workspace_constant_completion_auto_imports_module() -> Result<(), Box<dyn std::error::Error>> {
+fn workspace_constant_completion_omits_unimported_bare_symbol()
+-> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
     index.index_file(
         Url::parse("file:///lib/Foo.pm")?,
@@ -3778,20 +4109,27 @@ fn workspace_constant_completion_auto_imports_module() -> Result<(), Box<dyn std
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
     let completions = provider.get_completions(code, code.len());
 
-    let item = completions
-        .iter()
-        .find(|c| c.label == "ANSWER")
-        .ok_or("expected `ANSWER` constant completion")?;
-    assert_eq!(item.kind, CompletionItemKind::Constant);
-    assert_eq!(
-        item.additional_edits.len(),
-        1,
-        "constant completion must carry exactly one auto-import edit; got {:?}",
-        item.additional_edits
-    );
-    assert_eq!(
-        item.additional_edits[0].1, "use Foo;\n",
-        "constant completion must auto-insert exactly `use Foo;`"
+    assert!(!completions.iter().any(|c| c.label == "ANSWER"));
+    Ok(())
+}
+
+#[test]
+fn workspace_export_completion_omits_unimported_bare_symbol()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///lib/Foo.pm")?,
+        "package Foo;\nour @EXPORT = qw(barker);\nsub barker { }\n1;\n".to_string(),
+    )?;
+    let code = "use strict;\nbark";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    assert!(
+        !completions.iter().any(|c| c.label == "barker"),
+        "unimported workspace export must not produce a bare insertion"
     );
     Ok(())
 }
@@ -3804,8 +4142,8 @@ fn workspace_completion_suppresses_auto_import_when_already_imported()
         Url::parse("file:///lib/Foo.pm")?,
         "package Foo;\nsub barker { }\n1;\n".to_string(),
     )?;
-    // `Foo` is already imported, so no duplicate `use Foo;` edit should attach.
-    let code = "use strict;\nuse Foo;\nbark";
+    // An exact explicit import makes the bare insertion valid, but never adds an edit.
+    let code = "use strict;\nuse Foo qw(barker);\nbark";
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
@@ -3815,12 +4153,7 @@ fn workspace_completion_suppresses_auto_import_when_already_imported()
         .iter()
         .find(|c| c.label == "Foo::barker")
         .ok_or("expected `Foo::barker` workspace completion")?;
-    assert_eq!(
-        item.additional_edits,
-        vec![],
-        "already-imported module must not produce a duplicate auto-import edit; got {:?}",
-        item.additional_edits
-    );
+    assert!(item.additional_edits.is_empty());
     Ok(())
 }
 
@@ -3847,7 +4180,13 @@ fn workspace_completion_no_auto_import_for_file_local_symbol()
 }
 
 #[test]
-fn workspace_variable_completion_auto_imports_module() -> Result<(), Box<dyn std::error::Error>> {
+fn workspace_variable_completion_preserves_qualified_insertion_without_import()
+-> Result<(), Box<dyn std::error::Error>> {
+    // `$Foo::xyl` is served by the sigil path's `::` branch
+    // (`add_package_completions`). The name of this test claims a qualified
+    // insertion, so assert the inserted text — not just the absence of an
+    // import edit, which an untruthful bare insertion would also satisfy
+    // (issue #11937).
     let index = Arc::new(WorkspaceIndex::new());
     index.index_file(
         Url::parse("file:///lib/Foo.pm")?,
@@ -3865,23 +4204,78 @@ fn workspace_variable_completion_auto_imports_module() -> Result<(), Box<dyn std
         .ok_or("expected `$xylophone` workspace variable completion")?;
     assert_eq!(item.kind, CompletionItemKind::Variable);
     assert_eq!(
-        item.additional_edits.len(),
-        1,
-        "variable completion must carry exactly one auto-import edit; got {:?}",
-        item.additional_edits
+        item.insert_text.as_deref(),
+        Some("$Foo::xylophone"),
+        "the document never imports Foo, so only a fully qualified insertion resolves"
     );
-    assert_eq!(
-        item.additional_edits[0].1, "use Foo;\n",
-        "variable completion from Foo must auto-insert exactly `use Foo;`"
+    assert!(item.additional_edits.is_empty());
+    Ok(())
+}
+
+/// Pins the interception that makes the `WsSymbolKind::Variable` arm of
+/// `add_workspace_symbol_completions` dead code.
+///
+/// Every workspace variable candidate carries a leading sigil, so only a
+/// sigil-prefixed request could match one — and `complete_sigil_context`
+/// serves every sigil prefix and returns before `complete_general_context`
+/// (the sole caller of the workspace-symbol pass) runs. That is why the arm
+/// was removed rather than gated (issue #11937). If this test fails, the
+/// dispatch order changed and the arm has to come back *gated*, not as the
+/// bare/double-sigil emission it used to be.
+#[test]
+fn sigil_prefixed_requests_never_reach_the_workspace_symbol_pass()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///lib/Foo.pm")?,
+        "package Foo;\nour $xylophone = 1;\n1;\n".to_string(),
+    )?;
+
+    // Guard against vacuity: the same index, reached through the sigil path's
+    // `::` branch, does serve this symbol. So an empty bare-prefix result below
+    // is the dispatch interception, not an unpopulated index.
+    let qualified_code = "use strict;\n$Foo::xyl";
+    let mut qualified_parser = Parser::new(qualified_code);
+    let qualified_ast = must(qualified_parser.parse());
+    let qualified_provider =
+        CompletionProvider::new_with_index(&qualified_ast, Some(index.clone()));
+    let qualified = qualified_provider.get_completions(qualified_code, qualified_code.len());
+    assert!(
+        qualified.iter().any(|c| c.insert_text.as_deref() == Some("$Foo::xylophone")),
+        "index must be populated and findable through the sigil `::` branch; got {:?}",
+        qualified.iter().map(|c| c.label.as_ref()).collect::<Vec<_>>()
     );
+
+    // A bare sigil prefix is served entirely by the sigil path, which knows
+    // nothing of the workspace index — so no workspace variable appears under
+    // any spelling.
+    for code in ["use strict;\n$", "use strict;\n$xyl", "use strict;\n@xyl", "use strict;\n%xyl"] {
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let provider = CompletionProvider::new_with_index(&ast, Some(index.clone()));
+        let completions = provider.get_completions(code, code.len());
+        let leaked: Vec<_> = completions
+            .iter()
+            .filter(|c| {
+                c.label.contains("xylophone")
+                    || c.insert_text.as_deref().is_some_and(|t| t.contains("xylophone"))
+            })
+            .map(|c| (c.label.to_string(), c.insert_text.as_deref().map(str::to_string)))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "sigil prefix {code:?} must be served by the sigil path alone; got {leaked:?}"
+        );
+    }
     Ok(())
 }
 
 #[test]
-fn qualified_subroutine_completion_auto_imports_module() -> Result<(), Box<dyn std::error::Error>> {
+fn qualified_subroutine_completion_preserves_qualified_insertion_without_import()
+-> Result<(), Box<dyn std::error::Error>> {
     // Qualified `Foo::bar` completions are served by add_package_completions
     // (the `::` path), not add_workspace_symbol_completions. Observe that this
-    // path auto-imports the unimported defining module.
+    // path inserts the fully qualified member and needs no import edit.
     let index = Arc::new(WorkspaceIndex::new());
     index.index_file(
         Url::parse("file:///lib/Foo.pm")?,
@@ -3897,50 +4291,8 @@ fn qualified_subroutine_completion_auto_imports_module() -> Result<(), Box<dyn s
         .iter()
         .find(|c| c.label == "barley")
         .ok_or("expected `barley` qualified subroutine completion")?;
-    assert_eq!(
-        item.additional_edits.len(),
-        1,
-        "qualified subroutine completion must carry exactly one auto-import edit; got {:?}",
-        item.additional_edits
-    );
-    assert_eq!(
-        item.additional_edits[0].1, "use Foo;\n",
-        "qualified subroutine completion must auto-insert exactly `use Foo;`"
-    );
+    assert!(item.additional_edits.is_empty());
     Ok(())
-}
-
-#[test]
-fn workspace_auto_import_edits_returns_exact_edits_per_branch() {
-    // Direct call-observation with exact assertions on the helper that produces
-    // every workspace completion's `additionalTextEdits`, discriminating each
-    // guard branch (reachable, main, current package, empty, file-local,
-    // already-imported).
-    use super::workspace::workspace_auto_import_edits;
-
-    let source = "use strict;\nmy $x = 1;\n";
-    let after_use = "use strict;\n".len();
-
-    // Reachable, unimported, foreign module -> exactly one edit after the use block.
-    let edits = workspace_auto_import_edits(source, Some("My::App"), "main");
-    assert_eq!(edits.len(), 1, "expected exactly one edit; got {edits:?}");
-    assert_eq!(edits[0].1, "use My::App;\n");
-    assert_eq!(edits[0].0.start, after_use);
-    assert_eq!(edits[0].0.end, after_use);
-
-    // Implicit `main` package must never be auto-imported.
-    assert_eq!(workspace_auto_import_edits(source, Some("main"), "Other"), vec![]);
-    // The document's own current package needs no import.
-    assert_eq!(workspace_auto_import_edits(source, Some("Demo"), "Demo"), vec![]);
-    // Empty module name yields no edit.
-    assert_eq!(workspace_auto_import_edits(source, Some(""), "main"), vec![]);
-    // File-local symbol (no container module) yields no edit.
-    assert_eq!(workspace_auto_import_edits(source, None, "main"), vec![]);
-    // Already-imported module yields no duplicate edit.
-    assert_eq!(
-        workspace_auto_import_edits("use My::App;\nmy $x = 1;\n", Some("My::App"), "main"),
-        vec![]
-    );
 }
 
 #[test]
@@ -8368,20 +8720,6 @@ fn test_indirect_midword_cursor_offers_methods_with_insert_range()
     Ok(())
 }
 
-fn moo_parent_index() -> Result<Arc<WorkspaceIndex>, Box<dyn std::error::Error>> {
-    let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
-        Url::parse("file:///workspace/Parent.pm")?,
-        r#"package Parent;
-use Moo;
-has 'name' => (is => 'ro', isa => 'Str');
-1;
-"#
-        .to_string(),
-    )?;
-    Ok(index)
-}
-
 /// Index the parent package separately so these tests prove the workspace
 /// inheritance edge rather than merely finding declarations in one AST.
 fn inherited_moo_parent_index() -> Result<Arc<WorkspaceIndex>, Box<dyn std::error::Error>> {
@@ -8402,6 +8740,72 @@ has 'status' => (
         .to_string(),
     )?;
     Ok(index)
+}
+
+#[test]
+fn block_form_package_after_close_stays_main() {
+    let code = r#"package Child {
+    sub greet {
+        my $self = shift;
+        $self->bark;
+    }
+}
+$self->
+"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let pos = must_some(code.rfind("$self->")) + "$self->".len();
+    let context = provider.analyze_context(code, pos);
+    assert_eq!(
+        context.current_package, "main",
+        "after a block-form package closes, receiver package context must return to main; got {:?}",
+        context.current_package
+    );
+}
+
+#[test]
+fn block_form_package_at_scope_end_is_main() {
+    let code = "package Foo {\n    my $x;\n}\n";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let table = SymbolExtractor::new().extract(&ast);
+    let scope_end = table
+        .scopes
+        .values()
+        .filter(|scope| scope.kind == ScopeKind::Package)
+        .map(|scope| scope.location.end)
+        .max()
+        .expect("block-form package scope");
+    assert_eq!(
+        CompletionContext::detect_current_package(&table, scope_end),
+        "main",
+        "cursor at scope end (half-open) must not inherit the closed block package"
+    );
+}
+
+#[test]
+fn inherited_moo_current_package_is_child() {
+    let code = r#"
+package Child;
+use Moo;
+use parent 'Parent';
+
+sub greet {
+    my $self = shift;
+    $self->
+}
+"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let pos = must_some(code.find("$self->")) + "$self->".len();
+    let context = provider.analyze_context(code, pos);
+    assert_eq!(
+        context.current_package, "Child",
+        "receiver package context must be Child, got {:?}",
+        context.current_package
+    );
 }
 
 #[test]
@@ -8460,4 +8864,89 @@ sub inspect {
             labels
         );
     }
+}
+
+#[test]
+fn test_inherited_moo_open_package_survives_unrelated_bare_symbol_match() {
+    let code = r#"
+package Child;
+use Moo;
+use parent 'Parent';
+
+sub inspect {
+    my $self = shift;
+    $self->
+}
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let index = must(inherited_moo_parent_index());
+    must(index.index_file(
+        must(Url::parse("file:///workspace/Unrelated.pm")),
+        "package Other; sub Child { 1 }".to_string(),
+    ));
+
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
+    let pos = must_some(code.find("$self->")) + "$self->".len();
+    let labels: Vec<_> =
+        provider.get_completions(code, pos).into_iter().map(|item| item.label).collect();
+
+    assert!(
+        labels.iter().any(|label| label == "name"),
+        "open Child source must win over unrelated indexed bare symbol, got {labels:?}"
+    );
+}
+
+/// Proof seam for issue #11858: empty-prefix general context must emit visible
+/// document variables (`$var`) in addition to keywords and built-ins.
+///
+/// Confirms that `add_all_variables` correctly populates from the symbol table
+/// when the provider is built via `new_with_index_and_source_and_paths` and
+/// queried through `get_completions_with_path_cancellable`, the production
+/// provider seam. Binary launch and document-state behavior remain outside
+/// this unit test's scope.
+#[test]
+fn test_empty_prefix_emits_document_variables() {
+    // Matches the fixture in lsp_completion_tests::test_empty_prefix_completion.
+    let source = "my $var = 42;\nsub test { }\n\n";
+    // Cursor at the very end (line 3 char 0 in LSP terms) — after all declarations.
+    let pos = source.len();
+
+    let mut parser = Parser::new(source);
+    let ast = must(parser.parse());
+
+    // Build and query the provider through the production completion seam.
+    let provider = CompletionProvider::new_with_index_and_source_and_paths(
+        &ast,
+        source,
+        None,
+        Vec::new(),
+        Vec::new(),
+        false,
+    );
+    let completions = provider.get_completions_with_path_cancellable(source, pos, None, &|| false);
+
+    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
+
+    // Variables declared before the cursor must appear for an empty prefix.
+    assert!(
+        labels.contains(&"$var"),
+        "empty-prefix completion must emit document variable $var (issue #11858); got ({} items): {labels:?}",
+        labels.len()
+    );
+
+    // Subroutines declared in the file must also appear.
+    assert!(
+        labels.contains(&"test"),
+        "empty-prefix completion must emit document subroutine test; got ({} items): {labels:?}",
+        labels.len()
+    );
+
+    // Control-flow keywords must appear (regression guard for #11863 reserve).
+    assert!(
+        labels.contains(&"if"),
+        "empty-prefix completion must include control-flow keyword 'if'; got ({} items): {labels:?}",
+        labels.len()
+    );
 }

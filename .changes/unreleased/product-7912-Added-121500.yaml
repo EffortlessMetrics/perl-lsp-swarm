@@ -1,0 +1,9 @@
+project: product
+component: Editor integrations
+kind: Added
+body: "Added a public Zed registry receipt template and subject boundary that keeps official registry, merged extension, released defaults, exact perllsp asset, clean-profile, managed-download, PATH, and documentation-promotion evidence independently fail closed."
+time: 2026-08-13T12:15:00Z
+custom:
+  PR: "TBD"
+  Slug: zed-public-registry-receipt
+  Breaking: "no"

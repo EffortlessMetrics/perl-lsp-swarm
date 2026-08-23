@@ -5,6 +5,12 @@
 # model exact-head review receipts, fixed-head stages, verification ladders,
 # leases, or agent lifecycle. The candidate head is returned only as observed
 # metadata.
+#
+# It reads the same native facts as its parent and inherits the same limit: a
+# submitted human review is a GitHub fact, not a substantive-review verdict.
+# This helper therefore never reports REVIEWED. Subject-bound semantic
+# currentness is owned by check-pr-semantic-review-currentness.py, and callers
+# must consult it separately before treating a candidate as reviewed.
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
@@ -26,7 +32,8 @@ if [[ "$CLOSE_EXIT" -ge 2 ]]; then
       pr: ($pr | tonumber? // $pr),
       state: "NOT_PROVEN",
       child_exit: $childExit,
-      review_currentness: "semantic_changed_seam",
+      review_currentness: "NOT_PROVEN",
+      semantic_currentness_required: true,
       exact_head_review_required: false
     }'
     exit 2
@@ -39,7 +46,8 @@ if [[ -z "$JSON" ]] || ! jq -e . >/dev/null 2>&1 <<<"$JSON"; then
       pr: ($pr | tonumber? // $pr),
       state: "NOT_PROVEN",
       reason: "invalid_closeout_output",
-      review_currentness: "semantic_changed_seam",
+      review_currentness: "NOT_PROVEN",
+      semantic_currentness_required: true,
       exact_head_review_required: false
     }'
     exit 2
@@ -48,15 +56,20 @@ fi
 CLASSIFICATION="$(jq -r '.formal_review.classification // "NOT_PROVEN"' <<<"$JSON")"
 CONVERGED="$(jq -r '.converged // false' <<<"$JSON")"
 HEAD="$(jq -r '.headRefOid // ""' <<<"$JSON")"
+SUBMITTED_HUMAN_REVIEW_COUNT="$(jq -r '.submitted_human_review_count // 0' <<<"$JSON")"
 
+# Native facts can converge; they cannot establish substantive review. Both
+# converged classifications therefore project to the same state, and the
+# classification field carries the finer distinction.
 case "$CLASSIFICATION" in
     PENDING) STATE="PENDING_REVIEW" ;;
     FINDINGS_OPEN) STATE="FINDINGS_OPEN" ;;
-    REVIEWED)
-        if [[ "$CONVERGED" == "true" ]]; then STATE="REVIEWED"; else STATE="FINDINGS_OPEN"; fi
-        ;;
-    NOT_APPLICABLE)
-        if [[ "$CONVERGED" == "true" ]]; then STATE="NOT_APPLICABLE"; else STATE="FINDINGS_OPEN"; fi
+    SUBMITTED_REVIEW_PRESENT | NO_SUBMITTED_HUMAN_REVIEW)
+        if [[ "$CONVERGED" == "true" ]]; then
+            STATE="NATIVE_FACTS_CONVERGED"
+        else
+            STATE="FINDINGS_OPEN"
+        fi
         ;;
     *) STATE="NOT_PROVEN" ;;
 esac
@@ -67,12 +80,15 @@ jq -n \
     --arg state "$STATE" \
     --arg classification "$CLASSIFICATION" \
     --argjson converged "$CONVERGED" \
+    --argjson submittedReviews "$SUBMITTED_HUMAN_REVIEW_COUNT" \
     '{
       pr: ($pr | tonumber? // $pr),
       observed_head: $head,
       state: $state,
       formal_review_classification: $classification,
       converged: $converged,
-      review_currentness: "semantic_changed_seam",
+      submitted_human_review_count: $submittedReviews,
+      review_currentness: "NOT_PROVEN",
+      semantic_currentness_required: true,
       exact_head_review_required: false
     }'

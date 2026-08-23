@@ -3,12 +3,8 @@
 
 from __future__ import annotations
 
-import argparse
 import hashlib
-import json
 import re
-import subprocess
-import sys
 from pathlib import Path
 from typing import Final
 
@@ -238,56 +234,7 @@ def claim_digest(body: str) -> dict[str, object]:
     }
 
 
-def _read_live_pr_body(pr: str, repo: str | None) -> str:
-    command = [
-        "gh",
-        "pr",
-        "view",
-        pr,
-        "--json",
-        "body",
-        "--jq",
-        '.body // ""',
-    ]
-    if repo:
-        command.extend(["--repo", repo])
-    completed = subprocess.run(command, check=False, capture_output=True, text=True)
-    if completed.returncode != 0:
-        raise RuntimeError(completed.stderr.strip() or "gh pr view failed")
-    return normalize_pr_body(completed.stdout)
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--pr", help="GitHub pull-request number or URL")
-    source.add_argument("--body-file", type=Path, help="Read PR body from a fixture/file")
-    source.add_argument("--stdin", action="store_true", help="Read PR body from stdin")
-    parser.add_argument("--repo", help="owner/repo for --pr")
-    parser.add_argument("--json", action="store_true", help="Emit the full digest record")
-    return parser
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    try:
-        if args.pr:
-            body = _read_live_pr_body(args.pr, args.repo)
-        elif args.body_file:
-            body = args.body_file.read_text(encoding="utf-8")
-        else:
-            body = sys.stdin.read()
-        record = claim_digest(body)
-    except (OSError, RuntimeError, ValueError) as error:
-        print(f"ERROR: {error}", file=sys.stderr)
-        return 2
-
-    if args.json:
-        print(json.dumps(record, sort_keys=True))
-    else:
-        print(record["digest"])
-    return 0
-
-
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(
+        "RETIRED: scripts/reviews/claim_digest.py is import-only; it does not read live PRs"
+    )

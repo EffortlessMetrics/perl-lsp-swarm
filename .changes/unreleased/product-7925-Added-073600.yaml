@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Added
+body: "The Linux/macOS installer can now compose binary installation with the Rust-owned Claude Code setup path through `--with-claude`, while keeping binary integrity, PATH proof, and Claude plugin lifecycle as separate verified stages."
+time: 2026-08-13T11:36:00Z
+custom:
+  PR: "7925"
+  Slug: claude-posix-bootstrap
+  Breaking: "no"

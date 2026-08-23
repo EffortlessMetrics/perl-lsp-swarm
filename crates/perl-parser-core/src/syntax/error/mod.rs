@@ -24,6 +24,7 @@ use thiserror::Error;
 
 #[derive(Debug, Clone)]
 /// Rich error context with source line and fix suggestions
+#[non_exhaustive]
 pub struct ErrorContext {
     /// The original parse error
     pub error: ParseError,
@@ -53,6 +54,7 @@ impl From<perl_regex::RegexError> for ParseError {
 /// the parser applied a recovery strategy. LSP providers use this to decide
 /// which features can still be offered after a recovery.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum RecoverySite {
     /// Inside a parenthesised argument list `(...)`.
     ArgList,
@@ -75,6 +77,7 @@ pub enum RecoverySite {
 /// exact repair the parser made. This information lets consumers (e.g. LSP
 /// providers) understand the confidence level of the resulting AST region.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum RecoveryKind {
     /// A synthetic closing delimiter (`)` or `]`) was inferred.
     InsertedCloser,
@@ -109,6 +112,7 @@ pub enum RecoveryKind {
 /// };
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ParseBudget {
     /// Maximum number of errors to collect before giving up.
     /// After this limit, parsing stops to avoid flooding diagnostics.
@@ -164,6 +168,7 @@ impl ParseBudget {
 /// This struct monitors how much of the parse budget has been used
 /// and provides methods to check and consume budget atomically.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct BudgetTracker {
     /// Number of errors emitted so far.
     pub errors_emitted: usize,
@@ -338,6 +343,7 @@ impl ParseDiagnosticSeverity {
 ///
 /// Error handling is optimized for large Perl files and multi-file workspaces, ensuring
 /// memory-efficient error propagation and logging.
+#[non_exhaustive]
 pub enum ParseError {
     /// Parser encountered unexpected end of input during Perl code analysis
     ///
@@ -518,6 +524,7 @@ use perl_ast::Node;
 /// println!("Errors: {}", output.budget_usage.errors_emitted);
 /// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ParseOutput {
     /// The parsed AST. Always present, but may contain error nodes
     /// if parsing encountered recoverable errors.
@@ -548,6 +555,7 @@ pub struct ParseOutput {
 /// Used by corpus-level reporting to distinguish successful structured
 /// recovery from unrecovered parser damage and catastrophic failures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RecoverySalvageClass {
     /// No diagnostics and no `ERROR` AST nodes.
     Clean,
@@ -701,6 +709,117 @@ impl ParseOutput {
     }
 }
 
+/// Parser-owned source anchor for a diagnostic.
+///
+/// Use this type as the return value of [`ParseError::diagnostic_anchor`] instead
+/// of matching public enum variants to reconstruct byte offsets. This keeps the
+/// parser as the single authority over diagnostic placement and allows the enum
+/// to grow without forcing downstream code to guess byte zero for unknown variants.
+///
+/// # Semantics
+///
+/// | Anchor | Meaning |
+/// |---|---|
+/// | `Exact(n)` | The parser owns one exact byte offset `n` in the source. |
+/// | `EndOfInput` | The diagnostic belongs at the current end of the source (e.g. `UnexpectedEof`). |
+/// | `NoSource` | The diagnostic has no defensible source anchor; consumers that must emit an editor position should use line 0, character 0 with an explicit policy comment. |
+///
+/// See also [`ResolvedParseDiagnosticAnchor`] for a version already resolved
+/// against a concrete source length, and [`ParseError::diagnostic_anchor`] to
+/// obtain this value from an error instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParseDiagnosticAnchor {
+    /// The parser owns one exact byte offset in the source.
+    Exact(usize),
+    /// The diagnostic belongs at the current end of the source.
+    EndOfInput,
+    /// The diagnostic has no defensible source anchor.
+    ///
+    /// Consumers that must emit an LSP position should use the start of the file
+    /// (line 0, character 0) with an explicit policy comment — not a guess.
+    NoSource,
+}
+
+/// A [`ParseDiagnosticAnchor`] resolved against concrete source text.
+///
+/// Construct via [`ParseDiagnosticAnchor::resolve`] or
+/// [`ParseError::resolved_diagnostic_anchor`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvedParseDiagnosticAnchor {
+    /// Exact in-bounds byte offset on a UTF-8 scalar boundary.
+    Exact(usize),
+    /// End-of-input anchor, resolved to the supplied source length.
+    EndOfInput(usize),
+    /// No source location is available.
+    NoSource,
+    /// The parser reported an offset outside the supplied source — rejected rather
+    /// than silently clamped so consumers cannot convert parser corruption into a
+    /// plausible source location.
+    InvalidOffset {
+        /// Parser-reported byte offset.
+        reported: usize,
+        /// Concrete source length used for the bounds check.
+        source_len: usize,
+    },
+    /// The parser reported an in-range offset that lands inside a multibyte
+    /// UTF-8 scalar — not a valid source position. Kept distinct from
+    /// [`Self::InvalidOffset`] because the parser did not overshoot the source;
+    /// it produced a corrupted interior offset, which must never be rounded to
+    /// a plausible position.
+    InvalidUtf8Boundary {
+        /// Parser-reported byte offset.
+        reported: usize,
+        /// Concrete source length used for validation.
+        source_len: usize,
+    },
+}
+
+impl ParseDiagnosticAnchor {
+    /// Resolve this semantic anchor against concrete source text.
+    ///
+    /// Exact offsets are never silently clamped or rounded: an out-of-range
+    /// offset yields [`ResolvedParseDiagnosticAnchor::InvalidOffset`], and an
+    /// in-range offset inside a multibyte UTF-8 scalar yields
+    /// [`ResolvedParseDiagnosticAnchor::InvalidUtf8Boundary`] — an in-range byte
+    /// offset is not necessarily a valid source position.
+    ///
+    /// An offset equal to `source.len()` (just past the last byte) is valid — it
+    /// represents an end-of-source position for an `Exact` anchor.
+    #[must_use]
+    pub fn resolve(self, source: &str) -> ResolvedParseDiagnosticAnchor {
+        match self {
+            Self::Exact(reported) if reported > source.len() => {
+                ResolvedParseDiagnosticAnchor::InvalidOffset { reported, source_len: source.len() }
+            }
+            Self::Exact(reported) if !source.is_char_boundary(reported) => {
+                ResolvedParseDiagnosticAnchor::InvalidUtf8Boundary {
+                    reported,
+                    source_len: source.len(),
+                }
+            }
+            Self::Exact(offset) => ResolvedParseDiagnosticAnchor::Exact(offset),
+            Self::EndOfInput => ResolvedParseDiagnosticAnchor::EndOfInput(source.len()),
+            Self::NoSource => ResolvedParseDiagnosticAnchor::NoSource,
+        }
+    }
+
+    /// Return the concrete byte offset suitable for converting to an editor or LSP position.
+    ///
+    /// | Anchor | Result |
+    /// |---|---|
+    /// | `Exact(n)` | `n` — the parser-owned byte offset |
+    /// | `EndOfInput` | `source_len` — the supplied source length |
+    /// | `NoSource` | `0` — explicit file-start policy; callers that can emit a file-level range should prefer that over a pinned position |
+    #[must_use]
+    pub fn to_offset(self, source_len: usize) -> usize {
+        match self {
+            Self::Exact(n) => n,
+            Self::EndOfInput => source_len,
+            Self::NoSource => 0,
+        }
+    }
+}
+
 impl ParseError {
     /// Create the advisory emitted for valid but potentially expensive nested regex quantifiers.
     pub fn nested_quantifier_advisory(location: usize) -> Self {
@@ -840,6 +959,55 @@ impl ParseError {
             }
             _ => None,
         }
+    }
+
+    /// Return the parser-owned source anchor for this diagnostic.
+    ///
+    /// Prefer this accessor over matching public enum variants to reconstruct
+    /// byte offsets. Downstream code that uses the accessor remains
+    /// forward-compatible when new `ParseError` variants are added, because the
+    /// exhaustive match inside `perl-parser-core` forces the parser owner to
+    /// assign a source-anchor disposition for every new variant before the crate
+    /// compiles.
+    ///
+    /// # Anchor semantics per variant family
+    ///
+    /// | Variant | Anchor |
+    /// |---|---|
+    /// | `UnexpectedEof` | `EndOfInput` |
+    /// | `UnexpectedToken`, `SyntaxError`, `Advisory`, `Recovered` | `Exact(location)` |
+    /// | All other no-location variants | `NoSource` |
+    ///
+    /// See [`ParseDiagnosticAnchor`] for the full meaning of each value.
+    #[must_use]
+    pub fn diagnostic_anchor(&self) -> ParseDiagnosticAnchor {
+        // Keep this match exhaustive: adding a ParseError variant must also
+        // choose its diagnostic-anchor before the crate can compile.
+        match self {
+            Self::UnexpectedEof => ParseDiagnosticAnchor::EndOfInput,
+            Self::UnexpectedToken { location, .. }
+            | Self::SyntaxError { location, .. }
+            | Self::Advisory { location, .. }
+            | Self::Recovered { location, .. } => ParseDiagnosticAnchor::Exact(*location),
+            Self::LexerError { .. }
+            | Self::RecursionLimit
+            | Self::InvalidNumber { .. }
+            | Self::InvalidString
+            | Self::UnclosedDelimiter { .. }
+            | Self::InvalidRegex { .. }
+            | Self::NestingTooDeep { .. }
+            | Self::Cancelled => ParseDiagnosticAnchor::NoSource,
+        }
+    }
+
+    /// Resolve the parser-owned diagnostic anchor for one concrete source.
+    ///
+    /// Convenience wrapper around `self.diagnostic_anchor().resolve(source)`.
+    /// Prefer the two-step form when you need to inspect the anchor kind before
+    /// converting to a byte offset.
+    #[must_use]
+    pub fn resolved_diagnostic_anchor(&self, source: &str) -> ResolvedParseDiagnosticAnchor {
+        self.diagnostic_anchor().resolve(source)
     }
 }
 

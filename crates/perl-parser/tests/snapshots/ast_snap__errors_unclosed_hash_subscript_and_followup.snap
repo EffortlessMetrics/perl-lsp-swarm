@@ -1,5 +1,6 @@
 ---
 source: crates/perl-parser/tests/ast_snap.rs
+assertion_line: 326
 expression: "parse_errors(\"my $x = $h{foo;\\nmy $y = 2;\")"
 ---
-Recovered from InsertedCloser at HashSubscript (position 14)
+Inferred a missing closing delimiter in hash subscript

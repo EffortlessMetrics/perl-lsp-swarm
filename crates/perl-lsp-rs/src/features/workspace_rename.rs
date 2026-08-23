@@ -190,6 +190,8 @@ pub fn build_rename_edit(
                 replacement
             }
             SymKind::Pack => new_name_bare.to_string(),
+            // Forward-compatible fallback for future variants (#2898)
+            _ => new_name_bare.to_string(),
         };
 
         grouped.entry(loc.uri.clone()).or_default().push(TextEdit {

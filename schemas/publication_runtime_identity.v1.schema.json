@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/publication_runtime_identity.v1.schema.json",
+  "title": "perl-lsp publication runtime identity bundle v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "expected", "server", "extension", "topology"],
+  "properties": {
+    "schema_version": { "const": "perl_lsp.publication_runtime_identity.v1" },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tree_sha",
+        "version",
+        "target",
+        "candidate_identity",
+        "server_sha256",
+        "dap_sha256"
+      ],
+      "properties": {
+        "tree_sha": { "$ref": "#/$defs/sha40" },
+        "version": { "$ref": "#/$defs/identity" },
+        "target": { "$ref": "#/$defs/identity" },
+        "candidate_identity": {
+          "anyOf": [{ "$ref": "#/$defs/identity" }, { "type": "null" }]
+        },
+        "server_sha256": { "$ref": "#/$defs/sha64" },
+        "dap_sha256": {
+          "anyOf": [{ "$ref": "#/$defs/sha64" }, { "type": "null" }]
+        }
+      }
+    },
+    "server": { "$ref": "#/$defs/runtimeSubject" },
+    "dap": { "$ref": "#/$defs/runtimeSubject" },
+    "extension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "candidate_identity", "package_sha256"],
+      "properties": {
+        "id": { "const": "EffortlessMetrics.perl-lsp-rs" },
+        "version": { "$ref": "#/$defs/identity" },
+        "candidate_identity": {
+          "anyOf": [{ "$ref": "#/$defs/identity" }, { "type": "null" }]
+        },
+        "package_sha256": {
+          "anyOf": [{ "$ref": "#/$defs/sha64" }, { "type": "null" }]
+        }
+      }
+    },
+    "topology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest", "selected_target"],
+      "properties": {
+        "digest": { "$ref": "#/$defs/sha64" },
+        "selected_target": { "$ref": "#/$defs/identity" }
+      }
+    }
+  },
+  "$defs": {
+    "identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[A-Za-z0-9._:@/+\\-]+$"
+    },
+    "sha40": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha64": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "runtimeSubject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filename", "path_role", "executable_sha256", "packet"],
+      "properties": {
+        "filename": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "path_role": {
+          "enum": [
+            "staged_archive",
+            "package_install",
+            "vsix_managed",
+            "workspace",
+            "user_supplied"
+          ]
+        },
+        "executable_sha256": { "$ref": "#/$defs/sha64" },
+        "packet": { "type": "object" }
+      }
+    }
+  }
+}

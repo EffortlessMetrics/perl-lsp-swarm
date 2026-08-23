@@ -1,0 +1,566 @@
+schema_version = "perl_compiler_concepts.v1"
+ledger_id = "perl_compiler_concepts_seed_v1"
+controller_issue = "#6657"
+coverage_scope = "Initial current-main ownership and stage-state seed for the compiler frontier; not complete Perl semantic coverage."
+claim_boundary = "Rows separate representation, analysis, effects, execution, proof, and provider eligibility. This seed is intentionally incomplete."
+complete = false
+
+[[concepts]]
+concept_id = "calls.ampersand"
+family = "calls"
+title = "Ampersand calls"
+ast_kinds = ["AmperCall"]
+parser_ast = "parsed"
+flat_hir = "absent"
+body_hir = "opaque"
+pir_a = "boundary"
+compile_effects_world = "not_applicable"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "fallback_only"
+ownership = "active"
+owner_issue = "#5242"
+claim_boundary = "Ampersand syntax, prototype bypass, argument forwarding, and callee identity are not normalized."
+evidence = ["docs/project/status/hir_lowering.md", "#5242"]
+
+[[concepts]]
+concept_id = "calls.normalized_semantics"
+family = "calls"
+title = "Normalized call semantics"
+ast_kinds = ["FunctionCall", "MethodCall", "IndirectCall", "AmperCall"]
+parser_ast = "parsed"
+flat_hir = "bridge"
+body_hir = "bridge"
+pir_a = "boundary"
+compile_effects_world = "not_applicable"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "fallback_only"
+ownership = "active"
+owner_issue = "#5242"
+claim_boundary = "Several physical call forms exist, but syntax, dispatch, callee identity, operands, and prototype/context contracts are not yet one canonical projection."
+evidence = ["#5242"]
+
+[[concepts]]
+concept_id = "context.value_context"
+family = "context"
+title = "Scalar, list, void, truth, and definedness context"
+ast_kinds = []
+parser_ast = "not_applicable"
+flat_hir = "not_applicable"
+body_hir = "boundary"
+pir_a = "boundary"
+compile_effects_world = "not_applicable"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "fallback_only"
+ownership = "active"
+owner_issue = "#2275"
+claim_boundary = "Context dimensions are named by the compiler roadmap but are not yet fully propagated through every canonical operation and edge."
+evidence = ["#2275"]
+
+[[concepts]]
+concept_id = "control.default"
+family = "control"
+title = "Default arms"
+ast_kinds = ["Default"]
+parser_ast = "parsed"
+flat_hir = "absent"
+body_hir = "opaque"
+pir_a = "absent"
+compile_effects_world = "boundary"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "ineligible"
+ownership = "active"
+owner_issue = "#6674"
+claim_boundary = "Default-arm identity and control edges are not represented in canonical body/PIR state."
+evidence = ["docs/project/status/hir_lowering.md", "#6674"]
+
+[[concepts]]
+concept_id = "control.given"
+family = "control"
+title = "Given blocks"
+ast_kinds = ["Given"]
+parser_ast = "parsed"
+flat_hir = "absent"
+body_hir = "opaque"
+pir_a = "absent"
+compile_effects_world = "boundary"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "ineligible"
+ownership = "active"
+owner_issue = "#6674"
+claim_boundary = "Feature/version state, topicalization, arm control, and smartmatch semantics are absent."
+evidence = ["docs/project/status/hir_lowering.md", "#6674"]
+
+[[concepts]]
+concept_id = "control.postfix_modifier"
+family = "control"
+title = "Postfix statement modifiers"
+ast_kinds = ["StatementModifier"]
+parser_ast = "parsed"
+flat_hir = "modeled"
+body_hir = "modeled"
+pir_a = "boundary"
+compile_effects_world = "not_applicable"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "fallback_only"
+ownership = "active"
+owner_issue = "#4886"
+claim_boundary = "Flat/body shells exist; canonical PIR branch/loop edges and loop-control composition remain spec-gated."
+evidence = ["docs/project/status/hir_lowering.md", "#4886"]
+
+[[concepts]]
+concept_id = "control.when"
+family = "control"
+title = "When arms"
+ast_kinds = ["When"]
+parser_ast = "parsed"
+flat_hir = "absent"
+body_hir = "opaque"
+pir_a = "absent"
+compile_effects_world = "boundary"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "ineligible"
+ownership = "active"
+owner_issue = "#6674"
+claim_boundary = "Arm ordering, topicalized comparison, and version-specific smartmatch behavior are absent."
+evidence = ["docs/project/status/hir_lowering.md", "#6674"]
+
+[[concepts]]
+concept_id = "declarations.nested_variable_list"
+family = "declarations"
+title = "Nested variable-list declarations"
+ast_kinds = ["NestedVariableList"]
+parser_ast = "parsed"
+flat_hir = "absent"
+body_hir = "bridge"
+pir_a = "boundary"
+compile_effects_world = "not_applicable"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "fallback_only"
+ownership = "active"
+owner_issue = "#6659"
+claim_boundary = "Parent declaration traversal retains entries, but no canonical nested-list identity or place graph is proven."
+evidence = ["docs/project/status/hir_lowering.md", "#6659"]
+
+[[concepts]]
+concept_id = "dynamic.tie"
+family = "dynamic"
+title = "Tie"
+ast_kinds = ["Tie"]
+parser_ast = "parsed"
+flat_hir = "absent"
+body_hir = "opaque"
+pir_a = "absent"
+compile_effects_world = "not_applicable"
+eir_profile = "boundary"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "ineligible"
+ownership = "active"
+owner_issue = "#6683"
+claim_boundary = "Tie lifecycle, target place, hidden method effects, and capability boundaries are not represented."
+evidence = ["docs/project/status/hir_lowering.md", "#6683"]
+
+[[concepts]]
+concept_id = "dynamic.untie"
+family = "dynamic"
+title = "Untie"
+ast_kinds = ["Untie"]
+parser_ast = "parsed"
+flat_hir = "absent"
+body_hir = "opaque"
+pir_a = "absent"
+compile_effects_world = "not_applicable"
+eir_profile = "boundary"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "ineligible"
+ownership = "active"
+owner_issue = "#6683"
+claim_boundary = "Untie and tied-place lifetime/destructor consequences are not represented."
+evidence = ["docs/project/status/hir_lowering.md", "#6683"]
+
+[[concepts]]
+concept_id = "exceptions.defer"
+family = "exceptions"
+title = "Deferred cleanup"
+ast_kinds = ["Defer"]
+parser_ast = "parsed"
+flat_hir = "modeled"
+body_hir = "opaque"
+pir_a = "boundary"
+compile_effects_world = "not_applicable"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "ineligible"
+ownership = "active"
+owner_issue = "#6661"
+claim_boundary = "A flat marker exists; registration order and cleanup obligations on every exit path are not modeled."
+evidence = ["docs/project/status/hir_lowering.md", "#6661"]
+
+[[concepts]]
+concept_id = "exceptions.try"
+family = "exceptions"
+title = "Try/catch/finally regions"
+ast_kinds = ["Try"]
+parser_ast = "parsed"
+flat_hir = "modeled"
+body_hir = "opaque"
+pir_a = "boundary"
+compile_effects_world = "not_applicable"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "ineligible"
+ownership = "active"
+owner_issue = "#6661"
+claim_boundary = "A flat shell exists; exception regions, handlers, bindings, and exceptional CFG are not canonical."
+evidence = ["docs/project/status/hir_lowering.md", "#6661"]
+
+[[concepts]]
+concept_id = "formats.declaration"
+family = "formats"
+title = "Format declarations"
+ast_kinds = ["Format"]
+parser_ast = "parsed"
+flat_hir = "skipped"
+body_hir = "not_applicable"
+pir_a = "not_applicable"
+compile_effects_world = "boundary"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "ineligible"
+ownership = "active"
+owner_issue = "#6675"
+claim_boundary = "Scope/stash metadata exists; specialized format source, slot identity, and execution capability remain incomplete."
+evidence = ["docs/project/status/hir_lowering.md", "#6675"]
+
+[[concepts]]
+concept_id = "namespaces.typeglob"
+family = "namespaces"
+title = "Typeglob values and slots"
+ast_kinds = ["Typeglob"]
+parser_ast = "parsed"
+flat_hir = "absent"
+body_hir = "opaque"
+pir_a = "boundary"
+compile_effects_world = "boundary"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "fallback_only"
+ownership = "active"
+owner_issue = "#6668"
+claim_boundary = "Some assignments emit stash facts or boundaries, but typeglob value, slot, alias, and localization semantics are not canonical."
+evidence = ["docs/project/status/hir_lowering.md", "#6668"]
+
+[[concepts]]
+concept_id = "objects.core_class"
+family = "objects"
+title = "Core class declarations and object semantics"
+ast_kinds = ["Class"]
+parser_ast = "parsed"
+flat_hir = "modeled"
+body_hir = "opaque"
+pir_a = "absent"
+compile_effects_world = "boundary"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "fallback_only"
+ownership = "active"
+owner_issue = "#6672"
+claim_boundary = "ClassDecl is a declaration shell; fields, MRO, construction, method lookup, and EIR-ready object semantics are not established."
+evidence = ["docs/project/status/hir_lowering.md", "#6672"]
+
+[[concepts]]
+concept_id = "operators.binary"
+family = "operators"
+title = "Binary operators"
+ast_kinds = ["Binary"]
+parser_ast = "parsed"
+flat_hir = "absent"
+body_hir = "modeled"
+pir_a = "boundary"
+compile_effects_world = "not_applicable"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "fallback_only"
+ownership = "active"
+owner_issue = "#6658"
+claim_boundary = "Body HIR has a generic binary node; operator families, context, short-circuiting, and executable semantics remain unproven."
+evidence = ["crates/perl-parser-core/src/hir/body.rs", "docs/project/status/hir_lowering.md", "#6658"]
+
+[[concepts]]
+concept_id = "operators.chained_comparison"
+family = "operators"
+title = "Chained comparisons"
+ast_kinds = ["ChainedComparison"]
+parser_ast = "parsed"
+flat_hir = "absent"
+body_hir = "opaque"
+pir_a = "absent"
+compile_effects_world = "not_applicable"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "ineligible"
+ownership = "active"
+owner_issue = "#6658"
+claim_boundary = "The parser distinguishes the construct, but canonical body/PIR semantics and evaluate-once ordering are absent."
+evidence = ["docs/project/status/hir_lowering.md", "#6658"]
+
+[[concepts]]
+concept_id = "phases.begin"
+family = "phases"
+title = "BEGIN phase blocks"
+ast_kinds = ["PhaseBlock"]
+parser_ast = "parsed"
+flat_hir = "skipped"
+body_hir = "not_applicable"
+pir_a = "not_applicable"
+compile_effects_world = "boundary"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "fallback_only"
+ownership = "active"
+owner_issue = "#6664"
+claim_boundary = "Phase facts are recorded, but source/phase ordering, applied state, and lifecycle execution remain incomplete."
+evidence = ["docs/project/status/hir_lowering.md", "#6664"]
+
+[[concepts]]
+concept_id = "places.array_slice"
+family = "places"
+title = "Array slices"
+ast_kinds = ["ArraySlice"]
+parser_ast = "parsed"
+flat_hir = "absent"
+body_hir = "bridge"
+pir_a = "bridge"
+compile_effects_world = "not_applicable"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "fallback_only"
+ownership = "active"
+owner_issue = "#5244"
+claim_boundary = "Traversal/read recovery exists through a generic bridge; ordered evaluate-once slice-place semantics are not modeled."
+evidence = ["#5244"]
+
+[[concepts]]
+concept_id = "places.hash_slice"
+family = "places"
+title = "Hash slices"
+ast_kinds = ["HashSlice"]
+parser_ast = "parsed"
+flat_hir = "absent"
+body_hir = "bridge"
+pir_a = "bridge"
+compile_effects_world = "not_applicable"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "fallback_only"
+ownership = "active"
+owner_issue = "#5244"
+claim_boundary = "Traversal/read recovery exists through a generic bridge; ordered evaluate-once slice-place semantics are not modeled."
+evidence = ["#5244"]
+
+[[concepts]]
+concept_id = "places.key_value_slice"
+family = "places"
+title = "Key/value hash slices"
+ast_kinds = ["KeyValueSlice"]
+parser_ast = "parsed"
+flat_hir = "absent"
+body_hir = "bridge"
+pir_a = "bridge"
+compile_effects_world = "not_applicable"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "fallback_only"
+ownership = "active"
+owner_issue = "#5244"
+claim_boundary = "The key/value result shape and ordered selector places are not yet first-class."
+evidence = ["#5244"]
+
+[[concepts]]
+concept_id = "regex.literal"
+family = "regex"
+title = "Regex literals"
+ast_kinds = ["Regex"]
+parser_ast = "parsed"
+flat_hir = "modeled"
+body_hir = "opaque"
+pir_a = "boundary"
+compile_effects_world = "not_applicable"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "fallback_only"
+ownership = "active"
+owner_issue = "#4848"
+claim_boundary = "A flat shell and embedded-code boundary exist; canonical body/PIR regex operation semantics remain issue-owned."
+evidence = ["docs/project/status/hir_lowering.md", "#4848"]
+
+[[concepts]]
+concept_id = "regex.match"
+family = "regex"
+title = "Regex match operations"
+ast_kinds = ["Match"]
+parser_ast = "parsed"
+flat_hir = "modeled"
+body_hir = "opaque"
+pir_a = "boundary"
+compile_effects_world = "not_applicable"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "fallback_only"
+ownership = "active"
+owner_issue = "#4848"
+claim_boundary = "Flat target facts exist; body/PIR target, context, capture, and match-state semantics remain incomplete."
+evidence = ["docs/project/status/hir_lowering.md", "#4848"]
+
+[[concepts]]
+concept_id = "regex.substitution"
+family = "regex"
+title = "Substitution operations"
+ast_kinds = ["Substitution"]
+parser_ast = "parsed"
+flat_hir = "modeled"
+body_hir = "opaque"
+pir_a = "boundary"
+compile_effects_world = "not_applicable"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "fallback_only"
+ownership = "active"
+owner_issue = "#4848"
+claim_boundary = "Flat mutation/modifier facts exist; canonical place, replacement, capture, and embedded-code semantics remain incomplete."
+evidence = ["docs/project/status/hir_lowering.md", "#4848"]
+
+[[concepts]]
+concept_id = "regex.transliteration"
+family = "regex"
+title = "Transliteration operations"
+ast_kinds = ["Transliteration"]
+parser_ast = "parsed"
+flat_hir = "modeled"
+body_hir = "opaque"
+pir_a = "boundary"
+compile_effects_world = "not_applicable"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "fallback_only"
+ownership = "active"
+owner_issue = "#4848"
+claim_boundary = "A flat shell exists; target-place mutation, modifiers, and executable semantics remain incomplete."
+evidence = ["docs/project/status/hir_lowering.md", "#4848"]
+
+[[concepts]]
+concept_id = "source.data_section"
+family = "source"
+title = "DATA and END source regions"
+ast_kinds = ["DataSection"]
+parser_ast = "parsed"
+flat_hir = "absent"
+body_hir = "opaque"
+pir_a = "not_applicable"
+compile_effects_world = "absent"
+eir_profile = "boundary"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "ineligible"
+ownership = "active"
+owner_issue = "#6675"
+claim_boundary = "The parser recognizes the marker, but compiler stop/payload identity and runtime DATA capability are not modeled."
+evidence = ["docs/project/status/hir_lowering.md", "#6675"]
+
+[[concepts]]
+concept_id = "source.ellipsis"
+family = "source"
+title = "Ellipsis / yada-yada"
+ast_kinds = ["Ellipsis"]
+parser_ast = "parsed"
+flat_hir = "absent"
+body_hir = "opaque"
+pir_a = "absent"
+compile_effects_world = "not_applicable"
+eir_profile = "boundary"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "ineligible"
+ownership = "active"
+owner_issue = "#6675"
+claim_boundary = "Parsed syntax is not yet represented as a deliberate control/runtime boundary."
+evidence = ["docs/project/status/hir_lowering.md", "#6675"]
+
+[[concepts]]
+concept_id = "values.v_string"
+family = "values"
+title = "Version strings"
+ast_kinds = ["VString"]
+parser_ast = "parsed"
+flat_hir = "absent"
+body_hir = "opaque"
+pir_a = "absent"
+compile_effects_world = "not_applicable"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "ineligible"
+ownership = "active"
+owner_issue = "#6658"
+claim_boundary = "Parser classification exists; typed value representation and version-sensitive semantics do not."
+evidence = ["docs/project/status/hir_lowering.md", "#6658"]

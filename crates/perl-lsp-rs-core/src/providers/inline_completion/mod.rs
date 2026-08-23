@@ -433,14 +433,77 @@ struct RankedCompletionItem {
     item: InlineCompletionItem,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct InlineCandidateMetadata {
-    source: InlineCandidateSourceKind,
-    reason: InlineCandidateReason,
-    confidence: InlineCandidateConfidence,
+/// A completion item paired with the evidence that produced it.
+///
+/// The evidence envelope governs selection — most importantly whether a
+/// candidate may be shown as automatic ghost text — and is deliberately not
+/// part of the LSP wire shape. Callers that only need the protocol payload use
+/// [`InlineCompletionList`]; callers that make policy decisions use this.
+#[derive(Debug, Clone)]
+pub struct EvaluatedInlineCompletionItem {
+    /// The protocol-facing completion item.
+    pub item: InlineCompletionItem,
+    /// Why this item was produced, and how much it is worth trusting.
+    pub evidence: InlineCompletionEvidence,
+    /// Where the ranking placed this candidate relative to its siblings.
+    pub rank: InlineCompletionRank,
 }
 
-impl InlineCandidateMetadata {
+impl EvaluatedInlineCompletionItem {
+    /// Wrap text produced by an external (AI) backend for finalization.
+    ///
+    /// External text carries no local supporting fact and never competes in the
+    /// deterministic ranking, so it enters as low-confidence external evidence
+    /// at the weakest rank.
+    pub fn from_external_backend(item: InlineCompletionItem) -> Self {
+        let evidence = InlineCompletionEvidence::for_external_backend(&item);
+        Self { rank: InlineCompletionRank::weakest(evidence), item, evidence }
+    }
+}
+
+/// Where the deterministic ranking placed a candidate.
+///
+/// Two candidates compare equal exactly when the ranking could not separate
+/// them at all — neither score nor evidence distinguished them, and only the
+/// order the producers happened to run in put one ahead of the other. The inner
+/// values are an implementation detail of ranking and are deliberately not
+/// readable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InlineCompletionRank {
+    score: i16,
+    tiebreak: (u8, u8, u8, u8),
+}
+
+impl InlineCompletionRank {
+    fn new(score: InlineCandidateScore, evidence: InlineCompletionEvidence) -> Self {
+        Self { score: score.0, tiebreak: evidence.stable_tiebreak() }
+    }
+
+    fn weakest(evidence: InlineCompletionEvidence) -> Self {
+        Self { score: i16::MIN, tiebreak: evidence.stable_tiebreak() }
+    }
+}
+
+/// The internal evidence envelope carried through inline completion
+/// finalization.
+///
+/// These facts are the authority for automatic eligibility. They stay internal
+/// to the server: nothing here is serialized into the LSP response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InlineCompletionEvidence {
+    /// Which candidate source produced the item.
+    pub source: InlineCandidateSourceKind,
+    /// The specific fact the item rests on.
+    pub reason: InlineCandidateReason,
+    /// How strongly that fact supports showing the item.
+    pub confidence: InlineCandidateConfidence,
+    /// Whether the item is directly usable or still a scaffold.
+    pub shape: InlineCompletionShape,
+}
+
+type InlineCandidateMetadata = InlineCompletionEvidence;
+
+impl InlineCompletionEvidence {
     fn for_candidate(
         source: InlineCandidateSourceKind,
         item: &InlineCompletionItem,
@@ -448,13 +511,63 @@ impl InlineCandidateMetadata {
     ) -> Self {
         let reason = InlineCandidateReason::for_candidate(source, item, semantic_context);
         let confidence = InlineCandidateConfidence::for_reason(reason);
-        Self { source, reason, confidence }
+        let shape = InlineCompletionShape::for_candidate(item, semantic_context);
+        Self { source, reason, confidence, shape }
     }
 
-    fn stable_tiebreak(self) -> u8 {
-        self.source.stable_rank() * 32
-            + self.reason.stable_rank() * 4
-            + self.confidence.stable_rank()
+    /// Evidence for text produced by an external (AI) backend.
+    ///
+    /// An external candidate carries no source-backed supporting fact, so it is
+    /// classified as low confidence and never qualifies for automatic display.
+    pub fn for_external_backend(item: &InlineCompletionItem) -> Self {
+        Self {
+            source: InlineCandidateSourceKind::ExternalBackend,
+            reason: InlineCandidateReason::ExternalBackend,
+            confidence: InlineCandidateConfidence::Low,
+            shape: InlineCompletionShape::for_external_backend(item),
+        }
+    }
+
+    /// Decide whether this candidate may be shown without the user asking.
+    ///
+    /// Automatic ghost text has to be trustworthy enough to appear unbidden:
+    /// only a source-backed, directly usable, better-than-guess candidate
+    /// qualifies. Everything else stays available on an explicit invocation.
+    pub fn automatic_eligibility(self) -> AutomaticEligibility {
+        if self.source == InlineCandidateSourceKind::ExternalBackend {
+            return AutomaticEligibility::InvokedOnly(InvokedOnlyReason::ExternalProducer);
+        }
+
+        match self.shape {
+            InlineCompletionShape::Placeholder => {
+                return AutomaticEligibility::InvokedOnly(InvokedOnlyReason::LiteralPlaceholder);
+            }
+            InlineCompletionShape::Template => {
+                return AutomaticEligibility::InvokedOnly(InvokedOnlyReason::Scaffold);
+            }
+            InlineCompletionShape::Complete => {}
+        }
+
+        if self.confidence == InlineCandidateConfidence::Low {
+            return AutomaticEligibility::InvokedOnly(InvokedOnlyReason::WeakEvidence);
+        }
+
+        AutomaticEligibility::Eligible
+    }
+
+    /// Lexicographic rank used to order candidates the score left tied.
+    ///
+    /// This is compared before producer sequence, so a stronger source, reason,
+    /// confidence or shape wins regardless of which producer happened to run
+    /// first. Sequence is only the final deterministic tie among candidates
+    /// this cannot separate either.
+    fn stable_tiebreak(self) -> (u8, u8, u8, u8) {
+        (
+            self.source.stable_rank(),
+            self.reason.stable_rank(),
+            self.confidence.stable_rank(),
+            self.shape.stable_rank(),
+        )
     }
 
     #[cfg(test)]
@@ -463,23 +576,188 @@ impl InlineCandidateMetadata {
             source: InlineCandidateSourceKind::Syntax,
             reason: InlineCandidateReason::SourceSyntax,
             confidence: InlineCandidateConfidence::Medium,
+            shape: InlineCompletionShape::Complete,
         }
     }
 }
 
+/// Whether a candidate may appear as automatic ghost text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InlineCandidateReason {
+pub enum AutomaticEligibility {
+    /// The candidate may be shown without an explicit request.
+    Eligible,
+    /// The candidate is withheld until the user explicitly invokes completion.
+    InvokedOnly(InvokedOnlyReason),
+}
+
+impl AutomaticEligibility {
+    /// Whether the candidate may be shown without an explicit request.
+    pub fn is_eligible(self) -> bool {
+        self == Self::Eligible
+    }
+}
+
+/// Why a candidate is held back from automatic display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvokedOnlyReason {
+    /// Produced by an external backend, so no local supporting fact exists.
+    ExternalProducer,
+    /// The text still contains a literal stand-in the user has to replace.
+    LiteralPlaceholder,
+    /// The text is a multi-line scaffold rather than a finished continuation.
+    Scaffold,
+    /// The supporting fact is a guess rather than proven source or index data.
+    WeakEvidence,
+}
+
+/// How finished a candidate's text is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InlineCompletionShape {
+    /// A single-line, directly usable continuation of what the user typed.
+    Complete,
+    /// A multi-line scaffold whose body the user still has to write.
+    Template,
+    /// Text containing a literal stand-in (`...`, or a variable that is not in
+    /// scope) that the user has to replace before the code is correct.
+    Placeholder,
+}
+
+impl InlineCompletionShape {
+    fn for_candidate(
+        item: &InlineCompletionItem,
+        semantic_context: &SemanticInlineContext,
+    ) -> Self {
+        if item.insert_text.contains("...") {
+            return Self::Placeholder;
+        }
+
+        if mentions_variable_outside_scope(item.insert_text.as_str(), semantic_context) {
+            return Self::Placeholder;
+        }
+
+        if item.insert_text.contains('\n') {
+            return Self::Template;
+        }
+
+        Self::Complete
+    }
+
+    /// Shape of external backend text.
+    ///
+    /// External text has no semantic context to check variables against, so
+    /// only the text-shape rules apply.
+    fn for_external_backend(item: &InlineCompletionItem) -> Self {
+        if item.insert_text.contains("...") {
+            Self::Placeholder
+        } else if item.insert_text.contains('\n') {
+            Self::Template
+        } else {
+            Self::Complete
+        }
+    }
+
+    fn stable_rank(self) -> u8 {
+        match self {
+            Self::Complete => 0,
+            Self::Template => 1,
+            Self::Placeholder => 2,
+        }
+    }
+}
+
+/// Whether the text names a variable that is not visible at the cursor.
+///
+/// A completion that inserts `$got` where no `$got` exists is a literal
+/// stand-in, not a continuation. The exemption is per binding, not per
+/// candidate: `my $line (@lines) {` introduces `$line`, so only `$line` is
+/// excused, and `@lines` must still be visible. A candidate that declares one
+/// variable does not get to name arbitrary undeclared others.
+fn mentions_variable_outside_scope(text: &str, semantic_context: &SemanticInlineContext) -> bool {
+    let declared = collect_declared_variables(text);
+
+    collect_variable_mentions(text).into_iter().any(|mention| {
+        if declared.iter().any(|binding| binding == &mention) {
+            return false;
+        }
+
+        VariableFact::from_perl_variable(mention.as_str())
+            .is_some_and(|mentioned| !semantic_context.visible_variables.contains(&mentioned))
+    })
+}
+
+/// The exact variables this candidate binds itself.
+fn collect_declared_variables(text: &str) -> Vec<String> {
+    const DECLARATION_KEYWORDS: [&str; 4] = ["my", "our", "local", "state"];
+
+    let mut declared = Vec::new();
+    for keyword in DECLARATION_KEYWORDS {
+        let mut search_from = 0;
+        while let Some(relative) = text[search_from..].find(keyword) {
+            let start = search_from + relative;
+            let after = start + keyword.len();
+            search_from = after;
+
+            let opens = text[..start].chars().next_back().is_none_or(is_keyword_boundary);
+            let closes = text[after..].chars().next().is_some_and(char::is_whitespace);
+            if opens && closes {
+                declared.extend(declaration_targets(&text[after..]));
+            }
+        }
+    }
+
+    declared
+}
+
+/// The variables bound by one declaration: every variable of a parenthesized
+/// list, or the single variable that immediately follows the keyword.
+fn declaration_targets(after_keyword: &str) -> Vec<String> {
+    let trimmed = after_keyword.trim_start();
+
+    if let Some(list) = trimmed.strip_prefix('(') {
+        let end = list.find(')').unwrap_or(list.len());
+        return collect_variable_mentions(&list[..end]);
+    }
+
+    // Anything else in that position — `my sub helper`, say — binds no
+    // variable here, and must not excuse a mention further along the text.
+    if !trimmed.starts_with(['$', '@', '%']) {
+        return Vec::new();
+    }
+
+    collect_variable_mentions(trimmed).into_iter().take(1).collect()
+}
+
+/// The specific fact an inline completion candidate rests on.
+///
+/// Reasons are ordered from strongest to weakest supporting fact: proven
+/// package/index/scope data first, plain source-shape inference next, and
+/// unsupported guesses last.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InlineCandidateReason {
+    /// A subroutine defined in the current package.
     CurrentPackageMethod,
+    /// A method proven by the workspace index for an explicit package receiver.
     IndexedPackageMethod,
+    /// A method of a receiver identified as a DBI handle.
     DbiReceiverMethod,
+    /// A module reachable from the document's effective `@INC`.
     EffectiveIncModule,
+    /// A variable declared and still live at the cursor.
     VisibleLexical,
+    /// A method name guessed from receiver shape alone.
     SourceReceiver,
+    /// A module name guessed from the `use` statement shape alone.
     SourceModule,
+    /// A continuation inferred from the surrounding syntax.
     SourceSyntax,
+    /// A test assertion inferred from the file's test framework.
     SourceTest,
+    /// A shebang interpreter line.
     SourceShebang,
+    /// A generic continuation offered when nothing more specific applies.
     SourceContextualFallback,
+    /// Text returned by an external AI backend, with no local supporting fact.
+    ExternalBackend,
 }
 
 impl InlineCandidateReason {
@@ -497,6 +775,7 @@ impl InlineCandidateReason {
             InlineCandidateSourceKind::Test => Self::SourceTest,
             InlineCandidateSourceKind::Shebang => Self::SourceShebang,
             InlineCandidateSourceKind::ContextualFallback => Self::SourceContextualFallback,
+            InlineCandidateSourceKind::ExternalBackend => Self::ExternalBackend,
         }
     }
 
@@ -513,14 +792,19 @@ impl InlineCandidateReason {
             Self::SourceTest => 8,
             Self::SourceShebang => 9,
             Self::SourceContextualFallback => 10,
+            Self::ExternalBackend => 11,
         }
     }
 }
 
+/// How strongly a candidate's supporting fact backs showing it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InlineCandidateConfidence {
+pub enum InlineCandidateConfidence {
+    /// Backed by proven package, index, `@INC`, or in-scope declaration data.
     High,
+    /// Backed by the surrounding source shape.
     Medium,
+    /// A guess with no specific supporting fact.
     Low,
 }
 
@@ -538,7 +822,8 @@ impl InlineCandidateConfidence {
             }
             InlineCandidateReason::SourceReceiver
             | InlineCandidateReason::SourceModule
-            | InlineCandidateReason::SourceContextualFallback => Self::Low,
+            | InlineCandidateReason::SourceContextualFallback
+            | InlineCandidateReason::ExternalBackend => Self::Low,
         }
     }
 
@@ -576,14 +861,23 @@ impl InlineCandidateScore {
     }
 }
 
+/// Which producer emitted an inline completion candidate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InlineCandidateSourceKind {
+pub enum InlineCandidateSourceKind {
+    /// Method names for a `->` receiver.
     Receiver,
+    /// Module names for a `use` statement.
     Module,
+    /// Continuations inferred from the expected syntax at the cursor.
     Syntax,
+    /// Test framework assertions.
     Test,
+    /// Shebang interpreter lines.
     Shebang,
+    /// Generic continuations offered when nothing more specific applies.
     ContextualFallback,
+    /// An external AI backend.
+    ExternalBackend,
 }
 
 impl InlineCandidateSourceKind {
@@ -595,6 +889,7 @@ impl InlineCandidateSourceKind {
             Self::Test => 3,
             Self::Shebang => 4,
             Self::ContextualFallback => 5,
+            Self::ExternalBackend => 6,
         }
     }
 }
@@ -689,6 +984,9 @@ fn semantic_bonus(
         InlineCandidateSourceKind::ContextualFallback => {
             contextual_fallback_candidate_bonus(item, context)
         }
+        // External text never enters the deterministic ranking pipeline; it is
+        // finalized separately and carries no semantic bonus.
+        InlineCandidateSourceKind::ExternalBackend => 0,
     }
 }
 
@@ -970,20 +1268,87 @@ impl InlineCompletionProvider {
         character: u32,
         environment: &InlineCompletionEnvironment,
     ) -> InlineCompletionList {
-        if let Some(context) = self.prepare_context(text, line, character) {
-            let semantic_context =
-                self.semantic_context_for_request(text, line, &context, environment);
-            let items = self.get_completions_for_context(&context, &semantic_context);
-            let list = self.apply_replacement_ranges_for_context(
-                InlineCompletionList { items },
-                &context,
-                line,
-                character,
-            );
-            return self.filter_parse_safe_items(list, text, line, character);
+        InlineCompletionList {
+            items: self
+                .evaluate_inline_completions(text, line, character, environment)
+                .into_iter()
+                .map(|evaluated| evaluated.item)
+                .collect(),
+        }
+    }
+
+    /// Get inline completions together with the evidence behind each one.
+    ///
+    /// This is the same deterministic pipeline as
+    /// [`Self::get_inline_completions_with_environment`], except the evidence
+    /// envelope survives finalization so callers can apply trigger policy
+    /// against the supporting facts rather than against completion text shape.
+    /// Items are returned strongest-first.
+    pub fn evaluate_inline_completions(
+        &self,
+        text: &str,
+        line: u32,
+        character: u32,
+        environment: &InlineCompletionEnvironment,
+    ) -> Vec<EvaluatedInlineCompletionItem> {
+        let Some(context) = self.prepare_context(text, line, character) else {
+            return Vec::new();
+        };
+
+        let semantic_context = self.semantic_context_for_request(text, line, &context, environment);
+        let mut evaluated = self.get_completions_for_context(&context, &semantic_context);
+        self.assign_replacement_ranges(
+            evaluated.iter_mut().map(|candidate| &mut candidate.item),
+            &context,
+            line,
+            character,
+        );
+
+        let baseline = parse_damage_for_probe(text);
+        evaluated.retain(|candidate| {
+            self.is_parse_safe_item(&candidate.item, &baseline, text, line, character)
+        });
+        evaluated
+    }
+
+    /// Select the single candidate, if any, that may be shown as automatic
+    /// ghost text.
+    ///
+    /// Automatic display is deliberately conservative: it returns zero or one
+    /// item, only from evidence that survives
+    /// [`InlineCompletionEvidence::automatic_eligibility`], and returns nothing
+    /// when the ranking could not separate the two strongest survivors at all.
+    /// Where the provider has a deliberate preference — `use strict;` ahead of
+    /// `use warnings;`, say — that preference stands; where two candidates are
+    /// distinguished only by the order their producers ran in, showing either
+    /// one would be a guess.
+    ///
+    /// The candidates must be ordered strongest-first, as
+    /// [`Self::evaluate_inline_completions`] returns them.
+    pub fn select_automatic_item(
+        &self,
+        candidates: Vec<EvaluatedInlineCompletionItem>,
+    ) -> InlineCompletionList {
+        let mut eligible = candidates
+            .into_iter()
+            .filter(|candidate| candidate.evidence.automatic_eligibility().is_eligible());
+
+        let Some(best) = eligible.next() else {
+            return InlineCompletionList { items: vec![] };
+        };
+
+        // Every candidate sharing the best rank is a rival, not just the next
+        // one: a lower-ranked candidate can sit between two members of the
+        // best-rank cohort, so stopping at the runner-up would miss the tie.
+        let contested = eligible
+            .filter(|candidate| candidate.rank == best.rank)
+            .any(|candidate| candidate.item.insert_text != best.item.insert_text);
+
+        if contested {
+            return InlineCompletionList { items: vec![] };
         }
 
-        InlineCompletionList { items: vec![] }
+        InlineCompletionList { items: vec![best.item] }
     }
 
     /// Add an explicit single-line replacement range when the user has already
@@ -995,29 +1360,42 @@ impl InlineCompletionProvider {
         line: u32,
         character: u32,
     ) -> InlineCompletionList {
-        if let Some(range) = shebang_replacement_range(context.prefix.as_str(), line, character) {
-            for item in &mut list.items {
-                if item.range.is_none() && is_shebang_completion_item(item) {
-                    item.range = Some(range);
-                }
-            }
-        }
-
-        let Some(fragment) = replacement_fragment_at_cursor(context.prefix.as_str()) else {
-            return list;
-        };
-        let Some(range) = replacement_range(context.prefix.as_str(), &fragment, line, character)
-        else {
-            return list;
-        };
-
-        for item in &mut list.items {
-            if item.range.is_none() && item_matches_fragment(item, fragment.text) {
-                item.range = Some(range);
-            }
-        }
-
+        self.assign_replacement_ranges(list.items.iter_mut(), context, line, character);
         list
+    }
+
+    fn assign_replacement_ranges<'item>(
+        &self,
+        items: impl Iterator<Item = &'item mut InlineCompletionItem>,
+        context: &PreparedInlineCompletionContext,
+        line: u32,
+        character: u32,
+    ) {
+        let shebang_range = shebang_replacement_range(context.prefix.as_str(), line, character);
+        let fragment_range =
+            replacement_fragment_at_cursor(context.prefix.as_str()).and_then(|fragment| {
+                replacement_range(context.prefix.as_str(), &fragment, line, character)
+                    .map(|range| (fragment, range))
+            });
+
+        for item in items {
+            if item.range.is_some() {
+                continue;
+            }
+
+            if let Some(range) = shebang_range
+                && is_shebang_completion_item(item)
+            {
+                item.range = Some(range);
+                continue;
+            }
+
+            if let Some((fragment, range)) = fragment_range.as_ref()
+                && item_matches_fragment(item, fragment.text)
+            {
+                item.range = Some(*range);
+            }
+        }
     }
 
     /// Retain completion items that do not worsen the current parse damage.
@@ -1035,17 +1413,23 @@ impl InlineCompletionProvider {
         let items = list
             .items
             .into_iter()
-            .filter(|item| {
-                parse_probe_after_item(text, item, line, character)
-                    .map(|probe| {
-                        let candidate = parse_damage_for_probe(probe.as_str());
-                        !candidate.worse_than(&baseline)
-                    })
-                    .unwrap_or(false)
-            })
+            .filter(|item| self.is_parse_safe_item(item, &baseline, text, line, character))
             .collect();
 
         InlineCompletionList { items }
+    }
+
+    fn is_parse_safe_item(
+        &self,
+        item: &InlineCompletionItem,
+        baseline: &ParseDamage,
+        text: &str,
+        line: u32,
+        character: u32,
+    ) -> bool {
+        parse_probe_after_item(text, item, line, character)
+            .map(|probe| !parse_damage_for_probe(probe.as_str()).worse_than(baseline))
+            .unwrap_or(false)
     }
 
     /// Prepare surrounding code context for deterministic suggestions and
@@ -1113,7 +1497,7 @@ impl InlineCompletionProvider {
         &self,
         context: &PreparedInlineCompletionContext,
         semantic_context: &SemanticInlineContext,
-    ) -> Vec<InlineCompletionItem> {
+    ) -> Vec<EvaluatedInlineCompletionItem> {
         let mut sink = InlineCandidateSink::new(semantic_context);
         ReceiverCandidateSource.add_candidates(self, context, semantic_context, &mut sink);
         ModuleCandidateSource.add_candidates(self, context, semantic_context, &mut sink);
@@ -1727,22 +2111,41 @@ impl InlineCompletionProvider {
         }
     }
 
-    fn normalize_items(&self, mut items: Vec<RankedCompletionItem>) -> Vec<InlineCompletionItem> {
+    fn normalize_items(
+        &self,
+        mut items: Vec<RankedCompletionItem>,
+    ) -> Vec<EvaluatedInlineCompletionItem> {
+        // Evidence outranks producer sequence. `order` is unique and
+        // monotonic, so comparing it before the evidence tiebreak would let
+        // whichever producer ran first win every equal-score contest and make
+        // the tiebreak unreachable. Sequence stays last, as the deterministic
+        // tie among candidates neither score nor evidence separates.
         items.sort_by(|left, right| {
-            right.score.0.cmp(&left.score.0).then_with(|| left.order.cmp(&right.order)).then_with(
-                || left.metadata.stable_tiebreak().cmp(&right.metadata.stable_tiebreak()),
-            )
+            right
+                .score
+                .0
+                .cmp(&left.score.0)
+                .then_with(|| {
+                    left.metadata.stable_tiebreak().cmp(&right.metadata.stable_tiebreak())
+                })
+                .then_with(|| left.order.cmp(&right.order))
         });
 
         let mut deduped = Vec::new();
         let mut seen = Vec::<String>::new();
         for candidate in items.into_iter() {
+            // The strongest evidence for a given text now sorts first, so
+            // keeping the first occurrence keeps the best-supported one.
             if seen.iter().any(|existing| existing == &candidate.item.insert_text) {
                 continue;
             }
 
             seen.push(candidate.item.insert_text.clone());
-            deduped.push(candidate.item);
+            deduped.push(EvaluatedInlineCompletionItem {
+                rank: InlineCompletionRank::new(candidate.score, candidate.metadata),
+                item: candidate.item,
+                evidence: candidate.metadata,
+            });
             if deduped.len() >= MAX_INLINE_COMPLETION_ITEMS {
                 break;
             }
@@ -6463,11 +6866,12 @@ mod tests {
             InlineCandidateSourceKind::Test,
             InlineCandidateSourceKind::Shebang,
             InlineCandidateSourceKind::ContextualFallback,
+            InlineCandidateSourceKind::ExternalBackend,
         ]
         .into_iter()
         .map(|source| source.stable_rank())
         .collect();
-        assert_eq!(source_ranks, vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(source_ranks, vec![0, 1, 2, 3, 4, 5, 6]);
 
         let reason_ranks: Vec<_> = [
             InlineCandidateReason::CurrentPackageMethod,
@@ -6481,11 +6885,12 @@ mod tests {
             InlineCandidateReason::SourceTest,
             InlineCandidateReason::SourceShebang,
             InlineCandidateReason::SourceContextualFallback,
+            InlineCandidateReason::ExternalBackend,
         ]
         .into_iter()
         .map(|reason| reason.stable_rank())
         .collect();
-        assert_eq!(reason_ranks, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        assert_eq!(reason_ranks, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
 
         let confidence_ranks: Vec<_> = [
             InlineCandidateConfidence::High,
@@ -6501,15 +6906,59 @@ mod tests {
             source: InlineCandidateSourceKind::Receiver,
             reason: InlineCandidateReason::CurrentPackageMethod,
             confidence: InlineCandidateConfidence::High,
+            shape: InlineCompletionShape::Complete,
         };
         let low_confidence = InlineCandidateMetadata {
             source: InlineCandidateSourceKind::ContextualFallback,
             reason: InlineCandidateReason::SourceContextualFallback,
             confidence: InlineCandidateConfidence::Low,
+            shape: InlineCompletionShape::Complete,
         };
         assert!(high_confidence.stable_tiebreak() < low_confidence.stable_tiebreak());
 
+        // The tiebreak must be lexicographic across source, then reason, then
+        // confidence, then shape. A packed scalar rank lets a weaker source win
+        // whenever its reason rank is small enough to offset the source gap.
+        let weak_source_strong_reason = InlineCandidateMetadata {
+            source: InlineCandidateSourceKind::Module,
+            reason: InlineCandidateReason::CurrentPackageMethod,
+            confidence: InlineCandidateConfidence::High,
+            shape: InlineCompletionShape::Complete,
+        };
+        let strong_source_weak_reason = InlineCandidateMetadata {
+            source: InlineCandidateSourceKind::Receiver,
+            reason: InlineCandidateReason::SourceContextualFallback,
+            confidence: InlineCandidateConfidence::Low,
+            shape: InlineCompletionShape::Placeholder,
+        };
+        assert!(
+            strong_source_weak_reason.stable_tiebreak()
+                < weak_source_strong_reason.stable_tiebreak(),
+            "source rank must dominate the tiebreak regardless of reason rank"
+        );
+
         Ok(())
+    }
+
+    /// A ranked candidate with explicit evidence and producer sequence, for
+    /// tests that need the two to disagree.
+    fn ranked_fixture(
+        insert_text: &str,
+        metadata: InlineCandidateMetadata,
+        priority: u8,
+        order: usize,
+    ) -> RankedCompletionItem {
+        RankedCompletionItem {
+            score: InlineCandidateScore::from_legacy_priority(priority),
+            order,
+            metadata,
+            item: InlineCompletionItem {
+                insert_text: insert_text.to_string(),
+                filter_text: None,
+                range: None,
+                command: None,
+            },
+        }
     }
 
     fn ranked_candidate(
@@ -6617,8 +7066,8 @@ mod tests {
             ),
         ]);
 
-        assert_eq!(normalized[0].insert_text, "My::App;");
-        assert_eq!(normalized[1].insert_text, "strict;");
+        assert_eq!(normalized[0].item.insert_text, "My::App;");
+        assert_eq!(normalized[1].item.insert_text, "strict;");
         Ok(())
     }
 
@@ -6651,8 +7100,8 @@ mod tests {
             ),
         ]);
 
-        assert_eq!(normalized[0].insert_text, "save()");
-        assert_eq!(normalized[1].insert_text, "new()");
+        assert_eq!(normalized[0].item.insert_text, "save()");
+        assert_eq!(normalized[1].item.insert_text, "new()");
         Ok(())
     }
 
@@ -6683,8 +7132,8 @@ mod tests {
             ),
         ]);
 
-        assert_eq!(normalized[0].insert_text, "is($got, $expected, 'test description');");
-        assert_eq!(normalized[1].insert_text, "return $got;");
+        assert_eq!(normalized[0].item.insert_text, "is($got, $expected, 'test description');");
+        assert_eq!(normalized[1].item.insert_text, "return $got;");
         Ok(())
     }
 
@@ -6761,8 +7210,8 @@ mod tests {
             ),
         ]);
 
-        assert_eq!(normalized[0].insert_text, "$is_valid;");
-        assert_eq!(normalized[1].insert_text, "$condition;");
+        assert_eq!(normalized[0].item.insert_text, "$is_valid;");
+        assert_eq!(normalized[1].item.insert_text, "$condition;");
         Ok(())
     }
 
@@ -6874,11 +7323,11 @@ mod tests {
         let normalized = provider.normalize_items(items);
 
         assert_eq!(normalized.len(), MAX_INLINE_COMPLETION_ITEMS);
-        assert_eq!(normalized[0].insert_text, "first");
-        assert_eq!(normalized[1].insert_text, "second");
-        assert_eq!(normalized[2].insert_text, "late");
-        assert_eq!(normalized[3].insert_text, "third");
-        assert_eq!(normalized[4].insert_text, "fourth");
+        assert_eq!(normalized[0].item.insert_text, "first");
+        assert_eq!(normalized[1].item.insert_text, "second");
+        assert_eq!(normalized[2].item.insert_text, "late");
+        assert_eq!(normalized[3].item.insert_text, "third");
+        assert_eq!(normalized[4].item.insert_text, "fourth");
     }
 
     #[test]
@@ -6893,6 +7342,7 @@ mod tests {
                     source: InlineCandidateSourceKind::ContextualFallback,
                     reason: InlineCandidateReason::SourceContextualFallback,
                     confidence: InlineCandidateConfidence::Low,
+                    shape: InlineCompletionShape::Complete,
                 },
                 item: InlineCompletionItem {
                     insert_text: "fallback".into(),
@@ -6908,6 +7358,7 @@ mod tests {
                     source: InlineCandidateSourceKind::Receiver,
                     reason: InlineCandidateReason::CurrentPackageMethod,
                     confidence: InlineCandidateConfidence::High,
+                    shape: InlineCompletionShape::Complete,
                 },
                 item: InlineCompletionItem {
                     insert_text: "save()".into(),
@@ -6920,8 +7371,8 @@ mod tests {
 
         let normalized = provider.normalize_items(items);
 
-        assert_eq!(normalized[0].insert_text, "save()");
-        assert_eq!(normalized[1].insert_text, "fallback");
+        assert_eq!(normalized[0].item.insert_text, "save()");
+        assert_eq!(normalized[1].item.insert_text, "fallback");
 
         Ok(())
     }
@@ -6956,7 +7407,539 @@ mod tests {
 
         let normalized = provider.normalize_items(items);
 
-        assert_eq!(normalized[0].insert_text, "is($got, $expected, 'test description');");
-        assert_eq!(normalized[1].insert_text, "return $result;");
+        assert_eq!(normalized[0].item.insert_text, "is($got, $expected, 'test description');");
+        assert_eq!(normalized[1].item.insert_text, "return $result;");
+    }
+
+    // ── Automatic eligibility ────────────────────────────────────────────────
+
+    const SELF_RECEIVER_SOURCE: &str = "package My::App;\n\
+         \n\
+         sub save {\n\
+         \x20   my $self = shift;\n\
+         }\n\
+         \n\
+         sub run {\n\
+         \x20   my $self = shift;\n\
+         \x20   $self->\n\
+         }\n";
+
+    fn evaluate(text: &str, line: u32, character: u32) -> Vec<EvaluatedInlineCompletionItem> {
+        InlineCompletionProvider::new().evaluate_inline_completions(
+            text,
+            line,
+            character,
+            &InlineCompletionEnvironment::default(),
+        )
+    }
+
+    fn automatic_texts(text: &str, line: u32, character: u32) -> Vec<String> {
+        let provider = InlineCompletionProvider::new();
+        provider
+            .select_automatic_item(evaluate(text, line, character))
+            .items
+            .into_iter()
+            .map(|item| item.insert_text)
+            .collect()
+    }
+
+    fn evaluated_fixture(
+        insert_text: &str,
+        evidence: InlineCompletionEvidence,
+        priority: u8,
+    ) -> EvaluatedInlineCompletionItem {
+        EvaluatedInlineCompletionItem {
+            item: InlineCompletionItem {
+                insert_text: insert_text.to_string(),
+                filter_text: None,
+                range: None,
+                command: None,
+            },
+            evidence,
+            rank: InlineCompletionRank::new(
+                InlineCandidateScore::from_legacy_priority(priority),
+                evidence,
+            ),
+        }
+    }
+
+    /// An ordinary Perl continuation backed by a subroutine in the current
+    /// package qualifies for automatic display. Its sigils and parentheses are
+    /// normal Perl, not evidence of a weak suggestion.
+    #[test]
+    fn automatic_admits_source_backed_perl_continuation() {
+        let evaluated = evaluate(SELF_RECEIVER_SOURCE, 8, 11);
+        let candidate = must_some(evaluated.first());
+
+        assert_eq!(candidate.item.insert_text, "save()");
+        assert_eq!(candidate.evidence.reason, InlineCandidateReason::CurrentPackageMethod);
+        assert_eq!(candidate.evidence.confidence, InlineCandidateConfidence::High);
+        assert_eq!(candidate.evidence.shape, InlineCompletionShape::Complete);
+        assert_eq!(candidate.evidence.automatic_eligibility(), AutomaticEligibility::Eligible);
+
+        assert_eq!(automatic_texts(SELF_RECEIVER_SOURCE, 8, 11), vec!["save()".to_string()]);
+    }
+
+    /// A subroutine body scaffold still contains a literal `...` the user has
+    /// to replace, so it stays behind an explicit invocation.
+    #[test]
+    fn automatic_withholds_literal_placeholder_scaffold() {
+        let source = "package My::App;\n\nsub compute";
+        let evaluated = evaluate(source, 2, 11);
+        let candidate = must_some(evaluated.first());
+
+        assert!(candidate.item.insert_text.contains("..."));
+        assert_eq!(candidate.evidence.shape, InlineCompletionShape::Placeholder);
+        assert_eq!(
+            candidate.evidence.automatic_eligibility(),
+            AutomaticEligibility::InvokedOnly(InvokedOnlyReason::LiteralPlaceholder)
+        );
+
+        assert!(
+            automatic_texts(source, 2, 11).is_empty(),
+            "a placeholder scaffold must not appear as automatic ghost text"
+        );
+    }
+
+    /// A candidate naming a variable that does not exist at the cursor is a
+    /// stand-in the user has to rewrite, not a continuation.
+    #[test]
+    fn shape_treats_out_of_scope_variable_as_placeholder() {
+        let semantic_context = SemanticInlineContext {
+            visible_variables: vec![VariableFact {
+                sigil: VariableSigil::Scalar,
+                name: "result".to_string(),
+            }],
+            ..unknown_semantic_context()
+        };
+
+        let supported = InlineCompletionItem {
+            insert_text: "ok($result, 'test description');".to_string(),
+            filter_text: None,
+            range: None,
+            command: None,
+        };
+        let unsupported = InlineCompletionItem {
+            insert_text: "is($got, $expected, 'test description');".to_string(),
+            filter_text: None,
+            range: None,
+            command: None,
+        };
+
+        assert_eq!(
+            InlineCompletionShape::for_candidate(&supported, &semantic_context),
+            InlineCompletionShape::Complete
+        );
+        assert_eq!(
+            InlineCompletionShape::for_candidate(&unsupported, &semantic_context),
+            InlineCompletionShape::Placeholder
+        );
+    }
+
+    /// A candidate that introduces its own binding legitimately names a
+    /// variable that is not yet in scope.
+    #[test]
+    fn shape_exempts_candidates_that_declare_their_own_binding() {
+        let semantic_context = SemanticInlineContext {
+            visible_variables: vec![VariableFact {
+                sigil: VariableSigil::Array,
+                name: "lines".to_string(),
+            }],
+            ..unknown_semantic_context()
+        };
+
+        let declaration = InlineCompletionItem {
+            insert_text: "my $line (@lines) {".to_string(),
+            filter_text: None,
+            range: None,
+            command: None,
+        };
+
+        assert_eq!(
+            InlineCompletionShape::for_candidate(&declaration, &semantic_context),
+            InlineCompletionShape::Complete
+        );
+    }
+
+    /// The exemption covers the binding the candidate introduces, not every
+    /// other variable it happens to name. One declared and one undeclared
+    /// variable is still a placeholder.
+    #[test]
+    fn shape_exempts_only_the_declared_binding() {
+        let semantic_context = SemanticInlineContext {
+            visible_variables: vec![VariableFact {
+                sigil: VariableSigil::Array,
+                name: "lines".to_string(),
+            }],
+            ..unknown_semantic_context()
+        };
+
+        for text in ["my $line (@missing) {", "my $value = $missing;", "my ($head, $tail) = @gone;"]
+        {
+            let candidate = InlineCompletionItem {
+                insert_text: text.to_string(),
+                filter_text: None,
+                range: None,
+                command: None,
+            };
+
+            assert_eq!(
+                InlineCompletionShape::for_candidate(&candidate, &semantic_context),
+                InlineCompletionShape::Placeholder,
+                "declaring one variable must not excuse an invisible one: {text}"
+            );
+        }
+    }
+
+    /// A declaration keyword that binds nothing at that position cannot excuse
+    /// a variable further along the text.
+    #[test]
+    fn shape_ignores_declaration_keywords_that_bind_no_variable() {
+        let candidate = InlineCompletionItem {
+            insert_text: "my sub helper { $missing }".to_string(),
+            filter_text: None,
+            range: None,
+            command: None,
+        };
+
+        assert_eq!(
+            InlineCompletionShape::for_candidate(&candidate, &unknown_semantic_context()),
+            InlineCompletionShape::Placeholder
+        );
+    }
+
+    /// Evidence, not producer sequence, decides an equal-score contest.
+    ///
+    /// `order` is unique and monotonic, so comparing it before the evidence
+    /// tiebreak would let whichever producer ran first win every tie. Feeding
+    /// the weaker candidate in first must not put it ahead.
+    #[test]
+    fn ranking_prefers_stronger_evidence_over_producer_order() {
+        let provider = InlineCompletionProvider::new();
+        let weaker = InlineCompletionEvidence {
+            source: InlineCandidateSourceKind::ContextualFallback,
+            reason: InlineCandidateReason::SourceContextualFallback,
+            confidence: InlineCandidateConfidence::Low,
+            shape: InlineCompletionShape::Complete,
+        };
+        let stronger = InlineCompletionEvidence {
+            source: InlineCandidateSourceKind::Receiver,
+            reason: InlineCandidateReason::CurrentPackageMethod,
+            confidence: InlineCandidateConfidence::High,
+            shape: InlineCompletionShape::Complete,
+        };
+
+        let normalized = provider.normalize_items(vec![
+            ranked_fixture("guess()", weaker, 0, 0),
+            ranked_fixture("save()", stronger, 0, 1),
+        ]);
+
+        assert_eq!(
+            normalized.iter().map(|item| item.item.insert_text.as_str()).collect::<Vec<_>>(),
+            vec!["save()", "guess()"],
+            "the later-produced but better-supported candidate must rank first"
+        );
+
+        assert_eq!(
+            provider.select_automatic_item(normalized).items[0].insert_text,
+            "save()",
+            "automatic display must follow the evidence, not the producer sequence"
+        );
+    }
+
+    /// Deduplication keeps the strongest evidence for a repeated text, not
+    /// whichever producer emitted it first.
+    #[test]
+    fn ranking_keeps_the_best_supported_copy_of_repeated_text() {
+        let provider = InlineCompletionProvider::new();
+        let weaker = InlineCompletionEvidence {
+            source: InlineCandidateSourceKind::ContextualFallback,
+            reason: InlineCandidateReason::SourceContextualFallback,
+            confidence: InlineCandidateConfidence::Low,
+            shape: InlineCompletionShape::Complete,
+        };
+        let stronger = InlineCompletionEvidence {
+            source: InlineCandidateSourceKind::Receiver,
+            reason: InlineCandidateReason::CurrentPackageMethod,
+            confidence: InlineCandidateConfidence::High,
+            shape: InlineCompletionShape::Complete,
+        };
+
+        let normalized = provider.normalize_items(vec![
+            ranked_fixture("save()", weaker, 0, 0),
+            ranked_fixture("save()", stronger, 0, 1),
+        ]);
+
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(normalized[0].evidence, stronger);
+        assert_eq!(
+            normalized[0].evidence.automatic_eligibility(),
+            AutomaticEligibility::Eligible,
+            "the surviving copy must carry the evidence that actually supports it"
+        );
+    }
+
+    /// A tie can be separated by a lower-ranked candidate, so ambiguity is
+    /// measured against the whole best-rank cohort rather than the runner-up.
+    #[test]
+    fn automatic_detects_ambiguity_beyond_the_immediate_runner_up() {
+        let provider = InlineCompletionProvider::new();
+        let leader = InlineCompletionEvidence {
+            source: InlineCandidateSourceKind::Receiver,
+            reason: InlineCandidateReason::CurrentPackageMethod,
+            confidence: InlineCandidateConfidence::High,
+            shape: InlineCompletionShape::Complete,
+        };
+        let between = InlineCompletionEvidence {
+            source: InlineCandidateSourceKind::Syntax,
+            reason: InlineCandidateReason::SourceSyntax,
+            confidence: InlineCandidateConfidence::Medium,
+            shape: InlineCompletionShape::Complete,
+        };
+
+        let selected = provider.select_automatic_item(vec![
+            evaluated_fixture("save()", leader, 0),
+            evaluated_fixture("pragma;", between, 0),
+            evaluated_fixture("load()", leader, 0),
+        ]);
+
+        assert!(
+            selected.items.is_empty(),
+            "a same-rank rival past the runner-up is still a coin flip"
+        );
+    }
+
+    /// Multi-line scaffolds are invoked-only even when nothing in them is a
+    /// literal placeholder.
+    #[test]
+    fn automatic_withholds_multiline_scaffold() {
+        let evidence = InlineCompletionEvidence {
+            source: InlineCandidateSourceKind::Syntax,
+            reason: InlineCandidateReason::SourceSyntax,
+            confidence: InlineCandidateConfidence::Medium,
+            shape: InlineCompletionShape::Template,
+        };
+
+        assert_eq!(
+            evidence.automatic_eligibility(),
+            AutomaticEligibility::InvokedOnly(InvokedOnlyReason::Scaffold)
+        );
+    }
+
+    /// A guess with no specific supporting fact is invoked-only however
+    /// harmless its text looks.
+    #[test]
+    fn automatic_withholds_weak_evidence() {
+        let evidence = InlineCompletionEvidence {
+            source: InlineCandidateSourceKind::ContextualFallback,
+            reason: InlineCandidateReason::SourceContextualFallback,
+            confidence: InlineCandidateConfidence::Low,
+            shape: InlineCompletionShape::Complete,
+        };
+
+        assert_eq!(
+            evidence.automatic_eligibility(),
+            AutomaticEligibility::InvokedOnly(InvokedOnlyReason::WeakEvidence)
+        );
+    }
+
+    /// External backend text carries no local supporting fact, so it never
+    /// appears unbidden regardless of how clean the text is.
+    #[test]
+    fn automatic_withholds_external_backend_text() {
+        let item = InlineCompletionItem {
+            insert_text: "return $self;".to_string(),
+            filter_text: None,
+            range: None,
+            command: None,
+        };
+        let evidence = InlineCompletionEvidence::for_external_backend(&item);
+
+        assert_eq!(evidence.source, InlineCandidateSourceKind::ExternalBackend);
+        assert_eq!(evidence.confidence, InlineCandidateConfidence::Low);
+        assert_eq!(evidence.shape, InlineCompletionShape::Complete);
+        assert_eq!(
+            evidence.automatic_eligibility(),
+            AutomaticEligibility::InvokedOnly(InvokedOnlyReason::ExternalProducer)
+        );
+    }
+
+    /// Two candidates the ranking could not separate at all are a coin flip,
+    /// and a coin flip must not be shown as ghost text.
+    #[test]
+    fn automatic_returns_empty_when_ranking_cannot_separate_candidates() {
+        let provider = InlineCompletionProvider::new();
+        let evidence = InlineCompletionEvidence {
+            source: InlineCandidateSourceKind::Receiver,
+            reason: InlineCandidateReason::CurrentPackageMethod,
+            confidence: InlineCandidateConfidence::High,
+            shape: InlineCompletionShape::Complete,
+        };
+
+        let selected = provider.select_automatic_item(vec![
+            evaluated_fixture("save()", evidence, 0),
+            evaluated_fixture("load()", evidence, 0),
+        ]);
+
+        assert!(selected.items.is_empty());
+    }
+
+    /// Where the provider ranks one candidate ahead of another, that deliberate
+    /// preference stands — a lower-ranked sibling is not ambiguity.
+    #[test]
+    fn automatic_keeps_the_deliberately_preferred_candidate() {
+        let provider = InlineCompletionProvider::new();
+        let evidence = InlineCompletionEvidence {
+            source: InlineCandidateSourceKind::Syntax,
+            reason: InlineCandidateReason::SourceSyntax,
+            confidence: InlineCandidateConfidence::Medium,
+            shape: InlineCompletionShape::Complete,
+        };
+
+        let selected = provider.select_automatic_item(vec![
+            evaluated_fixture("strict;", evidence, 0),
+            evaluated_fixture("warnings;", evidence, 1),
+        ]);
+
+        assert_eq!(selected.items.len(), 1);
+        assert_eq!(selected.items[0].insert_text, "strict;");
+    }
+
+    /// Candidates separated by evidence alone are not ambiguous either.
+    #[test]
+    fn automatic_returns_one_item_when_evidence_classes_differ() {
+        let provider = InlineCompletionProvider::new();
+        let strong = InlineCompletionEvidence {
+            source: InlineCandidateSourceKind::Receiver,
+            reason: InlineCandidateReason::CurrentPackageMethod,
+            confidence: InlineCandidateConfidence::High,
+            shape: InlineCompletionShape::Complete,
+        };
+        let weaker = InlineCompletionEvidence {
+            source: InlineCandidateSourceKind::Syntax,
+            reason: InlineCandidateReason::SourceSyntax,
+            confidence: InlineCandidateConfidence::Medium,
+            shape: InlineCompletionShape::Complete,
+        };
+
+        let selected = provider.select_automatic_item(vec![
+            evaluated_fixture("save()", strong, 0),
+            evaluated_fixture("load()", weaker, 0),
+        ]);
+
+        assert_eq!(selected.items.len(), 1);
+        assert_eq!(selected.items[0].insert_text, "save()");
+    }
+
+    /// Ambiguity is measured only against candidates that survive eligibility,
+    /// so an invoked-only runner-up does not suppress a clear winner.
+    #[test]
+    fn automatic_ignores_invoked_only_candidates_when_measuring_ambiguity() {
+        let provider = InlineCompletionProvider::new();
+        let eligible = InlineCompletionEvidence {
+            source: InlineCandidateSourceKind::Syntax,
+            reason: InlineCandidateReason::VisibleLexical,
+            confidence: InlineCandidateConfidence::High,
+            shape: InlineCompletionShape::Complete,
+        };
+        let invoked_only =
+            InlineCompletionEvidence { shape: InlineCompletionShape::Placeholder, ..eligible };
+
+        let selected = provider.select_automatic_item(vec![
+            evaluated_fixture("$value;", eligible, 0),
+            evaluated_fixture("$placeholder;", invoked_only, 0),
+        ]);
+
+        assert_eq!(selected.items.len(), 1);
+        assert_eq!(selected.items[0].insert_text, "$value;");
+    }
+
+    /// Several subroutines in the current package are equally good `$self->`
+    /// continuations. Inserting one of them unbidden would be a guess, so
+    /// automatic display stays silent while invoked completion offers them all.
+    #[test]
+    fn automatic_is_silent_but_invoked_is_not_for_equally_ranked_methods() {
+        let provider = InlineCompletionProvider::new();
+        let source = "package My::App;\n\
+             \n\
+             sub save {\n\
+             \x20   my $self = shift;\n\
+             }\n\
+             \n\
+             sub load {\n\
+             \x20   my $self = shift;\n\
+             }\n\
+             \n\
+             sub run {\n\
+             \x20   my $self = shift;\n\
+             \x20   $self->\n\
+             }\n";
+
+        let evaluated = evaluate(source, 12, 11);
+        assert!(
+            evaluated.len() > 1,
+            "expected several package methods: {:?}",
+            evaluated.iter().map(|candidate| &candidate.item.insert_text).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            evaluated[0].rank, evaluated[1].rank,
+            "equally supported package methods must rank the same"
+        );
+
+        let invoked = provider.get_inline_completions(source, 12, 11);
+        assert!(invoked.items.len() > 1, "invoked completion must still offer every method");
+
+        assert!(
+            automatic_texts(source, 12, 11).is_empty(),
+            "a coin flip between package methods must not appear as ghost text"
+        );
+    }
+
+    /// The provider ranks `use strict;` ahead of the other pragmas on purpose,
+    /// so that preference survives into automatic display.
+    #[test]
+    fn automatic_keeps_the_preferred_pragma_for_a_bare_use_statement() {
+        let evaluated = evaluate("use ", 0, 4);
+        assert!(evaluated.len() > 1, "expected several pragma candidates");
+        assert_ne!(
+            evaluated[0].rank, evaluated[1].rank,
+            "the pragma order is a deliberate ranking, not a tie"
+        );
+
+        assert_eq!(automatic_texts("use ", 0, 4), vec!["strict;".to_string()]);
+    }
+
+    /// Once the user has typed enough to single out one pragma, only that
+    /// pragma remains.
+    #[test]
+    fn automatic_admits_disambiguated_use_statement() {
+        assert_eq!(automatic_texts("use str", 0, 7), vec!["strict;".to_string()]);
+    }
+
+    fn unknown_semantic_context() -> SemanticInlineContext {
+        SemanticInlineContext {
+            lexical_scope: InlineLexicalScope::File,
+            package: None,
+            enclosing_sub: None,
+            expected_syntax: ExpectedSyntax::Unknown,
+            visible_variables: Vec::new(),
+            receiver_hint: None,
+            dbi_receiver_kind: None,
+            imported_modules: Vec::new(),
+            available_modules: Vec::new(),
+            current_package_methods: Vec::new(),
+            indexed_package_methods: Vec::new(),
+            has_done_testing_call: false,
+            file_role: FileRole::Unknown,
+            style: InlineStyleContext::unknown(&PreparedInlineCompletionContext {
+                prefix: String::new(),
+                current_line: String::new(),
+                previous_non_empty_line: None,
+                current_function: None,
+                current_package: None,
+                variables: Vec::new(),
+                imports: Vec::new(),
+            }),
+        }
     }
 }

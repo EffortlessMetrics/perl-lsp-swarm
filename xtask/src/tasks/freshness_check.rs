@@ -4,7 +4,7 @@
 //! base ref) and emits a JSON receipt that downstream tools and hooks can
 //! consume.
 //!
-//! With `--binaries`, also verifies that the compiled `perl-lsp` binaries are
+//! With `--binaries`, also verifies that the compiled `perllsp` binaries are
 //! newer than the HEAD commit timestamp, catching the stale-binary failure
 //! mode documented in incident #8624.
 //!
@@ -29,7 +29,7 @@
 //!   "allow_historical": false,
 //!   "bypass_reason": null,
 //!   "binaries_checked": [
-//!     {"path": "target/debug/perl-lsp", "mtime": 1778500000, "source_sha": null, "stale": false}
+//!     {"path": "target/debug/perllsp", "mtime": 1778500000, "source_sha": null, "stale": false}
 //!   ],
 //!   "binary_freshness_safe": true
 //! }
@@ -212,13 +212,13 @@ pub fn run(config: FreshnessCheckConfig) -> Result<()> {
     }
 
     // Binary-staleness exit: always blocks when --binaries is active.
-    if config.check_binaries {
-        if let Some(false) = receipt.binary_freshness_safe {
-            eprintln!(
-                "freshness-check: stale binary detected — rebuild with `cargo build` or `cargo build --release`"
-            );
-            std::process::exit(1);
-        }
+    if config.check_binaries
+        && let Some(false) = receipt.binary_freshness_safe
+    {
+        eprintln!(
+            "freshness-check: stale binary detected — rebuild with `cargo build` or `cargo build --release`"
+        );
+        std::process::exit(1);
     }
 
     Ok(())
@@ -238,12 +238,12 @@ fn git_commit_time_secs(rev: &str) -> Option<u64> {
     git_output(&["log", "-1", "--format=%ct", rev]).and_then(|s| s.trim().parse::<u64>().ok())
 }
 
-/// Return the host-platform binary file name for the `perl-lsp` executable.
+/// Return the host-platform binary file name for the `perllsp` executable.
 fn perl_lsp_binary_name() -> String {
-    format!("perl-lsp{}", std::env::consts::EXE_SUFFIX)
+    format!("perllsp{}", std::env::consts::EXE_SUFFIX)
 }
 
-/// Check the mtime of each well-known perl-lsp binary against `commit_time`.
+/// Check the mtime of each well-known perllsp binary against `commit_time`.
 fn gather_binary_entries(target_dir: &Path, commit_time: Option<u64>) -> Vec<BinaryEntry> {
     let binary_name = perl_lsp_binary_name();
     let profiles = ["debug", "release"];

@@ -1,0 +1,9 @@
+project: product
+component: Packaging and distribution
+kind: Added
+body: Add an exact installed-binary Neovim first-mile receipt for public distribution channels.
+time: 2026-08-13T10:11:10Z
+custom:
+  PR: "7817"
+  Slug: neovim-installed-first-mile
+  Breaking: "no"

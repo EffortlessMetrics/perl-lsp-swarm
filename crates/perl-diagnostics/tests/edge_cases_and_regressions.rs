@@ -1,171 +1,162 @@
-//! Edge case and regression tests for perl-diagnostics Wave E consolidation (#4429).
-//!
-//! This test file adds comprehensive coverage for:
-//! - Boundary conditions (empty collections, defaults, large strings)
-//! - Regression guards (old crate names fail, catalog functions work)
-//! - Type constraint verification
-//! - Enum variant accessibility
-//! - Diagnostic field combinations
+//! Edge cases and regression coverage for `perl-diagnostics`.
 
 use perl_diagnostics::catalog;
 use perl_diagnostics::codes::{DiagnosticCategory, DiagnosticCode, DiagnosticTag};
-use perl_diagnostics::types::{Diagnostic, DiagnosticSeverity, RelatedInformation};
-use perl_test_must::must_some;
+use perl_diagnostics::types::{ByteSpan, Diagnostic, DiagnosticSeverity, RelatedInformation};
+use perl_test_must::{must, must_some};
 
-// Edge case: Empty/default Diagnostic struct
-#[test]
-fn edge_case_diagnostic_default_is_valid() {
-    let diag = Diagnostic::default();
-
-    // All fields should have sensible defaults
-    assert_eq!(diag.message, "");
-    assert_eq!(diag.code, DiagnosticCode::ParseError); // First code variant
-    assert_eq!(diag.severity, DiagnosticSeverity::Error); // Error is the default
-    assert!(diag.related_information.is_none());
-    assert!(diag.tags.is_none());
+fn span(start: usize, end: usize) -> ByteSpan {
+    must(ByteSpan::new(start, end))
 }
 
-// Edge case: Empty RelatedInformation
+#[test]
+fn edge_case_diagnostic_default_is_valid_compatibility_state() {
+    let diagnostic = Diagnostic::default();
+
+    assert_eq!(diagnostic.message, "");
+    assert_eq!(diagnostic.code, DiagnosticCode::ParseError);
+    assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+    assert_eq!(diagnostic.range, ByteSpan::EMPTY);
+    assert!(diagnostic.related_information.is_none());
+    assert!(diagnostic.tags.is_none());
+}
+
 #[test]
 fn edge_case_related_information_default_is_valid() {
-    let info = RelatedInformation::default();
+    let information = RelatedInformation::default();
 
-    assert_eq!(info.message, "");
-    assert_eq!(info.location, (0, 0)); // Range tuple
+    assert_eq!(information.message, "");
+    assert_eq!(information.location, ByteSpan::EMPTY);
 }
 
-// Edge case: Diagnostic with all fields populated
 #[test]
 fn edge_case_diagnostic_with_all_fields_populated() {
-    let info = RelatedInformation::new("related info", (10, 20));
-
-    let mut diag = Diagnostic::new(
+    let information = RelatedInformation::new("related info", span(10, 20));
+    let mut diagnostic = Diagnostic::new(
         DiagnosticCode::SyntaxError,
         DiagnosticSeverity::Warning,
-        (1, 50),
+        span(1, 50),
         "Test diagnostic",
     );
-    diag.related_information = Some(vec![info]);
-    diag.tags = Some(vec![DiagnosticTag::Deprecated]);
+    diagnostic.related_information = Some(vec![information]);
+    diagnostic.tags = Some(vec![DiagnosticTag::Deprecated]);
 
-    assert_eq!(diag.message, "Test diagnostic");
-    assert_eq!(diag.code, DiagnosticCode::SyntaxError);
-    assert_eq!(diag.severity, DiagnosticSeverity::Warning);
-    assert!(diag.related_information.is_some());
-    assert!(diag.tags.is_some());
+    assert_eq!(diagnostic.message, "Test diagnostic");
+    assert_eq!(diagnostic.code, DiagnosticCode::SyntaxError);
+    assert_eq!(diagnostic.severity, DiagnosticSeverity::Warning);
+    assert!(diagnostic.related_information.is_some());
+    assert!(diagnostic.tags.is_some());
 
-    let tags = must_some(diag.tags);
-    assert_eq!(tags.len(), 1);
-    assert_eq!(tags[0], DiagnosticTag::Deprecated);
+    let tags = must_some(diagnostic.tags);
+    assert_eq!(tags, vec![DiagnosticTag::Deprecated]);
 }
 
-// Regression: Severity discriminants must match LSP spec exactly
 #[test]
-fn regression_severity_discriminants_match_lsp_spec() {
-    // LSP 3.17 spec: Error=1, Warning=2, Information=3, Hint=4
-    // These are the wire protocol values
+fn regression_reversed_spans_are_rejected_instead_of_swapped() {
+    assert!(ByteSpan::new(50, 1).is_err());
+    assert!(
+        Diagnostic::try_new(
+            DiagnosticCode::SyntaxError,
+            DiagnosticSeverity::Warning,
+            50,
+            1,
+            "Test diagnostic",
+        )
+        .is_err()
+    );
+    assert!(RelatedInformation::try_new("related", 20, 10).is_err());
+}
+
+#[test]
+fn regression_severity_discriminants_match_lsp_values() {
     assert_eq!(DiagnosticSeverity::Error as i32, 1);
     assert_eq!(DiagnosticSeverity::Warning as i32, 2);
     assert_eq!(DiagnosticSeverity::Information as i32, 3);
     assert_eq!(DiagnosticSeverity::Hint as i32, 4);
 }
 
-// Regression: Tag discriminants must match LSP spec exactly
 #[test]
-fn regression_tag_discriminants_match_lsp_spec() {
-    // LSP 3.17 spec: Unnecessary=1, Deprecated=2
+fn regression_tag_discriminants_match_lsp_values() {
     assert_eq!(DiagnosticTag::Unnecessary as i32, 1);
     assert_eq!(DiagnosticTag::Deprecated as i32, 2);
 }
 
-// Edge case: All DiagnosticCategory variants exist and are accessible
 #[test]
 fn edge_case_diagnostic_category_all_variants_accessible() {
-    // Verify all category variants can be constructed
-    let _parser = DiagnosticCategory::Parser;
-    let _strict = DiagnosticCategory::StrictWarnings;
-    let _package = DiagnosticCategory::PackageModule;
-    let _sub = DiagnosticCategory::Subroutine;
-    let _best = DiagnosticCategory::BestPractices;
-    let _deprecated = DiagnosticCategory::Deprecated;
-    let _security = DiagnosticCategory::Security;
-    let _import = DiagnosticCategory::Import;
-    let _heredoc = DiagnosticCategory::Heredoc;
+    let categories = [
+        DiagnosticCategory::Parser,
+        DiagnosticCategory::StrictWarnings,
+        DiagnosticCategory::PackageModule,
+        DiagnosticCategory::Subroutine,
+        DiagnosticCategory::BestPractices,
+        DiagnosticCategory::Deprecated,
+        DiagnosticCategory::Security,
+        DiagnosticCategory::Import,
+        DiagnosticCategory::Heredoc,
+    ];
 
-    // Verify they can be compared for equality
-    assert_eq!(DiagnosticCategory::Parser, DiagnosticCategory::Parser);
+    assert!(categories.contains(&DiagnosticCategory::Parser));
     assert_ne!(DiagnosticCategory::Parser, DiagnosticCategory::StrictWarnings);
 }
 
-// Edge case: DiagnosticCode has expected key variants
 #[test]
 fn edge_case_diagnostic_code_expected_variants_exist() {
-    // Verify key diagnostic codes exist (sampling from the spec)
-    let _parse_error = DiagnosticCode::ParseError;
-    let _syntax_error = DiagnosticCode::SyntaxError;
-    let _unexpected_eof = DiagnosticCode::UnexpectedEof;
-    let _missing_strict = DiagnosticCode::MissingStrict;
-    let _missing_warnings = DiagnosticCode::MissingWarnings;
-    let _undefined_variable = DiagnosticCode::UndefinedVariable;
-    let _unused_variable = DiagnosticCode::UnusedVariable;
-    let _missing_package = DiagnosticCode::MissingPackageDeclaration;
-    let _duplicate_package = DiagnosticCode::DuplicatePackage;
-    let _duplicate_sub = DiagnosticCode::DuplicateSubroutine;
-    let _missing_return = DiagnosticCode::MissingReturn;
-    let _bareword = DiagnosticCode::BarewordFilehandle;
-    let _two_arg_open = DiagnosticCode::TwoArgOpen;
-    let _implicit_return = DiagnosticCode::ImplicitReturn;
-    let _eval_error_flow = DiagnosticCode::EvalErrorFlow;
+    let codes = [
+        DiagnosticCode::ParseError,
+        DiagnosticCode::SyntaxError,
+        DiagnosticCode::UnexpectedEof,
+        DiagnosticCode::MissingStrict,
+        DiagnosticCode::MissingWarnings,
+        DiagnosticCode::UndefinedVariable,
+        DiagnosticCode::UnusedVariable,
+        DiagnosticCode::MissingPackageDeclaration,
+        DiagnosticCode::DuplicatePackage,
+        DiagnosticCode::DuplicateSubroutine,
+        DiagnosticCode::MissingReturn,
+        DiagnosticCode::BarewordFilehandle,
+        DiagnosticCode::TwoArgOpen,
+        DiagnosticCode::ImplicitReturn,
+        DiagnosticCode::EvalErrorFlow,
+    ];
+
+    assert!(codes.contains(&DiagnosticCode::ParseError));
 }
 
-// Regression: All catalog functions are callable and return DiagnosticMeta
 #[test]
 fn regression_catalog_functions_callable() {
-    // Sampling of key catalog functions — they should all return DiagnosticMeta
-    let _meta1 = catalog::parse_error();
-    let _meta2 = catalog::syntax_error();
-    let _meta3 = catalog::unexpected_eof();
-    let _meta4 = catalog::missing_strict();
-    let _meta5 = catalog::missing_warnings();
-    let _meta6 = catalog::undefined_var();
-    let _meta7 = catalog::unused_var();
-    let _meta8 = catalog::duplicate_package();
-    let _meta9 = catalog::missing_return();
+    let _ = (
+        catalog::parse_error(),
+        catalog::syntax_error(),
+        catalog::unexpected_eof(),
+        catalog::missing_strict(),
+        catalog::missing_warnings(),
+        catalog::undefined_var(),
+        catalog::unused_var(),
+        catalog::duplicate_package(),
+        catalog::missing_return(),
+    );
 }
 
-// Regression: diagnostic_meta function works (dispatcher function)
 #[test]
 fn regression_diagnostic_meta_dispatcher_function() {
-    // The diagnostic_meta function should take a code and return metadata
-    let meta = catalog::diagnostic_meta(DiagnosticCode::ParseError);
-
-    // Should return non-null code
-    assert!(!meta.code.is_null());
+    let metadata = catalog::diagnostic_meta(DiagnosticCode::ParseError);
+    assert!(!metadata.code.is_null());
 }
 
-// Edge case: Severity Copy semantics
 #[test]
 fn edge_case_severity_copy_semantics() {
-    let severity1 = DiagnosticSeverity::Error;
-    let severity2 = severity1; // Copy: should not move
-
-    // Both should be valid and equal
-    assert_eq!(severity1, severity2);
-    assert_eq!(severity1, DiagnosticSeverity::Error);
+    let first = DiagnosticSeverity::Error;
+    let second = first;
+    assert_eq!(first, second);
 }
 
-// Edge case: Tag Copy semantics
 #[test]
 fn edge_case_tag_copy_semantics() {
-    let tag1 = DiagnosticTag::Deprecated;
-    let tag2 = tag1; // Copy: should not move
-
-    // Both should be valid and equal
-    assert_eq!(tag1, tag2);
-    assert_eq!(tag1, DiagnosticTag::Deprecated);
+    let first = DiagnosticTag::Deprecated;
+    let second = first;
+    assert_eq!(first, second);
 }
 
-// Edge case: DiagnosticSeverity implements Ord for sorting
 #[test]
 fn edge_case_severity_ordering_complete() {
     let mut severities = [
@@ -174,330 +165,243 @@ fn edge_case_severity_ordering_complete() {
         DiagnosticSeverity::Information,
         DiagnosticSeverity::Warning,
     ];
-
     severities.sort();
 
-    // Should be in LSP order: Error < Warning < Information < Hint
-    assert_eq!(severities[0], DiagnosticSeverity::Error);
-    assert_eq!(severities[1], DiagnosticSeverity::Warning);
-    assert_eq!(severities[2], DiagnosticSeverity::Information);
-    assert_eq!(severities[3], DiagnosticSeverity::Hint);
+    assert_eq!(
+        severities,
+        [
+            DiagnosticSeverity::Error,
+            DiagnosticSeverity::Warning,
+            DiagnosticSeverity::Information,
+            DiagnosticSeverity::Hint,
+        ]
+    );
 }
 
-// Edge case: Diagnostic messages can be any length
 #[test]
 fn edge_case_diagnostic_message_various_lengths() {
-    // Empty message
-    let mut diag1 = Diagnostic::default();
-    diag1.message = String::new();
-    assert_eq!(diag1.message, "");
+    let mut empty = Diagnostic::default();
+    empty.message = String::new();
+    assert_eq!(empty.message, "");
 
-    // Long message (10k chars)
-    let long_msg = "a".repeat(10000);
-    let mut diag2 = Diagnostic::default();
-    diag2.message = long_msg.clone();
-    assert_eq!(diag2.message, long_msg);
+    let long_message = "a".repeat(10_000);
+    let mut long = Diagnostic::default();
+    long.message = long_message.clone();
+    assert_eq!(long.message, long_message);
 
-    // Unicode message
-    let unicode_msg = "Error in ñoño → 🚀 ⚠️".to_string();
-    let mut diag3 = Diagnostic::default();
-    diag3.message = unicode_msg.clone();
-    assert_eq!(diag3.message, unicode_msg);
+    let unicode_message = "Error in ñoño → 🚀 ⚠️".to_string();
+    let mut unicode = Diagnostic::default();
+    unicode.message = unicode_message.clone();
+    assert_eq!(unicode.message, unicode_message);
 }
 
-// Edge case: Multiple related_information entries
 #[test]
 fn edge_case_diagnostic_multiple_related_information() {
-    let info1 = RelatedInformation::new("First related", (0, 10));
-    let info2 = RelatedInformation::new("Second related", (20, 30));
-    let info3 = RelatedInformation::new("Third related", (40, 50));
+    let first = RelatedInformation::new("First related", span(0, 10));
+    let second = RelatedInformation::new("Second related", span(20, 30));
+    let third = RelatedInformation::new("Third related", span(40, 50));
 
-    let mut diag = Diagnostic::default();
-    diag.related_information = Some(vec![info1, info2, info3]);
+    let mut diagnostic = Diagnostic::default();
+    diagnostic.related_information = Some(vec![first, second, third]);
 
-    let infos = must_some(diag.related_information);
-    assert_eq!(infos.len(), 3);
-    assert_eq!(infos[0].message, "First related");
-    assert_eq!(infos[1].message, "Second related");
-    assert_eq!(infos[2].message, "Third related");
+    let information = must_some(diagnostic.related_information);
+    assert_eq!(information.len(), 3);
+    assert_eq!(information[0].message, "First related");
+    assert_eq!(information[1].message, "Second related");
+    assert_eq!(information[2].message, "Third related");
 }
 
-// Edge case: Multiple tags on a single diagnostic
 #[test]
 fn edge_case_diagnostic_multiple_tags() {
-    let mut diag = Diagnostic::default();
-    diag.tags = Some(vec![
+    let mut diagnostic = Diagnostic::default();
+    diagnostic.tags = Some(vec![
         DiagnosticTag::Unnecessary,
         DiagnosticTag::Deprecated,
-        DiagnosticTag::Unnecessary, // Can repeat
+        DiagnosticTag::Unnecessary,
     ]);
 
-    let tags = must_some(diag.tags);
+    let tags = must_some(diagnostic.tags);
     assert_eq!(tags.len(), 3);
     assert_eq!(tags[0], DiagnosticTag::Unnecessary);
     assert_eq!(tags[1], DiagnosticTag::Deprecated);
     assert_eq!(tags[2], DiagnosticTag::Unnecessary);
 }
 
-// Regression: Note that old import paths must fail
-// This test documents that old crate names should NOT compile
 #[test]
 fn regression_note_old_imports_must_fail() {
-    // The following would fail to compile (documented for regression prevention):
-    // use perl_diagnostics_codes::DiagnosticSeverity;  // OLD NAME
-    // use perl_lsp_diagnostic_types::Diagnostic;       // OLD NAME
-    // use perl_lsp_diagnostic_catalog::diagnostic_meta; // OLD NAME
-
-    // This test documents that a future refactor cannot accidentally
-    // re-introduce the old names at the crate root without breaking
-    // downstream consumers that migrated to the new paths.
-
-    // Marker: verify new paths work instead
-    let _sev = perl_diagnostics::types::DiagnosticSeverity::Error;
+    let _severity = perl_diagnostics::types::DiagnosticSeverity::Error;
     let _code = perl_diagnostics::codes::DiagnosticCode::ParseError;
-    let _meta = perl_diagnostics::catalog::diagnostic_meta(
+    let _metadata = perl_diagnostics::catalog::diagnostic_meta(
         perl_diagnostics::codes::DiagnosticCode::ParseError,
     );
-
-    // Test passes — old import paths documented above; new paths verified below
 }
 
-// Regression: DiagnosticCode implements Copy and Clone
 #[test]
 fn regression_diagnostic_code_copy_semantics() {
-    let code1 = DiagnosticCode::ParseError;
-    let code2 = code1; // Copy semantics
-
-    assert_eq!(code1, code2);
+    let first = DiagnosticCode::ParseError;
+    let second = first;
+    assert_eq!(first, second);
 }
 
-// Edge case: Type conversion round-trip for severity
 #[test]
 fn edge_case_severity_round_trip_lsp_value() {
-    let original = DiagnosticSeverity::Warning;
-    let lsp_val = original.to_lsp_value();
-
-    // LSP value should be 2 for Warning
-    assert_eq!(lsp_val, 2);
+    assert_eq!(DiagnosticSeverity::Warning.to_lsp_value(), 2);
 }
 
-// Edge case: Type conversion round-trip for tag
 #[test]
 fn edge_case_tag_round_trip_lsp_value() {
-    let original = DiagnosticTag::Deprecated;
-    let lsp_val = original.to_lsp_value();
-
-    // LSP value should be 2 for Deprecated
-    assert_eq!(lsp_val, 2);
+    assert_eq!(DiagnosticTag::Deprecated.to_lsp_value(), 2);
 }
 
-// Regression: Severity implements PartialOrd for comparison chains
 #[test]
 fn regression_severity_partial_ord_chains() {
     let error = DiagnosticSeverity::Error;
     let warning = DiagnosticSeverity::Warning;
-    let info = DiagnosticSeverity::Information;
+    let information = DiagnosticSeverity::Information;
 
-    // Should support comparison chains
     assert!(error < warning);
-    assert!(warning < info);
-    assert!(error < info);
-
-    // Should support not-less-than
+    assert!(warning < information);
+    assert!(error < information);
     assert!(warning >= error);
-    assert!(info >= warning);
+    assert!(information >= warning);
 }
 
-// Regression: All DiagnosticCategory variants are Copy
 #[test]
 fn regression_diagnostic_category_copy() {
-    let cat1 = DiagnosticCategory::Parser;
-    let cat2 = cat1; // Copy semantics
-
-    assert_eq!(cat1, cat2);
+    let first = DiagnosticCategory::Parser;
+    let second = first;
+    assert_eq!(first, second);
 }
 
-// Edge case: Diagnostic struct Debug representation is valid
 #[test]
 fn edge_case_diagnostic_debug_representation() {
-    let mut diag = Diagnostic::default();
-    diag.message = "Debug test".to_string();
+    let mut diagnostic = Diagnostic::default();
+    diagnostic.message = "Debug test".to_string();
 
-    let debug_str = format!("{:?}", diag);
-    assert!(debug_str.contains("Debug test") || !debug_str.is_empty());
+    let debug = format!("{:?}", diagnostic);
+    assert!(debug.contains("Debug test"));
 }
 
-// Edge case: DiagnosticCode Debug representation is valid
 #[test]
 fn edge_case_diagnostic_code_debug_representation() {
-    let code = DiagnosticCode::ParseError;
-    let debug_str = format!("{:?}", code);
-
-    // Should be non-empty
-    assert!(!debug_str.is_empty());
+    assert!(!format!("{:?}", DiagnosticCode::ParseError).is_empty());
 }
 
-// Edge case: DiagnosticCode.as_str() returns stable strings
 #[test]
 fn edge_case_diagnostic_code_as_str_stable() {
-    let code1_str = DiagnosticCode::ParseError.as_str();
-    let code2_str = DiagnosticCode::ParseError.as_str();
-
-    // Same code should return identical string
-    assert_eq!(code1_str, code2_str);
-
-    // Different codes should return different strings
-    let code3_str = DiagnosticCode::SyntaxError.as_str();
-    assert_ne!(code1_str, code3_str);
+    let first = DiagnosticCode::ParseError.as_str();
+    let second = DiagnosticCode::ParseError.as_str();
+    assert_eq!(first, second);
+    assert_ne!(first, DiagnosticCode::SyntaxError.as_str());
 }
 
-// Edge case: DiagnosticCode.severity() returns consistent severity
 #[test]
 fn edge_case_diagnostic_code_severity_consistent() {
     let code = DiagnosticCode::ParseError;
-    let sev1 = code.severity();
-    let sev2 = code.severity();
-
-    // Same code should always return same severity
-    assert_eq!(sev1, sev2);
+    assert_eq!(code.severity(), code.severity());
 }
 
-// Edge case: DiagnosticCode.category() returns expected category
 #[test]
 fn edge_case_diagnostic_code_category_consistent() {
-    // ParseError is in the Parser range (PL001-PL099)
-    let code = DiagnosticCode::ParseError;
-    let category = code.category();
-
-    assert_eq!(category, DiagnosticCategory::Parser);
+    assert_eq!(DiagnosticCode::ParseError.category(), DiagnosticCategory::Parser);
 }
 
-// Edge case: DiagnosticCode.tags() returns consistent tags
 #[test]
 fn edge_case_diagnostic_code_tags_consistent() {
     let code = DiagnosticCode::ParseError;
-    let tags1 = code.tags();
-    let tags2 = code.tags();
-
-    // Same code should always return same tags
-    assert_eq!(tags1, tags2);
+    assert_eq!(code.tags(), code.tags());
 }
 
-// Edge case: Diagnostic struct Clone and PartialEq work correctly
 #[test]
 fn edge_case_diagnostic_clone_and_equality() {
-    let diag1 =
-        Diagnostic::new(DiagnosticCode::SyntaxError, DiagnosticSeverity::Warning, (10, 20), "Test");
-
-    let diag2 = diag1.clone();
-
-    // Clone should produce equal diagnostic
-    assert_eq!(diag1, diag2);
+    let first = Diagnostic::new(
+        DiagnosticCode::SyntaxError,
+        DiagnosticSeverity::Warning,
+        span(10, 20),
+        "Test",
+    );
+    assert_eq!(first, first.clone());
 }
 
-// Edge case: Large range values work correctly
 #[test]
 fn edge_case_diagnostic_large_range_values() {
-    let mut diag = Diagnostic::default();
-    diag.range = (1_000_000, 2_000_000);
+    let mut diagnostic = Diagnostic::default();
+    diagnostic.range = span(1_000_000, 2_000_000);
 
-    assert_eq!(diag.range.0, 1_000_000);
-    assert_eq!(diag.range.1, 2_000_000);
+    assert_eq!(diagnostic.range.start(), 1_000_000);
+    assert_eq!(diagnostic.range.end(), 2_000_000);
 }
 
-// Regression: Diagnostic can be used in collections
 #[test]
 fn regression_diagnostic_in_collections() {
-    let mut diag1 = Diagnostic::default();
-    diag1.message = "First".to_string();
-    let mut diag2 = Diagnostic::default();
-    diag2.message = "Second".to_string();
+    let mut first = Diagnostic::default();
+    first.message = "First".to_string();
+    let mut second = Diagnostic::default();
+    second.message = "Second".to_string();
 
-    let diagnostics: Vec<Diagnostic> = vec![diag1, diag2];
+    let diagnostics = [first, second];
     assert_eq!(diagnostics.len(), 2);
     assert_eq!(diagnostics[0].message, "First");
     assert_eq!(diagnostics[1].message, "Second");
 }
 
-// Regression: All DiagnosticTag variants are Copy
 #[test]
 fn regression_diagnostic_tag_copy() {
-    let tag1 = DiagnosticTag::Unnecessary;
-    let tag2 = tag1; // Copy semantics
-
-    assert_eq!(tag1, tag2);
+    let first = DiagnosticTag::Unnecessary;
+    let second = first;
+    assert_eq!(first, second);
 }
 
-// Edge case: from_message priority — phase-scoped patterns take precedence over
-// generic "use strict" match because the phase-scoped message also contains "use strict"
-// as a substring. If checked in wrong order, "use strict" branch would fire first
-// and return MissingStrict instead of PhaseScopedStrictPragma.
 #[test]
 fn edge_case_from_message_phase_scoped_takes_priority_over_use_strict() {
-    // This message contains "use strict" as a substring but should map to
-    // PhaseScopedStrictPragma, not MissingStrict, because the phase-scoped check
-    // appears first in the from_message implementation.
-    let msg = "use strict inside a begin block does not enable strict at file scope";
-    assert_eq!(
-        DiagnosticCode::from_message(msg),
-        Some(DiagnosticCode::PhaseScopedStrictPragma),
-        "Phase-scoped strict check must take priority over generic 'use strict' match"
-    );
+    let strict = "use strict inside a begin block does not enable strict at file scope";
+    assert_eq!(DiagnosticCode::from_message(strict), Some(DiagnosticCode::PhaseScopedStrictPragma));
 
-    // Same for warnings
-    let msg_warn = "use warnings inside a phase block does not enable warnings at file scope";
+    let warnings = "use warnings inside a phase block does not enable warnings at file scope";
     assert_eq!(
-        DiagnosticCode::from_message(msg_warn),
-        Some(DiagnosticCode::PhaseScopedWarningsPragma),
-        "Phase-scoped warnings check must take priority over generic 'use warnings' match"
+        DiagnosticCode::from_message(warnings),
+        Some(DiagnosticCode::PhaseScopedWarningsPragma)
     );
 }
 
-// Edge case: from_message returns None for empty and whitespace-only strings
 #[test]
 fn edge_case_from_message_empty_and_whitespace() {
-    assert_eq!(DiagnosticCode::from_message(""), None, "empty string → None");
-    assert_eq!(DiagnosticCode::from_message("   "), None, "whitespace-only → None");
-    assert_eq!(DiagnosticCode::from_message("\t\n"), None, "tab+newline → None");
+    assert_eq!(DiagnosticCode::from_message(""), None);
+    assert_eq!(DiagnosticCode::from_message("   "), None);
+    assert_eq!(DiagnosticCode::from_message("\t\n"), None);
 }
 
-// Edge case: parse_code is case-sensitive (lowercase codes must not match)
 #[test]
 fn edge_case_parse_code_case_sensitivity() {
-    // parse_code is case-sensitive by design — codes are always uppercase
     assert_eq!(DiagnosticCode::parse_code("PL001"), Some(DiagnosticCode::ParseError));
-    assert_eq!(DiagnosticCode::parse_code("pl001"), None, "lowercase must not match");
-    assert_eq!(DiagnosticCode::parse_code("Pl001"), None, "mixed case must not match");
-    assert_eq!(DiagnosticCode::parse_code(""), None, "empty string → None");
-    assert_eq!(DiagnosticCode::parse_code("PL999"), None, "unassigned code → None");
-    assert_eq!(DiagnosticCode::parse_code("PC999"), None, "unassigned PC code → None");
-    assert_eq!(DiagnosticCode::parse_code("PL 001"), None, "space in code → None");
+    assert_eq!(DiagnosticCode::parse_code("pl001"), None);
+    assert_eq!(DiagnosticCode::parse_code("Pl001"), None);
+    assert_eq!(DiagnosticCode::parse_code(""), None);
+    assert_eq!(DiagnosticCode::parse_code("PL999"), None);
+    assert_eq!(DiagnosticCode::parse_code("PC999"), None);
+    assert_eq!(DiagnosticCode::parse_code("PL 001"), None);
 }
 
-// Regression: DiagnosticSeverity implements Hash correctly
 #[test]
 fn regression_severity_hash_in_map() {
     use std::collections::HashMap;
 
-    let mut map: HashMap<DiagnosticSeverity, i32> = HashMap::new();
+    let mut map = HashMap::new();
     map.insert(DiagnosticSeverity::Error, 1);
     map.insert(DiagnosticSeverity::Warning, 2);
 
-    // Lookups should work
     assert_eq!(map.get(&DiagnosticSeverity::Error), Some(&1));
     assert_eq!(map.get(&DiagnosticSeverity::Warning), Some(&2));
 }
 
-// Regression: DiagnosticTag implements Hash correctly
 #[test]
 fn regression_tag_hash_in_map() {
     use std::collections::HashMap;
 
-    let mut map: HashMap<DiagnosticTag, &str> = HashMap::new();
+    let mut map = HashMap::new();
     map.insert(DiagnosticTag::Unnecessary, "unnecessary");
     map.insert(DiagnosticTag::Deprecated, "deprecated");
 
-    // Lookups should work
     assert_eq!(map.get(&DiagnosticTag::Unnecessary), Some(&"unnecessary"));
     assert_eq!(map.get(&DiagnosticTag::Deprecated), Some(&"deprecated"));
 }

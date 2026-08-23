@@ -57,12 +57,12 @@ fn text_range_whole_document_multi_line() {
 }
 
 #[test]
-fn text_range_whole_document_trailing_newline_last_line_is_final_content_line() {
-    // Rust's str::lines() does not yield an empty line after a trailing newline,
-    // so "ab\n" has one line "ab" at index 0 with character offset 2.
+fn text_range_whole_document_trailing_newline_ends_on_final_empty_line() {
+    // A terminal separator creates a final empty line (#8048): "ab\n"
+    // reaches true EOF at line 1, not the end of content line zero.
     let range = TextRange::whole_document("ab\n");
     assert_eq!(range.start, TextPosition::new(0, 0));
-    assert_eq!(range.end, TextPosition::new(0, 2));
+    assert_eq!(range.end, TextPosition::new(1, 0));
 }
 
 // ── TextEdit ─────────────────────────────────────────────────────────────────

@@ -6,7 +6,11 @@
 //!
 //! - Quick fixes for common mistakes
 //! - Refactoring operations
-//! - Enhanced actions (extract variable/subroutine, import management)
+//! - Enhanced actions (extract variable/subroutine)
+//!
+//! Import management actions are intentionally absent (#10690): hard-coded
+//! function→module affinity is not candidate identity and not edit
+//! authorization. Restoration requires #790/#8948.
 //!
 //! ## Usage
 //!

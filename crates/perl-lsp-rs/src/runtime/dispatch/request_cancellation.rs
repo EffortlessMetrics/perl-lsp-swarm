@@ -54,19 +54,19 @@ pub(super) fn register_request_cancellation(
     let cleanup_context =
         ProviderCleanupContext::new(request.method.clone(), request.params.clone());
 
-    if let Err(e) = GLOBAL_CANCELLATION_REGISTRY.register_token(token) {
-        tracing::trace!(error = %e, "cancellation: failed to register token");
+    if let Err(error) = GLOBAL_CANCELLATION_REGISTRY.register_token(token) {
+        tracing::trace!(%error, "cancellation: failed to register token");
     }
-    if let Err(e) = GLOBAL_CANCELLATION_REGISTRY.register_cleanup(&typed_id, cleanup_context) {
-        tracing::trace!(error = %e, "cancellation: failed to register cleanup");
+    if let Err(error) = GLOBAL_CANCELLATION_REGISTRY.register_cleanup(&typed_id, cleanup_context) {
+        tracing::trace!(%error, "cancellation: failed to register cleanup");
     }
 
     if GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&typed_id) {
         if let Some(token) = GLOBAL_CANCELLATION_REGISTRY.get_token(&typed_id) {
             let cleanup_context = GLOBAL_CANCELLATION_REGISTRY
                 .cancel_request(&typed_id)
-                .map_err(|e| {
-                    tracing::trace!(error = %e, "cancellation: failed to cancel request (early)");
+                .map_err(|error| {
+                    tracing::trace!(%error, "cancellation: failed to cancel request (early)");
                 })
                 .ok()
                 .flatten();
@@ -94,6 +94,9 @@ fn method_supports_cancellation(method: &str) -> bool {
             | "textDocument/documentSymbol"
             | "textDocument/codeAction"
             | "textDocument/formatting"
+            | "textDocument/rangeFormatting"
+            | "textDocument/rangesFormatting"
+            | "textDocument/onTypeFormatting"
             | "textDocument/rename"
             | "workspace/symbol"
             | "callHierarchy/incomingCalls"
@@ -116,8 +119,8 @@ pub(super) fn finalize_cancellation_state(request_id: Option<&Value>) -> Option<
     {
         let cleanup_context = GLOBAL_CANCELLATION_REGISTRY
             .cancel_request(&typed_id)
-            .map_err(|e| {
-                tracing::trace!(error = %e, "cancellation: failed to cancel request (post-dispatch)");
+            .map_err(|error| {
+                tracing::trace!(%error, "cancellation: failed to cancel request (post-dispatch)");
             })
             .ok()
             .flatten();
@@ -134,13 +137,17 @@ mod tests {
     use super::method_supports_cancellation;
 
     #[test]
-    fn type_hierarchy_methods_are_registered_for_cancellation()
+    fn hierarchy_and_formatting_methods_are_registered_for_cancellation()
     -> Result<(), Box<dyn std::error::Error>> {
         for method in [
             "textDocument/prepareTypeHierarchy",
             "typeHierarchy/prepare",
             "typeHierarchy/supertypes",
             "typeHierarchy/subtypes",
+            "textDocument/formatting",
+            "textDocument/rangeFormatting",
+            "textDocument/rangesFormatting",
+            "textDocument/onTypeFormatting",
         ] {
             if !method_supports_cancellation(method) {
                 return Err(std::io::Error::other(format!(

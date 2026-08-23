@@ -636,33 +636,49 @@ fn seam4_plain_scalar_unchanged() {
     );
 }
 
-// ── BOUNDARY F: indirect call with unbraced deref keeps both arguments ────────
+// ── BOUNDARY F: user bareword call with unbraced deref keeps both arguments ───
+//
+// Historical note: an earlier version of the parser classified `catfile $$self, $_`
+// as `indirect_call` (verified sexp at the time:
+//   `(indirect_call catfile (unary_${} (variable $ self)) ((variable $ _)))`).
+// The current parser emits `ambiguous_function_call_expression` for unknown
+// lowercase barewords followed by sigiled arguments separated by a comma, because
+// `is_unknown_lowercase_bareword_call_pattern` returns false when the third token
+// after the function name is a comma (a guard against false positives).  This is
+// the accepted conservative contract from #1788 and PARSER_CONTRACTS.md: preserving
+// the ambiguous shape avoids classifying an unknown user-defined call as an
+// `IndirectCall`, whose downstream consumers assign different semantics.  The seam
+// boundary being protected here is that the deref of `$$self` is correctly
+// represented as `(unary_${} (variable $ self))` rather than being split into `$$`
+// (PID) and `self`, and that the comma-separated second argument `$_` is retained.
 
-/// `catfile $$self, $_` — indirect call must keep BOTH args.
-/// Verified sexp: `(indirect_call catfile (unary_${} (variable $ self)) ((variable $ _)))`
-/// Boundary: the comma after `$$self` must not be lost by the deref fix.
+/// `catfile $$self, $_` — both arguments must be preserved and `$$self` must be
+/// correctly parsed as a scalar deref rather than split into `$$` (PID) and `self`.
 #[test]
 fn seam4_indirect_call_with_deref_keeps_both_args() {
     let s = sexp("catfile $$self, $_;");
     assert!(
-        s.contains("(indirect_call catfile"),
-        "catfile call must parse as indirect_call; got: {s}"
+        s.contains(
+            "(ambiguous_function_call_expression (function) (unary_${} (variable $ self)) (variable $ _))"
+        ),
+        "catfile call must retain both args in one ambiguous call shape; got: {s}"
     );
-    assert!(
-        s.contains("(unary_${} (variable $ self))"),
-        "catfile first arg must be unary_${{}} deref; got: {s}"
-    );
-    assert!(s.contains("(variable $ _)"), "catfile second arg $_ must be present; got: {s}");
 }
 
-/// `catfile $$self, $_` — exact verified sexp.
+/// `catfile $$self, $_` — exact current sexp.
+///
+/// The call is currently classified as `ambiguous_function_call_expression`.  If the
+/// parser is later extended to recognise user-defined functions as indirect-call sites
+/// this test should be updated to expect `indirect_call`.
 #[test]
 fn seam4_indirect_call_exact_sexp() {
     let s = sexp("catfile $$self, $_;");
-    // Verified against binary: (source_file (indirect_call catfile (unary_${} (variable $ self)) ((variable $ _))))
+    // Current parser output: one ambiguous call node with both args intact.
     assert!(
-        s.contains("(indirect_call catfile (unary_${} (variable $ self)) ((variable $ _)))"),
-        "catfile sexp mismatch; got: {s}"
+        s.contains(
+            "(ambiguous_function_call_expression (function) (unary_${} (variable $ self)) (variable $ _))"
+        ),
+        "catfile sexp must retain both args in one ambiguous call shape; got: {s}"
     );
 }
 

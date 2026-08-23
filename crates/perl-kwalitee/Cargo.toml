@@ -5,18 +5,23 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Perl distribution Kwalitee evaluator — measurable distribution-quality indicators, profiles, and receipts for the perl-lsp native stack"
+description = "Legacy mixed repository/product release-readiness evaluator retained for perl_kwalitee.v1 compatibility"
 readme = "README.md"
 repository.workspace = true
 homepage.workspace = true
-keywords = ["perl", "kwalitee", "quality", "distribution", "lsp"]
+keywords = ["perl", "release", "readiness", "evidence", "compatibility"]
 categories = ["development-tools"]
-# Kept private while the receipt schema (schema_version = 1) stabilizes. The
-# publish decision is deferred to a follow-up: flip `publish = false`, add
-# `perl-kwalitee` to `[workspace.metadata.publish].allow`, and run
-# `cargo xtask publish-manifest-check`. See docs/reference/PERL_KWALITEE.md.
+# Historical compatibility crate. The canonical implementation moves to
+# `perl-release-readiness`; the `perl-kwalitee` package name is reclaimed by
+# the native distribution analyser only after the migration train completes.
 publish = false
-include = ["src/**", "README.md", "LICENSE*", "Cargo.toml"]
+include = [
+    "src/**",
+    "legacy_indicator_migrations.toml",
+    "README.md",
+    "LICENSE*",
+    "Cargo.toml",
+]
 
 [lib]
 name = "perl_kwalitee"
@@ -26,9 +31,8 @@ path = "src/lib.rs"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
-# `toml` is not a workspace dependency; pinned to the same version xtask uses so
-# the lockfile does not gain a second copy. Used only to parse Cargo.toml
-# manifests for the manifest/license indicators.
+# Kept aligned with xtask. Used for legacy Cargo-manifest evidence and the
+# checked-in migration ledger.
 toml = "1.1.2"
 
 [dev-dependencies]

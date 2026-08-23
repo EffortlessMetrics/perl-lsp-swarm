@@ -28,6 +28,8 @@ fn index_readiness_payload(state: &IndexState) -> serde_json::Value {
         IndexState::Degraded { reason, .. } => {
             (false, "ready_limited", Some(format!("{reason:?}")))
         }
+        // Forward-compatible fallback for future variants (#2898)
+        _ => (false, "unknown", None),
     };
 
     let mut payload = json!({

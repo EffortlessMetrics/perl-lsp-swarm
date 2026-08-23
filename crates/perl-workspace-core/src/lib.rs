@@ -12,6 +12,8 @@
 //!
 //! - A typed [`ProjectModel`] with per-fact records for files, packages, and
 //!   symbols, plus explicit [`DynamicBoundary`]s and [`ModelLimitation`]s.
+//! - A pure, versioned [`ProjectEnvironmentSnapshot`] authority for project,
+//!   interpreter, include-root, build-system, and tool input decisions.
 //! - Deterministic, host-path-free identity ([`FileId`], [`PackageId`],
 //!   [`SymbolId`]) and content [`Digest`]s.
 //! - One internal range format ([`SourceRange`]): byte offsets + 0-based UTF-8
@@ -19,6 +21,8 @@
 //!   never stored here.
 //! - [`Provenance`] + [`Confidence`] + [`EvidenceSource`] on every fact.
 //! - A [`FactClasses`] selector so a request only pays for what it asks for.
+//! - A framework-neutral [`TestItemSnapshot`] contract that references the
+//!   canonical source-identity program without inventing path identity locally.
 //!
 //! # What it must never depend on
 //!
@@ -47,6 +51,7 @@ pub mod boundary;
 pub mod builder;
 pub mod dist;
 pub mod effects;
+pub mod environment;
 pub mod error;
 pub mod export;
 pub mod fact_classes;
@@ -60,9 +65,11 @@ pub mod pod;
 pub mod provenance;
 pub mod range;
 pub mod relation;
+mod sha2;
 pub mod shard;
 pub mod symbol;
 pub mod test;
+pub mod test_item;
 
 /// The fact-schema version this crate emits. Bump on any breaking model change.
 pub const SCHEMA_VERSION: u32 = 2;
@@ -72,6 +79,16 @@ pub use boundary::{DynamicBoundary, DynamicBoundaryKind};
 pub use builder::{ProjectModelRequest, build_project_model};
 pub use dist::{DistMetadataFacts, DistMetadataSource, Prereq};
 pub use effects::CompileEffectFacts;
+pub use environment::{
+    BuildSystemFactRef, BuildSystemKind, EnvironmentBuildError, EnvironmentFingerprint,
+    EnvironmentInput, EnvironmentInputAuthority, EnvironmentInputId, EnvironmentInputState,
+    EnvironmentLimitation, EnvironmentPathRef, IncludeEntry, IncludeEntryRole,
+    InterpreterIdentityRef, PROJECT_ENVIRONMENT_SCHEMA_VERSION, ProjectEnvironmentSnapshot,
+    ProjectEnvironmentSnapshotBuilder, ProjectRoot, ProjectRootRole, PublicBuildSystemFactRef,
+    PublicEnvironmentInput, PublicInterpreterIdentityRef, PublicPathEntry,
+    PublicProjectEnvironmentReceipt, PublicToolCandidate, ToolCandidate, ToolCandidateRole,
+    WorkspaceTrust,
+};
 pub use error::{ModelLimitation, WorkspaceCoreError};
 pub use export::{ExportFact, ExportKind};
 pub use fact_classes::FactClasses;
@@ -87,3 +104,8 @@ pub use relation::{RelationFact, RelationKind};
 pub use shard::{ProjectDelta, ProjectFactShard, ProjectShardState, ShardError};
 pub use symbol::{SymbolFactKind, SymbolRecord, Visibility};
 pub use test::TestFact;
+pub use test_item::{
+    SOURCE_IDENTITY_REF_SCHEMA_VERSION, SourceIdentityRef, TEST_ITEM_SCHEMA_VERSION,
+    TestFrameworkIdentity, TestItem, TestItemCapabilities, TestItemDelta, TestItemDeltaError,
+    TestItemId, TestItemKind, TestItemName, TestItemSnapshot, TestItemValidationError,
+};

@@ -562,7 +562,7 @@ cargo test -p perl-lsp-rs --test lsp_code_actions_tests
 # Test specific refactoring categories
 cargo test -p perl-lsp-rs --test lsp_code_actions_tests -- test_extract_variable_action     # RefactorExtract
 cargo test -p perl-lsp-rs --test lsp_code_actions_tests -- test_extract_subroutine_action  # Advanced extraction
-cargo test -p perl-lsp-rs --test lsp_code_actions_tests -- test_organize_imports_action    # SourceOrganizeImports
+cargo test -p perl-lsp-rs --test lsp_code_actions_tests -- test_organize_imports           # source.organizeImports stays withdrawn (#8305)
 
 # Test code quality improvements
 cargo test -p perl-lsp-rs --test lsp_code_actions_tests -- test_modernize_code_actions     # RefactorRewrite
@@ -593,12 +593,13 @@ cargo test -p perl-lsp-rs --test lsp_code_actions_tests -- test_cross_file_extra
     "range": {"start": {"line": 10, "character": 4}, "end": {"line": 12, "character": 8}},
     "context": {
       "diagnostics": [],
-      "only": ["refactor.extract", "source.organizeImports"]
+      "only": ["refactor.extract"]
     }
   }
 }
 
 // Server response with available code actions
+// (`source.organizeImports` is withdrawn, #8305, and is never returned)
 {
   "jsonrpc": "2.0",
   "id": 2,
@@ -608,11 +609,6 @@ cargo test -p perl-lsp-rs --test lsp_code_actions_tests -- test_cross_file_extra
       "kind": "refactor.extract",
       "edit": { /* WorkspaceEdit with text changes */ },
       "isPreferred": true
-    },
-    {
-      "title": "Organize Imports",
-      "kind": "source.organizeImports",
-      "edit": { /* Import optimization changes */ }
     }
   ]
 }

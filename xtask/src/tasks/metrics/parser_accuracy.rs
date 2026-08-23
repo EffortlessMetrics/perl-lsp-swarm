@@ -1099,10 +1099,10 @@ fn measured_memory_mb(
     rss_after: Option<f64>,
     fallback_mb: f64,
 ) -> Option<f64> {
-    if let (Some(before), Some(after)) = (rss_before, rss_after) {
-        if after > before {
-            return Some(after - before);
-        }
+    if let (Some(before), Some(after)) = (rss_before, rss_after)
+        && after > before
+    {
+        return Some(after - before);
     }
     (fallback_mb > 0.0).then_some(fallback_mb)
 }
@@ -3759,6 +3759,9 @@ fn score_ast_expectations(
     let mut matched = BTreeSet::new();
     for expectation in expectations {
         let expected_delimiter_pair = expected_ast_delimiter_pair(expectation);
+        if expectation.operator.is_some() || expectation.parent_operator.is_some() {
+            score.operator_precedence_expected_count += 1;
+        }
         let prediction_index = best_ast_prediction_index(expectation, predictions, &matched);
 
         let Some(prediction_index) = prediction_index else {
@@ -3792,15 +3795,17 @@ fn score_ast_expectations(
             }
         }
         if expectation.operator.is_some() || expectation.parent_operator.is_some() {
-            score.operator_precedence_expected_count += 1;
             let operator_matches = expectation
                 .operator
                 .as_ref()
                 .is_none_or(|operator| prediction.operator.as_ref() == Some(operator));
-            let parent_operator_matches =
+            let parent_operator_matches = if expectation.operator.is_some() {
+                prediction.parent_operator.as_ref() == expectation.parent_operator.as_ref()
+            } else {
                 expectation.parent_operator.as_ref().is_none_or(|parent_operator| {
                     prediction.parent_operator.as_ref() == Some(parent_operator)
-                });
+                })
+            };
             if operator_matches && parent_operator_matches {
                 score.operator_precedence_correct_count += 1;
             }
@@ -3866,6 +3871,12 @@ fn ast_prediction_match_score(expectation: &AstExpectation, prediction: &AstPred
         && prediction.parent_operator.as_ref() == Some(parent_operator)
     {
         score += 1;
+    }
+    if expectation.operator.is_some()
+        && prediction.operator.as_ref() == expectation.operator.as_ref()
+        && prediction.parent_operator.as_ref() == expectation.parent_operator.as_ref()
+    {
+        score += 3;
     }
     score
 }
@@ -5840,21 +5851,20 @@ fn sync_runtime_metric_rows(artifact: &mut ParserAccuracyArtifact, cadence: Cade
 }
 
 fn sync_allocation_metric_rows(artifact: &mut ParserAccuracyArtifact, cadence: Cadence) {
-    if let Some(peak_rss_mb) = artifact.metric_runtime.peak_rss_mb {
-        if let Some(row) = artifact.metrics.iter_mut().find(|row| row.name() == "peak_rss_mb") {
-            *row = measured_value("peak_rss_mb", peak_rss_mb, 1, cadence);
-        }
+    if let Some(peak_rss_mb) = artifact.metric_runtime.peak_rss_mb
+        && let Some(row) = artifact.metrics.iter_mut().find(|row| row.name() == "peak_rss_mb")
+    {
+        *row = measured_value("peak_rss_mb", peak_rss_mb, 1, cadence);
     }
-    if let Some(allocated_bytes) = artifact.metric_runtime.allocated_bytes {
-        if let Some(row) = artifact.metrics.iter_mut().find(|row| row.name() == "allocated_bytes") {
-            *row = measured_count("allocated_bytes", allocated_bytes, 1, cadence);
-        }
+    if let Some(allocated_bytes) = artifact.metric_runtime.allocated_bytes
+        && let Some(row) = artifact.metrics.iter_mut().find(|row| row.name() == "allocated_bytes")
+    {
+        *row = measured_count("allocated_bytes", allocated_bytes, 1, cadence);
     }
-    if let Some(allocation_count) = artifact.metric_runtime.allocation_count {
-        if let Some(row) = artifact.metrics.iter_mut().find(|row| row.name() == "allocation_count")
-        {
-            *row = measured_count("allocation_count", allocation_count, 1, cadence);
-        }
+    if let Some(allocation_count) = artifact.metric_runtime.allocation_count
+        && let Some(row) = artifact.metrics.iter_mut().find(|row| row.name() == "allocation_count")
+    {
+        *row = measured_count("allocation_count", allocation_count, 1, cadence);
     }
 }
 
@@ -8005,6 +8015,229 @@ sub dynamic_boundary_case {
     }
 
     #[test]
+    fn ast_scorer_counts_unmatched_operator_expectations_in_denominator() {
+        let expectations = vec![
+            AstExpectation {
+                id: "matched_multiplication".to_string(),
+                kind: "Binary".to_string(),
+                line: 1,
+                span_text: "2 * 3".to_string(),
+                parent_kind: Some("Binary".to_string()),
+                depth: Some(3),
+                operator: Some("*".to_string()),
+                parent_operator: Some("+".to_string()),
+            },
+            AstExpectation {
+                id: "missing_negated_match".to_string(),
+                kind: "Match".to_string(),
+                line: 2,
+                span_text: "$value !~ /bar/".to_string(),
+                parent_kind: Some("Return".to_string()),
+                depth: Some(4),
+                operator: Some("!~".to_string()),
+                parent_operator: None,
+            },
+        ];
+        let predictions = vec![AstPrediction {
+            kind: "Binary".to_string(),
+            line: 1,
+            span_text: "2 * 3".to_string(),
+            parent_kind: Some("Binary".to_string()),
+            depth: 3,
+            operator: Some("*".to_string()),
+            parent_operator: Some("+".to_string()),
+        }];
+        let mut score = AstScore::default();
+
+        score_ast_expectations(&expectations, &predictions, &mut score);
+
+        assert_eq!(score.operator_precedence_expected_count, 2);
+        assert_eq!(score.operator_precedence_correct_count, 1);
+        let metrics = ast_metrics(&score, Cadence::Pr);
+        assert!(metrics.iter().any(|metric| {
+            matches!(
+                metric,
+                MetricRow::Measured { metric, value, sample_count: 2, .. }
+                    if metric == "ast_operator_precedence_accuracy"
+                        && (*value - 0.5).abs() < f64::EPSILON
+            )
+        }));
+    }
+
+    #[test]
+    fn ast_scorer_requires_absent_parent_operator_for_exact_operator_expectations() {
+        let expectations = vec![AstExpectation {
+            id: "match_without_parent_operator".to_string(),
+            kind: "Match".to_string(),
+            line: 1,
+            span_text: "$value =~ /foo/".to_string(),
+            parent_kind: Some("Return".to_string()),
+            depth: Some(4),
+            operator: Some("=~".to_string()),
+            parent_operator: None,
+        }];
+        let predictions = vec![AstPrediction {
+            kind: "Match".to_string(),
+            line: 1,
+            span_text: "$value =~ /foo/".to_string(),
+            parent_kind: Some("Return".to_string()),
+            depth: 4,
+            operator: Some("=~".to_string()),
+            parent_operator: Some("&&".to_string()),
+        }];
+        let mut score = AstScore::default();
+
+        score_ast_expectations(&expectations, &predictions, &mut score);
+
+        assert_eq!(score.operator_precedence_expected_count, 1);
+        assert_eq!(score.operator_precedence_correct_count, 0);
+    }
+
+    #[test]
+    fn best_ast_prediction_prefers_later_exact_null_parent_operator_candidate() {
+        let expectation = AstExpectation {
+            id: "match_without_parent_operator".to_string(),
+            kind: "Match".to_string(),
+            line: 1,
+            span_text: "$value =~ /foo/".to_string(),
+            parent_kind: Some("Return".to_string()),
+            depth: Some(4),
+            operator: Some("=~".to_string()),
+            parent_operator: None,
+        };
+        let predictions = vec![
+            AstPrediction {
+                kind: "Match".to_string(),
+                line: 1,
+                span_text: "$value =~ /foo/".to_string(),
+                parent_kind: Some("Return".to_string()),
+                depth: 4,
+                operator: Some("=~".to_string()),
+                parent_operator: Some("&&".to_string()),
+            },
+            AstPrediction {
+                kind: "Match".to_string(),
+                line: 1,
+                span_text: "$value =~ /foo/".to_string(),
+                parent_kind: Some("Return".to_string()),
+                depth: 4,
+                operator: Some("=~".to_string()),
+                parent_operator: None,
+            },
+        ];
+
+        assert_eq!(
+            best_ast_prediction_index(&expectation, &predictions, &BTreeSet::new()),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn ast_scorer_rejects_wrong_parent_operator_for_exact_operator_expectations() {
+        let expectations = vec![AstExpectation {
+            id: "multiplication_under_addition".to_string(),
+            kind: "Binary".to_string(),
+            line: 1,
+            span_text: "2 * 3".to_string(),
+            parent_kind: Some("Binary".to_string()),
+            depth: Some(3),
+            operator: Some("*".to_string()),
+            parent_operator: Some("+".to_string()),
+        }];
+        let predictions = vec![AstPrediction {
+            kind: "Binary".to_string(),
+            line: 1,
+            span_text: "2 * 3".to_string(),
+            parent_kind: Some("Binary".to_string()),
+            depth: 3,
+            operator: Some("*".to_string()),
+            parent_operator: Some("-".to_string()),
+        }];
+        let mut score = AstScore::default();
+
+        score_ast_expectations(&expectations, &predictions, &mut score);
+
+        assert_eq!(score.operator_precedence_expected_count, 1);
+        assert_eq!(score.operator_precedence_correct_count, 0);
+    }
+
+    #[test]
+    fn ast_scorer_preserves_parent_only_operator_wildcard_semantics() {
+        let expectations = vec![AstExpectation {
+            id: "typeglob_parent_operator".to_string(),
+            kind: "Typeglob".to_string(),
+            line: 1,
+            span_text: "*alias".to_string(),
+            parent_kind: Some("Assignment".to_string()),
+            depth: Some(3),
+            operator: None,
+            parent_operator: Some("=".to_string()),
+        }];
+        let predictions = vec![AstPrediction {
+            kind: "Typeglob".to_string(),
+            line: 1,
+            span_text: "*alias".to_string(),
+            parent_kind: Some("Assignment".to_string()),
+            depth: 3,
+            operator: Some("*".to_string()),
+            parent_operator: Some("=".to_string()),
+        }];
+        let mut score = AstScore::default();
+
+        score_ast_expectations(&expectations, &predictions, &mut score);
+
+        assert_eq!(score.operator_precedence_expected_count, 1);
+        assert_eq!(score.operator_precedence_correct_count, 1);
+    }
+
+    #[test]
+    fn ast_scorer_rejects_wrong_typeglob_parent_operator() {
+        let expectations = vec![AstExpectation {
+            id: "typeglob_wrong_parent_operator".to_string(),
+            kind: "Typeglob".to_string(),
+            line: 1,
+            span_text: "*alias".to_string(),
+            parent_kind: Some("Assignment".to_string()),
+            depth: Some(3),
+            operator: None,
+            parent_operator: Some("=".to_string()),
+        }];
+        let predictions = vec![AstPrediction {
+            kind: "Typeglob".to_string(),
+            line: 1,
+            span_text: "*alias".to_string(),
+            parent_kind: Some("Assignment".to_string()),
+            depth: 3,
+            operator: Some("*".to_string()),
+            parent_operator: Some("+".to_string()),
+        }];
+        let mut score = AstScore::default();
+
+        score_ast_expectations(&expectations, &predictions, &mut score);
+
+        assert_eq!(score.operator_precedence_expected_count, 1);
+        assert_eq!(score.operator_precedence_correct_count, 0);
+    }
+
+    #[test]
+    fn ast_predictions_preserve_positive_and_negated_match_operators() -> Result<()> {
+        let predictions =
+            extract_ast_predictions("return $value =~ /foo/;\nreturn $value !~ /bar/;\n");
+        let positive = predictions
+            .iter()
+            .find(|prediction| prediction.kind == "Match" && prediction.line == 1)
+            .ok_or_else(|| eyre!("positive match prediction is missing"))?;
+        let negated = predictions
+            .iter()
+            .find(|prediction| prediction.kind == "Match" && prediction.line == 2)
+            .ok_or_else(|| eyre!("negated match prediction is missing"))?;
+
+        assert_eq!(positive.operator.as_deref(), Some("=~"));
+        assert_eq!(negated.operator.as_deref(), Some("!~"));
+        Ok(())
+    }
+
+    #[test]
     fn ast_metrics_emit_measured_scores_and_insufficient_missing_denominators() {
         let mut score = AstScore::default();
         score_ast_expectations(
@@ -8283,7 +8516,7 @@ sub dynamic_boundary_case {
 
     #[test]
     fn scorecard_import_projection_keeps_semicolon_separated_modules_distinct() {
-        let source = concat!("use Accuracy::One qw(first); use Accuracy::Two qw[second];\n",);
+        let source = "use Accuracy::One qw(first); use Accuracy::Two qw[second];\n";
         let mut predictions = SymbolPredictions::default();
 
         add_import_occurrence_predictions(source, &mut predictions);
@@ -8342,9 +8575,11 @@ sub dynamic_boundary_case {
 
     #[test]
     fn symbol_metrics_emit_measured_kind_rows() {
-        let mut score = SymbolScore::default();
-        score.entity_expected_count = 1;
-        score.entity_true_positive_count = 1;
+        let mut score = SymbolScore {
+            entity_expected_count: 1,
+            entity_true_positive_count: 1,
+            ..Default::default()
+        };
         score.entity_by_kind.insert(
             "Package".to_string(),
             KindScore {

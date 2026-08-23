@@ -198,6 +198,7 @@ const CI_POLICY_PACK: ProofPack = ProofPack {
     id: "ci-policy-focused",
     commands: &[
         "python -m unittest scripts/ci/test_ci_classify.py",
+        "python -m unittest scripts/ci/test_docker_publish_metadata.py",
         "cargo xtask workflow-trigger-lint --policy .ci/policies/required-checks.toml --receipt target/receipts/workflow-trigger-lint.json",
         "cargo test -p xtask --test quality_ci_wiring_policy --profile agent --locked -- --nocapture",
     ],
@@ -706,6 +707,8 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         || file.starts_with("policy/")
         || file == "scripts/ci/ci_classify.py"
         || file == "scripts/ci/test_ci_classify.py"
+        || file == "scripts/ci/docker_publish_metadata.py"
+        || file == "scripts/ci/test_docker_publish_metadata.py"
         || matches!(
             file,
             "xtask/tests/codecov_patch_gate_policy.rs"
@@ -1574,12 +1577,11 @@ fn changed_crates(paths: &[String]) -> Vec<String> {
     let mut seen = BTreeSet::new();
     let mut crates = Vec::new();
     for path in paths {
-        if is_lcov_source_path(path) {
-            if let Some(name) = crate_name_from_source_path(path) {
-                if seen.insert(name.to_string()) {
-                    crates.push(name.to_string());
-                }
-            }
+        if is_lcov_source_path(path)
+            && let Some(name) = crate_name_from_source_path(path)
+            && seen.insert(name.to_string())
+        {
+            crates.push(name.to_string());
         }
     }
     crates

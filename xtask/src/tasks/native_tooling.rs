@@ -816,11 +816,11 @@ fn native_tooling_default_checks(root: &Path) -> Result<Vec<DefaultCheck>> {
         DefaultCheck {
             name: "configuration_docs_mark_native_format_default",
             passed: configuration_docs
-                .contains("| `[formatting]` | `engine` | string | `\"native\"` |")
+                .contains("| `[formatting] engine = \"native\"` | `\"formatting\": {\"engine\": \"native\"}` |")
                 && configuration_docs
-                    .contains("Use `\"external-perltidy\"` for legacy shell-out compatibility"),
+                    .contains("Generic LSP settings accept native, compat, or off; external-perltidy is project-only"),
             detail:
-                "configuration docs describe native formatter default and explicit legacy adapter"
+                "configuration docs distinguish generic client formatter modes from project-only external formatting"
                     .to_string(),
         },
         DefaultCheck {
@@ -2156,7 +2156,7 @@ if !enabled || critic_engine == perl_lsp_rs_core::config::CriticEngine::Native {
             r#"
 | `[critic]` | `engine` | string | `"native"` | Critic engine |
 | `[formatting]` | `engine` | string | `"native"` | Formatter engine |
-| `[formatting] engine = "native"` | `"formatting": {"engine": "native"}` | Use `"external-perltidy"` for legacy shell-out compatibility |
+| `[formatting] engine = "native"` | `"formatting": {"engine": "native"}` | Generic LSP settings accept native, compat, or off; external-perltidy is project-only |
 | `[critic] engine = "native"` | `"critic": {"engine": "native"}` | Use `"legacy"` or `"external"` for Perl::Critic shell-out compatibility |
 "#,
         )?;

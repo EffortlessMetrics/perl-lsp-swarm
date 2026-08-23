@@ -80,7 +80,7 @@ Rejected for S0. `cargo-allow` already ships a generic markdown-graph
 validator with identity/link/lifecycle checks and receipt output; duplicating
 that in xtask would be maintenance debt for a solved problem. xtask keeps
 owning what is genuinely repo-specific (lane IDs, WIP caps, hazard-class
-completeness, RTK-prefix policy) rather than re-implementing generic graph
+completeness, direct-command policy) rather than re-implementing generic graph
 validation.
 
 ### Configure `.allow/profiles/spec-system.toml` and register bundles in this PR

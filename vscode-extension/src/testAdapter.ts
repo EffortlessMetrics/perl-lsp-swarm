@@ -59,6 +59,7 @@ export type BoundedProcessOutcome =
   | 'timed_out'
   | 'output_limit'
   | 'cancelled'
+  | 'termination_failed'
   | 'spawn_error';
 
 export interface BoundedProcessResult {
@@ -76,19 +77,40 @@ export interface BoundedProcessOptions extends Omit<SpawnOptions, 'signal' | 'st
   timeoutMs: number;
   maxOutputBytes: number;
   terminationGraceMs: number;
+  /**
+   * Bound after SIGKILL / tree-kill escalation. If the child never emits
+   * `close` within this window, the probe finishes as `termination_failed`
+   * instead of hanging the host process.
+   */
+  terminationWatchdogMs?: number;
+  /**
+   * Test seam for kill delivery. Return `false` when the signal could not be
+   * delivered; production callers leave this unset and use `ChildProcess.kill`.
+   */
+  killProcess?: (proc: ReturnType<typeof spawn>, signal: NodeJS.Signals) => boolean;
 }
 
 /**
  * Run an external process with one bounded output envelope and one termination
  * path. The caller owns the user-facing mapping of the returned outcome.
  */
+const DEFAULT_TERMINATION_WATCHDOG_MS = 5_000;
+
 export function runBoundedProcess(
   command: string,
   args: readonly string[],
   options: BoundedProcessOptions,
 ): Promise<BoundedProcessResult> {
   return new Promise((resolve) => {
-    const { signal, timeoutMs, maxOutputBytes, terminationGraceMs, ...spawnOptions } = options;
+    const {
+      signal,
+      timeoutMs,
+      maxOutputBytes,
+      terminationGraceMs,
+      terminationWatchdogMs = DEFAULT_TERMINATION_WATCHDOG_MS,
+      killProcess,
+      ...spawnOptions
+    } = options;
     const proc = spawn(command, [...args], {
       ...spawnOptions,
       stdio: 'pipe',
@@ -96,18 +118,37 @@ export function runBoundedProcess(
     let stdout = '';
     let stderr = '';
     let capturedOutputBytes = 0;
-    let termination: Exclude<BoundedProcessOutcome, 'completed' | 'spawn_error'> | undefined;
+    let termination:
+      | Exclude<BoundedProcessOutcome, 'completed' | 'spawn_error' | 'termination_failed'>
+      | undefined;
     let settled = false;
     let closed = false;
     let graceTimer: NodeJS.Timeout | undefined;
+    let watchdogTimer: NodeJS.Timeout | undefined;
     let treeKill: Promise<void> | undefined;
     const timeout = setTimeout(() => requestTermination('timed_out'), timeoutMs);
     const needsTreeKill = process.platform === 'win32' && spawnOptions.shell === true;
+
+    const deliverKill = (killSignal: NodeJS.Signals): boolean => {
+      if (killProcess) {
+        return killProcess(proc, killSignal);
+      }
+      try {
+        return proc.kill(killSignal);
+      } catch {
+        // The process may have exited between the guard and kill(). The close
+        // event remains the single completion path when it fires.
+        return false;
+      }
+    };
 
     const cleanup = (): void => {
       clearTimeout(timeout);
       if (graceTimer !== undefined) {
         clearTimeout(graceTimer);
+      }
+      if (watchdogTimer !== undefined) {
+        clearTimeout(watchdogTimer);
       }
       signal?.removeEventListener('abort', onAbort);
     };
@@ -134,20 +175,32 @@ export function runBoundedProcess(
       });
     };
 
+    const armTerminationWatchdog = (): void => {
+      if (watchdogTimer !== undefined || closed || settled) {
+        return;
+      }
+      watchdogTimer = setTimeout(() => {
+        if (closed || settled) {
+          return;
+        }
+        finish(
+          'termination_failed',
+          null,
+          null,
+          `Process did not exit within ${terminationWatchdogMs} ms after forced termination.`,
+        );
+      }, terminationWatchdogMs);
+    };
+
     const requestTermination = (
-      reason: Exclude<BoundedProcessOutcome, 'completed' | 'spawn_error'>,
+      reason: Exclude<BoundedProcessOutcome, 'completed' | 'spawn_error' | 'termination_failed'>,
     ): void => {
       if (termination !== undefined || closed) {
         return;
       }
       termination = reason;
       if (!needsTreeKill) {
-        try {
-          proc.kill('SIGTERM');
-        } catch {
-          // The process may have exited between the guard and kill(). The close
-          // event remains the single completion path.
-        }
+        deliverKill('SIGTERM');
       }
       graceTimer = setTimeout(() => {
         if (closed) {
@@ -155,13 +208,11 @@ export function runBoundedProcess(
         }
         if (needsTreeKill) {
           treeKill = killWindowsProcessTree(proc.pid);
+          armTerminationWatchdog();
           return;
         }
-        try {
-          proc.kill('SIGKILL');
-        } catch {
-          // The process may have exited while the grace timer was pending.
-        }
+        deliverKill('SIGKILL');
+        armTerminationWatchdog();
       }, terminationGraceMs);
     };
 
@@ -558,9 +609,7 @@ export class PerlTestAdapter implements vscode.Disposable {
       run.passed(fileItem, duration);
     } else {
       const message = new vscode.TestMessage(
-        result.stderr.trim() ||
-          `${tapResults.failed} of ${tapResults.total} tests failed` +
-            (tapResults.bailOut ? ` (Bail out! ${tapResults.bailOut})` : ''),
+        result.stderr.trim() || describeFileFailure(result.exitCode, tapResults),
       );
       if (fileItem.uri) {
         message.location = new vscode.Location(fileItem.uri, new vscode.Position(0, 0));
@@ -596,6 +645,40 @@ export class PerlTestAdapter implements vscode.Disposable {
       d.dispose();
     }
   }
+}
+
+/**
+ * Describe why a test file failed when the process produced no stderr.
+ *
+ * A non-zero exit with no failing assertion is a real outcome — a bail out, a
+ * plan the run never reached, or a crash after the last `ok` line. Reporting it
+ * as "0 of N tests failed" contradicts the failure the user is looking at, so
+ * each shape gets its own explanation.
+ */
+export function describeFileFailure(
+  exitCode: number | null,
+  tapResults: { total: number; failed: number; bailOut: string | null },
+): string {
+  const bailSuffix =
+    tapResults.bailOut !== null
+      ? ` (Bail out!${tapResults.bailOut ? ` ${tapResults.bailOut}` : ''})`
+      : '';
+
+  if (tapResults.failed > 0) {
+    const tests = tapResults.total === 1 ? 'test' : 'tests';
+    return `${tapResults.failed} of ${tapResults.total} ${tests} failed${bailSuffix}`;
+  }
+
+  if (tapResults.bailOut !== null) {
+    return `Test run bailed out${tapResults.bailOut ? `: ${tapResults.bailOut}` : ''}`;
+  }
+
+  const exitDescription =
+    exitCode === null ? 'was terminated by a signal' : `exited with ${exitCode}`;
+  if (tapResults.total === 0) {
+    return `No test results were reported; the test process ${exitDescription}.`;
+  }
+  return `No assertion failed, but the test process ${exitDescription}.`;
 }
 
 /** Parse the top-level TAP summary from prove output. */

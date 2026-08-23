@@ -1,0 +1,9 @@
+project: product
+component: Debugger integration
+kind: Added
+body: Added a fail-closed actual Vim and Vimspector launch journey for the native perl-dap adapter.
+time: 2026-08-13T10:24:49Z
+custom:
+  PR: "7834"
+  Slug: vim-vimspector-perl-dap
+  Breaking: "no"

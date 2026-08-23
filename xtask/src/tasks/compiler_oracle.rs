@@ -104,11 +104,11 @@ for my $sub (qw(Oracle::Demo::proto)) {
             "compile-effect oracle disagreements: {rendered}"
         );
         assert!(
-            receipt.compared_families.iter().any(|family| *family == "package")
-                && receipt.compared_families.iter().any(|family| *family == "sub")
-                && receipt.compared_families.iter().any(|family| *family == "constant")
-                && receipt.compared_families.iter().any(|family| *family == "prototype")
-                && receipt.compared_families.iter().any(|family| *family == "isa"),
+            receipt.compared_families.contains(&"package")
+                && receipt.compared_families.contains(&"sub")
+                && receipt.compared_families.contains(&"constant")
+                && receipt.compared_families.contains(&"prototype")
+                && receipt.compared_families.contains(&"isa"),
             "receipt should cover the selected bounded fact families"
         );
 

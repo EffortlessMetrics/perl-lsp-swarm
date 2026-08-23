@@ -1,3 +1,5 @@
+mod support;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::{Child, Command, Stdio};
@@ -53,10 +55,10 @@ fn connect_with_deadline(port: u16) -> Result<TcpStream, Box<dyn std::error::Err
 /// Spawns the LSP server in socket mode, connects, and verifies the initialize handshake.
 #[test]
 fn test_socket_connection() -> Result<(), Box<dyn std::error::Error>> {
-    let bin_path = env!("CARGO_BIN_EXE_perl-lsp");
+    let bin_path = support::product_binary_path()?;
     let port = reserve_local_port()?;
 
-    let child = Command::new(bin_path)
+    let child = Command::new(&bin_path)
         .arg("--socket")
         .arg("--port")
         .arg(port.to_string())

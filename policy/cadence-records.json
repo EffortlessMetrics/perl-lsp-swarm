@@ -1,0 +1,54 @@
+[
+  {
+    "record_id": "mojolicious:edit_burst_completion",
+    "source_kind": "scenario_67_error_waiver",
+    "source_path": "crates/perl-lsp-ux-tests/fixtures/golden_editor_workload.json",
+    "owner": "#4050",
+    "owner_issue": "#4050",
+    "review_after": null,
+    "expires": "2026-08-11",
+    "evidence_identity": "removed on current main by PR #7152; current product measurement not proven",
+    "expected_debt_class": "request_superseded",
+    "required_decision": "measure current behavior; restore no waiver without fresh evidence",
+    "reproduce": "cargo test -p perl-lsp-ux-tests --test ux_scenario_67_golden_editor_workload --locked"
+  },
+  {
+    "record_id": "dancer2:edit_burst_completion",
+    "source_kind": "scenario_67_error_waiver",
+    "source_path": "crates/perl-lsp-ux-tests/fixtures/golden_editor_workload.json",
+    "owner": "#4050",
+    "owner_issue": "#4050",
+    "review_after": null,
+    "expires": "2026-08-11",
+    "evidence_identity": "removed on current main by PR #7152; current product measurement not proven",
+    "expected_debt_class": "request_superseded",
+    "required_decision": "measure current behavior; restore no waiver without fresh evidence",
+    "reproduce": "cargo test -p perl-lsp-ux-tests --test ux_scenario_67_golden_editor_workload --locked"
+  },
+  {
+    "record_id": "catalyst:edit_burst_completion",
+    "source_kind": "scenario_67_error_waiver",
+    "source_path": "crates/perl-lsp-ux-tests/fixtures/golden_editor_workload.json",
+    "owner": "#4050",
+    "owner_issue": "#4050",
+    "review_after": null,
+    "expires": "2026-08-11",
+    "evidence_identity": "removed on current main by PR #7152; current product measurement not proven",
+    "expected_debt_class": "request_superseded",
+    "required_decision": "measure current behavior; restore no waiver without fresh evidence",
+    "reproduce": "cargo test -p perl-lsp-ux-tests --test ux_scenario_67_golden_editor_workload --locked"
+  },
+  {
+    "record_id": "plain_modern_oo:edit_burst_completion",
+    "source_kind": "scenario_67_error_waiver",
+    "source_path": "crates/perl-lsp-ux-tests/fixtures/golden_editor_workload.json",
+    "owner": "#4050",
+    "owner_issue": "#4050",
+    "review_after": null,
+    "expires": "2026-08-11",
+    "evidence_identity": "removed on current main by PR #7152; current product measurement not proven",
+    "expected_debt_class": "request_superseded",
+    "required_decision": "measure current behavior; restore no waiver without fresh evidence",
+    "reproduce": "cargo test -p perl-lsp-ux-tests --test ux_scenario_67_golden_editor_workload --locked"
+  }
+]

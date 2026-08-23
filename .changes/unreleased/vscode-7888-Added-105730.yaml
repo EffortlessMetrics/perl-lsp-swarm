@@ -1,0 +1,9 @@
+project: vscode
+component: Performance and reliability
+kind: Added
+body: Added a generation-owned crash recovery arbiter that deduplicates watchdog and process-exit failure episodes.
+time: 2026-08-13T10:57:30Z
+custom:
+  PR: 7888
+  Slug: vscode-crash-recovery-arbiter
+  Breaking: "no"

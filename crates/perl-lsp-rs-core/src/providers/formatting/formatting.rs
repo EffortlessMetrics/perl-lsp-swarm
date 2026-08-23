@@ -1,24 +1,31 @@
 //! Code formatting support for Perl parsing workflow pipeline.
+//!
+//! This module is the request-independent formatting policy layer. It keeps the
+//! existing [`FormattedDocument`] API as a projection while exposing
+//! [`FormattingDecision`] for callers that must distinguish applied, no-change,
+//! refused, disabled, and failed/not-proven outcomes.
 
+#[path = "legacy.rs"]
+mod legacy;
+
+use crate::hashing::fnv1a64_hex;
 pub use crate::providers::formatting_types::{
     FormatPosition, FormatRange, FormatTextEdit, FormattedDocument, FormattingOptions,
 };
+use crate::tooling::perltidy::native::{
+    FormatChangeSummary, FormatContext, FormatDisposition, FormatEngine, FormatEvidenceState,
+    FormatIdentity, FormatLineEndingDisposition, FormatOutcome, FormatReasonCode,
+    FormatRequestTarget, FormatSafetyEvidence, TypedFormatResult,
+};
 use crate::tooling::perltidy::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatterMode, KeywordSpacing,
-    NativeFormatter, PerlFormatter, TextPosition, TextRange, TrailingComma,
+    NativeFormatter, TextPosition, TextRange, TrailingComma,
 };
+use perl_subprocess_runtime::SubprocessRuntime;
+use serde::{Deserialize, Serialize};
 
 /// Re-export PerlTidyConfig from perl-lsp-perltidy for convenience.
 pub use perl_lsp_perltidy::PerlTidyConfig;
-
-/// Count the number of UTF-16 code units in `s`.
-///
-/// LSP positions use UTF-16 code units (see Language Server Protocol spec Â§3.1).
-/// Characters in the Basic Multilingual Plane (U+0000â€“U+FFFF) count as 1 unit;
-/// supplementary-plane characters (U+10000 and above) count as 2 units.
-fn utf16_len(s: &str) -> usize {
-    s.chars().map(|c| if c as u32 >= 0x10000 { 2 } else { 1 }).sum()
-}
 
 /// Formatting error.
 #[derive(Debug, thiserror::Error)]
@@ -26,13 +33,10 @@ pub enum FormattingError {
     #[error(
         "perltidy not found: {0}\n\nTo install perltidy:\n  - Recommended: cpanm Perl::Tidy\n  - CPAN: cpan Perl::Tidy\n  - Debian/Ubuntu: apt-get install perltidy\n  - RedHat/Fedora: yum install perltidy\n  - macOS: brew install perltidy\n  - Windows: cpanm Perl::Tidy"
     )]
-    /// perltidy executable not found on system PATH.
+    /// Perltidy executable was not found or could not be started.
     PerltidyNotFound(String),
 
-    /// Error occurred during perltidy execution.
-    ///
-    /// This usually means perltidy ran but reported a problem â€” check that the
-    /// Perl code is syntactically valid, or inspect the perltidy output below.
+    /// Perltidy returned a non-success status.
     #[error("perltidy error (check Perl syntax): {0}")]
     PerltidyError(String),
 
@@ -40,16 +44,17 @@ pub enum FormattingError {
     #[error("perltidy returned invalid UTF-8 output")]
     InvalidOutputEncoding,
 
-    /// I/O error during file operations.
+    /// I/O error during formatting operations.
     #[error("IO error: {0}")]
     IoError(String),
+
+    /// Native formatting reached a failed/not-proven terminal outcome.
+    #[error("native formatting did not prove a safe result: {0:?}")]
+    NativeNotProven(FormatReasonCode),
 }
 
 impl FormattingError {
-    /// Return a stable machine-readable error kind string for structured LSP error data.
-    ///
-    /// Used by LSP handlers to populate the JSON-RPC error `data` field so that
-    /// clients (e.g. the VSCode extension) can present targeted remediation actions.
+    /// Return a stable machine-readable error kind string.
     #[must_use]
     pub fn error_kind(&self) -> &'static str {
         match self {
@@ -57,6 +62,18 @@ impl FormattingError {
             Self::PerltidyError(_) => "perltidy_error",
             Self::InvalidOutputEncoding => "invalid_output_encoding",
             Self::IoError(_) => "io_error",
+            Self::NativeNotProven(_) => "native_formatting_not_proven",
+        }
+    }
+}
+
+impl From<legacy::FormattingError> for FormattingError {
+    fn from(error: legacy::FormattingError) -> Self {
+        match error {
+            legacy::FormattingError::PerltidyNotFound(message) => Self::PerltidyNotFound(message),
+            legacy::FormattingError::PerltidyError(message) => Self::PerltidyError(message),
+            legacy::FormattingError::InvalidOutputEncoding => Self::InvalidOutputEncoding,
+            legacy::FormattingError::IoError(message) => Self::IoError(message),
         }
     }
 }
@@ -64,285 +81,391 @@ impl FormattingError {
 impl perl_parser_core::ErrorClass for FormattingError {
     fn error_class(&self) -> perl_parser_core::ErrorCategory {
         match self {
-            // External tool missing or IO failure — infrastructure issue.
             Self::PerltidyNotFound(_) | Self::IoError(_) => perl_parser_core::ErrorCategory::Infra,
-            // Perltidy reported a problem — usually the user's Perl has a
-            // syntax error that perltidy cannot format.
             Self::PerltidyError(_) => perl_parser_core::ErrorCategory::UserError,
-            // Perltidy returned non-UTF-8 output — should not happen with
-            // proper encoding handling, so this is our bug.
-            Self::InvalidOutputEncoding => perl_parser_core::ErrorCategory::Bug,
+            Self::InvalidOutputEncoding | Self::NativeNotProven(_) => {
+                perl_parser_core::ErrorCategory::Bug
+            }
         }
     }
 }
 
-/// Code formatter using native formatting with an external perltidy adapter.
+/// A formatted document paired with the explicit decision that authorized or
+/// withheld its edits.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FormattingDecision {
+    /// Formatted text and LSP-ready edits.
+    #[serde(skip)]
+    pub document: FormattedDocument,
+    /// Terminal outcome, reason, identity, and safety evidence.
+    pub outcome: FormatOutcome,
+}
+
+impl FormattingDecision {
+    /// Consume the decision and return the compatibility document projection.
+    #[must_use]
+    pub fn into_document(self) -> FormattedDocument {
+        self.document
+    }
+}
+
+/// Code formatter using native formatting with an explicit external perltidy adapter.
 pub struct FormattingProvider<R> {
-    /// Subprocess runtime for executing perltidy.
-    runtime: R,
-    /// Optional custom perltidy path.
-    perltidy_path: Option<String>,
-    /// Optional perltidy configuration.
+    inner: legacy::FormattingProvider<R>,
     perltidy_config: Option<PerlTidyConfig>,
-    /// Formatting engine selected for this provider.
     mode: FormatterMode,
 }
 
 impl<R> FormattingProvider<R> {
-    /// Create a new formatting provider with the given runtime.
+    /// Create a provider whose default engine is the Rust-native formatter.
     pub fn new(runtime: R) -> Self {
-        Self { runtime, perltidy_path: None, perltidy_config: None, mode: FormatterMode::Native }
+        Self {
+            inner: legacy::FormattingProvider::new(runtime),
+            perltidy_config: None,
+            mode: FormatterMode::Native,
+        }
     }
 
-    /// Set a custom perltidy path.
+    /// Set a custom external perltidy executable path.
     pub fn with_perltidy_path(mut self, path: String) -> Self {
-        self.perltidy_path = Some(path);
+        self.inner = self.inner.with_perltidy_path(path);
         self
     }
 
-    /// Set perltidy configuration.
+    /// Set native style and external perltidy compatibility configuration.
     pub fn with_perltidy_config(mut self, config: PerlTidyConfig) -> Self {
-        self.perltidy_config = Some(config);
+        self.perltidy_config = Some(config.clone());
+        self.inner = self.inner.with_perltidy_config(config);
         self
     }
 
-    /// Select the formatter engine.
+    /// Select the requested formatter mode.
     pub fn with_formatter_mode(mut self, mode: FormatterMode) -> Self {
         self.mode = mode;
         self
     }
 }
 
-impl<R: perl_subprocess_runtime::SubprocessRuntime> FormattingProvider<R> {
-    /// Format the entire Perl script document.
+impl<R: SubprocessRuntime> FormattingProvider<R> {
+    /// Format the entire document through the compatibility projection.
     pub fn format_document(
         &self,
         content: &str,
         options: &FormattingOptions,
     ) -> Result<FormattedDocument, FormattingError> {
+        self.format_document_decision(content, options, &FormatContext::default())
+            .map(FormattingDecision::into_document)
+    }
+
+    /// Format the entire document and retain the explicit terminal decision.
+    pub fn format_document_decision(
+        &self,
+        content: &str,
+        options: &FormattingOptions,
+        context: &FormatContext,
+    ) -> Result<FormattingDecision, FormattingError> {
         match self.mode {
-            // Compat mode is currently a no-op alias for Native (#5054 item 6).
             FormatterMode::Native | FormatterMode::Compat => {
-                Ok(native_format_document(content, options, self.perltidy_config.as_ref()))
+                self.native_document_decision(content, options, context)
             }
-            FormatterMode::ExternalLegacy => self.format_document_with_perltidy(content, options),
-            FormatterMode::Off => {
-                Ok(FormattedDocument { text: content.to_string(), edits: vec![] })
-            }
+            FormatterMode::ExternalLegacy => self.external_document_decision(
+                content,
+                options,
+                context,
+                FormatRequestTarget::Document,
+            ),
+            FormatterMode::Off => Ok(refused_decision(
+                content,
+                self.mode,
+                FormatEngine::Disabled,
+                FormatRequestTarget::Document,
+                context,
+                FormatReasonCode::FormatterDisabled,
+                "enable formatting or select a supported formatter mode",
+            )),
         }
     }
 
-    /// Format a specific range in the document.
+    /// Format a range through the compatibility projection.
     pub fn format_range(
         &self,
         content: &str,
         range: &FormatRange,
         options: &FormattingOptions,
     ) -> Result<FormattedDocument, FormattingError> {
-        let lines: Vec<&str> = content.lines().collect();
-        let start_line = range.start.line as usize;
-        let end_line = (range.end.line as usize).min(lines.len().saturating_sub(1));
-
-        if start_line >= lines.len() {
-            return Ok(FormattedDocument { text: content.to_string(), edits: vec![] });
-        }
-
-        if end_line < start_line {
-            return Ok(FormattedDocument { text: content.to_string(), edits: vec![] });
-        }
-
-        match self.mode {
-            // Compat mode is currently a no-op alias for Native (#5054 item 6).
-            FormatterMode::Native | FormatterMode::Compat => {
-                Ok(native_format_range(content, range, options, self.perltidy_config.as_ref()))
-            }
-            FormatterMode::ExternalLegacy => {
-                let whole_document = FormatRange::whole_document(content);
-                let is_whole_document = range.start.line == whole_document.start.line
-                    && range.start.character == whole_document.start.character
-                    && (range.end.line > whole_document.end.line
-                        || (range.end.line == whole_document.end.line
-                            && range.end.character >= whole_document.end.character));
-                if is_whole_document {
-                    // Perltidy is safe for a whole-document replacement. For a
-                    // partial range, formatting an isolated fragment can change
-                    // statement structure, line count, or trailing newlines;
-                    // use the native range-aware path instead of risking a
-                    // corrupt splice into the document.
-                    self.format_document_with_perltidy(content, options)
-                } else {
-                    Ok(native_format_range(content, range, options, self.perltidy_config.as_ref()))
-                }
-            }
-            FormatterMode::Off => {
-                Ok(FormattedDocument { text: content.to_string(), edits: vec![] })
-            }
-        }
+        self.format_range_decision(content, range, options, &FormatContext::default())
+            .map(FormattingDecision::into_document)
     }
 
-    fn format_document_with_perltidy(
+    /// Format a range and retain the explicit terminal decision.
+    pub fn format_range_decision(
         &self,
         content: &str,
+        range: &FormatRange,
         options: &FormattingOptions,
-    ) -> Result<FormattedDocument, FormattingError> {
-        let formatted =
-            apply_lsp_whitespace_options(&self.run_perltidy(content, options)?, options);
-
-        if formatted == content {
-            return Ok(FormattedDocument { text: formatted, edits: vec![] });
-        }
-
-        Ok(FormattedDocument {
-            text: formatted.clone(),
-            edits: vec![FormatTextEdit {
-                range: FormatRange::whole_document(content),
-                new_text: formatted,
-            }],
-        })
-    }
-
-    fn run_perltidy(
-        &self,
-        content: &str,
-        options: &FormattingOptions,
-    ) -> Result<String, FormattingError> {
-        let mut args = vec!["-st".to_string(), "-se".to_string()];
-
-        // If we have a perltidy config, use it to generate args
-        if let Some(ref config) = self.perltidy_config {
-            // A profile owns everything the workspace did not configure, but it
-            // must not silently discard indentation the workspace DID
-            // configure. `to_args` emits explicit indent/tabs after the profile
-            // and before `extra_args`, which stays last as the escape hatch.
-            //
-            // The editor `tabSize` / `insertSpaces` fallback is deliberately
-            // NOT applied here: with a profile present, an unset field is the
-            // profile's to decide, and injecting the editor's width would
-            // override the profile's own indentation for workspaces that
-            // configured nothing.
-            if config.profile.is_some() {
-                args.append(&mut config.to_args());
-            } else {
-                // Merge LSP options with config options.
-                //
-                // Explicitly configured indentation wins; the editor's
-                // `tabSize` / `insertSpaces` are only a fallback for the parts
-                // the configuration leaves unset. `to_args` emits
-                // `--indent-columns` / `--tabs` / `--notabs` only for fields
-                // that are actually set, so the fallbacks below are appended
-                // last and apply exactly when nothing configured them.
-                let config_sets_indent = config.indent_columns.is_some();
-                let config_sets_tabs = config.tabs.is_some();
-
-                args.append(&mut config.to_args());
-
-                if !config_sets_indent {
-                    args.push(format!("-i={}", options.tab_size));
-                }
-                if !config_sets_tabs {
-                    if options.insert_spaces {
-                        args.push(format!("-et={}", options.tab_size));
-                    } else {
-                        args.push("-dt".to_string());
-                    }
-                }
-            }
-        } else {
-            // Fallback to LSP options only
-            if options.insert_spaces {
-                args.push(format!("-et={}", options.tab_size));
-                args.push(format!("-i={}", options.tab_size));
-            } else {
-                args.push("-dt".to_string());
-                args.push(format!("-i={}", options.tab_size));
-            }
-        }
-
-        let perltidy_cmd = self.perltidy_path.as_deref().unwrap_or("perltidy");
-
-        let output = self
-            .runtime
-            .run_command(
-                perltidy_cmd,
-                &args.iter().map(String::as_str).collect::<Vec<_>>(),
-                Some(content.as_bytes()),
-            )
-            .map_err(|error| FormattingError::PerltidyNotFound(error.message))?;
-
-        if !output.success() {
-            return Err(FormattingError::PerltidyError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
+        context: &FormatContext,
+    ) -> Result<FormattingDecision, FormattingError> {
+        let target = FormatRequestTarget::Range { range: to_native_range(range) };
+        if !range_is_admissible(content, range) {
+            return Ok(refused_decision(
+                content,
+                self.mode,
+                FormatEngine::Unknown,
+                target,
+                context,
+                FormatReasonCode::UnsafeRange,
+                "request a valid complete source range",
             ));
         }
 
-        String::from_utf8(output.stdout).map_err(|_| FormattingError::InvalidOutputEncoding)
+        match self.mode {
+            FormatterMode::Native | FormatterMode::Compat => {
+                self.native_range_decision(content, range, options, context)
+            }
+            FormatterMode::ExternalLegacy if is_whole_document_range(content, range) => {
+                self.external_document_decision(content, options, context, target)
+            }
+            FormatterMode::ExternalLegacy => Ok(refused_decision(
+                content,
+                self.mode,
+                FormatEngine::Unknown,
+                target,
+                context,
+                FormatReasonCode::UnsafeRange,
+                "external Perl::Tidy compatibility currently supports whole-document formatting only",
+            )),
+            FormatterMode::Off => Ok(refused_decision(
+                content,
+                self.mode,
+                FormatEngine::Disabled,
+                target,
+                context,
+                FormatReasonCode::FormatterDisabled,
+                "enable formatting or select a supported formatter mode",
+            )),
+        }
+    }
+
+    fn native_document_decision(
+        &self,
+        content: &str,
+        options: &FormattingOptions,
+        context: &FormatContext,
+    ) -> Result<FormattingDecision, FormattingError> {
+        let mut config = native_format_config(options, self.perltidy_config.as_ref(), true);
+        config.mode = self.mode;
+        let mut typed = NativeFormatter::new().format_document_typed(content, &config, context);
+        bind_lsp_options(&mut typed.outcome.identity.config_fingerprint, options);
+        project_native_document(content, options, typed)
+    }
+
+    fn native_range_decision(
+        &self,
+        content: &str,
+        range: &FormatRange,
+        options: &FormattingOptions,
+        context: &FormatContext,
+    ) -> Result<FormattingDecision, FormattingError> {
+        let native_range = to_native_range(range);
+        let mut config = native_format_config(options, self.perltidy_config.as_ref(), false);
+        config.mode = self.mode;
+        let mut typed =
+            NativeFormatter::new().format_range_typed(content, native_range, &config, context);
+        bind_lsp_options(&mut typed.outcome.identity.config_fingerprint, options);
+        project_native_range(content, range, options, typed)
+    }
+
+    fn external_document_decision(
+        &self,
+        content: &str,
+        options: &FormattingOptions,
+        context: &FormatContext,
+        target: FormatRequestTarget,
+    ) -> Result<FormattingDecision, FormattingError> {
+        let document =
+            self.inner.format_document(content, options).map_err(FormattingError::from)?;
+        let disposition = if document.edits.is_empty() {
+            FormatDisposition::NoChange
+        } else {
+            FormatDisposition::Applied
+        };
+        let reason = if document.edits.is_empty() {
+            FormatReasonCode::AlreadyFormatted
+        } else {
+            FormatReasonCode::Applied
+        };
+        let outcome = provider_outcome(ProviderOutcomeInput {
+            source: content,
+            formatted: &document.text,
+            edits: &document.edits,
+            requested_mode: self.mode,
+            actual_engine: FormatEngine::ExternalLegacy,
+            target,
+            context,
+            disposition,
+            reason,
+            config_fingerprint: external_config_fingerprint(self.perltidy_config.as_ref(), options),
+            safety: FormatSafetyEvidence {
+                parse_before: FormatEvidenceState::NotRun,
+                parse_after: FormatEvidenceState::NotRun,
+                literal_preservation: FormatEvidenceState::NotRun,
+                utf8: FormatEvidenceState::Proven,
+                line_endings: line_ending_disposition(content, &document.text),
+            },
+            next_action: None,
+        });
+
+        Ok(FormattingDecision { document, outcome })
     }
 }
 
-fn native_format_document(
+fn project_native_document(
     content: &str,
     options: &FormattingOptions,
-    perltidy_config: Option<&PerlTidyConfig>,
-) -> FormattedDocument {
-    let config = native_format_config(options, perltidy_config, true);
-    let result = NativeFormatter::new().format_document(content, &config);
-    if result.diagnostics.is_empty() {
-        let edits: Vec<_> = result.edits.into_iter().map(native_edit_to_format_edit).collect();
-        // Log when the native formatter produces no edits on a non-trivial document,
-        // so users understand why their code wasn't reformatted (#5054 item 7).
-        // The native formatter supports only a subset of Perl (lexical/assignment/
-        // call/if-else/for-sub); complex constructs pass through unchanged.
-        if edits.is_empty() && content.trim().len() > 20 {
-            tracing::debug!(
-                len = content.len(),
-                "native formatter produced no edits — document may contain unsupported constructs \
-                 (print, grep/map blocks, ternaries, heredocs, regex); consider using external perltidy"
-            );
+    typed: TypedFormatResult,
+) -> Result<FormattingDecision, FormattingError> {
+    let TypedFormatResult { result, mut outcome } = typed;
+    match outcome.disposition {
+        FormatDisposition::Refused => {
+            return Ok(FormattingDecision { document: unchanged_document(content), outcome });
         }
-        let formatted = apply_lsp_whitespace_options(&result.formatted, options);
-        if formatted != result.formatted {
-            return FormattedDocument {
-                text: formatted.clone(),
-                edits: vec![FormatTextEdit {
-                    range: FormatRange::whole_document(content),
-                    new_text: formatted,
-                }],
-            };
+        FormatDisposition::FailedOrNotProven => {
+            return Ok(FormattingDecision { document: unchanged_document(content), outcome });
         }
-
-        return FormattedDocument { text: result.formatted, edits };
+        FormatDisposition::Applied | FormatDisposition::NoChange => {}
     }
 
-    FormattedDocument { text: content.to_string(), edits: vec![] }
+    let formatted = apply_lsp_whitespace_options(&result.formatted, options);
+    let edits = if formatted == content {
+        Vec::new()
+    } else if formatted == result.formatted {
+        result.edits.into_iter().map(native_edit_to_format_edit).collect()
+    } else {
+        vec![FormatTextEdit {
+            range: FormatRange::whole_document(content),
+            new_text: formatted.clone(),
+        }]
+    };
+    finalize_outcome(&mut outcome, content, &formatted, &edits);
+
+    Ok(FormattingDecision { document: FormattedDocument { text: formatted, edits }, outcome })
 }
 
-fn native_format_range(
+fn project_native_range(
     content: &str,
     range: &FormatRange,
     options: &FormattingOptions,
-    perltidy_config: Option<&PerlTidyConfig>,
-) -> FormattedDocument {
-    let native_range = TextRange::new(
-        TextPosition::new(range.start.line, range.start.character),
-        TextPosition::new(range.end.line, range.end.character),
-    );
-    let result = NativeFormatter::new().format_range(
-        content,
-        native_range,
-        &native_format_config(options, perltidy_config, false),
-    );
-    if result.diagnostics.is_empty() {
-        if result.edits.is_empty() {
-            return whitespace_range_fallback(content, range, options);
+    typed: TypedFormatResult,
+) -> Result<FormattingDecision, FormattingError> {
+    let TypedFormatResult { result, mut outcome } = typed;
+    match outcome.disposition {
+        FormatDisposition::Refused => {
+            return Ok(FormattingDecision { document: unchanged_document(content), outcome });
         }
-
-        return FormattedDocument {
-            text: result.formatted,
-            edits: result.edits.into_iter().map(native_edit_to_format_edit).collect(),
-        };
+        FormatDisposition::FailedOrNotProven => {
+            return Ok(FormattingDecision { document: unchanged_document(content), outcome });
+        }
+        FormatDisposition::Applied => {
+            let edits: Vec<_> = result.edits.into_iter().map(native_edit_to_format_edit).collect();
+            finalize_outcome(&mut outcome, content, &result.formatted, &edits);
+            return Ok(FormattingDecision {
+                document: FormattedDocument { text: result.formatted, edits },
+                outcome,
+            });
+        }
+        FormatDisposition::NoChange => {}
     }
 
-    FormattedDocument { text: content.to_string(), edits: vec![] }
+    let document = whitespace_range_fallback(content, range, options);
+    finalize_outcome(&mut outcome, content, &document.text, &document.edits);
+    Ok(FormattingDecision { document, outcome })
+}
+
+fn finalize_outcome(
+    outcome: &mut FormatOutcome,
+    source: &str,
+    formatted: &str,
+    edits: &[FormatTextEdit],
+) {
+    if edits.is_empty() {
+        outcome.disposition = FormatDisposition::NoChange;
+        outcome.reason = FormatReasonCode::AlreadyFormatted;
+    } else {
+        outcome.disposition = FormatDisposition::Applied;
+        outcome.reason = FormatReasonCode::Applied;
+    }
+    outcome.change = change_summary(source, formatted, edits);
+    outcome.safety.line_endings = line_ending_disposition(source, formatted);
+}
+
+struct ProviderOutcomeInput<'a> {
+    source: &'a str,
+    formatted: &'a str,
+    edits: &'a [FormatTextEdit],
+    requested_mode: FormatterMode,
+    actual_engine: FormatEngine,
+    target: FormatRequestTarget,
+    context: &'a FormatContext,
+    disposition: FormatDisposition,
+    reason: FormatReasonCode,
+    config_fingerprint: String,
+    safety: FormatSafetyEvidence,
+    next_action: Option<String>,
+}
+
+fn provider_outcome(input: ProviderOutcomeInput<'_>) -> FormatOutcome {
+    FormatOutcome {
+        disposition: input.disposition,
+        reason: input.reason,
+        identity: FormatIdentity {
+            source_id: input.context.source_id.clone(),
+            content_digest: stable_digest("source-v1", input.source.as_bytes()),
+            source_generation: input.context.source_generation,
+            actual_engine: input.actual_engine,
+            requested_mode: input.requested_mode,
+            config_fingerprint: input.config_fingerprint,
+        },
+        target: input.target,
+        change: change_summary(input.source, input.formatted, input.edits),
+        safety: input.safety,
+        next_action: input.next_action,
+    }
+}
+
+fn refused_decision(
+    content: &str,
+    requested_mode: FormatterMode,
+    actual_engine: FormatEngine,
+    target: FormatRequestTarget,
+    context: &FormatContext,
+    reason: FormatReasonCode,
+    next_action: &str,
+) -> FormattingDecision {
+    let outcome = provider_outcome(ProviderOutcomeInput {
+        source: content,
+        formatted: content,
+        edits: &[],
+        requested_mode,
+        actual_engine,
+        target,
+        context,
+        disposition: FormatDisposition::Refused,
+        reason,
+        config_fingerprint: stable_digest(
+            "format-config-v1",
+            formatter_mode_name(requested_mode).as_bytes(),
+        ),
+        safety: FormatSafetyEvidence {
+            parse_before: FormatEvidenceState::NotRun,
+            parse_after: FormatEvidenceState::NotRun,
+            literal_preservation: FormatEvidenceState::NotRun,
+            utf8: FormatEvidenceState::Proven,
+            line_endings: FormatLineEndingDisposition::Preserved,
+        },
+        next_action: Some(next_action.to_string()),
+    });
+
+    FormattingDecision { document: unchanged_document(content), outcome }
 }
 
 fn native_format_config(
@@ -371,9 +494,6 @@ fn native_format_config(
         if let Some(width) = perltidy_config.maximum_line_length {
             config.line_width = width;
         }
-        // Explicitly configured indentation wins over the editor's `tabSize` /
-        // `insertSpaces`; the editor options above remain the fallback for an
-        // unconfigured workspace.
         if let Some(indent_columns) = perltidy_config.indent_columns {
             config.indent_width = indent_columns;
         }
@@ -427,20 +547,30 @@ fn whitespace_range_fallback(
     let end_line = (range.end.line as usize).min(lines.len().saturating_sub(1));
 
     if start_line >= lines.len() || end_line < start_line {
-        return FormattedDocument { text: content.to_string(), edits: vec![] };
+        return unchanged_document(content);
     }
 
-    // Detect line ending to preserve CRLF (#5075)
     let line_ending = if content.contains("\r\n") { "\r\n" } else { "\n" };
     let text_to_format = lines[start_line..=end_line].join(line_ending);
     let raw = apply_lsp_whitespace_options(&text_to_format, options);
     let formatted = raw.trim_end_matches(['\r', '\n']).to_string();
     if formatted == text_to_format {
-        return FormattedDocument { text: content.to_string(), edits: vec![] };
+        return unchanged_document(content);
     }
 
+    let line_segments: Vec<&str> = content.split_inclusive('\n').collect();
+    let start_offset = line_segments.iter().take(start_line).map(|line| line.len()).sum::<usize>();
+    let end_line_body = line_segments[end_line].trim_end_matches(['\r', '\n']);
+    let end_offset = line_segments.iter().take(end_line).map(|line| line.len()).sum::<usize>()
+        + end_line_body.len();
+    let mut updated =
+        String::with_capacity(content.len() - (end_offset - start_offset) + formatted.len());
+    updated.push_str(&content[..start_offset]);
+    updated.push_str(&formatted);
+    updated.push_str(&content[end_offset..]);
+
     FormattedDocument {
-        text: content.to_string(),
+        text: updated,
         edits: vec![FormatTextEdit {
             range: FormatRange::new(
                 FormatPosition::new(start_line as u32, 0),
@@ -457,13 +587,11 @@ fn apply_lsp_whitespace_options(content: &str, options: &FormattingOptions) -> S
     if options.trim_trailing_whitespace.unwrap_or(false) {
         output = trim_trailing_whitespace(&output);
     }
-
     if options.trim_final_newlines.unwrap_or(false) {
         while output.ends_with('\n') {
             output.pop();
         }
     }
-
     if options.insert_final_newline.unwrap_or(false) && !output.ends_with('\n') {
         output.push('\n');
     }
@@ -475,8 +603,7 @@ fn trim_trailing_whitespace(content: &str) -> String {
     let mut result = String::with_capacity(content.len());
     for line in content.split_inclusive('\n') {
         if let Some(without_nl) = line.strip_suffix('\n') {
-            let trimmed = without_nl.trim_end_matches([' ', '\t']);
-            result.push_str(trimmed);
+            result.push_str(without_nl.trim_end_matches([' ', '\t']));
             result.push('\n');
         } else {
             result.push_str(line.trim_end_matches([' ', '\t']));
@@ -485,671 +612,229 @@ fn trim_trailing_whitespace(content: &str) -> String {
     result
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use anyhow::Result;
-    use perl_subprocess_runtime::{SubprocessError, SubprocessOutput, SubprocessRuntime};
+fn unchanged_document(content: &str) -> FormattedDocument {
+    FormattedDocument { text: content.to_string(), edits: Vec::new() }
+}
 
-    struct MissingPerltidyRuntime;
+fn to_native_range(range: &FormatRange) -> TextRange {
+    TextRange::new(
+        TextPosition::new(range.start.line, range.start.character),
+        TextPosition::new(range.end.line, range.end.character),
+    )
+}
 
-    impl SubprocessRuntime for MissingPerltidyRuntime {
-        fn run_command(
-            &self,
-            _program: &str,
-            _args: &[&str],
-            _stdin: Option<&[u8]>,
-        ) -> std::result::Result<SubprocessOutput, SubprocessError> {
-            Err(SubprocessError::new("perltidy missing"))
-        }
-    }
+fn range_is_admissible(content: &str, range: &FormatRange) -> bool {
+    let line_count = content.lines().count();
+    let start_line = range.start.line as usize;
+    start_line < line_count
+        && range.end.line >= range.start.line
+        && (range.end.line > range.start.line || range.end.character >= range.start.character)
+}
 
-    struct FakePerltidyRuntime;
+fn is_whole_document_range(content: &str, range: &FormatRange) -> bool {
+    let whole = FormatRange::whole_document(content);
+    range.start.line == whole.start.line
+        && range.start.character == whole.start.character
+        && (range.end.line > whole.end.line
+            || (range.end.line == whole.end.line && range.end.character >= whole.end.character))
+}
 
-    impl SubprocessRuntime for FakePerltidyRuntime {
-        fn run_command(
-            &self,
-            _program: &str,
-            _args: &[&str],
-            _stdin: Option<&[u8]>,
-        ) -> std::result::Result<SubprocessOutput, SubprocessError> {
-            Ok(SubprocessOutput {
-                stdout: b"my $external = 1;\n".to_vec(),
-                stderr: Vec::new(),
-                status_code: 0,
-            })
-        }
-    }
-
-    struct InvalidUtf8PerltidyRuntime;
-
-    impl SubprocessRuntime for InvalidUtf8PerltidyRuntime {
-        fn run_command(
-            &self,
-            _program: &str,
-            _args: &[&str],
-            _stdin: Option<&[u8]>,
-        ) -> std::result::Result<SubprocessOutput, SubprocessError> {
-            Ok(SubprocessOutput {
-                stdout: vec![b'm', b'y', b' ', 0xff, b'\n'],
-                stderr: Vec::new(),
-                status_code: 0,
-            })
-        }
-    }
-
-    /// A `perltidy` that is present and working (as if resolvable on PATH), and
-    /// records whether it was ever invoked. Used to prove the default native path
-    /// never shells out just because `perltidy` is available.
-    struct RecordingPerltidyRuntime {
-        invoked: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    }
-
-    impl SubprocessRuntime for RecordingPerltidyRuntime {
-        fn run_command(
-            &self,
-            _program: &str,
-            _args: &[&str],
-            _stdin: Option<&[u8]>,
-        ) -> std::result::Result<SubprocessOutput, SubprocessError> {
-            self.invoked.store(true, std::sync::atomic::Ordering::SeqCst);
-            Ok(SubprocessOutput {
-                stdout: b"my $external = 1;\n".to_vec(),
-                stderr: Vec::new(),
-                status_code: 0,
-            })
-        }
-    }
-
-    #[test]
-    fn format_document_uses_native_formatter_when_perltidy_missing() -> Result<()> {
-        let provider = FormattingProvider::new(MissingPerltidyRuntime);
-        let options = FormattingOptions {
-            tab_size: 4,
-            insert_spaces: true,
-            trim_trailing_whitespace: None,
-            insert_final_newline: None,
-            trim_final_newlines: None,
+fn change_summary(source: &str, formatted: &str, edits: &[FormatTextEdit]) -> FormatChangeSummary {
+    if edits.is_empty() || source == formatted {
+        return FormatChangeSummary {
+            edit_count: edits.len(),
+            source_bytes_changed: 0,
+            rendered_bytes_changed: 0,
+            changed_lines: 0,
         };
-
-        let formatted = provider.format_document("my$x=1;\n", &options)?;
-        assert_eq!(formatted.edits.len(), 1);
-        assert_eq!(formatted.edits[0].new_text, "my $x = 1;\n");
-        Ok(())
     }
 
-    #[test]
-    fn perltidy_available_does_not_change_default_native_formatting() -> Result<()> {
-        // Behavioral counterpart to the config-level PATH guard
-        // (`perltidy_discoverable_on_path_still_yields_native_default`): even when
-        // `perltidy` is present and working, the DEFAULT (native) engine must
-        // format natively AND must never shell out to perltidy. Merely having the
-        // external tool available cannot flip formatting behavior.
-        let invoked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        // No `.with_formatter_mode(...)` — exercise the default engine.
-        let provider =
-            FormattingProvider::new(RecordingPerltidyRuntime { invoked: invoked.clone() });
-        let options = FormattingOptions {
-            tab_size: 4,
-            insert_spaces: true,
-            trim_trailing_whitespace: None,
-            insert_final_newline: None,
-            trim_final_newlines: None,
-        };
-
-        let formatted = provider.format_document("my$x=1;\n", &options)?;
-        assert_eq!(formatted.edits.len(), 1);
-        assert_eq!(
-            formatted.edits[0].new_text, "my $x = 1;\n",
-            "default engine must format natively even when perltidy is available"
-        );
-        assert!(
-            !invoked.load(std::sync::atomic::Ordering::SeqCst),
-            "the native default must not invoke perltidy"
-        );
-        Ok(())
+    let source_bytes = source.as_bytes();
+    let formatted_bytes = formatted.as_bytes();
+    let prefix =
+        source_bytes.iter().zip(formatted_bytes).take_while(|(left, right)| left == right).count();
+    let suffix_limit = source_bytes.len().min(formatted_bytes.len()).saturating_sub(prefix);
+    let suffix = source_bytes
+        .iter()
+        .rev()
+        .zip(formatted_bytes.iter().rev())
+        .take(suffix_limit)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let changed_lines = count_changed_lines(source, formatted);
+    // Prefix/suffix accounting reports 0 on the shorter side for pure
+    // insertions or deletions. Mirror the non-zero span so callers that require
+    // both source and rendered evidence still see the edit magnitude.
+    let mut source_bytes_changed = source_bytes.len().saturating_sub(prefix + suffix);
+    let mut rendered_bytes_changed = formatted_bytes.len().saturating_sub(prefix + suffix);
+    if source_bytes_changed == 0 {
+        source_bytes_changed = rendered_bytes_changed;
+    }
+    if rendered_bytes_changed == 0 {
+        rendered_bytes_changed = source_bytes_changed;
     }
 
-    #[test]
-    fn format_document_native_applies_configured_formatting_policies() -> Result<()> {
-        let config = PerlTidyConfig {
-            maximum_line_length: Some(20),
-            opening_brace_on_new_line: Some(true),
-            cuddled_else: Some(false),
-            space_after_keyword: Some(false),
-            add_trailing_commas: Some(true),
-            ..PerlTidyConfig::default()
-        };
-        let provider = FormattingProvider::new(MissingPerltidyRuntime)
-            .with_perltidy_config(config)
-            .with_formatter_mode(FormatterMode::Native);
-        let options = FormattingOptions {
-            tab_size: 4,
-            insert_spaces: true,
-            trim_trailing_whitespace: None,
-            insert_final_newline: None,
-            trim_final_newlines: None,
-        };
-
-        let formatted = provider.format_document(
-            "if($ok){return foo($alpha,$beta,$gamma);}else{return bar();}\n",
-            &options,
-        )?;
-
-        assert_eq!(formatted.edits.len(), 1);
-        assert_eq!(
-            formatted.edits[0].new_text,
-            concat!(
-                "if($ok)\n",
-                "{\n",
-                "    return foo(\n",
-                "    $alpha,\n",
-                "    $beta,\n",
-                "    $gamma,\n",
-                ");\n",
-                "}\n",
-                "else\n",
-                "{\n",
-                "    return bar();\n",
-                "}\n",
-            )
-        );
-        Ok(())
+    FormatChangeSummary {
+        edit_count: edits.len(),
+        source_bytes_changed,
+        rendered_bytes_changed,
+        changed_lines,
     }
+}
 
-    /// Records the argv handed to `perltidy` so the external path's indentation
-    /// precedence can be asserted without an installed `perltidy`.
-    struct ArgRecordingPerltidyRuntime {
-        args: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    }
-
-    impl SubprocessRuntime for ArgRecordingPerltidyRuntime {
-        fn run_command(
-            &self,
-            _program: &str,
-            args: &[&str],
-            _stdin: Option<&[u8]>,
-        ) -> std::result::Result<SubprocessOutput, SubprocessError> {
-            if let Ok(mut recorded) = self.args.lock() {
-                *recorded = args.iter().map(|arg| (*arg).to_string()).collect();
+fn count_changed_lines(source: &str, formatted: &str) -> usize {
+    let mut source_lines = source.lines();
+    let mut formatted_lines = formatted.lines();
+    let mut changed_lines = 0;
+    loop {
+        match (source_lines.next(), formatted_lines.next()) {
+            (Some(source_line), Some(formatted_line)) => {
+                changed_lines += usize::from(source_line != formatted_line);
             }
-            Ok(SubprocessOutput {
-                stdout: b"my $external = 1;\n".to_vec(),
-                stderr: Vec::new(),
-                status_code: 0,
-            })
+            (Some(_), None) => return changed_lines + 1 + source_lines.count(),
+            (None, Some(_)) => return changed_lines + 1 + formatted_lines.count(),
+            (None, None) => return changed_lines,
+        }
+    }
+}
+
+fn bind_lsp_options(fingerprint: &mut String, options: &FormattingOptions) {
+    let canonical = format!(
+        "native-lsp-config-v1|native={fingerprint}|tab_size={}|insert_spaces={}|trim_trailing_whitespace={:?}|insert_final_newline={:?}|trim_final_newlines={:?}",
+        options.tab_size,
+        options.insert_spaces,
+        options.trim_trailing_whitespace,
+        options.insert_final_newline,
+        options.trim_final_newlines,
+    );
+    *fingerprint = stable_digest("native-lsp-config-v1", canonical.as_bytes());
+}
+
+fn external_config_fingerprint(
+    config: Option<&PerlTidyConfig>,
+    options: &FormattingOptions,
+) -> String {
+    let canonical = match config {
+        Some(config) => format!(
+            "external-format-config-v1|maximum_line_length={:?}|indent_columns={:?}|tabs={:?}|opening_brace_on_new_line={:?}|cuddled_else={:?}|space_after_keyword={:?}|add_trailing_commas={:?}|vertical_alignment={:?}|block_comment_indentation={:?}|profile={:?}|extra_args={:?}|timeout_secs={}|tab_size={}|insert_spaces={}|trim_trailing_whitespace={:?}|insert_final_newline={:?}|trim_final_newlines={:?}",
+            config.maximum_line_length,
+            config.indent_columns,
+            config.tabs,
+            config.opening_brace_on_new_line,
+            config.cuddled_else,
+            config.space_after_keyword,
+            config.add_trailing_commas,
+            config.vertical_alignment,
+            config.block_comment_indentation,
+            config.profile,
+            config.extra_args,
+            config.timeout_secs,
+            options.tab_size,
+            options.insert_spaces,
+            options.trim_trailing_whitespace,
+            options.insert_final_newline,
+            options.trim_final_newlines,
+        ),
+        None => format!(
+            "external-format-config-v1|none|tab_size={}|insert_spaces={}|trim_trailing_whitespace={:?}|insert_final_newline={:?}|trim_final_newlines={:?}",
+            options.tab_size,
+            options.insert_spaces,
+            options.trim_trailing_whitespace,
+            options.insert_final_newline,
+            options.trim_final_newlines,
+        ),
+    };
+    stable_digest("external-format-config-v1", canonical.as_bytes())
+}
+
+fn stable_digest(prefix: &str, bytes: &[u8]) -> String {
+    format!("{prefix}:{}", fnv1a64_hex(bytes).trim_start_matches("fnv1a64:"))
+}
+
+fn line_ending_disposition(source: &str, formatted: &str) -> FormatLineEndingDisposition {
+    if line_ending_kind(source) == line_ending_kind(formatted) {
+        FormatLineEndingDisposition::Preserved
+    } else {
+        FormatLineEndingDisposition::ChangedByFormatter
+    }
+}
+
+fn line_ending_kind(source: &str) -> (bool, bool, bool) {
+    let bytes = source.as_bytes();
+    let mut index = 0;
+    let mut has_lf = false;
+    let mut has_crlf = false;
+    let mut has_cr = false;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\r' if bytes.get(index + 1) == Some(&b'\n') => {
+                has_crlf = true;
+                index += 2;
+            }
+            b'\r' => {
+                has_cr = true;
+                index += 1;
+            }
+            b'\n' => {
+                has_lf = true;
+                index += 1;
+            }
+            _ => index += 1,
         }
     }
 
-    fn options_with_tab_size(tab_size: u32, insert_spaces: bool) -> FormattingOptions {
-        FormattingOptions {
-            tab_size,
-            insert_spaces,
-            trim_trailing_whitespace: None,
-            insert_final_newline: None,
-            trim_final_newlines: None,
-        }
-    }
+    (has_lf, has_crlf, has_cr)
+}
+
+#[cfg(test)]
+mod decision_projection_tests {
+    use super::*;
 
     #[test]
-    fn native_configured_indent_columns_win_over_editor_tab_size() {
-        // A workspace that sets `perltidy_indent_columns = 2` must get 2 even
-        // when the editor advertises tabSize 4.
-        let config = PerlTidyConfig { indent_columns: Some(2), ..PerlTidyConfig::default() };
-        let format_config =
-            native_format_config(&options_with_tab_size(4, true), Some(&config), false);
-
-        assert_eq!(format_config.indent_width, 2);
-        assert!(
-            !format_config.use_tabs,
-            "editor insertSpaces=true must keep spaces when only indent_columns is configured"
+    fn failed_native_outcome_retains_complete_evidence() -> Result<(), FormattingError> {
+        let source = "my $x = 1;\n";
+        let config = FormatConfig::default();
+        let mut typed = NativeFormatter::new().format_document_typed(
+            source,
+            &config,
+            &FormatContext::new(Some("fixture.pl".to_string()), Some(9)),
         );
-    }
+        typed.outcome.disposition = FormatDisposition::FailedOrNotProven;
+        typed.outcome.reason = FormatReasonCode::InstrumentFailure;
 
-    #[test]
-    fn native_configured_tabs_win_over_editor_insert_spaces() {
-        let config = PerlTidyConfig { tabs: Some(true), ..PerlTidyConfig::default() };
-        let format_config =
-            native_format_config(&options_with_tab_size(4, true), Some(&config), false);
-
-        assert!(
-            format_config.use_tabs,
-            "configured perltidy tabs=true must override editor insertSpaces=true"
-        );
-    }
-
-    #[test]
-    fn native_unconfigured_indentation_falls_back_to_editor_options() {
-        // Nothing configured indentation, so the editor stays authoritative --
-        // the fix must not pin unconfigured projects to a built-in width.
-        let config = PerlTidyConfig::default();
-        let format_config =
-            native_format_config(&options_with_tab_size(2, false), Some(&config), false);
-
-        assert_eq!(format_config.indent_width, 2);
-        assert!(
-            format_config.use_tabs,
-            "unconfigured perltidy must inherit editor insertSpaces=false as tabs"
-        );
-    }
-
-    #[test]
-    fn native_configured_indent_columns_change_rendered_output() -> Result<()> {
-        // End-to-end counterpart to the config-level assertions above: the
-        // configured width must reach the emitted text, not just FormatConfig.
-        let config = PerlTidyConfig { indent_columns: Some(2), ..PerlTidyConfig::default() };
-        let provider = FormattingProvider::new(MissingPerltidyRuntime)
-            .with_perltidy_config(config)
-            .with_formatter_mode(FormatterMode::Native);
-
-        let formatted =
-            provider.format_document("if($ok){return 1;}\n", &options_with_tab_size(4, true))?;
-
-        assert_eq!(formatted.edits.len(), 1);
-        assert_eq!(
-            formatted.edits[0].new_text, "if ($ok) {\n  return 1;\n}\n",
-            "the configured 2-column indent must reach the emitted text, not the editor's 4"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn external_configured_indent_columns_win_over_editor_tab_size() -> Result<()> {
-        let recorded = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let config = PerlTidyConfig {
-            indent_columns: Some(2),
-            tabs: Some(false),
-            ..PerlTidyConfig::default()
-        };
-        let provider =
-            FormattingProvider::new(ArgRecordingPerltidyRuntime { args: recorded.clone() })
-                .with_perltidy_config(config)
-                .with_formatter_mode(FormatterMode::ExternalLegacy);
-
-        provider.format_document("my $x = 1;\n", &options_with_tab_size(4, true))?;
-
-        let args = recorded.lock().map_err(|_| anyhow::anyhow!("args mutex poisoned"))?.clone();
-        assert!(args.contains(&"--indent-columns=2".to_string()), "{args:?}");
-        assert!(args.contains(&"--notabs".to_string()), "{args:?}");
-        assert!(
-            !args.iter().any(|arg| arg.starts_with("-i=")),
-            "the editor's tabSize must not override a configured indent width: {args:?}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn external_unconfigured_indentation_falls_back_to_editor_options() -> Result<()> {
-        let recorded = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let provider =
-            FormattingProvider::new(ArgRecordingPerltidyRuntime { args: recorded.clone() })
-                .with_perltidy_config(PerlTidyConfig::default())
-                .with_formatter_mode(FormatterMode::ExternalLegacy);
-
-        provider.format_document("my $x = 1;\n", &options_with_tab_size(2, true))?;
-
-        let args = recorded.lock().map_err(|_| anyhow::anyhow!("args mutex poisoned"))?.clone();
-        assert!(args.contains(&"-i=2".to_string()), "{args:?}");
-        assert!(args.contains(&"-et=2".to_string()), "{args:?}");
-        assert!(!args.iter().any(|arg| arg.starts_with("--indent-columns=")), "{args:?}");
-        Ok(())
-    }
-
-    #[test]
-    fn external_profile_still_applies_configured_indent_columns() -> Result<()> {
-        // A discovered `.perltidyrc` (or explicit perltidy_profile) sets
-        // `profile`, which used to make `to_args` emit only `--profile` and
-        // drop configured indentation entirely. perltidy lets command-line
-        // flags override profile settings, so an explicitly configured width
-        // must still reach the argv.
-        let recorded = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let config = PerlTidyConfig {
-            profile: Some("/workspace/.perltidyrc".to_string()),
-            indent_columns: Some(2),
-            tabs: Some(true),
-            extra_args: vec!["--maximum-line-length=120".to_string()],
-            ..PerlTidyConfig::default()
-        };
-        let provider =
-            FormattingProvider::new(ArgRecordingPerltidyRuntime { args: recorded.clone() })
-                .with_perltidy_config(config)
-                .with_formatter_mode(FormatterMode::ExternalLegacy);
-
-        provider.format_document("my $x = 1;\n", &options_with_tab_size(4, true))?;
-
-        let args = recorded.lock().map_err(|_| anyhow::anyhow!("args mutex poisoned"))?.clone();
-        assert!(args.contains(&"--profile=/workspace/.perltidyrc".to_string()), "{args:?}");
-        assert!(args.contains(&"--indent-columns=2".to_string()), "{args:?}");
-        assert!(args.contains(&"--tabs".to_string()), "{args:?}");
-
-        // extra_args stays last so it remains the escape hatch that can
-        // override the typed fields.
-        let indent_at = args.iter().position(|a| a == "--indent-columns=2");
-        let extra_at = args.iter().position(|a| a == "--maximum-line-length=120");
-        assert!(indent_at < extra_at, "extra_args must stay last: {args:?}");
-        Ok(())
-    }
-
-    #[test]
-    fn external_profile_without_configured_indent_defers_to_the_profile() -> Result<()> {
-        // Opposite-direction control for the decision above: when a profile is
-        // present and the workspace configured no indentation, the editor's
-        // tabSize must NOT be injected — that would override the profile's own
-        // indentation for workspaces that configured nothing.
-        let recorded = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let config = PerlTidyConfig {
-            profile: Some("/workspace/.perltidyrc".to_string()),
-            ..PerlTidyConfig::default()
-        };
-        let provider =
-            FormattingProvider::new(ArgRecordingPerltidyRuntime { args: recorded.clone() })
-                .with_perltidy_config(config)
-                .with_formatter_mode(FormatterMode::ExternalLegacy);
-
-        provider.format_document("my $x = 1;\n", &options_with_tab_size(2, true))?;
-
-        let args = recorded.lock().map_err(|_| anyhow::anyhow!("args mutex poisoned"))?.clone();
-        assert!(args.contains(&"--profile=/workspace/.perltidyrc".to_string()), "{args:?}");
-        assert!(
-            !args.iter().any(|a| a.starts_with("-i=") || a.starts_with("--indent-columns=")),
-            "the editor's tabSize must not override the profile: {args:?}"
-        );
-        assert!(
-            !args.iter().any(|a| a.starts_with("-et=") || a == "-dt"),
-            "the editor's insertSpaces must not override the profile: {args:?}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn format_range_native_applies_configured_formatting_policies() -> Result<()> {
-        let config = PerlTidyConfig {
-            opening_brace_on_new_line: Some(true),
-            cuddled_else: Some(false),
-            space_after_keyword: Some(false),
-            ..PerlTidyConfig::default()
-        };
-        let provider = FormattingProvider::new(MissingPerltidyRuntime)
-            .with_perltidy_config(config)
-            .with_formatter_mode(FormatterMode::Native);
-        let options = FormattingOptions {
-            tab_size: 4,
-            insert_spaces: true,
-            trim_trailing_whitespace: None,
-            insert_final_newline: None,
-            trim_final_newlines: None,
-        };
-        let source = "my $prefix = 1;\nif($ok){return 1;}else{return 0;}\nmy $suffix = 1;\n";
-        let range = FormatRange::new(FormatPosition::new(1, 0), FormatPosition::new(1, 34));
-
-        let formatted = provider.format_range(source, &range, &options)?;
-
-        assert_eq!(formatted.edits.len(), 1);
-        assert_eq!(
-            formatted.edits[0].new_text,
-            concat!(
-                "if($ok)\n",
-                "{\n",
-                "    return 1;\n",
-                "}\n",
-                "else\n",
-                "{\n",
-                "    return 0;\n",
-                "}"
-            )
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn format_document_external_legacy_uses_perltidy_adapter() -> Result<()> {
-        let provider = FormattingProvider::new(FakePerltidyRuntime)
-            .with_formatter_mode(FormatterMode::ExternalLegacy);
-        let options = FormattingOptions {
-            tab_size: 4,
-            insert_spaces: true,
-            trim_trailing_whitespace: None,
-            insert_final_newline: None,
-            trim_final_newlines: None,
-        };
-
-        let formatted = provider.format_document("my$x=1;\n", &options)?;
-        assert_eq!(formatted.edits.len(), 1);
-        assert_eq!(formatted.edits[0].new_text, "my $external = 1;\n");
-        Ok(())
-    }
-
-    #[test]
-    fn external_extended_document_range_uses_perltidy_adapter() -> Result<()> {
-        let invoked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let provider =
-            FormattingProvider::new(RecordingPerltidyRuntime { invoked: invoked.clone() })
-                .with_formatter_mode(FormatterMode::ExternalLegacy);
-        let options = FormattingOptions {
-            tab_size: 4,
-            insert_spaces: true,
-            trim_trailing_whitespace: None,
-            insert_final_newline: None,
-            trim_final_newlines: None,
-        };
-        let source = "my$x=1;\n";
-        let range = FormatRange::new(FormatPosition::new(0, 0), FormatPosition::new(99, 0));
-
-        let formatted = provider.format_range(source, &range, &options)?;
-
-        assert!(invoked.load(std::sync::atomic::Ordering::SeqCst));
-        assert_eq!(formatted.edits.len(), 1);
-        assert_eq!(formatted.edits[0].new_text, "my $external = 1;\n");
-        Ok(())
-    }
-
-    #[test]
-    fn external_partial_range_uses_native_safe_path() -> Result<()> {
-        let invoked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let provider =
-            FormattingProvider::new(RecordingPerltidyRuntime { invoked: invoked.clone() })
-                .with_formatter_mode(FormatterMode::ExternalLegacy);
-        let options = FormattingOptions {
-            tab_size: 4,
-            insert_spaces: true,
-            trim_trailing_whitespace: None,
-            insert_final_newline: None,
-            trim_final_newlines: None,
-        };
-        let source = "my $prefix = 1;\nif($ok){return 1;}else{return 0;}\nmy $suffix = 1;\n";
-        let range = FormatRange::new(FormatPosition::new(1, 0), FormatPosition::new(1, 34));
-
-        let formatted = provider.format_range(source, &range, &options)?;
-
-        assert!(!invoked.load(std::sync::atomic::Ordering::SeqCst));
-        assert_eq!(formatted.edits.len(), 1);
-        assert!(
-            formatted.edits[0].new_text.contains("if ($ok)"),
-            "partial external ranges must use the native range-safe formatter: {:?}",
-            formatted.edits[0].new_text
-        );
-        assert!(
-            !formatted.edits[0].new_text.contains("$external"),
-            "partial external ranges must not splice isolated perltidy output"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn format_document_external_legacy_reports_missing_perltidy() -> Result<()> {
-        let provider = FormattingProvider::new(MissingPerltidyRuntime)
-            .with_formatter_mode(FormatterMode::ExternalLegacy);
-        let options = FormattingOptions {
-            tab_size: 4,
-            insert_spaces: true,
-            trim_trailing_whitespace: None,
-            insert_final_newline: None,
-            trim_final_newlines: None,
-        };
-
-        let error = provider.format_document("my$x=1;\n", &options).err().ok_or_else(|| {
-            anyhow::anyhow!("explicit external legacy mode must report missing perltidy")
-        })?;
-        assert_eq!(error.error_kind(), "perltidy_not_found");
-        Ok(())
-    }
-
-    #[test]
-    fn format_document_external_legacy_rejects_invalid_utf8_output() -> Result<()> {
-        let provider = FormattingProvider::new(InvalidUtf8PerltidyRuntime)
-            .with_formatter_mode(FormatterMode::ExternalLegacy);
-
-        let error = provider
-            .format_document("my $x = 1;\n", &options_with_tab_size(4, true))
-            .err()
-            .ok_or_else(|| anyhow::anyhow!("invalid perltidy output must fail closed"))?;
-
-        assert_eq!(error.error_kind(), "invalid_output_encoding");
-        Ok(())
-    }
-
-    #[test]
-    fn format_document_returns_empty_edits_when_native_formatter_has_no_changes() -> Result<()> {
-        let provider = FormattingProvider::new(MissingPerltidyRuntime);
-        let options = FormattingOptions {
-            tab_size: 4,
-            insert_spaces: true,
-            trim_trailing_whitespace: None,
-            insert_final_newline: None,
-            trim_final_newlines: None,
-        };
-
-        let result = provider.format_document("my $x = 1;\n", &options)?;
-        assert!(result.edits.is_empty());
-        assert_eq!(result.text, "my $x = 1;\n");
-        Ok(())
-    }
-
-    #[test]
-    fn format_document_returns_empty_edits_when_native_reports_literal_preserve() -> Result<()> {
-        let provider = FormattingProvider::new(MissingPerltidyRuntime);
-        let options = FormattingOptions {
-            tab_size: 4,
-            insert_spaces: true,
-            trim_trailing_whitespace: Some(true),
-            insert_final_newline: Some(false),
-            trim_final_newlines: None,
-        };
-
-        let formatted = provider.format_document("=pod\n\n=cut\n\nmy $x = 1;   \n", &options)?;
-        assert!(formatted.edits.is_empty());
-        assert_eq!(formatted.text, "=pod\n\n=cut\n\nmy $x = 1;   \n");
-        Ok(())
-    }
-
-    #[test]
-    fn format_range_returns_empty_edits_when_native_reports_literal_preserve() -> Result<()> {
-        let provider = FormattingProvider::new(MissingPerltidyRuntime);
-        let options = FormattingOptions {
-            tab_size: 4,
-            insert_spaces: true,
-            trim_trailing_whitespace: Some(true),
-            insert_final_newline: Some(false),
-            trim_final_newlines: None,
-        };
-        let range = FormatRange::new(FormatPosition::new(0, 0), FormatPosition::new(0, 31));
-
-        let formatted =
-            provider.format_range("my $matched = $text =~ /needle/i;   \n", &range, &options)?;
-
-        assert!(formatted.edits.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn format_range_uses_native_formatter_when_perltidy_missing() -> Result<()> {
-        let provider = FormattingProvider::new(MissingPerltidyRuntime);
-        let options = FormattingOptions {
-            tab_size: 4,
-            insert_spaces: true,
-            trim_trailing_whitespace: Some(true),
-            insert_final_newline: Some(false),
-            trim_final_newlines: Some(false),
-        };
-        let range = FormatRange::new(FormatPosition::new(1, 0), FormatPosition::new(1, 10));
-
-        let formatted = provider.format_range(
-            "line1
-my$x=1;
-line3
-",
-            &range,
-            &options,
+        let decision = project_native_document(
+            source,
+            &FormattingOptions {
+                tab_size: 4,
+                insert_spaces: true,
+                trim_trailing_whitespace: None,
+                insert_final_newline: None,
+                trim_final_newlines: None,
+            },
+            typed,
         )?;
 
-        assert_eq!(formatted.edits.len(), 1);
-        assert_eq!(formatted.edits[0].new_text, "my $x = 1;");
+        assert_eq!(decision.outcome.disposition, FormatDisposition::FailedOrNotProven);
+        assert_eq!(decision.outcome.identity.source_generation, Some(9));
+        assert_eq!(decision.outcome.identity.source_id.as_deref(), Some("fixture.pl"));
+        assert!(
+            decision.document.edits.is_empty(),
+            "a failed/not-proven outcome must not emit edits"
+        );
         Ok(())
     }
+}
 
-    #[test]
-    fn format_range_fallback_does_not_inject_newline_when_insert_final_newline_set() -> Result<()> {
-        // Regression: apply_lsp_whitespace_options appends '\n' when insert_final_newline
-        // is true. For a range edit, new_text must not have a trailing newline because the
-        // replacement range already sits between existing document newlines.
-        let provider = FormattingProvider::new(MissingPerltidyRuntime);
-        let options = FormattingOptions {
-            tab_size: 4,
-            insert_spaces: true,
-            trim_trailing_whitespace: Some(true),
-            insert_final_newline: Some(true), // would normally append \n to fragment
-            trim_final_newlines: None,
-        };
-        let range = FormatRange::new(FormatPosition::new(1, 0), FormatPosition::new(1, 13));
+fn utf16_len(s: &str) -> usize {
+    s.chars().map(|ch| if ch as u32 >= 0x10000 { 2 } else { 1 }).sum()
+}
 
-        let formatted = provider.format_range("line1\nmy $x = 1;   \nline3\n", &range, &options)?;
-
-        assert_eq!(formatted.edits.len(), 1);
-        // new_text must NOT end with '\n' — that would insert a spurious blank line
-        let new_text = &formatted.edits[0].new_text;
-        assert_eq!(new_text, "my $x = 1;");
-        assert!(!new_text.ends_with('\n'), "range edit new_text must not end with '\\n'");
-        Ok(())
-    }
-
-    #[test]
-    fn format_range_returns_empty_edits_when_native_formatter_has_no_changes() -> Result<()> {
-        let provider = FormattingProvider::new(MissingPerltidyRuntime);
-        let options = FormattingOptions {
-            tab_size: 4,
-            insert_spaces: true,
-            trim_trailing_whitespace: None,
-            insert_final_newline: None,
-            trim_final_newlines: None,
-        };
-        let range = FormatRange::new(FormatPosition::new(0, 0), FormatPosition::new(0, 10));
-
-        let result = provider.format_range(
-            "my $x = 1;
-",
-            &range,
-            &options,
-        )?;
-        assert!(result.edits.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn apply_lsp_whitespace_options_trim_final_newlines_removes_all_trailing_newlines() {
-        // Regression: previous implementation used `ends_with("\n\n")` which left
-        // one trailing newline. LSP trimFinalNewlines must remove ALL trailing newlines.
-        let options = FormattingOptions {
-            tab_size: 4,
-            insert_spaces: true,
-            trim_trailing_whitespace: None,
-            insert_final_newline: None,
-            trim_final_newlines: Some(true),
-        };
-        let r = apply_lsp_whitespace_options("content\n", &options);
-        assert_eq!(r, "content");
-        let r = apply_lsp_whitespace_options("content\n\n", &options);
-        assert_eq!(r, "content");
-        let r = apply_lsp_whitespace_options("content\n\n\n", &options);
-        assert_eq!(r, "content");
+const fn formatter_mode_name(mode: FormatterMode) -> &'static str {
+    match mode {
+        FormatterMode::Native => "native",
+        FormatterMode::Compat => "compat",
+        FormatterMode::ExternalLegacy => "external-legacy",
+        FormatterMode::Off => "off",
     }
 }

@@ -1,0 +1,9 @@
+project: vscode
+component: Packaging and distribution
+kind: Added
+body: Added versioned managed-cache candidate and mutation-lease identities for cross-extension-host coordination.
+time: 2026-08-13T10:52:30Z
+custom:
+  PR: 7880
+  Slug: vscode-managed-cache-protocol
+  Breaking: "no"

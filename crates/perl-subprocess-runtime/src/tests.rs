@@ -249,7 +249,7 @@ fn test_subprocess_error_usable_as_std_error_trait_object() {
 /// `None`.  This pins the `!Path::new(c).is_absolute() { return false; }` seam.
 #[test]
 fn test_select_path_candidate_rejects_relative_candidates_on_all_platforms() {
-    let cwd = std::path::PathBuf::from(std::env::temp_dir());
+    let cwd = std::env::temp_dir();
     let candidates = &["relative_tool"];
     let result = select_path_candidate(candidates, &cwd);
     assert!(

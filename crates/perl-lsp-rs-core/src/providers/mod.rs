@@ -13,6 +13,8 @@
 // Group 1 -- helpers (no inter-provider dependencies)
 pub mod completion_item;
 pub mod provider_decision;
+pub mod semantic_port;
+pub mod semantic_port_adapters;
 pub mod symbol_query;
 
 // Group 2 -- consumers of Group 1 helpers
@@ -80,6 +82,8 @@ pub use on_type_formatting::*;
 pub use provider_decision::*;
 pub use rename::*;
 pub use selection_range::*;
+pub use semantic_port::*;
+pub use semantic_port_adapters::*;
 pub use semantic_tokens::*;
 pub use symbol_query::*;
 pub use type_hierarchy::*;

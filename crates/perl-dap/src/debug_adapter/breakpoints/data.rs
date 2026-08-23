@@ -4,6 +4,24 @@ use super::{
     is_valid_set_variable_name, lock_or_recover,
 };
 
+fn context_qualified_watchpoint_refusal(
+    args: &DataBreakpointInfoArguments,
+) -> Option<&'static str> {
+    if args.variables_reference.is_some() {
+        return Some(
+            "Cannot validate a variablesReference-qualified data breakpoint yet; \
+             no dataId was created for an unproven variable container",
+        );
+    }
+    if args.frame_id.is_some() {
+        return Some(
+            "Cannot validate a frameId-qualified data breakpoint yet; \
+             no dataId was created for an unproven stopped frame",
+        );
+    }
+    None
+}
+
 impl DebugAdapter {
     /// Handle dataBreakpointInfo request — check if a variable can be watched.
     pub(in crate::debug_adapter) fn handle_data_breakpoint_info(
@@ -27,26 +45,51 @@ impl DebugAdapter {
                 }
             };
 
-        let body = if is_valid_set_variable_name(&args.name) {
-            DataBreakpointInfoResponseBody {
-                data_id: Some(args.name.clone()),
-                description: format!("Watch `{}` for write access", args.name),
-                access_types: Some(vec!["write".to_string()]),
-            }
-        } else {
+        let body = if !is_valid_set_variable_name(&args.name) {
             DataBreakpointInfoResponseBody {
                 data_id: None,
                 description: "Cannot watch this expression".to_string(),
                 access_types: None,
             }
+        } else if let Some(description) = context_qualified_watchpoint_refusal(&args) {
+            // A context-qualified dataId is scoped to the referenced container or
+            // suspended frame. The current native path cannot yet prove either
+            // identity, so returning the bare Perl name would create a plausible
+            // but cross-frame/cross-generation identifier. Fail closed until
+            // #2374's stopped-generation lookup and installation receipt exist.
+            DataBreakpointInfoResponseBody {
+                data_id: None,
+                description: description.to_string(),
+                access_types: None,
+            }
+        } else {
+            // Preserve the context-free compatibility path. This name-only dataId
+            // remains a bounded legacy behavior, not proof that context-qualified
+            // or persistent watchpoint identity is implemented.
+            DataBreakpointInfoResponseBody {
+                data_id: Some(args.name.clone()),
+                description: format!("Watch `{}` for write access", args.name),
+                access_types: Some(vec!["write".to_string()]),
+            }
         };
+
+        // DAP makes `dataId` required-but-nullable. The shared response type
+        // predates that distinction and omits `None`, so repair this one wire
+        // boundary explicitly rather than allowing an unavailable target to
+        // serialize as a schema-invalid missing property.
+        let body = serde_json::to_value(&body).ok().map(|mut value| {
+            if let Value::Object(fields) = &mut value {
+                fields.entry("dataId".to_string()).or_insert(Value::Null);
+            }
+            value
+        });
 
         DapMessage::Response {
             seq,
             request_seq,
             success: true,
             command: "dataBreakpointInfo".to_string(),
-            body: serde_json::to_value(&body).ok(),
+            body,
             message: None,
         }
     }
@@ -189,5 +232,34 @@ impl DebugAdapter {
             body: serde_json::to_value(&body).ok(),
             message: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(
+        variables_reference: Option<i64>,
+        frame_id: Option<i64>,
+    ) -> DataBreakpointInfoArguments {
+        DataBreakpointInfoArguments { name: "$value".to_string(), variables_reference, frame_id }
+    }
+
+    #[test]
+    fn variables_reference_takes_precedence_over_frame_id() {
+        let reason = context_qualified_watchpoint_refusal(&args(Some(11), Some(7)));
+        assert!(reason.is_some_and(|value| value.contains("variablesReference")));
+    }
+
+    #[test]
+    fn frame_id_is_context_qualified_without_a_container() {
+        let reason = context_qualified_watchpoint_refusal(&args(None, Some(7)));
+        assert!(reason.is_some_and(|value| value.contains("frameId")));
+    }
+
+    #[test]
+    fn context_free_request_retains_compatibility_path() {
+        assert!(context_qualified_watchpoint_refusal(&args(None, None)).is_none());
     }
 }

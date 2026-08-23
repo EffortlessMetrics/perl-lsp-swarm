@@ -178,13 +178,23 @@ return {
 ```toml
 # ~/.config/helix/languages.toml
 
-[[language]]
-name = "perl"
-language-servers = ["perl-lsp"]
-
-[language-server.perl-lsp]
+[language-server.perllsp]
 command = "perllsp"
 args = ["--stdio"]
+
+[[language]]
+name = "perl"
+language-servers = ["perllsp"]
+roots = [".perl-lsp.toml", "Makefile.PL", "Build.PL", "cpanfile", "dist.ini"]
+file-types = [
+  "pl",
+  "pm",
+  "t",
+  "psgi",
+  { glob = "latexmkrc" },
+  { glob = ".latexmkrc" },
+]
+shebangs = ["perl"]
 ```
 
 ---

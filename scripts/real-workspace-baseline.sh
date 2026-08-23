@@ -40,7 +40,7 @@ echo ""
 
 # ── Step 1: Build release binary ─────────────────────────────────────────────
 echo "Step 1/3: Building release binary..."
-cargo build -p perl-lsp-rs --release --locked
+cargo build -p perllsp --bin perllsp --release --locked
 
 # ── Step 2: Run the latency benchmark ────────────────────────────────────────
 echo ""
@@ -259,7 +259,7 @@ just real-workspace-baseline ${PROJECT} ${SYSTEM}
 "C:/Program Files/Git/bin/bash.exe" scripts/real-workspace-baseline.sh ${PROJECT} ${SYSTEM}
 \`\`\`
 
-- Binary built with: \`cargo build -p perl-lsp-rs --release\`
+- Binary built with: \`cargo build -p perllsp --bin perllsp --release\`
 - Test invoked via: \`cargo test -p perl-lsp-rs --test real_project_latency ${PROJECT} -- --include-ignored --nocapture\`
 - Samples per metric: 10 (p50/p95/p99)
 - Fixture path: \`test_corpus/real_projects/${FIXTURE_DIR}/\`

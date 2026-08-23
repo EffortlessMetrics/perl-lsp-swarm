@@ -1730,10 +1730,10 @@ fn incremental_tree_find_containing_node_entire_range() -> Result<(), Box<dyn st
     let root = parse_ok("my $x = 42;")?;
     let tree = IncrementalTree::new(root, "my $x = 42;".to_string());
     // The whole program should contain [0, 11]
-    if let Some(node) = tree.find_containing_node(0, 11) {
-        if let NodeKind::Program { .. } = &node.kind {
-            // expected
-        }
+    if let Some(node) = tree.find_containing_node(0, 11)
+        && let NodeKind::Program { .. } = &node.kind
+    {
+        // expected
     }
     Ok(())
 }

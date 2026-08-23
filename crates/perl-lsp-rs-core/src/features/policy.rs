@@ -7,7 +7,7 @@
 //! [`AdvertisedFeatures`] projection consumed by server startup and the
 //! `initialize` response.
 
-use crate::features::contracts::advertised_features;
+use crate::features::contracts::{advertised_features, all_features};
 use crate::features::flags::{AdvertisedFeatures, BuildFlags};
 use crate::features::profile::{FeatureProfileKind, parse_profile_token};
 
@@ -138,10 +138,16 @@ pub fn feature_ids_from_flags(flags: &BuildFlags) -> Vec<&'static str> {
 /// Return advertised feature IDs from the current profile, intersecting with
 /// the catalog so this API remains aligned to the BDD grid.
 pub fn catalog_advertised_feature_ids(profile: FeatureProfile) -> Vec<&'static str> {
-    let catalog_ids = advertised_features();
     let mut ids = feature_ids_from_flags(&flags_for_profile(profile));
-
-    ids.retain(|id| catalog_ids.contains(id));
+    if profile == FeatureProfile::All {
+        // `all` is the explicit preview/development projection. Catalog rows
+        // may therefore be present even when their default `advertised` bit is
+        // false, but the ID must still exist in the canonical catalog.
+        ids.retain(|id| all_features().iter().any(|feature| feature.id == *id));
+    } else {
+        let catalog_ids = advertised_features();
+        ids.retain(|id| catalog_ids.contains(id));
+    }
     ids
 }
 
@@ -328,18 +334,37 @@ mod tests {
     }
 
     #[test]
-    fn catalog_advertised_ids_only_contain_catalog_known_ids() {
-        let catalog_ids = advertised_features();
-        for profile in FeatureProfile::all() {
-            let ids = catalog_advertised_feature_ids(*profile);
-            for id in &ids {
-                assert!(
-                    catalog_ids.contains(id),
-                    "profile '{}' emitted non-catalog ID '{id}'",
-                    profile.as_str(),
-                );
+    fn catalog_profile_ids_follow_supported_and_preview_membership() -> Result<(), String> {
+        let advertised_catalog_ids = advertised_features();
+        for profile in [FeatureProfile::GaLock, FeatureProfile::Production] {
+            for id in catalog_advertised_feature_ids(profile) {
+                if !advertised_catalog_ids.contains(&id) {
+                    return Err(format!(
+                        "supported profile '{}' emitted non-advertised catalog ID '{id}'",
+                        profile.as_str(),
+                    ));
+                }
             }
         }
+
+        let all_catalog_ids = all_features().iter().map(|feature| feature.id).collect::<Vec<_>>();
+        let all_ids = catalog_advertised_feature_ids(FeatureProfile::All);
+        for id in &all_ids {
+            if !all_catalog_ids.contains(id) {
+                return Err(format!("all profile emitted unknown catalog ID '{id}'"));
+            }
+        }
+        for notebook_id in ["lsp.notebook_document_sync", "lsp.notebook_cell_execution"] {
+            if !all_ids.contains(&notebook_id) {
+                return Err(format!("all profile omitted notebook preview ID '{notebook_id}'"));
+            }
+            if advertised_catalog_ids.contains(&notebook_id) {
+                return Err(format!(
+                    "notebook preview ID '{notebook_id}' became default-advertised"
+                ));
+            }
+        }
+        Ok(())
     }
 
     // ── all() profiles ──────────────────────────────────────────────

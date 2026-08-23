@@ -1,16 +1,26 @@
 use crate::incremental::{
-    IncrementalState,
+    IncrementalState, ParseSnapshotStrategy,
     diagnostics::{LexRestartReport, LexRestartStrategy, ReparseResult},
     edit::Edit,
-    lex::{lex_from_live_checkpoint, lex_source_with_checkpoints},
+    lex::{capture_live_checkpoint, lex_from_live_checkpoint, lex_source_with_checkpoints},
 };
 use anyhow::Result;
+use perl_lexer::LexerCheckpoint;
+use perl_source_identity::ContentDigest;
 use std::ops::Range;
 
 pub(crate) struct SingleEditReparse {
     pub(crate) range: Range<usize>,
     pub(crate) lex_restart: LexRestartReport,
     pub(crate) token_count: usize,
+}
+
+/// One resolved restart boundary for a single validated edit.
+struct SelectedRestart {
+    live_checkpoint: LexerCheckpoint,
+    /// Old-source prefix bytes replayed only to reconstruct restart state.
+    /// The canonical stored-checkpoint path reports zero.
+    old_prefix_bytes_replayed: usize,
 }
 
 pub(crate) fn apply_text_edit_to_state(state: &mut IncrementalState, edit: &Edit) -> Result<()> {
@@ -26,8 +36,51 @@ pub(crate) fn apply_text_edit_to_state(state: &mut IncrementalState, edit: &Edit
     new_source.push_str(&edit.new_text);
     new_source.push_str(&state.source()[old_end..]);
     state.replace_source_text(new_source);
-
     Ok(())
+}
+
+/// Resolve the restart state for one validated edit against the committed
+/// generation.
+///
+/// Canonical path: restore the nearest persisted generation-bound checkpoint at
+/// or before the edit start without replaying any old byte. Bounded fallback:
+/// reproduce complete live state by replaying the old prefix to the nearest
+/// boundary; those replayed bytes are reported honestly in the receipt.
+fn select_restart(
+    old_source: &str,
+    old_digest: &ContentDigest,
+    state: &IncrementalState,
+    edit: &Edit,
+) -> Result<SelectedRestart> {
+    if let Some(live_checkpoint) = state
+        .stored_lex_checkpoints()
+        .iter()
+        .rev()
+        .filter(|stored| stored.summary.byte <= edit.start_byte)
+        .find_map(|stored| stored.prepare_for_edit(old_source, old_digest, edit))
+    {
+        return Ok(SelectedRestart { live_checkpoint, old_prefix_bytes_replayed: 0 });
+    }
+
+    let boundary = state
+        .tokens()
+        .iter()
+        .find(|token| token.end >= edit.start_byte)
+        .map_or(edit.start_byte, |token| token.start);
+    let Some(summary) = state.find_lex_checkpoint(boundary).copied() else {
+        anyhow::bail!("No lexer restart boundary found");
+    };
+    let Some(mut live_checkpoint) = capture_live_checkpoint(old_source, summary.byte) else {
+        anyhow::bail!("Could not reproduce complete live lexer state at restart boundary");
+    };
+    let old_len = edit
+        .old_end_byte
+        .checked_sub(edit.start_byte)
+        .ok_or_else(|| anyhow::anyhow!("edit end precedes edit start"))?;
+    if !live_checkpoint.try_apply_edit(edit.start_byte, old_len, edit.new_text.len()) {
+        anyhow::bail!("Edit invalidated required live lexer state");
+    }
+    Ok(SelectedRestart { old_prefix_bytes_replayed: live_checkpoint.position, live_checkpoint })
 }
 
 pub(crate) fn apply_single_edit(
@@ -35,61 +88,63 @@ pub(crate) fn apply_single_edit(
     edit: &Edit,
 ) -> Result<SingleEditReparse> {
     let old_source = state.source().to_string();
-    let selected = state
-        .stored_lex_checkpoints()
-        .iter()
-        .rev()
-        .filter(|stored| stored.summary.byte <= edit.start_byte)
-        .find_map(|stored| {
-            stored.prepare_for_edit(&old_source, edit).map(|live| (stored.summary, live))
-        })
-        .ok_or_else(|| anyhow::anyhow!("No valid stored lexer checkpoint found"))?;
-    let (summary, live_checkpoint) = selected;
-    let restart_byte = live_checkpoint.position;
+    let old_digest = ContentDigest::of_bytes(old_source.as_bytes());
+
+    let selected = select_restart(&old_source, &old_digest, state, edit)?;
+    let restart_byte = selected.live_checkpoint.position;
     let reused_prefix_tokens =
         state.tokens().iter().take_while(|token| token.start < restart_byte).count();
-    let old_prefix_checkpoints = state
-        .stored_lex_checkpoints()
-        .iter()
-        .take_while(|checkpoint| checkpoint.summary.byte < restart_byte)
-        .cloned()
-        .collect::<Vec<_>>();
 
     apply_text_edit_to_state(state, edit)?;
-    let lexed = lex_from_live_checkpoint(state.source(), state.line_index(), &live_checkpoint)?;
+
+    // Surviving old-generation checkpoints carry forward only when every
+    // behavior-bearing offset provably survives the edit. The edited generation
+    // identity is computed once for the whole carry-forward set.
+    let new_digest = ContentDigest::of_bytes(state.source().as_bytes());
+    let lexed =
+        lex_from_live_checkpoint(state.source(), state.line_index(), &selected.live_checkpoint)?;
+    let mut stored_checkpoints = state
+        .stored_lex_checkpoints()
+        .iter()
+        .filter_map(|checkpoint| {
+            checkpoint.transform_for_generation(
+                &old_source,
+                state.source(),
+                &old_digest,
+                &new_digest,
+                edit,
+            )
+        })
+        .collect::<Vec<_>>();
+    stored_checkpoints.extend(lexed.stored_checkpoints);
 
     let mut tokens = state.tokens()[..reused_prefix_tokens].to_vec();
     tokens.extend(lexed.tokens);
 
-    let mut checkpoint_summaries = state
+    let mut checkpoints = state
         .lex_checkpoints()
         .iter()
         .take_while(|checkpoint| checkpoint.byte < restart_byte)
         .copied()
         .collect::<Vec<_>>();
-    checkpoint_summaries.extend(lexed.checkpoints);
+    checkpoints.extend(lexed.checkpoints);
+    state.replace_lex_state(tokens, checkpoints, stored_checkpoints);
 
-    let mut stored_checkpoints = old_prefix_checkpoints
-        .iter()
-        .filter_map(|checkpoint| {
-            checkpoint.transform_for_generation(&old_source, state.source(), edit)
-        })
-        .collect::<Vec<_>>();
-    stored_checkpoints.extend(lexed.stored_checkpoints);
-
-    state.replace_lex_state(tokens, checkpoint_summaries, stored_checkpoints);
-
+    let strategy = if selected.old_prefix_bytes_replayed == 0 {
+        LexRestartStrategy::StoredCheckpointToEof
+    } else {
+        LexRestartStrategy::LiveCheckpointToEof
+    };
     let lex_restart = LexRestartReport {
-        strategy: LexRestartStrategy::StoredCheckpointToEof,
+        strategy,
         restart_byte,
-        old_prefix_bytes_replayed: 0,
+        old_prefix_bytes_replayed: selected.old_prefix_bytes_replayed,
         relexed_bytes: state.source().len().saturating_sub(restart_byte),
         reused_prefix_tokens,
         reused_suffix_tokens: 0,
         stored_checkpoint_count: state.stored_lex_checkpoint_count(),
     };
 
-    debug_assert_eq!(summary.byte, restart_byte);
     Ok(SingleEditReparse {
         range: restart_byte..state.source().len(),
         lex_restart,
@@ -98,7 +153,7 @@ pub(crate) fn apply_single_edit(
 }
 
 pub(crate) fn full_reparse(state: &mut IncrementalState) -> Result<ReparseResult> {
-    state.refresh_parse_output();
+    state.refresh_parse_output(ParseSnapshotStrategy::IncrementalFullFallback)?;
     let source_len = state.source().len();
     let lexed = lex_source_with_checkpoints(state.source(), state.line_index());
     state.replace_lex_state(lexed.tokens, lexed.checkpoints, lexed.stored_checkpoints);
@@ -115,7 +170,7 @@ pub(crate) fn full_reparse(state: &mut IncrementalState) -> Result<ReparseResult
 
     Ok(ReparseResult {
         changed_ranges: vec![0..source_len],
-        parse_output: state.parse_output().clone(),
+        snapshot: state.snapshot().clone(),
         diagnostics: vec![],
         lex_restart,
         reparsed_bytes: source_len,
@@ -167,6 +222,7 @@ mod tests {
         assert_eq!(result.lex_restart.strategy, LexRestartStrategy::StoredCheckpointToEof);
         assert_eq!(result.lex_restart.old_prefix_bytes_replayed, 0);
         assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
+        assert!(result.lex_restart.restart_byte > 0, "restart must reuse proven prefix state");
         assert_eq!(result.range.end, state.source().len());
         assert_tokens_equal(state.tokens(), &fresh_tokens(state.source()));
         Ok(())
@@ -206,6 +262,10 @@ mod tests {
         assert_eq!(result.lex_restart.strategy, LexRestartStrategy::StoredCheckpointToEof);
         assert_eq!(result.lex_restart.old_prefix_bytes_replayed, 0);
         assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
+        assert!(
+            result.lex_restart.restart_byte <= start,
+            "restart must sit at or before the queued heredoc body"
+        );
         assert_tokens_equal(state.tokens(), &fresh_tokens(state.source()));
         Ok(())
     }

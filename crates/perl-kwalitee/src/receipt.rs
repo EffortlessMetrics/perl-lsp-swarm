@@ -55,6 +55,7 @@ impl KwaliteeVerdict {
 
 /// A complete Kwalitee evaluation result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KwaliteeReceipt {
     /// Always [`RECEIPT_KIND`].
     pub kind: String,

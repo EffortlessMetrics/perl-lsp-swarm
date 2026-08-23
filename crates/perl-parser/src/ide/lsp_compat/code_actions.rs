@@ -372,8 +372,10 @@ impl CodeActionProvider {
         // Remove unused imports
         actions.push(self.create_remove_unused_imports_action(uri, range));
         
-        // Add missing imports
-        actions.push(self.create_add_missing_imports_action(uri, range));
+        // "Add missing imports" is withdrawn (#10690): this compatibility
+        // surface previously returned an enabled action with an empty
+        // `WorkspaceEdit`, which is not truthful withdrawal. Hard-coded name
+        // affinity is not edit authorization; restoration requires #790/#8948.
         
         // Sort imports
         actions.push(self.create_sort_imports_action(uri, range));
@@ -667,32 +669,6 @@ impl CodeActionProvider {
     /// Code action for removing unused imports
     fn create_remove_unused_imports_action(&self, uri: &Url, range: Range) -> CodeActionOrCommand {
         let title = "Remove unused imports".to_string();
-        let action = CodeAction {
-            title: title.clone(),
-            kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
-            diagnostics: None,
-            edit: Some(WorkspaceEdit::default()),
-            command: None,
-            is_preferred: Some(true),
-            disabled: None,
-            data: None,
-        };
-        
-        CodeActionOrCommand::CodeAction(action)
-    }
-
-    /// Creates an add missing imports action
-    ///
-    /// # Arguments
-    ///
-    /// * `uri` - Document URI
-    /// * `range` - Selected range
-    ///
-    /// # Returns
-    ///
-    /// Code action for adding missing imports
-    fn create_add_missing_imports_action(&self, uri: &Url, range: Range) -> CodeActionOrCommand {
-        let title = "Add missing imports".to_string();
         let action = CodeAction {
             title: title.clone(),
             kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),

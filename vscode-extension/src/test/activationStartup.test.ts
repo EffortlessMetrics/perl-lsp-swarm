@@ -25,6 +25,10 @@ jest.mock('vscode-languageclient/node', () => ({
 }));
 
 import { activate, deactivate } from '../extension';
+// Language-server startup is demand-driven (#8180): activation alone no longer
+// starts a client, so these scheduling tests supply the demand a real
+// `onLanguage:perl` activation carries.
+import { openPerlDocument } from './serverDemandDocuments';
 
 function delay(ms: number): Promise<'timeout'> {
   return new Promise((resolve) => {
@@ -68,6 +72,11 @@ function makeContext(extensionPath: string): vscode.ExtensionContext {
 
 describe('extension activation startup scheduling (#3159)', () => {
   const originalSkipStartup = process.env.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP;
+  let restoreDocuments: (() => void) | undefined;
+
+  beforeEach(() => {
+    restoreDocuments = openPerlDocument();
+  });
 
   afterEach(async () => {
     if (originalSkipStartup === undefined) {
@@ -77,6 +86,8 @@ describe('extension activation startup scheduling (#3159)', () => {
     }
 
     await deactivate();
+    restoreDocuments?.();
+    restoreDocuments = undefined;
     jest.clearAllMocks();
   });
 

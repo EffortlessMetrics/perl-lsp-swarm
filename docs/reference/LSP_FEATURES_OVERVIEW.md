@@ -66,16 +66,17 @@ All navigation features integrate with workspace indexing for cross-file resolut
 
 ### Code Actions (`lsp.code_action`)
 
-9 action kinds:
+8 action kinds:
 - **QuickFix**: diagnostic fixes for undefined/unused variables, missing `strict`/`warnings`, deprecated patterns
 - **Refactor**: general refactoring entry point
 - **RefactorExtract**: extract variable, extract subroutine
 - **RefactorInline**: inline variable or subroutine
 - **RefactorRewrite**: C-style `for` → `foreach`, postfix-`if` conversion
 - **Source**: general source transformations
-- **SourceOrganizeImports**: sort and deduplicate `use` statements
 - **SourceFixAll**: apply all safe quick fixes in one step
 - **SourceModernize**: replace legacy patterns (`local $_`, bareword filehandles, two-arg `open`)
+
+`source.organizeImports` is withdrawn (#8305): the legacy line-oriented sorter could destroy executable statements between import-looking lines. It returns only after #10696 lands a proven source-preserving cohort.
 
 Lazy loading via `lsp.code_action_resolve`.
 

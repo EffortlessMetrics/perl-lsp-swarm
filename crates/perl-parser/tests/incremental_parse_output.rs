@@ -2,7 +2,7 @@
 //! Differential tests for the incremental native parse-output contract.
 
 use perl_parser::incremental::MAX_EDIT_SIZE;
-use perl_parser::{apply_edits, Edit, IncrementalState, ParseOutput, Parser};
+use perl_parser::{Edit, IncrementalState, ParseOutput, Parser, apply_edits};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -62,7 +62,29 @@ fn empty_edit_batch_preserves_the_current_generation_without_work() -> TestResul
     assert_eq!(result.token_count, token_count);
     assert_eq!(state.tokens().len(), token_count);
     assert_output_equivalent(state.parse_output(), &before);
-    assert_output_equivalent(&result.parse_output, &before);
+    assert_output_equivalent(result.parse_output(), &before);
+    Ok(())
+}
+
+#[test]
+fn empty_edit_batch_preserves_the_current_generation_without_parser_work() -> TestResult {
+    let source = "my $x = ; print 1;";
+    let mut state = IncrementalState::new(source.to_string());
+    let before = state.parse_output().clone();
+    let token_count = state.tokens.len();
+    assert!(!before.diagnostics.is_empty(), "fixture must preserve recovered output");
+
+    let result = apply_edits(&mut state, &[])?;
+
+    assert_eq!(state.source, source);
+    assert!(result.changed_ranges.is_empty());
+    assert_eq!(result.reparsed_bytes, 0);
+    assert_eq!(result.reused_tokens, token_count);
+    assert_eq!(result.token_count, token_count);
+    assert_eq!(state.tokens.len(), token_count);
+    assert_output_equivalent(state.parse_output(), &before);
+    assert_output_equivalent(result.parse_output(), &before);
+
     Ok(())
 }
 
@@ -86,7 +108,7 @@ fn clean_to_malformed_edit_returns_the_current_native_parse_output() -> TestResu
     assert_eq!(state.source(), final_source);
     assert_eq!(result.reparsed_bytes, final_source.len());
     assert_output_equivalent(state.parse_output(), &fresh);
-    assert_output_equivalent(&result.parse_output, &fresh);
+    assert_output_equivalent(result.parse_output(), &fresh);
     Ok(())
 }
 
@@ -110,7 +132,7 @@ fn malformed_to_clean_edit_removes_recovery_diagnostics_atomically() -> TestResu
 
     assert_eq!(state.source(), final_source);
     assert_output_equivalent(state.parse_output(), &fresh);
-    assert_output_equivalent(&result.parse_output, &fresh);
+    assert_output_equivalent(result.parse_output(), &fresh);
     Ok(())
 }
 
@@ -143,7 +165,7 @@ fn oversized_batch_applies_every_edit_before_full_fallback() -> TestResult {
     assert_eq!(result.changed_ranges, vec![0..final_source.len()]);
     assert_eq!(result.reparsed_bytes, final_source.len());
     assert_output_equivalent(state.parse_output(), &fresh);
-    assert_output_equivalent(&result.parse_output, &fresh);
+    assert_output_equivalent(result.parse_output(), &fresh);
     Ok(())
 }
 

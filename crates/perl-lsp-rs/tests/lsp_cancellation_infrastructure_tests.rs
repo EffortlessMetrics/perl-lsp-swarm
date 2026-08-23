@@ -271,10 +271,10 @@ impl ThreadSafetyMonitor {
     fn finish_concurrent_operation(&self, handle: ConcurrentOperationHandle) {
         let duration = handle.start_time.elapsed();
 
-        if let Ok(mut operations) = self.concurrent_operations.lock() {
-            if let Some(tracker) = operations.get_mut(&handle.operation_id) {
-                tracker.status = OperationStatus::Completed(duration);
-            }
+        if let Ok(mut operations) = self.concurrent_operations.lock()
+            && let Some(tracker) = operations.get_mut(&handle.operation_id)
+        {
+            tracker.status = OperationStatus::Completed(duration);
         }
     }
 

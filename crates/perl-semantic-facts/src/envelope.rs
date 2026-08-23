@@ -4,7 +4,7 @@
 //! adapt their local facts into this contract; providers can then decide whether a
 //! fact is safe to use without reopening compiler internals.
 
-use super::{AnchorId, Confidence, EntityId, FileId, Provenance, ScopeId};
+use super::{AnchorId, Confidence, EntityId, FileId, Provenance, ScopeId, ValueShape};
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Stable identity for one promoted semantic fact.
@@ -20,6 +20,8 @@ pub enum SemanticFactKind {
     Import,
     Module,
     Boundary,
+    /// Callable return relation and exit coverage.
+    CallableResult,
 }
 
 /// Source identity for a fact's bytes or compiler input snapshot.
@@ -367,6 +369,193 @@ impl SemanticFactEnvelope {
     }
 }
 
+/// Relationship between a callable invocation and its returned value.
+///
+/// The relation remains symbolic until an exact callsite supplies the receiver
+/// and arguments. This prevents framework and ordinary-source producers from
+/// hard-coding one concrete package for receiver-self or argument-dependent
+/// methods.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CallableResultRelation {
+    /// One source-backed concrete value shape.
+    Concrete(ValueShape),
+    /// The call returns its current receiver/invocant.
+    ReceiverSelf,
+    /// The call returns one exact parameter binding supplied by the callsite.
+    Argument {
+        /// Canonical parameter binding entity.
+        parameter_entity_id: EntityId,
+        /// Zero-based parameter position retained for explanation and fallback.
+        position: u16,
+    },
+    /// Perl bare-return semantics; materialization remains context-sensitive.
+    BareReturn,
+    /// Optional value relation, preserving the inner identity.
+    Optional(Box<CallableResultRelation>),
+    /// Complete finite relation alternatives across admitted exits.
+    FiniteUnion(Vec<CallableResultRelation>),
+    /// No exact relation is available.
+    Unknown,
+}
+
+impl CallableResultRelation {
+    /// Build a deterministic finite union, flattening nested unions and removing
+    /// duplicate alternatives. Empty input becomes [`Self::Unknown`].
+    #[must_use]
+    pub fn finite_union(relations: Vec<Self>) -> Self {
+        let mut flattened = Vec::new();
+        for relation in relations {
+            match relation {
+                Self::FiniteUnion(inner) => flattened.extend(inner),
+                relation => flattened.push(relation),
+            }
+        }
+        flattened.sort_by_key(relation_sort_key);
+        flattened.dedup();
+        match flattened.len() {
+            0 => Self::Unknown,
+            1 => flattened.pop().unwrap_or(Self::Unknown),
+            _ => Self::FiniteUnion(flattened),
+        }
+    }
+
+    /// Whether this relation or one nested alternative remains unknown.
+    #[must_use]
+    pub fn contains_unknown(&self) -> bool {
+        match self {
+            Self::Concrete(ValueShape::Unknown) | Self::Unknown => true,
+            Self::Optional(inner) => inner.contains_unknown(),
+            Self::FiniteUnion(relations) => relations.iter().any(Self::contains_unknown),
+            _ => false,
+        }
+    }
+}
+
+fn relation_sort_key(relation: &CallableResultRelation) -> String {
+    match relation {
+        CallableResultRelation::Concrete(shape) => format!("0:{}", value_shape_sort_key(shape)),
+        CallableResultRelation::ReceiverSelf => "1:receiver-self".to_string(),
+        CallableResultRelation::Argument { parameter_entity_id, position } => {
+            format!("2:{position:05}:{}", parameter_entity_id.0)
+        }
+        CallableResultRelation::BareReturn => "3:bare-return".to_string(),
+        CallableResultRelation::Optional(inner) => format!("4:{}", relation_sort_key(inner)),
+        CallableResultRelation::FiniteUnion(relations) => {
+            format!("5:{}", relations.iter().map(relation_sort_key).collect::<Vec<_>>().join("|"))
+        }
+        CallableResultRelation::Unknown => "9:unknown".to_string(),
+    }
+}
+
+fn value_shape_sort_key(shape: &ValueShape) -> String {
+    match shape {
+        ValueShape::Unknown => "unknown".to_string(),
+        ValueShape::Scalar => "scalar".to_string(),
+        ValueShape::ArrayRef => "array-ref".to_string(),
+        ValueShape::HashRef => "hash-ref".to_string(),
+        ValueShape::CodeRef => "code-ref".to_string(),
+        ValueShape::PackageName { package } => format!("package:{package}"),
+        ValueShape::Object { package, confidence } => {
+            format!("object:{package}:{confidence:?}")
+        }
+    }
+}
+
+/// Whether every admitted callable exit contributed to the relation.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum CallableResultCompleteness {
+    /// Every admitted reachable exit is represented.
+    Complete,
+    /// Useful alternatives exist, but the reachable-exit denominator is incomplete.
+    Partial,
+}
+
+/// Context or source limitation retained by a callable result fact.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum CallableResultLimitation {
+    ScalarContext,
+    ListContext,
+    VoidContext,
+    ConditionalControl,
+    LoopControl,
+    ExceptionControl,
+    DynamicValue,
+    RecoveredSyntax,
+    GeneratedNoSource,
+    BudgetExhausted,
+    Unsupported,
+}
+
+/// Canonical callable-result payload plus its semantic envelope.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallableResultFact {
+    /// Shared semantic identity, source generation, proof, and invalidation data.
+    pub envelope: SemanticFactEnvelope,
+    /// Symbolic or concrete relation to materialize at an exact callsite.
+    pub relation: CallableResultRelation,
+    /// Source anchors for every admitted exit contributor.
+    exit_anchors: Vec<SourceAnchor>,
+    /// Reachable-exit coverage for the relation.
+    pub completeness: CallableResultCompleteness,
+    /// Context and source limitations preserved for query policy.
+    limitations: Vec<CallableResultLimitation>,
+}
+
+impl CallableResultFact {
+    /// Construct a callable-result fact and canonicalize its contributor and
+    /// limitation order. The envelope kind is forced to `CallableResult`.
+    #[must_use]
+    pub fn new(
+        mut envelope: SemanticFactEnvelope,
+        relation: CallableResultRelation,
+        mut exit_anchors: Vec<SourceAnchor>,
+        completeness: CallableResultCompleteness,
+        mut limitations: Vec<CallableResultLimitation>,
+    ) -> Self {
+        envelope.kind = SemanticFactKind::CallableResult;
+        exit_anchors.sort();
+        exit_anchors.dedup();
+        limitations.sort();
+        limitations.dedup();
+        Self { envelope, relation, exit_anchors, completeness, limitations }
+    }
+
+    /// Canonical exit-contributor view.
+    #[must_use]
+    pub fn exit_anchors(&self) -> &[SourceAnchor] {
+        &self.exit_anchors
+    }
+
+    /// Canonical limitation view.
+    #[must_use]
+    pub fn limitations(&self) -> &[CallableResultLimitation] {
+        &self.limitations
+    }
+
+    /// Classify whether this complete payload may participate in exact callsite
+    /// materialization without reopening producer internals.
+    #[must_use]
+    pub fn status(&self) -> SemanticFactStatus {
+        let envelope_status = self.envelope.status();
+        if !matches!(envelope_status, SemanticFactStatus::Exact) {
+            return envelope_status;
+        }
+        if !matches!(self.completeness, CallableResultCompleteness::Complete)
+            || self.relation.contains_unknown()
+            || self.exit_anchors.is_empty()
+            || !self.limitations.is_empty()
+        {
+            SemanticFactStatus::Degraded
+        } else {
+            SemanticFactStatus::Exact
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,5 +790,84 @@ mod tests {
         envelope.boundary = None;
         envelope.freshness = SemanticFreshness::Stale;
         assert_eq!(envelope.status(), SemanticFactStatus::Stale);
+    }
+
+    #[test]
+    fn callable_result_union_is_deterministic_and_deduplicated() -> Result<(), String> {
+        let relation = CallableResultRelation::finite_union(vec![
+            CallableResultRelation::ReceiverSelf,
+            CallableResultRelation::Concrete(ValueShape::Scalar),
+            CallableResultRelation::ReceiverSelf,
+        ]);
+        let relations = match relation {
+            CallableResultRelation::FiniteUnion(relations) => relations,
+            other => return Err(format!("expected a finite union, got {other:?}")),
+        };
+        assert_eq!(relations.len(), 2);
+        assert_eq!(
+            CallableResultRelation::finite_union(relations.clone()),
+            CallableResultRelation::FiniteUnion(relations)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn callable_result_fact_roundtrips_and_forces_kind() -> Result<(), serde_json::Error> {
+        let fact = CallableResultFact::new(
+            exact_envelope(Vec::new()),
+            CallableResultRelation::ReceiverSelf,
+            vec![SourceAnchor::new(Some(AnchorId(12)), FileId(4), 30, 40)],
+            CallableResultCompleteness::Complete,
+            Vec::new(),
+        );
+        assert_eq!(fact.envelope.kind, SemanticFactKind::CallableResult);
+        assert_eq!(fact.status(), SemanticFactStatus::Exact);
+
+        let serialized = serde_json::to_string(&fact)?;
+        let decoded: CallableResultFact = serde_json::from_str(&serialized)?;
+        assert_eq!(decoded, fact);
+        assert_eq!(decoded.status(), SemanticFactStatus::Exact);
+        Ok(())
+    }
+
+    #[test]
+    fn partial_unknown_or_limited_result_cannot_be_exact() {
+        let exit = SourceAnchor::new(Some(AnchorId(12)), FileId(4), 30, 40);
+        let partial = CallableResultFact::new(
+            exact_envelope(Vec::new()),
+            CallableResultRelation::ReceiverSelf,
+            vec![exit],
+            CallableResultCompleteness::Partial,
+            Vec::new(),
+        );
+        assert_eq!(partial.status(), SemanticFactStatus::Degraded);
+
+        let unknown = CallableResultFact::new(
+            exact_envelope(Vec::new()),
+            CallableResultRelation::Unknown,
+            vec![exit],
+            CallableResultCompleteness::Complete,
+            Vec::new(),
+        );
+        assert_eq!(unknown.status(), SemanticFactStatus::Degraded);
+
+        let limited = CallableResultFact::new(
+            exact_envelope(Vec::new()),
+            CallableResultRelation::ReceiverSelf,
+            vec![exit],
+            CallableResultCompleteness::Complete,
+            vec![CallableResultLimitation::ConditionalControl],
+        );
+        assert_eq!(limited.status(), SemanticFactStatus::Degraded);
+    }
+
+    #[test]
+    fn receiver_self_and_argument_remain_symbolic_relations() {
+        let receiver = CallableResultRelation::ReceiverSelf;
+        let argument =
+            CallableResultRelation::Argument { parameter_entity_id: EntityId(88), position: 1 };
+        assert_ne!(receiver, argument);
+        assert!(!receiver.contains_unknown());
+        assert!(!argument.contains_unknown());
     }
 }

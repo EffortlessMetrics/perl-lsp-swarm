@@ -3,6 +3,8 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { parsePackagedServerVersionStdout } from '../../packagedServerVersion';
+import { runBoundedProcess } from '../../testAdapter';
 
 type ReceiptValue = Record<string, unknown>;
 
@@ -16,7 +18,26 @@ interface VerifiedChildArtifact {
   status: 'pass' | 'limited' | 'blocked' | 'not_proven';
   claim_boundary: string;
   limitation: string | null;
+  source_receipt_sha256: string;
+  artifact_hashes: ArtifactHashes;
 }
+
+interface CandidateArtifactManifest {
+  candidate_id: string;
+  frozen_product_sha: string;
+  artifact_set_id: string;
+  platform: string;
+  vsix_sha256: string;
+  bundled_server_sha256: string;
+}
+
+interface ArtifactHashes {
+  vsix_sha256: string;
+  bundled_server_sha256: string;
+}
+
+const SOURCE_CLAIM_BOUNDARY =
+  'Packaged VSIX and bundled-server journey exercised by the VS Code extension host.';
 
 function platformLabel(): string {
   switch (process.platform) {
@@ -36,6 +57,11 @@ function receiptsDir(): string {
     process.env.PERL_LSP_SMOKE_RECEIPTS_DIR ??
     path.resolve(__dirname, '..', '..', '..', '..', 'target', 'receipts', 'vscode-smoke');
   const label = process.env.PERL_LSP_SMOKE_SOURCE_LABEL ?? 'packaged-bundle';
+  assert.match(
+    label,
+    /^[A-Za-z0-9_-]+$/,
+    'smoke receipt label must be a single safe path component',
+  );
   const directory = path.join(root, label, platformLabel());
   fs.mkdirSync(directory, { recursive: true });
   return directory;
@@ -45,7 +71,147 @@ function sha256(filePath: string): string {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 }
 
-function writeVerifiedChildArtifact(receipt: ReceiptValue): void {
+type BundledServerVersion =
+  | {
+      status: 'ok';
+      version: string;
+      stdout: string;
+      stderr: string;
+      outcome: 'completed';
+      output_truncated: boolean;
+      termination_confirmed: boolean;
+    }
+  | {
+      status: 'error';
+      version?: never;
+      stdout: string;
+      stderr: string;
+      outcome: string;
+      output_truncated: boolean;
+      termination_confirmed: boolean;
+      message: string;
+    };
+
+const VERSION_PROBE_TIMEOUT_MS = 15_000;
+const VERSION_PROBE_OUTPUT_MAX_BYTES = 64 * 1024;
+
+async function bundledServerVersion(binaryPath: string): Promise<BundledServerVersion> {
+  const result = await runBoundedProcess(binaryPath, ['--version'], {
+    shell: false,
+    timeoutMs: VERSION_PROBE_TIMEOUT_MS,
+    maxOutputBytes: VERSION_PROBE_OUTPUT_MAX_BYTES,
+    terminationGraceMs: 500,
+    terminationWatchdogMs: 5_000,
+    windowsHide: true,
+  });
+  const terminationConfirmed =
+    result.outcome !== 'spawn_error' && result.outcome !== 'termination_failed';
+  const base = {
+    stdout: result.stdout,
+    stderr: result.stderr,
+    outcome: result.outcome,
+    output_truncated: result.outcome === 'output_limit',
+    termination_confirmed: terminationConfirmed,
+  };
+  if (result.outcome !== 'completed') {
+    return {
+      status: 'error',
+      ...base,
+      message:
+        result.diagnostic ??
+        `bundled server --version ended with ${result.outcome} before a clean completion`,
+    };
+  }
+  const completedBase = { ...base, outcome: 'completed' as const };
+  try {
+    const version = parsePackagedServerVersionStdout(result.stdout);
+    if (!version) {
+      return {
+        status: 'error',
+        ...completedBase,
+        message: 'bundled server --version did not contain a semantic version',
+      };
+    }
+    return {
+      status: 'ok',
+      version,
+      ...completedBase,
+    };
+  } catch (error: unknown) {
+    return {
+      status: 'error',
+      ...completedBase,
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function requireCandidateArtifactManifest(
+  observedVsixSha256: string | undefined,
+  observedBundledServerSha256: string,
+): CandidateArtifactManifest | undefined {
+  const serialized = process.env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST?.trim();
+  const candidateId = process.env.PERL_LSP_CANDIDATE_ID?.trim();
+  const frozenProductSha = process.env.PERL_LSP_CURRENT_SOURCE_SHA?.trim();
+  const artifactSetId = process.env.PERL_LSP_ARTIFACT_SET_ID?.trim();
+  const candidateBound = Boolean(serialized || candidateId || frozenProductSha || artifactSetId);
+  if (!candidateBound) {
+    return undefined;
+  }
+  assert.ok(serialized, 'candidate-bound packaged smoke requires an artifact manifest');
+  let manifest: CandidateArtifactManifest;
+  try {
+    manifest = JSON.parse(serialized) as CandidateArtifactManifest;
+  } catch (error: unknown) {
+    throw new Error(
+      `candidate artifact manifest must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  for (const [field, value] of Object.entries(manifest)) {
+    assert.equal(typeof value, 'string', `candidate artifact manifest ${field} must be a string`);
+    assert.ok(value.trim(), `candidate artifact manifest ${field} is required`);
+  }
+  assert.equal(
+    manifest.candidate_id,
+    candidateId,
+    'candidate artifact manifest candidate mismatch',
+  );
+  assert.equal(
+    manifest.frozen_product_sha,
+    frozenProductSha,
+    'candidate artifact manifest frozen SHA mismatch',
+  );
+  assert.equal(
+    manifest.artifact_set_id,
+    artifactSetId,
+    'candidate artifact manifest artifact-set mismatch',
+  );
+  assert.equal(
+    manifest.platform,
+    platformLabel(),
+    'candidate artifact manifest platform mismatch; candidate-bound verification is Linux-only',
+  );
+  assert.match(manifest.vsix_sha256, /^[0-9a-f]{64}$/i, 'manifest VSIX SHA-256 is invalid');
+  assert.match(
+    manifest.bundled_server_sha256,
+    /^[0-9a-f]{64}$/i,
+    'manifest bundled-server SHA-256 is invalid',
+  );
+  assert.ok(observedVsixSha256, 'candidate-bound smoke could not observe a VSIX SHA-256');
+  assert.equal(
+    manifest.vsix_sha256,
+    observedVsixSha256,
+    'observed VSIX identity differs from manifest',
+  );
+  assert.equal(
+    manifest.bundled_server_sha256,
+    observedBundledServerSha256,
+    'observed bundled-server identity differs from manifest',
+  );
+  return manifest;
+}
+
+function writeVerifiedChildArtifact(receipt: ReceiptValue, sourceReceiptPath: string): void {
   const outputPath = process.env.PERL_LSP_VERIFIED_OUTPUT;
   if (!outputPath) {
     return;
@@ -63,6 +229,19 @@ function writeVerifiedChildArtifact(receipt: ReceiptValue): void {
     ? receipt.known_limitations.filter((value): value is string => typeof value === 'string')
     : [];
   const outcome = receipt.outcome;
+  const artifactHashes = receipt.artifact_hashes;
+  assert.ok(
+    artifactHashes && typeof artifactHashes === 'object',
+    'packaged artifact hashes are required',
+  );
+  const vsixSha256 = (artifactHashes as Record<string, unknown>).vsix_sha256;
+  const bundledServerSha256 = (artifactHashes as Record<string, unknown>).bundled_server_sha256;
+  assert.match(vsixSha256 as string, /^[0-9a-f]{64}$/i, 'observed VSIX SHA-256 is required');
+  assert.match(
+    bundledServerSha256 as string,
+    /^[0-9a-f]{64}$/i,
+    'observed bundled-server SHA-256 is required',
+  );
   const mandatoryEvidenceIsMissing = knownLimitations.some(
     (limitation) =>
       limitation === 'DAP preview is not exercised by this slice.' ||
@@ -85,14 +264,18 @@ function writeVerifiedChildArtifact(receipt: ReceiptValue): void {
     frozen_product_sha: frozenProductSha,
     artifact_set_id: artifactSetId,
     status,
-    claim_boundary:
-      'Packaged VSIX and bundled-server journey exercised by the VS Code extension host.',
+    claim_boundary: SOURCE_CLAIM_BOUNDARY,
     limitation:
       knownLimitations.length > 0
         ? knownLimitations.join(' ')
         : status === 'blocked'
           ? 'The packaged journey reported one or more product blockers.'
           : null,
+    source_receipt_sha256: sha256(sourceReceiptPath),
+    artifact_hashes: {
+      vsix_sha256: vsixSha256 as string,
+      bundled_server_sha256: bundledServerSha256 as string,
+    },
   };
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, JSON.stringify(artifact, null, 2));
@@ -146,6 +329,18 @@ function bundledBinaryPath(extensionPath: string): string {
     .find((candidate) => fs.existsSync(candidate));
   assert.ok(binary, `packaged VSIX must contain a bundled server in ${directory}`);
   return binary;
+}
+
+function pathsEquivalent(left: unknown, right: string): boolean {
+  if (typeof left !== 'string' || left.length === 0) {
+    return false;
+  }
+  const normalizedLeft = path.resolve(left);
+  const normalizedRight = path.resolve(right);
+  if (process.platform === 'win32' || process.platform === 'darwin') {
+    return normalizedLeft.toLowerCase() === normalizedRight.toLowerCase();
+  }
+  return normalizedLeft === normalizedRight;
 }
 
 async function providerResult(
@@ -205,6 +400,7 @@ suite('Packaged VSIX bundled-server journey', function () {
     assert.ok(extension, 'packaged journey requires the installed extension');
 
     const bundledServerPath = bundledBinaryPath(extension.extensionPath);
+    const expectedVersion = extension.packageJSON?.version ?? null;
     const workspaceFile = path.join(workspacePath, 'packaged_daily_driver.pl');
     fs.writeFileSync(
       workspaceFile,
@@ -260,6 +456,7 @@ suite('Packaged VSIX bundled-server journey', function () {
           }
         | undefined;
       const activationCompleted = performance.now();
+      const bundledVersion = await bundledServerVersion(bundledServerPath);
       const document = await vscode.workspace.openTextDocument(workspaceFile);
       await vscode.window.showTextDocument(document);
       const position = providerPosition(document);
@@ -376,9 +573,27 @@ suite('Packaged VSIX bundled-server journey', function () {
         server_identity: {
           path: bundledServerPath,
           source: 'packaged_vsix_bundle',
-          version: process.env.PERL_LSP_PUBLISHED_EXTENSION_VERSION ?? null,
+          version: bundledVersion.version ?? null,
+          expected_version: expectedVersion,
+          version_stdout: bundledVersion.stdout,
+          version_stderr: bundledVersion.stderr,
+          version_output_truncated: bundledVersion.output_truncated,
+          version_probe_termination_confirmed: bundledVersion.termination_confirmed,
+          version_match:
+            bundledVersion.status === 'ok' && expectedVersion !== null
+              ? bundledVersion.version === expectedVersion
+              : false,
+          activated_version: metrics.server_version ?? null,
+          activated_version_match:
+            bundledVersion.status === 'ok' &&
+            expectedVersion !== null &&
+            metrics.server_version === bundledVersion.version &&
+            metrics.server_version === expectedVersion,
+          activated_path: metrics.binary_resolution_path ?? null,
+          activated_path_match: pathsEquivalent(metrics.binary_resolution_path, bundledServerPath),
           startup_source: metrics.binary_resolution_source ?? null,
         },
+        claim_boundary: SOURCE_CLAIM_BOUNDARY,
         startup: metrics,
         vsix_identity: {
           extension_id: extension.id,
@@ -414,6 +629,13 @@ suite('Packaged VSIX bundled-server journey', function () {
         diagnostics: { count: diagnostics.length },
         shutdown: 'pending',
       };
+
+      requireCandidateArtifactManifest(
+        typeof receipt.artifact_hashes === 'object' && receipt.artifact_hashes !== null
+          ? ((receipt.artifact_hashes as Record<string, unknown>).vsix_sha256 as string | undefined)
+          : undefined,
+        (receipt.artifact_hashes as Record<string, unknown>).bundled_server_sha256 as string,
+      );
 
       if (activation?.stop) {
         try {
@@ -457,19 +679,81 @@ suite('Packaged VSIX bundled-server journey', function () {
             metrics,
           },
         }));
+      const bundledVersionBlocker =
+        bundledVersion.status === 'error'
+          ? {
+              label: 'bundled_server_version',
+              result: {
+                expected: expectedVersion,
+                actual: null,
+                message: bundledVersion.message,
+                stdout: bundledVersion.stdout,
+                stderr: bundledVersion.stderr,
+                output_truncated: bundledVersion.output_truncated,
+                termination_confirmed: bundledVersion.termination_confirmed,
+              },
+            }
+          : expectedVersion === null || bundledVersion.version !== expectedVersion
+            ? {
+                label: 'bundled_server_version',
+                result: {
+                  expected: expectedVersion,
+                  actual: bundledVersion.version,
+                  stdout: bundledVersion.stdout,
+                  stderr: bundledVersion.stderr,
+                  output_truncated: bundledVersion.output_truncated,
+                  termination_confirmed: bundledVersion.termination_confirmed,
+                },
+              }
+            : null;
+      const activatedPath = metrics.binary_resolution_path;
+      const activatedPathBlocker = pathsEquivalent(activatedPath, bundledServerPath)
+        ? null
+        : {
+            label: 'activated_server_path',
+            result: {
+              expected: bundledServerPath,
+              actual: activatedPath ?? null,
+              source: metrics.binary_resolution_source ?? null,
+              message: 'initialized server path did not resolve to the packaged bundled binary',
+            },
+          };
+      const activatedVersion = metrics.server_version;
+      const activatedVersionBlocker =
+        bundledVersion.status !== 'ok' || expectedVersion === null || !activatedVersion
+          ? {
+              label: 'activated_server_version',
+              result: {
+                expected: expectedVersion ?? bundledVersion.version,
+                actual: activatedVersion ?? null,
+                message: 'initialized server did not report a comparable semantic version',
+              },
+            }
+          : activatedVersion !== bundledVersion.version || activatedVersion !== expectedVersion
+            ? {
+                label: 'activated_server_version',
+                result: {
+                  expected: { package: expectedVersion, bundled: bundledVersion.version },
+                  actual: activatedVersion,
+                  message: 'initialized server version disagrees with packaged identities',
+                },
+              }
+            : null;
       const productBlockers = [
+        ...(bundledVersionBlocker ? [bundledVersionBlocker] : []),
+        ...(activatedPathBlocker ? [activatedPathBlocker] : []),
+        ...(activatedVersionBlocker ? [activatedVersionBlocker] : []),
         ...lifecycleFailures,
         ...providerFailures.map(([label, result]) => ({ label, result })),
       ];
       receipt.outcome = productBlockers.length > 0 ? 'failed' : 'not_proven';
       receipt.product_blockers = productBlockers;
 
-      fs.writeFileSync(
-        path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json'),
-        JSON.stringify(receipt, null, 2),
-      );
-      writeVerifiedChildArtifact(receipt);
+      const sourceReceiptPath = path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json');
+      fs.writeFileSync(sourceReceiptPath, JSON.stringify(receipt, null, 2));
+      writeVerifiedChildArtifact(receipt, sourceReceiptPath);
 
+      assert.equal(productBlockers.length, 0, JSON.stringify(productBlockers));
       assert.equal(metrics.binary_resolution_source, 'bundled', JSON.stringify(metrics));
       assert.equal(metrics.binary_resolution_status, 'ok', JSON.stringify(metrics));
       assert.equal(metrics.server_start_status, 'ok', JSON.stringify(metrics));

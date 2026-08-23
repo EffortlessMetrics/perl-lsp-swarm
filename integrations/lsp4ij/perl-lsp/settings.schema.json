@@ -1,0 +1,150 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "perl-lsp/lsp4ij/settings.schema.json",
+  "title": "Perl Language Server settings for LSP4IJ",
+  "description": "Sparse LSP4IJ projection of the canonical generic perllsp `perl.*` settings contract. Defaults shown here describe server behavior; they are not copied into settings.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "perl.workspace.includePaths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": ["lib", ".", "local/lib/perl5"],
+      "description": "Workspace-relative Perl module roots. Prefer .perl-lsp.toml for shared project configuration."
+    },
+    "perl.workspace.useSystemInc": {
+      "type": "boolean",
+      "default": false,
+      "description": "Include the selected Perl interpreter's system @INC paths in module resolution."
+    },
+    "perl.workspace.usePerl5lib": {
+      "type": "boolean",
+      "default": true,
+      "description": "Merge PERL5LIB/PERLLIB paths into module resolution."
+    },
+    "perl.workspace.perl5libPrecedence": {
+      "type": "string",
+      "enum": ["prepend", "append"],
+      "default": "prepend",
+      "description": "Place PERL5LIB paths before or after configured include paths."
+    },
+    "perl.workspace.resolutionTimeout": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 50,
+      "description": "Module-resolution timeout in milliseconds."
+    },
+    "perl.inlayHints.enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable server inlay hints where the client exposes them."
+    },
+    "perl.inlayHints.parameterHints": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable parameter-name hints."
+    },
+    "perl.inlayHints.typeHints": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable inferred type hints."
+    },
+    "perl.inlayHints.chainedHints": {
+      "type": "boolean",
+      "default": false,
+      "description": "Enable hints for supported chained-call contexts."
+    },
+    "perl.inlayHints.maxLength": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 30,
+      "description": "Maximum rendered inlay-hint text length."
+    },
+    "perl.critic.enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable native critic diagnostics."
+    },
+    "perl.critic.severity": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5,
+      "default": 3,
+      "description": "Minimum critic severity: 1 reports more findings; 5 reports only the most severe."
+    },
+    "perl.critic.profile": {
+      "type": "string",
+      "enum": ["recommended", "strict"],
+      "default": "recommended",
+      "description": "Select the native critic rule profile."
+    },
+    "perl.formatting.enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable ordinary LSP document/range formatting."
+    },
+    "perl.formatting.engine": {
+      "type": "string",
+      "enum": ["native", "compat", "off"],
+      "default": "native",
+      "description": "Select the server formatting engine. External profile paths/arguments remain outside the workspace LSP settings channel."
+    },
+    "perl.formatting.maximumLineLength": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 80,
+      "description": "Maximum line length for supported formatting operations."
+    },
+    "perl.formatting.indentColumns": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Explicit indentation width. Omit to let editor formatting options participate."
+    },
+    "perl.formatting.tabs": {
+      "type": "boolean",
+      "description": "Use tabs when supported by the selected formatting engine."
+    },
+    "perl.formatting.openingBraceOnNewLine": {
+      "type": "boolean",
+      "default": false,
+      "description": "Place supported opening braces on a new line."
+    },
+    "perl.formatting.cuddledElse": {
+      "type": "boolean",
+      "default": true,
+      "description": "Use cuddled else/elsif layout for supported blocks."
+    },
+    "perl.formatting.spaceAfterKeyword": {
+      "type": "boolean",
+      "default": true,
+      "description": "Insert a space after supported control-flow keywords."
+    },
+    "perl.formatting.addTrailingCommas": {
+      "type": "boolean",
+      "default": false,
+      "description": "Add trailing commas in supported multiline constructs."
+    },
+    "perl.formatting.verticalAlignment": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable supported vertical-alignment formatting."
+    },
+    "perl.formatting.blockCommentIndentation": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "Indentation offset for supported block comments."
+    },
+    "perl.formatting.timeoutSecs": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 10,
+      "description": "Formatting timeout in seconds."
+    },
+    "perl.telemetry.enabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "Enable server telemetry/event notifications to the client."
+    }
+  }
+}

@@ -600,69 +600,15 @@ fn scope_analysis_underscore_prefix_suppresses() -> Result<(), Box<dyn std::erro
 fn scope_suggestions_for_all_issue_kinds() -> Result<(), Box<dyn std::error::Error>> {
     let analyzer = ScopeAnalyzer::new();
     let test_issues = vec![
-        ScopeIssue {
-            kind: IssueKind::VariableShadowing,
-            variable_name: "$x".to_string(),
-            line: 1,
-            range: (0, 2),
-            description: String::new(),
-        },
-        ScopeIssue {
-            kind: IssueKind::UnusedVariable,
-            variable_name: "$y".to_string(),
-            line: 2,
-            range: (0, 2),
-            description: String::new(),
-        },
-        ScopeIssue {
-            kind: IssueKind::UndeclaredVariable,
-            variable_name: "$z".to_string(),
-            line: 3,
-            range: (0, 2),
-            description: String::new(),
-        },
-        ScopeIssue {
-            kind: IssueKind::VariableRedeclaration,
-            variable_name: "$w".to_string(),
-            line: 4,
-            range: (0, 2),
-            description: String::new(),
-        },
-        ScopeIssue {
-            kind: IssueKind::DuplicateParameter,
-            variable_name: "$p".to_string(),
-            line: 5,
-            range: (0, 2),
-            description: String::new(),
-        },
-        ScopeIssue {
-            kind: IssueKind::ParameterShadowsGlobal,
-            variable_name: "$g".to_string(),
-            line: 6,
-            range: (0, 2),
-            description: String::new(),
-        },
-        ScopeIssue {
-            kind: IssueKind::UnusedParameter,
-            variable_name: "$u".to_string(),
-            line: 7,
-            range: (0, 2),
-            description: String::new(),
-        },
-        ScopeIssue {
-            kind: IssueKind::UnquotedBareword,
-            variable_name: "FOO".to_string(),
-            line: 8,
-            range: (0, 3),
-            description: String::new(),
-        },
-        ScopeIssue {
-            kind: IssueKind::UninitializedVariable,
-            variable_name: "$v".to_string(),
-            line: 9,
-            range: (0, 2),
-            description: String::new(),
-        },
+        ScopeIssue::new(IssueKind::VariableShadowing, "$x", 1, (0, 2), ""),
+        ScopeIssue::new(IssueKind::UnusedVariable, "$y", 2, (0, 2), ""),
+        ScopeIssue::new(IssueKind::UndeclaredVariable, "$z", 3, (0, 2), ""),
+        ScopeIssue::new(IssueKind::VariableRedeclaration, "$w", 4, (0, 2), ""),
+        ScopeIssue::new(IssueKind::DuplicateParameter, "$p", 5, (0, 2), ""),
+        ScopeIssue::new(IssueKind::ParameterShadowsGlobal, "$g", 6, (0, 2), ""),
+        ScopeIssue::new(IssueKind::UnusedParameter, "$u", 7, (0, 2), ""),
+        ScopeIssue::new(IssueKind::UnquotedBareword, "FOO", 8, (0, 3), ""),
+        ScopeIssue::new(IssueKind::UninitializedVariable, "$v", 9, (0, 2), ""),
     ];
 
     let suggestions = analyzer.get_suggestions(&test_issues);

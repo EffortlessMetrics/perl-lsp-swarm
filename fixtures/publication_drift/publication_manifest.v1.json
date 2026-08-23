@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "swarm_repository": "EffortlessMetrics/perl-lsp-swarm",
+  "public_repository": "EffortlessMetrics/perl-lsp",
+  "swarm_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "public_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "swarm_tree_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "public_tree_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "version": "0.17.0",
+  "rules": [
+    {
+      "id": "publication_context.repository_links",
+      "path": "README.md",
+      "classification": "expected_publication_translation",
+      "owner": "release-engineering"
+    },
+    {
+      "id": "managed_downloader.declared_translation",
+      "path": "vscode-extension/src/downloader.ts",
+      "classification": "expected_publication_translation",
+      "owner": "vscode-extension"
+    }
+  ],
+  "required_invariants": [
+    {
+      "id": "targets_requested_are_built",
+      "owner": "release-engineering"
+    },
+    {
+      "id": "archive_members_match_consumers",
+      "owner": "release-engineering"
+    },
+    {
+      "id": "server_dap_pairing",
+      "owner": "release-engineering"
+    },
+    {
+      "id": "extension_claims_match_vsix",
+      "owner": "release-engineering"
+    },
+    {
+      "id": "public_install_docs_are_executable",
+      "owner": "release-engineering"
+    },
+    {
+      "id": "support_posture_matches_claims",
+      "owner": "release-engineering"
+    },
+    {
+      "id": "artifact_traceable_to_public_sha",
+      "owner": "release-engineering"
+    },
+    {
+      "id": "product_path_coverage_complete",
+      "owner": "release-engineering"
+    },
+    {
+      "id": "release_repo_unique_dispositions_complete",
+      "owner": "release-engineering"
+    }
+  ]
+}

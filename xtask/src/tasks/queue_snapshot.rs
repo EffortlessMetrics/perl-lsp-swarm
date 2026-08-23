@@ -251,6 +251,58 @@ fn is_terminal_check_failure(state: &str) -> bool {
     )
 }
 
+pub fn derive_buckets(prs: &[PullRequestSnapshot]) -> DerivedBuckets {
+    let mut buckets = DerivedBuckets::default();
+    for pr in prs {
+        let has_failing =
+            pr.status_check_rollup.iter().any(|check| is_terminal_check_failure(&check.state));
+        let all_green = !pr.status_check_rollup.is_empty()
+            && pr.status_check_rollup.iter().all(|check| {
+                check.state.eq_ignore_ascii_case("success")
+                    || check.state.eq_ignore_ascii_case("neutral")
+                    || check.state.eq_ignore_ascii_case("skipped")
+            });
+        let merge_state = pr.merge_state_status.as_deref().map(str::to_ascii_uppercase);
+        let mergeability = pr.mergeability.as_deref().map(str::to_ascii_uppercase);
+        // Prefer GitHub's native `mergeable` observation when it is present.
+        // `mergeStateStatus` is the compatibility fallback for older or
+        // incomplete snapshots; it must not override an explicit native state.
+        let is_conflicting = match mergeability.as_deref() {
+            Some("CONFLICTING") => true,
+            Some(_) => false,
+            None => matches!(merge_state.as_deref(), Some("DIRTY") | Some("CONFLICTING")),
+        };
+        let is_unknown = match mergeability.as_deref() {
+            Some("UNKNOWN") => true,
+            Some(_) => false,
+            None => matches!(merge_state.as_deref(), None | Some("UNKNOWN")),
+        };
+
+        if pr.is_draft {
+            buckets.draft.push(pr.number);
+        }
+        if mergeability.as_deref() == Some("MERGEABLE") && merge_state.as_deref() == Some("CLEAN") {
+            buckets.mergeable_clean.push(pr.number);
+        }
+
+        if is_conflicting {
+            buckets.conflicting.push(pr.number);
+        }
+        if is_unknown {
+            buckets.unknown_not_proven.push(pr.number);
+        }
+
+        if has_failing {
+            buckets.needs_ci_fix.push(pr.number);
+        } else if all_green {
+            buckets.ci_green.push(pr.number);
+        } else if !is_conflicting && !is_unknown {
+            buckets.pending_or_unclassified.push(pr.number);
+        }
+    }
+    buckets
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,56 +500,4 @@ mod tests {
         assert!(buckets.conflicting.contains(&11));
         assert!(buckets.needs_ci_fix.contains(&11));
     }
-}
-
-pub fn derive_buckets(prs: &[PullRequestSnapshot]) -> DerivedBuckets {
-    let mut buckets = DerivedBuckets::default();
-    for pr in prs {
-        let has_failing =
-            pr.status_check_rollup.iter().any(|check| is_terminal_check_failure(&check.state));
-        let all_green = !pr.status_check_rollup.is_empty()
-            && pr.status_check_rollup.iter().all(|check| {
-                check.state.eq_ignore_ascii_case("success")
-                    || check.state.eq_ignore_ascii_case("neutral")
-                    || check.state.eq_ignore_ascii_case("skipped")
-            });
-        let merge_state = pr.merge_state_status.as_deref().map(str::to_ascii_uppercase);
-        let mergeability = pr.mergeability.as_deref().map(str::to_ascii_uppercase);
-        // Prefer GitHub's native `mergeable` observation when it is present.
-        // `mergeStateStatus` is the compatibility fallback for older or
-        // incomplete snapshots; it must not override an explicit native state.
-        let is_conflicting = match mergeability.as_deref() {
-            Some("CONFLICTING") => true,
-            Some(_) => false,
-            None => matches!(merge_state.as_deref(), Some("DIRTY") | Some("CONFLICTING")),
-        };
-        let is_unknown = match mergeability.as_deref() {
-            Some("UNKNOWN") => true,
-            Some(_) => false,
-            None => matches!(merge_state.as_deref(), None | Some("UNKNOWN")),
-        };
-
-        if pr.is_draft {
-            buckets.draft.push(pr.number);
-        }
-        if mergeability.as_deref() == Some("MERGEABLE") && merge_state.as_deref() == Some("CLEAN") {
-            buckets.mergeable_clean.push(pr.number);
-        }
-
-        if is_conflicting {
-            buckets.conflicting.push(pr.number);
-        }
-        if is_unknown {
-            buckets.unknown_not_proven.push(pr.number);
-        }
-
-        if has_failing {
-            buckets.needs_ci_fix.push(pr.number);
-        } else if all_green {
-            buckets.ci_green.push(pr.number);
-        } else if !is_conflicting && !is_unknown {
-            buckets.pending_or_unclassified.push(pr.number);
-        }
-    }
-    buckets
 }

@@ -1,0 +1,127 @@
+{
+  "schema_version": "close_proof_contract_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4997",
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5022"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts of historical GitHub subjects. The fixture proves schema-level dispositions only; semantic completion evaluation belongs to CP03 (#10382)."
+  },
+  "contract": {
+    "schema_version": "issue_contract.v1",
+    "repository": "effortlessmetrics/perl-lsp-swarm",
+    "issue_number": 4997,
+    "title": "security(ai-completion): project config must not be able to activate a remote AI backend",
+    "kind": "activation",
+    "required_proof_level": "authorized_behavior",
+    "allowed_close_modes": [
+      "completed",
+      "phase_complete_issue_remains_open",
+      "superseded",
+      "true_duplicate",
+      "not_planned"
+    ],
+    "denominator": [
+      {
+        "row_id": "activation.vscode-channel.closed",
+        "statement": "Project config cannot activate a remote AI backend through VS Code channels.",
+        "required_proof_level": "authorized_behavior"
+      },
+      {
+        "row_id": "activation.generic-first-egress.authority",
+        "statement": "Generic/non-VS-Code first-egress authority no longer permits project-config activation.",
+        "required_proof_level": "authorized_behavior"
+      },
+      {
+        "row_id": "activation.config-source.trust-boundary",
+        "statement": "Config-source trust boundaries hold for every activation path.",
+        "required_proof_level": "authorized_behavior"
+      }
+    ],
+    "negative_controls": [
+      {
+        "control_id": "nc.new-provider-blocked",
+        "guards_row_id": "activation.vscode-channel.closed",
+        "description": "A newly registered provider cannot be activated from project config."
+      }
+    ],
+    "mandatory_children": [],
+    "transfer_policy": {
+      "permitted": false,
+      "conditions": []
+    },
+    "domain_evidence_refs": [],
+    "identity": {
+      "issue_body_digest": "0000000000000000000000000000000000000000000000000000000000001385",
+      "denominator_digest": "122a1d7d07ad2b39af5cc88b4d841d5e351ce6b54f4a62274eb10d5dd0a12434",
+      "accepted_ruling": null
+    }
+  },
+  "cases": [
+    {
+      "case_id": "pr-5022-terminal-close-attempt",
+      "description": "Historical PR #5022 closed #4997 as completed although non-VS-Code egress authority remained.",
+      "packet": {
+        "schema_version": "issue_close_proof.v1",
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 4997,
+        "requested_close_mode": "completed",
+        "contract_binding": {
+          "contract_issue_body_digest": "0000000000000000000000000000000000000000000000000000000000001385",
+          "contract_denominator_digest": "122a1d7d07ad2b39af5cc88b4d841d5e351ce6b54f4a62274eb10d5dd0a12434",
+          "accepted_ruling_digest": null
+        },
+        "candidate_pr": 5022,
+        "landed_subjects": [],
+        "landing_content_proof": [],
+        "established_claims": [
+          {
+            "statement": "VS Code channel activation from project config is blocked.",
+            "covers_rows": [
+              "activation.vscode-channel.closed"
+            ]
+          }
+        ],
+        "explicitly_not_established_claims": [],
+        "row_dispositions": {
+          "activation.config-source.trust-boundary": {
+            "disposition": "not_proven",
+            "reason": "the remaining authority path was never bounded."
+          },
+          "activation.generic-first-egress.authority": {
+            "disposition": "contradicted",
+            "reason": "generic/non-VS-Code first-egress authority remained active after the candidate landed."
+          },
+          "activation.vscode-channel.closed": {
+            "disposition": "proven_current_main",
+            "evidence": {
+              "producer": "xtask-pr-close-proof",
+              "subject": "000000000000000000000000000000000000c42d",
+              "content_digest": "000000000000000000000000000000000000000000000000000000000007a9c9",
+              "reference": "cargo xtask pr-close-proof --pr 5022"
+            }
+          }
+        },
+        "negative_control_dispositions": {
+          "nc.new-provider-blocked": {
+            "state": "not_proven",
+            "reason": "provider registration paths changed after capture."
+          }
+        },
+        "child_dispositions": [],
+        "duplicate_of": null,
+        "verdict": {
+          "pr_scope": "pass",
+          "issue_close": "invalid",
+          "reasons": [
+            "A completed close is invalid while generic first-egress authority remained."
+          ]
+        }
+      },
+      "expected_pr_scope": "pass",
+      "expected_issue_close": "invalid"
+    }
+  ]
+}

@@ -65,7 +65,7 @@ fn empty_edit_batch_reports_unchanged_without_lexer_or_parser_work() -> TestResu
 }
 
 #[test]
-fn late_equal_width_edit_uses_stored_state_and_relexes_the_complete_suffix() -> TestResult {
+fn late_equal_width_edit_retains_prefix_and_relexes_the_complete_suffix() -> TestResult {
     let source = "my $before = 1; my $target = 2; my $after = 3;";
     let start = source.find("= 2").ok_or("target literal is missing")? + 2;
     let edit = Edit {
@@ -106,19 +106,13 @@ fn stateful_and_source_boundary_edits_match_fresh_lexing() -> TestResult {
         ("unicode", "my $x = \"café\"; my $after = 1;", "é", "ø"),
         (
             "crlf",
-            "my $x = 1;
-my $y = 2;
-",
+            "my $x = 1;\r\nmy $y = 2;\r\n",
             "= 2",
             "= 3",
         ),
         (
             "heredoc-body",
-            "my $value = <<EOF;
-body
-EOF
-print $value;
-",
+            "my $value = <<EOF;\nbody\nEOF\nprint $value;\n",
             "body",
             "changed",
         ),
@@ -186,7 +180,8 @@ fn large_edit_reports_full_relex_instead_of_checkpoint_reuse() -> TestResult {
 }
 
 #[test]
-fn timeout_sensitive_heredoc_state_selects_an_earlier_safe_checkpoint() -> TestResult {
+fn timeout_sensitive_heredoc_state_selects_an_earlier_safe_checkpoint_with_span_parity() -> TestResult
+{
     let source = "my $value = <<EOF;\nbody\nEOF\nmy $after = 1;\n";
     let edit = replacing_edit(source, "body", "changed")?;
     let mut state = IncrementalState::new(source.to_string());

@@ -63,10 +63,6 @@ reason = "Subprocess execution test/runtime support; infra, not product."
 name = "perl-test-generators"
 reason = "Test-fixture generation tooling; no product surface to document."
 
-[[exempt]]
-name = "perl-test-must"
-reason = "`must`/`must_some` test-assertion helpers; test infra, not product."
-
 # ---------------------------------------------------------------------------
 # needs_context -- core-product crates tracked as explicit context debt
 # ---------------------------------------------------------------------------
@@ -78,4 +74,5 @@ reason = "`must`/`must_some` test-assertion helpers; test infra, not product."
 # CLAUDE.md and have been removed from this list: perllsp, perl-lsp-rs-core,
 # perl-module, perl-workspace-core, perl-pod, perl-lsp-perltidy,
 # perl-diagnostics, perl-line-index, perl-ast-v2, perl-semantic-facts,
-# perl-tree-sitter-compat, perl-dead-code.
+# perl-tree-sitter-compat, perl-dead-code. perl-source-identity was tracked
+# here afterwards and has since been documented and removed the same way.

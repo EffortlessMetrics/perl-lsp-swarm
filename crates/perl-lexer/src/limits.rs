@@ -1,15 +1,22 @@
-//! Lexer parse budgets and limits used for graceful degradation on pathological input.
+//! Deterministic lexer parse budgets for graceful degradation on pathological input.
+//!
+//! Source-derived tokenization is governed by byte, step, and depth budgets.
+//! Wall-clock cancellation belongs to the caller or process supervisor and must
+//! not change the token stream for identical source and configuration.
 
-// Budget limits to prevent hangs on pathological input
-// When these limits are exceeded, the lexer gracefully truncates the token
-// as UnknownRest, preserving all previously parsed symbols and allowing
-// continued analysis of the remainder. LSP clients may emit a soft diagnostic
-// about truncation but won't crash or hang.
-pub(crate) const MAX_REGEX_BYTES: usize = 64 * 1024; // 64KB max for regex patterns
-pub(crate) const MAX_HEREDOC_BYTES: usize = 256 * 1024; // 256KB max for heredoc bodies
-pub(crate) const MAX_DELIM_NEST: usize = 128; // Max nesting depth for delimiters
-pub(crate) const MAX_HEREDOC_DEPTH: usize = 100; // Max nesting depth for heredocs
-pub(crate) const HEREDOC_TIMEOUT_MS: u64 = 5000; // 5 seconds timeout for heredoc parsing
+// When these limits are exceeded, the lexer emits UnknownRest, preserving all
+// previously parsed symbols while making the unlexed remainder explicit.
+/// Maximum source bytes consumed by one regex literal.
+pub(crate) const MAX_REGEX_BYTES: usize = 64 * 1024;
+
+/// Maximum source bytes consumed by one heredoc body.
+pub(crate) const MAX_HEREDOC_BYTES: usize = 256 * 1024;
+
+/// Maximum delimiter nesting depth within one token.
+pub(crate) const MAX_DELIM_NEST: usize = 128;
+
+/// Maximum number of pending heredocs queued by one statement.
+pub(crate) const MAX_HEREDOC_DEPTH: usize = 100;
 
 /// Maximum scan iterations for a single regex literal.
 /// This is a lexer parse budget, not regex-engine backtracking detection.

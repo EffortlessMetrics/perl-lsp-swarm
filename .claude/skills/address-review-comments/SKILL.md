@@ -63,14 +63,26 @@ results, unresolved contradictions, limitations, and typed result.
 2. Verify each finding against current source and authority; do not patch comments literally.
    A finding the currentness contract already answers is refuted, not complied with.
    Base staleness, "behind by N", head-SHA movement, and a demand to rebuild on current
-   `main` for a conflict-free candidate are all answered by
+   main for a conflict-free candidate are all answered by
    [`REVIEW_CURRENTNESS.md`](../../../docs/agents/REVIEW_CURRENTNESS.md) —
    this repository squash-merges, so unrelated base movement changes nothing. Reply
    `Disposition: refuted` citing the contract. Rebasing to satisfy such a request costs
    a full re-proof cycle, invites a fresh set of stale-head objections against the new
    head, and can silently absorb concurrent edits made to the branch meanwhile.
-   Likewise, a failing check anchored to a superseded SHA, or one that reproduces on
-   the base branch, is not a finding about this candidate.
+
+   A failing check is narrower, and the same contract's check-attribution rules decide
+   it. Refuting one takes evidence, not arithmetic on SHAs:
+
+   - a run that was **cancelled** by a newer push reached no verdict and is not
+     evidence in either direction — let the run at the current head answer;
+   - a run that **genuinely failed** stays a finding even though its SHA is
+     superseded. Later commits that did not touch the failing seam do not refute it: a
+     documentation-only push leaves a test failure exactly as true as it was.
+     Revalidate that seam at the current head before dispositioning;
+   - a failure blamed on the base needs the same gate, the same failure signature, and
+     that signature observed at this PR's **merge base** — not at current main, and
+     not a locally approximated command. Short of that it is `NOT_PROVEN`, not
+     somebody else's.
 3. Batch accepted repairs through one writer on the selected candidate.
 4. Run affected focused proof.
 5. Compose the canonical human reply with `Disposition: <class>` and `Evidence: <claim-bounded evidence summary>` lines, then pass that complete text through `--reply` to `scripts/reviews/disposition` with the PR, thread ID, lowercase class, and required class-specific evidence (`--commit`, `--argument`, `--superseded-by`, or `--issue`).
@@ -94,8 +106,8 @@ per finding or resolve merely to make the thread count green.
 
 ## Routes
 
-- `FINDINGS_REPAIRED_OR_DISPOSITIONED` → `$final-challenge`
-- `MATERIAL_PREMISE_CHANGED` → `$prepare-issue`
-- `PROOF_WEAKENED` → `$prepare-proof`
+- `FINDINGS_REPAIRED_OR_DISPOSITIONED` → `final-challenge`
+- `MATERIAL_PREMISE_CHANGED` → `prepare-issue`
+- `PROOF_WEAKENED` → `prepare-proof`
 - `FOLLOW_UP_ACCEPTED` → create or link the bounded follow-up and continue within the current claim
 - `DISPOSITION_INSTRUMENT_FAILURE` / `BLOCKED` / `NOT_PROVEN` → preserve the unresolved finding or missing evidence

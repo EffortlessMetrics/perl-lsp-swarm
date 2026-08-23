@@ -1,0 +1,9 @@
+project: product
+component: Editor integrations
+kind: Changed
+body: "Converged the repository-owned Zed integration substrates onto one current-main review surface while keeping executable and public support evidence separate."
+time: 2026-08-13T21:35:00Z
+custom:
+  PR: "7847"
+  Slug: zed-static-convergence
+  Breaking: "no"

@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Security
+body: "Remove generic client testRunner executable, argv, timeout, and enabled authority; legacy payloads are inert while server-owned test execution remains available. Migration: remove perl.testRunner.command, perl.testRunner.args, perl.testRunner.timeout, and perl.testRunner.enabled from client settings; existing server-owned test execution is unchanged."
+time: 2026-08-20T03:46:45Z
+custom:
+  PR: "11845"
+  Slug: client-test-runner-authority
+  Breaking: "yes"

@@ -1,0 +1,75 @@
+{
+  "schema_version": "zed_perllsp_settings_contract.v1",
+  "status": "shape_checked_behavior_not_proven",
+  "server_id": "perllsp",
+  "process_configuration": {
+    "zed_path": "lsp.perllsp.binary",
+    "fields": ["path", "arguments", "env"],
+    "forwarded_to_workspace_configuration": false,
+    "owner": "Zed extension command resolution"
+  },
+  "server_configuration": {
+    "zed_path": "lsp.perllsp.settings.perl",
+    "wire_root": "perl",
+    "workspace_configuration_section": "perl",
+    "owner": "canonical generic-client perl.* schema",
+    "canonical_schema_issue": 7768,
+    "forwarding": "return lsp.perllsp.settings unchanged from language_server_workspace_configuration"
+  },
+  "project_configuration": {
+    "path": ".perl-lsp.toml",
+    "owner": "perllsp server",
+    "portable_across_editors": true
+  },
+  "initialization_options": {
+    "default_route": false,
+    "rule": "empty unless a field is proven initialization-only by the canonical server contract"
+  },
+  "example": {
+    "lsp": {
+      "perllsp": {
+        "binary": {
+          "path": "/optional/absolute/path/to/perllsp",
+          "arguments": []
+        },
+        "settings": {
+          "perl": {
+            "workspace": {
+              "includePaths": ["lib", "local/lib/perl5"]
+            },
+            "inlayHints": {
+              "enabled": true
+            },
+            "limits": {
+              "workspaceSymbolCap": 5000
+            }
+          }
+        }
+      }
+    }
+  },
+  "precedence": {
+    "status": "pending_canonical_authority_and_actual_zed_receipt",
+    "authority_issue": 6736,
+    "must_distinguish": [
+      "server defaults",
+      ".perl-lsp.toml",
+      "Zed lsp.perllsp.settings.perl",
+      "process arguments",
+      "workspace-local Zed overrides"
+    ]
+  },
+  "live_update": {
+    "status": "not_proven",
+    "required_observation": "settings edit causes configuration notification, restart, or no effect until restart"
+  },
+  "claim_boundary": {
+    "zed_json_shape": "checked",
+    "extension_forwards_settings_object": "source_checked",
+    "workspace_configuration_request_response": "not_proven",
+    "typed_setting_consumption": "not_proven",
+    "precedence": "not_proven",
+    "live_or_restart_semantics": "not_proven",
+    "public_zed_support": "not_proven"
+  }
+}

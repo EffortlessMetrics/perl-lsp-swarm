@@ -1,0 +1,63 @@
+name: Installer PowerShell Checksum Contract
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'install.ps1'
+      - 'scripts/tests/test-install-ps1-checksum-required.ps1'
+      - 'docs/how-to/INSTALLATION.md'
+      - '.github/workflows/installer-powershell-checksum-contract.yml'
+  push:
+    branches: [main, master]
+    paths:
+      - 'install.ps1'
+      - 'scripts/tests/test-install-ps1-checksum-required.ps1'
+      - 'docs/how-to/INSTALLATION.md'
+      - '.github/workflows/installer-powershell-checksum-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: PowerShell checksum required
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify checkout identity
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if ((git rev-parse HEAD) -ne $env:EXPECTED_SHA) {
+              throw "checkout identity mismatch"
+          }
+
+      - name: Parse PowerShell sources
+        shell: pwsh
+        run: |
+          foreach ($Path in @('install.ps1', 'scripts/tests/test-install-ps1-checksum-required.ps1')) {
+              $Tokens = $null
+              $Errors = $null
+              [System.Management.Automation.Language.Parser]::ParseFile(
+                  (Resolve-Path $Path),
+                  [ref]$Tokens,
+                  [ref]$Errors
+              ) | Out-Null
+              if ($Errors.Count -ne 0) {
+                  $Errors | ForEach-Object { Write-Error $_ }
+                  throw "$Path contains PowerShell parse errors"
+              }
+          }
+
+      - name: Run checksum negative controls
+        shell: pwsh
+        run: ./scripts/tests/test-install-ps1-checksum-required.ps1

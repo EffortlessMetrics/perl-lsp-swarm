@@ -17,8 +17,9 @@ use support::lsp_harness::LspHarness;
 // Capability profile: minimal client (no optional features declared)
 //
 // Most returned capabilities are driven by build flags and the active feature
-// profile. Inline completion is static for this minimal client and dynamically
-// registered for the full client fixture below.
+// profile. This fixture declares no client capabilities at all, so per #7682 the
+// server advertises neither inline completion nor any workspace.fileOperations:
+// both are negotiated from the client's declaration.
 // ---------------------------------------------------------------------------
 
 #[test]

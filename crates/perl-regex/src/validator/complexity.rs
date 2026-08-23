@@ -1,90 +1,100 @@
-use crate::{error::RegexError, syntax::cursor::quoted_literal_end};
+use crate::syntax::event::{RegexEventKind, RegexEventStream, RegexGroupKind};
 
 use super::{
+    analysis::{RegexDiagnostic, RegexDiagnosticCode},
     config::RegexValidationConfig,
-    group::{GroupStack, GroupType},
 };
 
-pub(crate) fn check_complexity(
-    pattern: &str,
-    start_pos: usize,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GroupType {
+    Normal,
+    Lookbehind,
+    BranchReset { branch_count: usize },
+}
+
+pub(crate) fn find_complexity_diagnostics(
+    stream: &RegexEventStream,
     config: &RegexValidationConfig,
-) -> Result<(), RegexError> {
-    let bytes = pattern.as_bytes();
-    let mut i = 0;
-    let mut stack = GroupStack::new();
-    let mut unicode_property_count = 0;
+) -> Vec<RegexDiagnostic> {
+    let mut stack = Vec::new();
+    let mut unicode_property_count = 0usize;
+    let mut emitted_unicode_limit = false;
+    let mut emitted_lookbehind_limit = false;
+    let mut emitted_branch_reset_nesting_limit = false;
+    let mut emitted_branch_reset_branch_limit = false;
+    let mut diagnostics = Vec::new();
 
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => {
-                if let Some(end) = quoted_literal_end(bytes, i) {
-                    i = end;
-                    continue;
+    for event in &stream.events {
+        match event.kind {
+            RegexEventKind::UnicodeProperty { .. } => {
+                unicode_property_count = unicode_property_count.saturating_add(1);
+                if unicode_property_count > config.max_unicode_properties && !emitted_unicode_limit
+                {
+                    diagnostics.push(RegexDiagnostic::new(
+                        RegexDiagnosticCode::UnicodePropertyLimit,
+                        event.range,
+                        Some(config.max_unicode_properties),
+                    ));
+                    emitted_unicode_limit = true;
                 }
-
-                if i + 1 < bytes.len() {
-                    match bytes[i + 1] {
-                        b'p' | b'P' => {
-                            i += 2;
-                            if i < bytes.len() && bytes[i] == b'{' {
-                                unicode_property_count += 1;
-                                if unicode_property_count > config.max_unicode_properties {
-                                    return Err(RegexError::syntax(
-                                        format!(
-                                            "Too many Unicode properties in regex (max {})",
-                                            config.max_unicode_properties
-                                        ),
-                                        start_pos + i - 2,
-                                    ));
-                                }
-                            }
-                            continue;
+            }
+            RegexEventKind::GroupOpen(kind) => {
+                let group = match kind {
+                    RegexGroupKind::Lookbehind | RegexGroupKind::NegativeLookbehind => {
+                        let depth = stack
+                            .iter()
+                            .filter(|candidate| matches!(candidate, GroupType::Lookbehind))
+                            .count();
+                        if depth >= config.max_nesting && !emitted_lookbehind_limit {
+                            diagnostics.push(RegexDiagnostic::new(
+                                RegexDiagnosticCode::LookbehindNestingLimit,
+                                event.range,
+                                Some(config.max_nesting),
+                            ));
+                            emitted_lookbehind_limit = true;
                         }
-                        _ => {
-                            i += 2;
-                            continue;
+                        GroupType::Lookbehind
+                    }
+                    RegexGroupKind::BranchReset => {
+                        let depth = stack
+                            .iter()
+                            .filter(|candidate| matches!(candidate, GroupType::BranchReset { .. }))
+                            .count();
+                        if depth >= config.max_nesting && !emitted_branch_reset_nesting_limit {
+                            diagnostics.push(RegexDiagnostic::new(
+                                RegexDiagnosticCode::BranchResetNestingLimit,
+                                event.range,
+                                Some(config.max_nesting),
+                            ));
+                            emitted_branch_reset_nesting_limit = true;
                         }
+                        GroupType::BranchReset { branch_count: 1 }
+                    }
+                    _ => GroupType::Normal,
+                };
+                stack.push(group);
+            }
+            RegexEventKind::Alternation => {
+                if let Some(GroupType::BranchReset { branch_count }) = stack.last_mut() {
+                    *branch_count = branch_count.saturating_add(1);
+                    if *branch_count > config.max_branch_reset_branches
+                        && !emitted_branch_reset_branch_limit
+                    {
+                        diagnostics.push(RegexDiagnostic::new(
+                            RegexDiagnosticCode::BranchResetBranchLimit,
+                            event.range,
+                            Some(config.max_branch_reset_branches),
+                        ));
+                        emitted_branch_reset_branch_limit = true;
                     }
                 }
             }
-            b'[' => {
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == b'\\' {
-                        i += 2;
-                    } else if bytes[i] == b']' {
-                        break;
-                    } else {
-                        i += 1;
-                    }
-                }
+            RegexEventKind::GroupClose(_) => {
+                stack.pop();
             }
-            b'(' => {
-                let mut group = GroupType::Normal;
-                if i + 1 < bytes.len() && bytes[i + 1] == b'?' {
-                    i += 2;
-                    if i < bytes.len() && bytes[i] == b'<' {
-                        i += 1;
-                        if i < bytes.len() && (bytes[i] == b'=' || bytes[i] == b'!') {
-                            i += 1;
-                            group = GroupType::Lookbehind;
-                        }
-                    } else if i < bytes.len() && bytes[i] == b'|' {
-                        i += 1;
-                        group = GroupType::BranchReset { branch_count: 1 };
-                    }
-                } else {
-                    i += 1;
-                }
-                stack.push(group, i - 1, start_pos, config)?;
-                continue;
-            }
-            b'|' => stack.observe_alternation(i, start_pos, config)?,
-            b')' => stack.pop(),
             _ => {}
         }
-        i += 1;
     }
-    Ok(())
+
+    diagnostics
 }

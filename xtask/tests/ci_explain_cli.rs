@@ -1,3 +1,8 @@
+// This whole file is an integration test; assertions favor `expect()`/
+// `unwrap()` with descriptive messages over propagating errors — the
+// workspace-wide deny is a production-code rule.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use assert_cmd::cargo::cargo_bin_cmd;
 use std::fs;
 use tempfile::TempDir;

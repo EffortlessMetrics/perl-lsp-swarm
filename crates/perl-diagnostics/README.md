@@ -1,6 +1,6 @@
 # perl-diagnostics
 
-Unified diagnostic codes, types, and catalog for Perl LSP.
+Unified diagnostic codes, transport-neutral byte spans, types, and catalog for Perl LSP.
 
 This crate consolidates three previously separate diagnostic crates into a
 single, coherent API:
@@ -18,15 +18,28 @@ single, coherent API:
   their severity/tag types from here; there is exactly one definition in the
   workspace.
 
-- **`types`** — `Diagnostic` and `RelatedInformation` structs. `DiagnosticSeverity`
-  and `DiagnosticTag` are re-exported from `codes` so the legacy
-  `types::DiagnosticSeverity` import path still resolves to the same type.
+- **`types`** — validated `ByteSpan`, `Diagnostic`, and `RelatedInformation`
+  types. `DiagnosticSeverity` and `DiagnosticTag` are re-exported from `codes`
+  so the legacy `types::DiagnosticSeverity` import path still resolves to the
+  same type.
 
-- **`catalog`** — LSP-facing metadata helpers that map a `DiagnosticCode` to its
+- **`catalog`** — metadata helpers that map a `DiagnosticCode` to its
   human-readable message, related documentation URL, and default severity.
 
 All public items are additionally re-exported from the crate root via the
 `api` module so consumers need only `use perl_diagnostics::*`.
+
+## Byte-span contract
+
+`ByteSpan` is a validated half-open UTF-8 byte interval `[start, end)`:
+
+- `start <= end` is required;
+- zero-width spans are deliberate and supported;
+- reversed spans are rejected, never swapped or clamped;
+- source length and UTF-8 scalar boundaries are checked against the exact
+  source snapshot by the consumer;
+- LSP line/column, URI, and negotiated position-encoding policy stay outside
+  this crate.
 
 ## Usage
 
@@ -38,25 +51,27 @@ perl-diagnostics = { path = "../../crates/perl-diagnostics" }
 ```
 
 ```rust
-use perl_diagnostics::{Diagnostic, DiagnosticCode, DiagnosticSeverity};
+use perl_diagnostics::{ByteSpan, Diagnostic, DiagnosticCode, DiagnosticSeverity};
 
-let diag = Diagnostic {
-    code: DiagnosticCode::MissingStrict,
-    severity: DiagnosticSeverity::Warning,
-    message: "Missing 'use strict'".into(),
-    ..Default::default()
-};
+let span = ByteSpan::new(0, 12)?;
+let diagnostic = Diagnostic::new(
+    DiagnosticCode::MissingStrict,
+    DiagnosticSeverity::Warning,
+    span,
+    "Missing 'use strict'",
+);
+# Ok::<(), perl_diagnostics::InvalidByteSpan>(())
 ```
 
-## Type Unification
+## Type unification
 
 `DiagnosticSeverity` and `DiagnosticTag` are defined once in `codes` and
 re-exported through `types`. This means `types::DiagnosticSeverity` and
-`codes::DiagnosticSeverity` are the same type — no orphan-impl issues, no
-`From` conversion needed when passing values between modules.
+`codes::DiagnosticSeverity` are the same type — no orphan-impl issues and no
+`From` conversion is needed when passing values between modules.
 
 ## Features
 
 | Feature | Default | Effect |
 |---|---|---|
-| `serde` | off | Derives `Serialize`/`Deserialize` on all public types |
+| `serde` | off | Enables stable serialization/deserialization for public types |

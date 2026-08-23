@@ -197,7 +197,11 @@ fn depth_tracking() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn errors_exhausted_respects_budget() -> Result<(), Box<dyn std::error::Error>> {
-    let budget = ParseBudget { max_errors: 1, ..ParseBudget::default() };
+    let budget = {
+        let mut b = ParseBudget::default();
+        b.max_errors = 1;
+        b
+    };
     let mut ctx = ParserContext::with_budget("test".to_string(), budget);
 
     assert!(!ctx.errors_exhausted());
@@ -211,7 +215,11 @@ fn errors_exhausted_respects_budget() -> Result<(), Box<dyn std::error::Error>> 
 
 #[test]
 fn add_error_returns_false_when_budget_exhausted() -> Result<(), Box<dyn std::error::Error>> {
-    let budget = ParseBudget { max_errors: 1, ..ParseBudget::default() };
+    let budget = {
+        let mut b = ParseBudget::default();
+        b.max_errors = 1;
+        b
+    };
     let mut ctx = ParserContext::with_budget("test".to_string(), budget);
 
     let e1 = RecoveryParseError::new("err1".to_string(), ctx.current_position_range());

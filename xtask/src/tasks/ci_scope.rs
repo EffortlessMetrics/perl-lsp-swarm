@@ -445,8 +445,14 @@ fn has_features_toml_change(files: &[String]) -> bool {
 /// test scope, so this is not the place for "xtask might care about it" — only
 /// inputs an xtask test reads and asserts on.
 fn is_xtask_policy_guarded_input(file: &str) -> bool {
-    // Packaging contract: asserted by release_artifact_check's binstall tests.
-    file == ".github/workflows/release.yml"
+    // Workflow contracts asserted by xtask integration tests.
+    matches!(
+        file,
+        ".github/workflows/release.yml"
+            | ".github/workflows/post-merge-status.yml"
+            | ".github/workflows/badge-endpoints.yml"
+            | ".github/workflows/ripr.yml"
+    )
         // Publishable-crate manifests: binstall metadata, publish metadata, and
         // version-sync are all xtask-owned assertions over these files.
         || (file.starts_with("crates/") && file.ends_with("/Cargo.toml"))
@@ -1094,6 +1100,23 @@ mod tests {
     }
 
     #[test]
+    fn workflow_contract_inputs_select_xtask() -> Result<()> {
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        for workflow in [
+            ".github/workflows/post-merge-status.yml",
+            ".github/workflows/badge-endpoints.yml",
+            ".github/workflows/ripr.yml",
+        ] {
+            let crates = crates_from_files(&[workflow.to_string()], &metadata, "/workspace")?;
+            assert!(
+                crates.contains("xtask"),
+                "changing {workflow} must route to the xtask contract that reads it"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn publishable_manifest_change_selects_both_its_crate_and_xtask() -> Result<()> {
         let files = vec!["crates/perllsp/Cargo.toml".to_string()];
         let metadata = fake_metadata(&[("perllsp", "crates/perllsp"), ("xtask", "xtask")]);
@@ -1108,7 +1131,7 @@ mod tests {
     #[test]
     fn unrelated_workflow_change_does_not_select_xtask() -> Result<()> {
         // The rule is deliberately narrow: every extra path costs a crate in
-        // the routed test scope. Only release.yml is a guarded packaging input.
+        // the routed test scope. Only workflows read by xtask contracts are guarded.
         let files = vec![".github/workflows/docs-deploy.yml".to_string()];
         let metadata = fake_metadata(&[("xtask", "xtask")]);
         let crates = crates_from_files(&files, &metadata, "/workspace")?;

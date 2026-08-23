@@ -1,5 +1,6 @@
 use crate::incremental::checkpoint::{LexCheckpoint, ParseCheckpoint, ScopeSnapshot};
 use crate::incremental::lex::{StoredLexCheckpoint, lex_source_with_checkpoints};
+use crate::incremental::snapshot::{ParseGeneration, ParseSnapshot, ParseSnapshotStrategy};
 use perl_lexer::Token;
 use perl_line_index::LineIndex;
 use perl_parser_core::ast::{Node, NodeKind};
@@ -9,35 +10,79 @@ use ropey::Rope;
 use std::ops::Deref;
 
 /// Read-only compatibility view for legacy field-style access.
+///
+/// `IncrementalState` intentionally implements `Deref` but not `DerefMut` for
+/// this view. Existing consumers may continue to read the committed generation
+/// through legacy fields, while every state transition remains private to the
+/// incremental parser.
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct IncrementalStateReadView {
     /// Current committed source text.
     pub source: String,
+    /// Rope view for the current committed source.
+    pub rope: Rope,
+    /// Line index for the current committed source.
+    pub line_index: LineIndex,
     /// Lexer restart summaries for the current committed token stream.
     pub lex_checkpoints: Vec<LexCheckpoint>,
+    /// Parser restart summaries for the current committed parse output.
+    pub parse_checkpoints: Vec<ParseCheckpoint>,
+    /// Generation-bound authoritative parser snapshot. This is the sole owned
+    /// authority for generation, exact source identity, disposition, and
+    /// native parser output; no mirrored `parse_output`/`ast` copies exist.
+    pub snapshot: ParseSnapshot,
+    /// Current committed lexer token stream.
+    pub tokens: Vec<Token>,
 }
 
 /// One internally consistent incremental parser generation.
 ///
+/// Generation-bearing fields are held by an immutable compatibility view so
+/// external callers can read the legacy fields but cannot mutate source,
+/// tokens, checkpoints, AST, or parser output independently. Use
+/// [`IncrementalState::new`], read-only accessors, and [`super::apply_edits`] to
+/// move between committed generations.
+///
 /// Complete behavior-bearing lexer checkpoints are retained privately and move
 /// atomically with source, token, line-index, and parser state. The public
-/// `LexCheckpoint` vector remains a compact compatibility summary; it is not the
-/// restart authority.
+/// `LexCheckpoint` vector remains a compact compatibility summary; it is not
+/// the restart authority.
+///
+/// Legacy field-style reads remain available:
+///
+/// ```
+/// use perl_parser::incremental::IncrementalState;
+///
+/// let state = IncrementalState::new("my $x = 1;".to_string());
+/// assert_eq!(state.source.len(), state.source().len());
+/// assert_eq!(state.tokens.len(), state.tokens().len());
+/// assert_eq!(state.lex_checkpoints.len(), state.lex_checkpoints().len());
+/// ```
+///
+/// The view does not grant mutation authority:
+///
+/// ```compile_fail
+/// use perl_parser::incremental::IncrementalState;
+///
+/// let mut state = IncrementalState::new("my $x = 1;".to_string());
+/// state.source.push_str("\n");
+/// ```
+///
+/// ```compile_fail
+/// use perl_parser::incremental::IncrementalState;
+///
+/// let mut state = IncrementalState::new("my $x = 1;".to_string());
+/// state.tokens.clear();
+/// ```
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct IncrementalState {
-    pub(super) rope: Rope,
-    pub(super) line_index: LineIndex,
-    pub(super) parse_checkpoints: Vec<ParseCheckpoint>,
-    /// Authoritative native parser output for the current source.
-    pub(super) parse_output: ParseOutput,
-    /// Parsed AST compatibility mirror.
-    #[deprecated(note = "Use parse_output(); this compatibility mirror will be removed.")]
-    pub(super) ast: Node,
-    pub(super) tokens: Vec<Token>,
-    pub(super) stored_lex_checkpoints: Vec<StoredLexCheckpoint>,
     pub(super) read_view: IncrementalStateReadView,
+    /// Complete generation-bound lexer checkpoints retained privately. These
+    /// move atomically with the committed generation and never leak through
+    /// the read-only compatibility view.
+    stored_lex_checkpoints: Vec<StoredLexCheckpoint>,
 }
 
 impl Deref for IncrementalState {
@@ -50,28 +95,32 @@ impl Deref for IncrementalState {
 
 impl IncrementalState {
     /// Build the initial committed generation from source text.
-    #[expect(deprecated, reason = "the compatibility AST field mirrors the native parse output")]
     #[must_use]
     pub fn new(source: String) -> Self {
         let rope = Rope::from_str(&source);
         let line_index = LineIndex::new(&source);
         let mut parser = Parser::new(&source);
         let parse_output = parser.parse_with_recovery();
-        let ast = parse_output.ast.clone();
-        let lexed = lex_source_with_checkpoints(&source, &line_index);
-        let tokens = lexed.tokens;
-        let lex_checkpoints = lexed.checkpoints;
-        let stored_lex_checkpoints = lexed.stored_checkpoints;
-        let parse_checkpoints = Self::create_parse_checkpoints(&parse_output.ast);
-        Self {
-            rope,
-            line_index,
-            parse_checkpoints,
+        let snapshot = ParseSnapshot::from_output(
+            &source,
+            ParseGeneration::INITIAL,
+            ParseSnapshotStrategy::Fresh,
             parse_output,
-            ast,
-            tokens,
-            stored_lex_checkpoints,
-            read_view: IncrementalStateReadView { source, lex_checkpoints },
+        );
+        let lexed = lex_source_with_checkpoints(&source, &line_index);
+        let parse_checkpoints = Self::create_parse_checkpoints(&snapshot.parse_output().ast);
+
+        Self {
+            read_view: IncrementalStateReadView {
+                source,
+                rope,
+                line_index,
+                lex_checkpoints: lexed.checkpoints,
+                parse_checkpoints,
+                snapshot,
+                tokens: lexed.tokens,
+            },
+            stored_lex_checkpoints: lexed.stored_checkpoints,
         }
     }
 
@@ -84,13 +133,13 @@ impl IncrementalState {
     /// Rope view for the current committed source.
     #[must_use]
     pub fn rope(&self) -> &Rope {
-        &self.rope
+        &self.read_view.rope
     }
 
     /// Line index for the current committed source.
     #[must_use]
     pub fn line_index(&self) -> &LineIndex {
-        &self.line_index
+        &self.read_view.line_index
     }
 
     /// Lexer restart summaries for the current committed token stream.
@@ -112,30 +161,44 @@ impl IncrementalState {
     /// Parser restart summaries for the current committed parse output.
     #[must_use]
     pub fn parse_checkpoints(&self) -> &[ParseCheckpoint] {
-        &self.parse_checkpoints
+        &self.read_view.parse_checkpoints
     }
 
-    /// Authoritative recovery-aware parser output for this generation.
+    /// Monotonic identity for the committed source generation.
+    #[must_use]
+    pub fn generation(&self) -> ParseGeneration {
+        self.read_view.snapshot.generation()
+    }
+
+    /// Generation-bound authoritative parser snapshot.
+    #[must_use]
+    pub fn snapshot(&self) -> &ParseSnapshot {
+        &self.read_view.snapshot
+    }
+
+    /// Authoritative recovery-aware parser output for this generation,
+    /// projected from the generation-bound snapshot.
     #[must_use]
     pub fn parse_output(&self) -> &ParseOutput {
-        &self.parse_output
+        self.read_view.snapshot.parse_output()
     }
 
     /// Compatibility AST view for the current generation.
-    #[deprecated(note = "Use parse_output().ast; this compatibility view will be removed.")]
-    #[expect(deprecated, reason = "the compatibility AST field mirrors the native parse output")]
+    #[deprecated(
+        note = "Use snapshot().parse_output().ast; this compatibility view will be removed."
+    )]
     #[must_use]
     pub fn ast(&self) -> &Node {
-        &self.ast
+        &self.read_view.snapshot.parse_output().ast
     }
 
     /// Current committed lexer token stream.
     #[must_use]
     pub fn tokens(&self) -> &[Token] {
-        &self.tokens
+        &self.read_view.tokens
     }
 
-    /// Find the nearest compact lexer checkpoint at or before `byte`.
+    /// Find the nearest lexer checkpoint at or before `byte`.
     #[must_use]
     pub fn find_lex_checkpoint(&self, byte: usize) -> Option<&LexCheckpoint> {
         self.read_view.lex_checkpoints.iter().rev().find(|cp| cp.byte <= byte)
@@ -144,13 +207,17 @@ impl IncrementalState {
     /// Find the nearest parser checkpoint at or before `byte`.
     #[must_use]
     pub fn find_parse_checkpoint(&self, byte: usize) -> Option<&ParseCheckpoint> {
-        self.parse_checkpoints.iter().rev().find(|cp| cp.byte <= byte)
+        self.read_view.parse_checkpoints.iter().rev().find(|cp| cp.byte <= byte)
     }
 
     /// Replace the text-bearing portion of a staged generation.
+    ///
+    /// This remains crate-private so source, rope, and line-index identity cannot
+    /// be changed independently by consumers. Callers finish rebuilding tokens,
+    /// checkpoints, and parser output before publishing the staged state.
     pub(super) fn replace_source_text(&mut self, source: String) {
-        self.rope = Rope::from_str(&source);
-        self.line_index = LineIndex::new(&source);
+        self.read_view.rope = Rope::from_str(&source);
+        self.read_view.line_index = LineIndex::new(&source);
         self.read_view.source = source;
     }
 
@@ -161,19 +228,33 @@ impl IncrementalState {
         lex_checkpoints: Vec<LexCheckpoint>,
         stored_lex_checkpoints: Vec<StoredLexCheckpoint>,
     ) {
-        self.tokens = tokens;
+        self.read_view.tokens = tokens;
         self.read_view.lex_checkpoints = lex_checkpoints;
         self.stored_lex_checkpoints = stored_lex_checkpoints;
     }
 
     /// Refresh the authoritative parser output from the current source.
-    #[expect(deprecated, reason = "the compatibility AST field mirrors the native parse output")]
-    pub(crate) fn refresh_parse_output(&mut self) {
+    ///
+    /// The snapshot and parse checkpoints are updated from the same recovered
+    /// parse so the state cannot expose mixed generations. Generation
+    /// advancement is checked: counter exhaustion fails closed before any
+    /// state is committed.
+    pub(crate) fn refresh_parse_output(
+        &mut self,
+        strategy: ParseSnapshotStrategy,
+    ) -> anyhow::Result<()> {
+        let generation = self
+            .generation()
+            .checked_next()
+            .ok_or_else(|| anyhow::anyhow!("parse generation counter exhausted"))?;
         let mut parser = Parser::new(self.source());
         let parse_output = parser.parse_with_recovery();
-        self.parse_checkpoints = Self::create_parse_checkpoints(&parse_output.ast);
-        self.ast = parse_output.ast.clone();
-        self.parse_output = parse_output;
+        let snapshot =
+            ParseSnapshot::from_output(self.source(), generation, strategy, parse_output);
+        self.read_view.parse_checkpoints =
+            Self::create_parse_checkpoints(&snapshot.parse_output().ast);
+        self.read_view.snapshot = snapshot;
+        Ok(())
     }
 
     pub(crate) fn create_parse_checkpoints(ast: &Node) -> Vec<ParseCheckpoint> {

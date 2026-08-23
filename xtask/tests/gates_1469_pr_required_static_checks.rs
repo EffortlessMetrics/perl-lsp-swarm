@@ -309,12 +309,31 @@ fn ci_workflow_runs_unit_routed_full_in_pr_smoke() -> Result<(), Box<dyn std::er
         workflow.contains("PR-fast timeout policy: GitHub job 50m, outer runner watchdog 45m"),
         "pr-smoke log message must document the active watchdog policy"
     );
-    assert!(
-        workflow.contains(
-            "timeout --signal=TERM --kill-after=60s 2700s ./target/debug/xtask gates --tier pr-fast --base origin/main --receipt"
-        ),
-        "pr-smoke inner watchdog must leave enough room for unit_routed_full receipt output"
-    );
+    // The watchdog invocation is asserted by its durable parts rather than as one
+    // literal line: the binary path spelling is incidental (it moved from
+    // `./target/debug/xtask` to `"$CARGO_TARGET_DIR/debug/xtask"` in #4912), while the
+    // signal, grace period, 2700s ceiling, tier, base, and --receipt are the contract.
+    let watchdog_line = workflow
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("timeout ") && line.contains("gates --tier pr-fast"))
+        .ok_or("pr-smoke must wrap the pr-fast gate runner in a `timeout` watchdog")?;
+
+    for required in [
+        "--signal=TERM",
+        "--kill-after=60s",
+        "2700s",
+        "/debug/xtask",
+        "gates --tier pr-fast",
+        "--base origin/main",
+        "--receipt",
+    ] {
+        assert!(
+            watchdog_line.contains(required),
+            "pr-smoke inner watchdog must leave enough room for unit_routed_full receipt \
+             output; missing {required:?} in: {watchdog_line}"
+        );
+    }
 
     // Ensure the routed shard (which was a failed attempt to run unit_routed_full)
     // has been removed

@@ -6,7 +6,7 @@ describe('LanguageClientStartupMetrics', function () {
     const metrics = new LanguageClientStartupMetrics();
     metrics.setLifecycleState('resolving');
     metrics.beginBinaryResolution();
-    metrics.finishBinaryResolution('ok', 'configured');
+    metrics.finishBinaryResolution('ok', 'configured', 'C:\\configured\\perllsp.exe');
     metrics.setLifecycleState('starting');
     metrics.beginServerStart();
     metrics.beginInitialize();
@@ -24,6 +24,7 @@ describe('LanguageClientStartupMetrics', function () {
     assert.equal(snapshot.lifecycle_state, 'running');
     assert.equal(snapshot.binary_resolution_status, 'ok');
     assert.equal(snapshot.binary_resolution_source, 'configured');
+    assert.equal(snapshot.binary_resolution_path, 'C:\\configured\\perllsp.exe');
     assert.equal(snapshot.server_start_status, 'ok');
     assert.equal(snapshot.initialize_status, 'ok');
     assert.equal(snapshot.server_version, '0.17.0');
@@ -65,10 +66,28 @@ describe('LanguageClientStartupMetrics', function () {
     const snapshot = metrics.snapshot();
     assert.equal(snapshot.binary_resolution_status, 'unavailable');
     assert.equal(snapshot.binary_resolution_source, 'unavailable');
+    assert.equal(snapshot.binary_resolution_path, null);
     assert.equal(snapshot.initialize_status, 'idle');
     assert.equal(snapshot.initialize_ms, null);
     assert.equal(snapshot.server_start_status, 'idle');
     assert.equal(snapshot.server_start_ms, null);
+  });
+
+  test('retains a same-version configured path for packaged identity rejection', function () {
+    const metrics = new LanguageClientStartupMetrics();
+    metrics.beginBinaryResolution();
+    metrics.finishBinaryResolution('ok', 'configured', 'C:\\configured\\perllsp.exe');
+    metrics.beginServerStart();
+    metrics.beginInitialize();
+    metrics.finishServerStart('ok');
+    metrics.finishInitialize('ok');
+    metrics.setServerVersion('0.17.0');
+
+    const snapshot = metrics.snapshot();
+    assert.equal(snapshot.server_version, '0.17.0');
+    assert.equal(snapshot.binary_resolution_source, 'configured');
+    assert.equal(snapshot.binary_resolution_path, 'C:\\configured\\perllsp.exe');
+    assert.notEqual(snapshot.binary_resolution_source, 'bundled');
   });
 
   test('retains the first timestamp when a lifecycle event is observed again', function () {

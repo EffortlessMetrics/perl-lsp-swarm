@@ -2,9 +2,7 @@
 //!
 //! Provides context-aware method completion including DBI methods.
 
-use super::{
-    auto_import, context::CompletionContext, items::CompletionItem, items::InsertTextFormat,
-};
+use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
 use perl_semantic_analyzer::symbol::{SymbolKind, SymbolTable};
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -436,19 +434,6 @@ pub fn add_method_completions(
     // Try to infer the receiver type from context
     let receiver_type = infer_receiver_type(context, source);
 
-    // Determine module for auto-import:
-    // - For static calls like `LWP::UserAgent->` use the prefix receiver.
-    // - For DBI-inferred types use "DBI".
-    let import_module: Option<&str> =
-        static_receiver_module(&context.prefix).or(match receiver_type.as_deref() {
-            Some("DBI::db") | Some("DBI::st") => Some("DBI"),
-            _ => None,
-        });
-
-    // Build an auto-import edit once so all items in this batch share it.
-    let auto_import_edit =
-        import_module.and_then(|m| auto_import::build_auto_import_edit(source, m));
-
     let static_framework_methods =
         imported_framework_methods(context.receiver_prefix(), used_modules);
 
@@ -475,8 +460,6 @@ pub fn add_method_completions(
             continue;
         }
         if seen.insert(method) {
-            let additional_edits =
-                auto_import_edit.as_ref().map(|e| vec![e.clone()]).unwrap_or_default();
             completions.push(CompletionItem {
                 label: Cow::Owned(method.to_string()),
                 kind: super::items::CompletionItemKind::Function,
@@ -485,7 +468,7 @@ pub fn add_method_completions(
                 insert_text: Some(Cow::Owned(format!("{}()", method))),
                 sort_text: Some(Cow::Owned(format!("2_{}", method))),
                 filter_text: Some(Cow::Owned(method.to_string())),
-                additional_edits,
+                additional_edits: vec![],
                 text_edit_range: Some((context.method_text_edit_start(source), context.position)),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
@@ -501,8 +484,6 @@ pub fn add_method_completions(
             ("can", "Check if object can call method"),
         ] {
             if seen.insert(method) {
-                let additional_edits =
-                    auto_import_edit.as_ref().map(|e| vec![e.clone()]).unwrap_or_default();
                 completions.push(CompletionItem {
                     label: Cow::Owned(method.to_string()),
                     kind: super::items::CompletionItemKind::Function,
@@ -511,7 +492,7 @@ pub fn add_method_completions(
                     insert_text: Some(Cow::Owned(format!("{}()", method))),
                     sort_text: Some(Cow::Owned(format!("9_{}", method))), // Lower priority
                     filter_text: Some(Cow::Owned(method.to_string())),
-                    additional_edits,
+                    additional_edits: vec![],
                     text_edit_range: Some((
                         context.method_text_edit_start(source),
                         context.position,

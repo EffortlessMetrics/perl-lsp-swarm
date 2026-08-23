@@ -256,10 +256,10 @@ fn test_syntax_highlighting(_test_dir: &Path) -> Result<()> {
         PathBuf::from("target/debug/perllsp")
     } else if Path::new("target/release/perllsp").exists() {
         PathBuf::from("target/release/perllsp")
-    } else if Path::new("target/debug/perl-lsp").exists() {
-        PathBuf::from("target/debug/perl-lsp")
-    } else if Path::new("target/release/perl-lsp").exists() {
-        PathBuf::from("target/release/perl-lsp")
+    } else if Path::new("target/debug/perllsp").exists() {
+        PathBuf::from("target/debug/perllsp")
+    } else if Path::new("target/release/perllsp").exists() {
+        PathBuf::from("target/release/perllsp")
     } else {
         PathBuf::from("perllsp")
     };

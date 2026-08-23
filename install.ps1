@@ -12,7 +12,8 @@
 
 param(
     [string]$Version = "latest",
-    [string]$InstallDir = "$env:USERPROFILE\.local\bin"
+    [string]$InstallDir = "$env:USERPROFILE\.local\bin",
+    [switch]$NoModifyPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -56,6 +57,84 @@ function Write-Success {
     Write-Host $Message
 }
 
+# Normalize one PATH entry for exact, case-insensitive comparison. Expand
+# environment variables before comparing so `%USERPROFILE%\.local\bin` and the
+# already-expanded install directory are treated as the same entry.
+function Normalize-PathEntry {
+    param([string]$PathEntry)
+
+    if ([string]::IsNullOrWhiteSpace($PathEntry)) {
+        return $null
+    }
+
+    $Expanded = [Environment]::ExpandEnvironmentVariables($PathEntry.Trim())
+    if ([IO.Path]::IsPathRooted($Expanded)) {
+        try {
+            $Expanded = [IO.Path]::GetFullPath($Expanded)
+        } catch {
+            # Keep the expanded value when the entry is intentionally not a normal
+            # filesystem path; it still participates in exact string comparison.
+        }
+    }
+
+    return $Expanded.TrimEnd([char[]]"\/")
+}
+
+function Test-PathContainsEntry {
+    param(
+        [string]$PathValue,
+        [string]$Entry
+    )
+
+    $Expected = Normalize-PathEntry $Entry
+    if (-not $Expected) {
+        return $false
+    }
+
+    foreach ($Candidate in @($PathValue -split ';')) {
+        $Normalized = Normalize-PathEntry $Candidate
+        if ($Normalized -and [string]::Equals($Normalized, $Expected, [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Add-InstallDirToCurrentProcessPath {
+    if (Test-PathContainsEntry -PathValue $env:Path -Entry $InstallDir) {
+        return
+    }
+
+    if ([string]::IsNullOrWhiteSpace($env:Path)) {
+        $env:Path = $InstallDir
+    } else {
+        $env:Path = "$env:Path;$InstallDir"
+    }
+}
+
+function Ensure-InstallDirOnUserPath {
+    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if (Test-PathContainsEntry -PathValue $UserPath -Entry $InstallDir) {
+        return $false
+    }
+
+    # Persist only the existing *user* PATH plus the install directory. Do not
+    # copy `$env:Path`: that value is the merged process/system/user PATH and
+    # writing it back to the user scope duplicates system entries permanently.
+    $NewUserPath = if ([string]::IsNullOrWhiteSpace($UserPath)) {
+        $InstallDir
+    } else {
+        "$($UserPath.TrimEnd(';'));$InstallDir"
+    }
+    [Environment]::SetEnvironmentVariable("Path", $NewUserPath, "User")
+    return $true
+}
+
+function Write-ManualPathGuidance {
+    Write-Host "Add this directory to your user PATH before starting a new editor/Claude process: $InstallDir" -ForegroundColor Cyan
+}
+
 # Detect architecture.
 #
 # The release matrix builds both x86_64-pc-windows-msvc and, since #5208, a
@@ -83,6 +162,36 @@ $HostArch = if ($env:PROCESSOR_ARCHITEW6432) {
 }
 
 $IsArm64Host = $HostArch -eq "ARM64"
+
+function Get-ExpectedAssetHash {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ChecksumPath,
+        [Parameter(Mandatory = $true)]
+        [string]$Asset
+    )
+
+    $HashPattern = [regex]'^[0-9a-f]{64}$'
+    $Rows = @(
+        Get-Content -LiteralPath $ChecksumPath | ForEach-Object {
+            $Parts = $_ -split '\s+', 2
+            if ($Parts.Count -eq 2 -and $Parts[0] -and $Parts[1]) {
+                [pscustomobject]@{ Hash = $Parts[0]; Name = $Parts[1].Trim().TrimStart('*') }
+            }
+        } | Where-Object { $_.Name -ceq $Asset }
+    )
+
+    if ($Rows.Count -eq 0) {
+        throw "SHA256SUMS contains no exact entry for $Asset"
+    }
+    if ($Rows.Count -ne 1) {
+        throw "SHA256SUMS contains duplicate entries for $Asset"
+    }
+    if (-not $HashPattern.IsMatch($Rows[0].Hash)) {
+        throw "SHA256SUMS entry for $Asset is not an exact lowercase SHA-256 hash"
+    }
+    return $Rows[0].Hash
+}
 
 function Get-WindowsBuildNumber {
     try {
@@ -213,36 +322,36 @@ Write-Info "Downloading $Name $Tag for $Target"
 $TempDir = New-TemporaryFile | ForEach-Object { Remove-Item $_; New-Item -ItemType Directory -Path $_ }
 
 try {
+    # Integrity metadata is required and validated before the archive download.
+    $ChecksumUrl = "$ReleaseBaseUrl/SHA256SUMS"
+    $ChecksumPath = Join-Path $TempDir "SHA256SUMS"
+    try {
+        Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumPath -UseBasicParsing
+    } catch {
+        Write-Error "Failed to download required checksum manifest from $ChecksumUrl : $_"
+        throw
+    }
+
+    $ExpectedHash = Get-ExpectedAssetHash -ChecksumPath $ChecksumPath -Asset $Asset
+
     # Download binary
     $ZipPath = Join-Path $TempDir $Asset
     Write-Info "Downloading from $Url"
-    
     try {
         Invoke-WebRequest -Uri $Url -OutFile $ZipPath -UseBasicParsing
     } catch {
         Write-Error "Failed to download from $Url : $_"
+        throw
     }
-    
-    # Download and verify checksum (optional)
-    $ChecksumUrl = "https://github.com/$Repo/releases/download/$Tag/SHA256SUMS"
-    $ChecksumPath = Join-Path $TempDir "SHA256SUMS"
-    
-    try {
-        Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumPath -UseBasicParsing
-        
-        # Verify checksum
-        $ExpectedHash = (Get-Content $ChecksumPath | Select-String $Asset).Line.Split(" ")[0]
-        $ActualHash = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash.ToLower()
-        
-        if ($ExpectedHash -eq $ActualHash) {
-            Write-Success "Checksum verified"
-        } else {
-            Write-Error "Checksum mismatch - expected: $ExpectedHash, got: $ActualHash"
-        }
-    } catch {
-        Write-Warn "Could not download or verify checksums"
+
+    # Verify checksum
+    $ActualHash = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash.ToLower()
+    if ($ExpectedHash -ne $ActualHash) {
+        Write-Error "Checksum mismatch - expected: $ExpectedHash, got: $ActualHash"
+        throw
     }
-    
+    Write-Success "Checksum verified"
+
     # Extract archive
     Write-Info "Extracting archive"
     $ExtractDir = Join-Path $TempDir "extract"
@@ -305,23 +414,51 @@ try {
     } catch {
         Write-Warn "Could not verify installation"
     }
-    
-    # Check PATH
+
+    # Persist a user-local install directory safely. The old guidance printed a
+    # command that copied the merged process/system/user `$env:Path` back into
+    # the User PATH, permanently duplicating system entries. This path updates
+    # only the User scope and keeps an explicit opt-out for managed machines.
+    #
+    # Process-only visibility is not persistence: a prior temporary-session
+    # PATH edit must still write User PATH so fresh terminals inherit it.
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($UserPath -like "*$InstallDir*") {
-        Write-Success "$InstallDir is already in your PATH"
+    $InUserPath = Test-PathContainsEntry -PathValue $UserPath -Entry $InstallDir
+    $InProcessPath = Test-PathContainsEntry -PathValue $env:Path -Entry $InstallDir
+
+    if ($InUserPath) {
+        Add-InstallDirToCurrentProcessPath
+        if ($InProcessPath) {
+            $PathDisposition = "path_visible_current_process"
+            Write-Success "$InstallDir is already persisted and visible on PATH"
+        } else {
+            $PathDisposition = "persisted_user_path_restart_required"
+            Write-Info "$InstallDir is already persisted in the user PATH"
+            Write-Warn "Restart already-running terminals, editors, and Claude Code so they inherit the persisted PATH."
+        }
+    } elseif ($NoModifyPath) {
+        $PathDisposition = "manual_path_action_required"
+        Write-Warn "$InstallDir is not in the user PATH and -NoModifyPath was requested"
+        Write-ManualPathGuidance
     } else {
-        Write-Warn "$InstallDir is not in your PATH"
-        Write-Host ""
-        Write-Host "To add it to your PATH permanently, run:" -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "  [Environment]::SetEnvironmentVariable('Path', `"`$env:Path;$InstallDir`", 'User')" -ForegroundColor White
-        Write-Host ""
-        Write-Host "Or add it temporarily for this session:" -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "  `$env:Path += `";$InstallDir`"" -ForegroundColor White
-        Write-Host ""
+        try {
+            $Changed = Ensure-InstallDirOnUserPath
+            Add-InstallDirToCurrentProcessPath
+            $PathDisposition = "persisted_user_path_restart_required"
+            if ($Changed) {
+                Write-Success "Added $InstallDir to the persistent user PATH"
+            } elseif ($InProcessPath) {
+                Write-Info "$InstallDir was process-visible; confirmed user PATH persistence"
+            }
+            Write-Warn "Restart already-running terminals, editors, and Claude Code so they inherit the persisted PATH."
+        } catch {
+            Add-InstallDirToCurrentProcessPath
+            $PathDisposition = "manual_path_action_required"
+            Write-Warn "Could not persist $InstallDir on the user PATH: $($_.Exception.Message)"
+            Write-ManualPathGuidance
+        }
     }
+    Write-Info "PATH status: $PathDisposition"
     
     Write-Host ""
     Write-Host "Installation complete! 🎉" -ForegroundColor Green

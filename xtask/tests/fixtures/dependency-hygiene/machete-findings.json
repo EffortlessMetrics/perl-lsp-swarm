@@ -1,0 +1,1 @@
+{"crates":[{"package_name":"fixture-crate","manifest_path":"crates/fixture-crate/Cargo.toml","unused":["unused-dependency"],"ignored_used":[]}]}
