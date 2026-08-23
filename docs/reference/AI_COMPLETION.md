@@ -22,42 +22,46 @@ Where each field can be set:
 | Channel | Fields it accepts |
 |---------|-------------------|
 | `.perl-lsp.toml` | `enabled` only (`false` opt-out; `true` is ignored) |
-| LSP client/server configuration | the complete server field set below |
-| Primary VS Code extension | activation and streaming toggles only — no endpoint or credential surface |
-
-`endpoint` and the API-key fields are **not** accepted from `.perl-lsp.toml` (see
-"Destination and credentials" below, and issue #4955). Timeout, rate limits,
-output bounds, and streaming controls are likewise server-configuration fields,
-not project-config fields.
+| LSP client/server configuration | envelope/presentation fields only (`timeoutMs`, limits, `fallback`, `localModelMode`, `streaming.updateDebounceMs`) — never activation, provider/model, endpoint, or credentials (#4997, #5684) |
+| Primary VS Code extension | client-side activation/streaming toggles only (machine scope) — the extension does not forward an AI transport configuration to the server |
 
 Project configuration is opt-out only: `enabled = false` can disable AI for a
-repository, while `enabled = true`, `provider`, and `model` are ignored. Users
-must enable AI and choose the provider/model through client settings. The API
-key itself is always read from an environment variable; it is never stored in
-settings.
+repository, while `enabled = true`, `provider`, and `model` are ignored. No
+current channel can enable remote AI or choose its provider/model: activation
+authority is reserved for a future server-owned trusted user/operator adapter
+(issue #4997, tracked by #10817). The API key itself is always read from an
+environment variable; it is never stored in settings.
 
 ## Server Configuration Fields
 
-The server reads AI completion settings from the `aiCompletion` section of LSP
-`initializationOptions` or `didChangeConfiguration`. These are the full fields
-accepted:
+The server parses the `aiCompletion` section of LSP `initializationOptions`,
+`didChangeConfiguration`, and `workspace/configuration` results through one
+generic settings parser. Because none of these channels can prove user/machine
+provenance, **activation and selection fields are rejected on arrival**
+(#4997); previously accepted state is preserved and a warning names the
+ignored key.
 
-| JSON Key | Type | Default | Description |
-|----------|------|---------|-------------|
-| `enabled` | boolean | `false` | Master toggle for AI completions. |
-| `provider` | string | `"openai_compat"` | Provider type. Currently only `openai_compat` is supported. |
-| `endpoint` | string | `""` (empty) | API endpoint URL (e.g. `https://api.openai.com/v1/chat/completions`). |
-| `model` | string | `"gpt-4o-mini"` | Model identifier sent in the request body. |
-| `apiKeyEnv` | string | `"OPENAI_API_KEY"` | Name of the environment variable containing the API key. |
-| `apiKeyHeader` | string | `"Authorization"` | HTTP header the credential is sent in. Must be a valid header name; an empty or invalid value is ignored and the default is kept. Use e.g. `"x-api-key"` for providers that do not use `Authorization`. |
-| `apiKeyPrefix` | string | `"Bearer"` | Scheme prepended to the key, sent as `<prefix> <key>`. Set to `""` to send the raw key with no prefix — required by providers that expect a bare token. Values containing control characters are ignored. |
-| `timeoutMs` | integer | `1800` | Per-request timeout in milliseconds. |
-| `maxOutputTokens` | integer | `64` | Maximum tokens the model may generate per request. |
-| `rateLimitRps` | float | `1.0` | Maximum requests per second (token-bucket rate). |
-| `maxInflight` | integer | `1` | Maximum concurrent in-flight requests (burst size). |
-| `fallback` | boolean | `true` | Fall back to deterministic completions on AI failure. |
-| `streaming.enabled` | boolean | `true` | Enable streaming mode (progressive ghost text). |
-| `streaming.updateDebounceMs` | integer | `60` | Minimum milliseconds between streamed ghost text updates. The first and final cumulative updates are always emitted. |
+| JSON Key | Type | Default | Accepted generically | Description |
+|----------|------|---------|----------------------|-------------|
+| `enabled` | boolean | `false` | no — rejected (#4997) | Master toggle for AI completions; writable only by the future trusted operator adapter. |
+| `provider` | string | `"openai_compat"` | no — rejected (#4997) | Provider type. Currently only `openai_compat` is supported. |
+| `endpoint` | string | `""` (empty) | no — rejected (#5684) | API endpoint URL (e.g. `https://api.openai.com/v1/chat/completions`). |
+| `model` | string | `"gpt-4o-mini"` | no — rejected (#4997) | Model identifier sent in the request body. |
+| `apiKeyEnv` | string | `"OPENAI_API_KEY"` | no — rejected (#5684) | Name of the environment variable containing the API key. |
+| `apiKeyHeader` | string | `"Authorization"` | no — rejected (#5684) | HTTP header the credential is sent in. Must be a valid header name; an empty or invalid value is ignored and the default is kept. Use e.g. `"x-api-key"` for providers that do not use `Authorization`. |
+| `apiKeyPrefix` | string | `"Bearer"` | no — rejected (#5684) | Scheme prepended to the key, sent as `<prefix> <key>`. Set to `""` to send the raw key with no prefix — required by providers that expect a bare token. Values containing control characters are ignored. |
+| `timeoutMs` | integer | `1800` | yes | Per-request timeout in milliseconds. |
+| `maxOutputTokens` | integer | `64` | yes | Maximum tokens the model may generate per request. |
+| `rateLimitRps` | float | `1.0` | yes | Maximum requests per second (token-bucket rate). |
+| `maxInflight` | integer | `1` | yes | Maximum concurrent in-flight requests (burst size). |
+| `fallback` | boolean | `true` | yes | Fall back to deterministic completions on AI failure. |
+| `streaming.enabled` | boolean | `true` | no — rejected (#4997) | Enable streaming mode (progressive ghost text). Streaming preferences never imply backend authorization. |
+| `streaming.updateDebounceMs` | integer | `60` | yes | Minimum milliseconds between streamed ghost text updates. The first and final cumulative updates are always emitted. |
+
+Arming the remote backend additionally requires an accepted trusted
+activation; until the server-owned adapter lands, remote construction fails
+closed and inline completions resolve deterministically regardless of any
+client payload.
 
 ## Project Config File (`.perl-lsp.toml`)
 
@@ -75,34 +79,30 @@ enabled = false
 
 Only the fields you set will override defaults. Omitted fields retain their
 built-in default values. `enabled = true`, `provider`, and `model` in
-`.perl-lsp.toml` are **not honoured** (issue #4997); use client settings to
-enable AI and choose provider/model.
+`.perl-lsp.toml` are **not honoured** (issue #4997). Enabling remote AI and
+choosing provider/model currently has no accepted channel at all: that
+authority is reserved for the future server-owned trusted user/operator
+adapter (#10817).
 
-### Destination and credentials cannot come from `.perl-lsp.toml`
+### Destination, credentials, activation, and selection cannot come from any project or generic channel
 
-`endpoint`, `api_key_env`, `api_key_header`, and `api_key_prefix` **cannot be set
-from `.perl-lsp.toml`**. They are read only from the LSP client/server
-configuration channel — `initializationOptions` or `didChangeConfiguration`, as
-documented under "Server Configuration Fields" above.
+`endpoint`, `api_key_env`, `api_key_header`, `api_key_prefix`,
+`enabled`, `provider`, and `model` **cannot be set from `.perl-lsp.toml` nor
+from generic LSP settings** (`initializationOptions`, `didChangeConfiguration`,
+`workspace/configuration` results). A checked-in file or a workspace-derived
+client payload must never be able to choose which environment variable is read
+as a credential, where requests are sent (#4955, #5684), or whether source code
+leaves the machine at all (#4997).
 
-`.perl-lsp.toml` is checked into a repository, so honouring those fields let a
-cloned project choose both which environment variable was read as a credential
-and where it was sent — arbitrary named-secret exfiltration, with your source in
-the request body. They were removed for the same reason `perlPath` and `perlArgs`
-are not honoured from workspace settings (issue #3729). See issue #4955.
+Generic-channel arrivals of these keys are logged with a warning naming the
+ignored setting; previously accepted state is preserved.
 
-**These keys are silently ignored, not rejected**, because the TOML deserializer
-drops unknown fields. If you set `endpoint` in `.perl-lsp.toml` and requests keep
-going to the default destination, that is why.
-
-Supply these fields through an LSP client that supports server configuration.
-**The primary VS Code extension currently does not expose that surface** — see
-the known gap below.
-
-> **Activation is user/machine-scoped.** `perl-lsp.aiCompletion.enabled` and
+> **Activation is user/machine-scoped — and server-enforced.**
+> `perl-lsp.aiCompletion.enabled` and
 > `perl-lsp.aiCompletion.streaming.enabled` are declared `scope: machine` in
-> the VS Code extension, and the server ignores project attempts to enable AI
-> (issue #4997). A repository can still opt out with `[ai_completion] enabled =
+> the VS Code extension, the server ignores project attempts to enable AI,
+> and no generic LSP channel can arm the backend either (issue #4997).
+> A repository can still opt out with `[ai_completion] enabled =
 > false` in `.perl-lsp.toml`. Issue #4998 covers the same provenance gap for
 > include paths.
 
@@ -156,23 +156,24 @@ For Responses endpoints, the request format uses `"stream": true`,
 ```
 
 > **Known gap: there is currently no VS Code setting for `endpoint` or the
-> API-key fields.**
+> API-key fields, and no accepted channel supplies them to the server.**
 >
 > Earlier revisions of this document showed a `perl-lsp.serverConfig` block
 > here. **That setting does not exist** — the extension has never contributed
 > it, and its `initializationOptions` carry only `disabledFeatures`. The
 > example was wrong when written.
 >
-> Until a configuration surface is added (issue #4997), the endpoint and
-> credential fields can only be supplied by an LSP client that sends them in
-> `initializationOptions` or `didChangeConfiguration` directly — which the
-> VS Code extension does not currently do. They can no longer be set from
-> `.perl-lsp.toml`, because a checked-in file choosing the credential name and
-> destination is the exfiltration chain closed in issue #4955.
+> The endpoint and credential fields cannot be supplied from `.perl-lsp.toml`
+> (a checked-in file choosing the credential name and destination is the
+> exfiltration chain closed in issue #4955), and generic LSP settings channels
+> are rejected for the same provenance reasons (#5684, #4997). Until a
+> server-owned trusted operator adapter exists (issue #4997, #10817), remote
+> AI backend construction fails closed; inline completions resolve through the
+> deterministic path.
 >
-> If you previously configured `endpoint` via `.perl-lsp.toml`, it will stop
-> taking effect. That is intentional; the replacement surface is tracked in
-> #4997.
+> If you previously configured `endpoint` or enabled AI via `.perl-lsp.toml`
+> or client settings, those values no longer take effect. That is intentional;
+> the replacement surface is tracked in #4997.
 
 Set the API key in your shell profile or VS Code terminal environment:
 
@@ -207,11 +208,15 @@ the server falls back to deterministic pattern-based completions when
 
 **No AI completions appearing**
 
-1. Verify `aiCompletion.enabled` is `true` in your settings.
-2. Check that `endpoint` is set to a valid URL (it defaults to empty).
-3. Confirm the API key environment variable is set and non-empty in the
-   LSP server's process environment. Check the server stderr log for
-   `AI completion enabled but <VAR> is empty or unset`.
+1. Remote AI activation currently has no accepted configuration channel: the
+   server-owned trusted operator adapter is pending (issue #4997, #10817), so
+   completions resolve deterministically. A warning naming
+   `aiCompletion.enabled` means a client payload tried to arm egress and was
+   rejected.
+2. When the trusted adapter lands, check that `endpoint` is set to a valid URL
+   (it defaults to empty) and that the API key environment variable is set and
+   non-empty in the LSP server's process environment. Check the server stderr
+   log for `AI completion enabled but <VAR> is empty or unset`.
 
 **Authentication errors (401/403)**
 
