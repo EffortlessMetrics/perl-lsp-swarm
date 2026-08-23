@@ -1038,9 +1038,20 @@ fn has_semantic_close_packet(
     current_repository: &str,
 ) -> bool {
     let contract = section_text(sections, &[SectionKind::GoverningContract]);
-    let lower = contract.to_ascii_lowercase();
-    (lower.contains("semantic close packet") || lower.contains("close packet"))
-        && references_issue(&contract, key, current_repository)
+    contract.lines().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        let has_marker = lower.contains("semantic close packet") || lower.contains("close packet");
+        let negated = ["not supplied", "not provided", "missing", "absent", "without"]
+            .iter()
+            .any(|marker| lower.contains(marker));
+        let has_concrete_reference = lower.split_once(':').is_some_and(|(_, reference)| {
+            reference.contains('/') || reference.contains(".json") || reference.contains("https://")
+        });
+        has_marker
+            && !negated
+            && has_concrete_reference
+            && references_issue(line, key, current_repository)
+    })
 }
 
 fn issue_names_pull_as_historical_predecessor(issue_body: &str, pull_number: u64) -> bool {
@@ -1603,14 +1614,25 @@ mod tests {
     #[test]
     fn mutation_controls_prove_each_rule_owns_its_fixture_disposition() -> Result<()> {
         let controls = [
-            (RuleId::PhaseTerminal, "invalid-phase-terminal-5023-5001"),
-            (RuleId::RemainingSameIssue, "invalid-partial-slice-6239-5016"),
-            (RuleId::PredecessorSuccessorCollapse, "invalid-predecessor-successor-5968-5231"),
-            (RuleId::ProofLevelContradiction, "invalid-proof-level-6282-5901"),
-            (RuleId::ControllerPacketMissing, "invalid-controller-no-packet"),
-            (RuleId::ExplicitlyNotProven, "invalid-explicit-unproven"),
+            (
+                RuleId::PhaseTerminal,
+                "invalid-phase-terminal-5023-5001",
+                Some(("## Claim Boundary\nPhase 1 only.\n\nCloses #5001", None)),
+            ),
+            (RuleId::RemainingSameIssue, "invalid-remaining-same-issue", None),
+            (RuleId::PredecessorSuccessorCollapse, "invalid-predecessor-successor-5968-5231", None),
+            (
+                RuleId::ProofLevelContradiction,
+                "invalid-proof-level-6282-5901",
+                Some((
+                    "## Claim Boundary\nRelease evidence is explicitly out of scope.\n\nCloses #5901",
+                    Some("## Acceptance\nRelease proof is required."),
+                )),
+            ),
+            (RuleId::ControllerPacketMissing, "invalid-controller-no-packet", None),
+            (RuleId::ExplicitlyNotProven, "invalid-explicit-unproven", None),
         ];
-        for (rule, name) in controls {
+        for (rule, name, isolated) in controls {
             let raw = FIXTURES
                 .iter()
                 .find(|(fixture_name, _)| *fixture_name == name)
@@ -1629,11 +1651,35 @@ mod tests {
                 "mutation fixture {name} must fail with every rule enabled"
             );
 
-            let mutated = evaluate_fixture_with_rules(&fixture, RuleGate { disabled: Some(rule) })?;
+            let mutated = if let Some((body, isolated_issue_body)) = isolated {
+                let issue = fixture.issues.first().with_context(|| {
+                    format!("locating issue subject for mutation fixture {name}")
+                })?;
+                let pull = PullRequestSubject {
+                    repository: fixture.repository.clone(),
+                    number: fixture.pull_request.number,
+                    title: fixture.pull_request.title.clone(),
+                    body: body.to_string(),
+                };
+                let evidence = IssueEvidence::Available(IssueSubject {
+                    number: issue.number,
+                    title: issue.title.clone(),
+                    body: isolated_issue_body.unwrap_or(&issue.body).to_string(),
+                });
+                evaluate_with_rules(&pull, |_| evidence.clone(), RuleGate { disabled: Some(rule) })?
+            } else {
+                evaluate_fixture_with_rules(&fixture, RuleGate { disabled: Some(rule) })?
+            };
             assert_ne!(
                 mutated.aggregate_code,
                 intact.aggregate_code,
                 "disabling {} left the {name} disposition unchanged; the mutation control does not discriminate",
+                rule.as_str()
+            );
+            assert_eq!(
+                mutated.aggregate_code,
+                ResultCode::PassNoHighConfidenceContradiction,
+                "disabling {} left another contradiction active in {name}",
                 rule.as_str()
             );
         }
@@ -1659,6 +1705,12 @@ mod tests {
             MAX_PR_BODY_BYTES,
         )?;
         assert!(!has_semantic_close_packet(&summary_prose, &key, current_repository));
+
+        let negated_packet = parse_sections(
+            "## Governing contract\nSemantic close packet for #8035 is not supplied.\n",
+            MAX_PR_BODY_BYTES,
+        )?;
+        assert!(!has_semantic_close_packet(&negated_packet, &key, current_repository));
 
         let packet = parse_sections(
             "## Governing contract\nSemantic close packet for #8035: `.spec/8035/issue-close-proof.json`.\n",
