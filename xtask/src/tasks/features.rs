@@ -59,7 +59,15 @@ pub fn regen_vendored() -> Result<()> {
     let authority = fs::read("features.toml").context("reading root features.toml")?;
     for relative in VENDORED_PROJECTIONS {
         let path = repo_relative_path(relative);
-        let previous = fs::read(&path).unwrap_or_default();
+        let previous = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            // A missing projection simply needs generating; any other read
+            // failure must not silently masquerade as drift (#7029).
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => {
+                return Err(error).context(format!("reading current projection {relative}"));
+            }
+        };
         if previous != authority {
             fs::write(&path, &authority)
                 .with_context(|| format!("writing projection {relative}"))?;

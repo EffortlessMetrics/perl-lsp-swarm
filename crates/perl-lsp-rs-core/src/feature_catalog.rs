@@ -369,7 +369,7 @@ impl Catalog {
                         )),
                         Some(required) => {
                             let has_qualifying = feature.evidence.iter().any(|entry| {
-                                required.iter().any(|class| class == &entry.class)
+                                required.contains(&entry.class)
                                     && !self.evidence_non_qualifying(&entry.class)
                             });
                             if !has_qualifying {
@@ -413,15 +413,6 @@ impl Catalog {
                         ));
                     }
                 }
-            }
-
-            if matches!(
-                feature.maturity,
-                Maturity::Planned | Maturity::Unsupported | Maturity::NotProven
-            ) && feature.evidence.is_empty()
-            {
-                // Recorded honestly: no citation exists yet. Limitations should
-                // explain the gap, but absence of evidence is not an error.
             }
         }
 
