@@ -448,7 +448,9 @@ fn parse_denominator(metadata: &serde_json::Value) -> Result<Denominator> {
                 .and_then(serde_json::Value::as_array)
                 .map(|kinds| {
                     kinds.iter().any(|kind| {
-                        kind.get("kind").and_then(serde_json::Value::as_str) != Some("Dev")
+                        // cargo metadata serializes kinds as lowercase strings
+                        // ("dev"/"build") or null for a normal edge.
+                        kind.get("kind").and_then(serde_json::Value::as_str) != Some("dev")
                     })
                 })
                 .unwrap_or(true);
@@ -881,7 +883,7 @@ mod tests {
                 { "id": "registry+lsp", "features": [], "deps": [] },
                 { "id": "path+adapter", "features": [], "deps": [ { "pkg": "registry+lsp", "dep_kinds": [ { "kind": null, "target": null } ] } ] },
                 { "id": "path+parser", "features": ["lsp-compat"], "deps": [ { "pkg": "registry+lsp", "dep_kinds": [ { "kind": null, "target": null } ] } ] },
-                { "id": "path+uri", "features": [], "deps": [ { "pkg": "path+tdd", "dep_kinds": [ { "kind": "Dev", "target": null } ] } ] },
+                { "id": "path+uri", "features": [], "deps": [ { "pkg": "path+tdd", "dep_kinds": [ { "kind": "dev", "target": null } ] } ] },
                 { "id": "path+tdd", "features": ["lsp-compat"], "deps": [ { "pkg": "registry+lsp", "dep_kinds": [ { "kind": null, "target": null } ] } ] }
             ] }
         })

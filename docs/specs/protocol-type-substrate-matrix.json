@@ -165,7 +165,7 @@
         {
           "min_hops": 2,
           "package": "perl-core-harness",
-          "reachability": "normal_chain"
+          "reachability": "dev_only_chain"
         },
         {
           "min_hops": 3,
@@ -175,7 +175,7 @@
         {
           "min_hops": 2,
           "package": "perl-corpus",
-          "reachability": "normal_chain"
+          "reachability": "dev_only_chain"
         },
         {
           "min_hops": 2,
@@ -185,7 +185,7 @@
         {
           "min_hops": 2,
           "package": "perl-kwalitee",
-          "reachability": "normal_chain"
+          "reachability": "dev_only_chain"
         },
         {
           "min_hops": 2,
@@ -220,7 +220,7 @@
         {
           "min_hops": 2,
           "package": "perl-parser-pest",
-          "reachability": "normal_chain"
+          "reachability": "dev_only_chain"
         },
         {
           "min_hops": 3,
@@ -240,7 +240,7 @@
         {
           "min_hops": 2,
           "package": "perl-subprocess-runtime",
-          "reachability": "normal_chain"
+          "reachability": "dev_only_chain"
         },
         {
           "min_hops": 2,
@@ -250,7 +250,7 @@
         {
           "min_hops": 3,
           "package": "perl-token",
-          "reachability": "normal_chain"
+          "reachability": "dev_only_chain"
         },
         {
           "min_hops": 3,
@@ -260,7 +260,7 @@
         {
           "min_hops": 2,
           "package": "perl-uri",
-          "reachability": "normal_chain"
+          "reachability": "dev_only_chain"
         },
         {
           "min_hops": 3,
