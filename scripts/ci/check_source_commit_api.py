@@ -83,7 +83,7 @@ def main() -> int:
     if not isinstance(banned_prefixes, list) or not all(
         isinstance(prefix, str) and prefix for prefix in banned_prefixes
     ):
-        raise SystemExit("compatibility_banned_prefixes must be a non-empty string list")
+        raise SystemExit("compatibility_banned_prefixes must be a list of non-empty strings")
     tracked_sources = subprocess.check_output(
         ["git", "ls-files", "-z", "--", "*.rs"], cwd=ROOT
     ).decode("utf-8").split("\0")
