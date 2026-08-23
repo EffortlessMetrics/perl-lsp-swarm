@@ -114,9 +114,10 @@ impl LspHarness {
             return timeout;
         }
 
-        let is_ci = std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok();
+        let is_ci = is_ci_environment();
+        let is_constrained = is_constrained_environment();
 
-        if is_ci {
+        if uses_reliability_floor(is_ci, is_constrained, false) {
             timeout.max(Duration::from_secs(12))
         } else if cfg!(windows) {
             timeout.max(Duration::from_secs(10))
@@ -1295,16 +1296,10 @@ impl LspHarness {
             .unwrap_or(4);
 
         // Detect CI environments which need longer timeouts
-        let is_ci = std::env::var("CI").is_ok()
-            || std::env::var("GITHUB_ACTIONS").is_ok()
-            || std::env::var("TRAVIS").is_ok()
-            || std::env::var("CIRCLECI").is_ok()
-            || std::env::var("JENKINS_URL").is_ok();
+        let is_ci = is_ci_environment();
 
         // Detect containerized/constrained environments
-        let is_constrained = std::env::var("DOCKER_CONTAINER").is_ok()
-            || std::path::Path::new("/.dockerenv").exists()
-            || std::env::var("KUBERNETES_SERVICE_HOST").is_ok();
+        let is_constrained = is_constrained_environment();
 
         // Detect WSL environment (often has different performance characteristics)
         let is_wsl = std::env::var("WSL_DISTRO_NAME").is_ok() || std::env::var("WSLENV").is_ok();
@@ -1352,15 +1347,63 @@ impl LspHarness {
         // constrained environments raise the adaptive budget to the 2s threshold
         // so `effective_request_timeout` escalates it to the same 12s
         // reliability floor that initialization already enjoys.
-        let final_timeout =
-            if (is_ci || is_constrained) && std::env::var("PERL_LSP_PERFORMANCE_TEST").is_err() {
-                final_timeout.max(Duration::from_secs(2))
-            } else {
-                final_timeout
-            };
+        let final_timeout = if uses_reliability_floor(
+            is_ci,
+            is_constrained,
+            std::env::var("PERL_LSP_PERFORMANCE_TEST").is_ok(),
+        ) {
+            final_timeout.max(Duration::from_secs(2))
+        } else {
+            final_timeout
+        };
 
         // Cap maximum timeout to prevent tests from hanging indefinitely
         final_timeout.min(Duration::from_secs(30))
+    }
+}
+
+fn is_ci_environment() -> bool {
+    std::env::var("CI").is_ok()
+        || std::env::var("GITHUB_ACTIONS").is_ok()
+        || std::env::var("TRAVIS").is_ok()
+        || std::env::var("CIRCLECI").is_ok()
+        || std::env::var("JENKINS_URL").is_ok()
+}
+
+fn is_constrained_environment() -> bool {
+    std::env::var("DOCKER_CONTAINER").is_ok()
+        || std::path::Path::new("/.dockerenv").exists()
+        || std::env::var("KUBERNETES_SERVICE_HOST").is_ok()
+}
+
+fn uses_reliability_floor(is_ci: bool, is_constrained: bool, is_performance_test: bool) -> bool {
+    !is_performance_test && (is_ci || is_constrained)
+}
+
+#[cfg(test)]
+mod timeout_environment_tests {
+    use super::uses_reliability_floor;
+
+    #[test]
+    fn reliability_floor_environment_matrix_is_consistent() {
+        let cases = [
+            (false, false, false, false),
+            (true, false, false, true),
+            (false, true, false, true),
+            (true, true, false, true),
+            (false, false, true, false),
+            (true, false, true, false),
+            (false, true, true, false),
+            (true, true, true, false),
+        ];
+
+        for (is_ci, is_constrained, is_performance_test, expected) in cases {
+            assert_eq!(
+                uses_reliability_floor(is_ci, is_constrained, is_performance_test),
+                expected,
+                "unexpected reliability-floor decision for CI={is_ci}, constrained={is_constrained}, performance={is_performance_test}"
+            );
+        }
     }
 }
 
