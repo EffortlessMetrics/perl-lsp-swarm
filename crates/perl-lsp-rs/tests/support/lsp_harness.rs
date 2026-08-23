@@ -1346,6 +1346,19 @@ impl LspHarness {
             final_timeout
         };
 
+        // Loaded CI runners stall individual requests past sub-second budgets,
+        // which turns shape-claim suites red without any assertion firing (see
+        // issue #11982). Keep fast-fail behavior locally, but on CI and other
+        // constrained environments raise the adaptive budget to the 2s threshold
+        // so `effective_request_timeout` escalates it to the same 12s
+        // reliability floor that initialization already enjoys.
+        let final_timeout =
+            if (is_ci || is_constrained) && std::env::var("PERL_LSP_PERFORMANCE_TEST").is_err() {
+                final_timeout.max(Duration::from_secs(2))
+            } else {
+                final_timeout
+            };
+
         // Cap maximum timeout to prevent tests from hanging indefinitely
         final_timeout.min(Duration::from_secs(30))
     }
