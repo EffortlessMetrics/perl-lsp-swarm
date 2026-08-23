@@ -4,12 +4,13 @@ use super::*;
 use crate::contract::{validate_external_selector_for_test, validate_selector_for_test};
 use crate::io::{read_drift, read_matrix};
 use crate::model::{
-    CompositeOverlapPolicy, ManifestPopulation, TARGET_MATRIX_SCHEMA_VERSION,
+    CompositeOverlapPolicy, ManifestPopulation, TARGET_MATRIX_INDEX_SCHEMA_VERSION,
+    TARGET_MATRIX_PART_SCHEMA_VERSION, TARGET_MATRIX_SCHEMA_VERSION,
     TARGET_SELECTION_SCHEMA_VERSION, TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION, TargetAuthority,
     TargetAuthorityKind, TargetDisposition, TargetExclusion, TargetKind, TargetMatrixEntry,
-    TargetPerlRuntime, TargetPreparation, TargetScriptForm, TargetSelectionContract,
-    TargetSelector, TargetTerminalPolicy, TargetTopologyDrift, TargetTopologyDriftStatus,
-    UpstreamTargetMatrix,
+    TargetMatrixIndex, TargetMatrixPart, TargetPerlRuntime, TargetPreparation, TargetScriptForm,
+    TargetSelectionContract, TargetSelector, TargetTerminalPolicy, TargetTopologyDrift,
+    TargetTopologyDriftStatus, UpstreamTargetMatrix,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -1108,5 +1109,106 @@ fn selector_and_collection_errors_are_exact_and_load_bearing() -> Result<(), Str
         "capability predicate values must be strictly sorted and unique",
     )?;
 
+    Ok(())
+}
+
+// --- Index assembly and part seams -------------------------------------------
+// `read_matrix` on the checked-in bundle only reaches `assemble` with exactly
+// the declared parts, so the mismatch rejection and the combination contract
+// need their own focused oracles.
+
+fn matrix_index_fixture(target_files: Vec<String>) -> TargetMatrixIndex {
+    TargetMatrixIndex {
+        schema_version: TARGET_MATRIX_INDEX_SCHEMA_VERSION.to_string(),
+        perl_version_row: "fixture".to_string(),
+        perl_requested_ref: "fixture".to_string(),
+        perl_resolved_ref: "0000000000000000000000000000000000000000".to_string(),
+        topology_sources: BTreeMap::from([(
+            "t/TEST".to_string(),
+            "1111111111111111111111111111111111111111".to_string(),
+        )]),
+        target_files,
+        claim_boundary: "fixture index".to_string(),
+    }
+}
+
+fn matrix_part_fixture(mut entries: Vec<TargetMatrixEntry>) -> TargetMatrixPart {
+    entries.sort_by(|left, right| left.contract.target_id.cmp(&right.contract.target_id));
+    TargetMatrixPart {
+        schema_version: TARGET_MATRIX_PART_SCHEMA_VERSION.to_string(),
+        targets: entries,
+    }
+}
+
+#[test]
+fn index_assemble_rejects_part_count_mismatch_with_exact_message() -> Result<(), String> {
+    let index = matrix_index_fixture(vec!["01-components-a.json".to_string()]);
+
+    expect_exact_error(
+        index.assemble(Vec::new()).map(|_| ()),
+        "target matrix loaded 0 parts but index declares 1",
+    )?;
+    expect_exact_error(
+        index
+            .assemble(vec![matrix_part_fixture(Vec::new()), matrix_part_fixture(Vec::new())])
+            .map(|_| ()),
+        "target matrix loaded 2 parts but index declares 1",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn index_assemble_combines_parts_into_the_declared_matrix() -> Result<(), String> {
+    let index = matrix_index_fixture(vec![
+        "01-components-a.json".to_string(),
+        "02-components-b.json".to_string(),
+    ]);
+    let first_part = matrix_part_fixture(vec![entry(
+        physical_contract_with_id("component_base", "base"),
+        TargetDisposition::Implemented,
+    )]);
+    let second_part = matrix_part_fixture(vec![
+        entry(physical_contract_with_id("component_comp", "comp"), TargetDisposition::Implemented),
+        entry(physical_contract_with_id("component_run", "run"), TargetDisposition::Implemented),
+    ]);
+
+    let matrix = index.assemble(vec![first_part, second_part])?;
+    assert_eq!(matrix.schema_version, TARGET_MATRIX_SCHEMA_VERSION);
+    assert_eq!(matrix.perl_version_row, "fixture");
+    assert_eq!(matrix.claim_boundary, "fixture index");
+    assert_eq!(
+        matrix.topology_sources.get("t/TEST").map(String::as_str),
+        Some("1111111111111111111111111111111111111111")
+    );
+    let target_ids: Vec<&str> =
+        matrix.targets.iter().map(|row| row.contract.target_id.as_str()).collect();
+    assert_eq!(target_ids, vec!["component_base", "component_comp", "component_run"]);
+    Ok(())
+}
+
+#[test]
+fn matrix_part_rejects_empty_and_unsorted_rows_with_exact_messages() -> Result<(), String> {
+    expect_exact_error(
+        matrix_part_fixture(Vec::new()).validate(),
+        "target matrix part contains no rows",
+    )?;
+
+    let unsorted = TargetMatrixPart {
+        schema_version: TARGET_MATRIX_PART_SCHEMA_VERSION.to_string(),
+        targets: vec![
+            entry(
+                physical_contract_with_id("component_run", "run"),
+                TargetDisposition::Implemented,
+            ),
+            entry(
+                physical_contract_with_id("component_comp", "comp"),
+                TargetDisposition::Implemented,
+            ),
+        ],
+    };
+    expect_exact_error(
+        unsorted.validate(),
+        "target matrix part rows must be strictly sorted by target ID",
+    )?;
     Ok(())
 }
