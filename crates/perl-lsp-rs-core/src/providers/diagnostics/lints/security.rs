@@ -21,6 +21,7 @@ use perl_diagnostics::codes::DiagnosticCode;
 use perl_parser_core::ast::{Node, NodeKind};
 
 use super::super::internal_types::{Diagnostic, RelatedInformation};
+use crate::tooling::perl_critic::CriticObservedIdentity;
 use perl_diagnostics::codes::DiagnosticSeverity;
 
 /// Check for security anti-patterns
@@ -317,6 +318,11 @@ fn walk_security_node(
                     "Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution"
                         .to_string(),
                 ),
+                // Declared at emission (#11918): the parser stores backtick and
+                // qx bodies alike as `` `body` `` strings, so the observable AST
+                // shape is the backtick form -- exactly what the native
+                // backtick_exec rule declares for the same nodes.
+                observed_identity: Some(CriticObservedIdentity::built_in_backtick_exec().into()),
             });
             signal_shadowed
         }
@@ -408,6 +414,7 @@ fn check_global_signal_handler_assignment(
         }],
         tags: Vec::new(),
         fixable: false,
+        observed_identity: None,
         suggestion: Some(format!(
             "Use `local $SIG{{{}}} = ...` if the handler should be scoped",
             signal_handler.signal_name
@@ -496,6 +503,7 @@ fn check_eval_node(block: &Node, eval_node: &Node, diagnostics: &mut Vec<Diagnos
         }],
         tags: Vec::new(),
         fixable: false,
+        observed_identity: None,
         suggestion: Some(
             "Use eval { } for exception handling, or consider safer alternatives like Try::Tiny"
                 .to_string(),
@@ -543,6 +551,7 @@ fn check_two_arg_open(name: &str, args: &[Node], node: &Node, diagnostics: &mut 
         }],
         tags: Vec::new(),
         fixable: false,
+        observed_identity: None,
         suggestion: Some("Replace with 3-arg form: open(my $fh, '>', $file)".to_string()),
     });
 }
@@ -583,6 +592,7 @@ fn check_string_eval(name: &str, args: &[Node], node: &Node, diagnostics: &mut V
         }],
         tags: Vec::new(),
         fixable: false,
+        observed_identity: None,
         suggestion: Some(
             "Use eval { } for exception handling, or consider safer alternatives like Try::Tiny"
                 .to_string(),
@@ -615,6 +625,9 @@ fn check_system_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>)
             "Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection"
                 .to_string(),
         ),
+        // Declared at emission (#11918): this producer observes the system-call
+        // shape of the reviewed PL603 alias set.
+        observed_identity: Some(CriticObservedIdentity::built_in_system_call().into()),
     });
 }
 
@@ -643,6 +656,9 @@ fn check_exec_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             "Use the list form: exec($cmd, @args) instead of exec(\"$cmd @args\") to avoid shell injection"
                 .to_string(),
         ),
+        // Declared at emission (#11918): this producer observes the exec-call
+        // shape of the reviewed PL604 alias set.
+        observed_identity: Some(CriticObservedIdentity::built_in_exec_call().into()),
     });
 }
 
@@ -703,6 +719,7 @@ fn check_pipe_open(name: &str, args: &[Node], node: &Node, diagnostics: &mut Vec
         }],
         tags: Vec::new(),
         fixable: false,
+        observed_identity: None,
         suggestion: Some(
             "Use the list form: open(my $fh, '-|', $cmd, @args) for safer command execution"
                 .to_string(),
@@ -760,6 +777,9 @@ fn check_readpipe(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             "Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution"
                 .to_string(),
         ),
+        // Declared at emission (#11918): this producer observes the readpipe
+        // shape of the reviewed PL606 alias set.
+        observed_identity: Some(CriticObservedIdentity::built_in_readpipe_exec().into()),
     });
 }
 
@@ -863,6 +883,33 @@ mod tests {
         );
     }
 
+    // --- #11918: reviewed alias emissions declare checked identities ---
+
+    #[test]
+    fn reviewed_security_emissions_declare_built_in_identities() {
+        use crate::tooling::perl_critic::{CriticFindingOrigin, CriticFindingShape};
+
+        let cases = [
+            (r#"`ls -la`;"#, "PL601", CriticFindingShape::Backtick),
+            (r#"system("ls");"#, "PL603", CriticFindingShape::SystemCall),
+            (r#"exec("ls");"#, "PL604", CriticFindingShape::ExecCall),
+            (r#"readpipe("ls");"#, "PL606", CriticFindingShape::Readpipe),
+        ];
+        for (source, code, shape) in cases {
+            let diags = security_diags(source);
+            let declared = diags
+                .iter()
+                .find(|d| d.code.as_deref() == Some(code))
+                .unwrap_or_else(|| panic!("{code} must fire for {source}"));
+            let identity = declared
+                .observed_identity
+                .as_ref()
+                .unwrap_or_else(|| panic!("{code} emission must declare its built-in identity"));
+            assert_eq!(identity.origin(), CriticFindingOrigin::BuiltInDiagnostic);
+            assert_eq!(identity.code(), code);
+            assert_eq!(identity.shape(), shape, "{code} must declare its reviewed shape");
+        }
+    }
     // --- system() tests ---
 
     #[test]

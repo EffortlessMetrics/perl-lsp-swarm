@@ -21,7 +21,7 @@ use perl_diagnostics::codes::DiagnosticCode;
 use perl_lsp_rs_core::config::CriticEngine;
 use perl_lsp_rs_core::providers::diagnostics::{parse_error_code, parse_error_severity};
 use perl_lsp_rs_core::tooling::perl_critic::{
-    CriticConfig, CriticContext, NativeCriticProfile, NativeCriticRegistry, Severity,
+    CriticConfig, CriticContext, NativeCriticProfile, NativeCriticRegistry,
 };
 use perl_module::resolution::use_lib::{
     UseLibOperation, extract_use_lib_operations_with_offsets,
@@ -417,8 +417,11 @@ impl PullDiagnosticsProvider {
                 );
 
                 // Wire workspace semantic queries when available (pull-text path).
+                // Provider output stays internal until policy critic collection
+                // has routed identity-carrying core emissions into
+                // normalization before LSP projection (#11918).
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                let base_diagnostics: Vec<_> = {
+                let provider_internal: Vec<InternalDiagnostic> = {
                     let semantic_diags =
                         context.workspace_index.as_ref().and_then(|workspace_index| {
                             workspace_index.with_semantic_queries_for_uri(
@@ -437,23 +440,19 @@ impl PullDiagnosticsProvider {
                                 },
                             )
                         });
-                    semantic_diags
-                        .unwrap_or_else(|| {
-                            provider.get_diagnostics_with_path(
-                                &ast,
-                                &parse_errors,
-                                content,
-                                Some(&resolver),
-                                &search_paths,
-                                source_path.as_deref(),
-                            )
-                        })
-                        .into_iter()
-                        .map(|d| self.to_lsp_diagnostic_with_context(uri, content, d, context))
-                        .collect()
+                    semantic_diags.unwrap_or_else(|| {
+                        provider.get_diagnostics_with_path(
+                            &ast,
+                            &parse_errors,
+                            content,
+                            Some(&resolver),
+                            &search_paths,
+                            source_path.as_deref(),
+                        )
+                    })
                 };
                 #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-                let base_diagnostics: Vec<_> = provider
+                let provider_internal: Vec<InternalDiagnostic> = provider
                     .get_diagnostics_with_path(
                         &ast,
                         &parse_errors,
@@ -461,12 +460,9 @@ impl PullDiagnosticsProvider {
                         Some(&resolver),
                         &search_paths,
                         source_path.as_deref(),
-                    )
-                    .into_iter()
-                    .map(|d| self.to_lsp_diagnostic_with_context(uri, content, d, context))
-                    .collect();
+                    );
 
-                let mut diagnostics = base_diagnostics;
+                let mut diagnostics: Vec<LspDiagnostic> = Vec::new();
 
                 let critic_generation =
                     doc_state.map(|state| state.current_generation()).unwrap_or(0);
@@ -479,6 +475,7 @@ impl PullDiagnosticsProvider {
                         &uri.to_string(),
                         critic_generation,
                     ),
+                    provider_internal,
                     &mut diagnostics,
                 );
 
@@ -599,6 +596,10 @@ impl PullDiagnosticsProvider {
     }
 
     /// Add configured policy critic diagnostics.
+    ///
+    /// Receives the not-yet-projected provider diagnostics so reviewed
+    /// core-lint emissions can enter normalization before LSP projection
+    /// (#11918). Under the legacy engine every diagnostic projects unchanged.
     fn add_policy_critic_diagnostics(
         &self,
         uri: &Uri,
@@ -606,19 +607,33 @@ impl PullDiagnosticsProvider {
         content: &str,
         context: &PullDiagnosticsContext,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
+        provider_internal: Vec<InternalDiagnostic>,
         diagnostics: &mut Vec<LspDiagnostic>,
     ) {
         match context.critic_engine {
             CriticEngine::Legacy => {
+                for internal in provider_internal {
+                    diagnostics
+                        .push(self.to_lsp_diagnostic_with_context(uri, content, internal, context));
+                }
                 self.add_builtin_critic_diagnostics(uri, ast, content, diagnostics);
             }
             CriticEngine::Native => {
+                use perl_lsp_rs_core::tooling::perl_critic::builtin_emission_candidates;
+
+                let (core_candidates, plain_internal) =
+                    builtin_emission_candidates(provider_internal, content, source_identity);
+                for internal in plain_internal {
+                    diagnostics
+                        .push(self.to_lsp_diagnostic_with_context(uri, content, internal, context));
+                }
                 self.add_native_critic_diagnostics(
                     uri,
                     ast,
                     content,
                     context,
                     source_identity,
+                    core_candidates,
                     diagnostics,
                 );
             }
@@ -659,6 +674,7 @@ impl PullDiagnosticsProvider {
                 tags: Vec::new(),
                 suggestion: None,
                 fixable: is_fixable_diagnostic(&violation.policy),
+                observed_identity: None,
             };
 
             diagnostics.push(self.to_lsp_diagnostic(uri, content, internal_diag));
@@ -666,6 +682,11 @@ impl PullDiagnosticsProvider {
     }
 
     /// Add native critic policy diagnostics.
+    ///
+    /// `core_candidates` carries reviewed built-in lint emissions whose
+    /// identities were declared at emission; they merge with the native
+    /// candidates into one normalized logical row before projection (#11918).
+    #[allow(clippy::too_many_arguments)]
     fn add_native_critic_diagnostics(
         &self,
         uri: &Uri,
@@ -673,6 +694,7 @@ impl PullDiagnosticsProvider {
         content: &str,
         context: &PullDiagnosticsContext,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
+        core_candidates: Vec<perl_lsp_rs_core::tooling::perl_critic::CriticFindingCandidate>,
         diagnostics: &mut Vec<LspDiagnostic>,
     ) {
         use perl_lsp_rs_core::tooling::perl_critic::{
@@ -711,7 +733,9 @@ impl PullDiagnosticsProvider {
             &suppressions,
         );
 
-        for finding in normalize_with_native_policy(candidates, &policy) {
+        for finding in
+            normalize_with_native_policy(core_candidates.into_iter().chain(candidates), &policy)
+        {
             diagnostics.push(self.normalized_finding_to_lsp_diagnostic(uri, content, &finding));
         }
     }
@@ -724,7 +748,7 @@ impl PullDiagnosticsProvider {
     ) -> LspDiagnostic {
         let range =
             lsp_range_from_offsets(text, finding.range().start.byte, finding.range().end.byte);
-        let severity = Some(native_critic_severity_to_lsp(finding.severity()));
+        let severity = Some(finding.severity().to_lsp_diagnostic_severity());
         let code = Some(NumberOrString::String(finding.public_code().to_string()));
         let data = Some(serde_json::json!({
             "code": finding.public_code(),
@@ -808,8 +832,11 @@ impl PullDiagnosticsProvider {
             let uri_str = uri.to_string();
 
             // Wire workspace semantic queries when available (pull-state path).
+            // Provider output stays internal until policy critic collection has
+            // had the chance to route identity-carrying core emissions into
+            // normalization before LSP projection (#11918).
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-            let base_diagnostics: Vec<_> = {
+            let provider_internal: Vec<InternalDiagnostic> = {
                 let semantic_diags = context.workspace_index.as_ref().and_then(|workspace_index| {
                     workspace_index.with_semantic_queries_for_uri(&uri_str, |file_id, queries| {
                         provider.get_diagnostics_with_path_and_semantics(
@@ -824,36 +851,28 @@ impl PullDiagnosticsProvider {
                         )
                     })
                 });
-                semantic_diags
-                    .unwrap_or_else(|| {
-                        provider.get_diagnostics_with_path(
-                            ast,
-                            parse_errors,
-                            &doc_state.text,
-                            Some(&resolver),
-                            &search_paths,
-                            source_path.as_deref(),
-                        )
-                    })
-                    .into_iter()
-                    .map(|d| self.to_lsp_diagnostic_with_context(uri, &doc_state.text, d, context))
-                    .collect()
+                semantic_diags.unwrap_or_else(|| {
+                    provider.get_diagnostics_with_path(
+                        ast,
+                        parse_errors,
+                        &doc_state.text,
+                        Some(&resolver),
+                        &search_paths,
+                        source_path.as_deref(),
+                    )
+                })
             };
             #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-            let base_diagnostics: Vec<_> = provider
-                .get_diagnostics_with_path(
-                    ast,
-                    parse_errors,
-                    &doc_state.text,
-                    Some(&resolver),
-                    &search_paths,
-                    source_path.as_deref(),
-                )
-                .into_iter()
-                .map(|d| self.to_lsp_diagnostic_with_context(uri, &doc_state.text, d, context))
-                .collect();
+            let provider_internal: Vec<InternalDiagnostic> = provider.get_diagnostics_with_path(
+                ast,
+                parse_errors,
+                &doc_state.text,
+                Some(&resolver),
+                &search_paths,
+                source_path.as_deref(),
+            );
 
-            let mut diagnostics = base_diagnostics;
+            let mut diagnostics: Vec<LspDiagnostic> = Vec::new();
 
             self.add_policy_critic_diagnostics(
                 uri,
@@ -864,6 +883,7 @@ impl PullDiagnosticsProvider {
                     &uri.to_string(),
                     doc_state.current_generation(),
                 ),
+                provider_internal,
                 &mut diagnostics,
             );
 
@@ -1362,10 +1382,6 @@ fn to_lsp_severity(severity: InternalDiagnosticSeverity) -> LspDiagnosticSeverit
     }
 }
 
-fn native_critic_severity_to_lsp(severity: Severity) -> LspDiagnosticSeverity {
-    severity.to_diagnostic_severity()
-}
-
 fn to_lsp_tags(tags: &[InternalDiagnosticTag]) -> Option<Vec<LspDiagnosticTag>> {
     if tags.is_empty() {
         return None;
@@ -1824,26 +1840,30 @@ mod tests {
         assert_eq!(data["suppressionKey"], "native.common.deprecated_defined");
         assert_eq!(data["fixable"], true);
 
+        // #11918: the reviewed PL404-literal ↔ native.common.undef_comparison
+        // alias set is one logical product row presented by its built-in
+        // spelling; the native spelling must not appear as a second row.
         let undef_comparison = items
             .iter()
             .find(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.common.undef_comparison"),
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL404"),
                 )
             })
-            .ok_or("expected native undef-comparison finding")?;
+            .ok_or("expected merged undef-comparison finding")?;
         assert_eq!(undef_comparison.source.as_deref(), Some("perl-lsp"));
         assert_eq!(undef_comparison.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(
-            undef_comparison.message,
-            "Using '==' with undef -- use defined() to check first"
-        );
+        assert!(!items.iter().any(|diag| {
+            diag.code.as_ref().is_some_and(
+                |code| matches!(code, NumberOrString::String(value) if value == "native.common.undef_comparison"),
+            )
+        }));
         let data = undef_comparison
             .data
             .as_ref()
-            .ok_or("native undef-comparison data should be populated")?;
-        assert_eq!(data["code"], "native.common.undef_comparison");
-        assert_eq!(data["suppressionKey"], "native.common.undef_comparison");
+            .ok_or("merged undef-comparison data should be populated")?;
+        assert_eq!(data["code"], "PL404");
+        assert_eq!(data["suppressionKey"], "PL404");
         assert_eq!(data["fixable"], true);
 
         let stale_dollar_at = items
@@ -1955,23 +1975,27 @@ mod tests {
         assert_eq!(data["suppressionKey"], "native.io.unchecked_open_close");
         assert_eq!(data["fixable"], false);
 
+        // #11918: the reviewed PL601-backtick ↔ native.security.backtick_exec
+        // alias set merges into one logical row before projection.
         let backtick_exec = items
             .iter()
             .find(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.security.backtick_exec"),
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL601"),
                 )
             })
-            .ok_or("expected native backtick execution finding")?;
+            .ok_or("expected merged backtick-exec finding")?;
         assert_eq!(backtick_exec.source.as_deref(), Some("perl-lsp"));
         assert_eq!(backtick_exec.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(backtick_exec.message, "Command execution detected");
-        let data = backtick_exec
-            .data
-            .as_ref()
-            .ok_or("native backtick execution data should be populated")?;
-        assert_eq!(data["code"], "native.security.backtick_exec");
-        assert_eq!(data["suppressionKey"], "native.security.backtick_exec");
+        assert!(!items.iter().any(|diag| {
+            diag.code.as_ref().is_some_and(
+                |code| matches!(code, NumberOrString::String(value) if value == "native.security.backtick_exec"),
+            )
+        }));
+        let data =
+            backtick_exec.data.as_ref().ok_or("merged backtick-exec data should be populated")?;
+        assert_eq!(data["code"], "PL601");
+        assert_eq!(data["suppressionKey"], "PL601");
         assert_eq!(data["fixable"], false);
 
         let qx_readpipe = items
@@ -2008,21 +2032,27 @@ mod tests {
         assert_eq!(data["suppressionKey"], "native.security.string_eval");
         assert_eq!(data["fixable"], false);
 
+        // #11918: the reviewed PL603 ↔ native.security.system_exec alias set
+        // merges into one logical row presented by the built-in spelling.
         let system_exec = items
             .iter()
             .find(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.security.system_exec"),
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL603"),
                 )
             })
-            .ok_or("expected native system/exec finding")?;
+            .ok_or("expected merged system/exec finding")?;
         assert_eq!(system_exec.source.as_deref(), Some("perl-lsp"));
         assert_eq!(system_exec.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(system_exec.message, "system() executes a shell command");
+        assert!(!items.iter().any(|diag| {
+            diag.code.as_ref().is_some_and(
+                |code| matches!(code, NumberOrString::String(value) if value == "native.security.system_exec"),
+            )
+        }));
         let data =
-            system_exec.data.as_ref().ok_or("native system/exec data should be populated")?;
-        assert_eq!(data["code"], "native.security.system_exec");
-        assert_eq!(data["suppressionKey"], "native.security.system_exec");
+            system_exec.data.as_ref().ok_or("merged system/exec data should be populated")?;
+        assert_eq!(data["code"], "PL603");
+        assert_eq!(data["suppressionKey"], "PL603");
         assert_eq!(data["fixable"], false);
 
         let unused = items

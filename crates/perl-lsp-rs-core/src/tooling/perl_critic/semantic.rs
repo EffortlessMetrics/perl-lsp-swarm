@@ -15,9 +15,11 @@ use super::normalized::{
     normalize_critic_findings,
 };
 use super::{
-    CriticFindingOrigin, CriticFindingShape, CriticObservedIdentity, Severity,
+    CriticFindingOrigin, CriticFindingShape, CriticObservedIdentity,
     native::{CriticFinding, CriticSuppressionMap, NativeCriticRegistry},
 };
+use crate::providers::Diagnostic as InternalDiagnostic;
+use perl_parser_core::position::{Position, Range};
 
 /// A native finding whose `(rule_id, observed_shape)` pair has no registered
 /// producer disposition. Normalization fails closed instead of guessing.
@@ -211,7 +213,9 @@ pub fn account_unresolved_native_identities(
 /// Deterministic output order is owned entirely by
 /// [`normalize_critic_findings`]. Filtering here, on merged rows,
 /// is what makes "exclude/suppress one spelling" unable to leave a registered
-/// sibling spelling behind.
+/// sibling spelling behind. Rows whose contributors all declared core-scale
+/// severities bypass the perlcritic threshold, which never governed them
+/// (#11918).
 #[must_use]
 pub fn normalize_with_native_policy(
     candidates: impl IntoIterator<Item = CriticFindingCandidate>,
@@ -219,18 +223,68 @@ pub fn normalize_with_native_policy(
 ) -> Vec<NormalizedCriticFinding> {
     normalize_critic_findings(candidates)
         .into_iter()
-        .filter(|finding| severity_passes_threshold(finding.severity(), policy.severity_threshold))
+        .filter(|finding| finding.severity().passes_perlcritic_threshold(policy.severity_threshold))
         .filter(|finding| include_exclude_admits(finding, policy.include, policy.exclude))
         .filter(|finding| !policy.suppressions.suppresses_normalized(finding))
         .collect()
 }
 
-/// Whether one normalized row survives the configured severity threshold.
+/// Convert identity-carrying built-in lint diagnostics into normalization
+/// candidates bound to one exact logical source subject (#11918).
 ///
-/// Severities are perlcritic threshold values (1-5, higher is stricter); a
-/// row survives when its merged severity meets or exceeds the threshold.
-fn severity_passes_threshold(severity: Severity, threshold: u8) -> bool {
-    severity as u8 >= threshold
+/// Built-in lint producers declare their checked built-in identity and their
+/// own core-diagnostic-scale severity at emission. Only diagnostics carrying
+/// such a declaration become candidates; every other diagnostic passes through
+/// unchanged so unrelated providers are unaffected.
+///
+/// Byte ranges are re-expressed as parser positions with the same line/column
+/// derivation the native rules use (`position_for_byte_offset` semantics), so
+/// a core emission and its native counterpart share an exact merge range.
+pub fn builtin_emission_candidates(
+    diagnostics: impl IntoIterator<Item = InternalDiagnostic>,
+    doc_text: &str,
+    source_identity: CriticSourceIdentity,
+) -> (Vec<CriticFindingCandidate>, Vec<InternalDiagnostic>) {
+    let mut candidates = Vec::new();
+    let mut passthrough = Vec::new();
+    for diagnostic in diagnostics {
+        let Some(identity) = diagnostic.observed_identity.clone() else {
+            passthrough.push(diagnostic);
+            continue;
+        };
+        let (start, end) = diagnostic.range;
+        candidates.push(CriticFindingCandidate::for_core_diagnostic(
+            identity.observed(),
+            source_identity,
+            diagnostic.severity,
+            Range {
+                start: position_for_byte_offset(doc_text, start),
+                end: position_for_byte_offset(doc_text, end),
+            },
+            diagnostic.message,
+            None,
+        ));
+    }
+    (candidates, passthrough)
+}
+
+/// Derive a parser position from a byte offset with native-rule parity.
+///
+/// Mirrors `native::position_for_byte_offset`: lines count newline bytes and
+/// columns count chars since the last newline. The identical derivation is
+/// what lets reviewed alias pairs merge on their complete range.
+fn position_for_byte_offset(content: &str, offset: usize) -> Position {
+    let offset = offset.min(content.len());
+    let prefix = &content[..offset];
+    let line = prefix.bytes().filter(|byte| *byte == b'\n').count();
+    let line_start = prefix.rfind('\n').map_or(0, |idx| idx + 1);
+    let column = content[line_start..offset].chars().count();
+
+    Position {
+        byte: offset,
+        line: u32::try_from(line).unwrap_or(u32::MAX),
+        column: u32::try_from(column).unwrap_or(u32::MAX),
+    }
 }
 
 /// Alias-aware include/exclude admission for one normalized logical row.
@@ -258,6 +312,7 @@ mod tests {
         NativeCriticPolicy, critic_source_identity_for_uri, native_finding_candidates,
         normalize_with_native_policy,
     };
+    use crate::providers::Diagnostic as InternalDiagnostic;
     use crate::tooling::perl_critic::{
         CriticFinding, CriticFindingCandidate, CriticFindingOrigin, CriticFindingShape,
         CriticObservedIdentity, CriticSourceIdentity, CriticSuppressionMap, Severity,
@@ -491,7 +546,11 @@ mod tests {
         assert_eq!(row.contributors().len(), 2);
         assert!(row.canonical_id().is_some());
         assert!(row.has_severity_conflict(), "contributor severities disagree");
-        assert_eq!(row.severity(), Severity::Stern, "most severe contributor wins");
+        assert_eq!(
+            row.severity().perlcritic_severity(),
+            Some(Severity::Stern),
+            "most severe contributor wins"
+        );
         assert!(!row.has_available_fix());
         assert!(row.approved_aliases().iter().any(|alias| alias.code() == "PL601"));
     }
@@ -609,5 +668,168 @@ mod tests {
             identity.source_key(),
             critic_source_identity_for_uri("file:///b.pm", 3).source_key()
         );
+    }
+
+    // --- #11918: reviewed core/native alias rows merge before projection ---
+
+    use perl_diagnostics::codes::DiagnosticSeverity as CoreSeverity;
+
+    /// A built-in system() emission exactly as the core lint declares it.
+    fn pl603_core_diagnostic() -> InternalDiagnostic {
+        InternalDiagnostic {
+            range: (0, 14),
+            severity: CoreSeverity::Warning,
+            code: Some("PL603".to_string()),
+            message: "system() executes a shell command. Ensure input is sanitized.".to_string(),
+            related_information: Vec::new(),
+            tags: Vec::new(),
+            suggestion: None,
+            fixable: false,
+            observed_identity: Some(
+                crate::tooling::perl_critic::CriticObservedIdentity::built_in_system_call().into(),
+            ),
+        }
+    }
+
+    fn native_system_candidates() -> Vec<CriticFindingCandidate> {
+        let (candidates, unresolved) = native_finding_candidates(
+            [native_finding(
+                "native.security.system_exec",
+                CriticFindingShape::SystemCall,
+                Severity::Stern,
+            )],
+            subject(),
+        );
+        assert!(unresolved.is_empty());
+        candidates
+    }
+
+    /// A native system() finding on the same span the core diagnostic covers.
+    ///
+    /// `native_finding` above pins its range on line 1; the #11918 merge tests
+    /// need both producers to observe one identical span.
+    fn native_system_candidates_on_core_span() -> Vec<CriticFindingCandidate> {
+        let mut finding = native_finding(
+            "native.security.system_exec",
+            CriticFindingShape::SystemCall,
+            Severity::Stern,
+        );
+        finding.range = Range {
+            start: Position { byte: 0, line: 0, column: 0 },
+            end: Position { byte: 14, line: 0, column: 14 },
+        };
+        let (candidates, unresolved) = native_finding_candidates([finding], subject());
+        assert!(unresolved.is_empty());
+        candidates
+    }
+
+    fn open_policy() -> NativeCriticPolicy<'static> {
+        let include: Vec<String> = Vec::new();
+        let exclude: Vec<String> = Vec::new();
+        let suppressions: &'static CriticSuppressionMap =
+            Box::leak(Box::new(CriticSuppressionMap::from_source("")));
+        NativeCriticPolicy::new(1, include.leak(), exclude.leak(), suppressions)
+    }
+
+    #[test]
+    fn system_document_yields_one_logical_row_with_both_contributor_identities() {
+        let doc_text = "system(\"ls -la\");";
+        let (core_candidates, passthrough) =
+            super::builtin_emission_candidates([pl603_core_diagnostic()], doc_text, subject());
+        assert!(passthrough.is_empty(), "the declared emission must become a candidate");
+
+        let policy = open_policy();
+        let rows = normalize_with_native_policy(
+            native_system_candidates_on_core_span().into_iter().chain(core_candidates),
+            &policy,
+        );
+
+        assert_eq!(rows.len(), 1, "reviewed aliases must merge into one logical row");
+        let row = &rows[0];
+        let identities: Vec<_> =
+            row.contributors().iter().map(|contributor| contributor.identity()).collect();
+        assert!(
+            identities.iter().any(|identity| {
+                identity.origin() == CriticFindingOrigin::BuiltInDiagnostic
+                    && identity.code() == "PL603"
+            }),
+            "the PL603 contributor identity must be retained: {identities:?}"
+        );
+        assert!(
+            identities.iter().any(|identity| {
+                identity.origin() == CriticFindingOrigin::NativeCritic
+                    && identity.code() == "native.security.system_exec"
+            }),
+            "the native contributor identity must be retained: {identities:?}"
+        );
+        assert!(!row.has_severity_conflict(), "cross-scale claims are not a conflict fact");
+        assert_eq!(row.public_code(), "PL603", "built-in presentation wins");
+    }
+
+    #[test]
+    fn suppression_by_compat_spelling_removes_the_merged_row_across_producers() {
+        let doc_text = "## no critic PL603\nsystem(\"ls -la\");";
+        let (core_candidates, _) =
+            super::builtin_emission_candidates([pl603_core_diagnostic()], doc_text, subject());
+        let suppressions = CriticSuppressionMap::from_source(doc_text);
+        let include: Vec<String> = Vec::new();
+        let exclude: Vec<String> = Vec::new();
+        let policy = NativeCriticPolicy::new(1, &include, &exclude, &suppressions);
+
+        let rows = normalize_with_native_policy(
+            native_system_candidates_on_core_span().into_iter().chain(core_candidates),
+            &policy,
+        );
+        assert!(rows.is_empty(), "one approved spelling must remove the whole logical row");
+    }
+
+    #[test]
+    fn exclusion_of_any_approved_spelling_removes_the_whole_merged_row() {
+        let doc_text = "system(\"ls -la\");";
+        let (core_candidates, _) =
+            super::builtin_emission_candidates([pl603_core_diagnostic()], doc_text, subject());
+        let include: Vec<String> = Vec::new();
+        let suppressions = CriticSuppressionMap::from_source("");
+
+        for spelling in ["PL603", "native.security.system_exec"] {
+            let exclude = vec![spelling.to_string()];
+            let policy = NativeCriticPolicy::new(1, &include, &exclude, &suppressions);
+            let rows = normalize_with_native_policy(
+                native_system_candidates_on_core_span().into_iter().chain(core_candidates.clone()),
+                &policy,
+            );
+            assert!(rows.is_empty(), "excluding {spelling} must remove the whole row");
+        }
+    }
+
+    #[test]
+    fn undeclared_builtin_diagnostics_pass_through_without_inventing_identity() {
+        let mut undeclared = pl603_core_diagnostic();
+        undeclared.observed_identity = None;
+        undeclared.code = Some("PL602".to_string());
+
+        let (candidates, passthrough) =
+            super::builtin_emission_candidates([undeclared], "$SIG{__WARN__} = sub {}", subject());
+
+        assert!(candidates.is_empty(), "coincidence must not invent an identity");
+        assert_eq!(passthrough.len(), 1);
+        assert!(passthrough[0].observed_identity.is_none());
+    }
+
+    #[test]
+    fn builtin_emission_ranges_share_native_position_derivation_for_merging() {
+        // The merge key compares complete ranges. The built-in converter derives
+        // line/column from byte offsets with the same rule as native rules, so
+        // an emission and its native counterpart on the same span are eligible.
+        let doc_text = "system(\"ls -la\");";
+        let (mut core_candidates, _) =
+            super::builtin_emission_candidates([pl603_core_diagnostic()], doc_text, subject());
+        let native_candidates = native_system_candidates_on_core_span();
+
+        let merged = normalize_critic_findings(
+            core_candidates.drain(..).chain(native_candidates).collect::<Vec<_>>(),
+        );
+        assert_eq!(merged.len(), 1, "same-span alias emissions must merge");
+        assert_eq!(merged[0].contributors().len(), 2);
     }
 }

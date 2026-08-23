@@ -493,6 +493,7 @@ impl PullDiagnosticsOrchestrator {
                         tags: Vec::new(),
                         suggestion: None,
                         fixable,
+                        observed_identity: None,
                     });
                 }
             }
@@ -2001,7 +2002,7 @@ impl LspServer {
                                         code_str,
                                         &category,
                                         fixable,
-                                        &tag_strings,
+                                                                                &tag_strings,
                                     );
                                 }
                                 diag
@@ -2100,7 +2101,7 @@ impl LspServer {
                                     code_str,
                                     &category,
                                     fixable,
-                                    &tag_strings,
+                                                                        &tag_strings,
                                 );
                             }
                             diag
@@ -2167,8 +2168,8 @@ impl LspServer {
         diagnostics: &mut Vec<InternalDiagnostic>,
     ) {
         use perl_lsp_rs_core::tooling::perl_critic::{
-            NativeCriticPolicy, native_finding_candidates_with_accounting,
-            normalize_with_native_policy,
+            NativeCriticPolicy, builtin_emission_candidates,
+            native_finding_candidates_with_accounting, normalize_with_native_policy,
         };
 
         let (critic_engine, severity, profile, native_profile, native_include, native_exclude) = {
@@ -2185,6 +2186,13 @@ impl LspServer {
         if critic_engine != perl_lsp_rs_core::config::CriticEngine::Native {
             return;
         }
+
+        // Reviewed core-lint emissions (#11918) enter normalization alongside
+        // native candidates so alias rows merge before LSP projection. Every
+        // diagnostic without a declared built-in identity passes through.
+        let provider_output = std::mem::take(diagnostics);
+        let (core_candidates, mut retained) =
+            builtin_emission_candidates(provider_output, doc_text, source_identity);
 
         let severity_threshold = severity.clamp(1, 5);
         let critic_config = crate::perl_critic::CriticConfig {
@@ -2222,11 +2230,12 @@ impl LspServer {
             &suppressions,
         );
 
-        diagnostics.extend(
-            normalize_with_native_policy(candidates, &policy)
+        retained.extend(
+            normalize_with_native_policy(core_candidates.into_iter().chain(candidates), &policy)
                 .iter()
                 .map(normalized_critic_finding_to_diagnostic),
         );
+        *diagnostics = retained;
     }
 
     /// Collect external perlcritic diagnostics if the feature is enabled.
@@ -2417,6 +2426,7 @@ impl LspServer {
                         tags: Vec::new(),
                         suggestion: None,
                         fixable,
+                        observed_identity: None,
                     });
                 }
             }
@@ -2571,13 +2581,14 @@ fn normalized_critic_finding_to_diagnostic(
 ) -> InternalDiagnostic {
     InternalDiagnostic {
         range: (finding.range().start.byte, finding.range().end.byte),
-        severity: critic_severity_to_internal(finding.severity()),
+        severity: finding.severity().to_diagnostic_severity(),
         code: Some(finding.public_code().to_string()),
         message: finding.message().to_string(),
         related_information: Vec::new(),
         tags: Vec::new(),
         suggestion: None,
         fixable: finding.has_available_fix(),
+        observed_identity: None,
     }
 }
 
@@ -2630,6 +2641,7 @@ fn builtin_violation_to_diagnostic(
         tags: Vec::new(),
         suggestion: None,
         fixable: is_fixable_diagnostic(&violation.policy),
+        observed_identity: None,
     }
 }
 
@@ -3041,10 +3053,12 @@ mod tests {
 
         let bytes = buf.lock().clone();
         let text = String::from_utf8(bytes).unwrap_or_default();
-        // After dedup (#5088), native-critic diagnostics that overlap with built-in
-        // PL* lints are collapsed — the PL* code wins.  Verify the strict/warnings
-        // findings are present via their PL* codes, and that native-only findings
-        // (no PL* equivalent) still appear.
+        // Reviewed alias pairs (e.g. PL601 ↔ native.security.backtick_exec,
+        // PL404-literal ↔ native.common.undef_comparison) merge into one
+        // logical row before projection (#11918), so the PL* code presents the
+        // row. Out-of-scope native↔PL* overlap still relies on the transport
+        // XOR dedup (#5088). Verify strict/warnings present via their PL* codes
+        // and that native-only findings (no PL* equivalent) still appear.
         assert!(
             text.contains("PL100"),
             "strict finding should be present (PL100 after dedup); got: {text:?}"
@@ -3067,12 +3081,12 @@ mod tests {
             text.contains("native.common.stale_dollar_at"),
             "native stale-$@ finding (no PL* equivalent) should still be present; got: {text:?}"
         );
-        // PL601 (SecurityBacktickExec) and native.security.backtick_exec both
-        // emit at Warning severity after the #5285 fix. Since they share the same
-        // range+severity, the dedup collapses the native-critic one — PL601 wins.
+        // PL601 (SecurityBacktickExec) and native.security.backtick_exec are a
+        // reviewed alias set: normalization merges them into one logical row
+        // whose built-in spelling presents it (#11918).
         assert!(
             text.contains("PL601"),
-            "backtick-exec should be present as PL601 (deduped from native.security.backtick_exec); got: {text:?}"
+            "backtick-exec should be present as PL601 (merged logical row); got: {text:?}"
         );
         assert!(
             !text.contains("native.security.backtick_exec"),
@@ -3115,6 +3129,63 @@ mod tests {
         assert!(
             !text.contains("TestingAndDebugging::RequireUseStrict"),
             "native critic engine should not publish legacy built-in critic policy IDs; got: {text:?}"
+        );
+    }
+
+    // --- #11918: reviewed core/native alias rows merge before projection ---
+
+    #[test]
+    fn system_document_publishes_exactly_one_merged_logical_row() {
+        let (server, buf) = make_server_with_capture();
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        server.test_configure_native_critic_profile("strict");
+        let uri = "file:///merged_system_row_test.pl";
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "use strict;\nuse warnings;\nsystem(\"ls -la\");\n"
+                }
+            })))
+            .unwrap();
+
+        let text = capture_until(&buf, |output| output.contains("publishDiagnostics"));
+        // The projected row's top-level `code` is followed by codeDescription;
+        // the enrichment `data.code` echo must not count as a second row.
+        let pl603_rows = text.matches("\"code\":\"PL603\",\"codeDescription\"").count();
+        assert_eq!(
+            pl603_rows, 1,
+            "the reviewed PL603 alias set must project exactly one logical row; got: {text:?}"
+        );
+        assert!(
+            !text.contains("native.security.system_exec"),
+            "the native spelling must not appear as a second row; got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn compat_suppression_removes_the_whole_merged_core_native_row() {
+        let (server, buf) = make_server_with_capture();
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        server.test_configure_native_critic_profile("strict");
+        let uri = "file:///suppressed_system_row_test.pl";
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "use strict;\nuse warnings;\n## no critic PL603\nsystem(\"ls -la\");\n"
+                }
+            })))
+            .unwrap();
+
+        let text = capture_until(&buf, |output| output.contains("publishDiagnostics"));
+        assert!(
+            !text.contains("\"code\":\"PL603\"") && !text.contains("native.security.system_exec"),
+            "suppressing one approved spelling must remove the whole logical row; got: {text:?}"
         );
     }
 
@@ -3441,14 +3512,22 @@ mod tests {
             }),
             "native critic engine should add native assignment-in-condition finding to workspace diagnostics: {report}"
         );
+        // #11918: the reviewed PL404-literal ↔ native.common.undef_comparison
+        // alias set is ONE logical product row presented by its built-in
+        // spelling; the native spelling must not appear as a second row.
         assert!(
             diagnostics.iter().any(|diag| {
-                diag["code"].as_str() == Some("native.common.undef_comparison")
+                diag["code"].as_str() == Some("PL404")
                     && diag["source"].as_str() == Some("perl-lsp")
-                    && diag["message"].as_str()
-                        == Some("Using '==' with undef -- use defined() to check first")
+                    && diag["range"]["start"]["line"].as_u64() == Some(12)
             }),
-            "native critic engine should add native undef-comparison finding to workspace diagnostics: {report}"
+            "workspace diagnostics should present the merged undef-comparison row as PL404: {report}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diag| diag["code"].as_str() != Some("native.common.undef_comparison")),
+            "the native undef-comparison spelling must be merged into the logical row: {report}"
         );
         assert!(
             diagnostics.iter().any(|diag| {
@@ -3509,13 +3588,21 @@ mod tests {
             }),
             "native critic engine should add native unchecked open/close finding to workspace diagnostics: {report}"
         );
+        // #11918: the reviewed PL601-backtick ↔ native.security.backtick_exec
+        // alias set merges into one logical row before projection.
         assert!(
             diagnostics.iter().any(|diag| {
-                diag["code"].as_str() == Some("native.security.backtick_exec")
+                diag["code"].as_str() == Some("PL601")
                     && diag["source"].as_str() == Some("perl-lsp")
-                    && diag["message"].as_str() == Some("Command execution detected")
+                    && diag["range"]["start"]["line"].as_u64() == Some(8)
             }),
-            "native critic engine should add native backtick execution finding to workspace diagnostics: {report}"
+            "workspace diagnostics should present the merged backtick row as PL601: {report}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diag| diag["code"].as_str() != Some("native.security.backtick_exec")),
+            "the native backtick spelling must be merged into the logical row: {report}"
         );
         assert!(
             diagnostics.iter().any(|diag| {
@@ -3533,13 +3620,26 @@ mod tests {
             }),
             "native critic engine should add native string eval finding to workspace diagnostics: {report}"
         );
+        // #11918: the reviewed PL603/PL604 ↔ native.security.system_exec alias
+        // sets merge into one logical row per observed shape, presented by the
+        // built-in spelling. The unpaired native Qx observation above stays,
+        // proving merged rows were not blanket-dropped.
         assert!(
             diagnostics.iter().any(|diag| {
-                diag["code"].as_str() == Some("native.security.system_exec")
+                diag["code"].as_str() == Some("PL603")
                     && diag["source"].as_str() == Some("perl-lsp")
-                    && diag["message"].as_str() == Some("system() executes a shell command")
+                    && diag["range"]["start"]["line"].as_u64() == Some(19)
+            }) && diagnostics.iter().any(|diag| {
+                diag["code"].as_str() == Some("PL604")
+                    && diag["range"]["start"]["line"].as_u64() == Some(20)
             }),
-            "native critic engine should add native system/exec finding to workspace diagnostics: {report}"
+            "workspace diagnostics should present the merged system/exec rows as PL603 and PL604: {report}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diag| diag["code"].as_str() != Some("native.security.system_exec")),
+            "the native system/exec spelling must be merged into the logical rows: {report}"
         );
         assert!(
             diagnostics.iter().any(|diag| {

@@ -53,6 +53,7 @@ pub fn check_source_filter_risk(root: &Node, diagnostics: &mut Vec<Diagnostic>) 
             }],
             tags: Vec::new(),
             fixable: false,
+            observed_identity: None,
             suggestion: Some(
                 "Avoid source filters; prefer modern Perl features or Devel::Declare-style \
                 alternatives that don't rewrite source before parsing."

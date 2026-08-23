@@ -210,6 +210,7 @@ pub fn check_unused_imports(node: &Node, source: &str, diagnostics: &mut Vec<Dia
                 }],
                 tags: vec![DiagnosticTag::Unnecessary],
                 fixable: false,
+                observed_identity: None,
                 suggestion: Some(format!("Remove 'use {};' if it is not needed", module)),
             });
         }

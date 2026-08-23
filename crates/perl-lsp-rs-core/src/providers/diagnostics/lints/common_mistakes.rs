@@ -17,6 +17,7 @@ use perl_semantic_analyzer::symbol::{SymbolKind, SymbolTable};
 
 use super::super::internal_types::{Diagnostic, RelatedInformation};
 use super::super::walker::walk_node;
+use crate::tooling::perl_critic::CriticObservedIdentity;
 use perl_diagnostics::codes::DiagnosticSeverity;
 
 /// Check for common mistakes
@@ -55,6 +56,16 @@ pub fn check_common_mistakes(
                 if (op == "==" || op == "!=")
                     && (might_be_undef(left, symbol_table) || might_be_undef(right, symbol_table))
                 {
+                    // Declared at emission (#11918): the two reviewed PL404
+                    // shapes are distinct logical findings. An explicit `undef`
+                    // literal is the reviewed alias of the native
+                    // undef-comparison rule; inferred maybe-undef data flow is
+                    // deliberately distinct from it.
+                    let observed_identity = if is_literal_undef_operand(left, right) {
+                        CriticObservedIdentity::built_in_literal_undef_comparison()
+                    } else {
+                        CriticObservedIdentity::built_in_potentially_undef_comparison()
+                    };
                     diagnostics.push(Diagnostic {
                         range: (n.location.start, n.location.end),
                         severity: DiagnosticSeverity::Warning,
@@ -67,6 +78,7 @@ pub fn check_common_mistakes(
                         tags: Vec::new(),
                         fixable: false,
                         suggestion: Some("Guard with 'defined($var)' or use the '//' (defined-or) operator".to_string()),
+                        observed_identity: Some(observed_identity.into()),
                     });
                 }
             }
@@ -120,6 +132,7 @@ fn check_bareword_filehandle(
         }],
         tags: Vec::new(),
         fixable: false,
+        observed_identity: None,
         suggestion: Some("Use lexical filehandle: open(my $fh, ... )".to_string()),
     });
 }
@@ -152,8 +165,18 @@ fn check_assignment_in_condition(condition: &Node, diagnostics: &mut Vec<Diagnos
         ],
         tags: Vec::new(),
         fixable: false,
+        observed_identity: None,
         suggestion: Some("Replace '=' with '==' for numeric comparison or 'eq' for string comparison".to_string()),
     });
+}
+
+/// Whether either operand of a comparison is an explicit `undef` literal.
+///
+/// The reviewed PL404 shapes split on exactly this distinction: a literal
+/// `undef` comparison aliases the native undef-comparison rule, while an
+/// inferred maybe-undef operand does not (#11918).
+fn is_literal_undef_operand(left: &Node, right: &Node) -> bool {
+    matches!(left.kind, NodeKind::Undef) || matches!(right.kind, NodeKind::Undef)
 }
 
 /// Check if a node might evaluate to undef
@@ -262,6 +285,34 @@ mod tests {
         assert!(
             diags.iter().any(|d| d.code.as_deref() == Some("PL404")),
             "numeric comparison with `undef` should fire PL404: {diags:?}"
+        );
+    }
+
+    // --- #11918: the two reviewed PL404 shapes are declared at emission ---
+
+    #[test]
+    fn pl404_emissions_declare_their_reviewed_shapes() {
+        use crate::tooling::perl_critic::CriticFindingShape;
+
+        let literal = common_mistakes_diags("if (undef == 5) { }")
+            .into_iter()
+            .find(|d| d.code.as_deref() == Some("PL404"))
+            .expect("literal undef comparison must fire PL404");
+        let potential = common_mistakes_diags("sub f { if ($undeclared == 5) { } }")
+            .into_iter()
+            .find(|d| d.code.as_deref() == Some("PL404"))
+            .expect("potentially undef comparison must fire PL404");
+
+        let literal_identity =
+            literal.observed_identity.as_ref().expect("emission must declare identity");
+        let potential_identity =
+            potential.observed_identity.as_ref().expect("emission must declare identity");
+
+        assert_eq!(literal_identity.shape(), CriticFindingShape::LiteralUndefComparison);
+        assert_eq!(
+            potential_identity.shape(),
+            CriticFindingShape::PotentiallyUndefComparison,
+            "inferred data-flow comparisons stay distinct from the native alias"
         );
     }
 

@@ -353,6 +353,7 @@ impl DiagnosticsProvider {
                 tags: Vec::new(),
                 suggestion,
                 fixable: code == DiagnosticCode::ParseError,
+                observed_identity: None,
             });
         }
 

@@ -229,6 +229,7 @@ mod tests {
             tags: vec![],
             suggestion: None,
             fixable: false,
+            observed_identity: None,
         }
     }
 
@@ -1075,6 +1076,7 @@ mod tests {
             tags: vec![],
             suggestion: Some("Add a ';' at the end of the statement".to_string()),
             fixable: false,
+            observed_identity: None,
         };
 
         let actions = provider.get_actions_for_diagnostic(&diagnostic);
@@ -1289,6 +1291,7 @@ mod tests {
             tags: vec![],
             suggestion: None,
             fixable: false,
+            observed_identity: None,
         };
 
         let actions = provider.get_actions_for_diagnostic(&diagnostic);

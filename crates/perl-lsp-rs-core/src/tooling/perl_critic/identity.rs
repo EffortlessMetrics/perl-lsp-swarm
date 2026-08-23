@@ -78,6 +78,19 @@ impl<'a> CriticObservedIdentity<'a> {
 
         Ok(Self { origin, code, shape: CriticFindingShape::General })
     }
+
+    /// Rebuild a checked identity from an owned record's parts.
+    ///
+    /// The registry re-validates the producer/code/shape tuple whenever the
+    /// identity resolves, so records rebuilt through this path cannot invent
+    /// an alias relationship that registration does not approve.
+    pub(crate) fn rebuild<'b>(
+        origin: CriticFindingOrigin,
+        code: &'b str,
+        shape: CriticFindingShape,
+    ) -> CriticObservedIdentity<'b> {
+        CriticObservedIdentity { origin, code, shape }
+    }
 }
 
 impl CriticObservedIdentity<'static> {

@@ -96,6 +96,7 @@ pub fn check_pod_coverage(node: &Node, source: &str, diagnostics: &mut Vec<Diagn
             related_information: Vec::new(),
             tags: Vec::new(),
             fixable: false,
+            observed_identity: None,
             suggestion: Some(format!(
                 "Add '=head2 {}' documentation before or near the subroutine definition",
                 export_name

@@ -9,6 +9,8 @@ use std::fmt;
 use perl_diagnostics::codes::DiagnosticSeverity;
 use perl_diagnostics::{ByteSpan, InvalidByteSpan};
 
+use crate::tooling::perl_critic::OwnedCriticObservedIdentity;
+
 /// Tags for diagnostics (internal alias for the canonical type from codes::).
 pub use perl_diagnostics::codes::DiagnosticTag;
 
@@ -34,6 +36,13 @@ pub struct Diagnostic {
     pub suggestion: Option<String>,
     /// Whether the producer has a currently available safe remediation.
     pub fixable: bool,
+    /// Producer-declared checked built-in identity (#11918).
+    ///
+    /// Reviewed core-lint producers whose code has a registered canonical
+    /// alias declare this at emission so normalization can merge the row with
+    /// its native counterpart before LSP projection. Producers without a
+    /// registered identity leave it `None`; coincidence never invents one.
+    pub observed_identity: Option<OwnedCriticObservedIdentity>,
 }
 
 /// Failure converting the migration-only provider diagnostic into the canonical type.
@@ -89,6 +98,7 @@ impl TryFrom<Diagnostic> for perl_diagnostics::Diagnostic {
             tags,
             suggestion: _,
             fixable: _,
+            observed_identity: _,
         } = inner;
 
         let code_text = code.ok_or(DiagnosticConversionError::MissingCode)?;
@@ -151,12 +161,22 @@ impl Diagnostic {
             tags: Vec::new(),
             suggestion: None,
             fixable: false,
+            observed_identity: None,
         }
     }
 
     /// Sets the optional diagnostic code.
     pub fn with_code(mut self, code: impl Into<String>) -> Self {
         self.code = Some(code.into());
+        self
+    }
+
+    /// Declares the producer's checked built-in identity at emission (#11918).
+    pub fn with_observed_identity(
+        mut self,
+        identity: impl Into<OwnedCriticObservedIdentity>,
+    ) -> Self {
+        self.observed_identity = Some(identity.into());
         self
     }
 

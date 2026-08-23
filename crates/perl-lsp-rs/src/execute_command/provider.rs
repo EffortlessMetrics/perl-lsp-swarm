@@ -847,7 +847,10 @@ impl ExecuteCommandProvider {
                     finding.public_code(),
                     finding.message(),
                     finding.explanation().unwrap_or_default(),
-                    finding.severity() as u8,
+                    // This path normalizes native findings only, whose claims
+                    // are always perlcritic-scale (#11918 keeps core-scale
+                    // rows out of perlcritic numeric formatting).
+                    finding.severity().perlcritic_severity().map_or(0, |severity| severity as u8),
                     (finding.range().start.line + 1) as usize,
                     (finding.range().start.column + 1) as usize,
                     &file,
