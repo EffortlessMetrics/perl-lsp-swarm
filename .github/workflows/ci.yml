@@ -385,6 +385,21 @@ jobs:
           # The target directory is selected before Warm xtask so gate commands reuse that build.
           # Gate receipts intentionally stay at target/receipts for upload steps.
           echo "PR-fast timeout policy: GitHub job 50m, outer runner watchdog 45m, per-gate timeouts recorded in target/receipts/receipt.json"
+          capture_disk_pressure() {
+            # #11943: unit_routed_full has died mid-link with ENOSPC -> ld SIGBUS after
+            # exhausting the shared root filesystem (~84G free at job start), which
+            # presents as a confusing compile failure. Always leave a point-in-time
+            # disk snapshot beside the other receipt logs so resource exhaustion is
+            # visible with the filled path named instead of guessed post-mortem.
+            mkdir -p target/receipts/logs
+            {
+              echo "== $(date -u '+%Y-%m-%dT%H:%M:%SZ') PR-fast disk pressure snapshot =="
+              echo "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-<unset>}"
+              df -h . "${CARGO_TARGET_DIR:-target}" || true
+              du -h --max-depth=1 "${CARGO_TARGET_DIR:-target}" 2>/dev/null | sort -rh | head -n 20 || true
+            } >> target/receipts/logs/pr-fast-disk-pressure.log || true
+          }
+          trap capture_disk_pressure EXIT
           timeout --signal=TERM --kill-after=60s 2700s "$CARGO_TARGET_DIR/debug/xtask" gates --tier pr-fast --base origin/main --receipt
           status=$?
           case "$status" in
