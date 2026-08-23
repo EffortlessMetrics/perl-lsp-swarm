@@ -1,4 +1,5 @@
--- Deterministic focused tests for clients/lite-xl/upstream/json.lua (#11197, #11136).
+-- Deterministic focused tests for clients/lite-xl/upstream/json.lua
+-- (#11197, #11136, #11183, #11194).
 --
 -- Run:
 --   lua clients/lite-xl/tests/json_decode_test.lua [path-to-json-module]
@@ -483,6 +484,95 @@ do
   ok(not json.is_number(forged) and json.number_lexeme(forged) == nil,
     "forged number tag gains nothing")
   ok(json.encode(forged) == "{}", "forged number-tagged table encodes as plain empty table")
+end
+
+-- ---------------------------------------------------------------------------
+-- Unicode scalar and UTF-8 validity (#11194)
+--
+-- Only valid Unicode scalars decode from \u escapes (lone/malformed surrogates
+-- fail typed), raw string bytes must be valid UTF-8, and outbound strings are
+-- validated before any encoding work.
+-- ---------------------------------------------------------------------------
+
+do
+  -- Required valid cases: exact bytes preserved.
+  ok(json.decode('"abc"') == "abc", "ASCII passthrough")
+  local two = json.decode('"\195\169"')
+  ok(two == "\195\169", "raw 2-byte sequence preserved")
+  local two_esc = json.decode('"\\u00e9"')
+  ok(two_esc == "\195\169", "escaped BMP scalar equals raw bytes")
+  local three = json.decode('"\226\130\172"')
+  ok(three == "\226\130\172", "raw 3-byte sequence preserved")
+  ok(json.decode('"\\u20ac"') == "\226\130\172", "escaped 3-byte scalar composes exactly")
+  local four = json.decode('"\240\159\152\128"')
+  ok(four == "\240\159\152\128", "raw 4-byte non-BMP preserved")
+  local pair = json.decode('"\\ud83d\\ude00"')
+  ok(pair == "\240\159\152\128", "valid surrogate pair decodes to U+1F600 bytes")
+  ok(json.decode('"\\u0000"') == "\0", "escaped NUL stays valid at the JSON layer")
+  ok(json.decode('"a\\u00e9b\195\169c"') == "a\195\169b\195\169c", "mixed raw/escaped decodes")
+
+  -- Outbound: valid strings round-trip byte-exactly; escaping still works.
+  local uni = "x\195\169\226\130\172\240\159\152\128y"
+  ok(json.encode(uni) == '"x\195\169\226\130\172\240\159\152\128y"', "valid unicode encodes byte-exactly")
+  ok(json.encode("\n\"\\") == '"\\n\\"\\\\"', "control/quote/backslash escaping intact")
+  ok(json.decode(json.encode(uni)) == uni, "unicode round trip")
+
+  -- Required invalid escape cases fail typed.
+  assert_typed_failure('"\\ud800"', "invalid_unicode_escape", "lone high surrogate")
+  assert_typed_failure('"\\udbff"', "invalid_unicode_escape", "lone high surrogate at dbff")
+  assert_typed_failure('"\\udc00"', "invalid_unicode_escape", "lone low surrogate")
+  assert_typed_failure('"\\udfff"', "invalid_unicode_escape", "lone low surrogate at dfff")
+  assert_typed_failure('"\\ud800\\ud800"', "invalid_unicode_escape", "high followed by high")
+  assert_typed_failure('"\\ud83d\\u0041"', "invalid_unicode_escape", "high followed by non-low BMP")
+  assert_typed_failure('"\\ud800\\u0041"', "invalid_unicode_escape",
+    "high plus plain escape previously composed garbage silently")
+  assert_typed_failure('"\\ud83d"', "invalid_unicode_escape", "truncated pair at end of input")
+
+  -- Required invalid raw-byte cases fail typed.
+  assert_typed_failure('"\128"', "invalid_utf8", "isolated continuation byte")
+  assert_typed_failure('"\195"', "invalid_utf8", "truncated 2-byte sequence")
+  assert_typed_failure('"\226\130"', "invalid_utf8", "truncated 3-byte sequence")
+  assert_typed_failure('"\240\159\152"', "invalid_utf8", "truncated 4-byte sequence")
+  assert_typed_failure('"\194"', "invalid_utf8", "truncated 2-byte at c2")
+  assert_typed_failure('"\192\175"', "invalid_utf8", "overlong 2-byte encoding")
+  assert_typed_failure('"\224\128\175"', "invalid_utf8", "overlong 3-byte encoding")
+  assert_typed_failure('"\224\128"', "invalid_utf8", "overlong truncated")
+  assert_typed_failure('"\237\160\189"', "invalid_utf8", "raw surrogate encoding D800")
+  assert_typed_failure('"\237\191\191"', "invalid_utf8", "raw surrogate encoding DFFF")
+  assert_typed_failure('"\247\191\191\191"', "invalid_utf8", "value above U+10FFFF")
+  assert_typed_failure('"\193\191"', "invalid_utf8", "overlong lead byte c1")
+  assert_typed_failure('"\245\128\128\128"', "invalid_utf8", "lead byte f5 above plane 16")
+end
+
+do
+  -- Outbound validation rejects invalid UTF-8 with a bounded deterministic
+  -- error before any frame content is produced.
+  local cases = {
+    { "ok\195", "truncated tail" },
+    { "\128", "leading continuation" },
+    { "a\226\130b", "truncated middle" },
+    { "x\237\160\189y", "surrogate bytes outbound" },
+    { "\192\175", "overlong outbound" },
+  }
+  for _, case in ipairs(cases) do
+    local ran, exc = pcall(json.encode, case[1])
+    ok(ran == false and type(exc) == "string"
+      and string.find(exc, "invalid UTF%-8 at byte offset %d+", 1, false) ~= nil,
+      "encode rejects " .. case[2] .. ": " .. tostring(exc))
+  end
+
+  -- The failure message stays bounded and does not echo long bodies.
+  local long_bad = string.rep("a", 4096) .. "\128"
+  local ran, exc = pcall(json.encode, long_bad)
+  ok(ran == false and #tostring(exc) < 200
+    and not string.find(tostring(exc), string.rep("a", 64), 1, true),
+    "encode failure message bounded without body echo")
+
+  -- Typed containers holding invalid strings fail through the same gate.
+  local arr = json.array({ "ok", "bad\195" })
+  ran, exc = pcall(json.encode, arr)
+  ok(ran == false and string.find(exc, "invalid UTF%-8", 1, false),
+    "nested invalid string fails encode: " .. tostring(exc))
 end
 
 print(string.format("%s: %d passed, %d failed (%s)",
