@@ -97,10 +97,7 @@ try {
   & git status --porcelain=v1 -z --untracked-files=all > $statusFile 2>&1
   if ($LASTEXITCODE -ne 0) { throw 'git status porcelain failed' }
   $bytes = [IO.File]::ReadAllBytes($statusFile)
-  if ($bytes.Length -ge 2 -and $bytes[$bytes.Length - 2] -eq 0x0D -and $bytes[$bytes.Length - 1] -eq 0x0A) {
-    $bytes = $bytes[0..($bytes.Length - 3)]
-  }
-  $raw = [Text.Encoding]::UTF8.GetString($bytes)
+  $raw = [Text.Encoding]::UTF8.GetString($bytes).TrimEnd([char]0x0D, [char]0x0A)
 } finally { Remove-Item -LiteralPath $statusFile -Force -ErrorAction SilentlyContinue }
 $records = @($raw -split [char]0 | Where-Object { $_ -ne '' })
 $found = [System.Collections.Generic.List[string]]::new()
