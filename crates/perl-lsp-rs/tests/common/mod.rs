@@ -50,11 +50,12 @@ pub mod protocol_io;
 
 // Re-export everything from extracted submodules for backwards compatibility
 pub use handshake::{
-    await_index_ready, initialize_lsp, initialize_lsp_with_capabilities, shutdown_and_exit,
+    await_index_ready, initialize_lsp, initialize_lsp_with_capabilities,
+    initialize_lsp_with_root_path, shutdown_and_exit,
 };
 pub use protocol_io::{
-    ReadResponseOutcome, drain_until_quiet, read_notification_method, read_notification_timeout,
-    read_response, read_response_matching, read_response_matching_i64,
+    ReadResponseOutcome, drain_until_quiet, read_notification_for_uri, read_notification_method,
+    read_notification_timeout, read_response, read_response_matching, read_response_matching_i64,
     read_response_matching_outcome, read_response_only_timeout, read_response_timeout, send_raw,
     send_raw_message, send_request_no_wait,
 };

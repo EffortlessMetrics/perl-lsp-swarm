@@ -1241,6 +1241,7 @@ impl LspServer {
                 let document_instance = Arc::clone(&ticket.document_instance);
                 let task_counter = Arc::clone(&self.pending_index_task_count);
                 let settle_notified_by_worker = ticket.settle_notified_by_worker;
+                let outbound = self.outbound.clone();
                 task_counter.fetch_add(1, Ordering::SeqCst);
 
                 let task = move || {
@@ -1257,35 +1258,47 @@ impl LspServer {
                             // typed API with a non-zero owner generation; raw
                             // zero is structurally unrepresentable here.
                             match NonZeroU32::new(expected_generation) {
-                                Some(commit_generation) => {
-                                    match workspace_index.index_live_file(
-                                        url,
-                                        doc_content,
-                                        SourceCommit::new(commit_generation),
-                                    ) {
-                                        SourceCommitOutcome::Accepted
-                                        | SourceCommitOutcome::NoOp => {}
-                                        SourceCommitOutcome::RejectedStale => tracing::debug!(
-                                            uri = %uri_owned,
-                                            expected_generation,
-                                            "Live index commit rejected stale after newer source won"
-                                        ),
-                                        SourceCommitOutcome::Failed(e) => {
-                                            tracing::warn!(
-                                                "Failed to index file {}: {}",
-                                                uri_owned,
-                                                e
-                                            );
-                                        }
-                                    }
-                                }
-                                None => tracing::warn!(
-                                    uri = %uri_owned,
-                                    "Refusing zero-generation live source commit"
+                                Some(commit_generation) => workspace_index.index_live_file(
+                                    url,
+                                    doc_content,
+                                    SourceCommit::new(commit_generation),
                                 ),
+                                None => {
+                                    tracing::warn!(
+                                        uri = %uri_owned,
+                                        "Refusing zero-generation live source commit"
+                                    );
+                                    SourceCommitOutcome::Failed(
+                                        "zero generation is not a live commit identity".to_string(),
+                                    )
+                                }
                             }
                         },
                     );
+                    // An accepted edit commit is the same freshness fact the
+                    // didOpen background task already announces: the active
+                    // document's index entry is now current at this
+                    // generation. Emitting it here gives clients (and
+                    // integration tests) one deterministic per-document
+                    // readiness signal for edits, not just opens.
+                    if matches!(indexed, Some(SourceCommitOutcome::Accepted)) {
+                        workspace_progress::send_active_document_ready_notification(
+                            &outbound,
+                            &uri_owned,
+                            u64::from(expected_generation),
+                        );
+                    }
+                    match indexed {
+                        Some(SourceCommitOutcome::RejectedStale) => tracing::debug!(
+                            uri = %uri_owned,
+                            expected_generation,
+                            "Live index commit rejected stale after newer source won"
+                        ),
+                        Some(SourceCommitOutcome::Failed(ref error)) => {
+                            tracing::warn!("Failed to index file {}: {}", uri_owned, error);
+                        }
+                        _ => {}
+                    }
                     if indexed.is_none() {
                         tracing::debug!(
                             uri = %uri_owned,

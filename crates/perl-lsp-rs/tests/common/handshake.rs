@@ -134,6 +134,28 @@ pub fn initialize_lsp_with_capabilities(server: &LspServer, capabilities: Value)
     )
 }
 
+/// Initialize the server with an explicit filesystem workspace root.
+///
+/// Tests that drive virtual (never-on-disk) documents through `didOpen` need
+/// this to keep the server's workspace index isolated: with no root of any
+/// kind, the server deliberately falls back to the process working directory
+/// (lightweight-client compatibility) and bulk-indexes it, racing those tests'
+/// assertions with a real-directory scan and polluting the index with files
+/// unrelated to the scenario under test. Pointing the server at an empty
+/// directory keeps the index populated only by the documents the test opens.
+pub fn initialize_lsp_with_root_path(server: &LspServer, root_path: &str) -> Value {
+    initialize_lsp_with_params(
+        server,
+        json!({
+            "capabilities": {},
+            "clientInfo": {"name":"perl-parser-tests","version":"0"},
+            "rootPath": root_path,
+            "rootUri": null,
+            "workspaceFolders": null
+        }),
+    )
+}
+
 /// Wait for the index-ready notification from the server
 pub fn await_index_ready(server: &LspServer) {
     // Wait for perl-lsp/index-ready notification with a reasonable timeout
@@ -193,4 +215,41 @@ pub fn shutdown_and_exit(server: &LspServer) {
         std::thread::sleep(Duration::from_millis(50));
     }
     let _ = server.process.lock().unwrap_or_else(|e| e.into_inner()).kill();
+}
+
+#[cfg(test)]
+mod initialize_lsp_with_root_path_tests {
+    use super::{LspServer, initialize_lsp_with_root_path};
+    use serde_json::Value;
+
+    type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
+
+    /// The root-scoped handshake must complete against a real server and an
+    /// empty root directory: the initialize response carries capabilities,
+    /// and the `rootPath` channel resolves the same folder state the suite's
+    /// isolated-workspace tests rely on.
+    #[test]
+    fn initializes_server_against_an_explicit_empty_root() -> TestResult<()> {
+        let root =
+            std::env::temp_dir().join(format!("perl-lsp-root-path-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root)
+            .map_err(|err| format!("failed to create root {}: {err}", root.display()))?;
+
+        let server: LspServer = super::super::start_lsp_server();
+        let response = initialize_lsp_with_root_path(&server, &root.to_string_lossy());
+
+        let capabilities = response
+            .get("result")
+            .and_then(|result| result.get("capabilities"))
+            .cloned()
+            .unwrap_or_else(|| Value::Null);
+        assert!(
+            capabilities.is_object(),
+            "initialize must answer with a capabilities object, got: {response:?}"
+        );
+
+        super::shutdown_and_exit(&server);
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
 }
