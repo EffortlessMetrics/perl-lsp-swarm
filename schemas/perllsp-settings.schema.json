@@ -115,14 +115,6 @@
             "enabled": { "type": "boolean", "default": false }
           }
         },
-        "nextEdit": {
-          "type": "object",
-          "additionalProperties": false,
-          "description": "Preview gate for future next-edit suggestions; enabling it does not by itself create an editor-visible provider.",
-          "properties": {
-            "enabled": { "type": "boolean", "default": false }
-          }
-        },
         "perlcritic": {
           "type": "object",
           "additionalProperties": false,

@@ -179,22 +179,8 @@ pub struct ServerConfig {
     /// Timeout in seconds for perltidy.
     pub perltidy_timeout_secs: u64,
 
-    /// Feature gate for future next-edit suggestions.
-    pub next_edit: NextEditConfig,
-
     /// AI-powered inline completion configuration.
     pub ai_completion: AiCompletionConfig,
-}
-
-/// Configuration for gated next-edit suggestions.
-///
-/// Disabled by default. Enabling this only opens the runtime boundary; no
-/// editor-visible next-edit provider is registered yet.
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct NextEditConfig {
-    /// Whether the future next-edit runtime boundary is explicitly enabled.
-    pub enabled: bool,
 }
 
 /// Configuration for AI-powered inline completions.
@@ -367,7 +353,6 @@ impl Default for ServerConfig {
             perltidy_block_comment_indentation: Some(0),
             perltidy_extra_args: Vec::new(),
             perltidy_timeout_secs: 10,
-            next_edit: NextEditConfig::default(),
             ai_completion: AiCompletionConfig::default(),
         }
     }
@@ -400,10 +385,17 @@ impl ServerConfig {
             self.telemetry_enabled = enabled;
         }
 
-        if let Some(next_edit) = settings.get("nextEdit")
-            && let Some(enabled) = next_edit.get("enabled").and_then(|v| v.as_bool())
-        {
-            self.next_edit.enabled = enabled;
+        // #8311: `nextEdit.enabled` is no longer a public setting. The key is
+        // recognized only to answer legacy payloads with one bounded
+        // ignored/deprecation reason; it can never enable the internal
+        // next-edit scaffold gate, and no editor-visible provider exists.
+        if settings.get("nextEdit").is_some() {
+            tracing::warn!(
+                target: "perl_lsp::config",
+                setting = "nextEdit.enabled",
+                "ignoring deprecated `nextEdit` settings key; no editor next-edit provider is \
+                 registered, so it can never report ready or enabled (#8311)",
+            );
         }
 
         // Critic settings advance as ONE accepted transaction (#8253): the
@@ -1770,7 +1762,10 @@ pub struct ProjectConfig {
     pub features: ProjectFeaturesConfig,
     /// `[ai_completion]` section: AI completion settings.
     pub ai_completion: ProjectAiCompletionConfig,
-    /// `[next_edit]` section: gated next-edit settings.
+    /// Deprecated `[next_edit]` section of `.perl-lsp.toml` (#8311).
+    ///
+    /// Recognized only so legacy files can be answered with one bounded
+    /// ignored/deprecation reason; it never affects server state.
     pub next_edit: ProjectNextEditConfig,
     /// `[formatting]` section: native formatter and legacy adapter configuration.
     pub formatting: ProjectFormattingConfig,
@@ -1858,12 +1853,18 @@ pub struct ProjectAiCompletionConfig {
     pub enabled: Option<bool>,
 }
 
-/// `[next_edit]` section of `.perl-lsp.toml`.
+/// Deprecated `[next_edit]` section of `.perl-lsp.toml` (#8311).
+///
+/// No longer part of public configuration: no editor-visible next-edit
+/// provider is registered. The section is retained only as a legacy
+/// recognizer so supplying it can be reported with one bounded
+/// ignored/deprecation reason instead of apparent success; it can never
+/// enable the internal scaffold gate or report ready/enabled.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectNextEditConfig {
-    /// Whether the future next-edit runtime boundary is explicitly enabled.
+    /// Legacy `enabled` flag. Ignored; kept only for the deprecation reason.
     pub enabled: Option<bool>,
 }
 
@@ -2141,8 +2142,17 @@ impl ProjectConfig {
         // workspace settings into `didChangeConfiguration` remain a residual
         // provenance gap (documented in AI_COMPLETION.md).
         recompute_ai_completion_effective(&mut config.ai_completion);
+        // #8311: `[next_edit]` is no longer public configuration. Recognized
+        // only to report one bounded ignored/deprecation reason; it can never
+        // enable the internal scaffold gate or report ready/enabled.
         if let Some(enabled) = self.next_edit.enabled {
-            config.next_edit.enabled = enabled;
+            tracing::warn!(
+                target: "perl_lsp::config",
+                setting = "next_edit.enabled",
+                value = enabled,
+                "ignoring deprecated .perl-lsp.toml [next_edit] setting; no editor next-edit \
+                 provider is registered, so it can never report ready or enabled (#8311)",
+            );
         }
 
         // Apply formatting configuration
@@ -2474,9 +2484,11 @@ impl RejectedIncludePathReason {
 ///
 /// Produced by [`merge_project_configs_for_server`]. The `[perl]` section is
 /// intentionally excluded because it is already scoped per-folder via
-/// `WorkspaceConfig`; only the six server-global sections (`[diagnostics]`,
-/// `[critic]`, `[features]`, `[formatting]`, `[ai_completion]`, `[next_edit]`)
-/// participate in the merge.
+/// `WorkspaceConfig`; only the five server-global sections (`[diagnostics]`,
+/// `[critic]`, `[features]`, `[formatting]`, `[ai_completion]`) participate in
+/// the merge. The deprecated `[next_edit]` section (#8311) is ignored with a
+/// bounded deprecation reason and no longer represents server state, so it is
+/// deliberately not merged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MultiRootConfigConflict {
     /// Dotted path of the conflicting key, e.g. `"diagnostics.perlcritic"`.
@@ -2507,10 +2519,12 @@ impl MultiRootConfigConflict {
 ///
 /// In a multi-root workspace, each folder's `.perl-lsp.toml` is loaded
 /// independently. The `[perl]` section is correctly scoped per-folder through
-/// `WorkspaceConfig`, but the other six sections (`[diagnostics]`, `[critic]`,
-/// `[features]`, `[formatting]`, `[ai_completion]`, `[next_edit]`) target the
+/// `WorkspaceConfig`, but the other five sections (`[diagnostics]`, `[critic]`,
+/// `[features]`, `[formatting]`, `[ai_completion]`) target the
 /// single shared `ServerConfig`. Applying every folder's config in a loop would
 /// silently let the last folder win for any field set by more than one folder.
+/// The deprecated `[next_edit]` section (#8311) carries no server state and is
+/// not merged; it is reported as ignored when applied.
 ///
 /// This function instead produces a merged `ProjectConfig` where each field
 /// takes the value from the **first** folder (in iteration order) that sets it,
@@ -2562,14 +2576,13 @@ pub fn merge_project_configs_for_server(
     // are intentionally absent from `ProjectAiCompletionConfig` (issue #4955)
     // and therefore have nothing to merge here.
 
-    // `[next_edit]`
-    merge_opt_field(
-        &mut merged.next_edit.enabled,
-        &mut conflicts,
-        "next_edit.enabled",
-        folders,
-        |c| c.next_edit.enabled,
-    );
+    // `[next_edit]` — deprecated and ignored (#8311). Carry the first-set value
+    // only so `apply_to_server_config` can still report the bounded
+    // deprecation reason; no conflict is recorded because the key no longer
+    // represents server state.
+    if merged.next_edit.enabled.is_none() {
+        merged.next_edit.enabled = folders.iter().find_map(|(_, c)| c.next_edit.enabled);
+    }
 
     // `[formatting]`
     merge_opt_field(
@@ -3381,26 +3394,52 @@ profile = "recommended"
     }
 
     #[test]
-    fn server_config_update_from_value_applies_next_edit_gate() -> TestResult {
+    fn server_config_update_from_value_ignores_deprecated_next_edit_key() {
         let mut config = ServerConfig::default();
-        assert!(!config.next_edit.enabled);
 
-        config.update_from_value(&serde_json::json!({
-            "nextEdit": {
-                "enabled": true
-            }
-        }));
+        // #8311: the legacy `nextEdit` key must fail closed. Any supplied
+        // shape produces exactly one bounded ignored/deprecation reason and
+        // never mutates server state, so the internal scaffold gate can never
+        // report ready or enabled from user configuration.
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "nextEdit": {
+                    "enabled": true
+                }
+            }));
+        });
+        let combined = captured.join("\n");
+        assert_eq!(
+            combined.matches("ignoring deprecated").count(),
+            1,
+            "legacy nextEdit key must produce exactly one deprecation reason; captured: {combined}"
+        );
+        assert!(combined.contains("nextEdit.enabled"), "captured: {combined}");
+        assert!(combined.contains("#8311"), "captured: {combined}");
 
-        assert!(config.next_edit.enabled);
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "nextEdit": {
+                    "enabled": false
+                }
+            }));
+        });
+        let combined = captured.join("\n");
+        assert_eq!(
+            combined.matches("ignoring deprecated").count(),
+            1,
+            "legacy nextEdit key must produce exactly one deprecation reason; captured: {combined}"
+        );
 
-        config.update_from_value(&serde_json::json!({
-            "nextEdit": {
-                "enabled": false
-            }
-        }));
-
-        assert!(!config.next_edit.enabled);
-        Ok(())
+        // Unrelated keys are unaffected and produce no deprecation reason.
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "inlayHints": { "enabled": false }
+            }));
+        });
+        let combined = captured.join("\n");
+        assert!(!combined.contains("nextEdit"), "captured: {combined}");
+        assert!(!config.inlay_hints_enabled);
     }
 
     #[test]
@@ -4095,26 +4134,33 @@ profile = "recommended"
     }
 
     #[test]
-    fn project_config_applies_next_edit_gate() {
+    fn project_config_ignores_deprecated_next_edit_section() {
         let mut config = ServerConfig::default();
         let mut project = ProjectConfig::default();
         project.next_edit.enabled = Some(true);
 
-        project.apply_to_server_config(&mut config);
+        // #8311: `[next_edit]` is no longer public configuration. Supplying it
+        // produces one bounded ignored/deprecation reason and never changes
+        // server state, in either direction.
+        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        let combined = captured.join("\n");
+        assert_eq!(
+            combined.matches("ignoring deprecated").count(),
+            1,
+            "legacy [next_edit] section must produce exactly one deprecation reason; captured: {combined}"
+        );
+        assert!(combined.contains("next_edit.enabled"), "captured: {combined}");
+        assert!(combined.contains("#8311"), "captured: {combined}");
 
-        assert!(config.next_edit.enabled);
-    }
-
-    #[test]
-    fn project_config_can_disable_next_edit_gate() {
-        let mut config = ServerConfig::default();
-        config.next_edit.enabled = true;
         let mut project = ProjectConfig::default();
         project.next_edit.enabled = Some(false);
-
-        project.apply_to_server_config(&mut config);
-
-        assert!(!config.next_edit.enabled);
+        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        let combined = captured.join("\n");
+        assert_eq!(
+            combined.matches("ignoring deprecated").count(),
+            1,
+            "legacy [next_edit] section must produce exactly one deprecation reason; captured: {combined}"
+        );
     }
 
     #[test]
@@ -4122,7 +4168,6 @@ profile = "recommended"
         let mut config = ServerConfig {
             perlcritic_enabled: true,
             inlay_hints_enabled: true,
-            next_edit: NextEditConfig { enabled: true },
             ..ServerConfig::default()
         };
         let project = ProjectConfig::default();
@@ -4131,7 +4176,6 @@ profile = "recommended"
 
         assert!(config.perlcritic_enabled);
         assert!(config.inlay_hints_enabled);
-        assert!(config.next_edit.enabled);
     }
 
     #[test]

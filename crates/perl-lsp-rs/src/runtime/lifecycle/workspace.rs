@@ -130,8 +130,8 @@ impl LspServer {
     /// Multi-root workspaces: each folder loads its own `.perl-lsp.toml` independently.
     ///
     /// The `[perl]` section is scoped per-folder through `effective_workspace_config`.
-    /// The six server-global sections (`[diagnostics]`, `[critic]`, `[features]`,
-    /// `[formatting]`, `[ai_completion]`, `[next_edit]`) target the single shared
+    /// The five server-global sections (`[diagnostics]`, `[critic]`, `[features]`,
+    /// `[formatting]`, `[ai_completion]`) target the single shared
     /// `ServerConfig`; they are merged with **first-folder-wins** semantics via
     /// [`perl_lsp_rs_core::config::merge_project_configs_for_server`] so a later
     /// folder can no longer silently overwrite an earlier folder's setting. When two

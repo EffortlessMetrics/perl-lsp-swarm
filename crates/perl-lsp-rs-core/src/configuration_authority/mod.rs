@@ -15,7 +15,6 @@ pub(crate) use catalog::CONFIGURATION_AUTHORITY;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ConfigOwner {
     Server,
-    NextEdit,
     AiCompletion,
     AiStreaming,
     Workspace,
@@ -148,7 +147,6 @@ pub(crate) enum ConfigConsumer {
     NativeFormatter,
     ExternalFormatter,
     SaveFormatting,
-    NextEditGate,
     InlineCompletion,
     AiTransport,
     AiScheduler,
@@ -189,16 +187,12 @@ mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
 
-    const CONTAINER_FIELDS: &[(ConfigOwner, &str)] = &[
-        (ConfigOwner::Server, "next_edit"),
-        (ConfigOwner::Server, "ai_completion"),
-        (ConfigOwner::AiCompletion, "streaming"),
-    ];
+    const CONTAINER_FIELDS: &[(ConfigOwner, &str)] =
+        &[(ConfigOwner::Server, "ai_completion"), (ConfigOwner::AiCompletion, "streaming")];
 
     fn owner_struct(owner: ConfigOwner) -> &'static str {
         match owner {
             ConfigOwner::Server => "ServerConfig",
-            ConfigOwner::NextEdit => "NextEditConfig",
             ConfigOwner::AiCompletion => "AiCompletionConfig",
             ConfigOwner::AiStreaming => "AiStreamingConfig",
             ConfigOwner::Workspace => "WorkspaceConfig",
@@ -225,7 +219,6 @@ mod tests {
         let mut expected = BTreeSet::new();
         for owner in [
             ConfigOwner::Server,
-            ConfigOwner::NextEdit,
             ConfigOwner::AiCompletion,
             ConfigOwner::AiStreaming,
             ConfigOwner::Workspace,
