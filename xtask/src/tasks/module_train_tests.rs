@@ -629,3 +629,47 @@ fn tree_binding_rejects_non_head_trees() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn git_facts_follow_the_loaded_repository_not_the_process_cwd() -> Result<()> {
+    // Regression for the foreign-repo binding defect: git output must be
+    // resolved inside the passed root. A scratch repository with one known
+    // commit must report its own HEAD even though the test process runs in
+    // the worktree.
+    let dir = std::env::temp_dir().join("plsw-11626-module-train-scratch-repo");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).with_context(|| "failed to create scratch repo dir")?;
+    fn scratch_git(dir: &std::path::Path, args: &[&str]) -> Result<()> {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", std::path::Path::new("NUL"))
+            .env("GIT_CONFIG_SYSTEM", std::path::Path::new("NUL"))
+            .output()
+            .with_context(|| format!("failed to spawn git {}", args.join(" ")))?;
+        if !output.status.success() {
+            bail!("git {} failed in scratch repo", args.join(" "));
+        }
+        Ok(())
+    }
+    scratch_git(&dir, &["init", "--quiet"])?;
+    scratch_git(&dir, &["config", "user.email", "scratch@example.invalid"])?;
+    scratch_git(&dir, &["config", "user.name", "scratch"])?;
+    std::fs::write(dir.join("marker.txt"), "scratch").with_context(|| "scratch marker write")?;
+    scratch_git(&dir, &["add", "marker.txt"])?;
+    scratch_git(&dir, &["commit", "--quiet", "-m", "scratch"])?;
+    let scratch_head = git_output(&dir, &["rev-parse", "HEAD"])?;
+    let worktree_root = crate::utils::project_root()?;
+    let worktree_head = git_output(&worktree_root, &["rev-parse", "HEAD"])?;
+    if scratch_head == worktree_head {
+        bail!("scratch discrimination failed: both repositories report the same HEAD");
+    }
+    // The property under test: same binary, same process, different roots —
+    // each root's HEAD is reported for that root.
+    let again = git_output(&dir, &["rev-parse", "HEAD"])?;
+    if again != scratch_head {
+        bail!("git output does not follow the passed repository root");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}

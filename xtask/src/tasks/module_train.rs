@@ -1126,11 +1126,11 @@ pub struct TreeBinding {
     pub manifest_dirty: bool,
 }
 
-fn git_output(args: &[&str]) -> Result<String> {
-    let output = std::process::Command::new("git")
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to spawn git {}", args.join(" ")))?;
+fn git_output(root: &std::path::Path, args: &[&str]) -> Result<String> {
+    let output =
+        std::process::Command::new("git").args(args).current_dir(root).output().with_context(
+            || format!("failed to spawn git {} in {}", args.join(" "), root.display()),
+        )?;
     if !output.status.success() {
         bail!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&output.stderr).trim());
     }
@@ -1142,6 +1142,11 @@ fn git_output(args: &[&str]) -> Result<String> {
 
 /// Resolve the exact-tree binding. This slice binds the current checkout at
 /// `HEAD` only; checking out arbitrary trees is a recorded residual.
+///
+/// Git facts are always resolved inside the repository root the manifest was
+/// loaded from, never the ambient process working directory: a caller
+/// invoking the binary from elsewhere must never get a foreign `HEAD` bound
+/// to this manifest.
 pub fn tree_binding(tree: &str) -> Result<TreeBinding> {
     if tree != "HEAD" {
         bail!(
@@ -1149,10 +1154,12 @@ pub fn tree_binding(tree: &str) -> Result<TreeBinding> {
              arbitrary-tree checkout support is a recorded residual of #11626"
         );
     }
-    let tree_head = git_output(&["rev-parse", "HEAD"])?;
-    let status = git_output(&["status", "--porcelain"])?;
+    let root = crate::utils::project_root()?;
+    let tree_head = git_output(&root, &["rev-parse", "HEAD"])?;
+    let status = git_output(&root, &["status", "--porcelain"])?;
     let dirty_paths = status.lines().filter(|line| !line.trim().is_empty()).count();
-    let manifest_status = git_output(&["status", "--porcelain", "--", MANIFEST_RELATIVE_PATH])?;
+    let manifest_status =
+        git_output(&root, &["status", "--porcelain", "--", MANIFEST_RELATIVE_PATH])?;
     Ok(TreeBinding { tree_head, dirty_paths, manifest_dirty: !manifest_status.trim().is_empty() })
 }
 
