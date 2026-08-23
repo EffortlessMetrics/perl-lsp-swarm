@@ -12,8 +12,9 @@
 use super::*;
 use super::{
     Arc, AtomicBool, AtomicU32, CodeFormatter, DocumentState, FormattingOptions, HashMap,
-    JsonRpcError, LspServer, Mutex, Node, NonZeroU32, Ordering, Parser, Value, json, parse_worker,
-    source_path_from_uri, workspace_progress,
+    JsonRpcError, LspServer, Mutex, Node, NonZeroU32, Ordering, Parser, Value,
+    diagnostics_sink::{PushDiagnosticIdentity, PushDiagnosticsDisposition},
+    json, parse_worker, source_path_from_uri, workspace_progress,
 };
 use crate::protocol::invalid_params;
 use crate::state::{DegradationTier, FIRST_ACCEPTED_DOCUMENT_GENERATION, ParsedSnapshot};
@@ -134,17 +135,24 @@ impl LspServer {
                 );
 
                 let normalized_uri = self.normalize_uri_key(uri);
-                self.documents.lock().insert(normalized_uri.clone(), minimal_state(text, version));
+                // Guarded no-parse state still carries document identity
+                // through the push-diagnostics sink (#11673).
+                let guard_state = minimal_state(text, version);
+                let identity = PushDiagnosticIdentity::for_document(
+                    &normalized_uri,
+                    &guard_state.generation,
+                    guard_state.current_generation(),
+                );
+                self.documents.lock().insert(normalized_uri.clone(), guard_state);
 
-                if let Err(e) = self.notify(
-                    "textDocument/publishDiagnostics",
+                let _outcome = self.commit_push_diagnostics(
+                    &identity,
                     json!({
                         "uri": uri,
                         "diagnostics": []
                     }),
-                ) {
-                    tracing::warn!("Failed to publish diagnostics for {}: {}", uri, e);
-                }
+                    PushDiagnosticsDisposition::Clear,
+                );
                 self.clear_document_symbols(uri);
 
                 return Ok(());
@@ -163,17 +171,22 @@ impl LspServer {
 
                 // Store document state without AST
                 let normalized_uri = self.normalize_uri_key(uri);
-                self.documents.lock().insert(normalized_uri.clone(), minimal_state(text, version));
+                let guard_state = minimal_state(text, version);
+                let identity = PushDiagnosticIdentity::for_document(
+                    &normalized_uri,
+                    &guard_state.generation,
+                    guard_state.current_generation(),
+                );
+                self.documents.lock().insert(normalized_uri.clone(), guard_state);
 
-                if let Err(e) = self.notify(
-                    "textDocument/publishDiagnostics",
+                let _outcome = self.commit_push_diagnostics(
+                    &identity,
                     json!({
                         "uri": uri,
                         "diagnostics": []
                     }),
-                ) {
-                    tracing::warn!("Failed to publish diagnostics for {}: {}", uri, e);
-                }
+                    PushDiagnosticsDisposition::Clear,
+                );
                 self.clear_document_symbols(uri);
 
                 return Ok(());
@@ -188,10 +201,16 @@ impl LspServer {
                 );
 
                 let normalized_uri = self.normalize_uri_key(uri);
-                self.documents.lock().insert(normalized_uri.clone(), minimal_state(text, version));
+                let guard_state = minimal_state(text, version);
+                let identity = PushDiagnosticIdentity::for_document(
+                    &normalized_uri,
+                    &guard_state.generation,
+                    guard_state.current_generation(),
+                );
+                self.documents.lock().insert(normalized_uri.clone(), guard_state);
 
-                if let Err(e) = self.notify(
-                    "textDocument/publishDiagnostics",
+                let _outcome = self.commit_push_diagnostics(
+                    &identity,
                     json!({
                         "uri": uri,
                         "diagnostics": [{
@@ -204,13 +223,8 @@ impl LspServer {
                             "message": "File appears to contain binary content (null bytes detected). Perl diagnostics are disabled."
                         }]
                     }),
-                ) {
-                    tracing::warn!(
-                        "Failed to publish binary-content diagnostic for {}: {}",
-                        uri,
-                        e
-                    );
-                }
+                    PushDiagnosticsDisposition::Replacement,
+                );
                 self.clear_document_symbols(uri);
 
                 return Ok(());
@@ -673,18 +687,22 @@ impl LspServer {
                         version,
                         doc_state.generation.clone(),
                     );
+                    let identity = PushDiagnosticIdentity::for_document(
+                        &normalized_uri,
+                        &doc_state.generation,
+                        doc_state.current_generation(),
+                    );
                     documents.insert(normalized_uri.clone(), doc_state);
                     drop(documents);
 
-                    if let Err(e) = self.notify(
-                        "textDocument/publishDiagnostics",
+                    let _outcome = self.commit_push_diagnostics(
+                        &identity,
                         json!({
                             "uri": uri,
                             "diagnostics": []
                         }),
-                    ) {
-                        tracing::warn!("Failed to publish diagnostics for {}: {}", uri, e);
-                    }
+                        PushDiagnosticsDisposition::Clear,
+                    );
                     self.clear_document_symbols(uri);
 
                     return Ok(());
@@ -709,18 +727,22 @@ impl LspServer {
                         version,
                         doc_state.generation.clone(),
                     );
+                    let identity = PushDiagnosticIdentity::for_document(
+                        &normalized_uri,
+                        &doc_state.generation,
+                        doc_state.current_generation(),
+                    );
                     documents.insert(normalized_uri.clone(), doc_state);
                     drop(documents);
 
-                    if let Err(e) = self.notify(
-                        "textDocument/publishDiagnostics",
+                    let _outcome = self.commit_push_diagnostics(
+                        &identity,
                         json!({
                             "uri": uri,
                             "diagnostics": []
                         }),
-                    ) {
-                        tracing::warn!("Failed to publish diagnostics for {}: {}", uri, e);
-                    }
+                        PushDiagnosticsDisposition::Clear,
+                    );
                     self.clear_document_symbols(uri);
 
                     return Ok(());
@@ -741,11 +763,16 @@ impl LspServer {
                         version,
                         doc_state.generation.clone(),
                     );
+                    let identity = PushDiagnosticIdentity::for_document(
+                        &normalized_uri,
+                        &doc_state.generation,
+                        doc_state.current_generation(),
+                    );
                     documents.insert(normalized_uri.clone(), doc_state);
                     drop(documents);
 
-                    if let Err(e) = self.notify(
-                        "textDocument/publishDiagnostics",
+                    let _outcome = self.commit_push_diagnostics(
+                        &identity,
                         json!({
                             "uri": uri,
                             "diagnostics": [{
@@ -758,13 +785,8 @@ impl LspServer {
                                 "message": "File appears to contain binary content (null bytes detected). Perl diagnostics are disabled."
                             }]
                         }),
-                    ) {
-                        tracing::warn!(
-                            "Failed to publish binary-content diagnostic for {}: {}",
-                            uri,
-                            e
-                        );
-                    }
+                        PushDiagnosticsDisposition::Replacement,
+                    );
                     self.clear_document_symbols(uri);
 
                     return Ok(());
