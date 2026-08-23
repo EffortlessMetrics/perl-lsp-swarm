@@ -51,9 +51,15 @@ fn test_formatting_capability_advertised() -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-/// Test that code actions include organize imports
+/// Test that the legacy organize-imports edit stays withdrawn (#8305).
+///
+/// The line-oriented organizer was destructive: it replaced the whole interval
+/// between the first and last import-looking lines, destroying executable
+/// statements in between. Until #8319 admits a bounded source-preserving cohort
+/// and #10696 lands the proven cutover, no filtered request may return a
+/// `source.organizeImports` action and none may carry an edit.
 #[test]
-fn test_organize_imports_code_action_available() -> Result<(), Box<dyn std::error::Error>> {
+fn test_organize_imports_code_action_withdrawn() -> Result<(), Box<dyn std::error::Error>> {
     let srv = LspServer::new();
 
     // Initialize server
@@ -127,14 +133,13 @@ print Dumper($data);
     let result = response.result.ok_or("Expected result in code action response")?;
 
     let actions = result.as_array().ok_or("Expected array result for code actions")?;
-    let action = actions
-        .iter()
-        .find(|action| action["kind"].as_str() == Some("source.organizeImports"))
-        .ok_or("source.organizeImports action must be returned for a document with imports")?;
-
     assert!(
-        action.get("edit").is_some(),
-        "source.organizeImports action should include a workspace edit"
+        actions.iter().all(|action| action["kind"].as_str() != Some("source.organizeImports")),
+        "source.organizeImports is withdrawn (#8305) and must not be returned; got {actions:?}"
+    );
+    assert!(
+        actions.iter().all(|action| action["title"].as_str() != Some("Organize imports")),
+        "no action may reuse the withdrawn organizer title; got {actions:?}"
     );
 
     Ok(())

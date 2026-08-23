@@ -14,4 +14,6 @@ Key capabilities:
 
 Current version: v0.13.0-rc1 (public alpha). Dual-licensed MIT / Apache-2.0.
 
-Editor support: VS Code (primary, with bundled extension), Neovim, Emacs, Zed, Helix.
+Editor support: VS Code (primary, with bundled extension), Neovim, Emacs, and Helix through their respective packaged or generic-LSP routes.
+
+Zed integration: planned / not proven until the public Perl extension registers the distinct `perllsp` server ID and an actual-host receipt lands. The existing Zed `perl-lsp` ID belongs to `tree-sitter-perl/perl-tree-sitter-lsp` and must not be repointed to this product.

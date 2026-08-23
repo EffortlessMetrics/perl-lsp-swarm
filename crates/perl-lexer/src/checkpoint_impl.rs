@@ -1,22 +1,25 @@
-use crate::checkpoint::Checkpointable;
+use crate::checkpoint::{Checkpointable, PendingHeredocCheckpoint, QuoteOperatorCheckpoint};
+use crate::heredoc::HeredocSpec;
+use crate::quote_handler::QuoteOperatorInfo;
 use crate::{LexerCheckpoint, LexerMode, PerlLexer, checkpoint};
+use std::sync::Arc;
 
 impl Checkpointable for PerlLexer<'_> {
     fn checkpoint(&self) -> LexerCheckpoint {
         use checkpoint::CheckpointContext;
 
-        // Determine the checkpoint context based on current state
         let context = if matches!(self.mode, LexerMode::InFormatBody) {
             CheckpointContext::Format {
                 // Format bodies are consumed atomically by `next_token`, so a
-                // checkpoint can observe this mode only at the exact position
-                // where format-body parsing will begin.
+                // checkpoint can observe this mode only where body parsing begins.
                 start_position: self.position,
             }
         } else if !self.delimiter_stack.is_empty() {
-            // We're in some kind of quote-like construct
             CheckpointContext::QuoteLike {
-                operator: String::new(), // Would need to track this
+                operator: self
+                    .current_quote_op
+                    .as_ref()
+                    .map_or_else(String::new, |quote| quote.operator.clone()),
                 delimiter: self.delimiter_stack.last().copied().unwrap_or('\0'),
                 is_paired: true,
             }
@@ -36,6 +39,24 @@ impl Checkpointable for PerlLexer<'_> {
             after_var_subscript: self.after_var_subscript,
             paren_depth: self.paren_depth,
             current_pos: self.current_pos,
+            after_newline: self.after_newline,
+            pending_heredocs: self
+                .pending_heredocs
+                .iter()
+                .map(|pending| PendingHeredocCheckpoint {
+                    label: pending.label.to_string(),
+                    body_start: pending.body_start,
+                    allow_indent: pending.allow_indent,
+                })
+                .collect(),
+            line_start_offset: self.line_start_offset,
+            emit_heredoc_body_tokens: self.emit_heredoc_body_tokens,
+            current_quote_op: self.current_quote_op.as_ref().map(|quote| QuoteOperatorCheckpoint {
+                operator: quote.operator.clone(),
+                delimiter: quote.delimiter,
+                start_pos: quote.start_pos,
+            }),
+            qw_recovery_enabled: self.qw_recovery_enabled,
             eof_emitted: self.eof_emitted,
             context,
         }
@@ -53,27 +74,42 @@ impl Checkpointable for PerlLexer<'_> {
         self.after_var_subscript = checkpoint.after_var_subscript;
         self.paren_depth = checkpoint.paren_depth;
         self.current_pos = checkpoint.current_pos;
+        self.after_newline = checkpoint.after_newline;
+        self.pending_heredocs = checkpoint
+            .pending_heredocs
+            .iter()
+            .map(|pending| HeredocSpec {
+                label: Arc::from(pending.label.as_str()),
+                body_start: pending.body_start,
+                allow_indent: pending.allow_indent,
+            })
+            .collect();
+        self.line_start_offset = checkpoint.line_start_offset;
+        self.emit_heredoc_body_tokens = checkpoint.emit_heredoc_body_tokens;
+        self.current_quote_op =
+            checkpoint.current_quote_op.as_ref().map(|quote| QuoteOperatorInfo {
+                operator: quote.operator.clone(),
+                delimiter: quote.delimiter,
+                start_pos: quote.start_pos,
+            });
+        self.qw_recovery_enabled = checkpoint.qw_recovery_enabled;
         self.eof_emitted = checkpoint.eof_emitted;
 
-        // Handle special contexts
         use checkpoint::CheckpointContext;
-        if let CheckpointContext::Format { .. } = &checkpoint.context {
-            // Ensure we're in format body mode
-            if !matches!(self.mode, LexerMode::InFormatBody) {
-                self.mode = LexerMode::InFormatBody;
-            }
+        if matches!(checkpoint.context, CheckpointContext::Format { .. }) {
+            self.mode = LexerMode::InFormatBody;
         }
     }
 
     fn can_restore(&self, checkpoint: &LexerCheckpoint) -> bool {
-        // Can restore if the position is valid for our input
-        checkpoint.position <= self.input.len()
+        checkpoint.is_valid_for(self.input)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Position;
     use crate::checkpoint::CheckpointContext;
 
     type TestResult = std::result::Result<(), String>;
@@ -144,5 +180,37 @@ mod tests {
             return Err("non-format mode retained format checkpoint context".to_string());
         }
         Ok(())
+    }
+
+    #[test]
+    fn restore_round_trip_preserves_every_mutable_replay_field() {
+        let input = "x".repeat(96);
+        let mut lexer = PerlLexer::new(&input);
+        lexer.position = 32;
+        lexer.mode = LexerMode::ExpectOperator;
+        lexer.delimiter_stack = vec!['{', '('];
+        lexer.in_prototype = true;
+        lexer.prototype_depth = 2;
+        lexer.after_sub = true;
+        lexer.after_arrow = true;
+        lexer.hash_brace_depth = 3;
+        lexer.after_var_subscript = true;
+        lexer.paren_depth = 4;
+        lexer.current_pos = Position { byte: 32, line: 3, column: 5 };
+        lexer.after_newline = false;
+        lexer.pending_heredocs =
+            vec![HeredocSpec { label: Arc::from("END"), body_start: 48, allow_indent: true }];
+        lexer.line_start_offset = 24;
+        lexer.emit_heredoc_body_tokens = true;
+        lexer.current_quote_op =
+            Some(QuoteOperatorInfo { operator: "s".to_string(), delimiter: '{', start_pos: 28 });
+        lexer.qw_recovery_enabled = false;
+        lexer.eof_emitted = true;
+
+        let expected = lexer.checkpoint();
+        let mut restored = PerlLexer::new(&input);
+        restored.restore(&expected);
+
+        assert_eq!(restored.checkpoint(), expected);
     }
 }

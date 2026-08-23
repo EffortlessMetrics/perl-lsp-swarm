@@ -1,0 +1,11 @@
+project: product
+component: Editor Integrations
+kind: Added
+body: >-
+  Add read-only Sublime integration status with bounded structural and
+  compatibility reason tokens.
+time: 2026-08-13T22:38:00Z
+custom:
+  PR: "8250"
+  Slug: sublime-integration-status
+  Breaking: "no"

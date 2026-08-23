@@ -236,6 +236,7 @@ fn make_diagnostic(node: &Node, has_prior_source: bool) -> Diagnostic {
             message: "Move the exception check immediately after the `eval { ... }` or `try { ... }` statement.".to_string(),
         }],
         tags: Vec::new(),
+        fixable: false,
         suggestion: Some(
             "Move the exception check immediately after the `eval` or `try` block."
                 .to_string(),

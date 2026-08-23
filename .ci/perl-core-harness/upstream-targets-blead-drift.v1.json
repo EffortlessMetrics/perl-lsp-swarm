@@ -4,7 +4,7 @@
   "pinned_matrix_fingerprint": "4182b36d39baa378790619cbf9d674de40cd895507a412750bd0e5fb0fa583fa",
   "observed_matrix_fingerprint": null,
   "observed_perl_ref": "blead",
-  "observed_perl_resolved_ref": "5355a72c746fa5146541d790aece53b22737afee",
+  "observed_perl_resolved_ref": "fd584474cf36982e2f2ef85b042ea51bb02fffaa",
   "observed_topology_sources": {
     "Makefile.SH": "dfd3090201312760198a05f06c6f6616a4732e38",
     "t/TEST": "d6556c335d3d24f28d7e1b74e098cfd82480b849",

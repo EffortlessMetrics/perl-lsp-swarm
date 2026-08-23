@@ -554,18 +554,18 @@ my $out = $fmt->format(
     // must conform to the strong oracle: the `format` signature must be present.
     if !result.is_null() {
         let sigs = result.get("signatures").and_then(|s| s.as_array());
-        if let Some(sigs) = sigs {
-            if !sigs.is_empty() {
-                // At least one signature must have a label containing "format"
-                let has_format_sig = sigs.iter().any(|s| {
-                    s.get("label").and_then(|l| l.as_str()).unwrap_or("").contains("format")
-                });
-                assert!(
-                    has_format_sig,
-                    "Signature help for $fmt->format( must include a signature labelled with 'format', got: {:?}",
-                    sigs
-                );
-            }
+        if let Some(sigs) = sigs
+            && !sigs.is_empty()
+        {
+            // At least one signature must have a label containing "format"
+            let has_format_sig = sigs
+                .iter()
+                .any(|s| s.get("label").and_then(|l| l.as_str()).unwrap_or("").contains("format"));
+            assert!(
+                has_format_sig,
+                "Signature help for $fmt->format( must include a signature labelled with 'format', got: {:?}",
+                sigs
+            );
         }
     }
 

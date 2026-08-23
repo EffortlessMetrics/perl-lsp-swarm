@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Added
+body: Add context-preserving perl-test-must helpers with non-redundant failure diagnostics.
+time: 2026-08-16T02:55:00Z
+custom:
+  PR: "10100"
+  Slug: perl-test-must-context
+  Breaking: "no"

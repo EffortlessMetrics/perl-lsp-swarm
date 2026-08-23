@@ -1,5 +1,9 @@
 # Pipeline State Machine
 
+<!-- authority-status:v1 -->
+> **Status: historical.** Current authority: [GitHub surfaces](../agents/GITHUB_SURFACES.md).
+> Retained as historical design or mechanism evidence. Internal wording below that calls this document accepted, active doctrine, a north star, current instruction, or lifecycle authority is historical and must not route current work. See [Agent and maintainer authority status](../agents/AUTHORITY_STATUS.md).
+
 ## What this doc is
 
 The perl-lsp orchestration pipeline is a **label-driven state machine**. Labels on a GitHub issue or PR are the authoritative state — presence of a label means an agent signed off, absence means that pass hasn't happened yet. The orchestrator routes work purely by querying what's missing.

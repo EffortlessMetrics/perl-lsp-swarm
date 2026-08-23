@@ -78,13 +78,13 @@ fn build_real_queries(
 }
 
 fn bareword_issue(name: &str, range: (usize, usize)) -> ScopeIssue {
-    ScopeIssue {
-        kind: IssueKind::UnquotedBareword,
-        variable_name: name.to_string(),
-        line: 1,
+    ScopeIssue::new(
+        IssueKind::UnquotedBareword,
+        name,
+        1,
         range,
-        description: format!("Bareword '{name}' not allowed under 'use strict'"),
-    }
+        format!("Bareword '{name}' not allowed under 'use strict'"),
+    )
 }
 
 // ── Case 1: dynamic import before call → suppress ──

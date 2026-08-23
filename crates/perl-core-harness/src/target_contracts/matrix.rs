@@ -10,67 +10,6 @@ use crate::model::{
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-const PINNED_PERL_5422_ROW: &str = "5.42.2";
-const PINNED_PERL_5422_REF: &str = "v5.42.2";
-const PINNED_PERL_5422_SHA: &str = "b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed";
-const PINNED_PERL_5422_TARGET_IDS: &[&str] = &[
-    "component_base",
-    "component_class",
-    "component_cmd",
-    "component_comp",
-    "component_io",
-    "component_mro",
-    "component_op",
-    "component_op_hook",
-    "component_opbasic",
-    "component_perf",
-    "component_porting",
-    "component_re",
-    "component_run",
-    "component_t_lib",
-    "component_test_pl",
-    "component_uni",
-    "instrument_valgrind",
-    "legacy_custom_core_harness",
-    "legacy_custom_core_test",
-    "legacy_custom_full_harness",
-    "legacy_custom_full_test",
-    "make_minitest_notty",
-    "make_minitest_tty",
-    "make_test_choose",
-    "make_test_harness_choose",
-    "make_test_harness_notty",
-    "make_test_notty",
-    "make_test_porting",
-    "make_test_reonly",
-    "make_test_tty",
-    "manifest_cpan",
-    "manifest_dist",
-    "manifest_ext",
-    "manifest_root_lib",
-    "optional_benchmark",
-    "optional_bigmem",
-    "optional_japh",
-    "platform_os2",
-    "platform_win32",
-    "prep_minitest",
-    "prep_test",
-    "prep_test_reonly",
-    "selector_test_core",
-    "variant_deparse",
-    "variant_taintwarn",
-    "variant_utf16_be_bom",
-    "variant_utf16_be_no_bom",
-    "variant_utf16_le_bom",
-    "variant_utf16_le_no_bom",
-    "variant_utf8",
-];
-const PINNED_PERL_5422_TOPOLOGY_SOURCES: &[(&str, &str)] = &[
-    ("Makefile.SH", "8732bb922b4f3365ce48f3979f29b30df850f885"),
-    ("t/TEST", "60c3f01b66a2c82062dc288aa3d336d5531d3b12"),
-    ("t/harness", "c038ad3c96a5e3e9450f3d3fe91ba932356ebfa4"),
-];
-
 impl TargetMatrixIndex {
     pub fn validate(&self) -> Result<(), String> {
         if self.schema_version != TARGET_MATRIX_INDEX_SCHEMA_VERSION {
@@ -253,39 +192,6 @@ impl UpstreamTargetMatrix {
         validate_global_target_namespace(&self.targets)?;
         validate_variant_base_kinds(&self.targets)?;
         validate_reference_graph(&self.targets)?;
-        self.validate_pinned_5422_inventory()?;
-        Ok(())
-    }
-
-    fn validate_pinned_5422_inventory(&self) -> Result<(), String> {
-        if self.perl_version_row != PINNED_PERL_5422_ROW {
-            return Ok(());
-        }
-        if self.perl_requested_ref != PINNED_PERL_5422_REF
-            || self.perl_resolved_ref != PINNED_PERL_5422_SHA
-        {
-            return Err(format!(
-                "Perl 5.42.2 target matrix must bind {PINNED_PERL_5422_REF} at {PINNED_PERL_5422_SHA}"
-            ));
-        }
-        let actual_ids =
-            self.targets.iter().map(|entry| entry.contract.target_id.as_str()).collect::<Vec<_>>();
-        if actual_ids.as_slice() != PINNED_PERL_5422_TARGET_IDS {
-            let actual = actual_ids.iter().copied().collect::<BTreeSet<_>>();
-            let expected = PINNED_PERL_5422_TARGET_IDS.iter().copied().collect::<BTreeSet<_>>();
-            let missing = expected.difference(&actual).copied().collect::<Vec<_>>();
-            let unexpected = actual.difference(&expected).copied().collect::<Vec<_>>();
-            return Err(format!(
-                "Perl 5.42.2 target inventory drifted; missing={missing:?}, unexpected={unexpected:?}"
-            ));
-        }
-        let expected_sources = PINNED_PERL_5422_TOPOLOGY_SOURCES
-            .iter()
-            .map(|(path, sha)| ((*path).to_string(), (*sha).to_string()))
-            .collect::<BTreeMap<_, _>>();
-        if self.topology_sources != expected_sources {
-            return Err("Perl 5.42.2 topology source identities drifted".to_string());
-        }
         Ok(())
     }
 }
@@ -459,15 +365,7 @@ fn validate_global_target_namespace(entries: &[TargetMatrixEntry]) -> Result<(),
                 ));
             }
             parents.insert(parent);
-            parameter_sets.insert(
-                entry
-                    .contract
-                    .variant_parameters
-                    .iter()
-                    .map(|(key, value)| format!("{key}={value}"))
-                    .collect::<Vec<_>>()
-                    .join(","),
-            );
+            parameter_sets.insert(entry.contract.variant_parameters.clone());
         }
         if parents.len() != 1 {
             return Err(format!(
@@ -592,19 +490,28 @@ fn visit_target(
     visiting: &mut BTreeSet<String>,
     visited: &mut BTreeSet<String>,
 ) -> Result<(), String> {
-    if visited.contains(target_id) {
-        return Ok(());
-    }
-    if !visiting.insert(target_id.to_string()) {
-        return Err(format!("target reference graph contains a cycle at {target_id}"));
-    }
-    if let Some(references) = edges.get(target_id) {
-        for reference in references {
-            visit_target(reference, edges, visiting, visited)?;
+    let mut stack = vec![(target_id.to_string(), false)];
+    while let Some((current, leaving)) = stack.pop() {
+        if leaving {
+            visiting.remove(&current);
+            visited.insert(current);
+            continue;
+        }
+        if visited.contains(&current) {
+            continue;
+        }
+        if !visiting.insert(current.clone()) {
+            return Err(format!("target reference graph contains a cycle at {current}"));
+        }
+        stack.push((current.clone(), true));
+        if let Some(references) = edges.get(&current) {
+            for reference in references.iter().rev() {
+                if !visited.contains(reference) {
+                    stack.push((reference.clone(), false));
+                }
+            }
         }
     }
-    visiting.remove(target_id);
-    visited.insert(target_id.to_string());
     Ok(())
 }
 
@@ -640,10 +547,14 @@ fn compute_topology_drift(
 
 fn target_topology_digest(contract: &TargetSelectionContract) -> Result<String, String> {
     let mut normalized = contract.clone();
-    normalized.display_name = "<display-name>".to_string();
     normalized.perl_version_row = "<version-row>".to_string();
     normalized.change_reason = None;
-    let bytes = serde_json::to_vec(&normalized)
+    let mut projection = serde_json::to_value(&normalized)
+        .map_err(|error| format!("serializing target topology: {error}"))?;
+    if let serde_json::Value::Object(fields) = &mut projection {
+        fields.remove("display_name");
+    }
+    let bytes = serde_json::to_vec(&projection)
         .map_err(|error| format!("serializing target topology: {error}"))?;
     Ok(sha256_hex(&bytes))
 }

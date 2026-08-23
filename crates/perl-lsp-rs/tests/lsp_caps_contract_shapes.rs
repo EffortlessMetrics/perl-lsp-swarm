@@ -357,8 +357,8 @@ fn test_ga_lock_is_conservative() -> Result<(), Box<dyn std::error::Error>> {
 
     // GA lock should be more conservative than production
     assert!(!ga.inline_values, "inline values not GA");
-    assert!(ga.notebook_document_sync, "notebook sync is GA");
-    assert!(ga.notebook_cell_execution, "notebook cell execution is GA");
+    assert!(!ga.notebook_document_sync, "notebook sync remains preview-only");
+    assert!(!ga.notebook_cell_execution, "notebook cell execution remains preview-only");
 
     // Graduated features should be enabled
     assert!(ga.completion, "completion is GA");
@@ -372,7 +372,9 @@ fn test_ga_lock_is_conservative() -> Result<(), Box<dyn std::error::Error>> {
     assert!(ga.code_lens, "code lens is GA");
     assert!(ga.type_definition, "type definition is GA");
     assert!(ga.implementation, "implementation is GA");
-    assert!(ga.source_organize_imports, "organize imports is GA");
+    // `source.organizeImports` is withdrawn (#8305): the legacy line-oriented
+    // organizer was removed from every request path, so the flag no longer
+    // exists and cannot be GA. Restoration: #8319/#10696.
     assert!(ga.formatting, "formatting is GA");
     assert!(ga.range_formatting, "range formatting is GA");
 

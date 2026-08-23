@@ -32,10 +32,10 @@ const ROUTES: &[SupportedEditorRouteRequirement] = &[
                 path: "docs/EDITORS/INTELLIJ_IDEA_SETUP.md",
                 markers: &[
                     "Recommended: LSP4IJ Upstream Integration",
-                    "The upstream LSP4IJ entry should launch `perllsp` with stdio transport",
+                    "confirm the command is the intended `perllsp --stdio` binary",
                     "client/registerCapability",
                     "textDocument/inlineCompletion",
-                    "inlineCompletionProvider",
+                    "dynamic registration through `client/registerCapability`",
                     "perllsp --stdio",
                 ],
             },

@@ -1,0 +1,9 @@
+project: product
+component: Language server
+kind: Added
+body: Added a transport-neutral semantic provider query contract that keeps exact, degraded, fallback, refusal, stale, dynamic, ambiguous, and unavailable outcomes distinct from their fact producers and proof classes.
+time: 2026-08-11T20:40:43Z
+custom:
+  PR: "6844"
+  Slug: semantic-provider-query-contract
+  Breaking: "no"

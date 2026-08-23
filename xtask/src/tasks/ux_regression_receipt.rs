@@ -86,6 +86,7 @@ pub fn run(config: UxRegressionReceiptConfig) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn classify(raw: &str, sha: Option<String>) -> UxRegressionReceipt {
     classify_with_exit_status(raw, sha, None)
 }

@@ -205,9 +205,11 @@ The cost-per-outcome curve was not flat across the session.
 
 `TaskUpdate` commits but the UI display caches stale state. Multiple times this session a `TaskUpdate` returned success but the displayed list showed the old state. Do not loop retrying `TaskUpdate`; query with `TaskGet` to verify actual state.
 
-### rtk hook warnings are operational tax
+### Keep command output focused
 
-Every `rtk` command produced `[rtk] /!\ No hook installed — run rtk init -g for automatic token savings`. This is repeated noise in every Bash output block. Low individual cost; cumulative distraction across 50+ commands.
+Unrelated shell-hook warnings add little value to verification output. They have
+low individual cost but cumulative distraction across 50+ commands; direct
+commands keep the evidence focused.
 
 ### Branch name confusion in agent push
 

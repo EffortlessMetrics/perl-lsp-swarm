@@ -740,7 +740,7 @@ mod tests {
         // command is retained.
         let source =
             "=head1 ARGUMENTS\n\nFirst argument.\n\n=cutlery\n\nSecond argument.\n\n=cut\n";
-        let doc = extract_pod(&source);
+        let doc = extract_pod(source);
         let args = doc.arguments.as_deref().unwrap_or("");
         assert!(
             args.contains("Second argument"),
@@ -753,7 +753,7 @@ mod tests {
         // #4971: =head3–=head6 must flush the current section rather than
         // falling through to body accumulation.
         let source = "=head1 NAME\n\nFoo\n\n=head2 method_a\n\nBody A\n\n=head3 Details\n\n=head2 method_b\n\nBody B\n\n=cut\n";
-        let doc = extract_pod(&source);
+        let doc = extract_pod(source);
         assert_eq!(doc.methods.len(), 2, "expected 2 methods, got {}", doc.methods.len());
     }
 

@@ -2093,6 +2093,30 @@
         "manual_editor_smoke",
         "issue_burndown_regression_guard"
       ]
+    },
+    {
+      "id": "scenario_20_single_authority_contract",
+      "scenario_file": "ux_scenario_20_single_authority_contract.rs",
+      "subsystem_owner": "editor_intelligence",
+      "ci_tier": "pr",
+      "component": "infra",
+      "instrumentation": {
+        "run_receipt": false,
+        "first_useful_result": false,
+        "protocol_goldens": false
+      },
+      "user_journey": "guard Scenario 20 source so retired status-only twins cannot return and retained reviewed authorities cannot disappear",
+      "measures": [
+        "workflow_pass_rate",
+        "workflow_stability_rate"
+      ],
+      "expected_outcomes": [
+        "retired Scenario 20 soft-pass identities stay absent",
+        "retained Scenario 20 reviewed authorities remain present"
+      ],
+      "confidence_signals": [
+        "issue_burndown_regression_guard"
+      ]
     }
   ]
 }

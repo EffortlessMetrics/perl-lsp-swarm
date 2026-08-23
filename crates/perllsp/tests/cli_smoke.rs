@@ -133,6 +133,9 @@ fn unknown_completion_shell_reports_supported_values() -> Result<(), Box<dyn std
         stderr.contains("Supported: bash, zsh, fish, powershell"),
         "stderr should list supported shells"
     );
-    assert!(stderr.contains("Usage: perllsp"), "error help should use the facade name");
+    assert!(
+        stderr.contains("Run 'perllsp --help'"),
+        "error help should use the facade name: {stderr:?}"
+    );
     Ok(())
 }

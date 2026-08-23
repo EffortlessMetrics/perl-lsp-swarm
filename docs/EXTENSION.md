@@ -75,7 +75,6 @@ Refactoring is exposed through server-backed code actions when available. The ex
 | `Perl: Show Server Version` | Show the installed `perl-lsp` version. |
 | `Perl: Show Output Channel` | Open the extension output channel. |
 | `Perl: Show Status Menu` | Open the quick status/action menu. |
-| `Perl: Organize Use Statements` | Trigger organize-imports for the active Perl document. |
 | `Perl: Run Tests in Current File` | Run tests for the active `.t` or `.pl` file. |
 | `Perl: Extract Variable` | Extract the selected expression into a new variable (`Shift+Alt+V`). |
 | `Perl: Extract Method` | Extract the selected code into a new subroutine (`Shift+Alt+M`). |

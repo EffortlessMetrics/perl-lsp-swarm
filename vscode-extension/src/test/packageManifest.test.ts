@@ -31,6 +31,29 @@ describe('package manifest Perl language registration', () => {
   });
 });
 
+describe('package manifest AI egress scope (#4997)', () => {
+  const extRoot = path.resolve(__dirname, '../..');
+
+  function manifestConfigurationProperties(): Record<string, { scope?: string }> {
+    const packageJson = JSON.parse(fs.readFileSync(path.join(extRoot, 'package.json'), 'utf8')) as {
+      contributes?: {
+        configuration?:
+          | { properties?: Record<string, { scope?: string }> }
+          | Array<{ properties?: Record<string, { scope?: string }> }>;
+      };
+    };
+    const configuration = packageJson.contributes?.configuration;
+    const blocks = Array.isArray(configuration) ? configuration : [configuration ?? {}];
+    return Object.assign({}, ...blocks.map((block) => block.properties ?? {}));
+  }
+
+  test('aiCompletion activation toggles are machine-scoped so workspaces cannot set them', () => {
+    const properties = manifestConfigurationProperties();
+    expect(properties['perl-lsp.aiCompletion.enabled']?.scope).toBe('machine');
+    expect(properties['perl-lsp.aiCompletion.streaming.enabled']?.scope).toBe('machine');
+  });
+});
+
 describe('package manifest demo project command (#1635)', () => {
   const extRoot = path.resolve(__dirname, '../..');
 

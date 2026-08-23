@@ -131,6 +131,8 @@ impl LspServer {
                     ("ready_limited", Some(format!("{reason:?}")))
                 }
                 IndexState::Building { .. } => ("building", None),
+                // Forward-compatible fallback for future variants (#2898)
+                _ => ("unknown", None),
             })
             .unwrap_or(("building", None));
 

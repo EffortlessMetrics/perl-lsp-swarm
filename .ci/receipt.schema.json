@@ -356,6 +356,10 @@
           "type": "integer",
           "description": "Number of files that failed to parse",
           "minimum": 0
+        },
+        "test_execution_reached": {
+          "type": "boolean",
+          "description": "For cargo-test-class gates: whether the gate's full captured log contains a `running N tests` preamble or a `test result:` summary line, proving the linked test binary began executing. False on a compile-only timeout (#11797). Reflects the final recorded attempt when retry_count produced more than one attempt: each retry truncates the gate log, so earlier attempts' reachability is not represented by this field or anywhere else in the receipt; the final attempt's retry trailer names earlier timeouts without their reach evidence."
         }
       }
     },

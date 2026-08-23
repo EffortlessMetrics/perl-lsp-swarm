@@ -21,7 +21,7 @@ use perl_parser_core::{Node, NodeKind};
 fn first_expression(source: &str) -> Result<Node, Box<dyn std::error::Error>> {
     let ast = parse(source);
     let sexp = ast.to_sexp();
-    let NodeKind::Program { mut statements } = ast.kind else {
+    let NodeKind::Program { mut statements } = ast.into_parts().0 else {
         return Err(format!("expected Program, got {sexp}").into());
     };
     if statements.len() != 1 {
@@ -29,10 +29,9 @@ fn first_expression(source: &str) -> Result<Node, Box<dyn std::error::Error>> {
     }
 
     let statement = statements.remove(0);
-    let NodeKind::ExpressionStatement { expression } = statement.kind else {
-        return Err(
-            format!("expected ExpressionStatement, got {}", statement.kind.kind_name()).into()
-        );
+    let statement_kind = statement.kind.kind_name();
+    let NodeKind::ExpressionStatement { expression } = statement.into_parts().0 else {
+        return Err(format!("expected ExpressionStatement, got {statement_kind}").into());
     };
 
     Ok(*expression)
@@ -44,13 +43,15 @@ fn assert_pos_assignment_shape(
     expected_op: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let expression = first_expression(source)?;
-    let NodeKind::Assignment { lhs, rhs: _, op } = expression.kind else {
-        return Err(format!("expected Assignment, got {}", expression.kind.kind_name()).into());
+    let expression_kind = expression.kind.kind_name();
+    let NodeKind::Assignment { lhs, rhs: _, op } = expression.into_parts().0 else {
+        return Err(format!("expected Assignment, got {expression_kind}").into());
     };
     assert_eq!(op, expected_op);
 
-    let NodeKind::FunctionCall { name, args } = lhs.kind else {
-        return Err(format!("expected pos() FunctionCall lhs, got {}", lhs.kind.kind_name()).into());
+    let lhs_kind = lhs.kind.kind_name();
+    let NodeKind::FunctionCall { name, args } = lhs.into_parts().0 else {
+        return Err(format!("expected pos() FunctionCall lhs, got {lhs_kind}").into());
     };
     assert_eq!(name, "pos");
     assert_eq!(args.len(), expected_arg_count);

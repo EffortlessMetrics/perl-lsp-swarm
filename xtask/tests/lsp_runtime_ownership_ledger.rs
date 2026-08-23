@@ -1,0 +1,695 @@
+//! Executable ownership ledger for the state-coherent LSP runtime extraction.
+//!
+//! This is the inventory/freeze PR for issue #7385. It changes no product
+//! behavior. Instead, it makes current runtime modules and direct LSP-crate
+//! dependencies fail closed when they appear without an ownership decision.
+//!
+//! Fixture reads propagate errors with `?` rather than `unwrap`/`expect`: the
+//! workspace denies `clippy::unwrap_used` and `clippy::expect_used` for every
+//! target, including test targets.
+
+use anyhow::{Context, Result};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::{Path, PathBuf},
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Responsibility {
+    GenericProtocol,
+    GenericConnection,
+    GenericCoherenceRuntime,
+    ApplicationPolicy,
+    PerlApplication,
+    ProductComposition,
+    TemporaryCoupling,
+    Retire,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ModuleRow {
+    module: &'static str,
+    responsibility: Responsibility,
+    target_owner: &'static str,
+    disposition: &'static str,
+    migration_issue: &'static str,
+}
+
+macro_rules! module_row {
+    (
+        $module:literal,
+        $responsibility:ident,
+        $owner:literal,
+        $disposition:literal,
+        $issue:literal
+    ) => {
+        ModuleRow {
+            module: $module,
+            responsibility: Responsibility::$responsibility,
+            target_owner: $owner,
+            disposition: $disposition,
+            migration_issue: $issue,
+        }
+    };
+}
+
+const MODULES: &[ModuleRow] = &[
+    module_row!(
+        "client_requests",
+        TemporaryCoupling,
+        "effortless-lsp + perl-lsp-rs",
+        "split generic client mechanics from Perl request policy",
+        "#7392"
+    ),
+    module_row!(
+        "constructors",
+        ProductComposition,
+        "perl-lsp-rs",
+        "retain adapter construction; move generic runtime construction",
+        "#9511"
+    ),
+    module_row!(
+        "diagnostic_debounce",
+        PerlApplication,
+        "perl-lsp-rs RuntimeServices",
+        "retain as application worker",
+        "#9508"
+    ),
+    module_row!(
+        "diagnostics",
+        PerlApplication,
+        "perl-code-intelligence",
+        "move semantic operation below transport",
+        "#6957"
+    ),
+    module_row!(
+        "dispatch",
+        TemporaryCoupling,
+        "effortless-lsp + PerlLspAdapter",
+        "split generic dispatch from Perl method handling",
+        "#7388"
+    ),
+    module_row!(
+        "document_access",
+        PerlApplication,
+        "perl-lsp-rs DocumentStore",
+        "move document ownership out of LspServer",
+        "#8384"
+    ),
+    module_row!(
+        "file_discovery",
+        PerlApplication,
+        "perl-lsp-rs WorkspaceServices",
+        "retain workspace policy above runtime",
+        "#8385"
+    ),
+    module_row!(
+        "file_watcher_debounce",
+        PerlApplication,
+        "perl-lsp-rs RuntimeServices",
+        "retain as application worker",
+        "#9508"
+    ),
+    module_row!(
+        "language",
+        PerlApplication,
+        "perl-code-intelligence + PerlLspAdapter",
+        "split semantic operation from LSP projection",
+        "#6957"
+    ),
+    module_row!(
+        "latency",
+        TemporaryCoupling,
+        "effortless-lsp observer + product metrics",
+        "split generic runtime events from product measurement",
+        "#9510"
+    ),
+    module_row!(
+        "lifecycle",
+        TemporaryCoupling,
+        "effortless-lsp + ClientSession",
+        "split protocol lifecycle from client/product state",
+        "#7390"
+    ),
+    module_row!(
+        "notebook",
+        PerlApplication,
+        "perl-lsp-rs DocumentStore",
+        "retain notebook document authority above runtime",
+        "#8384"
+    ),
+    module_row!(
+        "outbound",
+        GenericConnection,
+        "effortless-lsp",
+        "extract generic admission, writer, and delivery fate",
+        "#9506"
+    ),
+    module_row!(
+        "parse_worker",
+        PerlApplication,
+        "perl-lsp-rs RuntimeServices",
+        "retain parser worker as application service",
+        "#9508"
+    ),
+    module_row!(
+        "readiness",
+        PerlApplication,
+        "perl-code-intelligence + WorkspaceServices",
+        "retain semantic readiness outside generic runtime",
+        "#6957"
+    ),
+    module_row!(
+        "refresh",
+        TemporaryCoupling,
+        "effortless-lsp client + PerlLspAdapter",
+        "split generic reverse request from feature policy",
+        "#7392"
+    ),
+    module_row!(
+        "resolve_session",
+        GenericConnection,
+        "effortless-lsp",
+        "extract connection-bound resolve-session identity substrate",
+        "#8342"
+    ),
+    module_row!(
+        "routing",
+        ApplicationPolicy,
+        "PerlLspAdapter",
+        "provide explicit route descriptors to generic runtime",
+        "#9503"
+    ),
+    module_row!(
+        "scheduler",
+        GenericCoherenceRuntime,
+        "effortless-lsp",
+        "extract ordered mutation/read coherence mechanics",
+        "#7389"
+    ),
+    module_row!(
+        "serving",
+        GenericConnection,
+        "effortless-lsp",
+        "replace duplicate serving loops with one connection engine",
+        "#9509"
+    ),
+    module_row!(
+        "stream_session",
+        PerlApplication,
+        "perl-lsp-rs RuntimeServices",
+        "retain inline-completion session policy above runtime",
+        "#4418"
+    ),
+    module_row!(
+        "symbol_extraction",
+        Retire,
+        "canonical semantic fact producers",
+        "retire direct runtime extraction after service cutover",
+        "#6957"
+    ),
+    module_row!(
+        "test_api",
+        TemporaryCoupling,
+        "effortless-lsp testkit + product tests",
+        "split generic gates/observations from Perl fixtures",
+        "#7394"
+    ),
+    module_row!(
+        "test_runners",
+        PerlApplication,
+        "Perl test service",
+        "retain process/test semantics outside runtime",
+        "#4776"
+    ),
+    module_row!(
+        "text_sync",
+        PerlApplication,
+        "perl-lsp-rs DocumentStore + adapter",
+        "retain source mutation and position policy above runtime",
+        "#8384"
+    ),
+    module_row!(
+        "timing",
+        TemporaryCoupling,
+        "effortless-lsp observer + product metrics",
+        "split generic operation events from product timing",
+        "#9510"
+    ),
+    module_row!(
+        "types",
+        GenericProtocol,
+        "effortless-lsp",
+        "extract generic protocol types; adapter keeps Perl policy",
+        "#7386"
+    ),
+    module_row!(
+        "window",
+        ApplicationPolicy,
+        "PerlLspAdapter over generic client",
+        "retain method policy; consume generic client handle",
+        "#7392"
+    ),
+    module_row!(
+        "workspace",
+        PerlApplication,
+        "perl-lsp-rs WorkspaceServices",
+        "retain workspace state and policy above runtime",
+        "#8385"
+    ),
+    module_row!(
+        "workspace_folder",
+        PerlApplication,
+        "perl-lsp-rs WorkspaceServices",
+        "retain root lifecycle above runtime",
+        "#8385"
+    ),
+    module_row!(
+        "workspace_progress",
+        PerlApplication,
+        "perl-lsp-rs WorkspaceServices",
+        "retain workspace progress semantics above runtime",
+        "#8385"
+    ),
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DependencyDisposition {
+    RetainGeneric,
+    RetainGenericTest,
+    CandidateSubstrate,
+    MoveToPerlAdapter,
+    ProductOnly,
+    PerlTestOnly,
+    RetireCoupling,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DependencyRow {
+    package: &'static str,
+    disposition: DependencyDisposition,
+    owner_issue: &'static str,
+}
+
+macro_rules! dependency {
+    ($package:literal, $disposition:ident, $issue:literal) => {
+        DependencyRow {
+            package: $package,
+            disposition: DependencyDisposition::$disposition,
+            owner_issue: $issue,
+        }
+    };
+}
+
+/// Dispositions that describe a coupling ending rather than continuing.
+const MIGRATING_DISPOSITIONS: [&str; 5] = ["split", "move", "replace", "extract", "retire"];
+
+const DEPENDENCIES: &[DependencyRow] = &[
+    dependency!("anyhow", RetainGeneric, "#9291"),
+    dependency!("assert_cmd", RetainGenericTest, "#9298"),
+    dependency!("chrono", RetainGenericTest, "#6739"),
+    dependency!("clap", ProductOnly, "#7216"),
+    dependency!("criterion", RetainGenericTest, "#1373"),
+    dependency!("insta", RetainGenericTest, "#9298"),
+    dependency!("lsp-types", CandidateSubstrate, "#9360"),
+    dependency!("md5", MoveToPerlAdapter, "#9511"),
+    dependency!("moka", MoveToPerlAdapter, "#6957"),
+    dependency!("parking_lot", RetainGeneric, "#9291"),
+    dependency!("perl-ast", MoveToPerlAdapter, "#6957"),
+    dependency!("perl-corpus", PerlTestOnly, "#7394"),
+    dependency!("perl-dap", MoveToPerlAdapter, "#8400"),
+    dependency!("perl-diagnostics", MoveToPerlAdapter, "#6957"),
+    dependency!("perl-lexer", MoveToPerlAdapter, "#6957"),
+    dependency!("perl-lsp-perltidy", MoveToPerlAdapter, "#6957"),
+    dependency!("perl-lsp-rs", RetireCoupling, "#8401"),
+    dependency!("perl-lsp-rs-core", RetireCoupling, "#7412"),
+    dependency!("perl-module", MoveToPerlAdapter, "#6957"),
+    dependency!("perl-parser", MoveToPerlAdapter, "#6957"),
+    dependency!("perl-parser-core", MoveToPerlAdapter, "#7599"),
+    dependency!("perl-pod", MoveToPerlAdapter, "#6957"),
+    dependency!("perl-position-tracking", MoveToPerlAdapter, "#8617"),
+    dependency!("perl-pragma", MoveToPerlAdapter, "#6957"),
+    dependency!("perl-ripr-facts", MoveToPerlAdapter, "#6957"),
+    dependency!("perl-semantic-analyzer", MoveToPerlAdapter, "#6957"),
+    dependency!("perl-semantic-facts", MoveToPerlAdapter, "#6957"),
+    dependency!("perl-source-identity", MoveToPerlAdapter, "#6967"),
+    dependency!("perl-subprocess-runtime", ProductOnly, "#4836"),
+    dependency!("perl-symbol", MoveToPerlAdapter, "#6957"),
+    dependency!("perl-tdd-support", PerlTestOnly, "#7394"),
+    dependency!("perl-test-facts", PerlTestOnly, "#6943"),
+    dependency!("perl-uri", MoveToPerlAdapter, "#8617"),
+    dependency!("perl-workspace", MoveToPerlAdapter, "#6957"),
+    dependency!("predicates", RetainGenericTest, "#9298"),
+    dependency!("proptest", RetainGenericTest, "#9298"),
+    dependency!("regex", MoveToPerlAdapter, "#9511"),
+    dependency!("ropey", MoveToPerlAdapter, "#8617"),
+    dependency!("rustc-hash", RetainGeneric, "#9291"),
+    dependency!("serde", RetainGeneric, "#9291"),
+    dependency!("serde_json", RetainGeneric, "#9291"),
+    dependency!("serial_test", RetainGenericTest, "#9298"),
+    dependency!("sha2", RetainGenericTest, "#7113"),
+    dependency!("static_assertions", RetainGenericTest, "#9298"),
+    dependency!("tempfile", RetainGenericTest, "#9298"),
+    dependency!("thiserror", RetainGeneric, "#9291"),
+    dependency!("tokio", CandidateSubstrate, "#9360"),
+    dependency!("toml", ProductOnly, "#6736"),
+    dependency!("tracing", RetainGeneric, "#9291"),
+    dependency!("tracing-appender", ProductOnly, "#9510"),
+    dependency!("tracing-subscriber", ProductOnly, "#9510"),
+    dependency!("ureq", ProductOnly, "#8400"),
+    dependency!("url", MoveToPerlAdapter, "#8617"),
+    dependency!("uuid", RetainGeneric, "#9291"),
+    dependency!("walkdir", MoveToPerlAdapter, "#8385"),
+    dependency!("which", ProductOnly, "#4836"),
+];
+
+fn repo_root() -> Result<PathBuf> {
+    Ok(Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .context("xtask must live beneath the repository root")?
+        .to_path_buf())
+}
+
+/// Strip any module visibility prefix, including restricted forms such as
+/// `pub(super)` and `pub(in crate::runtime)`, so a module cannot escape the
+/// ledger by changing how widely it is exported.
+fn strip_module_visibility(line: &str) -> &str {
+    let Some(rest) = line.strip_prefix("pub") else {
+        return line;
+    };
+    match rest.strip_prefix('(') {
+        Some(restricted) => match restricted.find(')') {
+            Some(end) => restricted[end + 1..].trim_start(),
+            None => line,
+        },
+        None if rest.starts_with(char::is_whitespace) => rest.trim_start(),
+        None => line,
+    }
+}
+
+fn discover_runtime_modules(source: &str) -> BTreeSet<String> {
+    source
+        .lines()
+        .filter_map(|line| {
+            let declaration = strip_module_visibility(line.trim()).strip_prefix("mod ")?;
+            let module = declaration.strip_suffix(';')?.trim();
+            (!module.is_empty()
+                && module
+                    .chars()
+                    .all(|character| character == '_' || character.is_ascii_alphanumeric()))
+            .then(|| module.to_string())
+        })
+        .collect()
+}
+
+const DEPENDENCY_TABLES: [&str; 3] = ["dependencies", "build-dependencies", "dev-dependencies"];
+
+/// What one TOML table header means for direct-dependency discovery.
+enum DependencySection {
+    /// `[dependencies]`, `[target.'cfg(unix)'.dev-dependencies]`: every key in
+    /// the table names one direct dependency.
+    Table,
+    /// `[dependencies.tower]`, `[target.'cfg(unix)'.build-dependencies.cc]`:
+    /// the header itself names the dependency and its keys are that
+    /// dependency's fields, not further dependencies.
+    Entry(String),
+    Other,
+}
+
+/// Classify a table header by its trailing path segments. Only the last two
+/// segments carry meaning, so target-specific and workspace-scoped tables are
+/// handled without modelling the whole TOML path.
+fn classify_section(section: &str) -> DependencySection {
+    let segments: Vec<&str> = section.split('.').map(str::trim).collect();
+    let Some(last) = segments.last() else {
+        return DependencySection::Other;
+    };
+    if DEPENDENCY_TABLES.contains(last) {
+        return DependencySection::Table;
+    }
+    let parent_is_dependency_table = segments
+        .len()
+        .checked_sub(2)
+        .and_then(|index| segments.get(index))
+        .is_some_and(|parent| DEPENDENCY_TABLES.contains(parent));
+    match parent_is_dependency_table {
+        true => match dependency_key(last) {
+            Some(package) => DependencySection::Entry(package),
+            None => DependencySection::Other,
+        },
+        false => DependencySection::Other,
+    }
+}
+
+/// Extract the package a key names, rejecting anything that cannot be a crate
+/// name. `serde.workspace = true` and `"perl-lsp-rs".workspace = true` both
+/// name `serde`/`perl-lsp-rs`; a wrapped inline-table fragment names nothing.
+fn dependency_key(raw: &str) -> Option<String> {
+    let key = raw.trim().trim_matches(['"', '\'']);
+    let key = key.split('.').next()?.trim().trim_matches(['"', '\'']);
+    (!key.is_empty()
+        && key.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        }))
+    .then(|| key.to_string())
+}
+
+fn discover_direct_dependencies(source: &str) -> BTreeSet<String> {
+    let mut in_dependency_table = false;
+    let mut open_delimiters = 0_isize;
+    let mut dependencies = BTreeSet::new();
+
+    for raw_line in source.lines() {
+        let line = raw_line.trim();
+
+        // A table header can only start where no inline value is still open.
+        if open_delimiters == 0 && line.starts_with('[') && line.ends_with(']') {
+            match classify_section(&line[1..line.len() - 1]) {
+                DependencySection::Table => in_dependency_table = true,
+                DependencySection::Entry(package) => {
+                    in_dependency_table = false;
+                    dependencies.insert(package);
+                }
+                DependencySection::Other => in_dependency_table = false,
+            }
+            continue;
+        }
+
+        let continuing_value = open_delimiters > 0;
+        open_delimiters += line.chars().fold(0_isize, |depth, character| match character {
+            '{' | '[' => depth + 1,
+            '}' | ']' => depth - 1,
+            _ => depth,
+        });
+
+        // Continuation lines of a multi-line inline table hold values, not
+        // dependency names.
+        if !in_dependency_table || continuing_value || line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let Some((left, _)) = line.split_once('=') else {
+            continue;
+        };
+        if let Some(package) = dependency_key(left) {
+            dependencies.insert(package);
+        }
+    }
+
+    dependencies
+}
+
+fn unclassified_modules(source: &str) -> BTreeSet<String> {
+    let governed: BTreeSet<_> = MODULES.iter().map(|row| row.module.to_string()).collect();
+    discover_runtime_modules(source).difference(&governed).cloned().collect()
+}
+
+fn unclassified_dependencies(sources: &[&str]) -> BTreeSet<String> {
+    let governed: BTreeSet<_> = DEPENDENCIES.iter().map(|row| row.package.to_string()).collect();
+    sources
+        .iter()
+        .flat_map(|source| discover_direct_dependencies(source))
+        .collect::<BTreeSet<_>>()
+        .difference(&governed)
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn every_current_runtime_module_has_one_ownership_row() -> Result<()> {
+    let source = fs::read_to_string(repo_root()?.join("crates/perl-lsp-rs/src/runtime/mod.rs"))
+        .context("read current runtime module root")?;
+    let discovered = discover_runtime_modules(&source);
+    let governed: BTreeSet<_> = MODULES.iter().map(|row| row.module.to_string()).collect();
+
+    assert_eq!(
+        discovered,
+        governed,
+        "runtime module declarations and the #7385 ledger must move together; \
+         undecided modules: {:?}; ledger rows without a module: {:?}",
+        discovered.difference(&governed).collect::<Vec<_>>(),
+        governed.difference(&discovered).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn every_direct_lsp_crate_dependency_has_one_disposition() -> Result<()> {
+    let root = repo_root()?;
+    let adapter = fs::read_to_string(root.join("crates/perl-lsp-rs/Cargo.toml"))
+        .context("read perl-lsp-rs manifest")?;
+    let core = fs::read_to_string(root.join("crates/perl-lsp-rs-core/Cargo.toml"))
+        .context("read perl-lsp-rs-core manifest")?;
+    let discovered = [adapter.as_str(), core.as_str()]
+        .iter()
+        .flat_map(|source| discover_direct_dependencies(source))
+        .collect::<BTreeSet<_>>();
+    let governed: BTreeSet<_> = DEPENDENCIES.iter().map(|row| row.package.to_string()).collect();
+
+    assert_eq!(
+        discovered,
+        governed,
+        "direct dependency changes require an explicit extraction disposition; \
+         undecided dependencies: {:?}; ledger rows without a dependency: {:?}",
+        discovered.difference(&governed).collect::<Vec<_>>(),
+        governed.difference(&discovered).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn ownership_rows_are_unique_complete_and_directional() {
+    let mut modules = BTreeMap::new();
+    for row in MODULES {
+        assert!(
+            modules.insert(row.module, row).is_none(),
+            "duplicate module row for {}",
+            row.module
+        );
+        assert!(!row.target_owner.trim().is_empty());
+        assert!(!row.disposition.trim().is_empty());
+        assert!(row.migration_issue.starts_with('#'));
+
+        if matches!(
+            row.responsibility,
+            Responsibility::GenericProtocol
+                | Responsibility::GenericConnection
+                | Responsibility::GenericCoherenceRuntime
+        ) {
+            assert_eq!(row.target_owner, "effortless-lsp");
+        }
+        // A temporary coupling must name how it ends. Retaining it is the one
+        // disposition that would make the coupling permanent.
+        if row.responsibility == Responsibility::TemporaryCoupling {
+            assert!(
+                MIGRATING_DISPOSITIONS.iter().any(|verb| row.disposition.starts_with(verb)),
+                "temporary coupling {} must state an exit, not {:?}",
+                row.module,
+                row.disposition
+            );
+        }
+    }
+
+    let mut dependencies = BTreeMap::new();
+    for row in DEPENDENCIES {
+        assert!(
+            dependencies.insert(row.package, row).is_none(),
+            "duplicate dependency row for {}",
+            row.package
+        );
+        assert!(row.owner_issue.starts_with('#'));
+        if matches!(
+            row.disposition,
+            DependencyDisposition::RetainGeneric
+                | DependencyDisposition::RetainGenericTest
+                | DependencyDisposition::CandidateSubstrate
+        ) {
+            assert!(
+                !row.package.starts_with("perl-"),
+                "zero-Perl target graph cannot retain {}",
+                row.package
+            );
+        }
+    }
+}
+
+#[test]
+fn unclassified_runtime_or_dependency_additions_are_rejected() {
+    let modules = "mod serving;\nmod newly_added_runtime;\n";
+    assert_eq!(unclassified_modules(modules), BTreeSet::from(["newly_added_runtime".to_string()]));
+
+    let manifest = "[dependencies]\nserde.workspace = true\nnew-runtime-dep = \"1\"\n";
+    assert_eq!(
+        unclassified_dependencies(&[manifest]),
+        BTreeSet::from(["new-runtime-dep".to_string()])
+    );
+}
+
+/// A module cannot leave the ledger by changing visibility, and a dependency
+/// cannot leave it by choosing a different but equally valid manifest spelling.
+/// Each case below escaped discovery before this guard existed.
+#[test]
+fn alternative_declaration_spellings_cannot_escape_the_ledger() {
+    for declaration in [
+        "pub(super) mod escaped;",
+        "pub(in crate::runtime) mod escaped;",
+        "pub(crate) mod escaped;",
+        "pub mod escaped;",
+        "mod escaped;",
+    ] {
+        assert_eq!(
+            discover_runtime_modules(declaration),
+            BTreeSet::from(["escaped".to_string()]),
+            "visibility must not hide {declaration}"
+        );
+    }
+
+    for manifest in [
+        "[dependencies]\nescaped = \"1\"\n",
+        "[dependencies.escaped]\nversion = \"1\"\n",
+        "[dev-dependencies.escaped]\nversion = \"1\"\n",
+        "[target.'cfg(unix)'.dependencies]\nescaped = \"1\"\n",
+        "[target.'cfg(unix)'.dev-dependencies]\nescaped = \"1\"\n",
+        "[target.'cfg(windows)'.build-dependencies.escaped]\nversion = \"1\"\n",
+        "[workspace.dependencies]\nescaped = \"1\"\n",
+        "[dependencies]\n\"escaped\".workspace = true\n",
+    ] {
+        assert_eq!(
+            discover_direct_dependencies(manifest),
+            BTreeSet::from(["escaped".to_string()]),
+            "manifest spelling must not hide a dependency: {manifest}"
+        );
+    }
+}
+
+/// Multi-line inline tables are ordinary formatter output. Their continuation
+/// lines must not be read as dependency names, and must not mask the real one.
+#[test]
+fn wrapped_inline_tables_yield_only_real_dependency_names() {
+    let manifest = "[dependencies]\n\
+         tokio = { version = \"1\", features = [\n\
+         \x20   \"rt\",\n\
+         \x20   \"macros\",\n\
+         ], default-features = false }\n\
+         serde.workspace = true\n";
+
+    assert_eq!(
+        discover_direct_dependencies(manifest),
+        BTreeSet::from(["serde".to_string(), "tokio".to_string()])
+    );
+}
+
+/// Fields of a dotted dependency entry belong to that dependency; they are not
+/// themselves dependencies, and they must not leak into the following table.
+#[test]
+fn dotted_dependency_entry_fields_are_not_dependencies() {
+    let manifest = "[dependencies.tower]\n\
+         version = \"0.5\"\n\
+         features = [\"util\"]\n\
+         \n\
+         [package.metadata.docs.rs]\n\
+         all-features = true\n";
+
+    assert_eq!(discover_direct_dependencies(manifest), BTreeSet::from(["tower".to_string()]));
+}

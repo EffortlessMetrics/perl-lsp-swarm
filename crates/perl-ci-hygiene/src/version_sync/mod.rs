@@ -1104,6 +1104,32 @@ perl-token = { path = "../perl-token", version = "0.42.0" }
     }
 
     #[test]
+    fn check_rejects_product_and_implementation_package_version_drift() -> Result<()> {
+        let repo_root = unique_temp_repo_dir("product-implementation-version-drift")?;
+        fs::write(repo_root.join("Cargo.toml"), "[workspace.package]\nversion = \"0.42.0\"\n")?;
+
+        for (crate_name, version) in [("perllsp", "0.41.0"), ("perl-lsp-rs", "0.40.0")] {
+            let crate_dir = repo_root.join("crates").join(crate_name);
+            fs::create_dir_all(&crate_dir)?;
+            fs::write(
+                crate_dir.join("Cargo.toml"),
+                format!("[package]\nname = {crate_name:?}\nversion = {version:?}\n"),
+            )?;
+        }
+
+        let error = match check(&repo_root) {
+            Ok(()) => bail!("product and implementation version drift should fail"),
+            Err(error) => error,
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("2 site(s) drifted"), "unexpected error: {message}");
+
+        fs::remove_dir_all(&repo_root)
+            .map_err(|error| eyre!("cleanup {}: {error}", repo_root.display()))?;
+        Ok(())
+    }
+
+    #[test]
     fn is_pre_release_identifies_rc_versions() {
         assert!(is_pre_release("0.13.0-rc1"));
         assert!(is_pre_release("1.0.0-alpha"));

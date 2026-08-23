@@ -3,7 +3,6 @@
   "codeActionProvider": {
     "codeActionKinds": [
       "quickfix",
-      "source.organizeImports",
       "refactor",
       "refactor.extract",
       "refactor.rewrite",
@@ -99,19 +98,6 @@
   "inlineCompletionProvider": {},
   "linkedEditingRangeProvider": true,
   "monikerProvider": true,
-  "notebookDocumentSync": {
-    "notebookSelector": [
-      {
-        "cells": [
-          {
-            "language": "perl"
-          }
-        ],
-        "notebook": "jupyter-notebook"
-      }
-    ],
-    "save": true
-  },
   "referencesProvider": true,
   "renameProvider": {
     "prepareProvider": true

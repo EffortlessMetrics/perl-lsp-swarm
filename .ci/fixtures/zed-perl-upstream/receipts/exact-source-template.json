@@ -1,0 +1,94 @@
+{
+  "schema_version": "zed_host_compat.v1",
+  "evidence_stage": "exact_source_dev_extension",
+  "result": "not_run",
+  "observed_at": null,
+  "zed": {
+    "product": "Zed",
+    "version": null,
+    "channel": null,
+    "build": null
+  },
+  "extension": {
+    "repository": "tree-sitter-perl/zed-perl",
+    "base_commit": "eb27a19e69fed8a041b706b23a1f42fbafb29fd8",
+    "candidate_commit": null,
+    "manifest_version": "0.5.0-candidate",
+    "wasm_sha256": null,
+    "install_route": "dev_extension"
+  },
+  "perllsp": {
+    "server_id": "perllsp",
+    "command": null,
+    "arguments": ["--stdio"],
+    "version": null,
+    "build_commit": null,
+    "binary_sha256": null,
+    "resolution_route": null
+  },
+  "platform": {
+    "os": null,
+    "version": null,
+    "architecture": null
+  },
+  "profile": {
+    "clean_profile": null,
+    "prior_extension_absent": null,
+    "prior_managed_cache_absent": null,
+    "other_perl_servers_disabled": null
+  },
+  "workspace": {
+    "fixture_id": null,
+    "fixture_sha256": null,
+    "root_identity": null
+  },
+  "configuration": {
+    "settings_sha256": null,
+    "server_order": ["perllsp", "!perlnavigator-server", "!perl-lsp", "..."],
+    "workspace_configuration_observed": null,
+    "precedence_observed": null,
+    "live_update_observed": null
+  },
+  "activation": {
+    "pl": {"result": "not_proven", "evidence": null},
+    "pm": {"result": "not_proven", "evidence": null},
+    "t": {"result": "not_proven", "evidence": null},
+    "PL": {"result": "not_proven", "evidence": null},
+    "psgi": {"result": "not_proven", "evidence": null},
+    "cgi": {"result": "not_proven", "evidence": null},
+    "fcgi": {"result": "not_proven", "evidence": null},
+    "shebang": {"result": "not_proven", "evidence": null},
+    "pod": {"result": "not_proven", "evidence": null}
+  },
+  "journey": {
+    "manifest_discovery": {"result": "not_proven", "evidence": null},
+    "perl_attachment": {"result": "not_proven", "evidence": null},
+    "initialize": {"result": "not_proven", "evidence": null},
+    "workspace_root": {"result": "not_proven", "evidence": null},
+    "diagnostics": {"result": "not_proven", "evidence": null},
+    "completion": {"result": "not_proven", "evidence": null},
+    "hover": {"result": "not_proven", "evidence": null},
+    "definition": {"result": "not_proven", "evidence": null},
+    "references": {"result": "not_proven", "evidence": null},
+    "document_symbols": {"result": "not_proven", "evidence": null},
+    "workspace_symbols": {"result": "not_proven", "evidence": null},
+    "safe_edit_or_refusal": {"result": "not_proven", "evidence": null},
+    "unicode_positions": {"result": "not_proven", "evidence": null},
+    "mixed_newlines": {"result": "not_proven", "evidence": null},
+    "semantic_tokens": {"result": "not_proven", "evidence": null},
+    "post_edit_freshness": {"result": "not_proven", "evidence": null},
+    "restart": {"result": "not_proven", "evidence": null},
+    "shutdown": {"result": "not_proven", "evidence": null}
+  },
+  "artifacts": {
+    "zed_log": null,
+    "language_server_log": null,
+    "process_inventory": null,
+    "redacted": null
+  },
+  "limitations": [
+    "Template only. No actual Zed host has been run.",
+    "Public registry installation remains a separate evidence stage."
+  ],
+  "claim_boundary": "No Zed support claim may be promoted from this not-run template."
+}

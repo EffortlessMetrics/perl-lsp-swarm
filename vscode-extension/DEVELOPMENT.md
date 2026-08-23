@@ -43,12 +43,23 @@ This bypasses the auto-download and uses your local build.
 
 ```bash
 npm run typecheck   # Type-check only (tsc --noEmit) — TypeScript 7 is the sole type-check authority
-npm run typecheck:all # Check source, unit tests, integration, published smoke, and scripts
+npm run typecheck:authority # Prove the compiler that runs really is TypeScript 7
+npm run typecheck:all # Authority gate, then source, unit tests, integration, published smoke, and scripts
 npm run compile     # Single build (Rolldown bundles out/extension.js — does NOT type-check)
 npm run sample:published:local # Repeat exact-source VSIX smoke and write p50/p95 receipt summary
 npm run watch       # Rebuild out/extension.js on every file change (use during active development)
 npm run watch:types # Optional companion: live tsc --noEmit type-check loop in a separate terminal
 ```
+
+`npm run typecheck:authority` (the first step of `typecheck:all`, and blocking
+in the extension PR gate) proves the claim above rather than restating it: that
+the declared range, the lockfile resolution, the installed package, and the
+binary that actually runs are all the same real registry TypeScript 7 — no
+alias, shim, or `file:`/git specifier — and that no configuration reintroduced
+the TS6-era `ignoreDeprecations` escape hatch. This is needed because TypeScript
+6 and 7 compile and emit identically for this tree (see
+[`docs/migrations/ts7-compiler-swap-receipts.md`](docs/migrations/ts7-compiler-swap-receipts.md)),
+so a slide back to the old compiler would otherwise pass every check green.
 
 The shared configuration enables `noUncheckedIndexedAccess`,
 `exactOptionalPropertyTypes`, and `noImplicitOverride` as blocking compiler

@@ -120,6 +120,7 @@ mod tests {
             message: msg.to_string(),
             related_information: Vec::new(),
             tags: Vec::new(),
+            fixable: false,
             suggestion: None,
         }
     }
@@ -457,6 +458,7 @@ mod tests {
                 suggestion: None,
                 related_information: Vec::new(),
                 tags: Vec::new(),
+                fixable: false,
             },
             Diagnostic {
                 range: (0, 4),
@@ -466,6 +468,7 @@ mod tests {
                 suggestion: None,
                 related_information: Vec::new(),
                 tags: Vec::new(),
+                fixable: false,
             },
         ];
 
@@ -492,6 +495,7 @@ mod tests {
                 suggestion: None,
                 related_information: Vec::new(),
                 tags: Vec::new(),
+                fixable: false,
             },
             Diagnostic {
                 range: (0, 4),
@@ -501,6 +505,7 @@ mod tests {
                 suggestion: None,
                 related_information: Vec::new(),
                 tags: Vec::new(),
+                fixable: false,
             },
         ];
 
@@ -523,6 +528,7 @@ mod tests {
             suggestion: None,
             related_information: Vec::new(),
             tags: Vec::new(),
+            fixable: false,
         }];
 
         let provider = CodeActionsProvider::new(source.to_string());
@@ -544,6 +550,7 @@ mod tests {
             suggestion: None,
             related_information: Vec::new(),
             tags: Vec::new(),
+            fixable: false,
         }];
 
         let provider = CodeActionsProvider::new(source.to_string());
@@ -567,6 +574,7 @@ mod tests {
             suggestion: None,
             related_information: Vec::new(),
             tags: Vec::new(),
+            fixable: false,
         }];
 
         let provider = CodeActionsProvider::new(source.to_string());
@@ -590,6 +598,7 @@ mod tests {
             suggestion: None,
             related_information: Vec::new(),
             tags: Vec::new(),
+            fixable: false,
         }];
 
         let provider = CodeActionsProvider::new(source.to_string());
@@ -615,6 +624,7 @@ mod tests {
                 suggestion: None,
                 related_information: Vec::new(),
                 tags: Vec::new(),
+                fixable: false,
             }];
 
             let provider = CodeActionsProvider::new(source.to_string());
@@ -641,6 +651,7 @@ mod tests {
                 suggestion: None,
                 related_information: Vec::new(),
                 tags: Vec::new(),
+                fixable: false,
             },
             Diagnostic {
                 range: (0, source.len()),
@@ -650,6 +661,7 @@ mod tests {
                 suggestion: None,
                 related_information: Vec::new(),
                 tags: Vec::new(),
+                fixable: false,
             },
             Diagnostic {
                 range: (6, 13),
@@ -659,6 +671,7 @@ mod tests {
                 suggestion: None,
                 related_information: Vec::new(),
                 tags: Vec::new(),
+                fixable: false,
             },
         ];
 
@@ -684,6 +697,7 @@ mod tests {
                 suggestion: None,
                 related_information: Vec::new(),
                 tags: Vec::new(),
+                fixable: false,
             },
             Diagnostic {
                 range: (0, 0),
@@ -693,6 +707,7 @@ mod tests {
                 suggestion: None,
                 related_information: Vec::new(),
                 tags: Vec::new(),
+                fixable: false,
             },
         ];
 
@@ -717,6 +732,7 @@ mod tests {
             suggestion: None,
             related_information: Vec::new(),
             tags: Vec::new(),
+            fixable: false,
         }];
 
         let provider = CodeActionsProvider::new(source.to_string());
@@ -743,6 +759,7 @@ mod tests {
             suggestion: None,
             related_information: Vec::new(),
             tags: Vec::new(),
+            fixable: false,
         }];
 
         let provider = CodeActionsProvider::new(source.to_string());
@@ -772,6 +789,7 @@ mod tests {
             suggestion: None,
             related_information: Vec::new(),
             tags: Vec::new(),
+            fixable: false,
         }];
 
         let provider = CodeActionsProvider::new(source.to_string());
@@ -805,6 +823,7 @@ mod tests {
             suggestion: None,
             related_information: Vec::new(),
             tags: Vec::new(),
+            fixable: false,
         }];
 
         let provider = CodeActionsProvider::new(source.to_string());
@@ -839,6 +858,7 @@ mod tests {
             suggestion: None,
             related_information: Vec::new(),
             tags: Vec::new(),
+            fixable: false,
         }];
 
         let provider = CodeActionsProvider::new(source.to_string());
@@ -868,6 +888,7 @@ mod tests {
             suggestion: None,
             related_information: Vec::new(),
             tags: Vec::new(),
+            fixable: false,
         }];
 
         let provider = CodeActionsProvider::new(source.to_string());

@@ -1,5 +1,14 @@
 //! Native critic rule registry and profile orchestration.
 
+use std::fmt;
+use std::str::FromStr;
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+use super::super::identity::{
+    CriticFindingOrigin, CriticFindingShape, CriticIdentityRegistry,
+    NativeCriticIdentityDisposition,
+};
 use super::super::{CriticConfig, Severity, Violation};
 use super::native_contract::{CriticContext, CriticFinding, CriticRule, PragmaEntries};
 use super::native_suppressions::CriticSuppressionMap;
@@ -14,19 +23,91 @@ use super::{
     UnusedLexicalVariableRule, UnusedParameterRule,
 };
 
-/// Native critic rule bundle used by receipt and readiness tooling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+const GENERAL: CriticFindingShape = CriticFindingShape::General;
+
+// Producer-owned logical dispositions. Combined native rules appear once per
+// logical finding shape; this is intentionally not reducible to the rule-ID
+// catalog because that would lose the distinction completeness must prove.
+static NATIVE_IDENTITY_DISPOSITIONS: &[NativeCriticIdentityDisposition] = &[
+    NativeCriticIdentityDisposition::new("native.testing.require_use_strict", GENERAL),
+    NativeCriticIdentityDisposition::new("native.testing.require_use_warnings", GENERAL),
+    NativeCriticIdentityDisposition::new("native.common.assignment_in_condition", GENERAL),
+    NativeCriticIdentityDisposition::new("native.common.printf_format_arity", GENERAL),
+    NativeCriticIdentityDisposition::new("native.common.deprecated_defined", GENERAL),
+    NativeCriticIdentityDisposition::new(
+        "native.common.undef_comparison",
+        CriticFindingShape::LiteralUndefComparison,
+    ),
+    NativeCriticIdentityDisposition::new("native.common.stale_dollar_at", GENERAL),
+    NativeCriticIdentityDisposition::new("native.common.unreachable_code", GENERAL),
+    NativeCriticIdentityDisposition::new("native.io.bareword_filehandle", GENERAL),
+    NativeCriticIdentityDisposition::new("native.io.two_arg_open", GENERAL),
+    NativeCriticIdentityDisposition::new("native.io.pipe_open", GENERAL),
+    NativeCriticIdentityDisposition::new("native.io.unchecked_open_close", GENERAL),
+    NativeCriticIdentityDisposition::new("native.security.qx_readpipe", CriticFindingShape::Qx),
+    NativeCriticIdentityDisposition::new(
+        "native.security.qx_readpipe",
+        CriticFindingShape::Readpipe,
+    ),
+    NativeCriticIdentityDisposition::new(
+        "native.security.backtick_exec",
+        CriticFindingShape::Backtick,
+    ),
+    NativeCriticIdentityDisposition::new("native.security.string_eval", GENERAL),
+    NativeCriticIdentityDisposition::new(
+        "native.security.system_exec",
+        CriticFindingShape::SystemCall,
+    ),
+    NativeCriticIdentityDisposition::new(
+        "native.security.system_exec",
+        CriticFindingShape::ExecCall,
+    ),
+    NativeCriticIdentityDisposition::new("native.variables.unused_lexical", GENERAL),
+    NativeCriticIdentityDisposition::new("native.variables.unused_parameter", GENERAL),
+    NativeCriticIdentityDisposition::new("native.variables.duplicate_parameter", GENERAL),
+    NativeCriticIdentityDisposition::new("native.variables.parameter_shadows_global", GENERAL),
+    NativeCriticIdentityDisposition::new("native.variables.duplicate_lexical", GENERAL),
+    NativeCriticIdentityDisposition::new("native.variables.shadowed_lexical", GENERAL),
+    NativeCriticIdentityDisposition::new("native.regex.capture_without_match", GENERAL),
+    NativeCriticIdentityDisposition::new("native.variables.undeclared", GENERAL),
+    NativeCriticIdentityDisposition::new("native.variables.uninitialized", GENERAL),
+    NativeCriticIdentityDisposition::new("native.syntax.unquoted_bareword", GENERAL),
+    NativeCriticIdentityDisposition::new("native.documentation.require_pod_sections", GENERAL),
+    NativeCriticIdentityDisposition::new("native.syntax.prohibit_leading_zeros", GENERAL),
+];
+
+const MAX_REJECTED_PROFILE_CHARS: usize = 80;
+
+/// Native critic rule bundle used by configuration, diagnostics, and readiness tooling.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum NativeCriticProfile {
-    /// Lower-noise candidate for eventual default/native recommended use.
+    /// Lower-noise default for normal editor diagnostics.
+    #[default]
     Recommended,
     /// Every registered native rule, useful for strict audits and rule coverage.
     Strict,
 }
 
 impl NativeCriticProfile {
+    /// Canonical tokens accepted at external configuration boundaries.
+    pub const VALID_OPTIONS: &'static str = "recommended, strict";
+
     /// Parse a native critic profile token.
+    ///
+    /// Leading/trailing whitespace and ASCII case are normalized at the
+    /// boundary. Callers can carry this enum while removing profile reparsing.
     #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
+        raw.parse().ok()
+    }
+
+    /// Parse a legacy string carrier without changing its historical semantics.
+    ///
+    /// The older runtime carriers used an exact-token parse and fell back to
+    /// [`Self::Strict`] for anything else. Keep that behavior explicit while
+    /// configuration boundaries use [`Self::parse`] and its normalization.
+    #[must_use]
+    pub fn parse_legacy(raw: &str) -> Option<Self> {
         match raw {
             "recommended" => Some(Self::Recommended),
             "strict" => Some(Self::Strict),
@@ -34,7 +115,7 @@ impl NativeCriticProfile {
         }
     }
 
-    /// Stable profile label for receipts.
+    /// Stable canonical profile label for configuration, receipts, and display.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -42,6 +123,83 @@ impl NativeCriticProfile {
             Self::Strict => "strict",
         }
     }
+}
+
+impl fmt::Display for NativeCriticProfile {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for NativeCriticProfile {
+    type Err = NativeCriticProfileParseError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "recommended" => Ok(Self::Recommended),
+            "strict" => Ok(Self::Strict),
+            _ => Err(NativeCriticProfileParseError { value: raw.to_string() }),
+        }
+    }
+}
+
+impl Serialize for NativeCriticProfile {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for NativeCriticProfile {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        raw.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// Error returned when an external profile token is not recognized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeCriticProfileParseError {
+    value: String,
+}
+
+impl NativeCriticProfileParseError {
+    /// Unrecognized token exactly as supplied by the caller.
+    #[must_use]
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+}
+
+impl fmt::Display for NativeCriticProfileParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "unrecognized native critic profile '{}'; expected {}",
+            render_rejected_profile(&self.value),
+            NativeCriticProfile::VALID_OPTIONS
+        )
+    }
+}
+
+impl std::error::Error for NativeCriticProfileParseError {}
+
+fn render_rejected_profile(value: &str) -> String {
+    let mut chars = value.chars();
+    let mut rendered = chars
+        .by_ref()
+        .take(MAX_REJECTED_PROFILE_CHARS)
+        .flat_map(char::escape_default)
+        .collect::<String>();
+    if chars.next().is_some() {
+        rendered.push('…');
+    }
+    rendered
 }
 
 /// Registry for Rust-native critic rules.
@@ -213,9 +371,33 @@ impl NativeCriticRegistry {
         self.rules.iter().map(|rule| rule.id()).collect()
     }
 
+    /// Producer-owned `(rule_id, shape)` obligations for identity coverage.
+    #[must_use]
+    pub const fn identity_dispositions() -> &'static [NativeCriticIdentityDisposition] {
+        NATIVE_IDENTITY_DISPOSITIONS
+    }
+
     /// Run all registered rules and return collected findings.
     #[must_use]
     pub fn check(&self, ctx: &CriticContext<'_>) -> Vec<CriticFinding> {
+        let suppressions = CriticSuppressionMap::from_source(ctx.source);
+        self.check_unfiltered(ctx)
+            .into_iter()
+            .filter(|finding| severity_enabled(finding.severity, ctx.config))
+            .filter(|finding| !suppressions.suppresses(finding))
+            .collect()
+    }
+
+    /// Run all registered rules and return findings before post-normalization
+    /// policy.
+    ///
+    /// Include/exclude stay execution gates here; the severity threshold and
+    /// scoped suppression are policy decisions that must apply exactly once,
+    /// after canonical alias merging (#7475). The production semantic boundary
+    /// consumes this path; [`Self::check`] keeps the legacy filtered behavior
+    /// for callers that have not migrated yet.
+    #[must_use]
+    pub fn check_unfiltered(&self, ctx: &CriticContext<'_>) -> Vec<CriticFinding> {
         let mut findings = Vec::new();
 
         // Pre-compute scope analysis once and share it across all scope-based
@@ -251,12 +433,7 @@ impl NativeCriticRegistry {
             rule.check(&rich_ctx, &mut findings);
         }
 
-        let suppressions = CriticSuppressionMap::from_source(ctx.source);
         findings
-            .into_iter()
-            .filter(|finding| severity_enabled(finding.severity, ctx.config))
-            .filter(|finding| !suppressions.suppresses(finding))
-            .collect()
     }
 
     /// Run all registered rules and return current legacy violation values.
@@ -283,12 +460,118 @@ impl NativeCriticRegistry {
 /// rather than resolving to nothing.
 fn rule_enabled(rule: &dyn CriticRule, config: &CriticConfig) -> bool {
     let id = rule.id();
-    let included = config.include.is_empty() || config.include.iter().any(|policy| policy == id);
+    let included = config.include.is_empty()
+        || config
+            .include
+            .iter()
+            .any(|policy| policy == id || native_producer_admits_compatibility_alias(id, policy));
     let excluded = config.exclude.iter().any(|policy| policy == id);
 
     included && !excluded
 }
 
+/// Whether a compatibility include names the logical finding produced by a
+/// native rule. Resolve the producer's reviewed shape through the shared
+/// identity registry so combined native rules do not admit an alias belonging
+/// to a different shape (for example, `PL601` is both backtick and `qx`).
+fn native_producer_admits_compatibility_alias(rule_id: &str, policy: &str) -> bool {
+    CriticIdentityRegistry::entries().iter().any(|entry| {
+        entry.aliases().iter().any(|alias| {
+            alias.origin() == CriticFindingOrigin::BuiltInDiagnostic
+                && alias.code() == policy
+                && entry.aliases().iter().any(|producer| {
+                    producer.origin() == CriticFindingOrigin::NativeCritic
+                        && producer.code() == rule_id
+                        && producer.shape() == alias.shape()
+                })
+        })
+    })
+}
+
 fn severity_enabled(severity: Severity, config: &CriticConfig) -> bool {
     severity as u8 >= config.severity
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use std::str::FromStr;
+
+    use super::{MAX_REJECTED_PROFILE_CHARS, NativeCriticProfile, NativeCriticProfileParseError};
+
+    #[test]
+    fn recommended_is_the_internal_default() {
+        assert_eq!(NativeCriticProfile::default(), NativeCriticProfile::Recommended);
+    }
+
+    #[test]
+    fn parsing_normalizes_only_case_and_surrounding_whitespace() {
+        assert_eq!(
+            NativeCriticProfile::from_str(" Recommended "),
+            Ok(NativeCriticProfile::Recommended)
+        );
+        assert_eq!(NativeCriticProfile::from_str("STRICT"), Ok(NativeCriticProfile::Strict));
+        assert!(NativeCriticProfile::from_str("recomended").is_err());
+    }
+
+    #[test]
+    fn legacy_parsing_keeps_exact_token_compatibility() {
+        assert_eq!(
+            NativeCriticProfile::parse_legacy("recommended"),
+            Some(NativeCriticProfile::Recommended)
+        );
+        assert_eq!(NativeCriticProfile::parse_legacy("strict"), Some(NativeCriticProfile::Strict));
+        assert!(NativeCriticProfile::parse_legacy(" RECOMMENDED ").is_none());
+        assert!(NativeCriticProfile::parse_legacy("STRICT").is_none());
+    }
+
+    #[test]
+    fn invalid_tokens_preserve_the_original_value_in_the_error() {
+        let error = NativeCriticProfile::from_str(" recomended ");
+        assert_eq!(error, Err(NativeCriticProfileParseError { value: " recomended ".to_string() }));
+    }
+
+    #[test]
+    fn invalid_token_display_escapes_control_characters_without_changing_evidence() {
+        let raw = "strict\n\t\u{0007}'";
+        let error =
+            NativeCriticProfile::from_str(raw).expect_err("control-bearing token must fail");
+        let rendered = error.to_string();
+
+        assert_eq!(error.value(), raw);
+        assert!(!rendered.contains('\n'));
+        assert!(!rendered.contains('\t'));
+        assert!(!rendered.contains('\u{0007}'));
+        assert!(rendered.contains("\\n"));
+        assert!(rendered.contains("\\t"));
+        assert!(rendered.contains("\\u{7}"));
+        assert!(rendered.contains("\\'"));
+    }
+
+    #[test]
+    fn invalid_token_display_is_bounded_while_the_error_retains_the_full_value() {
+        let raw = "x".repeat(MAX_REJECTED_PROFILE_CHARS + 32);
+        let error = NativeCriticProfile::from_str(&raw).expect_err("oversized token must fail");
+        let rendered = error.to_string();
+
+        assert_eq!(error.value(), raw);
+        assert!(rendered.contains(&format!("{}…", "x".repeat(MAX_REJECTED_PROFILE_CHARS))));
+        assert!(!rendered.contains(&"x".repeat(MAX_REJECTED_PROFILE_CHARS + 1)));
+    }
+
+    #[test]
+    fn serde_round_trips_canonical_tokens() -> Result<(), serde_json::Error> {
+        for profile in [NativeCriticProfile::Recommended, NativeCriticProfile::Strict] {
+            let encoded = serde_json::to_string(&profile)?;
+            assert_eq!(encoded, format!("\"{}\"", profile.as_str()));
+            let decoded: NativeCriticProfile = serde_json::from_str(&encoded)?;
+            assert_eq!(decoded, profile);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn serde_rejects_unknown_tokens_without_widening() {
+        let decoded = serde_json::from_str::<NativeCriticProfile>("\"unknown\"");
+        assert!(decoded.is_err());
+    }
 }

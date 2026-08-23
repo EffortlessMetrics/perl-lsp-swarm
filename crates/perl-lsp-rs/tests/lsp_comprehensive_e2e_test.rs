@@ -1351,12 +1351,20 @@ class Point {
 
     ctx.open_document("file:///test/modern.pl", code);
 
-    // Should parse modern features
-    let mut parser = Parser::new(code);
-    let result = parser.parse();
+    // Not every construct above is necessarily supported yet, so this test does not
+    // pin parser acceptance. The e2e claim is that modern syntax does not wedge the
+    // server: it must still answer a request for this document afterwards.
+    let symbols = ctx.send_request(
+        "textDocument/documentSymbol",
+        Some(json!({
+            "textDocument": { "uri": "file:///test/modern.pl" }
+        })),
+    );
 
-    // Modern features might not all be supported yet
-    assert!(result.is_ok() || result.is_err());
+    assert!(
+        symbols.is_some(),
+        "server must still respond after opening a document using modern Perl features"
+    );
     Ok(())
 }
 
@@ -1723,10 +1731,16 @@ say "Sum: $sum";
 
     ctx.update_document("file:///test/legacy_proc.pl", modernized);
 
-    // Verify modernized code parses correctly
+    // Verify modernized code parses correctly. The parser recovers rather than
+    // bailing out, so `parse()` returns `Ok` even for malformed input; the recorded
+    // diagnostics are what actually distinguish clean code here.
     let mut parser = Parser::new(modernized);
-    // Modern features might not all be supported
-    assert!(parser.parse().is_ok() || parser.parse().is_err());
+    let _ = parser.parse();
+    assert!(
+        parser.errors().is_empty(),
+        "modernized code must parse cleanly, got: {:?}",
+        parser.errors()
+    );
     Ok(())
 }
 

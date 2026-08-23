@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Added
+body: Add a canonical Neovim config and actual-host activation/root receipt.
+time: 2026-08-13T10:02:40Z
+custom:
+  PR: "7805"
+  Slug: neovim-activation-root
+  Breaking: "no"

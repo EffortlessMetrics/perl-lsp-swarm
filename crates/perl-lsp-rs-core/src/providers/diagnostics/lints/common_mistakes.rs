@@ -65,6 +65,7 @@ pub fn check_common_mistakes(
                             message: "Consider using 'defined' check or '//' operator".to_string(),
                         }],
                         tags: Vec::new(),
+                        fixable: false,
                         suggestion: Some("Guard with 'defined($var)' or use the '//' (defined-or) operator".to_string()),
                     });
                 }
@@ -118,6 +119,7 @@ fn check_bareword_filehandle(
                     .to_string(),
         }],
         tags: Vec::new(),
+        fixable: false,
         suggestion: Some("Use lexical filehandle: open(my $fh, ... )".to_string()),
     });
 }
@@ -149,6 +151,7 @@ fn check_assignment_in_condition(condition: &Node, diagnostics: &mut Vec<Diagnos
             },
         ],
         tags: Vec::new(),
+        fixable: false,
         suggestion: Some("Replace '=' with '==' for numeric comparison or 'eq' for string comparison".to_string()),
     });
 }

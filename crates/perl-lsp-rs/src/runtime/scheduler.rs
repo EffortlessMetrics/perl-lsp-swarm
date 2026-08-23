@@ -483,9 +483,15 @@ impl Scheduler {
         server.install_diagnostic_debouncer(debouncer);
 
         // Install file watcher debouncer now that server is wrapped in Arc.
-        let fw_server = Arc::clone(&server);
+        // The callback captures the server weakly (#8064): the debouncer is
+        // owned by the server, so a strong capture would be an ownership
+        // cycle that keeps the server alive past teardown and allows
+        // post-shutdown publication.
+        let fw_server = Arc::downgrade(&server);
         let fw_debouncer = super::file_watcher_debounce::FileWatcherDebouncer::new(move |uris| {
-            fw_server.handle_watched_file_batch(uris);
+            if let Some(server) = fw_server.upgrade() {
+                server.handle_watched_file_batch(uris);
+            }
         });
         server.install_file_watcher_debouncer(fw_debouncer);
 
@@ -800,6 +806,30 @@ impl Scheduler {
         Some(StaleReason::DocumentGenerationAdvanced { captured, current })
     }
 
+    /// Re-capture completion freshness after its ordered mutation barrier.
+    ///
+    /// Completion requests intentionally describe the document produced by
+    /// all preceding `didChange` notifications. Their ingress snapshot can be
+    /// stale by construction while those mutations are still queued, so the
+    /// barrier result becomes the baseline for dispatch and response delivery.
+    fn refresh_read_freshness(
+        server: &LspServer,
+        freshness: Option<&ReadFreshness>,
+    ) -> Option<ReadFreshness> {
+        let freshness = freshness?;
+        let (document_generation, document_version, document_instance) = server
+            .document_freshness(&freshness.uri)
+            .map_or((None, None, None), |(generation, version, instance)| {
+                (Some(generation), Some(version), Some(instance))
+            });
+        Some(ReadFreshness {
+            uri: freshness.uri.clone(),
+            document_generation,
+            document_instance,
+            document_version,
+        })
+    }
+
     fn send_response(outbound: &OutboundSender, response: JsonRpcResponse) {
         log_response(&response);
         let _ = outbound.send_response(response);
@@ -952,6 +982,9 @@ impl Scheduler {
         mutation_seq_done: &Arc<AtomicU64>,
         mutation_notify: &Arc<Notify>,
     ) {
+        let refresh_after_barrier =
+            queued.request.method == "textDocument/completion" && queued.wait_for_seq > 0;
+
         // Stale check 1: position dedupe — newer same-position request supersedes.
         if let Some(ref key) = queued.dedup_key
             && let Some(&latest) = latest_seq.get(key)
@@ -972,7 +1005,9 @@ impl Scheduler {
         // Stale check 2: generation freshness — document moved on between
         // ingress and dispatch. This catches the typing-storm case where
         // every keystroke produces a unique position dedup key.
-        if let Some(reason) = Self::stale_read_reason(server, queued.freshness.as_ref()) {
+        if !refresh_after_barrier
+            && let Some(reason) = Self::stale_read_reason(server, queued.freshness.as_ref())
+        {
             if let Some(id) = queued.request.id.as_ref() {
                 server.clear_request_pending(id);
             }
@@ -999,7 +1034,7 @@ impl Scheduler {
         // we can attribute the mutation-barrier wait to a concrete read request.
         let read_wait_method =
             crate::runtime::timing::is_enabled().then(|| queued.request.method.clone());
-        let freshness = queued.freshness.clone();
+        let mut freshness = queued.freshness.clone();
         let method = queued.request.method.clone();
         let id = queued.request.id.clone();
 
@@ -1036,6 +1071,10 @@ impl Scheduler {
                 ));
             }
 
+            if refresh_after_barrier {
+                freshness = Self::refresh_read_freshness(&srv, freshness.as_ref());
+            }
+
             if let Some(reason) = Self::stale_read_reason(&srv, freshness.as_ref()) {
                 if let Some(id) = id.as_ref() {
                     srv.clear_request_pending(id);
@@ -1068,7 +1107,8 @@ impl Scheduler {
                     // (for example, waiting for an AI completion backend). A
                     // mutation can advance the document generation while that
                     // work is running, so make the final send decision against
-                    // the same freshness snapshot used at dispatch ingress.
+                    // the freshness baseline established before the handler
+                    // (at ingress, or after the ordered completion barrier).
                     if response.error.as_ref().is_some_and(|error| error.code == REQUEST_CANCELLED)
                     {
                         // Preserve a cancellation response that the handler
@@ -1678,7 +1718,8 @@ mod tests {
             RequestPriority::Hover,
         ));
         assert_eq!(f.uri, "file:///x.pl");
-        assert_eq!(f.document_generation, Some(0));
+        // didOpen mints the first accepted document generation as 1 (#11305).
+        assert_eq!(f.document_generation, Some(1));
         assert_eq!(f.document_version, Some(1));
         Ok(())
     }
@@ -1883,22 +1924,25 @@ mod tests {
         let server = crate::LspServer::new();
         let uri = "file:///reason.pl";
         server.test_apply_did_open(uri, "my $a;\n", 1)?;
-        let freshness = make_freshness(uri, Some(0), Some(1));
+        // didOpen mints the first accepted generation as 1 (#11305).
+        let freshness = make_freshness(uri, Some(1), Some(1));
 
         assert_eq!(Scheduler::stale_read_reason(&server, Some(&freshness)), None);
 
         server.test_apply_did_change(uri, "my $aa;\n", 2)?;
         assert_eq!(
             Scheduler::stale_read_reason(&server, Some(&freshness)),
-            Some(StaleReason::DocumentGenerationAdvanced { captured: 0, current: 1 })
+            Some(StaleReason::DocumentGenerationAdvanced { captured: 1, current: 2 })
         );
         Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn stale_read_cancelled_after_mutation_wait_before_handle_request()
-    -> Result<(), JsonRpcError> {
+    async fn completion_refreshes_freshness_after_ordered_mutation_wait()
+    -> Result<(), Box<dyn std::error::Error>> {
         let (server, output) = server_with_captured_output();
+        initialize_scheduler_test_server(&server)?;
+        output.lock().clear();
         let uri = "file:///mutation-wait-race.pl";
         server.test_apply_did_open(uri, &rapid_typing_source(1), 1)?;
 
@@ -1930,20 +1974,58 @@ mod tests {
         let completed =
             tokio::time::timeout(std::time::Duration::from_millis(500), in_flight.join_next())
                 .await;
-        assert!(completed.is_ok(), "read should cancel promptly after mutation barrier opens");
+        assert!(completed.is_ok(), "completion should run promptly after mutation barrier opens");
 
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         let bytes = output.lock().clone();
         let text = String::from_utf8_lossy(&bytes);
         assert!(
-            text.contains("document moved from generation 0 to 1"),
-            "post-wait stale read must send cancellation before handle_request; output={text}"
+            !text.contains("document moved from generation 0 to 1"),
+            "ordered mutations must become the completion freshness baseline; output={text}"
         );
         assert!(
-            !text.contains("result"),
-            "cancelled stale read must not run handle_request; output={text}"
+            text.contains("\"id\":77"),
+            "completion handler must answer after the ordered mutation barrier; output={text}"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn refreshed_completion_rejects_a_later_mutation_at_delivery() -> Result<(), JsonRpcError> {
+        let (server, output) = server_with_captured_output();
+        let uri = "file:///completion-refresh-race.pl";
+        server.test_apply_did_open(uri, "my $value;\n", 1)?;
+        let ingress = must_some(extract_freshness(
+            &server,
+            "textDocument/completion",
+            Some(&position_params(uri)),
+            RequestPriority::Completion,
+        ));
+
+        server.test_apply_did_change(uri, "my $value = 1;\n", 2)?;
+        let refreshed = must_some(Scheduler::refresh_read_freshness(&server, Some(&ingress)));
+        assert_eq!(Scheduler::stale_read_reason(&server, Some(&refreshed)), None);
+
+        server.test_apply_did_change(uri, "my $value = 12;\n", 3)?;
+        assert_eq!(
+            Scheduler::send_response_if_fresh(
+                &server,
+                Some(&refreshed),
+                JsonRpcResponse {
+                    jsonrpc: "2.0",
+                    id: JsonRpcId::from_value(&serde_json::json!(78)),
+                    result: Some(serde_json::json!([])),
+                    error: None,
+                },
+            ),
+            Some(StaleReason::DocumentGenerationAdvanced { captured: 2, current: 3 })
+        );
+        let output = String::from_utf8_lossy(&output.lock().clone()).to_string();
+        assert!(
+            !output.contains("\"id\":78"),
+            "post-handler stale completion result must not be delivered; output={output}"
+        );
         Ok(())
     }
 
@@ -2213,10 +2295,10 @@ mod tests {
             RequestPriority::Hover,
         ));
         // Before fix: None (raw uppercase key misses normalized lowercase entry)
-        // After fix: Some(0)
+        // After fix: Some(1) — didOpen mints the first accepted generation (#11305)
         assert_eq!(
             f.document_generation,
-            Some(0),
+            Some(1),
             "mixed-case URI must resolve to open document generation"
         );
         Ok(())

@@ -1,168 +1,141 @@
 # Compiler-Program Implementation Plan
 
-Status: planned
+Status: active routing map; orientation foundation complete
 Owner: perl-lsp maintainers
 Linked proposal: [PLSP-PROP-0002](../../docs/proposals/PLSP-PROP-0002-compiler-program.md)
 Linked ADR: [PLSP-ADR-0005](../../docs/adr/PLSP-ADR-0005-hir-body-pir-eir-boundaries.md)
 Linked specs:
+
 - [PLSP-SPEC-0025](../../docs/specs/PLSP-SPEC-0025-pir-v0.md) — PIR-A data model
 - [PLSP-SPEC-0030](../../docs/specs/PLSP-SPEC-0030-compile-state-layers.md) — compile state layers
-Goal manifest: [.perl-lsp/goals/compiler-program.toml](../../.perl-lsp/goals/compiler-program.toml)
+
 Tracker: [#2559](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/2559)
 References: #2563 (context), #2564 (HIR-body ADR), #2565 (PIR-A/EIR)
 
-## Purpose
+## Purpose and authority
 
-Define the PR sequence for the compiler-program lane: Phase-1 orientation
-documents, Phase-2 HIR body and PIR-A expansion, and the eventual compiler
-world integration. This plan is a routing map, not a product-claim document.
+This document preserves the durable compiler-program sequence and layer
+boundaries. It does not own generated coverage counts, current work selection,
+or provider-support claims:
 
-## Current State
+- accepted specs and ADRs own architecture and layer contracts;
+- generated [HIR lowering coverage](../../docs/project/status/hir_lowering.md)
+  owns current registry-backed HIR counts;
+- human-owned [compiler facts](../../docs/project/status/compiler_facts.md)
+  records bounded layer status;
+- [#2559](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/2559),
+  its re-queried live subordinate issues and PRs own work routing.
 
-- L0–L6 HIR side graphs are `fixture-backed`; see
-  [compiler facts](../../docs/project/status/compiler_facts.md).
-- HIR body construct coverage: 25 `lowered`, 3 `dynamic_boundary`,
-  19 `intentionally_skipped`, 23 `not_yet_modeled` of 70 tracked AST kinds.
-  See [HIR lowering coverage](../../docs/project/status/hir_lowering.md).
-- PIR v0 is `fixture-backed` (data-access, call, dynamic-boundary families);
-  branch/loop/return and read-side lowering remain reserved/unimplemented.
-- Provider cutover is `partial live`; broader live cutover is gated by
-  [#8197](https://github.com/EffortlessMetrics/perl-lsp/issues/8197).
+## Current state and claim boundary
 
-## Phase-1 Gate: Orientation Documents
+The orientation foundation landed through #2566: PLSP-PROP-0002,
+PLSP-ADR-0005, this plan, and the then-current routing artifact established the
+HIR-body/PIR-A/EIR vocabulary. Phase 1 is complete historical context, not an
+active gate.
 
-Phase 1 is this PR. No code changes. Phase 2 may open only after Phase 1 is
-merged and the ADR is accepted.
+L0-L6 HIR side graphs and Tooling PIR are `fixture-backed`; see
+[compiler facts](../../docs/project/status/compiler_facts.md). That human status
+page records first-class `Branch`, `Loop`, and `Return` lowering. The canonical
+[PIR-A lowering](../../crates/perl-parser-core/src/pir/lower.rs) and
+[body fixtures](../../crates/perl-parser-core/tests/pir_a_bodies_test.rs)
+show that lowering emits bounded `LexicalRead` and `StashRead` operations and
+that fixtures exercise the read-side path without independently discriminating
+the exact operation kind. Accepted
+PLSP-SPEC-0025 still reserves read-side lowering for later, and the human status
+page does not name it, so this implementation drift is explicit rather than
+attributed to either authority. The fixtures do not establish full Perl
+semantics, precise value merging, EIR, compiler-world completion, or broad
+provider cutover.
 
-Phase 1 is complete when:
+Do not copy HIR totals into this plan. The generated
+[HIR lowering coverage](../../docs/project/status/hir_lowering.md), sourced from
+the disposition registry and checked by the completeness tests, is the current
+authority for those totals.
 
-- [x] Proposal `PLSP-PROP-0002` is merged
-- [x] Boundary ADR `PLSP-ADR-0005` is accepted and merged
-- [x] This implementation plan is merged
-- [x] Goal manifest `.perl-lsp/goals/compiler-program.toml` is merged
-- All four artifacts are linked to each other and to tracker #2559
-- No generated status surface is altered; no provider behavior is changed
+Provider promotion remains independently staged. The former provider umbrella
+[#8197](https://github.com/EffortlessMetrics/perl-lsp/issues/8197) is completed;
+it is historical evidence, not a live sole gate. Use the current
+[provider cutover status](../../docs/project/status/provider_cutover.md) for
+provider state, support boundaries, and receipts. Use #2559 and re-queried live
+GitHub subjects for residual work routing.
 
-Proof commands for Phase 1:
+## Durable implementation sequence
 
-```bash
-git diff --check
-cargo xtask check-active-goal-manifest
-cargo xtask ci-hygiene check-doc-paths docs/proposals
-cargo xtask ci-hygiene check-doc-paths docs/adr
-cargo xtask ci-hygiene check-doc-paths plans/compiler-program
-```
+Expressions-before-dependent-control-flow remains the architectural rule:
+expression facts and anchors must exist before later control-flow semantics
+depend on them. Landed fixture-backed control-flow operations do not waive this
+dependency for semantic broadening.
 
-## Phase-2 Gate: HIR Body and PIR-A Expansion
+1. **HIR body constructs and semantic depth** (L0, PLSP-SPEC-0030)
+   - Follow the generated HIR disposition registry for missing constructs.
+   - Add expression, call, receiver, and context facts with provenance and
+     source anchors before downstream consumers rely on them.
+2. **PIR-A semantic broadening** (PLSP-SPEC-0025)
+   - Extend the landed read-side, assignment, branch, loop, and return families
+     only from contracted HIR facts.
+   - Keep unknown context, dynamic boundaries, evaluation order, CFG fidelity,
+     and value merging explicit rather than inferring semantic completeness
+     from operation presence.
+3. **Compiler world**
+   - Expose the L0-L6 fact graph through the contracted project/workspace owner.
+   - Add query and invalidation behavior without creating a duplicate semantic
+     authority.
+4. **EIR** (PLSP-ADR-0005)
+   - Remains a separate future execution concern; do not turn ordinary PIR-A
+     expansion into an EIR implementation.
+5. **Provider bridge and promotion**
+   - Connect compiler-world facts to provider fact-source tracing.
+   - Promote behavior only through the provider ledger's freshness,
+     confidence, fallback, rollback, and live-path proof.
 
-Phase 2 may open only after Phase 1 is complete.
+Each implementation slice remains a separate review-forward issue and PR with
+its own claim boundary, files, proof, non-goals, and rollback path.
 
-Phase 2 is ready to open when:
+## Live work routing
 
-- Phase 1 is merged and the ADR is accepted
-- HIR lowering coverage reflects the current `not_yet_modeled` baseline from
-  `cargo xtask metrics hir-coverage --check`
-- PLSP-SPEC-0025 is current and the reserved operation families are named
+Select current work from [#2559](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/2559)
+and live subordinate GitHub subjects. Representative current owners include:
 
-Phase 2 is complete when:
+- [#7136](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7136)
+  for a missing canonical body-HIR regex family;
+- [#4239](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4239)
+  for remaining LSP-useful PIR-A operation families and the semantic-fact
+  adapter;
+- [#4799](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4799)
+  for the ProjectModel/PIR-A-to-provider semantic-fact port;
+- [#5218](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5218)
+  for the first lexical references/rename vertical;
+- [#6657](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/6657)
+  for the cross-layer semantic coverage ledger.
 
-- Key expression constructs (`Binary`, `Unary`, calls, method calls) are
-  `lowered` in HIR coverage, with provenance and source anchors per C1–C5
-- PIR-A has branch/loop/return/read-side lowering with receipts per
-  PLSP-SPEC-0025
-- Compiler world integration extends `SemanticSnapshot` with the full L0–L6
-  fact graph (no new crate; extends existing workspace-analysis types)
-- No provider cutover follows from Phase 2 PRs (cutover is gated by #8197)
+Re-query those subjects before claiming or building them; this list describes
+ownership seams, not a cached queue or priority order.
 
-### Phase-2 Expression Order
+Tracked goal-manifest selection was retired by
+[#5332](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5332), which
+closed [#5205](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5205).
+The compatibility command `cargo xtask check-active-goal-manifest` emits a stable
+retirement receipt; it validates nothing, selects no work, and mutates nothing.
+See the [swarm operating model](../../docs/swarm/operating-model.md).
 
-Within Phase 2, expressions-before-control-flow is the canonical ordering.
-Rationale: expression lowering in HIR (Binary, Unary, calls) feeds the
-context-propagation needed for correct branch/loop semantics in PIR-A. Starting
-control-flow lowering before expression lowering is anchored produces
-under-specified CFG edges and deferred context gaps.
+## Plan verification
 
-The required order within Phase 2:
-
-1. **HIR body — expression constructs** (L0, PLSP-SPEC-0030)
-   - `Binary`, `Unary` shells with operand anchors
-   - `Ternary` broadening (existing shell; add per-arm context facts)
-   - Call context: argument-list and receiver-expression shells
-   - Method call context: method anchor and receiver expression facts
-
-2. **PIR-A — call and assignment side** (PLSP-SPEC-0025)
-   - Read-side lowering: `LexicalRead`, `StashRead`
-   - Assignment completion: full `Assign` facts including RHS expression anchors
-
-3. **PIR-A — control-flow** (PLSP-SPEC-0025)
-   - `Branch` family (if/unless/ternary)
-   - `Loop` family (while/until/for/foreach)
-   - `Return` family (explicit return, last/next/redo)
-
-4. **Compiler world** (SemanticSnapshot extension; no new crate)
-   - Extend `SemanticSnapshot` with full L0–L6 layer graph access
-   - Abstract compile engine: query interface over compiler world
-   - Provider bridge: connect compiler world facts to provider fact-source
-     tracing (no live behavior until cutover gates are satisfied)
-
-Each slice within Phase 2 should be a separate PR-sized work item in the goal
-manifest, with its own `claim_boundary`, `files`, and `commands`.
-
-## Work item: compiler-program-orientation
-
-Status: active (this PR)
-Lane: substrate
-Linked proposal: [PLSP-PROP-0002](../../docs/proposals/PLSP-PROP-0002-compiler-program.md)
-Linked ADR: [PLSP-ADR-0005](../../docs/adr/PLSP-ADR-0005-hir-body-pir-eir-boundaries.md)
-Blocks: all Phase-2 slices
-Blocked by: none
-
-Goal
-
-Author the four orientation documents — proposal, ADR, implementation plan,
-goal manifest — so Phase-2 agents have durable routing contracts.
-
-Production delta
-
-Docs only: four new files. No code, no generated status update, no provider
-behavior change.
-
-Non-goals
-
-No HIR shells, no PIR operations, no EIR types, no compiler world
-implementation, no provider cutover.
-
-Acceptance
-
-All four orientation documents exist, are cross-linked, and reference tracker
-#2559. Proof commands pass without workspace errors.
-
-Proof commands
+Use proof proportional to the selected slice. For source-truth reconciliation,
+the discriminating checks are:
 
 ```bash
 git diff --check
-cargo xtask check-active-goal-manifest
-cargo xtask ci-hygiene check-doc-paths docs/proposals
-cargo xtask ci-hygiene check-doc-paths docs/adr
+cargo xtask metrics hir-coverage --check
+cargo test -p perl-parser-core --test hir_lowering_completeness_tests --locked
+cargo test -p perl-parser-core --test pir_tests --locked
+cargo test -p perl-parser-core --test pir_a_bodies_test --locked
+cargo test -p perl-parser-core --test pir_a_branch_body_test --locked
+cargo test -p perl-parser-core --test pir_a_loop_body_test --locked
+cargo test -p perl-parser-core --test pir_a_return_body_test --locked
+cargo test -p perl-parser-core --test pir_a_ternary_body_test --locked
+cargo test -p xtask --test active_goal_manifest_cli --locked
 cargo xtask ci-hygiene check-doc-paths plans/compiler-program
 ```
 
-Rollback
-
-Revert this PR. Phase-2 slices that cite the ADR must be updated to cite
-whatever replacement boundary record exists.
-
-## Future Work Items (not yet open)
-
-The following items become available after Phase 1 is merged. Each should be
-filed as a separate PR-sized work item with its own goal manifest entry.
-
-- `hir-body-binary-unary-shells` — L0 HIR shells for Binary and Unary
-- `hir-body-call-context-shells` — L0 HIR shells for call argument-list and
-  receiver expression anchors
-- `pir-a-read-side-lowering` — PIR-A LexicalRead/StashRead families
-- `pir-a-branch-lowering` — PIR-A Branch/if/ternary families
-- `pir-a-loop-lowering` — PIR-A Loop/while/for/foreach families
-- `pir-a-return-lowering` — PIR-A Return/last/next/redo families
-- `compiler-world-snapshot-extension` — SemanticSnapshot extension with L0–L6
-- `abstract-compile-engine` — query layer over compiler world (no live behavior)
+Generated status, code, specs, provider behavior, and support tiers are outside
+this plan-reconciliation claim.

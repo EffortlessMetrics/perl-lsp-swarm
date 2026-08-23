@@ -19,6 +19,20 @@ The installed hooks are:
 The published `.pre-commit-hooks.yaml` is an optional external integration and routes
 to the same `cargo xtask precommit` command; it is not a second repository policy.
 
+## Changie validation
+
+When a staged Changie input changes, the existing `changie_fragment_staged` commit
+check materializes the frozen staged `.changie.yaml`, `aqua.yaml`, changes directory,
+and configured project changelogs in a temporary sandbox. It then runs Changie's own
+`batch --dry-run --keep` path for every configured project. The working tree and live
+index are not consulted after the gate captures its tree OID.
+
+The checker prefers the Changie version pinned by staged `aqua.yaml`, disables Aqua
+lazy installation so a commit never introduces a network-backed tool install, and
+falls back to `changie` on `PATH` (the Nix development shell supplies that binary).
+Missing or broken tooling is `NOT_PROVEN`; a schema-invalid fragment or a Changie render failure
+is `BLOCKED`. Repair or recreate fragments with `cargo change`.
+
 ## Notes
 
 - `check-githooks` reports missing or stale installed generated hooks as `NOT_PROVEN`.

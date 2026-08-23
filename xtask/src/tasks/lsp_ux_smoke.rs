@@ -839,10 +839,10 @@ fn resolve_smoke_binary(root: &Path, binary: Option<PathBuf>, no_build: bool) ->
         return resolve_binary_path(resolved, "explicit --binary");
     }
 
-    if let Ok(path) = std::env::var("PERL_LSP_BIN") {
-        if !path.trim().is_empty() {
-            return resolve_binary_path(PathBuf::from(path), "PERL_LSP_BIN");
-        }
+    if let Ok(path) = std::env::var("PERL_LSP_BIN")
+        && !path.trim().is_empty()
+    {
+        return resolve_binary_path(PathBuf::from(path), "PERL_LSP_BIN");
     }
 
     let candidate = binary_path_for_profile(root, DEFAULT_BINARY_PROFILE);
@@ -856,7 +856,7 @@ fn resolve_smoke_binary(root: &Path, binary: Option<PathBuf>, no_build: bool) ->
 
     if no_build {
         bail!(
-            "perl-lsp binary not found at {} or {}; rerun without --no-build or pass --binary",
+            "perllsp binary not found at {} or {}; rerun without --no-build or pass --binary",
             candidate.display(),
             debug_candidate.display()
         );
@@ -867,15 +867,26 @@ fn resolve_smoke_binary(root: &Path, binary: Option<PathBuf>, no_build: bool) ->
 }
 
 fn build_perl_lsp(root: &Path) -> Result<()> {
-    println!("building perl-lsp binary for UX smoke...");
+    println!("building perllsp binary for UX smoke...");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let status = Command::new(cargo)
         .current_dir(root)
-        .args(["build", "-p", "perl-lsp-rs", "--profile", DEFAULT_BINARY_PROFILE, "--locked"])
+        .args([
+            "build",
+            "-p",
+            "perllsp",
+            "--bin",
+            "perllsp",
+            "--profile",
+            DEFAULT_BINARY_PROFILE,
+            "--locked",
+        ])
         .status()
-        .context("spawning cargo build for perl-lsp-rs")?;
+        .context("spawning cargo build for perllsp")?;
     if !status.success() {
-        bail!("cargo build -p perl-lsp-rs --profile {DEFAULT_BINARY_PROFILE} --locked failed");
+        bail!(
+            "cargo build -p perllsp --bin perllsp --profile {DEFAULT_BINARY_PROFILE} --locked failed"
+        );
     }
     Ok(())
 }
@@ -894,11 +905,11 @@ fn resolve_binary_path(path: PathBuf, source: &str) -> Result<PathBuf> {
             }
         }
     }
-    bail!("perl-lsp binary from {source} does not exist: {}", path.display())
+    bail!("perllsp binary from {source} does not exist: {}", path.display())
 }
 
 fn binary_path_for_profile(root: &Path, profile: &str) -> PathBuf {
-    let path = root.join("target").join(profile).join("perl-lsp");
+    let path = root.join("target").join(profile).join("perllsp");
     #[cfg(windows)]
     {
         let mut path = path;

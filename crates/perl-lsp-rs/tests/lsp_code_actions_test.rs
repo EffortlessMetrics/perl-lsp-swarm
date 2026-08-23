@@ -148,6 +148,7 @@ fn test_parse_error_semicolon_fix() -> Result<(), Box<dyn std::error::Error>> {
         related_information: vec![],
         tags: vec![],
         suggestion: Some("Add a ';' at the end of the statement".to_string()),
+        fixable: false,
     };
 
     // Get code actions

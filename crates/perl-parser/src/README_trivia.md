@@ -1,87 +1,49 @@
-# Trivia Preservation Implementation
+# Canonical parsing with trivia retention
 
-The v3 Perl parser now supports **trivia preservation**, capturing comments and whitespace in the AST. This is essential for code formatting tools, refactoring engines, and IDE features.
+`TriviaPreservingParser` is one parser-backed surface over the canonical Perl parser:
 
-## Features
-
-### 1. Trivia Types
-```rust
-enum Trivia {
-    Whitespace(String),    // Spaces, tabs
-    LineComment(String),   // # comments  
-    PodComment(String),    // POD documentation
-    Newline,              // Line breaks
-}
+```text
+source
+→ canonical Parser::parse_with_recovery()
+→ ParseOutput (AST + diagnostics + recovery)
++ exact source
++ source-ordered trivia inventory
 ```
 
-### 2. Trivia Attachment
-```rust
-struct NodeWithTrivia {
-    node: Node,
-    leading_trivia: Vec<TriviaToken>,
-    trailing_trivia: Vec<TriviaToken>,
-}
-```
-
-### 3. Position Tracking
-Each trivia token includes precise position information (byte offset, line, column) for accurate source reconstruction.
+It does **not** maintain a second Perl grammar, synthesize placeholder AST nodes, or render `Debug` output as Perl source.
 
 ## Usage
 
 ```rust
-use perl_parser::TriviaPreservingParser;
+use perl_parser::trivia::Trivia;
+use perl_parser::trivia_parser::{TriviaPreservingParser, source_with_trivia};
 
-let parser = TriviaPreservingParser::new(source);
-let result = parser.parse();
+let source = "# header\nmy $x = 42;\n".to_string();
+let output = TriviaPreservingParser::new(source.clone()).parse();
 
-// Access comments before a node
-for trivia in &result.leading_trivia {
-    match &trivia.trivia {
-        Trivia::LineComment(text) => println!("Comment: {}", text),
-        Trivia::PodComment(text) => println!("POD: {}", text),
-        _ => {}
+println!("{}", output.parse.ast.to_sexp());
+for token in &output.trivia {
+    if let Trivia::LineComment(text) = &token.trivia {
+        println!("comment: {text}");
     }
 }
+
+assert_eq!(source_with_trivia(&output), source);
 ```
 
-## Example
+## Current boundary
 
-Input:
-```perl
-# This is a header comment
-my $x = 42;  # inline comment
+The current result contains:
 
-=pod
-Documentation here
-=cut
+- the complete canonical `ParseOutput`;
+- exact original source;
+- a source-ordered compatibility inventory of whitespace, comments, POD, and newline trivia.
 
-our $y;
-```
+It does **not yet** claim:
 
-The parser preserves:
-- Header comment before `my $x`
-- Inline comment after the statement
-- POD documentation block
-- All whitespace and newlines
+- complete per-node leading/trailing ownership;
+- exact one-owner partitioning of every source byte;
+- opaque-region classification for regexes, heredocs, formats, POD, or DATA;
+- safe source transformation or style formatting.
 
-## Benefits
-
-1. **Code Formatting**: Preserve original style when reformatting
-2. **Refactoring**: Keep comments with moved code
-3. **Documentation**: Extract and process embedded docs
-4. **Round-trip Editing**: Parse → Modify → Serialize without losing formatting
-5. **IDE Features**: Show comments in hover tooltips, preserve in quick fixes
-
-## Architecture
-
-- `trivia.rs`: Core trivia types and structures
-- `trivia_parser.rs`: Parser that collects and attaches trivia
-- Custom lexer mode that emits trivia tokens instead of skipping them
-- Trivia is attached to subsequent non-trivia nodes
-
-## Future Enhancements
-
-- Trailing trivia detection (comments at end of line)
-- Trivia-aware AST visitors
-- Format-preserving AST transformations
-- Comment association heuristics
+Those contracts are owned by the follow-on source-geometry and formatter issues #7101, #7104, and #7056. The deprecated `NodeWithTrivia` AST-v2 container remains only for migration and is not produced by the canonical parser-backed surface.

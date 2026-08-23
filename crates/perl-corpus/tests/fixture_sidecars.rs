@@ -12,42 +12,42 @@ fn sidecars_parse_for_seed_fixtures() -> Result<(), Box<dyn Error>> {
         ExpectationMode::TokenOnly,
         ExpectationMode::SpanOnly,
     ];
+    let (context, validations) = validate_sidecars_in_dir(root, None)?;
 
     for mode in known_modes {
-        let matches_mode = validate_sidecars_in_dir(root, None)?
+        let matches_mode = validations
             .iter()
-            .filter_map(|validation| parse_sidecar(&validation.sidecar_path).ok())
+            .filter_map(|validation| parse_sidecar(&context, &validation.sidecar_path).ok())
             .any(|sidecar| sidecar.expect.mode == mode);
         assert!(matches_mode, "missing seed sidecar for mode");
     }
-
     Ok(())
 }
 
 #[test]
 fn sidecars_validate_without_hard_failing_on_missing_registry() -> Result<(), Box<dyn Error>> {
     let root = Path::new("tests/perl-corpus");
-    let validations = validate_sidecars_in_dir(root, None)?;
+    let (_context, validations) = validate_sidecars_in_dir(root, None)?;
 
     assert!(!validations.is_empty());
     assert!(validations.iter().all(|validation| validation.is_valid()));
-    assert!(
-        validations
-            .iter()
-            .all(|validation| validation.warnings.iter().any(|w| w.contains("resolution pending")))
-    );
-
+    assert!(validations.iter().all(|validation| {
+        validation.warnings.iter().any(|warning| warning.contains("resolution pending"))
+    }));
     Ok(())
 }
 
 #[test]
 fn sidecars_have_matching_fixture_files() -> Result<(), Box<dyn Error>> {
     let root = Path::new("tests/perl-corpus");
-    let validations = validate_sidecars_in_dir(root, None)?;
+    let (context, validations) = validate_sidecars_in_dir(root, None)?;
 
     for validation in validations {
-        assert!(validation.fixture_path.exists());
+        let fixture = validation
+            .fixture_path
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("valid sidecar must retain fixture identity"))?;
+        assert!(context.root().join(fixture).is_file());
     }
-
     Ok(())
 }

@@ -1,0 +1,9 @@
+project: product
+component: Editor integrations
+kind: Added
+body: "Added a fail-closed actual-Zed receipt schema, exact-source not-run template, bounded host runbook, and false-green controls that bind the Zed, extension, perllsp process, platform, fixture, configuration, activation, journey, and shutdown subjects independently."
+time: 2026-08-13T12:00:00Z
+custom:
+  PR: "TBD"
+  Slug: zed-host-receipt-substrate
+  Breaking: "no"

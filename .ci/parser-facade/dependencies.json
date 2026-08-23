@@ -1,0 +1,176 @@
+{
+  "schema_version": 1,
+  "dependencies": [
+    {
+      "name": "anyhow",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Replace broad errors with parser-owned types where the canonical incremental API crosses public boundaries.",
+      "optional": true
+    },
+    {
+      "name": "lsp-types",
+      "classification": "workspace_or_lsp_adapter",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Remove from the minimal parser dependency graph; retain only in bounded compatibility adapters.",
+      "optional": true
+    },
+    {
+      "name": "perl-ast",
+      "classification": "compatibility_reexport",
+      "disposition": "review",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Retain only where the facade requires the v2 compatibility surface; otherwise consume parser-core AST authority.",
+      "optional": false
+    },
+    {
+      "name": "perl-lexer",
+      "classification": "parser_kernel",
+      "disposition": "retain",
+      "owner": "#6698",
+      "target_owner": "perl-parser-core",
+      "exit_condition": "Remain below the facade as the canonical lexer dependency.",
+      "optional": false
+    },
+    {
+      "name": "perl-line-index",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Remain optional and reachable only through the canonical incremental feature.",
+      "optional": true
+    },
+    {
+      "name": "perl-module",
+      "classification": "product_composition",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Move module/project composition above the parser contract unless a parser-owned type is proven necessary.",
+      "optional": false
+    },
+    {
+      "name": "perl-parser-core",
+      "classification": "parser_kernel",
+      "disposition": "retain",
+      "owner": "#6698",
+      "target_owner": "perl-parser-core",
+      "exit_condition": "Remain the canonical parser kernel beneath the facade.",
+      "optional": false
+    },
+    {
+      "name": "perl-semantic-analyzer",
+      "classification": "product_composition",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Remove from the minimal parser attachment point and compose explicitly above parser output.",
+      "optional": false
+    },
+    {
+      "name": "perl-source-identity",
+      "classification": "parser_output_contract",
+      "disposition": "retain",
+      "owner": "#7001",
+      "target_owner": "perl-parser",
+      "exit_condition": "Remain the canonical source_identity.v1 content identity consumed by the generation-bound ParseSnapshot (#7652).",
+      "optional": false
+    },
+    {
+      "name": "perl-tdd-support",
+      "classification": "product_composition",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Move TDD product composition out of the minimal parser dependency set.",
+      "optional": false
+    },
+    {
+      "name": "perl-workspace",
+      "classification": "workspace_or_lsp_adapter",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Remove from the minimal parser attachment point and compose explicitly above parser output.",
+      "optional": false
+    },
+    {
+      "name": "regex",
+      "classification": "product_composition",
+      "disposition": "review",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Move product helpers out or document the exact parser-owned use.",
+      "optional": false
+    },
+    {
+      "name": "ropey",
+      "classification": "parser_output_contract",
+      "disposition": "review",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Retain only if canonical parser/edit contracts require it; otherwise move to document adapters.",
+      "optional": false
+    },
+    {
+      "name": "rustc-hash",
+      "classification": "parser_kernel",
+      "disposition": "retain",
+      "owner": "#2477",
+      "target_owner": "perl-parser",
+      "exit_condition": "Retain as an implementation dependency while deterministic public ordering remains explicit.",
+      "optional": false
+    },
+    {
+      "name": "serde",
+      "classification": "parser_output_contract",
+      "disposition": "retain",
+      "owner": "#2477",
+      "target_owner": "perl-parser",
+      "exit_condition": "Retain only for parser-owned serialized contracts.",
+      "optional": false
+    },
+    {
+      "name": "serde_json",
+      "classification": "compatibility_reexport",
+      "disposition": "review",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Keep only where parser-owned public contracts require JSON rather than product adapters.",
+      "optional": false
+    },
+    {
+      "name": "thiserror",
+      "classification": "parser_output_contract",
+      "disposition": "retain",
+      "owner": "#2477",
+      "target_owner": "perl-parser",
+      "exit_condition": "Retain for parser-owned typed errors.",
+      "optional": false
+    },
+    {
+      "name": "tracing",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Remain optional and avoid making instrumentation part of parser result semantics.",
+      "optional": true
+    },
+    {
+      "name": "url",
+      "classification": "workspace_or_lsp_adapter",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Keep URI policy above the parser source identity unless a parser-owned use is proven.",
+      "optional": false
+    }
+  ]
+}

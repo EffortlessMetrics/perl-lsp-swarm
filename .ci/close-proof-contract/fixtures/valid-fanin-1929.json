@@ -1,0 +1,185 @@
+{
+  "schema_version": "close_proof_contract_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1929"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts of historical GitHub subjects. The fixture proves schema-level dispositions only; semantic completion evaluation belongs to CP03 (#10382)."
+  },
+  "contract": {
+    "schema_version": "issue_contract.v1",
+    "repository": "effortlessmetrics/perl-lsp-swarm",
+    "issue_number": 1929,
+    "title": "feat(toolchain): unified Perl executable profile with single-source interpreter identity",
+    "kind": "multi_phase",
+    "required_proof_level": "mechanism",
+    "allowed_close_modes": [
+      "completed",
+      "phase_complete_issue_remains_open",
+      "superseded",
+      "true_duplicate",
+      "not_planned"
+    ],
+    "denominator": [
+      {
+        "row_id": "profile.interpreter.identity-unified",
+        "statement": "Interpreter identity is unified under one profile source.",
+        "required_proof_level": "mechanism"
+      },
+      {
+        "row_id": "profile.env-policy.unified",
+        "statement": "Environment policy is unified under one profile source.",
+        "required_proof_level": "mechanism"
+      },
+      {
+        "row_id": "profile.single-source.enforced",
+        "statement": "Single-source-of-truth enforcement proves all three increments together.",
+        "required_proof_level": "mechanism"
+      }
+    ],
+    "negative_controls": [],
+    "mandatory_children": [],
+    "transfer_policy": {
+      "permitted": false,
+      "conditions": []
+    },
+    "domain_evidence_refs": [],
+    "identity": {
+      "issue_body_digest": "0000000000000000000000000000000000000000000000000000000000000789",
+      "denominator_digest": "b227ed3a243de421b6b53c9f657e9b83c7c6606482a13e9bc2b9bb0d0b7d5b47",
+      "accepted_ruling": null
+    }
+  },
+  "cases": [
+    {
+      "case_id": "pr-1950-initial-partial-increment",
+      "description": "The initial increment alone cannot close #1929.",
+      "packet": {
+        "schema_version": "issue_close_proof.v1",
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 1929,
+        "requested_close_mode": "completed",
+        "contract_binding": {
+          "contract_issue_body_digest": "0000000000000000000000000000000000000000000000000000000000000789",
+          "contract_denominator_digest": "b227ed3a243de421b6b53c9f657e9b83c7c6606482a13e9bc2b9bb0d0b7d5b47",
+          "accepted_ruling_digest": null
+        },
+        "candidate_pr": 1950,
+        "landed_subjects": [],
+        "landing_content_proof": [],
+        "established_claims": [
+          {
+            "statement": "Increment one unified interpreter identity.",
+            "covers_rows": [
+              "profile.interpreter.identity-unified"
+            ]
+          }
+        ],
+        "explicitly_not_established_claims": [],
+        "row_dispositions": {
+          "profile.env-policy.unified": {
+            "disposition": "not_proven",
+            "reason": "increment two has not landed."
+          },
+          "profile.interpreter.identity-unified": {
+            "disposition": "proven_current_main",
+            "evidence": {
+              "producer": "xtask-pr-close-proof",
+              "subject": "0000000000000000000000000000000000004b5b",
+              "content_digest": "000000000000000000000000000000000000000000000000000000000002f195",
+              "reference": "cargo xtask pr-close-proof --pr 1950"
+            }
+          },
+          "profile.single-source.enforced": {
+            "disposition": "not_proven",
+            "reason": "the fan-in increment has not landed."
+          }
+        },
+        "negative_control_dispositions": {},
+        "child_dispositions": [],
+        "duplicate_of": null,
+        "verdict": {
+          "pr_scope": "pass",
+          "issue_close": "invalid",
+          "reasons": [
+            "An initial partial increment would not close #1929."
+          ]
+        }
+      },
+      "expected_pr_scope": "pass",
+      "expected_issue_close": "invalid"
+    },
+    {
+      "case_id": "pr-1990-three-increment-fan-in",
+      "description": "The later verified three-increment fan-in closes #1929.",
+      "packet": {
+        "schema_version": "issue_close_proof.v1",
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 1929,
+        "requested_close_mode": "completed",
+        "contract_binding": {
+          "contract_issue_body_digest": "0000000000000000000000000000000000000000000000000000000000000789",
+          "contract_denominator_digest": "b227ed3a243de421b6b53c9f657e9b83c7c6606482a13e9bc2b9bb0d0b7d5b47",
+          "accepted_ruling_digest": null
+        },
+        "candidate_pr": 1990,
+        "landed_subjects": [],
+        "landing_content_proof": [],
+        "established_claims": [
+          {
+            "statement": "All three increments landed and the single-source enforcement binds them together.",
+            "covers_rows": [
+              "profile.interpreter.identity-unified",
+              "profile.env-policy.unified",
+              "profile.single-source.enforced"
+            ]
+          }
+        ],
+        "explicitly_not_established_claims": [],
+        "row_dispositions": {
+          "profile.env-policy.unified": {
+            "disposition": "proven_current_main",
+            "evidence": {
+              "producer": "xtask-pr-close-proof",
+              "subject": "0000000000000000000000000000000000004dbe",
+              "content_digest": "0000000000000000000000000000000000000000000000000000000000030973",
+              "reference": "cargo xtask pr-close-proof --pr 1990"
+            }
+          },
+          "profile.interpreter.identity-unified": {
+            "disposition": "proven_current_main",
+            "evidence": {
+              "producer": "xtask-pr-close-proof",
+              "subject": "0000000000000000000000000000000000004dbd",
+              "content_digest": "0000000000000000000000000000000000000000000000000000000000030969",
+              "reference": "cargo xtask pr-close-proof --pr 1990"
+            }
+          },
+          "profile.single-source.enforced": {
+            "disposition": "proven_current_main",
+            "evidence": {
+              "producer": "xtask-pr-close-proof",
+              "subject": "0000000000000000000000000000000000004dbf",
+              "content_digest": "000000000000000000000000000000000000000000000000000000000003097d",
+              "reference": "cargo xtask pr-close-proof --pr 1990"
+            }
+          }
+        },
+        "negative_control_dispositions": {},
+        "child_dispositions": [],
+        "duplicate_of": null,
+        "verdict": {
+          "pr_scope": "pass",
+          "issue_close": "valid",
+          "reasons": [
+            "The later verified three-increment fan-in completes the denominator."
+          ]
+        }
+      },
+      "expected_pr_scope": "pass",
+      "expected_issue_close": "valid"
+    }
+  ]
+}

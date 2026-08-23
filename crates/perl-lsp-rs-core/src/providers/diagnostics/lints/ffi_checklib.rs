@@ -87,6 +87,7 @@ fn check_call(node: &Node, args: &[Node], diagnostics: &mut Vec<Diagnostic>) {
                 ),
                 related_information: vec![],
                 tags: vec![],
+                fixable: false,
                 suggestion: Some(
                     "Add a matching `libpath` entry or install the library development package"
                         .to_string(),

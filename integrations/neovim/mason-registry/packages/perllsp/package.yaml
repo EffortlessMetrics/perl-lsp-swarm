@@ -1,0 +1,42 @@
+---
+name: perllsp
+description: Public Cargo facade for the perl-lsp language server.
+homepage: https://github.com/EffortlessMetrics/perl-lsp
+licenses:
+  - MIT
+  - Apache-2.0
+languages:
+  - Perl
+categories:
+  - LSP
+
+source:
+  id: pkg:github/EffortlessMetrics/perl-lsp@v0.17.0
+  asset:
+    - target: darwin_arm64
+      file: 'perllsp-{{ version | strip_prefix "v" }}-aarch64-apple-darwin.tar.gz'
+      bin: 'perllsp-{{ version | strip_prefix "v" }}-aarch64-apple-darwin/perllsp'
+    - target: darwin_x64
+      file: 'perllsp-{{ version | strip_prefix "v" }}-x86_64-apple-darwin.tar.gz'
+      bin: 'perllsp-{{ version | strip_prefix "v" }}-x86_64-apple-darwin/perllsp'
+    - target: linux_arm64_gnu
+      file: 'perllsp-{{ version | strip_prefix "v" }}-aarch64-unknown-linux-gnu.tar.gz'
+      bin: 'perllsp-{{ version | strip_prefix "v" }}-aarch64-unknown-linux-gnu/perllsp'
+    - target: linux_x64_gnu
+      file: 'perllsp-{{ version | strip_prefix "v" }}-x86_64-unknown-linux-gnu.tar.gz'
+      bin: 'perllsp-{{ version | strip_prefix "v" }}-x86_64-unknown-linux-gnu/perllsp'
+    - target: linux_arm64_musl
+      file: 'perllsp-{{ version | strip_prefix "v" }}-aarch64-unknown-linux-musl.tar.gz'
+      bin: 'perllsp-{{ version | strip_prefix "v" }}-aarch64-unknown-linux-musl/perllsp'
+    - target: linux_x64_musl
+      file: 'perllsp-{{ version | strip_prefix "v" }}-x86_64-unknown-linux-musl.tar.gz'
+      bin: 'perllsp-{{ version | strip_prefix "v" }}-x86_64-unknown-linux-musl/perllsp'
+    - target: win_x64
+      file: 'perllsp-{{ version | strip_prefix "v" }}-x86_64-pc-windows-msvc.zip'
+      bin: 'perllsp-{{ version | strip_prefix "v" }}-x86_64-pc-windows-msvc/perllsp.exe'
+
+bin:
+  perllsp: "{{source.asset.bin}}"
+
+neovim:
+  lspconfig: perllsp

@@ -361,11 +361,13 @@ fn scenario_48_receiver_bless_confidence_receipt() {
             )?;
             let dynamic_report = report_by_name(&reports, "dynamic_bless_receiver")?;
             recorder.check(
-                "dynamic bless receiver used legacy fallback without exact receiver evidence",
+                "dynamic bless receiver remains bounded without exact receiver evidence",
                 dynamic_report.dynamic_boundary
                     && !dynamic_report.source_backed
-                    && dynamic_report.fallback_state
-                        == "legacy_workspace_candidate_without_receiver_evidence"
+                    && matches!(
+                        dynamic_report.fallback_state,
+                        "blocked" | "low_confidence_labeled"
+                    )
                     && dynamic_report.fallback_or_labeled_boundary,
             )?;
             recorder.check(

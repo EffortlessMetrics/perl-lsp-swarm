@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Added
+body: "Add a dedicated IntelliJ/LSP4IJ perl-dap guide that keeps template presence, managed installation, launch, attach, debugger feature cells, source identity, and cleanup evidence separate."
+time: 2026-08-13T12:12:20Z
+custom:
+  PR: "7954"
+  Slug: lsp4ij-dap-evidence-docs
+  Breaking: "no"

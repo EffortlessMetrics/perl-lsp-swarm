@@ -1,0 +1,38 @@
+{
+  "schema_version": "dap_protocol_authority.v1",
+  "upstream": {
+    "repository": "microsoft/debug-adapter-protocol",
+    "commit": "bf8a5d27e8040044b84b863f90916e08925ee811",
+    "path": "debugAdapterProtocol.json",
+    "git_blob_sha1": "814e3b9597b4e734707b61eb196ecbefa121927e",
+    "sha256": "ff8ae4c6cfd588a050e9346c35fd104748a27ef4518d1c3268529ca6f8ff5818",
+    "raw_url": "https://raw.githubusercontent.com/microsoft/debug-adapter-protocol/bf8a5d27e8040044b84b863f90916e08925ee811/debugAdapterProtocol.json"
+  },
+  "base_protocol": {
+    "name": "Debug Adapter Protocol",
+    "transport": "Content-Length framed JSON",
+    "json_rpc": false,
+    "required_definitions": [
+      "ProtocolMessage",
+      "Request",
+      "Response",
+      "Event"
+    ]
+  },
+  "project_extensions": [
+    {
+      "wire_name": "inlineValues",
+      "kind": "request",
+      "classification": "extension",
+      "version": "unversioned-current",
+      "owner": "#2374"
+    }
+  ],
+  "project_configuration": [
+    {
+      "surface": "launch/attach arguments",
+      "classification": "adapter-configuration",
+      "owner": "#4754"
+    }
+  ]
+}

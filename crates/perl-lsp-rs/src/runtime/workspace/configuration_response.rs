@@ -1,18 +1,21 @@
 use crate::runtime::workspace_folder::WorkspaceFolderState;
-use perl_lsp_rs_core::config::WorkspaceConfigUpdateContext;
+use perl_lsp_rs_core::config::{
+    ExternalIncludePathAuthority, UnauthorizedExternalIncludePathSource,
+    WorkspaceConfigUpdateContext,
+};
 use serde_json::Value;
 
 fn apply_workspace_config_layer(
     config: &mut perl_lsp_rs_core::config::WorkspaceConfig,
     settings: &Value,
     folder: &WorkspaceFolderState,
-    apply_external_include_paths: bool,
+    external_include_paths: ExternalIncludePathAuthority,
 ) {
     let rejected = config.update_from_value_with_context(
         settings,
         WorkspaceConfigUpdateContext {
             workspace_root: folder.path.as_deref(),
-            apply_external_include_paths,
+            external_include_paths,
         },
     );
     for entry in rejected {
@@ -34,6 +37,14 @@ pub(super) fn apply_workspace_configuration_results(
     request_id: i64,
     init_options_perl: Option<&Value>,
 ) {
+    // Result-array position is not provenance (#4998): no `workspace/configuration`
+    // response item carries independently verified user/machine authority, so both
+    // the unscoped and per-folder items are classified untrusted here. A future
+    // server-owned operator adapter (#10817) is the only path that may admit
+    // machine-scoped `externalIncludePaths`.
+    let global_authority = ExternalIncludePathAuthority::Untrusted(
+        UnauthorizedExternalIncludePathSource::GenericUnscopedConfiguration,
+    );
     let global_settings = if includes_global_item { results.first() } else { None };
     let folder_results_start = usize::from(includes_global_item);
 
@@ -50,7 +61,15 @@ pub(super) fn apply_workspace_configuration_results(
 
         let mut effective_config = perl_lsp_rs_core::config::WorkspaceConfig::default();
         if let Some(init_opts) = init_options_perl {
-            let rejected = effective_config.update_from_value(init_opts);
+            let rejected = effective_config.update_from_value_with_context(
+                init_opts,
+                WorkspaceConfigUpdateContext {
+                    workspace_root: folder.path.as_deref(),
+                    external_include_paths: ExternalIncludePathAuthority::Untrusted(
+                        UnauthorizedExternalIncludePathSource::InitializationOptions,
+                    ),
+                },
+            );
             for entry in rejected {
                 tracing::warn!(
                     target: "perl_lsp::config",
@@ -81,11 +100,23 @@ pub(super) fn apply_workspace_configuration_results(
         }
 
         if let Some(global_settings) = global_settings {
-            apply_workspace_config_layer(&mut effective_config, global_settings, folder, true);
+            apply_workspace_config_layer(
+                &mut effective_config,
+                global_settings,
+                folder,
+                global_authority,
+            );
         }
 
         if let Some(perl_settings) = results.get(folder_results_start + idx) {
-            apply_workspace_config_layer(&mut effective_config, perl_settings, folder, false);
+            apply_workspace_config_layer(
+                &mut effective_config,
+                perl_settings,
+                folder,
+                ExternalIncludePathAuthority::Untrusted(
+                    UnauthorizedExternalIncludePathSource::FolderConfiguration,
+                ),
+            );
         } else {
             tracing::warn!(
                 request_id,
@@ -104,6 +135,56 @@ mod tests {
     use super::apply_workspace_configuration_results;
     use crate::runtime::workspace_folder::WorkspaceFolderState;
     use serde_json::json;
+
+    #[test]
+    fn unscoped_global_slot_cannot_authorize_external_roots() {
+        // Red-proof for #4998: a generic client placing an absolute external
+        // root in the first/unscoped response slot must not have it applied to
+        // any folder. Array position is not provenance.
+        let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+        let mut folders = vec![WorkspaceFolderState::new("file:///workspace-a".to_string())];
+        let folder_uris = vec!["file:///workspace-a".to_string()];
+        let results = vec![
+            json!({"workspace": {"includePaths": ["lib"], "externalIncludePaths": [absolute]}}),
+            json!({"workspace": {"resolutionTimeout": 150}}),
+        ];
+
+        apply_workspace_configuration_results(&mut folders, &folder_uris, true, &results, 45, None);
+
+        assert!(
+            folders[0].effective_workspace_config.external_include_paths.is_empty(),
+            "unscoped slot[0] must not authorize external roots"
+        );
+        assert_eq!(
+            folders[0].effective_workspace_config.include_paths,
+            vec!["lib".to_string()],
+            "contained relative roots from slot[0] still apply"
+        );
+        assert_eq!(folders[0].effective_workspace_config.resolution_timeout_ms, 150);
+    }
+
+    #[test]
+    fn hostile_client_duplicating_external_root_in_every_slot_stays_unauthorized() {
+        let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+        let mut folders = vec![
+            WorkspaceFolderState::new("file:///workspace-a".to_string()),
+            WorkspaceFolderState::new("file:///workspace-b".to_string()),
+        ];
+        let folder_uris =
+            vec!["file:///workspace-a".to_string(), "file:///workspace-b".to_string()];
+        let hostile = json!({"workspace": {"externalIncludePaths": [absolute]}});
+        let results = vec![hostile.clone(), hostile.clone(), hostile];
+
+        apply_workspace_configuration_results(&mut folders, &folder_uris, true, &results, 46, None);
+
+        for folder in &folders {
+            assert!(
+                folder.effective_workspace_config.external_include_paths.is_empty(),
+                "folder {} must not admit the duplicated root",
+                folder.uri
+            );
+        }
+    }
 
     #[test]
     fn applies_global_and_folder_specific_configuration() {

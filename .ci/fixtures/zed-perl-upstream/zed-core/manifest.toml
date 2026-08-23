@@ -1,0 +1,26 @@
+schema_version = "zed-perl-defaults-packet.v1"
+status = "candidate_not_host_proven"
+issue = 7908
+
+repository = "zed-industries/zed"
+base_branch = "main"
+base_commit = "7733b9922665f103abda7c6a3fde6b9dfdc8eba9"
+base_tree = "7bcba6e77bee0e630a65afef6af702ad8fa92756"
+target_path = "assets/settings/default.json"
+target_blob = "a03ad8874243f167e86deba8f975268eb384d20f"
+
+language = "Perl"
+default_provider = "perlnavigator-server"
+dormant_alternatives = ["perl-lsp", "perllsp"]
+ordering = ["perlnavigator-server", "!perl-lsp", "!perllsp", "..."]
+
+extension_current_repository = "tree-sitter-perl/zed-perl"
+extension_current_commit = "eb27a19e69fed8a041b706b23a1f42fbafb29fd8"
+extension_current_version = "0.4.0"
+extension_candidate_server = "perllsp"
+
+patch = ".ci/fixtures/zed-perl-upstream/zed-core/perl-defaults.patch"
+apply_script = "scripts/apply-zed-core-perl-defaults.sh"
+check_script = "scripts/check-zed-core-perl-defaults.sh"
+
+claim_boundary = "Patch identity and static ordering are checked. Existing/candidate extension compatibility, clean-profile process behavior, and safe merge order remain not proven until an actual Zed host receipt lands."

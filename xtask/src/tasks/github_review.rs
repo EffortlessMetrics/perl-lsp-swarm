@@ -431,7 +431,7 @@ fn page_basis(kind: &str, complete: bool) -> String {
 fn stale_human_reviews(reviews: &[SubmittedReview]) -> bool {
     let mut latest = std::collections::BTreeMap::<String, &SubmittedReview>::new();
     for review in reviews.iter().filter(|review| review.reviewer_kind != "Bot") {
-        let replace = latest.get(&review.reviewer).map_or(true, |current| {
+        let replace = latest.get(&review.reviewer).is_none_or(|current| {
             review.submitted_at.as_deref().unwrap_or("")
                 >= current.submitted_at.as_deref().unwrap_or("")
         });
@@ -442,6 +442,7 @@ fn stale_human_reviews(reviews: &[SubmittedReview]) -> bool {
     latest.values().any(|review| !review.current_at_head)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn graphql_page(
     owner: &str,
     repo: &str,

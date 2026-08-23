@@ -3,11 +3,11 @@
 //! Tests cover PragmaState, PragmaTracker::build, and PragmaTracker::state_for_offset
 //! across all public API surface including edge cases.
 
-use perl_ast::ast::{Node, NodeKind};
 use perl_ast::SourceLocation;
+use perl_ast::ast::{Node, NodeKind};
 use perl_pragma::{
-    features_enabled_by_version, CompileTimePragmaEnvironment, PerlVersion, PragmaState,
-    PragmaTracker,
+    CompileTimePragmaEnvironment, PerlVersion, PragmaState, PragmaTracker,
+    features_enabled_by_version,
 };
 
 // ---------------------------------------------------------------------------
@@ -66,11 +66,7 @@ fn dummy_node(start: usize, end: usize) -> Node {
 }
 
 fn require(condition: bool, message: &str) -> Result<(), Box<dyn std::error::Error>> {
-    if condition {
-        Ok(())
-    } else {
-        Err(std::io::Error::other(message).into())
-    }
+    if condition { Ok(()) } else { Err(std::io::Error::other(message).into()) }
 }
 
 // ===========================================================================
@@ -281,8 +277,8 @@ fn use_strict_empty_qw_is_noop() -> Result<(), Box<dyn std::error::Error>> {
 /// Perl allows `use strict 'refs vars'` (a single quoted string with
 /// space-separated categories), and the tracker should split and honor both.
 #[test]
-fn use_strict_space_separated_in_single_string_enables_requested_categories(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn use_strict_space_separated_in_single_string_enables_requested_categories()
+-> Result<(), Box<dyn std::error::Error>> {
     // Single quoted string should be split into both categories.
     let ast = program(vec![use_node("strict", &["'refs vars'"], 0, 25)]);
     let map = PragmaTracker::build(&ast);
@@ -342,8 +338,8 @@ fn use_unless_version_target_applies_version_semantics() -> Result<(), Box<dyn s
 }
 
 #[test]
-fn use_if_version_condition_does_not_apply_version_semantics(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn use_if_version_condition_does_not_apply_version_semantics()
+-> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![use_node("if", &["$]", ">=", "5.036", "Some::Module"], 0, 38)]);
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 20);
@@ -463,8 +459,8 @@ fn use_feature_signatures_enables_all_strict_categories() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn use_feature_qw_signatures_enables_all_strict_categories(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn use_feature_qw_signatures_enables_all_strict_categories()
+-> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![use_node("feature", &["qw(signatures say)"], 0, 34)]);
     let map = PragmaTracker::build(&ast);
     assert_eq!(map.len(), 1);
@@ -522,8 +518,8 @@ fn use_v5_40_1_enables_builtin_and_warnings() -> Result<(), Box<dyn std::error::
 }
 
 #[test]
-fn use_numeric_version_enables_effective_strict_and_warnings(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn use_numeric_version_enables_effective_strict_and_warnings()
+-> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![use_node("5.040", &[], 0, 12)]);
     let map = PragmaTracker::build(&ast);
     let state = &map[0].1;
@@ -1313,8 +1309,8 @@ fn no_warnings_with_category_disables_only_that_category() -> Result<(), Box<dyn
 }
 
 #[test]
-fn duplicate_no_warnings_category_does_not_create_extra_entry(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn duplicate_no_warnings_category_does_not_create_extra_entry()
+-> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         use_node("warnings", &[], 0, 12),
         no_node("warnings", &["'deprecated'"], 13, 36),
@@ -1368,8 +1364,8 @@ fn no_builtin_unknown_name_preserves_prior_import() -> Result<(), Box<dyn std::e
 }
 
 #[test]
-fn no_builtin_preserves_lexical_imports_without_extra_entry(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn no_builtin_preserves_lexical_imports_without_extra_entry()
+-> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         use_node("builtin", &["'true'", "'floor'"], 0, 30),
         use_node("builtin", &["'true'"], 31, 50),
@@ -1422,8 +1418,8 @@ fn conditional_builtin_use_and_no_follow_directive_rules() -> Result<(), Box<dyn
 }
 
 #[test]
-fn block_without_pragma_changes_does_not_create_restore_entry(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn block_without_pragma_changes_does_not_create_restore_entry()
+-> Result<(), Box<dyn std::error::Error>> {
     // A block with no pragma changes inside should not emit a restore entry.
     let ast = program(vec![
         use_node("strict", &[], 0, 12),
@@ -1491,8 +1487,8 @@ fn changed_builtin_scope_restores_state_after_block() -> Result<(), Box<dyn std:
 }
 
 #[test]
-fn scoped_body_without_pragma_changes_does_not_create_restore_entry(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn scoped_body_without_pragma_changes_does_not_create_restore_entry()
+-> Result<(), Box<dyn std::error::Error>> {
     let if_node = Node::new(
         NodeKind::If {
             keyword: None,
@@ -1703,8 +1699,8 @@ fn use_warnings_resets_fully_capped_disabled_list() -> Result<(), Box<dyn std::e
 }
 
 #[test]
-fn use_warnings_after_no_warnings_category_resets_disabled_list(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn use_warnings_after_no_warnings_category_resets_disabled_list()
+-> Result<(), Box<dyn std::error::Error>> {
     // use warnings; no warnings 'X'; use warnings;
     // The second `use warnings` should clear the disabled categories list.
     let ast = program(vec![
@@ -1751,8 +1747,8 @@ fn is_warning_active_false_when_global_warnings_off() -> Result<(), Box<dyn std:
 }
 
 #[test]
-fn is_warning_active_true_when_warnings_on_and_no_disabled(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn is_warning_active_true_when_warnings_on_and_no_disabled()
+-> Result<(), Box<dyn std::error::Error>> {
     let state = PragmaState { warnings: true, ..PragmaState::default() };
     assert!(state.is_warning_active("uninitialized"));
     assert!(state.is_warning_active("deprecated"));
@@ -2023,8 +2019,8 @@ fn no_builtin_preserves_selected_lexical_imports() -> Result<(), Box<dyn std::er
 }
 
 #[test]
-fn builtin_qw_alternate_delimiters_preserve_imports_across_no_directive(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn builtin_qw_alternate_delimiters_preserve_imports_across_no_directive()
+-> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         use_node("builtin", &["qw<true floor ceil>"], 0, 30),
         no_node("builtin", &["qw[floor]"], 31, 50),
@@ -2083,8 +2079,8 @@ fn no_if_builtin_conditionally_preserves_lexical_imports() -> Result<(), Box<dyn
 }
 
 #[test]
-fn use_if_strict_with_single_quoted_whitespace_list_enables_selected_flags(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn use_if_strict_with_single_quoted_whitespace_list_enables_selected_flags()
+-> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![use_node("if", &["$cond", "strict", "'vars subs'"], 0, 36)]);
     let map = PragmaTracker::build(&ast);
     let state = &map[0].1;
@@ -2096,8 +2092,8 @@ fn use_if_strict_with_single_quoted_whitespace_list_enables_selected_flags(
 }
 
 #[test]
-fn no_if_strict_with_single_quoted_whitespace_list_disables_selected_flags(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn no_if_strict_with_single_quoted_whitespace_list_disables_selected_flags()
+-> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         use_node("strict", &[], 0, 11),
         no_node("if", &["$cond", "strict", "'vars subs'"], 12, 48),
@@ -2195,8 +2191,8 @@ fn defer_node(body_node: Node, start: usize, end: usize) -> Node {
 }
 
 #[test]
-fn eval_string_is_conservative_and_does_not_enable_pragmas(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn eval_string_is_conservative_and_does_not_enable_pragmas()
+-> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         eval_node(string_node("use strict; use warnings;", false, 5, 33), 0, 33),
         dummy_node(34, 40),
@@ -2345,8 +2341,8 @@ fn package_block_pragma_inside_is_visible_at_inner_offset() -> Result<(), Box<dy
 }
 
 #[test]
-fn v5_42_removes_smartmatch_and_apostrophe_package_separator(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn v5_42_removes_smartmatch_and_apostrophe_package_separator()
+-> Result<(), Box<dyn std::error::Error>> {
     let features = features_enabled_by_version(PerlVersion::new(5, 42));
     assert!(!features.contains(&"smartmatch"));
     assert!(!features.contains(&"apostrophe_as_package_separator"));
@@ -2356,8 +2352,8 @@ fn v5_42_removes_smartmatch_and_apostrophe_package_separator(
 }
 
 #[test]
-fn no_feature_without_args_restores_default_feature_set_after_all(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn no_feature_without_args_restores_default_feature_set_after_all()
+-> Result<(), Box<dyn std::error::Error>> {
     let ast =
         program(vec![use_node("feature", &["':all'"], 0, 20), no_node("feature", &[], 21, 32)]);
     let map = PragmaTracker::build(&ast);

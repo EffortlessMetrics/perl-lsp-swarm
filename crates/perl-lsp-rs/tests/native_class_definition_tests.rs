@@ -87,14 +87,14 @@ fn test_goto_def_method_decl_self_location() -> TestResult {
     assert_locations_well_formed(&result, "method decl self-location");
 
     // The result must point into the same file.
-    if let Some(arr) = result.as_array() {
-        if let Some(first) = arr.first() {
-            let uri = first.get("uri").and_then(|u| u.as_str()).unwrap_or("");
-            assert!(
-                uri.contains("native_class_decl"),
-                "goto-def on method decl should point to same file, got uri: {uri}"
-            );
-        }
+    if let Some(arr) = result.as_array()
+        && let Some(first) = arr.first()
+    {
+        let uri = first.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+        assert!(
+            uri.contains("native_class_decl"),
+            "goto-def on method decl should point to same file, got uri: {uri}"
+        );
     }
 
     Ok(())
@@ -245,14 +245,14 @@ fn test_goto_def_class_name_resolves_to_class_decl() -> TestResult {
     assert_locations_well_formed(&result, "class name goto-def");
 
     // Must point into the same file.
-    if let Some(arr) = result.as_array() {
-        if let Some(first) = arr.first() {
-            let uri = first.get("uri").and_then(|u| u.as_str()).unwrap_or("");
-            assert!(
-                uri.contains("native_class_name_decl"),
-                "goto-def on class name should point to same file, got uri: {uri}"
-            );
-        }
+    if let Some(arr) = result.as_array()
+        && let Some(first) = arr.first()
+    {
+        let uri = first.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+        assert!(
+            uri.contains("native_class_name_decl"),
+            "goto-def on class name should point to same file, got uri: {uri}"
+        );
     }
 
     Ok(())
@@ -343,14 +343,14 @@ fn test_goto_def_method_named_new_at_decl() -> TestResult {
     assert_locations_well_formed(&result, "method named 'new' decl");
 
     // Must point back into the same file (not some external constructor).
-    if let Some(arr) = result.as_array() {
-        if let Some(first) = arr.first() {
-            let uri = first.get("uri").and_then(|u| u.as_str()).unwrap_or("");
-            assert!(
-                uri.contains("native_class_method_new"),
-                "goto-def on 'new' method decl should stay in same file, got uri: {uri}"
-            );
-        }
+    if let Some(arr) = result.as_array()
+        && let Some(first) = arr.first()
+    {
+        let uri = first.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+        assert!(
+            uri.contains("native_class_method_new"),
+            "goto-def on 'new' method decl should stay in same file, got uri: {uri}"
+        );
     }
 
     Ok(())

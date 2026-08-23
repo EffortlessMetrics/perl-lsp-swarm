@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "repository": "EffortlessMetrics/perl-lsp",
+  "version": "0.17.0",
+  "release_tag": "v0.17.0",
+  "tested_sublime_build": ">=4070",
+  "tested_lsp_package": "2.13.0",
+  "assets": {
+    "osx-x64": {
+      "target": "x86_64-apple-darwin",
+      "asset": "perllsp-0.17.0-x86_64-apple-darwin.tar.gz",
+      "sha256": "b117abfe29bb9840f21433d5ffff8c47a2fda1f6815cf477230d3f3b3ec22e74",
+      "binary": "perllsp"
+    },
+    "osx-arm64": {
+      "target": "aarch64-apple-darwin",
+      "asset": "perllsp-0.17.0-aarch64-apple-darwin.tar.gz",
+      "sha256": "cb00d92395e94caee6e565b2e74f18cbbcd2b9366ddd1e13a6b5df7660f77ffd",
+      "binary": "perllsp"
+    },
+    "windows-x64": {
+      "target": "x86_64-pc-windows-msvc",
+      "asset": "perllsp-0.17.0-x86_64-pc-windows-msvc.zip",
+      "sha256": "679cd43780d36cb2a980a42804905d24d2c76b0a3e2deaa3cd344daece87f7dd",
+      "binary": "perllsp.exe"
+    },
+    "linux-x64": {
+      "target": "x86_64-unknown-linux-gnu",
+      "asset": "perllsp-0.17.0-x86_64-unknown-linux-gnu.tar.gz",
+      "sha256": "23e742925e8d517230c93ca0674772c6dfa480ad6a571c9b1fb2ab031bb97d88",
+      "binary": "perllsp"
+    },
+    "linux-arm64": {
+      "target": "aarch64-unknown-linux-gnu",
+      "asset": "perllsp-0.17.0-aarch64-unknown-linux-gnu.tar.gz",
+      "sha256": "a83e085590e1cf071a5c2ae6e8bea28e491d767d108ea2464bab6c653dc4acca",
+      "binary": "perllsp"
+    }
+  }
+}

@@ -39,9 +39,11 @@ describe('HealthWidget workspace experience adapter', () => {
     expect(item.text).toContain('preparing active file');
   });
 
-  test('shows bounded fallback as ready-limited without an error background', () => {
+  test('records bounded fallback without changing workspace status', () => {
     const { item, widget } = makeWidget();
     widget.onStateChange(ClientState.Running);
+    const readyText = item.text;
+    const readyTooltip = item.tooltip;
 
     widget.setProviderOutcome('bounded_fallback', {
       detail: 'Using a bounded text fallback.',
@@ -50,20 +52,25 @@ describe('HealthWidget workspace experience adapter', () => {
 
     expect(widget.lifecycleState).toBe('ready');
     expect(widget.providerOutcome).toBe('bounded_fallback');
+    expect(widget.providerDetail).toBe('Using a bounded text fallback.');
+    expect(widget.providerReasonCode).toBe('compiler_fact_unavailable');
     expect(widget.mode).toBe('running');
-    expect(item.text).toContain('ready (limited)');
-    expect(item.tooltip).toContain('compiler_fact_unavailable');
+    expect(item.text).toBe(readyText);
+    expect(item.tooltip).toBe(readyTooltip);
+    expect(item.text).not.toContain('ready (limited)');
     expect(item.backgroundColor).toBeUndefined();
   });
 
-  test('keeps legitimate empty results in the healthy ready state', () => {
+  test('records legitimate empty results without changing workspace status', () => {
     const { item, widget } = makeWidget();
     widget.onStateChange(ClientState.Running);
+    const readyText = item.text;
 
     widget.setProviderOutcome('legitimate_empty');
 
+    expect(widget.providerOutcome).toBe('legitimate_empty');
     expect(widget.mode).toBe('running');
-    expect(item.text).toBe('$(check) perl-lsp');
+    expect(item.text).toBe(readyText);
   });
 
   test('shows an actionable configuration state with warning emphasis', () => {
@@ -81,28 +88,67 @@ describe('HealthWidget workspace experience adapter', () => {
     expect(item.backgroundColor?.id).toBe('statusBarItem.warningBackground');
   });
 
-  test('shows provider instrument failure as failure rather than limited success', () => {
+  test('records provider failure without reporting the workspace as stopped', () => {
     const { item, widget } = makeWidget();
     widget.onStateChange(ClientState.Running);
+    const readyText = item.text;
 
     widget.setProviderOutcome('product_or_instrument_error', {
       detail: 'Provider evidence could not be decoded.',
+      action: 'Inspect the provider output.',
+      reasonCode: 'provider_receipt_decode_failed',
     });
 
-    expect(widget.mode).toBe('stopped');
-    expect(item.text).toContain('failed');
-    expect(item.backgroundColor?.id).toBe('statusBarItem.errorBackground');
+    expect(widget.providerOutcome).toBe('product_or_instrument_error');
+    expect(widget.providerDetail).toBe('Provider evidence could not be decoded.');
+    expect(widget.providerAction).toBe('Inspect the provider output.');
+    expect(widget.providerReasonCode).toBe('provider_receipt_decode_failed');
+    expect(widget.mode).toBe('running');
+    expect(item.text).toBe(readyText);
+    expect(item.backgroundColor).toBeUndefined();
   });
 
   test('clears stale provider outcomes when a new startup begins', () => {
     const { widget } = makeWidget();
     widget.onStateChange(ClientState.Running);
-    widget.setProviderOutcome('safe_refusal');
+    widget.setProviderOutcome('safe_refusal', {
+      detail: 'Rename was refused.',
+      action: 'Review the refusal.',
+      reasonCode: 'rename_refused',
+    });
 
     widget.onStateChange(ClientState.Starting);
 
     expect(widget.lifecycleState).toBe('starting');
     expect(widget.providerOutcome).toBeUndefined();
+    expect(widget.providerDetail).toBeUndefined();
+    expect(widget.providerAction).toBeUndefined();
+    expect(widget.providerReasonCode).toBeUndefined();
+  });
+
+  test('clears operation state immediately when readiness changes during active progress', () => {
+    const { item, widget } = makeWidget();
+    widget.onProgress('token-1', { kind: 'begin', title: 'Indexing workspace' });
+    widget.setProviderOutcome('bounded_fallback', {
+      detail: 'Prior readiness generation used a fallback.',
+      action: 'Wait for current readiness.',
+      reasonCode: 'prior_generation_fallback',
+    });
+    const indexingText = item.text;
+
+    widget.onIndexReadinessState('ready_limited', 'ScanTimeout { elapsed_ms: 30000 }');
+
+    expect(widget.readinessState).toBe('ready_limited');
+    expect(widget.providerOutcome).toBeUndefined();
+    expect(widget.providerDetail).toBeUndefined();
+    expect(widget.providerAction).toBeUndefined();
+    expect(widget.providerReasonCode).toBeUndefined();
+    expect(widget.mode).toBe('indexing');
+    expect(item.text).toBe(indexingText);
+
+    widget.onProgress('token-1', { kind: 'end' });
+    expect(widget.mode).toBe('running');
+    expect(item.text).toContain('ready (limited)');
   });
 
   test('running projection must not clobber active workspace indexing', () => {

@@ -1,60 +1,98 @@
-# Zed Setup Guide for perl-lsp
+# Zed integration status for perl-lsp
 
-Use this guide to run `perllsp` in Zed through Zed's built-in LSP client.
+> **Status: planned / not proven.**
+>
+> The public Zed Perl extension does **not** register `perllsp`. Installing the
+> binary alone therefore does not create a working public Zed integration, and
+> this project does not currently claim direct Zed support.
 
-> **Current status:** Zed requires a language extension to register a language
-> server for each language. The public Zed Perl extension currently registers
-> `perlnavigator-server`, not `perllsp`. The configuration below works only with
-> a Perl extension that registers a `perl-lsp` language server and launches
-> `perllsp --stdio`.
+## The current product identities
 
-## Prerequisites
+The public Perl extension currently exposes two independent servers:
 
-- A current stable Zed release
-- Zed 0.152.0 or later if you rely on launching Zed from a shell so `PATH`
-  changes are inherited reliably
-- `perllsp` installed and available on your `PATH`, unless your Zed extension
-  downloads or bundles it
-- A Perl project opened in Zed
-- A Zed Perl extension that registers `perl-lsp` as a language server
+| Zed server ID | Product |
+| --- | --- |
+| `perlnavigator-server` | Perl Navigator |
+| `perl-lsp` | `tree-sitter-perl/perl-tree-sitter-lsp` |
 
-If you rely on shell `PATH` lookup, start Zed from the same shell:
+EffortlessMetrics ships a different executable and product:
 
-```bash
-zed .
+| Intended Zed server ID | Product |
+| --- | --- |
+| `perllsp` | `EffortlessMetrics/perl-lsp` |
+
+Do not configure the existing `perl-lsp` ID to launch `perllsp`. That substitutes
+one product behind another product's identity and can make logs, downloads,
+settings, and support evidence point at the wrong server.
+
+## Why `settings.json` is not enough
+
+Zed language extensions register the server IDs available for a language. The
+`lsp` section in Zed settings can configure or override an already registered
+server, but it does not register a new arbitrary server for Perl.
+
+A correct public route therefore requires the Perl extension to register a
+third, dedicated `perllsp` server ID and dispatch it explicitly to
+`perllsp --stdio`.
+
+## Staged upstream candidate
+
+The repository carries an initial candidate under:
+
+```text
+.ci/fixtures/zed-perl-upstream/
 ```
 
-Verify `perllsp` before changing editor settings:
+It is bound to an exact `tree-sitter-perl/zed-perl` base and currently stages:
 
-```bash
-perllsp --version
-perllsp --health
-perllsp --info
+- a separate `perllsp` server registration;
+- exhaustive dispatch that rejects unknown IDs instead of falling through to
+  Perl Navigator;
+- explicit binary override, PATH, and managed-download resolution;
+- managed downloads from `EffortlessMetrics/perl-lsp` for checked release
+  targets;
+- exact `--stdio` launch with non-LSP routes rejected;
+- `.PL`, `.psgi`, `.cgi`, and `.fcgi` activation while preserving the separate
+  POD language;
+- default mappings for `perllsp` custom semantic-token types;
+- a separate Zed-defaults fragment that keeps both alternative Perl servers
+  dormant until selected.
+
+That candidate is not yet submission-ready. Its settings route, public assets,
+default-selection behavior, and actual Zed host journey have separate issue and
+receipt gates under the Zed programme. See
+[ZED_UPSTREAM_SUBMISSION.md](../integrations/ZED_UPSTREAM_SUBMISSION.md) for the
+current exact-base staging material.
+
+## Expected configuration after upstream registration
+
+This is the intended future shape, not a currently supported public setup. Once
+a released Perl extension actually registers `perllsp`, select it and disable
+the other Perl servers:
+
+```json
+{
+  "languages": {
+    "Perl": {
+      "language_servers": [
+        "perllsp",
+        "!perlnavigator-server",
+        "!perl-lsp",
+        "..."
+      ]
+    }
+  }
+}
 ```
 
-## How Zed Loads Language Servers
-
-Zed discovers language servers through language extensions. The `lsp` block in
-`settings.json` configures language servers that Zed already knows about; it
-does not register a new language server by itself.
-
-For `perl-lsp`, the installed Zed extension must register a language server ID
-such as `perl-lsp` for the `Perl` language.
-
-If Zed logs `no language server found matching 'perl-lsp'`, the extension is
-missing or registered the server under a different ID.
-
-## Configure the `perllsp` Binary
-
-Once a Zed extension has registered `perl-lsp`, you can override the executable
-path in `settings.json`:
+A user-installed binary can then be selected through the dedicated identity:
 
 ```json
 {
   "lsp": {
-    "perl-lsp": {
+    "perllsp": {
       "binary": {
-        "path": "/usr/local/bin/perllsp",
+        "path": "/absolute/path/to/perllsp",
         "arguments": ["--stdio"]
       }
     }
@@ -62,110 +100,60 @@ path in `settings.json`:
 }
 ```
 
-On macOS or Linux, find the path with:
+Until the registration exists in a released extension, that settings entry has
+no public server to configure.
 
-```bash
-command -v perllsp
+## Project configuration
+
+Use `.perl-lsp.toml` in the project root for settings shared across editors.
+That keeps project configuration independent of extension release timing and
+avoids claiming that an older public `perllsp` release supports a newer
+initialization-options contract.
+
+A future released extension may also forward Zed-specific settings through
+`workspace/configuration`, but those fields need a version-bound actual-host
+receipt before this guide treats them as supported.
+
+## File associations
+
+The staged Perl-language update covers:
+
+```text
+.pl  .PL  .pm  .t  .psgi  .cgi  .fcgi
 ```
 
-On Windows PowerShell:
+`.pod` remains assigned to the extension's separate POD language and grammar.
+Do not add `.pod` to the Perl file-type override.
 
-```powershell
-where perllsp
+## Semantic tokens
+
+Zed keeps LSP semantic tokens disabled by default. The staged extension maps
+`perllsp`'s custom SQL and JSON heredoc token types, but that package integrity
+does not prove rendered behavior in Zed. Semantic-token support remains a
+separate receipt cell after upstream registration.
+
+## Evidence required before promotion
+
+Merging or compiling the extension is not enough to promote the support claim.
+The first actual-host receipt must bind:
+
+```text
+Zed version and platform
+Perl extension version/ref
+perllsp path, version, build identity, and hash
+winning server ID
+workspace root/configuration behavior
+pull diagnostics after open and edit
+completion plus hover/navigation
+one edit followed by a changed re-query result
+one applied workspace edit
+shutdown, exit, and orphan-process result
 ```
 
-The key name, `perl-lsp`, must match the language server ID registered by the
-installed Zed extension.
+A second receipt must repeat the journey using the released public extension
+and a public `perllsp` artifact. Only then may the support registry and generated
+documentation promote the relevant Zed cells.
 
-## Optional: Perl File Associations
-
-If your project uses Perl-bearing files beyond `.pl`, `.pm`, and `.t`, add file
-associations:
-
-```json
-{
-  "file_types": {
-    "Perl": ["pl", "PL", "pm", "t", "pod", "psgi", "cgi", "fcgi"]
-  }
-}
-```
-
-## Optional: Server Initialization Options
-
-Prefer `.perl-lsp.toml` for settings that should apply across all editors. Use
-Zed `initialization_options` for Zed-specific startup settings.
-
-```json
-{
-  "lsp": {
-    "perl-lsp": {
-      "initialization_options": {
-        "perl": {
-          "workspace": {
-            "includePaths": ["lib", ".", "local/lib/perl5"]
-          },
-          "inlayHints": {
-            "enabled": true
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-## Optional: Semantic Tokens
-
-Zed does not enable LSP semantic tokens by default. If your `perllsp` build and
-extension support semantic tokens, enable them globally or for Perl:
-
-```json
-{
-  "languages": {
-    "Perl": {
-      "semantic_tokens": "combined"
-    }
-  }
-}
-```
-
-## Verify It Is Running
-
-1. Open a Perl file such as `lib/My/Module.pm` or `t/basic.t`.
-2. Confirm Zed shows the file language as `Perl`.
-3. Introduce a temporary syntax error.
-4. Confirm diagnostics appear.
-5. Remove the syntax error after testing.
-
-You can also try LSP-backed navigation:
-
-- `editor: Go to Definition`
-- `editor: Find All References`
-- `editor: Hover`
-
-These features depend on what `perllsp` advertises and what the Zed extension
-wires through.
-
-## Troubleshooting
-
-- If Perl files do not activate the server, confirm that a Zed Perl extension
-  is installed and that it registers the `perl-lsp` server ID.
-- If Zed reports `no language server found matching 'perl-lsp'`, the `lsp` key
-  does not match any registered server.
-- If the server fails to launch, run `perllsp --health` and `perllsp --info` in
-  a terminal first.
-- If Zed cannot find `perllsp`, start Zed from a shell with `zed .`, or set an
-  absolute `binary.path`.
-- If `perllsp --stdio` appears to hang when run manually, that is expected: it
-  is waiting for framed LSP JSON-RPC input.
-- Check Zed logs with `zed: open log`.
-- For more verbose startup logs, close Zed and relaunch it from a terminal
-  with:
-
-  ```bash
-  zed --foreground .
-  ```
-
-For server-side behavior and configuration details, see
-[docs/reference/CONFIG.md](../reference/CONFIG.md) and
-[docs/how-to/TROUBLESHOOTING.md](../how-to/TROUBLESHOOTING.md).
+For server-side configuration and general diagnostics, see
+[CONFIG.md](../reference/CONFIG.md) and
+[TROUBLESHOOTING.md](../how-to/TROUBLESHOOTING.md).

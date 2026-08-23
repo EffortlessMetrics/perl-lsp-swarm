@@ -212,6 +212,7 @@ pub fn check_strict_warnings(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                 }
             ],
             tags: Vec::new(),
+            fixable: true,
             suggestion: Some("Add 'use strict;' at the top of the file".to_string()),
         });
     }
@@ -233,6 +234,7 @@ pub fn check_strict_warnings(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                 }
             ],
             tags: Vec::new(),
+            fixable: false,
             suggestion: Some("Add 'use warnings;' at the top of the file".to_string()),
         });
     }
@@ -338,6 +340,7 @@ fn phase_scoped_pragma_diagnostic(
             },
         ],
         tags: Vec::new(),
+        fixable: false,
         suggestion: Some(format!("Move `use {pragma_name};` to the top of the file")),
     }
 }
@@ -377,6 +380,7 @@ fn check_misspelled_pragma(module: &str, node: &Node, diagnostics: &mut Vec<Diag
                     message: format!("Replace '{}' with '{}'", module, correct),
                 }],
                 tags: Vec::new(),
+                fixable: false,
                 suggestion: Some(format!("Replace 'use {};' with 'use {};'", module, correct)),
             });
             return;

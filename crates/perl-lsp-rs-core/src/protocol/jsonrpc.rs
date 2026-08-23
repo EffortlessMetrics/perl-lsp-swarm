@@ -8,6 +8,7 @@ use serde_json::Value;
 /// JSON-RPC request/response id.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(untagged)]
+#[non_exhaustive]
 pub enum JsonRpcId {
     /// Numeric JSON-RPC id.
     Integer(i64),

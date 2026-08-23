@@ -77,7 +77,7 @@ copy_development_doc() {
             -e 's#../reference/COMMANDS_REFERENCE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/COMMANDS_REFERENCE.md#g' \
             -e 's#../tutorials/LSP_DEVELOPMENT_GUIDE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/tutorials/LSP_DEVELOPMENT_GUIDE.md#g' \
             -e 's#CURRENT_STATUS.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CURRENT_STATUS.md#g' \
-            -e 's#\](..\/project\/ROADMAP\.md\)#\](https:\/\/github.com\/EffortlessMetrics\/perl-lsp-swarm\/blob\/main\/docs\/project\/ROADMAP.md\)#g'
+            -e 's#](\.\.\/project\/ROADMAP\.md)#](https:\/\/github.com\/EffortlessMetrics\/perl-lsp-swarm\/blob\/main\/docs\/project\/ROADMAP.md)#g'
     fi
 }
 

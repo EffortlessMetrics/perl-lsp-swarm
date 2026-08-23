@@ -6,8 +6,8 @@ use support::lsp_client::LspClient;
 #[test]
 
 fn prepare_and_subtypes() -> Result<(), Box<dyn std::error::Error>> {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut client = LspClient::spawn(bin)?;
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
     let uri = "file:///isa.pl";
     let source = "package Base; package Child; use parent 'Base'; package GrandChild; use parent 'Child'; 1;\n";
 
@@ -78,8 +78,8 @@ fn prepare_and_subtypes() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 
 fn multiple_inheritance() -> Result<(), Box<dyn std::error::Error>> {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut client = LspClient::spawn(bin)?;
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
     let uri = "file:///multi.pl";
     let source = r#"
 package Mixin1;
@@ -140,8 +140,8 @@ use parent qw(Mixin1 Mixin2);
 #[test]
 
 fn isa_array_inheritance() -> Result<(), Box<dyn std::error::Error>> {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut client = LspClient::spawn(bin)?;
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
     let uri = "file:///isa.pl";
     let source = r#"
 package Parent1;
@@ -202,8 +202,8 @@ our @ISA = ('Parent1', 'Parent2');
 #[test]
 
 fn type_hierarchy_ignores_string_literals() -> Result<(), Box<dyn std::error::Error>> {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut client = LspClient::spawn(bin)?;
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
     let uri = "file:///string.pl";
     let source = r#"
 package Base;

@@ -1,11 +1,87 @@
 //! Stack frame management: stack trace parsing, scopes.
 
 use super::{
-    DEBUGGER_QUERY_WAIT_MS, DapMessage, DebugAdapter, Scope, ScopesArguments, ScopesResponseBody,
-    Source, StackFrame, StackTraceArguments, Value, Write, json, lock_or_recover,
+    DEBUGGER_QUERY_WAIT_MS, DapMessage, DebugAdapter, HashMap, Scope, ScopesArguments,
+    ScopesResponseBody, Source, StackFrame, StackTraceArguments, Value, Write, json,
+    lock_or_recover,
 };
+use std::collections::HashSet;
+
+const FRAME_ID_MODULUS: i32 = 100_000;
+
+fn clear_rejected_framed_snapshot(session: &mut Option<super::DebugSession>) {
+    if let Some(session) = session {
+        session.stack_frames.clear();
+        session.stack_frame_arguments.clear();
+    }
+}
 
 impl DebugAdapter {
+    fn rebind_generation_frame_ids(
+        frames: Vec<StackFrame>,
+        arguments: HashMap<i32, Vec<String>>,
+        current_frame_id: Option<i32>,
+    ) -> Option<(Vec<StackFrame>, HashMap<i32, Vec<String>>)> {
+        let base_id = current_frame_id.or_else(|| frames.first().map(|frame| frame.id));
+        if base_id.is_some_and(|id| !(0..FRAME_ID_MODULUS).contains(&id))
+            || frames.len() > FRAME_ID_MODULUS as usize
+        {
+            return None;
+        }
+        let mut used_ids = HashSet::new();
+        let mut rebound_arguments = HashMap::new();
+        let mut rebound_frames = Vec::with_capacity(frames.len());
+
+        for (index, mut frame) in frames.into_iter().enumerate() {
+            let original_id = frame.id;
+            let index = i32::try_from(index).unwrap_or(i32::MAX);
+            let mut candidate = if index == 0 {
+                base_id
+                    .map(|base| base.rem_euclid(FRAME_ID_MODULUS))
+                    .unwrap_or_else(|| original_id.rem_euclid(FRAME_ID_MODULUS))
+            } else {
+                base_id
+                    .map(|base| {
+                        base.rem_euclid(FRAME_ID_MODULUS)
+                            .wrapping_add(index)
+                            .rem_euclid(FRAME_ID_MODULUS)
+                    })
+                    .unwrap_or_else(|| original_id.rem_euclid(FRAME_ID_MODULUS))
+            };
+            let mut attempts = 0;
+            while !used_ids.insert(candidate) {
+                candidate = (candidate + 1).rem_euclid(FRAME_ID_MODULUS);
+                attempts += 1;
+                if attempts >= FRAME_ID_MODULUS {
+                    return None;
+                }
+            }
+            frame.id = candidate;
+            if let Some(values) = arguments.get(&original_id) {
+                rebound_arguments.insert(candidate, values.clone());
+            }
+            rebound_frames.push(frame);
+        }
+
+        Some((rebound_frames, rebound_arguments))
+    }
+
+    /// Return the only frame the native scope path may inspect.
+    ///
+    /// `stack_frames[0]` is the frame captured for the current stopped
+    /// suspension.  Do not infer identity from source/line or accept another
+    /// frame merely because its id is numerically valid; the typed frame
+    /// authority in #9045/#9046 will replace this compatibility floor.
+    pub(super) fn exact_current_stopped_frame_id(&self, requested: i64) -> Option<i32> {
+        let frame_id = i32::try_from(requested).ok().filter(|id| *id >= 0)?;
+        let session = lock_or_recover(&self.session, "debug_adapter.session");
+        let session = session.as_ref()?;
+        if session.state != crate::debug_adapter::DebugState::Stopped {
+            return None;
+        }
+        session.stack_frames.first().filter(|frame| frame.id == frame_id).map(|frame| frame.id)
+    }
+
     /// Handle stackTrace request
     pub(super) fn handle_stack_trace(
         &self,
@@ -46,7 +122,33 @@ impl DebugAdapter {
         let parsed_frames = if let Some(lines) = framed_output_lines.as_ref() {
             let output = lines.join("\n");
             let (parsed_frames, frame_arguments) = Self::parse_stack_frames_from_text(&output);
-            let framed_frames = Self::filter_user_visible_frames(parsed_frames);
+            let visible_frames = Self::filter_user_visible_frames(parsed_frames);
+            let current_frame_id = lock_or_recover(&self.session, "debug_adapter.session")
+                .as_ref()
+                .and_then(|session| session.stack_frames.first().map(|frame| frame.id));
+            let rebound = Self::rebind_generation_frame_ids(
+                visible_frames,
+                frame_arguments,
+                current_frame_id,
+            );
+            let Some((framed_frames, frame_arguments)) = rebound else {
+                // An unencodable generation or exhausted frame namespace is a
+                // hard rejection, not an empty debugger snapshot. Clear both
+                // authorities so the later fallback cannot resurrect prior
+                // frames or their captured arguments.
+                clear_rejected_framed_snapshot(&mut lock_or_recover(
+                    &self.session,
+                    "debug_adapter.session",
+                ));
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: true,
+                    command: "stackTrace".to_string(),
+                    body: Some(json!({ "stackFrames": [], "totalFrames": 0 })),
+                    message: None,
+                };
+            };
             if framed_frames.is_empty() {
                 // The framed T output contained only internal debugger frames (e.g.
                 // `@ = DB::DB called from file '...' line N` at top-level stops) or
@@ -82,12 +184,15 @@ impl DebugAdapter {
         };
 
         let stack_frames = if !parsed_frames.is_empty() {
-            // Keep parsed frames as best-effort latest snapshot.
+            // Keep parsed frames as best-effort latest snapshot. IDs and
+            // captured arguments were rebound together above so every visible
+            // frame remains uniquely addressable within this suspension.
+            let bound_frames = parsed_frames;
             if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
             {
-                session.stack_frames = parsed_frames.clone();
+                session.stack_frames = bound_frames.clone();
             }
-            parsed_frames
+            bound_frames
         } else if let Some(ref session) = *lock_or_recover(&self.session, "debug_adapter.session") {
             Self::filter_user_visible_frames(session.stack_frames.clone())
         } else if let Some(pid) = *lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid")
@@ -149,53 +254,50 @@ impl DebugAdapter {
             }
         };
 
-        let frame_id = Self::i64_to_i32_saturating(args.frame_id);
+        let Some(frame_id) = self.exact_current_stopped_frame_id(args.frame_id) else {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: true,
+                command: "scopes".to_string(),
+                body: Some(json!({ "scopes": [] })),
+                message: None,
+            };
+        };
 
         // AC8.3: Hierarchical scope inspection
         // Use VariableReference codec to encode scope refs into disjoint wire bands.
         use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
-        let locals_ref =
-            VariableReference::Scope { frame_id, kind: ScopeKind::Locals }.encode().unwrap_or(0);
-        let package_ref =
-            VariableReference::Scope { frame_id, kind: ScopeKind::Package }.encode().unwrap_or(0);
-        let globals_ref =
-            VariableReference::Scope { frame_id, kind: ScopeKind::Globals }.encode().unwrap_or(0);
+        let Some(locals_ref) =
+            VariableReference::Scope { frame_id, kind: ScopeKind::Locals }.encode()
+        else {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: true,
+                command: "scopes".to_string(),
+                body: Some(json!({ "scopes": [] })),
+                message: None,
+            };
+        };
         let arguments = lock_or_recover(&self.session, "debug_adapter.session")
             .as_ref()
             .and_then(|session| session.stack_frame_arguments.get(&frame_id))
             .cloned()
             .unwrap_or_default();
 
-        let mut scopes = vec![
-            Scope {
-                name: "Locals".to_string(),
-                presentation_hint: Some("locals".to_string()),
-                variables_reference: i64::from(locals_ref),
-                expensive: false,
-                named_variables: None,
-                indexed_variables: None,
-            },
-            Scope {
-                name: "Package".to_string(),
-                presentation_hint: None,
-                variables_reference: i64::from(package_ref),
-                expensive: true,
-                named_variables: None,
-                indexed_variables: None,
-            },
-            Scope {
-                name: "Globals".to_string(),
-                presentation_hint: None,
-                variables_reference: i64::from(globals_ref),
-                expensive: true,
-                named_variables: None,
-                indexed_variables: None,
-            },
-        ];
-        if !arguments.is_empty() {
-            let arguments_ref = VariableReference::Scope { frame_id, kind: ScopeKind::Arguments }
-                .encode()
-                .unwrap_or(0);
+        let mut scopes = vec![Scope {
+            name: "Locals".to_string(),
+            presentation_hint: Some("locals".to_string()),
+            variables_reference: i64::from(locals_ref),
+            expensive: false,
+            named_variables: None,
+            indexed_variables: None,
+        }];
+        if !arguments.is_empty()
+            && let Some(arguments_ref) =
+                (VariableReference::Scope { frame_id, kind: ScopeKind::Arguments }).encode()
+        {
             scopes.push(Scope {
                 name: "Arguments".to_string(),
                 presentation_hint: Some("arguments".to_string()),
@@ -236,6 +338,7 @@ impl DebugAdapter {
 #[cfg(test)]
 mod pagination_tests {
     use super::*;
+    use crate::debug_adapter::DebugState;
 
     fn make_frame(id: i32, name: &str) -> StackFrame {
         StackFrame {
@@ -272,6 +375,64 @@ mod pagination_tests {
             "total_frames ({total_before}) must be >= paginated len ({})",
             paginated.len()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn generation_rebinding_keeps_multi_frame_ids_and_arguments_aligned()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let frames = vec![make_frame(0, "inner"), make_frame(1, "outer")];
+        let arguments =
+            HashMap::from([(0, vec!["inner_arg".to_string()]), (1, vec!["outer_arg".to_string()])]);
+
+        // The generation id (2) intentionally collides with the parser's
+        // second frame id; rebinding must repair that collision as well as
+        // preserve each frame's captured arguments.
+        let (rebound, rebound_arguments) =
+            DebugAdapter::rebind_generation_frame_ids(frames, arguments, Some(2))
+                .ok_or("valid generation rebinding unexpectedly rejected")?;
+
+        let ids = rebound.iter().map(|frame| frame.id).collect::<Vec<_>>();
+        assert_eq!(ids, vec![2, 3], "every visible frame needs a unique stop-bound id");
+        assert_eq!(rebound_arguments.get(&2), Some(&vec!["inner_arg".to_string()]));
+        assert_eq!(rebound_arguments.get(&3), Some(&vec!["outer_arg".to_string()]));
+        Ok(())
+    }
+
+    #[test]
+    fn generation_rebinding_fails_closed_past_scope_frame_id_ceiling()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let frames = vec![make_frame(7, "inner"), make_frame(8, "outer")];
+        let arguments =
+            HashMap::from([(7, vec!["inner_arg".to_string()]), (8, vec!["outer_arg".to_string()])]);
+        let (near_ceiling, near_arguments) = DebugAdapter::rebind_generation_frame_ids(
+            frames.clone(),
+            arguments.clone(),
+            Some(99_999),
+        )
+        .ok_or("near-ceiling generation rebinding unexpectedly rejected")?;
+        let near_ids = near_ceiling.iter().map(|frame| frame.id).collect::<Vec<_>>();
+        assert_eq!(near_ids, vec![99_999, 0]);
+        assert_eq!(near_arguments.get(&0), Some(&vec!["outer_arg".to_string()]));
+
+        let rejected = DebugAdapter::rebind_generation_frame_ids(frames, arguments, Some(100_000));
+        assert!(rejected.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_framed_snapshot_clears_prior_frames_and_arguments()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(1, "prior")]);
+        adapter.seed_stack_frame_arguments_for_test(1, vec!["prior_arg".to_string()]);
+        let mut session = lock_or_recover(&adapter.session, "test.rejected_snapshot");
+
+        clear_rejected_framed_snapshot(&mut session);
+
+        let session = session.as_ref().ok_or("test session was cleared unexpectedly")?;
+        assert!(session.stack_frames.is_empty());
+        assert!(session.stack_frame_arguments.is_empty());
         Ok(())
     }
 
@@ -317,7 +478,11 @@ mod pagination_tests {
         };
         let scope_values =
             body.get("scopes").and_then(Value::as_array).ok_or("scopes body was not an array")?;
-        assert_eq!(scope_values.len(), 4);
+        assert_eq!(scope_values.len(), 2);
+        assert!(scope_values.iter().all(|scope| {
+            scope.get("name") != Some(&json!("Package"))
+                && scope.get("name") != Some(&json!("Globals"))
+        }));
         let arguments_scope = scope_values
             .iter()
             .find(|scope| scope.get("name") == Some(&json!("Arguments")))
@@ -342,6 +507,95 @@ mod pagination_tests {
         assert_eq!(values.len(), 1);
         assert_eq!(values[0].get("name"), Some(&json!("arg1")));
         assert_eq!(values[0].get("value"), Some(&json!("[1, 2]")));
+        Ok(())
+    }
+
+    #[test]
+    fn scopes_without_exact_current_stopped_frame_are_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+
+        for frame_id in [-1_i64, 8, i64::from(i32::MAX) + 1] {
+            let response = adapter.handle_scopes(1, 1, Some(json!({ "frameId": frame_id })));
+            let DapMessage::Response { body: Some(body), .. } = response else {
+                return Err("invalid frame response did not contain a body".into());
+            };
+            assert_eq!(body.get("scopes"), Some(&json!([])));
+        }
+
+        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(7, "main::run")]);
+        for frame_id in [6_i64, 8] {
+            let response = adapter.handle_scopes(1, 1, Some(json!({ "frameId": frame_id })));
+            let DapMessage::Response { body: Some(body), .. } = response else {
+                return Err("non-current frame response did not contain a body".into());
+            };
+            assert_eq!(body.get("scopes"), Some(&json!([])));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn scopes_without_a_stopped_session_are_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        let response = adapter.handle_scopes(1, 1, Some(json!({ "frameId": 7 })));
+        let DapMessage::Response { body: Some(body), .. } = response else {
+            return Err("no-session response did not contain a body".into());
+        };
+        assert_eq!(body.get("scopes"), Some(&json!([])));
+
+        adapter.seed_running_session_for_test();
+        let response = adapter.handle_scopes(1, 1, Some(json!({ "frameId": 7 })));
+        let DapMessage::Response { body: Some(body), .. } = response else {
+            return Err("running-session response did not contain a body".into());
+        };
+        assert_eq!(body.get("scopes"), Some(&json!([])));
+        Ok(())
+    }
+
+    #[test]
+    fn scopes_from_terminated_session_are_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(1, "main::run")]);
+        {
+            let mut guard = lock_or_recover(&adapter.session, "test.terminated_session");
+            let session = guard.as_mut().ok_or("test session was not seeded")?;
+            session.state = DebugState::Terminated;
+        }
+
+        let response = adapter.handle_scopes(1, 1, Some(json!({ "frameId": 1 })));
+        let DapMessage::Response { body: Some(body), .. } = response else {
+            return Err("terminated-session response did not contain a body".into());
+        };
+        assert_eq!(body.get("scopes"), Some(&json!([])));
+        Ok(())
+    }
+
+    #[test]
+    fn prior_suspension_scope_reference_cannot_revive_after_new_stop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
+
+        let adapter = DebugAdapter::new();
+        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(1, "main::run")]);
+        let old_scope = VariableReference::Scope { frame_id: 1, kind: ScopeKind::Locals }
+            .encode()
+            .ok_or("old scope reference did not encode")?;
+
+        // The next stop has a new generation-derived frame id, even when the
+        // visible source/line and logical frame are otherwise unchanged.
+        {
+            let mut guard = lock_or_recover(&adapter.session, "test.new_stop_generation");
+            let session = guard.as_mut().ok_or("test session was not seeded")?;
+            session.stopped_generation = 2;
+            session.stack_frames = vec![make_frame(2, "main::run")];
+        }
+
+        let stale =
+            adapter.handle_variables(1, 1, Some(json!({ "variablesReference": old_scope })));
+        let DapMessage::Response { body: Some(body), .. } = stale else {
+            return Err("stale scope response did not contain a body".into());
+        };
+        assert_eq!(body.get("variables"), Some(&json!([])));
         Ok(())
     }
 }

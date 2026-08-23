@@ -17,8 +17,16 @@ pub use perl_symbol::SymbolIndex;
 
 /// Cache for parsed ASTs with TTL.
 ///
-/// Stores parsed ASTs with content hashing to avoid re-parsing unchanged files.
-/// Uses a high-performance concurrent cache with automatic eviction.
+/// **Dormant as of #11215** — no production path calls [`AstCache::get`] or
+/// [`AstCache::put`] any longer. The type is retained here so existing module
+/// shape tests and integration tests continue to compile; the canonical removal
+/// owner is #7371 (complete parse-artifact architecture), which will replace
+/// this partial cache with a complete, error-preserving artifact store.
+///
+/// ⚠️ Do not wire `get`/`put` into any live parse path without also storing
+/// the complete parse-error list. The corruption this cache caused was exactly
+/// that: a cache hit returned the AST but synthesised `Vec::new()` for errors,
+/// making recovery-bearing source appear diagnostics-clean on repeated parses.
 pub struct AstCache {
     /// Concurrent cache storage with TTL and LRU eviction
     cache: Cache<String, CachedAst>,

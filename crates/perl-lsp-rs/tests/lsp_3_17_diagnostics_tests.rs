@@ -29,12 +29,12 @@ fn test_diagnostic_pull_3_17() -> TestResult {
         }),
     );
 
-    if let Ok(report) = response {
-        if !report.is_null() {
-            assert!(report["kind"].is_string());
-            if report["kind"] == "full" {
-                assert!(report["items"].is_array());
-            }
+    if let Ok(report) = response
+        && !report.is_null()
+    {
+        assert!(report["kind"].is_string());
+        if report["kind"] == "full" {
+            assert!(report["items"].is_array());
         }
     }
     Ok(())

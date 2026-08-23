@@ -16,5 +16,5 @@ The perl-lsp facade re-exports these modules for downstream consumers.
 
 ## See Also
 
-- [perl-lsp](../perl-lsp/) — LSP server facade (main public API)
+- [perl-lsp-rs](../perl-lsp-rs/) — LSP server facade (main public API)
 - [.spec/wave-f/](../../.spec/wave-f/) — Wave F specification and implementation checklist

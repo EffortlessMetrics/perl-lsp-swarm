@@ -627,9 +627,7 @@ fn validate_exceeds_unicode_property_limit() -> Result<(), Box<dyn std::error::E
     let v = RegexValidator::new();
     // 51 properties should exceed the limit of 50
     let pattern: String = (0..51).map(|_| r"\p{L}").collect::<Vec<_>>().join("");
-    let result = v.validate(&pattern, 0);
-    assert!(result.is_err());
-    let err = result.unwrap_err();
+    let err = require_error(v.validate(&pattern, 0), "unicode property limit")?;
     let msg = format!("{err}");
     assert!(msg.contains("Too many Unicode properties"));
     Ok(())
@@ -672,9 +670,8 @@ fn validate_deep_lookbehind_nesting_rejected() -> Result<(), Box<dyn std::error:
     for _ in 0..11 {
         pattern = format!("(?<={})", pattern);
     }
-    let result = v.validate(&pattern, 0);
-    assert!(result.is_err());
-    let msg = format!("{}", result.unwrap_err());
+    let err = require_error(v.validate(&pattern, 0), "lookbehind nesting")?;
+    let msg = format!("{err}");
     assert!(msg.contains("lookbehind nesting too deep"));
     Ok(())
 }
@@ -708,9 +705,8 @@ fn validate_deep_branch_reset_nesting_rejected() -> Result<(), Box<dyn std::erro
     for _ in 0..11 {
         pattern = format!("(?|{})", pattern);
     }
-    let result = v.validate(&pattern, 0);
-    assert!(result.is_err());
-    let msg = format!("{}", result.unwrap_err());
+    let err = require_error(v.validate(&pattern, 0), "branch reset nesting")?;
+    let msg = format!("{err}");
     assert!(msg.contains("branch reset nesting too deep"));
     Ok(())
 }
@@ -721,9 +717,8 @@ fn validate_branch_reset_too_many_branches() -> Result<(), Box<dyn std::error::E
     // 51 branches in a branch reset (exceeds max of 50)
     let branches: String = (0..51).map(|i| format!("a{i}")).collect::<Vec<_>>().join("|");
     let pattern = format!("(?|{branches})");
-    let result = v.validate(&pattern, 0);
-    assert!(result.is_err());
-    let msg = format!("{}", result.unwrap_err());
+    let err = require_error(v.validate(&pattern, 0), "branch reset branch count")?;
+    let msg = format!("{err}");
     assert!(msg.contains("Too many branches"));
     Ok(())
 }

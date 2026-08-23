@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Added
+body: "Document the LSP4IJ integration maintenance lifecycle from canonical authorities through local delta preparation, manual upstream handoff, released-host re-receipting, and support promotion."
+time: 2026-08-13T12:14:26Z
+custom:
+  PR: "7957"
+  Slug: lsp4ij-maintainer-lifecycle-runbook
+  Breaking: "no"

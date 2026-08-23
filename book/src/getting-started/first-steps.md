@@ -34,7 +34,7 @@ perl-lsp is a comprehensive Perl parsing + LSP/DAP ecosystem:
 
 **Later (post v0.9.x)**
 - DAP preview hardening (runtime variable/evaluate depth + packaging)
-- Full LSP 3.18 compliance
+- Full LSP 3.18 compliance (historical declaration; evidence-backed status tracked in #6731)
 - Package manager distribution
 
 See [ROADMAP.md](ROADMAP.md) for milestones and exit criteria.

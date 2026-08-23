@@ -1,313 +1,304 @@
-use anyhow::{Context, Result};
-use serde::Deserialize;
+//! Compatibility adapter for the canonical content-bound fixture-expectation authority.
+
+use anyhow::Result;
+use serde::{Deserialize, Deserializer};
 use std::collections::HashSet;
-use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct FixtureExpectation {
-    pub concept: Option<ConceptInfo>,
-    pub expect: ExpectBlock,
-    pub metrics: Option<MetricsBlock>,
-    pub snapshots: Option<SnapshotBlock>,
-}
+use crate::sidecar;
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct ConceptInfo {
-    pub id: String,
-    pub tier: String,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct ExpectBlock {
-    pub panic: bool,
-    pub timeout: bool,
-    pub mode: ExpectationMode,
-}
-
+/// Compatibility expectation-mode type retained as a distinct public identity.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExpectationMode {
+    /// The fixture should parse without errors.
     ParseClean,
+    /// Recovery may emit errors but must complete without panic.
     RecoverWithoutPanic,
+    /// The fixture is expected to produce a parser error.
     ExpectedError,
+    /// Only token output is authoritative for the fixture.
     TokenOnly,
+    /// Only source spans are authoritative for the fixture.
     SpanOnly,
 }
 
+impl From<sidecar::ExpectationMode> for ExpectationMode {
+    fn from(value: sidecar::ExpectationMode) -> Self {
+        match value {
+            sidecar::ExpectationMode::ParseClean => Self::ParseClean,
+            sidecar::ExpectationMode::RecoverWithoutPanic => Self::RecoverWithoutPanic,
+            sidecar::ExpectationMode::ExpectedError => Self::ExpectedError,
+            sidecar::ExpectationMode::TokenOnly => Self::TokenOnly,
+            sidecar::ExpectationMode::SpanOnly => Self::SpanOnly,
+        }
+    }
+}
+
+impl From<ExpectationMode> for sidecar::ExpectationMode {
+    fn from(value: ExpectationMode) -> Self {
+        match value {
+            ExpectationMode::ParseClean => Self::ParseClean,
+            ExpectationMode::RecoverWithoutPanic => Self::RecoverWithoutPanic,
+            ExpectationMode::ExpectedError => Self::ExpectedError,
+            ExpectationMode::TokenOnly => Self::TokenOnly,
+            ExpectationMode::SpanOnly => Self::SpanOnly,
+        }
+    }
+}
+
+/// Compatibility representation of a fixture expectation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixtureExpectation {
+    /// Concept metadata. Canonically parsed sidecars always produce `Some`.
+    pub concept: Option<ConceptInfo>,
+    /// Required execution expectation.
+    pub expect: ExpectBlock,
+    /// Optional metric constraints.
+    pub metrics: Option<MetricsBlock>,
+    /// Optional snapshot selection.
+    pub snapshots: Option<SnapshotBlock>,
+}
+
+impl<'de> Deserialize<'de> for FixtureExpectation {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        sidecar::FixtureExpectationSidecar::deserialize(deserializer).map(Self::from)
+    }
+}
+
+impl From<sidecar::FixtureExpectationSidecar> for FixtureExpectation {
+    fn from(value: sidecar::FixtureExpectationSidecar) -> Self {
+        Self {
+            concept: Some(value.concept.into()),
+            expect: value.expect.into(),
+            metrics: value.metrics.map(Into::into),
+            snapshots: value.snapshots.map(Into::into),
+        }
+    }
+}
+
+impl TryFrom<FixtureExpectation> for sidecar::FixtureExpectationSidecar {
+    type Error = anyhow::Error;
+
+    fn try_from(value: FixtureExpectation) -> Result<Self> {
+        let concept = value.concept.ok_or_else(|| {
+            anyhow::anyhow!(
+                "concept block is required by canonical schema {}",
+                sidecar::FIXTURE_EXPECTATION_SCHEMA
+            )
+        })?;
+        Ok(Self {
+            concept: concept.into(),
+            expect: value.expect.into(),
+            metrics: value.metrics.map(Into::into),
+            snapshots: value.snapshots.map(TryInto::try_into).transpose()?,
+        })
+    }
+}
+
+/// Compatibility concept metadata.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ConceptInfo {
+    /// Stable concept identifier.
+    pub id: String,
+    /// Execution tier.
+    pub tier: String,
+}
+
+impl From<sidecar::SidecarConcept> for ConceptInfo {
+    fn from(value: sidecar::SidecarConcept) -> Self {
+        Self { id: value.id, tier: value.tier }
+    }
+}
+
+impl From<ConceptInfo> for sidecar::SidecarConcept {
+    fn from(value: ConceptInfo) -> Self {
+        Self { id: value.id, tier: value.tier }
+    }
+}
+
+/// Compatibility execution expectation.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ExpectBlock {
+    /// Whether a panic is expected.
+    pub panic: bool,
+    /// Whether a timeout is expected.
+    pub timeout: bool,
+    /// Expected parser disposition.
+    pub mode: ExpectationMode,
+}
+
+impl From<sidecar::SidecarExpect> for ExpectBlock {
+    fn from(value: sidecar::SidecarExpect) -> Self {
+        Self { panic: value.panic, timeout: value.timeout, mode: value.mode.into() }
+    }
+}
+
+impl From<ExpectBlock> for sidecar::SidecarExpect {
+    fn from(value: ExpectBlock) -> Self {
+        Self { panic: value.panic, timeout: value.timeout, mode: value.mode.into() }
+    }
+}
+
+/// Compatibility metric constraints.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct MetricsBlock {
+    /// Maximum accepted error-node count.
     pub max_error_nodes: Option<u32>,
+    /// Node kinds that must be emitted.
     pub must_emit_node_kinds: Option<Vec<String>>,
 }
 
+impl From<sidecar::SidecarMetrics> for MetricsBlock {
+    fn from(value: sidecar::SidecarMetrics) -> Self {
+        Self {
+            max_error_nodes: value.max_error_nodes,
+            must_emit_node_kinds: value.must_emit_node_kinds,
+        }
+    }
+}
+
+impl From<MetricsBlock> for sidecar::SidecarMetrics {
+    fn from(value: MetricsBlock) -> Self {
+        Self {
+            max_error_nodes: value.max_error_nodes,
+            must_emit_node_kinds: value.must_emit_node_kinds,
+        }
+    }
+}
+
+/// Compatibility snapshot selection.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct SnapshotBlock {
+    /// Token snapshot selection.
     pub tokens: Option<bool>,
+    /// AST snapshot selection.
     pub ast: Option<bool>,
+    /// Span snapshot selection.
     pub spans: Option<bool>,
 }
 
+impl From<sidecar::SidecarSnapshots> for SnapshotBlock {
+    fn from(value: sidecar::SidecarSnapshots) -> Self {
+        Self { tokens: Some(value.tokens), ast: Some(value.ast), spans: Some(value.spans) }
+    }
+}
+
+impl TryFrom<SnapshotBlock> for sidecar::SidecarSnapshots {
+    type Error = anyhow::Error;
+
+    fn try_from(value: SnapshotBlock) -> Result<Self> {
+        Ok(Self {
+            tokens: value.tokens.ok_or_else(|| {
+                anyhow::anyhow!("snapshots.tokens is required by canonical schema")
+            })?,
+            ast: value
+                .ast
+                .ok_or_else(|| anyhow::anyhow!("snapshots.ast is required by canonical schema"))?,
+            spans: value.spans.ok_or_else(|| {
+                anyhow::anyhow!("snapshots.spans is required by canonical schema")
+            })?,
+        })
+    }
+}
+
+/// Compatibility validation result with portable resolved identities.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SidecarValidation {
+    /// Root-relative sidecar path that was inspected.
     pub sidecar_path: PathBuf,
-    pub fixture_path: PathBuf,
+    /// Root-relative paired fixture path, when authority succeeded.
+    pub fixture_path: Option<PathBuf>,
+    /// Blocking validation failures.
     pub errors: Vec<String>,
+    /// Non-blocking validation findings.
     pub warnings: Vec<String>,
 }
 
 impl SidecarValidation {
+    /// Whether validation found no blocking errors.
+    #[must_use]
     pub fn is_valid(&self) -> bool {
         self.errors.is_empty()
     }
 }
 
-pub fn parse_sidecar(path: &Path) -> Result<FixtureExpectation> {
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("failed to read sidecar {}", path.display()))?;
-
-    toml::from_str(&contents)
-        .with_context(|| format!("failed to parse sidecar TOML {}", path.display()))
+/// Parse through the canonical root-bound schema authority.
+pub fn parse_sidecar(
+    context: &sidecar::SidecarValidationContext,
+    path: &Path,
+) -> Result<FixtureExpectation> {
+    sidecar::parse_sidecar(context, path).map(Into::into)
 }
 
-fn fixture_path_for_sidecar(path: &Path) -> PathBuf {
-    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
-
-    if let Some(base_name) = file_name.strip_suffix(".meta.toml") {
-        return path.with_file_name(format!("{base_name}.pl"));
-    }
-
-    path.with_extension("pl")
+/// Discover one exact root-bound sidecar population.
+pub fn discover_sidecars(root: &Path) -> Result<sidecar::SidecarValidationContext> {
+    sidecar::SidecarValidationContext::discover(root)
 }
 
-pub fn discover_sidecars(root: &Path) -> Result<Vec<PathBuf>> {
-    let pattern = root.join("**/*.meta.toml");
-    let pattern = pattern.to_string_lossy().into_owned();
-
-    let mut sidecars = Vec::new();
-    for entry in glob::glob(&pattern).with_context(|| format!("invalid glob pattern: {pattern}"))? {
-        let path =
-            entry.with_context(|| format!("failed to read sidecar path from glob {pattern}"))?;
-        sidecars.push(path);
-    }
-
-    sidecars.sort();
-    Ok(sidecars)
-}
-
+/// Open and retain one pair, then parse and validate those exact bytes through
+/// the canonical authority without deriving or reopening a fallback path.
 pub fn validate_sidecar(
+    context: &sidecar::SidecarValidationContext,
     path: &Path,
     concept_registry: Option<&HashSet<String>>,
 ) -> SidecarValidation {
-    let fixture_path = fixture_path_for_sidecar(path);
-    let mut errors = Vec::new();
-    let mut warnings = Vec::new();
+    let registry =
+        concept_registry.map(|values| sidecar::ConceptRegistry::from_ids(values.iter().cloned()));
+    let sidecar_path = if path.is_absolute() {
+        path.strip_prefix(context.root())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|_| PathBuf::from("<outside-root>"))
+    } else {
+        path.to_path_buf()
+    };
 
-    match parse_sidecar(path) {
-        Ok(sidecar) => {
-            if !fixture_path.exists() {
-                errors.push(format!("fixture missing for sidecar: {}", fixture_path.display()));
-            }
-
-            if let Some(concept) = sidecar.concept {
-                if let Some(registry) = concept_registry {
-                    if !registry.contains(&concept.id) {
-                        errors.push(format!("concept id not found in registry: {}", concept.id));
-                    }
-                } else {
-                    warnings.push(format!(
-                        "concept registry unavailable; resolution pending for {}",
-                        concept.id
-                    ));
-                }
-            }
-        }
+    let pair = match context.resolve_pair(path) {
+        Ok(pair) => pair,
         Err(error) => {
-            errors.push(error.to_string());
+            return SidecarValidation {
+                sidecar_path,
+                fixture_path: None,
+                errors: vec![error.to_string()],
+                warnings: Vec::new(),
+            };
         }
+    };
+    let fixture_path = Some(pair.identity().fixture_path.clone());
+    match sidecar::parse_validated_sidecar(&pair) {
+        Ok(parsed) => {
+            let validation = sidecar::validate_validated_sidecar(&pair, &parsed, registry.as_ref());
+            SidecarValidation {
+                sidecar_path,
+                fixture_path,
+                errors: validation.errors,
+                warnings: validation.warnings,
+            }
+        }
+        Err(error) => SidecarValidation {
+            sidecar_path,
+            fixture_path,
+            errors: vec![error.to_string()],
+            warnings: Vec::new(),
+        },
     }
-
-    SidecarValidation { sidecar_path: path.to_path_buf(), fixture_path, errors, warnings }
 }
 
+/// Validate every member of one exact discovered population.
 pub fn validate_sidecars_in_dir(
     root: &Path,
     concept_registry: Option<&HashSet<String>>,
-) -> Result<Vec<SidecarValidation>> {
-    let sidecars = discover_sidecars(root)?;
-    Ok(sidecars.iter().map(|sidecar| validate_sidecar(sidecar, concept_registry)).collect())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::error::Error;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn temp_dir(prefix: &str) -> Result<PathBuf> {
-        let mut path = std::env::temp_dir();
-        let pid = std::process::id();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0);
-        path.push(format!("{}_{}_{}", prefix, pid, nanos));
-        fs::create_dir_all(&path)
-            .with_context(|| format!("failed to create temp dir {}", path.display()))?;
-        Ok(path)
-    }
-
-    fn write_fixture_pair(root: &Path, area: &str, name: &str, meta_toml: &str) -> Result<PathBuf> {
-        let area_dir = root.join(area);
-        fs::create_dir_all(&area_dir)
-            .with_context(|| format!("failed to create area dir {}", area_dir.display()))?;
-
-        let fixture = area_dir.join(format!("{name}.pl"));
-        fs::write(&fixture, "my $x = 1;\n")
-            .with_context(|| format!("failed to write fixture {}", fixture.display()))?;
-
-        let sidecar = area_dir.join(format!("{name}.meta.toml"));
-        fs::write(&sidecar, meta_toml)
-            .with_context(|| format!("failed to write sidecar {}", sidecar.display()))?;
-
-        Ok(sidecar)
-    }
-
-    #[test]
-    fn parses_known_expectation_mode() -> Result<(), Box<dyn Error>> {
-        let root = temp_dir("perl_corpus_sidecar_parse")?;
-        let sidecar = write_fixture_pair(
-            &root,
-            "recovery",
-            "missing_brace",
-            r#"
-[concept]
-id = "parser.recovery.missing_closing_brace"
-tier = "pr"
-
-[expect]
-panic = false
-timeout = false
-mode = "recover_without_panic"
-
-[snapshots]
-ast = true
-spans = true
-"#,
-        )?;
-
-        let parsed = parse_sidecar(&sidecar)?;
-        assert_eq!(parsed.expect.mode, ExpectationMode::RecoverWithoutPanic);
-
-        fs::remove_dir_all(root)?;
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_unknown_expectation_mode() -> Result<(), Box<dyn Error>> {
-        let root = temp_dir("perl_corpus_sidecar_mode")?;
-        let sidecar = write_fixture_pair(
-            &root,
-            "recovery",
-            "unknown_mode",
-            r#"
-[expect]
-panic = false
-timeout = false
-mode = "totally_unknown"
-"#,
-        )?;
-
-        let validation = validate_sidecar(&sidecar, None);
-        assert!(!validation.is_valid());
-        assert!(validation.errors.iter().any(|error| error.contains("mode")));
-
-        fs::remove_dir_all(root)?;
-        Ok(())
-    }
-
-    #[test]
-    fn reports_missing_fixture_file() -> Result<(), Box<dyn Error>> {
-        let root = temp_dir("perl_corpus_sidecar_fixture")?;
-        let sidecar_path = root.join("quote_like").join("delimiter.meta.toml");
-        let parent =
-            sidecar_path.parent().ok_or_else(|| anyhow::anyhow!("sidecar path had no parent"))?;
-        fs::create_dir_all(parent)?;
-        fs::write(
-            &sidecar_path,
-            r#"
-[expect]
-panic = false
-timeout = false
-mode = "parse_clean"
-"#,
-        )?;
-
-        let validation = validate_sidecar(&sidecar_path, None);
-        assert!(!validation.is_valid());
-        assert!(validation.errors.iter().any(|error| error.contains("fixture missing")));
-
-        fs::remove_dir_all(root)?;
-        Ok(())
-    }
-
-    #[test]
-    fn does_not_hard_fail_when_registry_is_unavailable() -> Result<(), Box<dyn Error>> {
-        let root = temp_dir("perl_corpus_sidecar_pending")?;
-        let sidecar = write_fixture_pair(
-            &root,
-            "ambiguity",
-            "regex_vs_division",
-            r#"
-[concept]
-id = "parser.ambiguity.regex_vs_division"
-tier = "pr"
-
-[expect]
-panic = false
-timeout = false
-mode = "parse_clean"
-"#,
-        )?;
-
-        let validation = validate_sidecar(&sidecar, None);
-        assert!(validation.is_valid());
-        assert!(validation.warnings.iter().any(|warning| warning.contains("resolution pending")));
-
-        fs::remove_dir_all(root)?;
-        Ok(())
-    }
-
-    #[test]
-    fn fails_when_registry_is_present_and_id_is_unknown() -> Result<(), Box<dyn Error>> {
-        let root = temp_dir("perl_corpus_sidecar_registry")?;
-        let sidecar = write_fixture_pair(
-            &root,
-            "heredoc",
-            "terminator",
-            r#"
-[concept]
-id = "parser.heredoc.terminator"
-tier = "pr"
-
-[expect]
-panic = false
-timeout = false
-mode = "expected_error"
-"#,
-        )?;
-
-        let registry = HashSet::from(["parser.other.known".to_string()]);
-        let validation = validate_sidecar(&sidecar, Some(&registry));
-        assert!(!validation.is_valid());
-        assert!(validation.errors.iter().any(|error| error.contains("concept id not found")));
-
-        fs::remove_dir_all(root)?;
-        Ok(())
-    }
+) -> Result<(sidecar::SidecarValidationContext, Vec<SidecarValidation>)> {
+    let context = discover_sidecars(root)?;
+    let sidecars = context.sidecars().map(Path::to_path_buf).collect::<Vec<_>>();
+    let validations =
+        sidecars.iter().map(|path| validate_sidecar(&context, path, concept_registry)).collect();
+    Ok((context, validations))
 }

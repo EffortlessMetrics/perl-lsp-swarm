@@ -107,6 +107,9 @@ impl LspServer {
 
         // Clear any pending cancelled requests on shutdown
         self.cancelled.lock().clear();
+        // Destroy the session-keyed resolve authenticator so every envelope
+        // from this session becomes unverifiable (#8342).
+        self.teardown_resolve_session();
         Ok(Some(json!(null)))
     }
 
@@ -308,6 +311,27 @@ mod tests {
         assert_eq!(
             second_error.code, -32600,
             "second shutdown must return InvalidRequest (-32600) per LSP spec"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn given_active_session_when_shutdown_dispatch_runs_then_resolve_authenticator_is_destroyed()
+    -> TestResult {
+        // Given — a live connection owns its resolve session authenticator (#8342)
+        let server = LspServer::new();
+        assert!(
+            server.resolve_session_authenticator.lock().is_some(),
+            "connection must construct the resolve session authenticator"
+        );
+
+        // When
+        server.handle_shutdown_dispatch().map_err(|e| format!("shutdown should succeed: {e}"))?;
+
+        // Then
+        assert!(
+            server.resolve_session_authenticator.lock().is_none(),
+            "shutdown must destroy the session authenticator so old envelopes become unverifiable"
         );
         Ok(())
     }

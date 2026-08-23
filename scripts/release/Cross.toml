@@ -1,0 +1,14 @@
+# Reviewed Cross config for release-matrix identity injection (#7314 / #7359).
+# Cross withholds arbitrary host env unless build.env.passthrough authorizes it.
+# scripts/release_build_identity.py validates this closed enrollment and binds
+# the file bytes into toolchain_digest when runner=cross; CROSS_CONFIG points here.
+
+[build.env]
+passthrough = [
+  "PERL_LSP_BUILD_REVISION",
+  "PERL_LSP_SOURCE_TREE_DIGEST",
+  "PERL_LSP_TARGET_TRIPLE",
+  "PERL_LSP_BUILD_PROFILE",
+  "PERL_LSP_CANDIDATE_ID",
+  "PERL_LSP_ARTIFACT_ROLE",
+]

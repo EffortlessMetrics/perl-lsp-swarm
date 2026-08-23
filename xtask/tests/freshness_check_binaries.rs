@@ -83,7 +83,7 @@ fn head_commit_time(repo: &Path) -> Result<u64> {
 }
 
 fn perl_lsp_binary_name() -> String {
-    format!("perl-lsp{}", std::env::consts::EXE_SUFFIX)
+    format!("perllsp{}", std::env::consts::EXE_SUFFIX)
 }
 
 /// Write a fake binary at the host-platform `target/<profile>/perl-lsp*`

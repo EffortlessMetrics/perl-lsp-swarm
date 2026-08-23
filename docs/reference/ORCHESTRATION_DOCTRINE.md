@@ -1,5 +1,9 @@
 # Orchestration Doctrine
 
+<!-- authority-status:v1 -->
+> **Status: superseded.** Current authority: [Development method](../agents/DEVELOPMENT_METHOD.md).
+> Retained as historical design or mechanism evidence. Internal wording below that calls this document accepted, active doctrine, a north star, current instruction, or lifecycle authority is historical and must not route current work. See [Agent and maintainer authority status](../agents/AUTHORITY_STATUS.md).
+
 > **This doc is the north star for orchestration design decisions. When an implementation pass hits ambiguous decisions, resolve by reading this doc.**
 >
 > For the umbrella concept and vocabulary — what an Octopus Cluster is, why variance is search not waste, and what we're gaining — see [OCTOPUS_CLUSTER.md](OCTOPUS_CLUSTER.md).

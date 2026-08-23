@@ -323,7 +323,7 @@ Branch coverage in the parser coverage lane is enforced separately through the b
 
 Codecov Test Analytics is populated from CI receipt artifacts.
 
-The CI gates already emit structured receipts under `target/receipts/`. The helper script `scripts/ci/receipts-to-junit.py` converts those receipts into JUnit XML and uploads them with `codecov/test-results-action@v1`.
+The CI gates already emit structured receipts under `target/receipts/`. The helper script `scripts/ci/receipts-to-junit.py` converts those receipts into JUnit XML and uploads them with `codecov/codecov-action@v5` using `report_type: test_results`.
 
 Current uploaded suites:
 

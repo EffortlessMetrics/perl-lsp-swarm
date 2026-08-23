@@ -228,6 +228,7 @@ mod tests {
             related_information: vec![],
             tags: vec![],
             suggestion: None,
+            fixable: false,
         }
     }
 
@@ -1073,6 +1074,7 @@ mod tests {
             related_information: vec![],
             tags: vec![],
             suggestion: Some("Add a ';' at the end of the statement".to_string()),
+            fixable: false,
         };
 
         let actions = provider.get_actions_for_diagnostic(&diagnostic);
@@ -1286,6 +1288,7 @@ mod tests {
             related_information: vec![],
             tags: vec![],
             suggestion: None,
+            fixable: false,
         };
 
         let actions = provider.get_actions_for_diagnostic(&diagnostic);

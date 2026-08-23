@@ -1,46 +1,30 @@
-use crate::syntax::cursor::RegexCursor;
+use crate::syntax::event::{RegexEmbeddedCodeKind, RegexEventKind, RegexEventStream};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EmbeddedCodeKind {
     Immediate,
     Deferred,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EmbeddedCodeFinding {
     pub(crate) offset: usize,
     pub(crate) kind: EmbeddedCodeKind,
 }
 
-pub(crate) fn detects_code_execution(pattern: &str) -> bool {
-    find_code_execution(pattern, 0).is_some()
-}
-
-pub(crate) fn find_code_execution(pattern: &str, start_pos: usize) -> Option<EmbeddedCodeFinding> {
-    let mut cursor = RegexCursor::new(pattern);
-    while let Some(ch) = cursor.current() {
-        if cursor.skip_quoted_literal()
-            || cursor.skip_escape()
-            || cursor.skip_char_class()
-            || cursor.skip_comment()
-        {
-            continue;
-        }
-        if ch == b'(' && cursor.peek(1) == Some(b'?') {
-            if cursor.peek(2) == Some(b'{') {
-                return Some(EmbeddedCodeFinding {
-                    offset: start_pos + cursor.position(),
-                    kind: EmbeddedCodeKind::Immediate,
-                });
+pub(crate) fn find_code_executions(stream: &RegexEventStream) -> Vec<EmbeddedCodeFinding> {
+    stream
+        .events
+        .iter()
+        .filter_map(|event| match event.kind {
+            RegexEventKind::EmbeddedCode { kind, opener_range, .. } => {
+                let kind = match kind {
+                    RegexEmbeddedCodeKind::Immediate => EmbeddedCodeKind::Immediate,
+                    RegexEmbeddedCodeKind::Deferred => EmbeddedCodeKind::Deferred,
+                };
+                Some(EmbeddedCodeFinding { offset: opener_range.start, kind })
             }
-            if cursor.peek(2) == Some(b'?') && cursor.peek(3) == Some(b'{') {
-                return Some(EmbeddedCodeFinding {
-                    offset: start_pos + cursor.position(),
-                    kind: EmbeddedCodeKind::Deferred,
-                });
-            }
-        }
-        cursor.bump();
-    }
-    None
+            _ => None,
+        })
+        .collect()
 }

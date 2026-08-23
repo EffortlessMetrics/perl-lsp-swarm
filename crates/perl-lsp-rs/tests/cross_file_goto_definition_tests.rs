@@ -106,19 +106,19 @@ print "Result: $result\n";
     )?;
 
     // The result should be an array of locations
-    if let Some(locations) = result.as_array() {
-        if !locations.is_empty() {
-            let first = &locations[0];
-            assert_valid_location(first);
+    if let Some(locations) = result.as_array()
+        && !locations.is_empty()
+    {
+        let first = &locations[0];
+        assert_valid_location(first);
 
-            // Should point to the module file
-            let uri = first["uri"].as_str().ok_or("Expected URI")?;
-            assert!(
-                uri.contains("My/Utils.pm") || uri.contains("My%2FUtils.pm"),
-                "Definition should point to My/Utils.pm, got: {}",
-                uri
-            );
-        }
+        // Should point to the module file
+        let uri = first["uri"].as_str().ok_or("Expected URI")?;
+        assert!(
+            uri.contains("My/Utils.pm") || uri.contains("My%2FUtils.pm"),
+            "Definition should point to My/Utils.pm, got: {}",
+            uri
+        );
     }
 
     Ok(())
@@ -181,18 +181,18 @@ Demo::Worker::run();
     )?;
 
     // The result should navigate to Demo::Worker.pm
-    if let Some(locations) = result.as_array() {
-        if !locations.is_empty() {
-            let first = &locations[0];
-            assert_valid_location(first);
+    if let Some(locations) = result.as_array()
+        && !locations.is_empty()
+    {
+        let first = &locations[0];
+        assert_valid_location(first);
 
-            let uri = first["uri"].as_str().ok_or("Expected URI")?;
-            assert!(
-                uri.contains("Demo") && uri.contains("Worker"),
-                "Definition should point to Demo/Worker.pm, got: {}",
-                uri
-            );
-        }
+        let uri = first["uri"].as_str().ok_or("Expected URI")?;
+        assert!(
+            uri.contains("Demo") && uri.contains("Worker"),
+            "Definition should point to Demo/Worker.pm, got: {}",
+            uri
+        );
     }
 
     Ok(())
@@ -935,14 +935,14 @@ my $valid = Base->validate();
         }),
     )?;
 
-    if let Some(locations) = result.as_array() {
-        if !locations.is_empty() {
-            let first = &locations[0];
-            assert_valid_location(first);
+    if let Some(locations) = result.as_array()
+        && !locations.is_empty()
+    {
+        let first = &locations[0];
+        assert_valid_location(first);
 
-            let uri = first["uri"].as_str().ok_or("Expected URI")?;
-            assert!(uri.contains("Base.pm"), "Definition should point to Base.pm, got: {}", uri);
-        }
+        let uri = first["uri"].as_str().ok_or("Expected URI")?;
+        assert!(uri.contains("Base.pm"), "Definition should point to Base.pm, got: {}", uri);
     }
 
     Ok(())

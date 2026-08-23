@@ -36,7 +36,9 @@ perl-ast-v2 = { workspace = true }
 
 [features]
 default = []
-# Enable SIMD optimizations for string processing
+# Compatibility no-op retained for callers that already enable it. The current
+# lexer selects no distinct SIMD implementation; removal or implementation is
+# tracked by issue #6715.
 simd = []
 # Enable slow stress tests (regex fuzzing, etc.)
 slow_tests = []

@@ -1,12 +1,12 @@
 //! Tests for DapMode, DapConfig, DapServer, TcpAttachConfig,
-//! TcpAttachSession, DapEvent, and BridgeAdapter.
+//! TcpAttachSession, and DapEvent.
 //!
-//! These tests verify the public API surfaces of the top-level DAP server
-//! types and supporting adapter infrastructure without requiring a live
-//! Perl debugger process.
+//! These tests verify the public API surfaces of the native top-level DAP
+//! server and supporting adapter infrastructure without requiring a live Perl
+//! debugger process.
 
 use perl_dap::tcp_attach::{DapEvent, TcpAttachConfig, TcpAttachSession};
-use perl_dap::{BridgeAdapter, DapConfig, DapMode, DapServer, DapSocketBindError};
+use perl_dap::{DapConfig, DapMode, DapServer, DapSocketBindError};
 use std::io;
 use std::net::TcpListener;
 use std::time::Duration;
@@ -20,18 +20,16 @@ fn dap_mode_default_is_native() {
 
 #[test]
 fn dap_mode_clone_and_eq() {
-    let mode = DapMode::Bridge;
+    let mode = DapMode::Native;
     let cloned = mode.clone();
     assert_eq!(mode, cloned);
-    assert_ne!(DapMode::Native, DapMode::Bridge);
 }
 
 #[test]
 fn dap_mode_debug_format() {
     let debug_str = format!("{:?}", DapMode::Native);
     assert!(debug_str.contains("Native"));
-    let debug_str = format!("{:?}", DapMode::Bridge);
-    assert!(debug_str.contains("Bridge"));
+    assert!(!debug_str.contains("Bridge"));
 }
 
 // ── DapServer ──────────────────────────────────────────────────────
@@ -48,27 +46,16 @@ fn dap_server_creation_native() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn dap_server_creation_bridge() -> Result<(), Box<dyn std::error::Error>> {
+fn dap_server_creation_preserves_workspace_root() -> Result<(), Box<dyn std::error::Error>> {
+    let root = std::path::PathBuf::from("/workspace");
     let config = DapConfig {
         log_level: "debug".to_string(),
-        mode: DapMode::Bridge,
-        workspace_root: Some(std::path::PathBuf::from("/workspace")),
+        mode: DapMode::Native,
+        workspace_root: Some(root.clone()),
     };
     let server = DapServer::new(config)?;
-    assert_eq!(server.config.mode, DapMode::Bridge);
-    assert_eq!(server.config.workspace_root, Some(std::path::PathBuf::from("/workspace")));
-    Ok(())
-}
-
-#[test]
-fn dap_server_socket_rejects_bridge_mode() -> Result<(), Box<dyn std::error::Error>> {
-    let config =
-        DapConfig { log_level: "info".to_string(), mode: DapMode::Bridge, workspace_root: None };
-    let mut server = DapServer::new(config)?;
-    let result = server.run_socket(9999);
-    assert!(result.is_err(), "Socket transport should be rejected in bridge mode");
-    let err_msg = result.err().ok_or("Expected error")?.to_string();
-    assert!(err_msg.contains("not supported"), "Error should mention lack of support: {err_msg}");
+    assert_eq!(server.config.mode, DapMode::Native);
+    assert_eq!(server.config.workspace_root, Some(root));
     Ok(())
 }
 
@@ -139,11 +126,11 @@ fn tcp_attach_config_validate_max_port_is_valid() {
 
 #[test]
 fn tcp_attach_config_validate_boundary_timeout() {
-    // At 300_000 (5 min) should be valid
+    // At 300_000 (5 min) should be valid.
     let mut config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(300_000);
     assert!(config.validate().is_ok());
 
-    // At 300_001 should fail
+    // At 300_001 should fail.
     let mut config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(300_001);
     assert!(config.validate().is_err());
 }
@@ -154,7 +141,7 @@ fn tcp_attach_config_validate_1ms_timeout() {
     assert!(config.validate().is_ok());
 }
 
-// ── TcpAttachSession ───────────────────────────────────────────────
+// ── TcpAttachSession ────────────────────────────────────────────────
 
 #[test]
 fn tcp_attach_session_default_is_disconnected() {
@@ -186,7 +173,7 @@ fn tcp_attach_session_start_reader_without_connection_fails() {
 #[test]
 fn tcp_attach_session_connect_to_invalid_host_fails() {
     let mut session = TcpAttachSession::new();
-    // Use a very short timeout to fail fast
+    // Use a very short timeout to fail fast.
     let mut config = TcpAttachConfig::new("192.0.2.1".to_string(), 59999).with_timeout(100);
     let result = session.connect(&mut config);
     assert!(result.is_err(), "Connecting to unreachable host should fail");
@@ -249,22 +236,4 @@ fn dap_event_clone() {
     let debug_original = format!("{:?}", event);
     let debug_cloned = format!("{:?}", cloned);
     assert_eq!(debug_original, debug_cloned);
-}
-
-// ── BridgeAdapter ──────────────────────────────────────────────────
-
-#[test]
-fn bridge_adapter_creation() {
-    let adapter = BridgeAdapter::new();
-    // BridgeAdapter::new() should succeed without panicking
-    let debug = format!("{:?}", "BridgeAdapter created");
-    assert!(!debug.is_empty());
-    drop(adapter);
-}
-
-#[test]
-fn bridge_adapter_default_creation() {
-    let adapter = BridgeAdapter::default();
-    // Default should be equivalent to new()
-    drop(adapter);
 }

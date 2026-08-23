@@ -220,8 +220,8 @@ impl PerlOracleEnv {
     /// - `extra_env`: empty.
     ///
     /// Returns `None` if the Perl binary cannot be resolved. The caller
-    /// (`fetch_perl_inc`) already handles the `None` case by returning
-    /// `Vec::new()`.
+    /// (`fetch_perl_inc`) preserves the `None` case as an `Unavailable`
+    /// probe outcome while keeping path lookup fail-closed.
     pub fn for_startup_inc_probe(config: &WorkspaceConfig) -> Option<Self> {
         let perl_binary = super::PerlToolchainProfile::resolve(config)?.into_perl_binary();
 

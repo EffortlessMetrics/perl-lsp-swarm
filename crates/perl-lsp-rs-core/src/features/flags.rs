@@ -131,8 +131,6 @@ pub struct BuildFlags {
     pub moniker: bool,
     /// Document color provider compilation flag for color swatches in strings and comments
     pub document_color: bool,
-    /// Source organize imports capability (GA-lock excludes this)
-    pub source_organize_imports: bool,
     /// Document formatting provider compilation flag
     pub formatting: bool,
     /// Range formatting provider compilation flag
@@ -292,7 +290,10 @@ impl BuildFlags {
         ids
     }
 
-    /// Default production-ready capabilities.
+    /// Default supported public-beta capabilities.
+    ///
+    /// Keep this as an explicit baseline rather than deriving it from [`Self::all`].
+    /// A newly added preview flag therefore cannot silently enter production.
     pub fn production() -> Self {
         Self {
             completion: true,
@@ -319,11 +320,10 @@ impl BuildFlags {
             linked_editing: true,
             inline_completion: true,
             inline_values: true,
-            notebook_document_sync: true,
-            notebook_cell_execution: true,
+            notebook_document_sync: false,
+            notebook_cell_execution: false,
             moniker: true,
             document_color: true,
-            source_organize_imports: true,
             formatting: true,
             range_formatting: true,
             folding_range: true,
@@ -333,45 +333,12 @@ impl BuildFlags {
         }
     }
 
-    /// All capabilities for testing.
+    /// All in-tree capabilities, including explicit preview features.
     pub fn all() -> Self {
-        Self {
-            completion: true,
-            hover: true,
-            definition: true,
-            type_definition: true,
-            implementation: true,
-            references: true,
-            document_symbol: true,
-            workspace_symbol: true,
-            inlay_hints: true,
-            pull_diagnostics: true,
-            workspace_symbol_resolve: true,
-            semantic_tokens: true,
-            code_actions: true,
-            execute_command: true,
-            rename: true,
-            document_links: true,
-            selection_ranges: true,
-            on_type_formatting: true,
-            code_lens: true,
-            call_hierarchy: true,
-            type_hierarchy: true,
-            linked_editing: true,
-            inline_completion: true,
-            inline_values: true,
-            notebook_document_sync: true,
-            notebook_cell_execution: true,
-            moniker: true,
-            document_color: true,
-            source_organize_imports: true,
-            formatting: true,
-            range_formatting: true,
-            folding_range: true,
-            signature_help: true,
-            document_highlight: true,
-            declaration: true,
-        }
+        let mut flags = Self::production();
+        flags.notebook_document_sync = true;
+        flags.notebook_cell_execution = true;
+        flags
     }
 
     /// Conservative GA-lock capabilities.
@@ -401,11 +368,10 @@ impl BuildFlags {
             linked_editing: true,
             inline_completion: true,
             inline_values: false,
-            notebook_document_sync: true,
-            notebook_cell_execution: true,
+            notebook_document_sync: false,
+            notebook_cell_execution: false,
             moniker: true,
             document_color: true,
-            source_organize_imports: true,
             formatting: true,
             range_formatting: true,
             folding_range: true,
@@ -485,11 +451,10 @@ mod tests {
                 linked_editing: true,
                 inline_completion: true,
                 inline_values: true,
-                notebook_document_sync: true,
-                notebook_cell_execution: true,
+                notebook_document_sync: false,
+                notebook_cell_execution: false,
                 moniker: true,
                 document_color: true,
-                source_organize_imports: true,
                 formatting: true,
                 range_formatting: true,
                 folding_range: true,
@@ -546,7 +511,6 @@ mod tests {
         assert!(all.notebook_cell_execution);
         assert!(all.moniker);
         assert!(all.document_color);
-        assert!(all.source_organize_imports);
         assert!(all.formatting);
         assert!(all.range_formatting);
         assert!(all.folding_range);

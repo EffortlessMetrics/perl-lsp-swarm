@@ -613,6 +613,7 @@ fn make_diagnostic(
         message,
         related_information: vec![],
         tags: vec![],
+        fixable: false,
         suggestion: Some(suggestion),
     }
 }
@@ -718,6 +719,7 @@ fn make_experimental_feature_diagnostic(
         message,
         related_information: vec![],
         tags: vec![],
+        fixable: false,
         suggestion: Some(suggestion),
     }
 }
@@ -739,6 +741,7 @@ fn make_given_when_default_diagnostic(node: &Node, declared_version: PerlVersion
         message,
         related_information: vec![],
         tags: vec![],
+        fixable: false,
         suggestion: Some(
             "Refactor `given` / `when` / `default` to `if` / `elsif` or another supported control-flow form; this feature is deprecated in v5.38."
                 .to_string(),
@@ -767,6 +770,7 @@ fn make_given_when_feature_diagnostic(node: &Node, declared_version: PerlVersion
         message,
         related_information: vec![],
         tags: vec![],
+        fixable: false,
         suggestion: Some("Add `use feature 'switch';` to enable given/when/default.".to_string()),
     }
 }
@@ -788,6 +792,7 @@ fn make_smartmatch_diagnostic(node: &Node, declared_version: PerlVersion) -> Dia
         message,
         related_information: vec![],
         tags: vec![],
+        fixable: false,
         suggestion: Some(
             "Replace smartmatch `~~` with `if` / `elsif`, `grep`, or `any` from List::Util; this operator is deprecated in v5.38."
                 .to_string(),
@@ -819,6 +824,7 @@ fn make_smartmatch_feature_gate_diagnostic(
         message,
         related_information: vec![],
         tags: vec![],
+        fixable: false,
         suggestion: Some(
             "Add `use feature 'smartmatch';` to enable the smartmatch operator.".to_string(),
         ),
@@ -853,6 +859,7 @@ fn make_diagnostic_with_details(
         related_information: vec![],
         tags: vec![],
         suggestion,
+        fixable: false,
     }
 }
 

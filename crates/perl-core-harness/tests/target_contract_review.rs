@@ -1,14 +1,5 @@
 //! Review falsifiers for target-selector decoding and legacy composite partitioning.
 
-#[path = "../src/target_contracts/contract.rs"]
-mod contract;
-#[path = "../src/target_contracts/io.rs"]
-mod io;
-#[path = "../src/target_contracts/matrix.rs"]
-mod matrix;
-#[path = "../src/target_contracts/model.rs"]
-mod model;
-
 use model::{
     CompositeOverlapPolicy, TARGET_MATRIX_SCHEMA_VERSION, TARGET_SELECTION_SCHEMA_VERSION,
     TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION, TargetAuthority, TargetAuthorityKind, TargetDisposition,
@@ -16,7 +7,9 @@ use model::{
     TargetSelectionContract, TargetSelector, TargetTerminalPolicy, TargetTopologyDrift,
     TargetTopologyDriftStatus, UpstreamTargetMatrix,
 };
+use perl_core_harness::target_contracts::{io, model};
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -178,6 +171,88 @@ fn legacy_composites_are_partitioned_by_runner() -> TestResult {
 }
 
 #[test]
+fn read_matrix_rejects_changed_target_id_in_part() -> TestResult {
+    let source = repo_file(".ci/perl-core-harness/upstream-targets-5.42.2.v1");
+    let temporary = tempfile::tempdir()?;
+    for entry in fs::read_dir(&source)? {
+        let entry = entry?;
+        fs::copy(entry.path(), temporary.path().join(entry.file_name()))?;
+    }
+
+    let part_path = temporary.path().join("01-components-a.json");
+    let mut part: serde_json::Value = serde_json::from_slice(&fs::read(&part_path)?)?;
+    part["targets"][0]["contract"]["target_id"] =
+        serde_json::Value::String("component_class".to_string());
+    fs::write(&part_path, serde_json::to_vec_pretty(&part)?)?;
+
+    let error = io::read_matrix(temporary.path())
+        .expect_err("duplicate target ID in changed matrix part was accepted");
+    assert!(error.to_string().contains("target matrix"));
+    Ok(())
+}
+
+fn assert_loader_rejects_contract_mutation(
+    mut matrix: UpstreamTargetMatrix,
+    target_id: &str,
+    mutate: impl FnOnce(&mut model::TargetSelectionContract),
+) -> TestResult {
+    let entry = matrix
+        .targets
+        .iter_mut()
+        .find(|entry| entry.contract.target_id == target_id)
+        .ok_or_else(|| format!("missing target contract {target_id}"))?;
+    mutate(&mut entry.contract);
+
+    let temporary = tempfile::NamedTempFile::new()?;
+    fs::write(temporary.path(), serde_json::to_vec_pretty(&matrix)?)?;
+    let error = io::read_matrix(temporary.path())
+        .expect_err("offline loader accepted an invalid target contract");
+    assert!(
+        error.to_string().contains(target_id),
+        "loader error should identify {target_id}: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn loader_observes_each_contract_kind_and_collection_guard() -> TestResult {
+    let matrix = io::read_matrix(&repo_file(".ci/perl-core-harness/upstream-targets-5.42.2.v1"))?;
+
+    assert_loader_rejects_contract_mutation(matrix.clone(), "component_base", |contract| {
+        contract.selectors.clear();
+    })?;
+    assert_loader_rejects_contract_mutation(matrix.clone(), "selector_test_core", |contract| {
+        contract.selection_authority = None;
+    })?;
+    assert_loader_rejects_contract_mutation(matrix.clone(), "make_minitest_notty", |contract| {
+        contract.runner_switches.clear();
+        contract.variant_parameters.clear();
+        contract.environment.clear();
+        contract.terminal_policy = model::TargetTerminalPolicy::Inherited;
+    })?;
+    assert_loader_rejects_contract_mutation(matrix.clone(), "prep_test", |contract| {
+        contract.preparation.make_target = None;
+    })?;
+    assert_loader_rejects_contract_mutation(
+        matrix.clone(),
+        "legacy_custom_core_harness",
+        |contract| contract.composite_members.clear(),
+    )?;
+    assert_loader_rejects_contract_mutation(matrix.clone(), "instrument_valgrind", |contract| {
+        contract.environment.clear();
+        contract.capability_predicates.clear();
+        contract.runner_switches.clear();
+        contract.variant_parameters.clear();
+        contract.terminal_policy = model::TargetTerminalPolicy::Inherited;
+    })?;
+    assert_loader_rejects_contract_mutation(matrix, "component_base", |contract| {
+        contract.selectors.push(contract.selectors[0].clone());
+    })?;
+
+    Ok(())
+}
+
+#[test]
 fn target_names_are_globally_unambiguous() -> TestResult {
     let mut matrix = matrix_with_contract(
         "fixture",
@@ -197,7 +272,10 @@ fn target_names_are_globally_unambiguous() -> TestResult {
         claim_boundary: "second fixture topology only".to_string(),
     });
 
-    assert!(matrix.validate().is_err());
+    let Err(error) = matrix.validate() else {
+        return Err("ambiguous target names were accepted".into());
+    };
+    assert!(error.contains("is ambiguous between"), "unexpected rejection: {error}");
     Ok(())
 }
 
@@ -340,6 +418,12 @@ fn presentation_only_changes_do_not_become_topology_drift() -> TestResult {
     let pinned_fingerprint = pinned.fingerprint()?;
 
     drift.validate_against(&pinned, &pinned_fingerprint, Some(&observed))?;
+    let mut wrong_fingerprint = drift;
+    wrong_fingerprint.pinned_matrix_fingerprint =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+    assert!(
+        wrong_fingerprint.validate_against(&pinned, &pinned_fingerprint, Some(&observed)).is_err()
+    );
     Ok(())
 }
 

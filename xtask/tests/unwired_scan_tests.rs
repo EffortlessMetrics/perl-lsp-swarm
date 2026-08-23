@@ -1,5 +1,8 @@
-// Unwired scan tests — eprintln! used for diagnostic output.
+// Unwired scan tests — eprintln! used for diagnostic output. Test assertions
+// also favor `expect()`/`unwrap()` with descriptive messages over
+// propagating errors; the workspace-wide deny is a production-code rule.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 //! Tests for the unwired infrastructure scanner (issue #2667)
 //!
 //! Validates the core logic of the `cargo xtask unwired-scan` command:

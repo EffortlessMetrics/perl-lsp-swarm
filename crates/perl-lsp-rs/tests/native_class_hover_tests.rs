@@ -120,13 +120,13 @@ mod native_class_hover_tests {
 
         // The hover response should not be an error and should return some content.
         // The variable hover path shows "Declaration: field" and attributes.
-        if !resp.is_null() {
-            if let Some(content) = semantic::hover_content(&resp) {
-                assert!(
-                    !content.is_empty(),
-                    "hover on field $x should return non-empty content, got empty string"
-                );
-            }
+        if !resp.is_null()
+            && let Some(content) = semantic::hover_content(&resp)
+        {
+            assert!(
+                !content.is_empty(),
+                "hover on field $x should return non-empty content, got empty string"
+            );
         }
         // Non-null response is the minimal requirement — field variables must not
         // silently suppress hover the way unsupported nodes do.

@@ -8,10 +8,6 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Default DAP feature identifiers emitted when catalog processing fails.
-pub const DEFAULT_DAP_FEATURES: &[&str] =
-    &["dap.breakpoints.basic", "dap.core", "dap.inline_values"];
-
 /// Feature maturity state.
 #[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -26,10 +22,6 @@ pub enum Maturity {
 impl Maturity {
     pub const fn is_advertised(self) -> bool {
         matches!(self, Self::Ga | Self::Production)
-    }
-
-    pub const fn is_trackable(self) -> bool {
-        !matches!(self, Self::Planned)
     }
 
     pub const fn label(self) -> &'static str {
@@ -91,29 +83,70 @@ impl Catalog {
         ids
     }
 
-    pub fn trackable_feature_count(&self) -> usize {
-        self.feature.iter().filter(|f| f.maturity.is_trackable()).count()
-    }
-
-    pub fn advertised_trackable_count(&self) -> usize {
+    /// Trackable feature count for BDD/compliance grids.
+    /// Excludes entries explicitly marked `counts_in_coverage = false`.
+    pub fn trackable_feature_count_for_grid(&self) -> usize {
         self.feature
             .iter()
-            .filter(|f| f.advertised && f.maturity.is_advertised())
+            .filter(|feature| feature.maturity != Maturity::Planned && feature.counts_in_coverage)
             .count()
     }
 
+    /// Advertised trackable count for BDD/compliance grids.
+    /// Excludes entries explicitly marked `counts_in_coverage = false`.
+    pub fn advertised_trackable_count_for_grid(&self) -> usize {
+        self.feature
+            .iter()
+            .filter(|feature| {
+                feature.advertised
+                    && feature.maturity.is_advertised()
+                    && feature.counts_in_coverage
+            })
+            .count()
+    }
+
+    /// Compatibility-only alias for the grid-oriented trackable count.
+    /// This is not a compliance, status, or reporting authority.
+    #[deprecated(note = "compatibility-only; use trackable_feature_count_for_grid")]
+    pub fn trackable_feature_count(&self) -> usize {
+        self.feature
+            .iter()
+            .filter(|feature| feature.maturity != Maturity::Planned)
+            .count()
+    }
+
+    /// Compatibility-only alias for the grid-oriented advertised count.
+    /// This is not a compliance, status, or reporting authority.
+    #[deprecated(note = "compatibility-only; use advertised_trackable_count_for_grid")]
+    pub fn advertised_trackable_count(&self) -> usize {
+        self.feature
+            .iter()
+            .filter(|feature| feature.advertised && feature.maturity.is_advertised())
+            .count()
+    }
+
+    /// Compatibility-only alias for the grid-oriented percentage.
+    /// This is not a compliance, status, or reporting authority.
+    #[deprecated(note = "compatibility-only; use compliance_percent_for_grid")]
     pub fn compliance_percent(&self) -> f32 {
-        let trackable = self.trackable_feature_count();
+        let trackable = self.trackable_feature_count_for_grid();
         if trackable == 0 {
             return 0.0;
         }
-        let advertised = self.advertised_trackable_count();
+        let advertised = self.advertised_trackable_count_for_grid();
         (advertised as f64 / trackable as f64 * 100.0).round() as f32
     }
 
     pub fn validate(&self) -> Result<(), String> {
         let mut seen = BTreeSet::new();
         let mut issues = Vec::new();
+        if self.meta.compliance_percent.is_some() {
+            issues.push(
+                "meta.compliance_percent is refused (#6731): a declaration-count aggregate \
+                 is not behavior evidence; generated status renders evidence state instead"
+                    .to_string(),
+            );
+        }
         for feature in &self.feature {
             if feature.id.trim().is_empty() {
                 issues.push("feature id must not be empty".to_string());
@@ -151,11 +184,24 @@ pub enum CatalogSourceKind {
 }
 
 pub fn resolve_catalog_source(manifest_dir: &Path) -> Result<CatalogSource, String> {
-    if let Ok(override_path) = env::var("FEATURES_TOML_OVERRIDE") {
-        let override_path = PathBuf::from(override_path);
-        if override_path.exists() {
-            return Ok(CatalogSource { path: override_path, kind: CatalogSourceKind::Override });
+    resolve_catalog_source_with_override(
+        manifest_dir,
+        env::var_os("FEATURES_TOML_OVERRIDE").map(PathBuf::from),
+    )
+}
+
+pub fn resolve_catalog_source_with_override(
+    manifest_dir: &Path,
+    override_path: Option<PathBuf>,
+) -> Result<CatalogSource, String> {
+    if let Some(override_path) = override_path {
+        if !override_path.exists() {
+            return Err(format!(
+                "FEATURES_TOML_OVERRIDE path does not exist: {}",
+                override_path.display()
+            ));
         }
+        return Ok(CatalogSource { path: override_path, kind: CatalogSourceKind::Override });
     }
 
     let local = manifest_dir.join("features.toml");
@@ -179,6 +225,37 @@ pub fn resolve_catalog_source(manifest_dir: &Path) -> Result<CatalogSource, Stri
     Err(format!("features catalog not found for manifest dir: {}", manifest_dir.display()))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::resolve_catalog_source_with_override;
+    use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn missing_explicit_override_does_not_fall_back_to_workspace_catalog() {
+        let root = std::env::temp_dir().join(format!(
+            "perl-lsp-build-catalog-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create test catalog directory");
+        let workspace_catalog = root.join("features.toml");
+        let missing_override = root.join("missing-features.toml");
+        fs::write(&workspace_catalog, "[meta]\nversion = 'test'\nlsp_version = 'test'\n")
+            .expect("write fallback workspace catalog");
+
+        let result = resolve_catalog_source_with_override(
+            &root,
+            Some(PathBuf::from(&missing_override)),
+        );
+
+        assert!(result.is_err(), "missing explicit override must be terminal");
+        assert!(result
+            .expect_err("missing explicit override must be terminal")
+            .contains("FEATURES_TOML_OVERRIDE path does not exist"));
+        fs::remove_dir_all(root).expect("remove test catalog directory");
+    }
+}
+
 pub fn read_catalog(path: &Path) -> Result<Catalog, String> {
     let content = fs::read_to_string(path)
         .map_err(|e| format!("failed to read features catalog: {e}"))?;
@@ -192,6 +269,19 @@ pub fn load_catalog_for_build(manifest_dir: &Path) -> Result<(Catalog, CatalogSo
     let source = resolve_catalog_source(manifest_dir)?;
     let catalog = read_catalog(&source.path)?;
     Ok((catalog, source))
+}
+
+pub fn generate_lsp_catalog_module_at(
+    manifest_dir: &Path,
+    out_dir: &Path,
+    override_path: Option<PathBuf>,
+) -> Result<CatalogSource, String> {
+    let source = resolve_catalog_source_with_override(manifest_dir, override_path)?;
+    let catalog = read_catalog(&source.path)?;
+    let code = render_lsp_feature_catalog_module(&catalog, source.comment());
+    fs::write(out_dir.join("feature_contracts.rs"), code)
+        .map_err(|error| format!("failed to write feature_contracts.rs: {error}"))?;
+    Ok(source)
 }
 
 pub fn render_lsp_feature_catalog_module(catalog: &Catalog, source_comment: &str) -> String {
@@ -208,11 +298,6 @@ pub fn render_lsp_feature_catalog_module(catalog: &Catalog, source_comment: &str
     code.push_str(&format!("pub const VERSION: &str = {:?};\n", catalog.meta.version));
     code.push_str("/// LSP protocol version supported by this parser implementation\n");
     code.push_str(&format!("pub const LSP_VERSION: &str = {:?};\n", catalog.meta.lsp_version));
-    code.push_str("/// Compliance percentage of advertised GA features vs trackable features\n");
-    code.push_str(&format!(
-        "pub const COMPLIANCE_PERCENT: f32 = {:.2};\n\n",
-        catalog.compliance_percent()
-    ));
     code.push_str(
         "/// Represents a single LSP feature with its metadata and implementation status\n",
     );
@@ -247,51 +332,6 @@ pub fn render_lsp_feature_catalog_module(catalog: &Catalog, source_comment: &str
     }
     code.push_str("];\n\n");
     code.push_str("pub fn advertised_features() -> &'static [&'static str] { ADVERTISED_LSP_FEATURES }\n\n");
-    code.push_str("pub fn has_feature(id: &str) -> bool { ADVERTISED_LSP_FEATURES.contains(&id) }\n\n");
-    code.push_str("pub fn compliance_percent() -> f32 { COMPLIANCE_PERCENT }\n");
-    code
-}
-
-pub fn render_dap_feature_catalog_module(ids: &[&str]) -> String {
-    let mut sorted = ids.to_vec();
-    sorted.sort_unstable();
-    sorted.dedup();
-    let mut code = String::new();
-    code.push_str("// @generated by build.rs; DO NOT EDIT.\n\n");
-    code.push_str("pub const ADVERTISED_DAP_FEATURES: &[&str] = &[\n");
-    for id in &sorted {
-        code.push_str(&format!("    {:?},\n", id));
-    }
-    code.push_str("];\n\n");
-    code.push_str("pub fn advertised_features() -> &'static [&'static str] { ADVERTISED_DAP_FEATURES }\n\n");
-    code.push_str("pub fn has_feature(id: &str) -> bool { ADVERTISED_DAP_FEATURES.contains(&id) }\n");
-    code
-}
-
-pub fn render_dap_fallback_module(default_features: &[&str]) -> String {
-    render_dap_feature_catalog_module(default_features)
-}
-
-pub fn render_lsp_fallback_module() -> String {
-    let mut code = String::new();
-    code.push_str("// Auto-generated minimal catalog - features.toml not found\n\n");
-    code.push_str("pub struct Feature {\n");
-    code.push_str("    pub id: &'static str,\n");
-    code.push_str("    pub spec: &'static str,\n");
-    code.push_str("    pub area: &'static str,\n");
-    code.push_str("    pub maturity: &'static str,\n");
-    code.push_str("    pub advertised: bool,\n");
-    code.push_str("    pub description: &'static str,\n");
-    code.push_str("    pub counts_in_coverage: bool,\n");
-    code.push_str("    pub tests: &'static [&'static str],\n");
-    code.push_str("}\n");
-    code.push_str("pub const VERSION: &str = \"0.10.0\";\n");
-    code.push_str("pub const LSP_VERSION: &str = \"3.18\";\n");
-    code.push_str("pub const COMPLIANCE_PERCENT: f32 = 0.0;\n");
-    code.push_str("pub const ALL_FEATURES: &[Feature] = &[];\n");
-    code.push_str("pub const ADVERTISED_LSP_FEATURES: &[&str] = &[];\n");
-    code.push_str("pub fn advertised_features() -> &'static [&'static str] { ADVERTISED_LSP_FEATURES }\n");
-    code.push_str("pub fn has_feature(_id: &str) -> bool { false }\n");
-    code.push_str("pub fn compliance_percent() -> f32 { 0.0 }\n");
+    code.push_str("pub fn has_feature(id: &str) -> bool { ADVERTISED_LSP_FEATURES.contains(&id) }\n");
     code
 }

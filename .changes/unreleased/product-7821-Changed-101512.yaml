@@ -1,0 +1,9 @@
+project: product
+component: Documentation
+kind: Changed
+body: Corrected Vim filetype guidance and Coc-on-Vim runtime prerequisites without overstating real-client support.
+time: 2026-08-13T10:15:12Z
+custom:
+  PR: "7821"
+  Slug: vim-doc-truth
+  Breaking: "no"

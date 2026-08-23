@@ -1,13 +1,123 @@
+use crate::incremental::snapshot::ParseSnapshot;
 use lsp_types::Diagnostic;
+use perl_parser_core::error::ParseOutput;
 use std::ops::Range;
 
-/// Result of incremental reparse
+/// Lexer work strategy selected for one incremental parse result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LexRestartStrategy {
+    /// Reuse the current token stream without performing lexer work.
+    Unchanged,
+    /// Lex the complete current source from byte zero.
+    FullRelex,
+    /// Restore one complete live lexer checkpoint and re-lex from there to EOF.
+    LiveCheckpointToEof,
+}
+
+/// Truthful lexer restart and token-retention receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LexRestartReport {
+    /// Strategy that produced the current token stream.
+    pub strategy: LexRestartStrategy,
+    /// Byte boundary where fresh lexing began.
+    ///
+    /// For [`LexRestartStrategy::Unchanged`], this is the current source length:
+    /// the complete old token stream is retained and no byte is freshly lexed.
+    pub restart_byte: usize,
+    /// Number of source bytes lexed from the restart boundary to EOF.
+    pub relexed_bytes: usize,
+    /// Tokens before the restart boundary retained without re-lexing.
+    pub reused_prefix_tokens: usize,
+    /// Tokens after a synchronization boundary retained from the old suffix.
+    pub reused_suffix_tokens: usize,
+}
+
+impl LexRestartReport {
+    /// Total old tokens retained by the selected strategy.
+    #[must_use]
+    pub fn reused_tokens(self) -> usize {
+        self.reused_prefix_tokens.saturating_add(self.reused_suffix_tokens)
+    }
+}
+
+/// Result of incremental reparse.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct ReparseResult {
+    /// Byte ranges reparsed or replaced by the selected strategy.
     pub changed_ranges: Vec<Range<usize>>,
+    /// Generation-bound parser snapshot for the committed source.
+    ///
+    /// This is the sole owned parser-output authority in the result; read the
+    /// native output through [`Self::parse_output`], which projects from the
+    /// snapshot so the two can never diverge.
+    pub snapshot: ParseSnapshot,
+    /// Legacy LSP-shaped diagnostics retained for compatibility.
+    ///
+    /// This is intentionally an unprojected compatibility slot: it is not a
+    /// lossy byte-to-LSP projection of the native diagnostics. Parser
+    /// consumers should use `snapshot.parse_output().diagnostics`; LSP
+    /// projection is a transport concern and remains separate from the native
+    /// parser output contract.
     pub diagnostics: Vec<Diagnostic>,
+    /// Lexer restart, fresh-work, and token-retention receipt.
+    pub lex_restart: LexRestartReport,
+    /// Number of source bytes covered by parser reparsing work.
     pub reparsed_bytes: usize,
+    /// Compatibility total of old lexer tokens retained from prefix and suffix.
+    ///
+    /// New consumers should use [`Self::lex_restart`] to distinguish prefix
+    /// retention from state-proven suffix reuse.
     pub reused_tokens: usize,
+    /// Total token count in the resulting incremental state.
     pub token_count: usize,
+}
+
+impl ReparseResult {
+    /// Native recovery-aware parser output for the current source generation,
+    /// projected from the generation-bound snapshot.
+    #[must_use]
+    pub fn parse_output(&self) -> &ParseOutput {
+        self.snapshot.parse_output()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::incremental::{ParseGeneration, ParseSnapshotStrategy};
+    use perl_parser_core::parser::Parser;
+
+    #[test]
+    fn native_snapshot_diagnostics_are_authoritative_over_legacy_lsp_slot() {
+        let source = "my $x = ;";
+        let parse_output = Parser::new(source).parse_with_recovery();
+        assert!(!parse_output.diagnostics.is_empty());
+        let snapshot = ParseSnapshot::from_output(
+            source,
+            ParseGeneration::INITIAL,
+            ParseSnapshotStrategy::Fresh,
+            parse_output,
+        );
+        let result = ReparseResult {
+            changed_ranges: Vec::new(),
+            snapshot,
+            diagnostics: Vec::new(),
+            lex_restart: LexRestartReport {
+                strategy: LexRestartStrategy::Unchanged,
+                restart_byte: source.len(),
+                relexed_bytes: 0,
+                reused_prefix_tokens: 0,
+                reused_suffix_tokens: 0,
+            },
+            reparsed_bytes: 0,
+            reused_tokens: 0,
+            token_count: 0,
+        };
+
+        assert!(!result.parse_output().diagnostics.is_empty());
+        assert!(result.diagnostics.is_empty());
+    }
 }

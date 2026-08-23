@@ -49,6 +49,7 @@ impl IndicatorStatus {
 
 /// A single piece of evidence backing an indicator's status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EvidenceRef {
     /// Evidence category. An open set; the values the evaluator emits are
     /// `"command"`, `"receipt"`, `"file"`, `"test"`, `"criterion"`,
@@ -82,6 +83,7 @@ impl EvidenceRef {
 
 /// One evaluated indicator in a [`KwaliteeReceipt`](crate::KwaliteeReceipt).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KwaliteeIndicator {
     /// Stable dotted identifier, e.g. `release.no_external_tooling`.
     pub id: String,

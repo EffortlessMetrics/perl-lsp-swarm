@@ -26,6 +26,7 @@ const ALL_ALIASES: &[&str] = &["all"];
 
 /// Canonical profile definitions and alias map.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum FeatureProfileKind {
     /// Conservative GA-lock feature profile.
     GaLock,
@@ -128,7 +129,7 @@ pub struct BddFeatureRow {
     pub spec: &'static str,
     /// Feature area grouping (e.g., `text_document`, `workspace`).
     pub area: &'static str,
-    /// Maturity level: `ga`, `beta`, `alpha`, or `planned`.
+    /// Maturity level: `experimental`, `preview`, `ga`, `planned`, or `production`.
     pub maturity: &'static str,
     /// Whether this feature is advertised to clients.
     pub advertised: bool,
@@ -140,9 +141,16 @@ pub struct BddFeatureRow {
     pub tests: &'static [&'static str],
 }
 
-pub use catalog::{
-    Feature, LSP_VERSION, VERSION, advertised_features, compliance_percent, has_feature,
-};
+pub use catalog::{Feature, LSP_VERSION, VERSION, advertised_features, has_feature};
+
+/// Compatibility accessor backed by the feature-grid calculation.
+///
+/// The build-generated catalog intentionally publishes no declaration-derived
+/// compliance constant or accessor; this compatibility surface is not a status
+/// or behavior-evidence authority.
+pub fn compliance_percent() -> f32 {
+    compliance_percent_for_grid()
+}
 
 /// All discovered LSP features in canonical declaration order.
 pub fn all_features() -> &'static [Feature] {
@@ -343,16 +351,19 @@ mod tests {
     }
 
     #[test]
-    fn all_features_have_valid_maturity() {
-        let valid_maturities = ["ga", "beta", "alpha", "planned"];
+    fn all_features_have_valid_maturity() -> Result<(), String> {
+        // Keep this vocabulary aligned with `feature_catalog::Maturity` rather
+        // than accepting arbitrary labels that weaken catalog validation.
+        let valid_maturities = ["experimental", "preview", "ga", "planned", "production"];
         for feature in all_features() {
-            assert!(
-                valid_maturities.contains(&feature.maturity),
-                "feature '{}' has unexpected maturity '{}'",
-                feature.id,
-                feature.maturity
-            );
+            if !valid_maturities.contains(&feature.maturity) {
+                return Err(format!(
+                    "feature '{}' has unexpected maturity '{}'",
+                    feature.id, feature.maturity
+                ));
+            }
         }
+        Ok(())
     }
 
     #[test]

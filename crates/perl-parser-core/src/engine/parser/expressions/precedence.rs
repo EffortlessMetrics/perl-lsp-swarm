@@ -893,8 +893,10 @@ impl<'a> Parser<'a> {
 
     /// Parse power expression
     fn parse_power(&mut self) -> ParseResult<Node> {
-        let expr = self.parse_unary()?;
-        self.parse_power_with(expr)
+        self.with_recursion_guard(|s| {
+            let expr = s.parse_unary()?;
+            s.parse_power_with(expr)
+        })
     }
 
     fn parse_shift_with(&mut self, mut expr: Node) -> ParseResult<Node> {
@@ -1092,7 +1094,7 @@ impl<'a> Parser<'a> {
             let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
                 missing
             } else {
-                self.parse_unary()?
+                self.parse_power()?
             };
             let start = expr.location.start;
             let end = right.location.end;

@@ -1,7 +1,17 @@
 //! Dead code detection for the perl-lsp workspace
 //!
-//! Combines cargo-machete (unused dependencies), cargo-udeps (deep unused dep detection),
-//! and clippy dead_code lints. Supports three modes:
+//! Rust source/item liveness: clippy dead_code lints.
+//! Dependency-unused analysis has moved to `dependency-hygiene` (issue #9364).
+//!
+//! ## Compatibility boundary
+//!
+//! `dead-code check` is a Rust source/item liveness check and does not run a
+//! dependency instrument. The legacy `cargo-udeps` invocation remains only in
+//! baseline/report generation to preserve their existing output schemas; those
+//! counts are advisory and must not be treated as a dependency verdict. The
+//! canonical dependency-unused authority is `dependency-hygiene`.
+//!
+//! Supports three modes:
 //! - `check`: Compare current state against baseline thresholds
 //! - `baseline`: Generate a new baseline YAML file
 //! - `report`: Generate a JSON report for CI integration
@@ -11,7 +21,7 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use color_eyre::eyre::{Context, Result, eyre};
+use color_eyre::eyre::{Context, Result, bail, eyre};
 use duct::cmd;
 use serde::{Deserialize, Serialize};
 
@@ -66,6 +76,7 @@ struct BaselineFile {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct Thresholds {
     #[serde(default = "default_max_5")]
     max_unused_dependencies: u64,
@@ -88,8 +99,9 @@ fn default_max_10() -> u64 {
 
 /// Baseline counts parsed from the YAML file.
 ///
-/// All four fields are deserialized for completeness. The check phase currently
-/// compares only `unused_dependencies` and `dead_code_items` against thresholds.
+/// All four fields are deserialized for compatibility. The check phase only
+/// enforces the Rust item liveness count; dependency-unused authority belongs
+/// to `dependency-hygiene`.
 #[derive(Debug, Default, Deserialize)]
 #[allow(dead_code)]
 struct BaselineCounts {
@@ -117,16 +129,20 @@ struct JsonReport {
 
 #[derive(Serialize)]
 struct JsonReportResults {
-    unused_dependencies: u64,
+    /// Legacy/advisory count retained for report-schema compatibility.
+    /// `null` when cargo-udeps did not run: unproven, not zero.
+    unused_dependencies: Option<u64>,
     dead_code_items: u64,
     unused_imports: u64,
     unused_variables: u64,
-    total_issues: u64,
+    /// `null` when any component count is unproven.
+    total_issues: Option<u64>,
 }
 
 #[derive(Serialize)]
 struct JsonReportDetails {
-    udeps_output: String,
+    /// `null` when cargo-udeps produced no usable result this run.
+    udeps_output: Option<String>,
     clippy_output: String,
 }
 
@@ -154,18 +170,6 @@ fn check_tools() -> Result<()> {
     Ok(())
 }
 
-fn ensure_udeps_installed() -> Result<()> {
-    let probe = cmd("cargo", ["+nightly", "udeps", "--version"]).stdout_null().stderr_null().run();
-
-    if probe.is_err() {
-        println!("[INFO] Installing cargo-udeps...");
-        cmd("cargo", ["install", "cargo-udeps", "--locked"])
-            .run()
-            .context("Failed to install cargo-udeps")?;
-    }
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // Running external tools and counting output
 // ---------------------------------------------------------------------------
@@ -177,43 +181,15 @@ fn output_dir(root: &Path) -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// Run cargo-machete and return (exit_ok, output_path).
-fn run_machete(root: &Path) -> Result<(bool, PathBuf)> {
-    let dir = output_dir(root)?;
-    let out_path = dir.join("machete-output.txt");
-
-    println!("[INFO] Checking for unused dependencies with cargo-machete...");
-
-    let result = cmd("cargo", ["machete"])
-        .stdout_capture()
-        .stderr_capture()
-        .unchecked()
-        .run()
-        .context("Failed to run cargo-machete")?;
-
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr)
-    );
-    fs::write(&out_path, &combined)
-        .with_context(|| format!("Failed to write {}", out_path.display()))?;
-
-    // Print the output so users see it
-    print!("{combined}");
-
-    let crate_count = count_occurrences(&combined, "Cargo.toml:");
-    if crate_count > 0 {
-        println!("[WARN] Found {crate_count} crates with unused dependencies");
-    } else {
-        println!("[SUCCESS] No unused dependencies detected by machete");
-    }
-
-    Ok((result.status.success(), out_path))
-}
-
-/// Run cargo-udeps and write output. Returns output path.
-fn run_udeps(root: &Path) -> Result<PathBuf> {
+/// Run legacy cargo-udeps with the historical target/feature scope and write
+/// output. This is advisory compatibility data, not the active dependency
+/// hygiene verdict.
+///
+/// Returns `None` when the instrument did not run to completion — nightly or
+/// `cargo-udeps` missing, or any nonzero exit. Callers must not count a failed
+/// invocation, because Cargo's error text contains no `unused` lines and would
+/// otherwise be recorded as a proven zero.
+fn run_udeps(root: &Path) -> Result<Option<PathBuf>> {
     let dir = output_dir(root)?;
     let out_path = dir.join("udeps-output.txt");
 
@@ -234,7 +210,30 @@ fn run_udeps(root: &Path) -> Result<PathBuf> {
     fs::write(&out_path, &combined)
         .with_context(|| format!("Failed to write {}", out_path.display()))?;
 
-    Ok(out_path)
+    // cargo-udeps exits 0 when it completed, 1 when it found unused
+    // dependencies. Anything else means it never produced a result.
+    match result.status.code() {
+        Some(0) | Some(1) => Ok(Some(out_path)),
+        other => {
+            println!(
+                "[WARN] cargo-udeps did not run (exit {other:?}); \
+                 legacy unused-dependency data is NOT_PROVEN for this run. \
+                 Native output saved to {}",
+                out_path.display()
+            );
+            println!(
+                "[WARN] install it with: cargo install cargo-udeps --locked \
+                 (requires a nightly toolchain)"
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// Count `needle` in the legacy udeps output, or `None` when the instrument
+/// did not run. `None` means unproven, which is not the same as zero.
+fn count_udeps(path: Option<&PathBuf>, needle: &str) -> Option<u64> {
+    path.map(|path| count_in_file(path, needle))
 }
 
 /// Run clippy with dead-code lints and write output. Returns output path.
@@ -306,10 +305,9 @@ fn run_check(root: &Path, strict: bool) -> Result<()> {
     if baseline_path.exists() {
         check_against_baseline(root, &baseline_path, strict)
     } else {
-        println!("[INFO] No baseline file, running basic checks...");
-        run_machete(root)?;
+        println!("[INFO] No baseline file, running Rust item liveness checks...");
         run_clippy_dead_code(root)?;
-        println!("[SUCCESS] Basic dead code checks completed");
+        println!("[SUCCESS] Rust item liveness checks completed");
         Ok(())
     }
 }
@@ -323,22 +321,19 @@ fn check_against_baseline(root: &Path, baseline_path: &Path, strict: bool) -> Re
     let baseline_file: BaselineFile = serde_yaml_ng::from_str(&baseline_content)
         .with_context(|| format!("Failed to parse {}", baseline_path.display()))?;
 
-    // Run tools and capture output files
-    let udeps_path = run_udeps(root)?;
+    // Dependency-unused analysis is owned by dependency-hygiene. Keep the
+    // legacy baseline fields readable, but do not run cargo-udeps or compare
+    // its count here as a required dead-code gate.
     let clippy_path = run_clippy_dead_code(root)?;
 
     // Count current issues
-    let current_unused_deps = count_in_file(&udeps_path, "unused");
     let current_dead_code = count_in_file(&clippy_path, "dead_code");
 
     let bl = &baseline_file.baseline;
     let th = &baseline_file.thresholds;
 
     println!("[INFO] Comparison:");
-    println!(
-        "  Unused dependencies: {} (baseline: {}, max: {})",
-        current_unused_deps, bl.unused_dependencies, th.max_unused_dependencies
-    );
+    println!("  Unused dependencies: advisory only (dependency-hygiene owns this check)");
     println!(
         "  Dead code items:     {} (baseline: {}, max: {})",
         current_dead_code, bl.dead_code_items, th.max_dead_code_items
@@ -347,13 +342,6 @@ fn check_against_baseline(root: &Path, baseline_path: &Path, strict: bool) -> Re
     let mut failed = false;
 
     // Check thresholds
-    if current_unused_deps > th.max_unused_dependencies {
-        println!(
-            "[ERROR] Unused dependencies ({}) exceeds threshold ({})",
-            current_unused_deps, th.max_unused_dependencies
-        );
-        failed = true;
-    }
     if current_dead_code > th.max_dead_code_items {
         println!(
             "[ERROR] Dead code items ({}) exceeds threshold ({})",
@@ -363,15 +351,6 @@ fn check_against_baseline(root: &Path, baseline_path: &Path, strict: bool) -> Re
     }
 
     // Check regression against baseline
-    if current_unused_deps > bl.unused_dependencies {
-        println!(
-            "[WARN] Unused dependencies increased from {} to {}",
-            bl.unused_dependencies, current_unused_deps
-        );
-        if strict {
-            failed = true;
-        }
-    }
     if current_dead_code > bl.dead_code_items {
         println!("[WARN] Dead code increased from {} to {}", bl.dead_code_items, current_dead_code);
         if strict {
@@ -390,12 +369,21 @@ fn check_against_baseline(root: &Path, baseline_path: &Path, strict: bool) -> Re
 fn run_baseline(root: &Path) -> Result<()> {
     println!("[INFO] Generating dead code baseline...");
 
-    ensure_udeps_installed()?;
-
     let udeps_path = run_udeps(root)?;
     let clippy_path = run_clippy_dead_code(root)?;
 
-    let unused_deps = count_in_file(&udeps_path, "unused");
+    // A baseline is durable evidence that later runs compare against. Refuse to
+    // write one when the legacy instrument did not produce a result, rather
+    // than recording an unmeasured zero as a proven count.
+    let Some(unused_deps) = count_udeps(udeps_path.as_ref(), "unused") else {
+        bail!(
+            "dead-code baseline: NOT_PROVEN — cargo-udeps did not run, so \
+             `baseline.unused_dependencies` cannot be measured. Install it with \
+             `cargo install cargo-udeps --locked` on a nightly toolchain and rerun, \
+             or use `cargo xtask dependency-hygiene` for the current \
+             dependency-unused authority."
+        );
+    };
     let dead_code = count_in_file(&clippy_path, "dead_code");
     let unused_imports = count_in_file(&clippy_path, "unused_imports");
     let unused_vars = count_in_file(&clippy_path, "unused_variables");
@@ -509,12 +497,10 @@ maintenance:
 fn run_report(root: &Path) -> Result<()> {
     println!("[INFO] Generating JSON report...");
 
-    ensure_udeps_installed()?;
-
     let udeps_path = run_udeps(root)?;
     let clippy_path = run_clippy_dead_code(root)?;
 
-    let unused_deps = count_in_file(&udeps_path, "unused");
+    let unused_deps = count_udeps(udeps_path.as_ref(), "unused");
     let dead_code = count_in_file(&clippy_path, "dead_code");
     let unused_imports = count_in_file(&clippy_path, "unused_imports");
     let unused_vars = count_in_file(&clippy_path, "unused_variables");
@@ -527,10 +513,12 @@ fn run_report(root: &Path) -> Result<()> {
             dead_code_items: dead_code,
             unused_imports,
             unused_variables: unused_vars,
-            total_issues: unused_deps + dead_code + unused_imports + unused_vars,
+            // Unproven legacy data must not be folded into a total that reads
+            // as a complete count.
+            total_issues: unused_deps.map(|deps| deps + dead_code + unused_imports + unused_vars),
         },
         details: JsonReportDetails {
-            udeps_output: udeps_path.display().to_string(),
+            udeps_output: udeps_path.as_ref().map(|path| path.display().to_string()),
             clippy_output: clippy_path.display().to_string(),
         },
     };

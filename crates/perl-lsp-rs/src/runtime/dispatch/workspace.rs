@@ -2,6 +2,8 @@
 //!
 //! Wraps workspace/* LSP requests.
 
+mod file_preflight;
+
 use super::super::{JsonRpcError, LspServer, Value};
 
 impl LspServer {
@@ -21,13 +23,6 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         self.handle_workspace_symbol_resolve(params)
-    }
-
-    pub(super) fn handle_configuration_dispatch(
-        &self,
-        params: Option<Value>,
-    ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_configuration(params)
     }
 
     pub(super) fn handle_did_change_watched_files_dispatch(
@@ -67,7 +62,7 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_will_rename_files(params)
+        self.handle_will_rename_files_pure(params)
     }
 
     pub(super) fn handle_did_rename_files_dispatch(
@@ -103,13 +98,6 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         self.handle_did_create_files(params)
-    }
-
-    pub(super) fn handle_apply_edit_dispatch(
-        &self,
-        params: Option<Value>,
-    ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_apply_edit(params)
     }
 
     pub(super) fn handle_text_document_content_dispatch(

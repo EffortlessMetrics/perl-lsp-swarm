@@ -318,34 +318,55 @@ impl NodeKind {
                 s
             }
 
-            VariableDeclaration { declarator, variable, initializer, .. } => match initializer {
-                Some(init) => format!(
-                    "(variable_declaration {} {} {})",
-                    declarator,
-                    variable.kind.to_sexp_depth(depth + 1),
-                    init.kind.to_sexp_depth(depth + 1)
-                ),
-                None => format!(
-                    "(variable_declaration {} {})",
-                    declarator,
-                    variable.kind.to_sexp_depth(depth + 1)
-                ),
-            },
+            VariableDeclaration { declarator, variable, attributes, initializer } => {
+                let var_sexp = variable.kind.to_sexp_depth(depth + 1);
+                // `String::new()` does not compile here: the `use NodeKind::*`
+                // above brings the `String` *variant* into scope, shadowing
+                // `std::string::String` for the rest of this function body.
+                let attrs_part = if attributes.is_empty() {
+                    "".to_string()
+                } else {
+                    format!(" (attrs {})", attributes.join(" "))
+                };
+                match initializer {
+                    Some(init) => format!(
+                        "(variable_declaration {} {}{} {})",
+                        declarator,
+                        var_sexp,
+                        attrs_part,
+                        init.kind.to_sexp_depth(depth + 1)
+                    ),
+                    None => {
+                        format!("(variable_declaration {} {}{})", declarator, var_sexp, attrs_part)
+                    }
+                }
+            }
 
-            VariableListDeclaration { declarator, variables, initializer, .. } => {
+            VariableListDeclaration { declarator, variables, attributes, initializer } => {
                 let vars = variables
                     .iter()
                     .map(|v| v.kind.to_sexp_depth(depth + 1))
                     .collect::<Vec<_>>()
                     .join(" ");
+                // `String::new()` does not compile here: the `use NodeKind::*`
+                // above brings the `String` *variant* into scope, shadowing
+                // `std::string::String` for the rest of this function body.
+                let attrs_part = if attributes.is_empty() {
+                    "".to_string()
+                } else {
+                    format!(" (attrs {})", attributes.join(" "))
+                };
                 match initializer {
                     Some(init) => format!(
-                        "(variable_list_declaration {} {} {})",
+                        "(variable_list_declaration {} {}{} {})",
                         declarator,
                         vars,
+                        attrs_part,
                         init.kind.to_sexp_depth(depth + 1)
                     ),
-                    None => format!("(variable_list_declaration {} {})", declarator, vars),
+                    None => {
+                        format!("(variable_list_declaration {} {}{})", declarator, vars, attrs_part)
+                    }
                 }
             }
 
@@ -440,7 +461,7 @@ mod tests {
     #[test]
     fn test_unary_sexp_explicit() -> Result<(), std::convert::Infallible> {
         let range = Range::new(Position::new(0, 1, 1), Position::new(2, 1, 3));
-        let inner = Node::new(0, NodeKind::Number { value: "1".to_string() }, range.clone());
+        let inner = Node::new(0, NodeKind::Number { value: "1".to_string() }, range);
         let node =
             Node::new(1, NodeKind::Unary { op: "!".to_string(), operand: Box::new(inner) }, range);
         let sexp = node.to_sexp();
@@ -452,8 +473,8 @@ mod tests {
     #[test]
     fn test_if_sexp_no_branches() -> Result<(), std::convert::Infallible> {
         let range = Range::new(Position::new(0, 1, 1), Position::new(0, 1, 1));
-        let cond = Node::new(0, NodeKind::Number { value: "1".to_string() }, range.clone());
-        let then_block = Node::new(1, NodeKind::Block { statements: vec![] }, range.clone());
+        let cond = Node::new(0, NodeKind::Number { value: "1".to_string() }, range);
+        let then_block = Node::new(1, NodeKind::Block { statements: vec![] }, range);
         let node = Node::new(
             2,
             NodeKind::If {
@@ -473,11 +494,11 @@ mod tests {
     #[test]
     fn test_if_sexp_with_elsif_and_else() -> Result<(), std::convert::Infallible> {
         let range = Range::new(Position::new(0, 1, 1), Position::new(0, 1, 1));
-        let cond = Node::new(0, NodeKind::Number { value: "1".to_string() }, range.clone());
-        let then_block = Node::new(1, NodeKind::Block { statements: vec![] }, range.clone());
-        let elsif_cond = Node::new(2, NodeKind::Number { value: "0".to_string() }, range.clone());
-        let elsif_block = Node::new(3, NodeKind::Block { statements: vec![] }, range.clone());
-        let else_block = Node::new(4, NodeKind::Block { statements: vec![] }, range.clone());
+        let cond = Node::new(0, NodeKind::Number { value: "1".to_string() }, range);
+        let then_block = Node::new(1, NodeKind::Block { statements: vec![] }, range);
+        let elsif_cond = Node::new(2, NodeKind::Number { value: "0".to_string() }, range);
+        let elsif_block = Node::new(3, NodeKind::Block { statements: vec![] }, range);
+        let else_block = Node::new(4, NodeKind::Block { statements: vec![] }, range);
         let node = Node::new(
             5,
             NodeKind::If {
@@ -499,7 +520,7 @@ mod tests {
         let var = Node::new(
             0,
             NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() },
-            range.clone(),
+            range,
         );
         let node = Node::new(
             1,
@@ -523,9 +544,9 @@ mod tests {
         let var = Node::new(
             0,
             NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() },
-            range.clone(),
+            range,
         );
-        let init = Node::new(1, NodeKind::Number { value: "42".to_string() }, range.clone());
+        let init = Node::new(1, NodeKind::Number { value: "42".to_string() }, range);
         let node = Node::new(
             2,
             NodeKind::VariableDeclaration {
@@ -546,12 +567,12 @@ mod tests {
         let var_a = Node::new(
             0,
             NodeKind::Variable { sigil: "$".to_string(), name: "a".to_string() },
-            range.clone(),
+            range,
         );
         let var_b = Node::new(
             1,
             NodeKind::Variable { sigil: "$".to_string(), name: "b".to_string() },
-            range.clone(),
+            range,
         );
         let node = Node::new(
             2,
@@ -575,9 +596,9 @@ mod tests {
         let var_a = Node::new(
             0,
             NodeKind::Variable { sigil: "$".to_string(), name: "a".to_string() },
-            range.clone(),
+            range,
         );
-        let init = Node::new(1, NodeKind::Number { value: "0".to_string() }, range.clone());
+        let init = Node::new(1, NodeKind::Number { value: "0".to_string() }, range);
         let node = Node::new(
             2,
             NodeKind::VariableListDeclaration {

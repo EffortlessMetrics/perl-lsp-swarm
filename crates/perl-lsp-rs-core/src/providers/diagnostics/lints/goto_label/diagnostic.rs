@@ -15,6 +15,7 @@ pub(crate) fn undefined_label(target: &Node, label: &str) -> Diagnostic {
             message: "Define the label or use a dynamic goto form only when the target is known at runtime.".to_string(),
         }],
         tags: Vec::new(),
+        fixable: false,
         suggestion: Some(format!("Add a '{label}:' label or remove the goto")),
     }
 }

@@ -40,7 +40,10 @@ describe('gherkin step definition support', () => {
     expect(buildGeneratedStepPattern('a user exists with name "alice"')).toBe(
       '^a user exists with name "([^"]+)"$',
     );
-    expect(buildGeneratedStepPattern('I add <item> to the cart')).toBe('^I add (.+) to the cart$');
+    // Outline placeholders must not span newlines (#5997).
+    expect(buildGeneratedStepPattern('I add <item> to the cart')).toBe(
+      '^I add ([^\\r\\n]+) to the cart$',
+    );
     expect(buildGeneratedStepPattern('the total is 19.99')).toBe('^the total is 19\\.99$');
   });
 
@@ -234,13 +237,13 @@ describe('gherkin step definition support', () => {
 
     const stub = buildGeneratedStepStub(step!, 'features/checkout.feature');
     expect(stub).toContain('# Auto-generated from features/checkout.feature:9');
-    expect(stub).toContain('When qr/^I add (.+) to the cart$/, sub {');
+    expect(stub).toContain('When qr/^I add ([^\\r\\n]+) to the cart$/, sub {');
     expect(stub).toContain('# TODO: implement step');
 
     const content = buildStepDefinitionFileContent(step!, 'features/checkout.feature');
     expect(content).toContain('use Test::BDD::Cucumber::StepFile;');
     expect(content).toContain('use strict;');
     expect(content).toContain('use warnings;');
-    expect(content).toContain('When qr/^I add (.+) to the cart$/, sub {');
+    expect(content).toContain('When qr/^I add ([^\\r\\n]+) to the cart$/, sub {');
   });
 });

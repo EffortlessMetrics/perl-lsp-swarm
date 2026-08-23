@@ -35,8 +35,8 @@ fn bdd_user_explores_subtypes_from_a_base_class() -> TestResult {
     let source = "package Base; package Child; use parent 'Base'; package GrandChild; use parent 'Child'; 1;\n";
     let uri = "file:///hierarchy.pl";
 
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut client = LspClient::spawn(bin)?;
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
     client.did_open(uri, "perl", source)?;
 
     scenario.when("the user requests prepareTypeHierarchy on the Base package declaration");
@@ -84,8 +84,8 @@ our @ISA = ('Parent1', 'Parent2');
 ";
     let uri = "file:///isa.pl";
 
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut client = LspClient::spawn(bin)?;
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
     client.did_open(uri, "perl", source)?;
 
     scenario.when("the user requests prepareTypeHierarchy on the Child package declaration");

@@ -83,6 +83,11 @@ describe('Rolldown bundle configuration', () => {
     expect(pkg.scripts['vscode:prepublish']).toBe(
       'npm run doctor && npm run typecheck:all && npm run compile',
     );
+    // ...and typechecking must first establish *which* compiler is doing the
+    // checking. TS6 and TS7 compile and emit identically for this tree, so a
+    // slide back to the old compiler passes every `tsc` invocation green.
+    expect(pkg.scripts['typecheck:all']).toMatch(/^npm run typecheck:authority &&/);
+    expect(pkg.scripts['typecheck:authority']).toBe('node scripts/check-typescript-authority.js');
   });
 
   test('package.json has rolldown devDependency, exactly pinned (no ^/~)', () => {

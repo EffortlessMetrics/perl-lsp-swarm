@@ -1,0 +1,76 @@
+{
+  "schema_version": "zed_settings_behavior_contract.v1",
+  "issue": 7990,
+  "programme": 7759,
+  "canonical_schema": "schemas/perllsp-settings.schema.json",
+  "static_contract": ".ci/fixtures/zed-perl-upstream/settings-contract.v1.json",
+  "host_receipt_schema": "zed_host_compat.v1",
+  "host_evidence_stage": "exact_source_dev_extension",
+  "zed_process_prefix": "lsp.perllsp.binary",
+  "server_settings_prefix": "lsp.perllsp.settings.perl",
+  "probes": [
+    {
+      "id": "boolean_inlay_hints",
+      "key": "perl.inlayHints.enabled",
+      "schema_pointer": "/properties/perl/properties/inlayHints/properties/enabled",
+      "expected_type": "boolean",
+      "project_value": true,
+      "zed_value": false,
+      "observable": "Inlay hints visible before the Zed override and absent after the override."
+    },
+    {
+      "id": "enum_critic_profile",
+      "key": "perl.critic.profile",
+      "schema_pointer": "/properties/perl/properties/critic/properties/profile",
+      "expected_type": "string",
+      "project_value": "recommended",
+      "zed_value": "strict",
+      "observable": "A fixture diagnostic unique to the strict native critic profile appears only while the Zed override is effective."
+    },
+    {
+      "id": "integer_format_width",
+      "key": "perl.formatting.maximumLineLength",
+      "schema_pointer": "/properties/perl/properties/formatting/properties/maximumLineLength",
+      "expected_type": "integer",
+      "project_value": 100,
+      "zed_value": 40,
+      "observable": "Formatting output changes at a discriminator line whose layout differs between widths 100 and 40."
+    },
+    {
+      "id": "path_list_include_paths",
+      "key": "perl.workspace.includePaths",
+      "schema_pointer": "/properties/perl/properties/workspace/properties/includePaths",
+      "expected_type": "array",
+      "project_value": ["project-lib"],
+      "zed_value": ["zed-lib"],
+      "observable": "ProjectOnly.pm resolves only from project-lib and ZedOnly.pm resolves only from zed-lib."
+    },
+    {
+      "id": "nested_streaming_setting",
+      "key": "perl.aiCompletion.streaming.enabled",
+      "schema_pointer": "/properties/perl/properties/aiCompletion/properties/streaming/properties/enabled",
+      "expected_type": "boolean",
+      "project_value": true,
+      "zed_value": false,
+      "observable": "The server configuration trace identifies the nested streaming value and its winning authority; client-visible streaming remains a separate feature cell."
+    }
+  ],
+  "precedence_sequence": [
+    "project_only",
+    "zed_override",
+    "zed_override_removed"
+  ],
+  "restart_dispositions": [
+    "live_configuration",
+    "zed_managed_restart",
+    "manual_restart",
+    "no_effect",
+    "instrument_failed"
+  ],
+  "claim_boundary": {
+    "static_shape": "proven_by_7902",
+    "settings_behavior": "not_run",
+    "full_zed_support": "not_proven",
+    "public_registry": "not_proven"
+  }
+}

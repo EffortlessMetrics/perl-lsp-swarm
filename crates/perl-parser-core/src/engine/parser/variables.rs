@@ -22,30 +22,7 @@ impl<'a> Parser<'a> {
             // Parse comma-separated list of variables with their individual attributes
             while self.peek_kind() != Some(TokenKind::RightParen) && !self.tokens.is_eof() {
                 let var = self.parse_variable_list_item()?;
-
-                // Parse optional attributes for this specific variable
-                let var_attributes = if self.peek_kind() == Some(TokenKind::Colon) {
-                    self.parse_variable_attributes()?
-                } else {
-                    Vec::new()
-                };
-
-                // Create a node that includes both the variable and its attributes
-                let var_with_attrs = if var_attributes.is_empty() {
-                    var
-                } else {
-                    let start = var.location.start;
-                    let end = self.previous_position();
-                    Node::new(
-                        NodeKind::VariableWithAttributes {
-                            variable: Box::new(var),
-                            attributes: var_attributes,
-                        },
-                        SourceLocation { start, end },
-                    )
-                };
-
-                variables.push(var_with_attrs);
+                variables.push(self.with_optional_list_item_attributes(var)?);
 
                 if self.peek_kind() == Some(TokenKind::Comma) {
                     self.consume_token()?; // consume comma
@@ -267,6 +244,30 @@ impl<'a> Parser<'a> {
             }
             _ => self.parse_ternary(),
         }
+    }
+
+    /// Attach optional per-item attributes after a list-declaration slot.
+    ///
+    /// Shared by statement-form `my ($x :shared, $y)` and declaration-as-argument
+    /// forms (`Readonly my (...)`, `const my (...)`) so both paths stay in lockstep.
+    fn with_optional_list_item_attributes(&mut self, var: Node) -> ParseResult<Node> {
+        let var_attributes = if self.peek_kind() == Some(TokenKind::Colon) {
+            self.parse_variable_attributes()?
+        } else {
+            Vec::new()
+        };
+        if var_attributes.is_empty() {
+            return Ok(var);
+        }
+        let start = var.location.start;
+        let end = self.previous_position();
+        Ok(Node::new(
+            NodeKind::VariableWithAttributes {
+                variable: Box::new(var),
+                attributes: var_attributes,
+            },
+            SourceLocation { start, end },
+        ))
     }
 
     /// Consume an optional legacy type constraint in lexical declarations.
@@ -1674,13 +1675,14 @@ fn parse_inline_expression(source: &str, offset: usize) -> ParseResult<(Node, Ve
         .cloned()
         .map(|error| offset_parse_error(error, offset))
         .collect();
-    let NodeKind::Program { mut statements } = ast.kind else {
+    let NodeKind::Program { mut statements } = ast.into_parts().0 else {
         return Err(ParseError::syntax("Expected an expression program", offset));
     };
     let mut expressions = Vec::new();
     for statement in statements.drain(..) {
         let statement_start = statement.location.start;
-        let NodeKind::ExpressionStatement { expression: statement_expression } = statement.kind
+        let NodeKind::ExpressionStatement { expression: statement_expression } =
+            statement.into_parts().0
         else {
             return Err(ParseError::syntax(
                 "Expected an expression statement",
@@ -1851,7 +1853,7 @@ mod inline_expression_tests {
     fn multi_statement_inline_expression_preserves_every_expression() -> ParseResult<()> {
         let (node, _) = parse_inline_expression("$tmp; 'STDOUT'", 17)?;
 
-        let NodeKind::Block { statements } = node.kind else {
+        let NodeKind::Block { statements } = node.into_parts().0 else {
             return Err(ParseError::syntax(
                 "expected multi-statement inline expression to remain a block",
                 17,
@@ -1920,7 +1922,7 @@ mod prototype_heuristic_tests {
     fn parse_sub(code: &str) -> Option<Node> {
         let mut parser = Parser::new(code);
         let ast = parser.parse().ok()?;
-        if let NodeKind::Program { statements } = ast.kind {
+        if let NodeKind::Program { statements } = ast.into_parts().0 {
             statements.into_iter().next()
         } else {
             None
@@ -2274,8 +2276,8 @@ mod code_dereference_tests {
     /// Helper: parse code and return the first statement node.
     fn parse_first_stmt(code: &str) -> Option<Node> {
         let ast = parse_program(code);
-        match ast.kind {
-            NodeKind::Program { mut statements } if !statements.is_empty() => {
+        match ast.into_parts() {
+            (NodeKind::Program { mut statements }, _) if !statements.is_empty() => {
                 Some(statements.swap_remove(0))
             }
             _ => None,

@@ -1,0 +1,264 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.com/schemas/perl_builtin_semantics.v1.schema.json",
+  "title": "Perl builtin semantics catalog v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "catalog_id",
+    "controller_issue",
+    "coverage_scope",
+    "claim_boundary",
+    "complete",
+    "builtins"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "perl_builtin_semantics.v1"
+    },
+    "catalog_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "controller_issue": {
+      "$ref": "#/$defs/issue"
+    },
+    "coverage_scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "claim_boundary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "builtins": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/builtin"
+      }
+    }
+  },
+  "$defs": {
+    "issue": {
+      "type": "string",
+      "pattern": "^#[1-9][0-9]*$"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_.-]*[a-z0-9]$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "classification": {
+      "enum": ["builtin", "list_operator", "named_unary", "special_syntax"]
+    },
+    "recognition": {
+      "enum": ["parser_builtin_or_core_qualified"]
+    },
+    "argument_context": {
+      "enum": ["scalar", "list", "callback", "place", "filehandle"]
+    },
+    "argument_access": {
+      "enum": ["read", "read_modify_write", "write"]
+    },
+    "cardinality": {
+      "enum": ["exactly_one", "zero_or_one", "zero_or_more"]
+    },
+    "implicit_operand": {
+      "enum": [
+        "caller_context",
+        "selected_output_handle",
+        "topic_alias_per_iteration",
+        "topic_when_omitted"
+      ]
+    },
+    "result_behavior": {
+      "enum": [
+        "context_tri_state",
+        "scalar_boolean",
+        "scalar_count",
+        "scalar_count_or_list",
+        "scalar_value"
+      ]
+    },
+    "side_effect": {
+      "enum": [
+        "callback_invocation",
+        "container_mutation",
+        "interpreter_state_read",
+        "stream_write",
+        "topic_localization"
+      ]
+    },
+    "boundary": {
+      "enum": [
+        "dynamic_callback",
+        "interpreter_state",
+        "io",
+        "output_separators",
+        "overload",
+        "selected_handle_state",
+        "tie_magic"
+      ]
+    },
+    "capability": {
+      "enum": ["interpreter_state", "io"]
+    },
+    "control_effect": {
+      "enum": ["ordinary"]
+    },
+    "hir_pir_lowering": {
+      "enum": ["catalog_only", "classified_call", "dedicated_operation", "boundary"]
+    },
+    "eir_profile": {
+      "enum": ["absent", "boundary", "executable"]
+    },
+    "proof": {
+      "enum": ["missing", "proven"]
+    },
+    "argument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "context", "access", "cardinality"],
+      "properties": {
+        "role": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]*$"
+        },
+        "context": {
+          "$ref": "#/$defs/argument_context"
+        },
+        "access": {
+          "$ref": "#/$defs/argument_access"
+        },
+        "cardinality": {
+          "$ref": "#/$defs/cardinality"
+        }
+      }
+    },
+    "builtin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "builtin_id",
+        "name",
+        "forms",
+        "classification",
+        "recognition",
+        "perl_version_min",
+        "arguments",
+        "implicit_operands",
+        "result_behavior",
+        "side_effects",
+        "boundaries",
+        "capabilities",
+        "control_effect",
+        "hir_pir_lowering",
+        "eir_profile",
+        "proof",
+        "owner_issue",
+        "evidence",
+        "claim_boundary"
+      ],
+      "properties": {
+        "builtin_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "forms": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "classification": {
+          "$ref": "#/$defs/classification"
+        },
+        "recognition": {
+          "$ref": "#/$defs/recognition"
+        },
+        "perl_version_min": {
+          "$ref": "#/$defs/version"
+        },
+        "arguments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/argument"
+          }
+        },
+        "implicit_operands": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/implicit_operand"
+          }
+        },
+        "result_behavior": {
+          "$ref": "#/$defs/result_behavior"
+        },
+        "side_effects": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/side_effect"
+          }
+        },
+        "boundaries": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/boundary"
+          }
+        },
+        "capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/capability"
+          }
+        },
+        "control_effect": {
+          "$ref": "#/$defs/control_effect"
+        },
+        "hir_pir_lowering": {
+          "$ref": "#/$defs/hir_pir_lowering"
+        },
+        "eir_profile": {
+          "$ref": "#/$defs/eir_profile"
+        },
+        "proof": {
+          "$ref": "#/$defs/proof"
+        },
+        "owner_issue": {
+          "$ref": "#/$defs/issue"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "claim_boundary": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

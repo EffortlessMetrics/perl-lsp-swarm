@@ -1,0 +1,262 @@
+use perl_regex::analyzer::{
+    FeatureState, ModifierSequence, PerlVersion, RegexLanguageProfile, RegexOperator,
+};
+use perl_regex::validator::{RegexDiagnosticCode, RegexValidationConfig};
+use perl_regex::{RegexAnalyzer, RegexValidator};
+
+fn effective(
+    operator: RegexOperator,
+    raw: &str,
+) -> Result<perl_regex::analyzer::EffectiveModifiers, Box<dyn std::error::Error>> {
+    let sequence = ModifierSequence::new(raw, 0)
+        .ok_or_else(|| format!("modifier range overflow for {raw:?}"))?;
+    let profile = RegexLanguageProfile::new(Some(PerlVersion::new(5, 44)), FeatureState::Enabled);
+    Ok(RegexAnalyzer::analyze_modifiers(operator, sequence, profile).effective)
+}
+
+#[test]
+fn extended_line_comments_are_excluded_from_every_analysis()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pattern = "# (?{ hidden }) (a+)+ \\p{L}\\p{N}\n(a+)+";
+    let validator = RegexValidator::with_config(RegexValidationConfig {
+        max_nesting: 10,
+        max_unicode_properties: 1,
+        max_branch_reset_branches: 50,
+    });
+    let analysis = validator.analyze_with_modifiers(pattern, effective(RegexOperator::Match, "x")?);
+
+    assert!(analysis.facts.embedded_code.is_empty());
+    assert_eq!(analysis.facts.nested_quantifiers.len(), 1);
+    assert_eq!(
+        analysis
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == RegexDiagnosticCode::UnicodePropertyLimit)
+            .count(),
+        0
+    );
+    assert_eq!(
+        analysis.facts.nested_quantifiers[0].start,
+        pattern.rfind('+').ok_or("missing live outer quantifier")?
+    );
+    Ok(())
+}
+
+#[test]
+fn pattern_whitespace_does_not_hide_nbsp_as_trivia() -> Result<(), Box<dyn std::error::Error>> {
+    let pattern = "(a+)\u{00a0}+";
+    let analysis = RegexValidator::new()
+        .analyze_with_modifiers(pattern, effective(RegexOperator::Match, "x")?);
+
+    assert!(analysis.facts.nested_quantifiers.is_empty());
+    Ok(())
+}
+
+#[test]
+fn nested_quantifier_state_survives_extended_comments() -> Result<(), Box<dyn std::error::Error>> {
+    let pattern = "(a+) # ignored\n +";
+    let analysis = RegexValidator::new()
+        .analyze_with_modifiers(pattern, effective(RegexOperator::Match, "x")?);
+
+    assert_eq!(analysis.facts.nested_quantifiers.len(), 1);
+    assert_eq!(
+        analysis.facts.nested_quantifiers[0].start,
+        pattern.rfind('+').ok_or("missing live outer quantifier")?
+    );
+    Ok(())
+}
+
+#[test]
+fn omitted_lower_bound_brace_quantifier_is_structurally_normalized()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pattern = "(a+){,3}";
+    let analysis = RegexValidator::new().analyze(pattern);
+
+    assert_eq!(analysis.facts.nested_quantifiers.len(), 1);
+    assert_eq!(
+        analysis.facts.nested_quantifiers[0].start,
+        pattern.find("{,3}").ok_or("missing omitted-lower-bound quantifier")?
+    );
+    Ok(())
+}
+
+#[test]
+fn caret_modifier_scope_resets_extended_mode_for_embedded_code()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pattern = "(?^:#(?{ live }))";
+    let analysis = RegexValidator::new()
+        .analyze_with_modifiers(pattern, effective(RegexOperator::Match, "x")?);
+
+    assert_eq!(analysis.facts.embedded_code.len(), 1);
+    assert_eq!(
+        analysis.facts.embedded_code[0].range.start,
+        pattern.find("(?{").ok_or("missing live embedded-code opener")?
+    );
+    Ok(())
+}
+
+#[test]
+fn group_comments_are_excluded_before_later_live_structure()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pattern = "(?# (?{ hidden })(a+)+";
+    let analysis = RegexValidator::new().analyze(pattern);
+
+    assert!(analysis.facts.embedded_code.is_empty());
+    assert_eq!(analysis.facts.nested_quantifiers.len(), 1);
+    assert_eq!(
+        analysis.facts.nested_quantifiers[0].start,
+        pattern.rfind('+').ok_or("missing live outer quantifier")?
+    );
+    Ok(())
+}
+
+#[test]
+fn local_x_scope_hides_structure_and_minus_x_restores_literal_hash_behavior()
+-> Result<(), Box<dyn std::error::Error>> {
+    let validator = RegexValidator::new();
+
+    let locally_extended = "(?x:# (?{ hidden }) (a+)+\n(a+)+)";
+    let extended = validator.analyze(locally_extended);
+    assert!(extended.facts.embedded_code.is_empty());
+    assert_eq!(extended.facts.nested_quantifiers.len(), 1);
+    assert_eq!(
+        extended.facts.nested_quantifiers[0].start,
+        locally_extended.rfind('+').ok_or("missing live local quantifier")?
+    );
+
+    let locally_literal = "(?-x:#(?{ live }))";
+    let literal =
+        validator.analyze_with_modifiers(locally_literal, effective(RegexOperator::Match, "x")?);
+    assert_eq!(literal.facts.embedded_code.len(), 1);
+    assert_eq!(
+        literal.facts.embedded_code[0].range.start,
+        locally_literal.find("(?{").ok_or("missing embedded-code opener")?
+    );
+    Ok(())
+}
+
+#[test]
+fn persistent_inline_x_changes_apply_to_the_remaining_pattern()
+-> Result<(), Box<dyn std::error::Error>> {
+    let validator = RegexValidator::new();
+
+    let enable = "(?x)# (?{ hidden }) (a+)+\n(a+)+";
+    let enabled = validator.analyze(enable);
+    assert!(enabled.facts.embedded_code.is_empty());
+    assert_eq!(enabled.facts.nested_quantifiers.len(), 1);
+    assert_eq!(
+        enabled.facts.nested_quantifiers[0].start,
+        enable.rfind('+').ok_or("missing live quantifier after newline")?
+    );
+
+    let disable = "(?-x)#(?{ live })";
+    let disabled = validator.analyze_with_modifiers(disable, effective(RegexOperator::Match, "x")?);
+    assert_eq!(disabled.facts.embedded_code.len(), 1);
+    assert_eq!(
+        disabled.facts.embedded_code[0].range.start,
+        disable.find("(?{").ok_or("missing live embedded-code opener")?
+    );
+    Ok(())
+}
+
+#[test]
+fn optional_exact_and_repeating_outer_quantifiers_are_distinct()
+-> Result<(), Box<dyn std::error::Error>> {
+    let validator = RegexValidator::new();
+    let safe = ["(a+)?", "(a+){0,1}", "(a+){1}"];
+    for pattern in safe {
+        assert!(
+            validator.analyze(pattern).facts.nested_quantifiers.is_empty(),
+            "optional or exact-one outer quantifier must not be reported: {pattern}"
+        );
+    }
+
+    let risky = ["(a+)+", "(a+)+?", "(a+){2}", "(a+){2,5}", "(a+){2,}"];
+    for pattern in risky {
+        let analysis = validator.analyze(pattern);
+        assert_eq!(
+            analysis.facts.nested_quantifiers.len(),
+            1,
+            "repeating outer quantifier should retain one advisory: {pattern}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn possessive_quantifiers_and_atomic_groups_block_the_nested_risk_path()
+-> Result<(), Box<dyn std::error::Error>> {
+    let validator = RegexValidator::new();
+    for pattern in ["(a++)+", "(?>a+)+", "(a+){2}+"] {
+        assert!(
+            validator.analyze(pattern).facts.nested_quantifiers.is_empty(),
+            "possessive or atomic protection should suppress the advisory: {pattern}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn excluded_regions_use_one_authority_for_embedded_code_and_nested_risk()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pattern = r"\Q(?{ literal })(a+)+\E[(?{ x })(a+)+](a+)+(?{ live })";
+    let analysis = RegexValidator::new().analyze(pattern);
+
+    assert_eq!(analysis.facts.nested_quantifiers.len(), 1);
+    assert_eq!(analysis.facts.embedded_code.len(), 1);
+    assert_eq!(
+        analysis.facts.embedded_code[0].range.start,
+        pattern.rfind("(?{").ok_or("missing live embedded-code opener")?
+    );
+    Ok(())
+}
+
+#[test]
+fn policy_limits_consume_the_same_group_and_unicode_events()
+-> Result<(), Box<dyn std::error::Error>> {
+    let validator = RegexValidator::with_config(RegexValidationConfig {
+        max_nesting: 1,
+        max_unicode_properties: 1,
+        max_branch_reset_branches: 1,
+    });
+    let pattern = r"(?<=(?<=x))(?|a|b)\p{L}\p{N}";
+    let analysis = validator.analyze(pattern);
+    let codes = analysis.diagnostics.iter().map(|diagnostic| diagnostic.code).collect::<Vec<_>>();
+
+    assert!(codes.contains(&RegexDiagnosticCode::LookbehindNestingLimit));
+    assert!(codes.contains(&RegexDiagnosticCode::BranchResetBranchLimit));
+    assert!(codes.contains(&RegexDiagnosticCode::UnicodePropertyLimit));
+    assert!(analysis.completeness.is_policy_limited());
+    Ok(())
+}
+
+#[test]
+fn malformed_structure_is_retained_without_fabricated_findings()
+-> Result<(), Box<dyn std::error::Error>> {
+    let analysis = RegexValidator::new().analyze("[unterminated");
+
+    assert!(analysis.malformed);
+    assert!(!analysis.is_exhausted());
+    assert!(analysis.diagnostics.is_empty());
+    assert!(analysis.facts.embedded_code.is_empty());
+    assert!(analysis.facts.nested_quantifiers.is_empty());
+    Ok(())
+}
+
+#[test]
+fn embedded_code_without_closing_paren_is_malformed() -> Result<(), Box<dyn std::error::Error>> {
+    // `(?{ code })` requires the literal `)` after the closing `}`.  A bare
+    // `(?{ code }` that lacks the `)` is rejected by Perl as unterminated.
+    //
+    // Before the fix the scanner advanced past `}`, optionally consumed `)` if
+    // present, then unconditionally returned `closed = true`.  This meant a
+    // pattern that Perl rejects was reported as well-formed, producing a
+    // definitive analysis result from a structurally invalid pattern.
+    let malformed = RegexValidator::new().analyze("(?{ run }");
+    assert!(malformed.malformed, "(?{{ run }} without closing ) must be reported as malformed");
+
+    // The well-formed spelling closes normally and must not be malformed.
+    let well_formed = RegexValidator::new().analyze("(?{ run })");
+    assert!(!well_formed.malformed, "(?{{ run }}) with closing ) must not be malformed");
+    Ok(())
+}

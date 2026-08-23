@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import {
-  organizeImportsCommand,
   showStatusMenuCommand,
   showWorkspaceStatusCommand,
   showVersionCommand,
@@ -37,9 +36,21 @@ describe('navigation command implementations', () => {
     setActiveEditor(undefined);
   });
 
-  test('delegates organize imports to VS Code', async () => {
-    await organizeImportsCommand();
-    expect(vscode.commands.executeCommand).toHaveBeenCalledWith('editor.action.organizeImports');
+  test('keeps the withdrawn organize-imports entry out of the status menu', async () => {
+    setActiveEditor(makeEditor());
+    (vscode.window.showQuickPick as jest.Mock).mockResolvedValueOnce(undefined);
+
+    await showStatusMenuCommand();
+
+    const items = (vscode.window.showQuickPick as jest.Mock).mock.calls[0]?.[0] as Array<{
+      command?: string;
+      disabled?: boolean;
+    }>;
+    expect(items.find((item) => item.command === 'perl-lsp.organizeImports')).toBeUndefined();
+    expect(items.find((item) => item.command === 'perl-lsp.runTests')?.disabled).toBe(false);
+    expect(items.find((item) => item.command === 'perl-lsp.showWorkspaceStatus')?.disabled).toBe(
+      undefined,
+    );
   });
 
   test('offers recovery actions when the server is unavailable', async () => {
@@ -197,20 +208,11 @@ describe('navigation command implementations', () => {
   test('builds a context-aware status menu and dispatches enabled actions', async () => {
     setActiveEditor(makeEditor());
     (vscode.window.showQuickPick as jest.Mock).mockResolvedValueOnce({
-      command: 'perl-lsp.organizeImports',
+      command: 'perl-lsp.runTests',
     });
 
     await showStatusMenuCommand();
 
-    const items = (vscode.window.showQuickPick as jest.Mock).mock.calls[0]?.[0] as Array<{
-      command?: string;
-      disabled?: boolean;
-    }>;
-    expect(items.find((item) => item.command === 'perl-lsp.organizeImports')?.disabled).toBe(false);
-    expect(items.find((item) => item.command === 'perl-lsp.runTests')?.disabled).toBe(false);
-    expect(items.find((item) => item.command === 'perl-lsp.showWorkspaceStatus')?.disabled).toBe(
-      undefined,
-    );
-    expect(vscode.commands.executeCommand).toHaveBeenCalledWith('perl-lsp.organizeImports');
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith('perl-lsp.runTests');
   });
 });

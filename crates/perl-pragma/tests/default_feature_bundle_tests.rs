@@ -51,10 +51,7 @@ fn no_node(module: &str, args: &[&str], start: usize, end: usize) -> Node {
 }
 
 fn function_call(name: &str, start: usize, end: usize) -> Node {
-    Node::new(
-        NodeKind::FunctionCall { name: name.to_string(), args: vec![] },
-        loc(start, end),
-    )
+    Node::new(NodeKind::FunctionCall { name: name.to_string(), args: vec![] }, loc(start, end))
 }
 
 fn block(stmts: Vec<Node>, start: usize, end: usize) -> Node {
@@ -164,7 +161,7 @@ fn all_strict_boundary_discriminator_input_that_hits_the_boundary_strict_refs_tr
         builtin_imports: Vec::new(),
     };
 
-    assert_eq!(state.strict_refs, true, "input that hits the boundary: strict_refs: true");
+    assert!(state.strict_refs, "input that hits the boundary: strict_refs: true");
     assert_eq!(state, expected, "all_strict should match the exact expected state");
     Ok(())
 }

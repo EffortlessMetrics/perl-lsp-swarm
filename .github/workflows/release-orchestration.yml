@@ -1,6 +1,6 @@
 name: Release Orchestration
 
-# Master release workflow that orchestrates all release tasks
+# Default-branch release workflow that orchestrates all release tasks
 # Triggered manually after version bump PR is merged
 
 on:
@@ -32,10 +32,7 @@ on:
         default: false
 
 permissions:
-  contents: write
-  actions: write
-  id-token: write
-  attestations: write
+  contents: read
 
 concurrency:
   group: release-orchestration-${{ github.event.inputs.version }}
@@ -50,15 +47,19 @@ jobs:
     name: Validate Release
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
+      statuses: read
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -107,7 +108,7 @@ jobs:
             exit 1
           fi
 
-          # Poll combined-status with a bounded window. Master CI on a just-
+          # Poll combined-status with a bounded window. Default-branch CI on a just-
           # squash-merged commit can return `pending` for several minutes
           # before all required checks report; that is "no signal yet," not
           # "negative signal." Treat `pending` as wait-and-retry; fail fast
@@ -176,7 +177,7 @@ jobs:
       - name: Verify RELEASE_HISTORY ledger row exists
         run: |
           # Trip-wire: a missing ledger row breaks the release-history drift
-          # gate for *every* PR opened against master, not just release PRs.
+          # gate for *every* PR opened against the default branch, not just release PRs.
           # The bundling guarantee (version bump and ledger row land together)
           # is enforced both upstream by `cargo xtask bump-version` (which
           # appends the row) and here at finalization (so a manually-edited
@@ -223,22 +224,27 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - name: Create and push tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          TAG: ${{ needs.validate.outputs.tag }}
         run: |
-          VERSION="${{ needs.validate.outputs.version }}"
-          TAG="${{ needs.validate.outputs.tag }}"
+          # Git authentication is introduced here, in the only step that writes
+          # repository contents — not persisted by checkout for the whole job.
+          gh auth setup-git
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           # Extract changelog section for this version
           CHANGELOG_SECTION="$(mktemp)"
-          awk -v ver="${VERSION}" '
+          awk -v ver="$VERSION" '
             $0 ~ "^## \\[" ver "\\]" { in_section=1; next }
             in_section && /^## \[/ { exit }
             in_section { print }
@@ -264,10 +270,12 @@ jobs:
           echo "Created tag: $TAG"
 
       - name: Summary
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
         run: |
           echo "## Tag Created :bookmark:" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Tag**: v${{ github.event.inputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tag**: $TAG" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Pushed**: Yes" >> "$GITHUB_STEP_SUMMARY"
 
   trigger-release:
@@ -275,6 +283,8 @@ jobs:
     needs: [create-tag, validate]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      actions: write
 
     steps:
       - name: Dispatch release workflows
@@ -334,33 +344,38 @@ jobs:
           fi
 
       - name: Summary
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SKIP_CRATES: ${{ github.event.inputs.skip_crates }}
+          SKIP_EXTENSION: ${{ github.event.inputs.skip_extension }}
+          SKIP_DOCKER: ${{ github.event.inputs.skip_docker }}
         run: |
           echo "## Release Triggered :rocket:" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "The following workflows have been triggered:" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Build & Release" >> "$GITHUB_STEP_SUMMARY"
-          echo "- [Release](https://github.com/${{ github.repository }}/actions/workflows/release.yml) - Build binaries and create GitHub release" >> "$GITHUB_STEP_SUMMARY"
+          echo "- [Release](https://github.com/$REPOSITORY/actions/workflows/release.yml) - Build binaries and create GitHub release" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Publishing" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${{ github.event.inputs.skip_crates }}" != "true" ]; then
-            echo "- [Publish to crates.io](https://github.com/${{ github.repository }}/actions/workflows/publish-crates.yml)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$SKIP_CRATES" != "true" ]; then
+            echo "- [Publish to crates.io](https://github.com/$REPOSITORY/actions/workflows/publish-crates.yml)" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "- ~~Publish to crates.io~~ (skipped)" >> "$GITHUB_STEP_SUMMARY"
           fi
-          if [ "${{ github.event.inputs.skip_extension }}" != "true" ]; then
-            echo "- [Publish VSCode Extension](https://github.com/${{ github.repository }}/actions/workflows/publish-extension.yml) - Marketplace and Open VSX jobs report separately" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$SKIP_EXTENSION" != "true" ]; then
+            echo "- [Publish VSCode Extension](https://github.com/$REPOSITORY/actions/workflows/publish-extension.yml) - Marketplace and Open VSX jobs report separately" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "- ~~Publish VSCode Extension~~ (skipped)" >> "$GITHUB_STEP_SUMMARY"
           fi
-          if [ "${{ github.event.inputs.skip_docker }}" != "true" ]; then
-            echo "- [Publish Docker Images](https://github.com/${{ github.repository }}/actions/workflows/docker-publish.yml)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$SKIP_DOCKER" != "true" ]; then
+            echo "- [Publish Docker Images](https://github.com/$REPOSITORY/actions/workflows/docker-publish.yml)" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "- ~~Publish Docker Images~~ (skipped)" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Package Manager Updates" >> "$GITHUB_STEP_SUMMARY"
-          echo "- [Homebrew Bump](https://github.com/${{ github.repository }}/actions/workflows/brew-bump.yml)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- [Scoop Bump](https://github.com/${{ github.repository }}/actions/workflows/scoop-bump.yml)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- [Chocolatey Bump](https://github.com/${{ github.repository }}/actions/workflows/chocolatey-bump.yml)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- [Winget Manifest Refresh](https://github.com/${{ github.repository }}/actions/workflows/winget-bump.yml)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- [Homebrew Bump](https://github.com/$REPOSITORY/actions/workflows/brew-bump.yml)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- [Scoop Bump](https://github.com/$REPOSITORY/actions/workflows/scoop-bump.yml)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- [Chocolatey Bump](https://github.com/$REPOSITORY/actions/workflows/chocolatey-bump.yml)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- [Winget Manifest Refresh](https://github.com/$REPOSITORY/actions/workflows/winget-bump.yml)" >> "$GITHUB_STEP_SUMMARY"

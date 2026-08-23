@@ -1055,7 +1055,7 @@ mod tests {
             let path_str = path.to_str().ok_or_else(|| {
                 format!("Failed to convert path to string for test file: {}", name)
             })?;
-            index.index_file_str(path_str, content)?;
+            index.index_initial_file_str(path_str, content)?;
             paths.push(path);
         }
         Ok((dir, index, paths))

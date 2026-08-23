@@ -1,564 +1,341 @@
 # Contributing to Perl LSP
 
-Thank you for your interest in contributing to Perl LSP! This is a **public beta** — the core feature set is solid, but there are rough edges and plenty of room to help. Whether you are fixing a bug, improving Perl parsing coverage, or adding an LSP feature, you are welcome here.
+Thank you for contributing to Perl LSP. The project is a public beta: the core editor
+experience is useful, but APIs and behavior may still change between minor releases.
+See [STABILITY.md](docs/reference/STABILITY.md) for the supported compatibility boundary.
 
-> **Public beta means:** things move fast, APIs may change between minor versions, and your early feedback shapes the 1.0 design. See [STABILITY.md](docs/reference/STABILITY.md) for the stability policy.
+This guide covers the ordinary contributor path. Agentic environments should also read
+the [agent contributing guide](docs/how-to/AGENT_CONTRIBUTING.md), which points to the
+provider-native repository contracts without creating a second workflow.
 
-## Quick Start
-
-Clone, check the environment, and run the fast local gate:
+## Quick start
 
 ```bash
 git clone https://github.com/EffortlessMetrics/perl-lsp.git
 cd perl-lsp
-nix develop                   # Recommended: Rust 1.95.0 + all repo tools
+
+# Recommended reproducible environment
+nix develop
+
+# Verify tools and repository health
 just devex
+just doctor
+
+# Fast local proof
 just pr-fast
 ```
 
-No Nix? Install Rust via [rustup](https://rustup.rs/) (MSRV 1.95, toolchain `1.95.0` pinned in `rust-toolchain.toml`), install `just`, then run the same commands:
+Without Nix, install the pinned Rust toolchain through
+[rustup](https://rustup.rs/) and install `just`:
 
 ```bash
+rustup show
 cargo install just
 just devex
 just pr-fast
 ```
 
-## Getting Started
+The repository pins Rust channel `1.95.0` in `rust-toolchain.toml` and currently
+requires MSRV 1.95.
 
-### Prerequisites
+## Choose one coherent claim
 
-- **Rust** toolchain (pinned via `rust-toolchain.toml`, MSRV 1.95, channel `1.95.0`)
-- **Nix** (recommended, not required) for a fully reproducible dev environment — `nix develop` drops you into a shell with all tools present
-- **just** — task runner used for all build/test/lint commands (`cargo install just` or via Nix)
+A useful pull request has:
 
-### First-Time Setup Checklist
+- one problem or improvement;
+- one semantic owner;
+- an observable acceptance condition;
+- proof that can distinguish the intended change from a realistic wrong one;
+- explicit non-goals;
+- a bounded rollback or cleanup path.
 
-Run through these five steps once after cloning. Each step has a clear success signal — if you see something different, check the note below it.
+Start from an existing issue when one owns the work. Create or update an issue when the
+problem, scope, proof seam, or authority would otherwise be lost between sessions. Do
+not bundle adjacent work merely because it touches nearby files.
 
-**1. Clone and enter the repository**
+## Current repository map
+
+The workspace contains many internal modules and crates. These are the main contributor
+entrypoints:
+
+| Surface | Path | Role |
+| --- | --- | --- |
+| Parser | `crates/perl-parser/` | Native Perl parser and recovery behavior |
+| Compiler and semantic facts | `crates/perl-semantic-analyzer/`, `crates/perl-semantic-facts/` | Semantic analysis and compiler-facing facts |
+| LSP core | `crates/perl-lsp-rs-core/` | Protocol, runtime, workspace, and provider implementation |
+| LSP integration | `crates/perl-lsp-rs/` | Server integration and higher-level behavior |
+| LSP executable | `crates/perllsp/` | User-facing language-server binary |
+| DAP | `crates/perl-dap/` | Debug Adapter Protocol implementation |
+| Corpus and compatibility | `crates/perl-corpus/`, `crates/perl-core-harness/` | Real-Perl and upstream compatibility evidence |
+| Repository tooling | `xtask/`, `scripts/`, `.ci/` | Gates, generators, policy, and proof routing |
+| VS Code extension | `vscode-extension/` | Installed editor experience |
+
+Read the nearest package-local `AGENTS.md` or `CLAUDE.md` before changing an owning
+crate. The root [`AGENTS.md`](AGENTS.md) and [`CLAUDE.md`](CLAUDE.md) contain the current
+repository route maps.
+
+## Development workflow
+
+### 1. Create a branch
+
 ```bash
-git clone https://github.com/EffortlessMetrics/perl-lsp.git
-cd perl-lsp
+git switch -c fix/short-description
 ```
 
-**2. Enter the dev environment**
+Agents and parallel writers should use an isolated worktree. One candidate branch or
+worktree has one mutation owner at a time. See
+[WORKTREE_PROTOCOL.md](docs/reference/WORKTREE_PROTOCOL.md).
+
+### 2. Reproduce or define the behavior
+
+For a bug, start with a focused reproduction or failing test at the observable seam. For
+new behavior, write the smallest test or fixture that distinguishes the intended result
+from a plausible wrong implementation.
+
+External claims need an external oracle:
+
+- Perl semantics: run a bounded `perl -e` or upstream test against the supported Perl
+  runtime;
+- LSP or DAP behavior: cite and exercise the relevant protocol contract;
+- third-party APIs: verify the current official documentation or implementation.
+
+Do not approve a language or protocol claim because several reviewers independently
+remember the same rule.
+
+### 3. Implement the smallest coherent change
+
+Keep semantic ownership and dependency direction intact. Do not add a second policy,
+registry, scheduler, or state model when a current repository authority already owns the
+answer.
+
+Production code must not introduce `unwrap`, `expect`, `panic!`, `todo!`,
+`unimplemented!`, `abort`, or `dbg!` outside a documented narrow exception. Prefer
+`Result`, `Option`, explicit invariants, and actionable errors.
+
+### 4. Run focused proof first
+
+Use the cheapest command that can falsify the claim:
+
 ```bash
-nix develop          # Recommended: pins Rust 1.95.0 + all tools
-# No Nix? Install rustup and then: cargo install just
-```
-Success: your shell prompt changes (or you see the nix shellHook banner listing available commands).
-
-**3. Verify the environment**
-```bash
-just devex           # Required tools and Rust components
-just doctor          # Workspace health, hooks, branch/worktree state
-```
-Success: every required check passes. If something fails, the output explains what's missing and how to install it. Optional-tool warnings are safe to skip for basic contribution work.
-
-**4. Validate everything compiles and tests pass**
-```bash
-just pr-fast         # ~1-2 min
-```
-Success: ends with `PR-fast gate complete` and no `FAILED` lines.
-
-**5. Install the pre-push git hook**
-```bash
-bash scripts/install-githooks.sh
-```
-Success: prints `Installed pre-push hook`. The hook runs `just pr-fast` automatically before every `git push`.
-
-Once all five steps succeed, you're ready to make changes. Before pushing, run `just ready` to combine the workspace doctor with the fast PR gate.
-
-### Agent Quickstart
-
-If you are contributing from an agentic coding environment, use the repo's bounded build profiles so target directories and caches do not grow inside disposable worktrees:
-
-For the provider-native contribution path, read the [agent contributing guide](docs/how-to/AGENT_CONTRIBUTING.md) first, then use the preparation and build profiles below.
-
-```bash
-just agent-preflight
-just agent-check
-just agent-test
-just agent-clippy
-just agent-pr-fast
+cargo fmt -p <package> -- --check
+cargo clippy -p <package> --all-targets --locked -- -D warnings
+cargo test -p <package> --all-targets --locked
 ```
 
-For Codex Desktop specifically:
-
-1. Open the repository root as the workspace.
-2. Run checks through a POSIX shell (`bash`) even on Windows.
-3. Prefer `just agent-check`, `just agent-test`, and `just agent-clippy` for large compile/test work.
-4. Use `just pr-fast` or `just ready` before handing a PR to review.
+Then run the repository gate appropriate to the change:
 
 ```bash
-# Fast inner-loop validation
 just pr-fast
-
-# Canonical pre-PR gate (matches merge expectations)
+# or, in the reproducible environment
 nix develop -c just ci-gate
 ```
 
-If your desktop environment does not use Nix, run `just ci-gate` directly.
-For stale toolchains or workspace drift, run `just devex` and `just doctor`.
+Useful command choices:
 
-#### cargo-safe agent profiles
+| Situation | Command |
+| --- | --- |
+| Tool or environment problem | `just devex` |
+| Repository health or generated drift | `just doctor` |
+| Fast inner loop | `just pr-fast` |
+| Full local merge gate | `just ci-gate` |
+| Agent compile/test/lint | `just agent-check`, `just agent-test`, `just agent-clippy` |
+| Parser or generated status changed | `just status-update` then `just status-check` |
+| Public API documentation changed | `just ci-docs-check` and `just docs-verify` |
+| Release/version surfaces changed | `just version-check` then `just release-check` |
+| Cargo manifests or publish topology changed | `just publish-dry-run` |
 
-The `just agent-check`, `just agent-test`, `just agent-clippy`, and `just agent-pr-fast`
-commands run through `scripts/cargo-safe`, which sandboxes build artefacts to a per-repo
-devplane cache. The compile, test, and lint profiles also guard disk space and serialize
-Cargo builds; `agent-pr-fast` invokes `xtask` and receives the isolated cache, but does not
-enter those disk and build-lock guards. Understanding these constraints prevents silent
-failures in constrained environments:
+Do not run broad workspace proof after every edit. Escalate when the dependency graph,
+risk, changed public surface, or selected merge gate requires it.
 
-| Env var | Default | Effect |
-|---------|---------|--------|
-| `DEVPLANE` | `${XDG_CACHE_HOME:-$HOME/.cache}/devplane/<repo>` | Root of the isolated build cache (cargo home, target dir, sccache) |
-| `CARGO_BUILD_JOBS` | `2` | Parallel cargo jobs — set higher on machines with more cores |
-| `MIN_FREE_GB` | `40` | Minimum free disk space (GiB); script exits 75 if threshold is not met |
-| `MAX_USED_PCT` | `85` | Maximum disk-used percentage; exits 75 if exceeded |
-| `CARGO_LOCK_WAIT` | `180` | Seconds to wait for the build flock before giving up |
+### 5. Inspect the proposed change
 
-Exit code **75** means the disk-space gate fired — free up space or lower
-`MIN_FREE_GB` for smaller machines (`MIN_FREE_GB=10 just agent-check`).
-
-### Build and Test
+Before committing or pushing:
 
 ```bash
-cargo build -p perl-lsp-rs --release  # Build the LSP server binary
-cargo test --workspace --lib          # Run all library tests
+git status --short --branch
+git diff --check
+git diff
 ```
 
-#### Windows: Exclude `target/` from Defender
+Stage intended paths explicitly. Do not use `git stash` in a multi-worktree repository;
+stash is shared across worktrees. Use scoped restore or a branch-local WIP commit.
 
-On Windows, Microsoft Defender real-time protection scans every artifact
-written to `target/` during a build, adding 30–50% to build times. Exclude
-the build directories to avoid this tax:
+### 6. Open the pull request
 
-```powershell
-# Run in an elevated PowerShell — adds exclusions for the repo's target/ dirs
-Add-MpPreference -ExclusionPath (Resolve-Path "target").Path
-Add-MpPreference -ExclusionProcess "cargo.exe"
-Add-MpPreference -ExclusionProcess "rustc.exe"
-Add-MpPreference -ExclusionProcess "cl.exe"
+Use a conventional title with the controlling issue number:
+
+```text
+fix(parser): handle heredoc in ternary context (#1234)
+feat(lsp): add bounded provider behavior (#1234)
+docs(contributing): correct the current workflow (#1234)
 ```
 
-If something looks broken, `just doctor` diagnoses common environment issues (missing tools, stale worktrees, drift between generated files and source):
+The body should state:
+
+- the claim and controlling issue;
+- root cause or design reason;
+- changed behavior and important seams;
+- proof run and proof not run;
+- risk and rollback;
+- explicit non-goals;
+- any `NOT_PROVEN` boundary.
+
+Follow the repository pull-request template. Do not claim that a local command, earlier
+candidate, different platform, or fixture proves a surface it did not exercise.
+
+## Review and integration
+
+Pull requests receive substantive provider-native review and live GitHub integration
+checks. There is no fixed two-model review ladder, permanent named-agent roster, or
+lifecycle-label state machine.
+
+Review is semantic and cumulative:
+
+- a material claim, implementation, production route, authority, risk, or tested-seam
+  change refreshes the affected review and proof;
+- a focused repair refreshes the finding and changed seam;
+- formatting, editorial cleanup, and unrelated generated refreshes do not restart the
+  entire review merely because the commit SHA changed.
+
+Labels may help navigation. They are not proof or merge permission. Current submitted
+reviews, unresolved threads, change requests, required checks, mergeability, rulesets,
+and applicable release policy govern integration.
+
+A conflict-free branch does not need an update merely because `main` advanced. Behind-only
+movement requires no action. Rebase, merge-main, retarget, cherry-pick, or reconstruction
+is selected when a real conflict, same-seam interaction, explicit stack, policy, or other
+concrete integration reason makes it useful.
+
+Required GitHub statuses remain attached to the commit they actually evaluated. If a
+required run is pending on the current head, let it report or request a same-head rerun
+where supported. Do not push an empty commit or rebase solely to manufacture status.
+
+At merge, the current head is used as compare-and-swap protection; it is not the review
+verdict.
+
+## Specialized contributor workflows
+
+The current route above remains the default. The following surfaces have additional
+bounded obligations; use their existing generators and checks rather than reimplementing
+them in a pull-request body or hand-editing derived state.
+
+### Public API and SemVer
+
+Facade crates have checked public-API baselines. Before changing a published API:
 
 ```bash
-just doctor
+just semver-check
+just public-api-update
 ```
 
-To debug the LSP server itself — reproduce a parse error, run in socket mode,
-or enable structured logging — see
-[docs/contributing/DEBUGGING_LSP_SERVER.md](docs/contributing/DEBUGGING_LSP_SERVER.md).
+Review the generated `.ci/public-api-baselines/` changes and include only intentional
+surface movement. A focused compile or unit test does not prove downstream compatibility;
+document migration impact and the exact baseline change.
 
-## Project Structure
+### New crates, manifests, and publish topology
 
-The workspace contains many crates organized into families. Key crates:
+When adding, removing, or renaming a crate:
 
-| Crate | Purpose |
-|-------|---------|
-| `perl-parser` | Main parser (v3 recursive descent) |
-| `perl-lsp-rs` | LSP server binary |
-| `perl-dap` | Debug Adapter Protocol server |
-| `perl-lexer` | Context-aware tokenizer |
-
-Crate families: `perl-module-*` (module resolution), `perl-lsp-*` (LSP providers), `perl-dap-*` (DAP), `perl-workspace-*` (workspace discovery).
-
-For the full crate map, key paths, and architecture details, see [CLAUDE.md](CLAUDE.md).
-
-## Finding Issues to Work On
-
-- Look for issues labeled **`good first issue`** for beginner-friendly tasks
-- **`help wanted`** marks issues where maintainer input is available
-- **`parser`** issues improve Perl parsing coverage
-- **`lsp`** issues add or fix editor features
-- Browse [open issues](https://github.com/EffortlessMetrics/perl-lsp/issues) or check the [roadmap](docs/project/ROADMAP.md) for larger goals
-
-## Development Workflow
-
-### 1. Branch
+1. update the root workspace membership and dependency entries;
+2. update the current publish/topology authority when the crate is distributable;
+3. update affected package-local guidance and ownership surfaces;
+4. run metadata and publish-shape proof.
 
 ```bash
-git checkout -b feature/your-feature-name
-```
-
-### 2. Check the environment (optional but useful)
-
-```bash
-just devex      # Verifies that required tools are available and in a good state
-just doctor     # Deeper workspace health check — finds drift, stale files, config issues
-```
-
-### 3. Iterate locally
-
-```bash
-just pr-fast    # Fastest checks: fmt + clippy + tests (~1-2 min). Run this often.
-```
-
-### 4. Run the canonical merge gate
-
-This is the explicit full validation step before merge. It runs the same checks CI runs:
-
-```bash
-nix develop -c just ci-gate   # Recommended: reproducible env (~3-5 min)
-# or, without Nix:
-just ci-gate
-```
-
-If you install the pre-push git hook, it runs the faster Tier A gate automatically on push:
-
-```bash
-bash scripts/install-githooks.sh
-```
-
-That hook runs `nix develop -c just pr-fast` (or `just pr-fast` without Nix).
-It is a quick push guard, not the full merge gate.
-
-### Command Decision Table
-
-| Situation | Command | Why |
-|---|---|---|
-| New checkout | `just doctor` | Verifies workspace health, hooks, branch state, and common drift. |
-| Tool/env check | `just devex` | Checks required tools, Rust components, and local setup. |
-| Before push | `just ready` | Runs doctor plus the fast PR gate. |
-| Fast PR loop | `just pr-fast` | Cheapest useful proof while iterating. |
-| Agent compile/test | `just agent-check` / `just agent-test` | Uses cargo-safe agent profiles and bounded build directories. |
-| Agent lint | `just agent-clippy` | Runs clippy through the cargo-safe agent profile. |
-| Agent PR proof | `just agent-pr-fast` | Runs the PR-fast gate through cargo-safe. |
-| Full pre-merge | `just ci-gate` or `nix develop -c just ci-gate` | Canonical local merge gate. |
-| Memory lifecycle touched | `cargo xtask check-memory-lifecycle-policy` | Enforces retained-state lifecycle and receipt policy. |
-| Retained owner added | `cargo xtask check-memory-retained-owner-drift --base origin/master` | Checks whether long-lived storage/task additions need retained-state inventory coverage. |
-| Parser-accuracy metrics touched | `just ci-metrics-ratchet-check parser_accuracy` | Verifies parser-accuracy scorecard floors do not regress. |
-| Generated status docs touched | `just status-update` then `just status-check` | Regenerates and verifies `docs/project/status/` outputs. |
-| Release/version surfaces touched | `just version-check` then `just release-check` | Verifies version sync and the release-prep gate before tagging/publishing. |
-| Need a command map | `just quick-ref` or [Commands Reference](docs/reference/COMMANDS_REFERENCE.md) | Shows the short command decision tree. |
-| DevEx docs changed | `cargo xtask check-devex-docs` | Verifies toolchain wording and documented command references stay current. |
-
-### 5. Expand for larger changes or release prep
-
-```bash
-just ci-full    # Full pipeline including mutation testing, fuzzing, benchmarks (~15-30 min)
-```
-
-### 5a. Verify your Cargo.toml changes won't break publishing
-
-If your PR touches any `Cargo.toml` file (adding/removing deps, adding new crates, modifying
-workspace metadata), a **publish dry-run gate** runs automatically in CI. It packages every
-allowlisted crate in topological dependency order — the same order and with the same dev-dep
-stripping logic used by the actual publish workflow — and fails loudly if any crate cannot be
-packaged.
-
-**Why this gate exists:** Two separate publish failures happened within a single session:
-- A dev-dep ordering issue where `perl-corpus` dev-depends on `perl-tdd-support` but was
-  sorted before it (fixed by Tarjan SCC in the topo sort, #3236).
-- An intra-SCC dev-dep cycle where `perl-module-import` dev-depends on `perl-module-token`,
-  causing `cargo package` to fail during manifest resolution (#3254).
-
-Both bugs would have been caught by this gate before the breaking PR merged.
-
-**If the gate fails**, your PR would break the `publish-crates.yml` workflow. Fix before merging.
-Common causes: adding a dev-dep on an un-allowlisted crate, a normal-dep cycle, or removing a
-crate without updating dependents.
-
-**Run it locally:**
-
-```bash
+cargo metadata --no-deps --format-version 1 >/dev/null
+just publish-allowlist-check
 just publish-dry-run
 ```
 
-This runs in ~5-10 minutes (packaging only, no uploading).
+Do not assume workspace membership implies publication, or that successful compilation
+proves packaging order, license files, or registry dependencies.
 
-### 6. Keep docs and status in sync (only needed if you changed metrics or generated files)
+### Version and release-preparation changes
+
+Version, notes, topology, candidate, approval, and publication are separate authorities.
+Ordinary contributors must not create tags or publish artifacts as part of a feature PR.
+A release-owned preparation lane may use:
+
+```bash
+just bump-version X.Y.Z
+just version-check
+just release-check
+```
+
+Review every generated version, lockfile, release-history, notes, and status change. A
+version bump does not authorize a tag, marketplace update, registry publish, or channel
+mutation.
+
+### Generated status, docs, and demo assets
+
+Use the owning generator and require a second run to produce no diff. For API docs and
+status surfaces:
 
 ```bash
 just status-update
 just status-check
+just ci-docs-check
+just docs-verify
 ```
 
-If your change introduces or modifies public APIs, also run the documentation
-coverage workflow so CI catches missing rustdoc before review:
+Screen recordings and README walkthrough assets follow
+[`docs/assets/gifs/README.md`](docs/assets/gifs/README.md). Use the repository rendering
+script rather than committing an unbounded raw recording:
 
 ```bash
-just docs-check
-just docs-report
+python scripts/marketing/render-walkthrough-gif.py --help
 ```
 
-See [docs/reference/MISSING_DOCUMENTATION_GUIDE.md](docs/reference/MISSING_DOCUMENTATION_GUIDE.md)
-for remediation workflow and [docs/reference/API_DOCUMENTATION_STANDARDS.md](docs/reference/API_DOCUMENTATION_STANDARDS.md)
-for required rustdoc structure.
+A visual refresh should preserve the documented workflow, readable dimensions, and
+repository size limits.
 
-### 7. Open a Pull Request
+## Documentation and generated state
 
-1. Push your branch and open a PR
-2. Give the PR a CI-safe title in the form `type(scope): summary (#1234)` — the title format is validated by a CI workflow, so get it right the first time
-3. Describe your changes and link related issues in the PR body
-4. All PRs run format checks, clippy, and tests automatically in CI
+Generated status, dashboards, ledgers, and manifests must be regenerated through their
+owning command rather than hand-edited. The applicable check should produce no diff on a
+second run.
 
-Conventional subject format:
+For documentation-only changes, verify links and run the narrow docs checks selected by
+CI. Historical or forensic records may preserve old terminology and branch names; current
+operational guides must use current authority and `main`.
 
-- `feat(scope): imperative summary`
-- `fix(scope): imperative summary`
-- `fix(scope)!: imperative summary` — include `!` before the colon for breaking changes
-- `chore(scope): imperative summary`
-- `docs(scope): imperative summary`
-- `test(scope): imperative summary`
+## Security and privacy
 
-Example PR titles:
+Do not commit secrets, access tokens, personal data, private corpus material, or raw
+receipts containing sensitive paths or content. Use repository redaction and fixture
+patterns. Security-sensitive changes need realistic negative controls and fail-closed
+behavior where the claim requires it.
 
-```text
-fix(parser): handle here-doc inside ternary (#3052)
-feat(lsp): add rename symbol provider (#2980)
-docs(contributing): refresh for v0.13.0 public alpha (#3200)
-```
+Report security concerns through the process in
+[SECURITY.md](SECURITY.md). Conduct expectations are defined in
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
-Do not rely on PR title defaults (often noisy, e.g. `Merge branch ...` or the GitHub auto-fill), because they fail `validate-title` and break changelog generation.
+## After merge
 
-#### What Happens After You Open a PR
+A squash merge is not the end of the claim. Verify the landed effect, update the owning
+issue with what changed and what remains, preserve residual work, and remove only the
+branch, worktree, or scratch state created by the lane when it is safe.
 
-PRs go through a two-pass review before merging:
+Do not delete dirty, unpushed, ambiguous, or salvageable work. The pull request, reviews,
+checks, issue, and landed commit are the durable record; runtime agent state is not.
 
-1. **Standards review** (haiku-tier) — checks formatting, clippy compliance, test coverage, and scope
-2. **Deep correctness review** (sonnet-tier) — checks logic, edge cases, and correctness for feature PRs
+## Community and licensing
 
-You will see pipeline labels added to your PR:
+Use [GitHub issues](https://github.com/EffortlessMetrics/perl-lsp/issues) for confirmed
+defects and scoped implementation work. Keep reports reproducible, redact private data,
+and link the smallest relevant evidence. Repository discussion/support surfaces may be
+enabled separately; do not use a feature proposal as a substitute for a verified bug
+report or accepted plan.
 
-| Label | Meaning |
-|-------|---------|
-| `in-review` | A reviewer has picked up your PR |
-| `needs-deep-review` | Standards review done, awaiting deep correctness pass |
-| `reviewed-deep` | Both review passes complete |
-| `merge-ready` | Approved and ready for merge |
+Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md), and security
+reports follow [SECURITY.md](SECURITY.md). Contributions are licensed under both
+[MIT](LICENSE-MIT) and [Apache-2.0](LICENSE-APACHE).
 
-The CI merge gate only runs on `merge-ready` PRs. This keeps the queue clean — do not worry if CI looks quiet on your draft.
+## Where to ask or start
 
-#### External-claim verification
-
-If a PR's description or commit message cites an external specification (Perl language semantics, LSP protocol spec, DAP protocol spec) or a third-party crate API, the review process **must** include running the claimed behavior against the reference implementation, not just reading the documentation. For Perl claims, a short `perl -e` snippet against the runtime is authoritative. For LSP/DAP claims, the published spec text is authoritative. For crate APIs, the current `docs.rs` entry is authoritative.
-
-This rule exists because on 2026-04-11, [PR #4090](https://github.com/EffortlessMetrics/perl-lsp/pull/4090) was approved by multiple reviewers on the basis of a false claim about Perl phase-block pragma semantics that every reviewer had independently assumed was true. The false claim was caught only by a research-verifier agent running `perl -e 'BEGIN { use strict; } $x = 1'` and observing the script succeeds — proving `use strict` inside `BEGIN { }` stays lexically scoped to the block and is **not** active at file scope. The resulting revert is tracked in [#4100](https://github.com/EffortlessMetrics/perl-lsp/issues/4100) and the correct positive-direction lint in [#4101](https://github.com/EffortlessMetrics/perl-lsp/issues/4101). See also related process context in [#4062](https://github.com/EffortlessMetrics/perl-lsp/issues/4062).
-
-For code review automation: the `research-verifier` agent should be invoked on any PR whose body references `perlmod`, `perlop`, `LSP 3.`, `DAP`, or a `docs.rs` URL. The `reviewer-deep` agent's definition at `.claude/agents/reviewer-deep.md` will be updated separately to reference this rule (tracked as a follow-up).
-
-For more detail on the CI structure see [docs/project/CI.md](docs/project/CI.md) and [docs/project/CI_TEST_LANES.md](docs/project/CI_TEST_LANES.md). For CI runner policy (Linux-only by default, Windows/macOS for OS-specific necessity), see [docs/reference/CI_ARCHITECTURE.md §4.5](docs/reference/CI_ARCHITECTURE.md#section-45--runner-policy).
-
-## Coding Standards
-
-These are the rules that CI enforces. The quick version: no panics, no unwraps, no debug prints in production code. Use `?` for error propagation and `Result<()>` in tests.
-
-For full detail and rationale, see [CLAUDE.md](CLAUDE.md#coding-standards).
-
-### Formatting and Linting
-
-- Run `cargo xtask fmt` before every commit — `just ci-gate` will catch this, but the sooner the better
-- Fix all `cargo clippy --workspace` warnings — clippy is treated as errors in CI
-- Use [conventional commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, etc.
-- Scope-qualify commit subjects: `feat(lsp): ...`, `fix(dap): ...`, `chore(release): ...`
-
-### Banned in Production Code
-
-These constructs cause panics or hide errors. They are checked by `ci-gate` and will fail CI:
-
-| Banned | Use Instead |
-|--------|-------------|
-| `unwrap()`, `expect()` | `?`, `.ok_or_else()`, pattern matching |
-| `panic!()`, `todo!()`, `unimplemented!()` | Return `Result` or `Option` |
-| `dbg!()` | `tracing::debug!` |
-| `std::process::exit()` | Only in `bin/` and `lifecycle.rs` |
-
-In tests: use `Result<()>` returns or `perl_tdd_support::must` / `must_some` helpers instead of `unwrap()`.
-
-### Style Preferences
-
-- `.first()` over `.get(0)`
-- `.push(char)` over `.push_str("x")` for single characters
-- `or_default()` over `or_insert_with(Vec::new)`
-- Avoid `.clone()` on `Copy` types
-
-### Documentation Anti-Drift
-
-Metrics in this project are **computed, not hand-edited**. Never put exact numeric claims (crate counts, test counts, percentages) in prose files. Link to [CURRENT_STATUS.md](docs/project/CURRENT_STATUS.md) for live metrics instead.
-
-## Testing Guidelines
-
-- Place tests in `tests/` or inline with `#[cfg(test)]`
-- Test both success and failure paths
-- For parser changes, add edge case tests and run `just cpan-corpus-sweep` to check CPAN coverage
-
-```bash
-cargo test -p <crate>                          # Test a specific crate
-cargo test -p perl-parser -- test_name --exact # Run an exact test
-cargo nextest run                              # Fast parallel runner
-```
-
-For LSP tests, control threading to avoid flaky results:
-
-```bash
-RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs -- --test-threads=2
-```
-
-See [COMMANDS_REFERENCE.md](docs/reference/COMMANDS_REFERENCE.md) for the full command catalog.
-
-## SemVer and Breaking Changes
-
-We follow [Semantic Versioning 2.0.0](https://semver.org/). Check for breaking changes before submitting PRs that modify public APIs:
-
-```bash
-just semver-check
-```
-
-If a breaking change is necessary:
-1. Document it in the PR description with a migration guide
-2. Label the PR with `breaking-change`
-3. Coordinate with maintainers
-
-See [STABILITY.md](docs/reference/STABILITY.md) for our API stability policy.
-
-### Public API Surface Ratchet
-
-The five user-facing facade crates (`perl-lsp-rs`, `perl-parser`, `perl-uri`, `perl-dap`, `perllsp`) have their public API surface locked in text baselines at `.ci/public-api-baselines/`. The nightly CI job fails if the surface changes without a baseline update.
-
-When you intentionally add or remove items from a facade crate's public API:
-
-1. Run `just public-api-update` to regenerate all 5 baselines.
-2. Include the updated `.ci/public-api-baselines/*.txt` files in your PR.
-3. In your PR description, describe what changed and why.
-4. Add the `ci:public-api` label to trigger the surface check in CI.
-
-The check uses `cargo public-api -p <crate> --simplified` (omits blanket-impl noise).
-
-## Release Workflow
-
-### Version Bump
-
-All workspace crates inherit their version from `[workspace.package] version` in the root
-`Cargo.toml`. To bump the version across the entire workspace in one command:
-
-```bash
-just bump-version 0.13.0
-```
-
-This updates every tracked version site in a single pass:
-- `[workspace.package] version` in `Cargo.toml`
-- All `[workspace.dependencies]` version fields in `Cargo.toml`
-- `vscode-extension/package.json` (and `package-lock.json` if present)
-- `features.toml` `[meta] version`
-- Documentation references in `README.md`, `CLAUDE.md`, and `docs/project/ROADMAP.md`
-
-Individual crate `Cargo.toml` files use `version.workspace = true` and pick up the new
-version automatically — they are not touched by the bump script.
-
-After running, review the diff (`git diff`), commit, push, and open a PR.
-
-### Release Sequence
-
-Once the version-bump PR is merged:
-
-1. Tag the release on `master`:
-   ```bash
-   git tag v0.13.0
-   git push origin v0.13.0
-   ```
-2. Create a GitHub Release from the tag — this triggers the publish workflow automatically.
-3. The publish workflow validates that every workspace crate reports the tag version, then
-   publishes them to crates.io in topological dependency order.
-
-### Verify Version Consistency
-
-At any time, verify that all version sites agree with the workspace canonical version:
-
-```bash
-just version-check
-```
-
-This runs as part of `just release-gate` before cutting a release.
-
-## Updating Demo GIFs
-
-The three animated GIFs shown in `README.md` live in `docs/assets/gifs/`. They
-are produced from manual screen recordings, not generated automatically.
-
-### When to Re-Record
-
-Re-record a GIF when:
-- A menu label, key binding, or status bar message changes.
-- The workflow changes enough that the current GIF is misleading.
-- The GIF is blurry or hard to read at 960 px wide.
-
-### Recording Process
-
-1. Open `demo_workspace/` in VS Code with the `EffortlessMetrics.perl-lsp-rs`
-   extension active and the LSP server running.
-2. Set a clean theme (large font, minimal panels visible).
-3. Record the interaction using your platform screen-capture tool:
-   - Linux: `peek`, `simplescreenrecorder`, or `ffmpeg -f x11grab`
-   - macOS: QuickTime Player or ScreenFlow
-   - Windows: Xbox Game Bar, OBS Studio, or ShareX
-4. Save the raw recording to `docs/assets/recordings/` (gitignored).
-
-The full step-by-step script for each GIF is in
-[`docs/assets/gifs/README.md`](docs/assets/gifs/README.md).
-
-### Rendering
-
-After capturing, convert to a compressed GIF:
-
-```bash
-python scripts/marketing/render-walkthrough-gif.py \
-  --input docs/assets/recordings/goto-definition.mp4 \
-  --output docs/assets/gifs/goto-definition.gif \
-  --fps 12 \
-  --width 960 \
-  --max-bytes 3145728
-```
-
-Use `--start` and `--duration` to trim dead time. Run `--help` for all options.
-Requires `ffmpeg`; `gifsicle` is used automatically if available.
-
-### GIF Inventory
-
-| File | Workflow | Max size |
-|------|---------|---------|
-| `docs/assets/gifs/install-health.gif` | VS Code install, auto-download, `perllsp --health` | 3 MB |
-| `docs/assets/gifs/goto-definition.gif` | Ctrl+Click go-to-def, Find All References | 3 MB |
-| `docs/assets/gifs/extract-variable.gif` | Select, light-bulb, Extract Variable | 3 MB |
-
-### Commit Message Convention
-
-```
-docs: re-record goto-definition gif for v0.13 navigation changes
-```
-
-## Adding New Crates
-
-1. Create the crate under `crates/` using the naming convention of its family
-2. Add it to the workspace `members` in the root `Cargo.toml`
-3. Follow the structure of a sibling crate in the same family
-4. Run `nix develop -c just ci-gate` to verify, and `just ci-full` for larger
-   workspace-impacting changes
-
-## Getting Help
-
-Use the right channel for the fastest response:
-
-| Channel | Use for |
-|---------|---------|
-| [GitHub Discussions - Q&A](https://github.com/EffortlessMetrics/perl-lsp/discussions/categories/q-a) | Editor setup, configuration, how-to questions |
-| [GitHub Discussions - Ideas](https://github.com/EffortlessMetrics/perl-lsp/discussions/categories/ideas) | Feature brainstorming before opening a formal issue |
-| [GitHub Discussions - Show & Tell](https://github.com/EffortlessMetrics/perl-lsp/discussions/categories/show-and-tell) | Configs, workflows, and integrations to share |
-| [GitHub Issues](https://github.com/EffortlessMetrics/perl-lsp/issues) | Bug reports and confirmed feature requests |
-
-> Note: Discussions must be enabled in repository settings before the links above are active.
-> See [#2169](https://github.com/EffortlessMetrics/perl-lsp/issues/2169) for the tracking issue.
-
-- **Docs**: See `docs/` for detailed guides -- start with [COMMANDS_REFERENCE.md](docs/reference/COMMANDS_REFERENCE.md)
-- **Verification policy**: See [VERIFICATION_LADDER.md](docs/contributing/VERIFICATION_LADDER.md) for claim verification requirements
-
-## Code of Conduct
-
-We follow the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). Please be respectful and constructive in all interactions.
-
-## License
-
-This project is dual-licensed under [MIT](LICENSE-MIT) and [Apache-2.0](LICENSE-APACHE). By contributing, you agree that your contributions will be licensed under both licenses.
+- [Open issues](https://github.com/EffortlessMetrics/perl-lsp/issues)
+- [Project roadmap](docs/project/ROADMAP.md)
+- [Commands reference](docs/reference/COMMANDS_REFERENCE.md)
+- [Architecture reference](docs/reference/ARCHITECTURE.md)
+- [Agent contributing guide](docs/how-to/AGENT_CONTRIBUTING.md)
+- [Debugging the LSP server](docs/contributing/DEBUGGING_LSP_SERVER.md)

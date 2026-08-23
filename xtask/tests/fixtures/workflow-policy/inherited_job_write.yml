@@ -1,0 +1,23 @@
+name: fixture-inherited-job-write
+# The pre-#5989 release-orchestration shape: a read-only validation job
+# silently inherits contents/actions/OIDC/attestation write authority because
+# it declares no permissions of its own.
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: write
+  id-token: write
+  attestations: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "read-only validation, but holds four write scopes"
+  create-tag:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - run: git push origin "$TAG"

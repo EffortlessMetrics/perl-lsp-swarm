@@ -195,11 +195,11 @@ should not invoke `/pr-ready` at end (see `feedback_deep_reviewer_premature_merg
 
 Two persistent sources of environment cost:
 
-**RTK hook not installed**: The `rtk` tool reduces token consumption 60-90% on standard
-commands. When the hook is not installed (`/!\ No hook installed — run rtk init -g`),
-every `cargo test`, `git log`, `gh pr list` returns full unfiltered output. This is not
-a correctness issue, but it increases context window consumption per agent, which reduces
-the number of useful steps an agent can take before hitting context limits.
+**Unfiltered command output**: Broad `cargo test`, `git log`, and `gh pr list` commands
+can return much more output than the active decision needs. This is not a correctness
+issue, but it increases context window consumption per agent, which reduces the number
+of useful steps an agent can take before hitting context limits. Prefer direct command
+filters such as package selection, result limits, and JSON field selection.
 
 **Windows path issues**: Windows-specific path normalization bugs (`std::fs::canonicalize`
 expanding 8.3 short names, `CARGO_BIN_EXE_*` dropping backslashes, `MAX_PATH` failures

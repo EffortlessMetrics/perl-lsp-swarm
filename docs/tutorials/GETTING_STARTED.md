@@ -173,15 +173,36 @@ Then run `M-x eglot` in a Perl buffer.
 
 Add to `~/.config/helix/languages.toml`:
 
-```toml
-[[language]]
-name = "perl"
-language-servers = ["perllsp"]
+Helix's current built-in `perl` language entry also owns Raku/NQP/P6 file
+extensions. `perllsp` is a Perl 5 server, so use the reviewed override rather
+than replacing only the language-server name on the combined entry:
 
+```toml
 [language-server.perllsp]
 command = "perllsp"
 args = ["--stdio"]
+
+[[language]]
+name = "perl"
+language-servers = ["perllsp"]
+roots = [".perl-lsp.toml", "Makefile.PL", "Build.PL", "cpanfile", "dist.ini"]
+file-types = [
+  "pl",
+  "pm",
+  "t",
+  "psgi",
+  { glob = "latexmkrc" },
+  { glob = ".latexmkrc" },
+]
+shebangs = ["perl"]
 ```
+
+The checked fixture is
+[`docs/examples/helix/languages.toml`](../examples/helix/languages.toml).
+This safe override deliberately stops the same entry from owning Raku-family
+file detection; it does not supply or imply Raku LSP support. See
+[HELIX_SETUP.md](../EDITORS/HELIX_SETUP.md) for the released-versus-current
+client cohorts, roots, and workspace-trust boundaries.
 
 ## Your First 5 Minutes
 
@@ -347,7 +368,7 @@ For per-developer or editor-specific settings, configure via your editor's LSP m
 }
 ```
 
-See [CONFIG.md](../reference/CONFIG.md) for all configuration options, including workspace paths, inlay hints, test-runner settings, and resource limits.
+See [CONFIG.md](../reference/CONFIG.md) for the current configuration options, including workspace paths, inlay hints, and resource limits.
 
 ## Troubleshooting
 
