@@ -152,10 +152,6 @@ pub(crate) mod completion {
     pub use crate::features::completion::*;
 }
 
-pub(crate) mod on_type_formatting {
-    pub use crate::features::on_type_formatting::*;
-}
-
 pub(crate) mod inline_completions {
     pub use crate::features::inline_completions::*;
 }

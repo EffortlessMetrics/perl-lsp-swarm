@@ -555,7 +555,7 @@ fn stale_unknown_range_decision_preserves_unknown_receipt_engine()
 }
 
 #[test]
-fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy()
+fn live_dispatch_keeps_document_live_and_refuses_withdrawn_surfaces()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     initialize(&server)?;
@@ -564,14 +564,9 @@ fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy()
     server.test_apply_did_open(document_uri, "my$x=1;\nmy$y=2;\n", 1)?;
     server.test_apply_did_open(on_type_uri, "if ($ok) {\n\n", 1)?;
 
-    let cases = [
-        (
-            "textDocument/formatting",
-            json!({
-                "textDocument": { "uri": document_uri, "version": 1 },
-                "options": { "tabSize": 4, "insertSpaces": true }
-            }),
-        ),
+    // Withdrawn surfaces (#11955): every default-profile request must receive
+    // the truthful method-not-advertised refusal before any admission work.
+    let withdrawn = [
         (
             "textDocument/rangeFormatting",
             json!({
@@ -611,65 +606,53 @@ fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy()
         ),
     ];
 
-    for (offset, (method, params)) in cases.into_iter().enumerate() {
+    for (offset, (method, params)) in withdrawn.into_iter().enumerate() {
         let response = server
             .handle_request(request(100 + offset as i64, method, params))
             .ok_or_else(|| format!("{method} returned no response"))?;
-        if let Some(error) = response.error {
-            return Err(format!("{method} failed: {error:?}").into());
-        }
-        assert!(response.result.is_some(), "{method} must return an edit array");
-        let trace = receipt(&server)?;
-        assert_eq!(trace["provider"], PROVIDER);
-        assert_eq!(trace["provider_action"], method);
-        assert!(
-            trace["source_generation"].is_u64(),
-            "{method} receipt must carry a numeric source_generation"
-        );
-        assert!(
-            trace["config_fingerprint"].is_string(),
-            "{method} receipt must carry a config_fingerprint string"
-        );
-        if method == "textDocument/rangesFormatting" {
-            let edits = response
-                .result
-                .as_ref()
-                .and_then(Value::as_array)
-                .ok_or("rangesFormatting must return an edit array")?;
-            assert_eq!(edits.len(), 2);
-            assert_eq!(
-                edits[0],
-                json!({
-                    "range": {
-                        "start": { "line": 0, "character": 0 },
-                        "end": { "line": 0, "character": 7 }
-                    },
-                    "newText": "my $x = 1;"
-                })
-            );
-            assert_eq!(
-                edits[1],
-                json!({
-                    "range": {
-                        "start": { "line": 1, "character": 0 },
-                        "end": { "line": 1, "character": 7 }
-                    },
-                    "newText": "my $y = 2;"
-                })
-            );
-            assert_eq!(trace["result_count"], 2);
-        }
+        let error = response.error.ok_or_else(|| format!("{method} must be refused"))?;
+        assert_eq!(error.code, crate::protocol::METHOD_NOT_FOUND, "{method} refusal code");
+        assert!(response.result.is_none(), "{method} refusal cannot carry edits");
     }
+
+    // The proven manual surface stays live through one receipt policy.
+    let response = server
+        .handle_request(request(
+            199,
+            "textDocument/formatting",
+            json!({
+                "textDocument": { "uri": document_uri, "version": 1 },
+                "options": { "tabSize": 4, "insertSpaces": true }
+            }),
+        ))
+        .ok_or("formatting returned no response")?;
+    if let Some(error) = response.error {
+        return Err(format!("textDocument/formatting failed: {error:?}").into());
+    }
+    assert!(response.result.is_some(), "textDocument/formatting must return an edit array");
+    let trace = receipt(&server)?;
+    assert_eq!(trace["provider"], PROVIDER);
+    assert_eq!(trace["provider_action"], "textDocument/formatting");
+    assert!(
+        trace["source_generation"].is_u64(),
+        "formatting receipt must carry a numeric source_generation"
+    );
+    assert!(
+        trace["config_fingerprint"].is_string(),
+        "formatting receipt must carry a config_fingerprint string"
+    );
 
     Ok(())
 }
 
 #[test]
-fn live_external_partial_range_returns_typed_refusal_not_native_edits()
+fn live_external_partial_range_cannot_execute_any_formatter_edits()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     initialize(&server)?;
     server.config.lock().formatting_engine = FormatterMode::ExternalLegacy;
+    let runtime = Arc::new(MockSubprocessRuntime::new());
+    server.test_install_formatter_runtime(runtime.clone());
     let uri = "file:///live-external-range.pl";
     server.test_apply_did_open(uri, "my$x=1;\nmy$y=2;\n", 1)?;
 
@@ -688,13 +671,16 @@ fn live_external_partial_range_returns_typed_refusal_not_native_edits()
         ))
         .ok_or("rangeFormatting returned no response")?;
 
-    assert!(response.error.is_none(), "range formatting should return a typed refusal");
-    assert_eq!(response.result, Some(json!([])));
-    let trace = receipt(&server)?;
-    assert_eq!(trace["decision"], "blocked");
-    assert_eq!(trace["reason"], "unsafe_range");
-    assert_eq!(trace["requested_mode"], "external-legacy");
-    assert_eq!(trace["actual_engine"], "unknown");
+    // Withdrawal containment (#11955): the route refuses before engine
+    // selection, so an external partial request can never silently execute
+    // the native formatter nor produce edits of any origin.
+    let error = response.error.ok_or("withdrawn rangeFormatting must refuse")?;
+    assert_eq!(error.code, crate::protocol::METHOD_NOT_FOUND);
+    assert_eq!(response.result, None);
+    assert!(
+        runtime.invocations().is_empty(),
+        "no formatter subprocess may run for a withdrawn route"
+    );
     Ok(())
 }
 

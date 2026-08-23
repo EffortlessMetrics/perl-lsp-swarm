@@ -149,6 +149,8 @@ my$result=calculate(5,3);
     let edits = format_result.as_array().ok_or("formatting result must be edit array")?;
     assert!(!edits.is_empty(), "native default formatting should return edits");
     let formatted = apply_text_edits(messy_code, edits);
+    // Pins the current whole-document outcome including the true-EOF
+    // correction: one final newline, not two.
     assert_eq!(
         formatted,
         concat!(
@@ -158,7 +160,6 @@ my$result=calculate(5,3);
             "    return $x + $y;\n",
             "}\n",
             "my $result = calculate(5, 3);\n",
-            "\n",
         )
     );
 

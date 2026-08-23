@@ -70,8 +70,12 @@ fn full_capabilities_match_contract() -> Result<(), Box<dyn std::error::Error>> 
     assert_eq!(dl["resolveProvider"], json!(true));
 
     assert_eq!(caps["selectionRangeProvider"], json!(true));
-    let ot = &caps["documentOnTypeFormattingProvider"];
-    assert!(ot.is_object());
+    // Withdrawn route (#11955): on-type formatting must not be advertised
+    // until #9320 lands the proven cutover.
+    assert!(
+        caps["documentOnTypeFormattingProvider"].is_null(),
+        "documentOnTypeFormattingProvider is withdrawn and must NOT be advertised"
+    );
 
     // Call and type hierarchy should now be advertised
     assert!(!caps["callHierarchyProvider"].is_null(), "callHierarchyProvider must be advertised");

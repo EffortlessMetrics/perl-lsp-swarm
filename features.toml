@@ -172,30 +172,30 @@ id = "lsp.range_formatting"
 spec = "LSP 3.0"
 area = "text_document"
 maturity = "ga"
-advertised = true
+advertised = false
 tests = [
   "crates/perl-lsp-rs/tests/lsp_formatting_tests.rs",
   "crates/perl-lsp-rs/tests/lsp_bdd_workflows.rs",
 ]
-description = "Range formatting (single range)"
+description = "Range formatting (single range); withdrawn from live routes (#11955) until #9317 lands the exact geometry contract"
 
 [[feature]]
 id = "lsp.ranges_formatting"
 spec = "LSP 3.18"
 area = "text_document"
 maturity = "ga"
-advertised = true
+advertised = false
 tests = ["crates/perl-lsp-rs/tests/lsp_formatting_e2e.rs"]
-description = "Multi-range formatting (textDocument/rangesFormatting) (@proposed)"
+description = "Multi-range formatting (textDocument/rangesFormatting) (@proposed); withdrawn from live routes (#11955) until #7089 lands the atomic composition contract"
 
 [[feature]]
 id = "lsp.on_type_formatting"
 spec = "LSP 3.0"
 area = "text_document"
 maturity = "ga"
-advertised = true
+advertised = false
 tests = ["crates/perl-lsp-rs/tests/lsp_on_type_formatting.rs"]
-description = "On-type formatting with auto-indent"
+description = "On-type formatting with auto-indent; withdrawn from live routes (#11955) until #9320 lands the proven cutover"
 
 [[feature]]
 id = "lsp.rename"
