@@ -2,10 +2,12 @@
 //!
 //! This module proves the reusable envelope, input bounds, source pin, the
 //! lifecycle registry (`initialize` / `initialized` / `shutdown` / `exit` /
-//! `$/cancelRequest`), and the window-message family (`window/showMessage`,
-//! `window/logMessage`, `window/showMessageRequest`). Remaining method payload
-//! validators stay on #10477 so each family stays within RIPR's review budget.
-//! Exact-process coverage is wired separately by #7116.
+//! `$/cancelRequest`), the window-message family (`window/showMessage`,
+//! `window/showMessageRequest`, `window/logMessage`), and the document-sync
+//! family (`textDocument/didOpen`, `textDocument/didChange`,
+//! `textDocument/didClose`). Remaining method payload validators stay on
+//! #10477 so each family stays within RIPR's review budget. Exact-process
+//! coverage is wired separately by #7116.
 
 mod methods;
 mod payloads;
@@ -22,7 +24,7 @@ pub const SCHEMA_SOURCE_JSON: &str = include_str!("../../../protocol_schema_sour
 pub const UPSTREAM_PROTOCOL_COMMIT: &str = "8d5153933153aed3a488b9b8f46b22ed0f90f552";
 /// SHA-256 of the reviewed, checked-in source manifest bytes.
 pub const SCHEMA_SOURCE_MANIFEST_SHA256: &str =
-    "9dd85708629d5b1a8ec6b32f260e14e79b7d1ede7be1beb11bf258f569049899";
+    "8ff2184593d7fca687bfba4121f746ac1905f65405101170f1a3ecd5d111e92b";
 
 /// Direction of a protocol message on the LSP connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -525,6 +527,24 @@ pub(super) fn expect_integer(
 ) -> Result<i64, SchemaError> {
     let value = value.ok_or_else(|| SchemaError::new(method, path, "integer", "missing"))?;
     value.as_i64().ok_or_else(|| SchemaError::at_value(method, path, "integer", value))
+}
+
+/// LSP metamodel `uint`: an unsigned integer within 32 bits.
+pub(super) fn expect_unsigned_integer(
+    method: Option<&str>,
+    path: &str,
+    value: Option<&Value>,
+) -> Result<u32, SchemaError> {
+    let value =
+        value.ok_or_else(|| SchemaError::new(method, path, "unsigned integer", "missing"))?;
+    let number = value
+        .as_u64()
+        .ok_or_else(|| SchemaError::at_value(method, path, "unsigned integer", value))?;
+    if let Ok(bounded) = u32::try_from(number) {
+        Ok(bounded)
+    } else {
+        Err(SchemaError::at_value(method, path, "unsigned integer within 32 bits", value))
+    }
 }
 
 pub(super) fn expect_null(
