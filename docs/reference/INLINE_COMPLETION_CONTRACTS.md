@@ -324,3 +324,9 @@ in the current build. Its declared safety policy is
 its own contract section), NextEdit MUST NOT emit into the
 `textDocument/inlineCompletion` response. Activating it is out of scope for the
 inline-completion contract above and requires its own spec.
+
+NextEdit is **not exposed through public configuration** (#8311): no settings
+schema, example, or editor contribution advertises a next-edit toggle, and the
+runtime gate is structurally default-off with no enabling input. Supplying the
+legacy settings key is ignored with one bounded deprecation reason and can never
+report ready or enabled.

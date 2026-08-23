@@ -108,7 +108,7 @@ scoping tiers:
   per-folder effective workspace config, so two folders can have completely
   different include paths without interacting.
 - **Server-global** — `[diagnostics]`, `[critic]`, `[features]`, `[formatting]`,
-  `[ai_completion]`, and `[next_edit]`. These target the single shared
+  and `[ai_completion]`. These target the single shared
   `ServerConfig`, so they are inherently server-wide rather than per-folder.
 
 Because the server-global sections are shared, two folders that set the **same**

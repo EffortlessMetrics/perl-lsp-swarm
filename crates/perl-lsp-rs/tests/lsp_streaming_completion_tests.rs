@@ -28,7 +28,12 @@ fn init_harness() -> Result<LspHarness, String> {
     Ok(harness)
 }
 
-/// Helper: enable AI streaming completion via didChangeConfiguration.
+/// Helper: send a generic-client AI enable attempt via didChangeConfiguration.
+///
+/// Since #4997 no generic LSP settings channel can arm remote AI egress or
+/// toggle its streaming authorization: this payload is rejected by the
+/// server and previously accepted state is preserved. The helper remains so
+/// transport-level regressions prove that exact rejection end-to-end.
 fn enable_ai_streaming(harness: &mut LspHarness) {
     harness.notify(
         "workspace/didChangeConfiguration",
@@ -49,8 +54,8 @@ fn enable_ai_streaming(harness: &mut LspHarness) {
     std::thread::sleep(Duration::from_millis(50));
 }
 
-/// Helper: enable streaming and force the no-backend path to emit progress
-/// instead of falling back to one-shot inline completions.
+/// Helper: generic enable attempt with fallback=false, the payload shape that
+/// used to select the no-backend progress contract before #4997.
 fn enable_ai_streaming_progress_contract(harness: &mut LspHarness) {
     harness.notify(
         "workspace/didChangeConfiguration",
@@ -71,7 +76,8 @@ fn enable_ai_streaming_progress_contract(harness: &mut LspHarness) {
     std::thread::sleep(Duration::from_millis(50));
 }
 
-/// Helper: enable AI completion but disable streaming specifically.
+/// Helper: generic enable-plus-disable-streaming attempt. Both directions are
+/// unauthorized under #4997; neither may change AI state.
 fn enable_ai_disable_streaming(harness: &mut LspHarness) {
     harness.notify(
         "workspace/didChangeConfiguration",
@@ -91,12 +97,16 @@ fn enable_ai_disable_streaming(harness: &mut LspHarness) {
     std::thread::sleep(Duration::from_millis(50));
 }
 
-// ==================== Streaming with AI enabled ====================
+// ==================== Generic-channel rejection (#4997) ====================
 
-/// The happy path: AI+streaming enabled, partialResultToken present.
-/// The handler should return `null` and emit a `$/progress` notification.
+/// Security regression (#4997): a generic client forwarding workspace-derived
+/// `aiCompletion.enabled=true` over didChangeConfiguration must not enter the
+/// streaming route at all. The request falls back to the deterministic
+/// one-shot handler (items returned directly) and zero `$/progress`
+/// notifications are emitted for the token — proof the hostile payload armed
+/// nothing.
 #[test]
-fn streaming_completion_returns_null_and_emits_progress() -> TestResult {
+fn hostile_generic_enable_cannot_enter_streaming_route() -> TestResult {
     let mut harness = init_harness()?;
     enable_ai_streaming_progress_contract(&mut harness);
 
@@ -116,10 +126,18 @@ fn streaming_completion_returns_null_and_emits_progress() -> TestResult {
         }),
     )?;
 
-    // The handler returns null -- all data is sent via $/progress.
-    assert!(result.is_null(), "expected null response for streaming request, got: {result}");
+    // The one-shot fallback returns items directly instead of the streaming
+    // route's null response.
+    let items = result
+        .get("items")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| format!("expected deterministic fallback items, got: {result}"))?;
+    assert!(
+        !items.is_empty(),
+        "deterministic one-shot fallback should return completions for 'Package->'"
+    );
 
-    // Verify that a $/progress notification was emitted.
+    // Zero stream sessions were started: no $/progress for this token.
     let progress_notifications = harness.drain_notifications(Some("$/progress"), 500);
     let matching: Vec<_> = progress_notifications
         .iter()
@@ -127,75 +145,55 @@ fn streaming_completion_returns_null_and_emits_progress() -> TestResult {
         .collect();
 
     assert!(
-        !matching.is_empty(),
-        "expected at least one $/progress notification with token 'stream-token-1', \
-         got {} total progress notifications",
+        matching.is_empty(),
+        "generic enablement must not start a stream session; got {} progress notifications",
         progress_notifications.len()
     );
-
-    // Validate the progress payload structure.
-    let progress = matching[0];
-    let value = &progress["params"]["value"];
-    assert_eq!(
-        value["kind"].as_str(),
-        Some("perlInlineCompletionStream"),
-        "progress kind must be 'perlInlineCompletionStream'"
-    );
-    let session_id = value["sessionId"].as_str().ok_or("progress sessionId must be a string")?;
-    assert!(!session_id.is_empty(), "progress sessionId must not be empty");
-    assert_eq!(
-        value["sequence"].as_u64(),
-        Some(0),
-        "the first progress frame must start at sequence zero"
-    );
-    assert_eq!(
-        value["isFinal"].as_bool(),
-        Some(true),
-        "current implementation emits a single final progress"
-    );
-    assert!(value.get("items").is_some(), "progress must contain an items array");
 
     Ok(())
 }
 
-/// Verify the progress session ID format and that the sequence starts at 0.
+/// Security regression (#4997): the same rejection holds when the hostile
+/// payload also tries to disable streaming — neither direction may change AI
+/// state, and the request still resolves through the deterministic path.
 #[test]
-fn streaming_completion_progress_has_valid_session_and_sequence() -> TestResult {
+fn hostile_generic_disable_streaming_is_equally_unauthorized() -> TestResult {
     let mut harness = init_harness()?;
-    enable_ai_streaming_progress_contract(&mut harness);
+    enable_ai_disable_streaming(&mut harness);
 
-    let uri = "file:///session_test.pl";
-    harness.open(uri, "sub foo {\n    \n}")?;
+    let uri = "file:///fallback_streaming_disabled.pl";
+    harness.open(uri, "my $obj = Package->")?;
 
     harness.wait_for_idle(Duration::from_millis(200));
     let _ = harness.drain_notifications(None, 100);
 
-    let _result = harness.request(
+    let result = harness.request(
         "textDocument/perlInlineCompletionStream",
         json!({
             "textDocument": { "uri": uri, "version": 1 },
-            "position": { "line": 1, "character": 4 },
-            "partialResultToken": "sess-check-token"
+            "position": { "line": 0, "character": 19 },
+            "partialResultToken": "stream-disabled-token"
         }),
     )?;
 
-    let progress_notifications = harness.drain_notifications(Some("$/progress"), 500);
-    let matching: Vec<_> = progress_notifications
+    // Falls back to one-shot -- returns items, not null; no stream session.
+    let items = result
+        .get("items")
+        .and_then(|v| v.as_array())
+        .ok_or("expected items array in fallback response")?;
+    assert!(!items.is_empty(), "one-shot fallback should return completions");
+
+    let progress = harness.drain_notifications(Some("$/progress"), 200);
+    let matching: Vec<_> = progress
         .iter()
-        .filter(|n| n.pointer("/params/token").and_then(|v| v.as_str()) == Some("sess-check-token"))
+        .filter(|n| {
+            n.pointer("/params/token").and_then(|v| v.as_str()) == Some("stream-disabled-token")
+        })
         .collect();
-
-    assert!(!matching.is_empty(), "expected progress notification");
-
-    let value = &matching[0]["params"]["value"];
-    let session_id = value["sessionId"].as_str().ok_or("sessionId should be a string")?;
     assert!(
-        session_id.starts_with("sess-"),
-        "session ID should start with 'sess-', got: {session_id}"
+        matching.is_empty(),
+        "unauthorized disable attempt must not open or close any stream session"
     );
-
-    let sequence = value["sequence"].as_u64();
-    assert_eq!(sequence, Some(0), "first progress sequence should be 0");
 
     Ok(())
 }
@@ -250,6 +248,11 @@ fn streaming_completion_without_ai_falls_back_to_one_shot() -> TestResult {
 
 /// When AI is enabled but streaming specifically is disabled, the streaming
 /// request should also fall back to one-shot.
+///
+/// Superseded by `hostile_generic_disable_streaming_is_equally_unauthorized`
+/// above: under #4997 the enable-plus-disable payload this test used to send
+/// is rejected wholesale, and that test additionally proves no stream session
+/// was opened or torn down by either direction of the hostile payload.
 #[test]
 fn streaming_completion_with_streaming_disabled_falls_back() -> TestResult {
     let mut harness = init_harness()?;
@@ -315,67 +318,11 @@ fn streaming_completion_without_partial_result_token_falls_back() -> TestResult 
 }
 
 // ==================== Session cancellation ====================
-
-/// Sending two streaming requests for the same position should cancel the
-/// first session. Verify the server handles this without error and both
-/// return null.
-#[test]
-fn streaming_completion_second_request_cancels_first_session() -> TestResult {
-    let mut harness = init_harness()?;
-    enable_ai_streaming_progress_contract(&mut harness);
-
-    let uri = "file:///cancel_test.pl";
-    harness.open(uri, "use strict;\nmy $x = ")?;
-
-    harness.wait_for_idle(Duration::from_millis(200));
-    let _ = harness.drain_notifications(None, 100);
-
-    // First request
-    let result1 = harness.request(
-        "textDocument/perlInlineCompletionStream",
-        json!({
-            "textDocument": { "uri": uri, "version": 1 },
-            "position": { "line": 1, "character": 9 },
-            "partialResultToken": "cancel-token-1"
-        }),
-    )?;
-    assert!(result1.is_null(), "first streaming response should be null");
-
-    // Second request at same position -- cancels the first session.
-    let result2 = harness.request(
-        "textDocument/perlInlineCompletionStream",
-        json!({
-            "textDocument": { "uri": uri, "version": 1 },
-            "position": { "line": 1, "character": 9 },
-            "partialResultToken": "cancel-token-2"
-        }),
-    )?;
-    assert!(result2.is_null(), "second streaming response should be null");
-
-    // Both should have emitted progress, but with different session IDs.
-    let progress = harness.drain_notifications(Some("$/progress"), 500);
-    let token1_progress: Vec<_> = progress
-        .iter()
-        .filter(|n| n.pointer("/params/token").and_then(|v| v.as_str()) == Some("cancel-token-1"))
-        .collect();
-    let token2_progress: Vec<_> = progress
-        .iter()
-        .filter(|n| n.pointer("/params/token").and_then(|v| v.as_str()) == Some("cancel-token-2"))
-        .collect();
-
-    assert!(!token1_progress.is_empty(), "first request should emit progress");
-    assert!(!token2_progress.is_empty(), "second request should emit progress");
-
-    // Verify different session IDs.
-    let sid1 = token1_progress[0].pointer("/params/value/sessionId").and_then(|v| v.as_str());
-    let sid2 = token2_progress[0].pointer("/params/value/sessionId").and_then(|v| v.as_str());
-    assert_ne!(
-        sid1, sid2,
-        "two requests at the same position should produce different session IDs"
-    );
-
-    Ok(())
-}
+// Session-cancellation semantics (second request at the same position
+// cancels the first, distinct session IDs per token) are proven by
+// `streaming_completion_cancel_rotates_session_identity` in the gated
+// `mock_streaming_completion_tests` module below: arming AI now requires the
+// trusted test API (#4997), which only that module can reach.
 
 // ==================== URI cancellation ====================
 
@@ -454,71 +401,10 @@ fn streaming_completion_capability_advertised() -> TestResult {
 }
 
 // ==================== Progress payload schema ====================
-
-/// Validate the full schema of the progress notification payload.
-#[test]
-fn streaming_completion_progress_schema_validation() -> TestResult {
-    let mut harness = init_harness()?;
-    enable_ai_streaming_progress_contract(&mut harness);
-
-    let uri = "file:///schema_test.pl";
-    harness.open(uri, "#!/usr/bin/perl\nuse strict;\n")?;
-
-    harness.wait_for_idle(Duration::from_millis(200));
-    let _ = harness.drain_notifications(None, 100);
-
-    let _result = harness.request(
-        "textDocument/perlInlineCompletionStream",
-        json!({
-            "textDocument": { "uri": uri, "version": 1 },
-            "position": { "line": 1, "character": 11 },
-            "partialResultToken": "schema-token"
-        }),
-    )?;
-
-    let progress = harness.drain_notifications(Some("$/progress"), 500);
-    let matching: Vec<_> = progress
-        .iter()
-        .filter(|n| n.pointer("/params/token").and_then(|v| v.as_str()) == Some("schema-token"))
-        .collect();
-
-    assert!(!matching.is_empty(), "expected progress notification");
-
-    let notif = matching[0];
-
-    // Top-level: method must be $/progress
-    assert_eq!(
-        notif["method"].as_str(),
-        Some("$/progress"),
-        "notification method must be $/progress"
-    );
-
-    // params.token must match the request's partialResultToken
-    assert_eq!(
-        notif.pointer("/params/token").and_then(|v| v.as_str()),
-        Some("schema-token"),
-        "token must match partialResultToken"
-    );
-
-    // params.value must be present
-    let value = &notif["params"]["value"];
-    assert!(!value.is_null(), "value must be present");
-
-    // Required fields in value
-    let required_fields = ["kind", "sessionId", "sequence", "isFinal", "items"];
-    for field in &required_fields {
-        assert!(value.get(field).is_some(), "progress value must contain '{field}'");
-    }
-
-    // Type checks
-    assert!(value["kind"].is_string(), "kind must be a string");
-    assert!(value["sessionId"].is_string(), "sessionId must be a string");
-    assert!(value["sequence"].is_number(), "sequence must be a number");
-    assert!(value["isFinal"].is_boolean(), "isFinal must be a boolean");
-    assert!(value["items"].is_array(), "items must be an array");
-
-    Ok(())
-}
+// The full progress-payload schema (method, token echo, value fields) is
+// proven by `streaming_completion_progress_schema_validation_armed` in the
+// gated `mock_streaming_completion_tests` module below: arming AI now
+// requires the trusted test API (#4997), which only that module can reach.
 
 // Mock streaming-backend coverage includes:
 // 1. Multiple intermediate $/progress notifications with increasing sequence numbers
@@ -651,6 +537,150 @@ mod mock_streaming_completion_tests {
         let _ = server.handle_request(config_request);
 
         (server, capture)
+    }
+
+    /// Variant of `create_server` that arms AI through the trusted test API
+    /// (#4997) with deterministic fallback disabled, so the no-backend
+    /// progress contract (null response plus a single final `$/progress`
+    /// frame carrying an items array) is observable. The trailing
+    /// didChangeConfiguration payload is the generic-channel enable shape,
+    /// which the server must reject: streaming stays at its trusted default.
+    fn create_server_progress_contract() -> (LspServer, TestOutputCapture) {
+        let capture = TestOutputCapture::new();
+        let output = Box::new(capture.clone()) as Box<dyn Write + Send>;
+        let server = LspServer::with_output(Arc::new(Mutex::new(output)));
+
+        let init_request = JsonRpcRequest {
+            _jsonrpc: "2.0".into(),
+            id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+            method: "initialize".into(),
+            params: Some(json!({
+                "processId": std::process::id(),
+                "rootUri": "file:///workspace",
+                "capabilities": {
+                    "textDocument": {
+                        "inlineCompletion": { "dynamicRegistration": false },
+                    }
+                }
+            })),
+        };
+        let _ = server.handle_request(init_request);
+
+        let initialized = JsonRpcRequest {
+            _jsonrpc: "2.0".into(),
+            id: None,
+            method: "initialized".into(),
+            params: Some(json!({})),
+        };
+        let _ = server.handle_request(initialized);
+
+        // Trusted-operator stand-in (#4997): no client channel may arm this.
+        server.test_configure_ai_completion(true, false);
+
+        let hostile_enable = JsonRpcRequest {
+            _jsonrpc: "2.0".into(),
+            id: None,
+            method: "workspace/didChangeConfiguration".into(),
+            params: Some(json!({
+                "settings": {
+                    "perl": {
+                        "aiCompletion": {
+                            "enabled": true,
+                            "streaming": { "enabled": true }
+                        }
+                    }
+                }
+            })),
+        };
+        let _ = server.handle_request(hostile_enable);
+
+        (server, capture)
+    }
+
+    /// Progress-contract happy path under a legitimately armed state:
+    /// streaming route entered, backend absent, fallback disabled — the
+    /// handler returns null and emits exactly one final progress frame with
+    /// the full value schema.
+    #[test]
+    fn streaming_completion_progress_schema_validation_armed() {
+        let (server, capture) = create_server_progress_contract();
+        open_doc(&server, "file:///schema_test.pl", "my $obj = Package->");
+
+        let result =
+            request_streaming_completion(&server, "file:///schema_test.pl", 19, "schema-token");
+        assert!(result.is_null(), "streaming route returns null; got: {result}");
+
+        let progress =
+            wait_for_progress_messages(&capture, "schema-token", Duration::from_millis(500));
+        assert!(!progress.is_empty(), "expected progress notification");
+
+        let notif = &progress[0];
+        assert_eq!(notif["method"].as_str(), Some("$/progress"));
+        assert_eq!(
+            notif.pointer("/params/token").and_then(|v| v.as_str()),
+            Some("schema-token"),
+            "token must match partialResultToken"
+        );
+
+        let value = &notif["params"]["value"];
+        assert!(!value.is_null(), "value must be present");
+        for field in ["kind", "sessionId", "sequence", "isFinal", "items"] {
+            assert!(value.get(field).is_some(), "progress value must contain '{field}'");
+        }
+        assert_eq!(
+            value["kind"].as_str(),
+            Some("perlInlineCompletionStream"),
+            "progress kind must be 'perlInlineCompletionStream'"
+        );
+        assert_eq!(value["sequence"].as_u64(), Some(0), "first frame starts at zero");
+        assert_eq!(
+            value["isFinal"].as_bool(),
+            Some(true),
+            "no-backend contract emits a single final progress"
+        );
+        assert!(value["items"].is_array(), "items must be an array");
+    }
+
+    /// Two streaming requests at the same position rotate the stream session:
+    /// each token gets progress frames carrying distinct session IDs.
+    #[test]
+    fn streaming_completion_cancel_rotates_session_identity() {
+        let (server, capture) = create_server_progress_contract();
+        open_doc(&server, "file:///cancel_test.pl", "my $obj = Package->");
+
+        let first =
+            request_streaming_completion(&server, "file:///cancel_test.pl", 19, "cancel-token-1");
+        assert!(first.is_null(), "first streaming response should be null");
+
+        let second =
+            request_streaming_completion(&server, "file:///cancel_test.pl", 19, "cancel-token-2");
+        assert!(second.is_null(), "second streaming response should be null");
+
+        // Synchronize on the second token's final frame, then classify the
+        // full captured stream by token.
+        let _ = wait_for_progress_messages(&capture, "cancel-token-2", Duration::from_millis(500));
+        let progress = capture.messages();
+        let token1: Vec<_> = progress
+            .iter()
+            .filter(|n| {
+                n.pointer("/params/token").and_then(|v| v.as_str()) == Some("cancel-token-1")
+            })
+            .collect();
+        let token2: Vec<_> = progress
+            .iter()
+            .filter(|n| {
+                n.pointer("/params/token").and_then(|v| v.as_str()) == Some("cancel-token-2")
+            })
+            .collect();
+        assert!(!token1.is_empty(), "first request should emit progress");
+        assert!(!token2.is_empty(), "second request should emit progress");
+
+        let sid1 = token1[0].pointer("/params/value/sessionId").and_then(|v| v.as_str());
+        let sid2 = token2[0].pointer("/params/value/sessionId").and_then(|v| v.as_str());
+        assert_ne!(
+            sid1, sid2,
+            "two requests at the same position should produce different session IDs"
+        );
     }
 
     fn set_streaming_debounce(server: &LspServer, milliseconds: u64) {
@@ -1092,8 +1122,12 @@ mod mock_streaming_completion_tests {
             params: Some(json!({
                 "settings": {
                     "perl": {
-                        "aiCompletion": { "model": "updated-model" }
-                    }
+                    // Any client-settings notification starts a new
+                    // configuration session; envelope fields like timeoutMs
+                    // remain generic-settable (#4997 rejected arm/select
+                    // fields are not needed to exercise the reset).
+                    "aiCompletion": { "timeoutMs": 2500 }
+                }
                 }
             })),
         });

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 7276,
-  "reason": "#7276 ptkdb claim-boundary candidate: package.json grows 58306->58690 bytes (external-peer manifest copy) and out/extension.js grows 1462804->1465391 bytes (fail-closed dangling externalDebugger rejection); every other packaged entry is byte-identical after normalizing vsce archive asset names.",
-  "base_baseline_file_sha256": "7d24b2a9cc9653790b955a84124949a15d0f1cfa2e1994964f8e0c818d76f71c",
-  "candidate_baseline_file_sha256": "86d37aec8d47610d247c297a2b9c1592419fb8e6ea301de42318006a93c8d690",
-  "base_inventory_sha256": "a18d9dc92dec8337e1885300530d30f3b179044e648da7c9b7df3cc24f2a8a13",
-  "candidate_inventory_sha256": "9ffef8327470dc624893f58b6ca0ac5b04262acebc7ea9d6eaed77fed657373e"
+  "owner_issue": 10200,
+  "reason": "#10200 baseline truth repair: tighten package.json 58690->58529 to the true current size; record changelog.md at the archive-measured 19955 (vsce markdown processor rewrites the two now-absolute release-note links); record out/extension.js at the true current build 1465078 (both win32 and CI linux builds agree; the prior 1465391 recorded a larger bundle that no longer builds — undeclared -313 drift since the #7276-era packaging). Archive-normalized asset names retained; no file added, removed, or loosened; total recomputed 1638716->1638246.",
+  "base_baseline_file_sha256": "86d37aec8d47610d247c297a2b9c1592419fb8e6ea301de42318006a93c8d690",
+  "candidate_baseline_file_sha256": "0c0505194ee87ddadae4154dc7d77dd005b2791447d7f0278f1f9078f1eabaeb",
+  "base_inventory_sha256": "9ffef8327470dc624893f58b6ca0ac5b04262acebc7ea9d6eaed77fed657373e",
+  "candidate_inventory_sha256": "5b56dd0d313e33cad431fc52e9e16521d10c4e5cbaa0dda80365bd7f0d2f628e"
 }

@@ -2570,7 +2570,7 @@ language = "lua"
 surface = "editor"
 classification = "production"
 owner = "editor/lite-xl"
-reason = "Exact upstream lite-xl-lsp json.lua (base d1432ae, blob eb36b8fa) staged for the Lite XL integration train, carrying only the #11197 terminal typed-decode-error patch and the #11136 typed JSON null/array/object identity patch."
+reason = "Exact upstream lite-xl-lsp json.lua (base d1432ae, blob eb36b8fa) staged for the Lite XL integration train, carrying the #11155 bounded-diagnostics, #11197 typed-decode-error, #11136 typed-value, #11183 numeric-identity, #11194 Unicode-validity, and #11186 structural-budget patches."
 covered_by = [
   "lua clients/lite-xl/tests/json_decode_test.lua",
   "cargo xtask check-file-policy",
@@ -2628,3 +2628,165 @@ covered_by = [
 ]
 created = "2026-08-23"
 review_after = "2026-11-23"
+
+[[allow]]
+id = "non-rust-litexl-server-transport"
+path = "clients/lite-xl/upstream/server.lua"
+kind = "editor_extension"
+language = "lua"
+surface = "editor"
+classification = "production"
+owner = "editor/lite-xl"
+reason = "Exact upstream lite-xl-lsp server.lua (base d1432ae, blob 33c8ccae) staged for the Lite XL integration train, carrying the #11151 bounded inbound frame-reader patch: explicit parser state, header/body budgets, strict Content-Length validation, remainder ownership, and typed content-free framing failures."
+covered_by = [
+  "lua clients/lite-xl/tests/server_frame_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-init-plugin"
+path = "clients/lite-xl/upstream/init.lua"
+kind = "editor_extension"
+language = "lua"
+surface = "editor"
+classification = "production"
+owner = "editor/lite-xl"
+reason = "Exact upstream lite-xl-lsp init.lua (base d1432ae, blob 7b38c3a9) staged for the Lite XL integration train, carrying the #11115 monotonic document-version patch (one structured per-server/per-document open-session record owning versions, pending changes, server generations, and session identities) and the #11108 request-subject currentness patch (immutable subjects plus one reusable response-admission guard with typed dispositions)."
+covered_by = [
+  "lua clients/lite-xl/tests/init_document_session_test.lua",
+  "lua clients/lite-xl/tests/init_request_currentness_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-init-session-tests"
+path = "clients/lite-xl/tests/init_document_session_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free document-session suite proving exact wire versions, session identities, snapshot capture, and inert terminated sessions; runs against the staged module, the pristine upstream blob, or any single-behavior mutation for red-first and falsifier checks."
+covered_by = [
+  "lua clients/lite-xl/tests/init_document_session_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-init-request-currentness-tests"
+path = "clients/lite-xl/tests/init_request_currentness_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free request-currentness suite proving held responses apply only to their exact server/document subject across edits, restarts, close/reopen, and URI transitions; runs against the staged module or current main for red-first checks and against single-behavior mutations for falsifier checks."
+covered_by = [
+  "lua clients/lite-xl/tests/init_request_currentness_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-diagnostics-store"
+path = "clients/lite-xl/upstream/diagnostics.lua"
+kind = "editor_extension"
+language = "lua"
+surface = "editor"
+classification = "production"
+owner = "editor/lite-xl"
+reason = "Exact upstream lite-xl-lsp diagnostics.lua (base d1432ae, blob c06bec49) staged for the Lite XL integration train, carrying the #11124 generation-bound publication patch: provider/server-generation/document-session/version admission with typed dispositions, deterministic source-attributed projection, and lifecycle-bound cleanup."
+covered_by = [
+  "lua clients/lite-xl/tests/diagnostics_currentness_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-diagnostics-currentness-tests"
+path = "clients/lite-xl/tests/diagnostics_currentness_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free push-diagnostics currentness suite proving stale/future/old-generation rejections, complementary provider composition, unversioned not-proven dispositions, generation-bound delayed rendering, and lifecycle cleanup; runs against the staged modules or the pristine blobs for red-first checks."
+covered_by = [
+  "lua clients/lite-xl/tests/diagnostics_currentness_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-server-frame-tests"
+path = "clients/lite-xl/tests/server_frame_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free inbound-framing suite proving bounded typed frame parsing over a fake process; runs against the staged module, the pristine upstream blob, or any single-behavior mutation for red-first and falsifier checks."
+covered_by = [
+  "lua clients/lite-xl/tests/server_frame_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-util-support"
+path = "clients/lite-xl/upstream/util.lua"
+kind = "editor_extension"
+language = "lua"
+surface = "editor"
+classification = "production"
+owner = "editor/lite-xl"
+reason = "Exact upstream lite-xl-lsp util.lua (base d1432ae, blob 588c101a) staged for the Lite XL integration train, carrying the #11155 guarded sensitive-trace patch (log_file append failures warn once without recursion, documented source-bearing surface, no automatic retention) and the #11162 shell-free external-launch patch (URI classification policy, argv-only platform launchers, testable show_document sequence)."
+covered_by = [
+  "lua clients/lite-xl/tests/server_logging_test.lua",
+  "lua clients/lite-xl/tests/util_show_document_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-server-logging-tests"
+path = "clients/lite-xl/tests/server_logging_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic canary-based redaction suite proving default failure logs keep actionable identity while source/secret bytes stay out, stderr drains bounded with visible truncation, and the explicit trace stays opt-in, guarded, and immediately stoppable; runs against staged or mutated modules."
+covered_by = [
+  "lua clients/lite-xl/tests/server_logging_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-show-document-tests"
+path = "clients/lite-xl/tests/util_show_document_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic argv/scheme falsifier suite proving shell-free external launches across Linux/macOS/Windows shapes, explicit URI dispositions, truthful decline/failure outcomes, and zero shell invocation; runs against the staged module, pristine upstream blob, or a restored shell-construction mutation."
+covered_by = [
+  "lua clients/lite-xl/tests/util_show_document_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"

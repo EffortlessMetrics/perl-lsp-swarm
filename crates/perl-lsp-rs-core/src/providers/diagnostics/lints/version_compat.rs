@@ -614,6 +614,7 @@ fn make_diagnostic(
         related_information: vec![],
         tags: vec![],
         fixable: false,
+        critic_observation: None,
         suggestion: Some(suggestion),
     }
 }
@@ -720,6 +721,7 @@ fn make_experimental_feature_diagnostic(
         related_information: vec![],
         tags: vec![],
         fixable: false,
+        critic_observation: None,
         suggestion: Some(suggestion),
     }
 }
@@ -742,6 +744,7 @@ fn make_given_when_default_diagnostic(node: &Node, declared_version: PerlVersion
         related_information: vec![],
         tags: vec![],
         fixable: false,
+        critic_observation: None,
         suggestion: Some(
             "Refactor `given` / `when` / `default` to `if` / `elsif` or another supported control-flow form; this feature is deprecated in v5.38."
                 .to_string(),
@@ -771,6 +774,7 @@ fn make_given_when_feature_diagnostic(node: &Node, declared_version: PerlVersion
         related_information: vec![],
         tags: vec![],
         fixable: false,
+        critic_observation: None,
         suggestion: Some("Add `use feature 'switch';` to enable given/when/default.".to_string()),
     }
 }
@@ -793,6 +797,7 @@ fn make_smartmatch_diagnostic(node: &Node, declared_version: PerlVersion) -> Dia
         related_information: vec![],
         tags: vec![],
         fixable: false,
+        critic_observation: None,
         suggestion: Some(
             "Replace smartmatch `~~` with `if` / `elsif`, `grep`, or `any` from List::Util; this operator is deprecated in v5.38."
                 .to_string(),
@@ -825,6 +830,7 @@ fn make_smartmatch_feature_gate_diagnostic(
         related_information: vec![],
         tags: vec![],
         fixable: false,
+        critic_observation: None,
         suggestion: Some(
             "Add `use feature 'smartmatch';` to enable the smartmatch operator.".to_string(),
         ),
@@ -860,6 +866,7 @@ fn make_diagnostic_with_details(
         tags: vec![],
         suggestion,
         fixable: false,
+        critic_observation: None,
     }
 }
 
