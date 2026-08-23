@@ -242,7 +242,7 @@ mod initialize_lsp_with_root_path_tests {
             .get("result")
             .and_then(|result| result.get("capabilities"))
             .cloned()
-            .unwrap_or_else(|| Value::Null);
+            .unwrap_or(Value::Null);
         assert!(
             capabilities.is_object(),
             "initialize must answer with a capabilities object, got: {response:?}"

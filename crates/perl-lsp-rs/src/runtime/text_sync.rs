@@ -14,6 +14,7 @@ use super::{
     Arc, AtomicBool, AtomicU32, CodeFormatter, DocumentState, FormattingOptions, HashMap,
     JsonRpcError, LspServer, Mutex, Node, NonZeroU32, Ordering, Parser, Value,
     diagnostics_sink::{PushDiagnosticIdentity, PushDiagnosticsDisposition},
+    document_symbols_sink::DocumentSymbolIdentity as SymbolsIdentity,
     json, parse_worker, source_path_from_uri, workspace_progress,
 };
 use crate::protocol::invalid_params;
@@ -138,6 +139,11 @@ impl LspServer {
                 // Guarded no-parse state still carries document identity
                 // through the push-diagnostics sink (#11673).
                 let guard_state = minimal_state(text, version);
+                let symbols_identity = SymbolsIdentity::for_document(
+                    &normalized_uri,
+                    &guard_state.generation,
+                    guard_state.current_generation(),
+                );
                 let identity = PushDiagnosticIdentity::for_document(
                     &normalized_uri,
                     &guard_state.generation,
@@ -153,7 +159,7 @@ impl LspServer {
                     }),
                     PushDiagnosticsDisposition::Clear,
                 );
-                self.clear_document_symbols(uri);
+                self.clear_document_symbols_for_identity(&symbols_identity);
 
                 return Ok(());
             }
@@ -172,6 +178,11 @@ impl LspServer {
                 // Store document state without AST
                 let normalized_uri = self.normalize_uri_key(uri);
                 let guard_state = minimal_state(text, version);
+                let symbols_identity = SymbolsIdentity::for_document(
+                    &normalized_uri,
+                    &guard_state.generation,
+                    guard_state.current_generation(),
+                );
                 let identity = PushDiagnosticIdentity::for_document(
                     &normalized_uri,
                     &guard_state.generation,
@@ -187,7 +198,7 @@ impl LspServer {
                     }),
                     PushDiagnosticsDisposition::Clear,
                 );
-                self.clear_document_symbols(uri);
+                self.clear_document_symbols_for_identity(&symbols_identity);
 
                 return Ok(());
             }
@@ -202,6 +213,11 @@ impl LspServer {
 
                 let normalized_uri = self.normalize_uri_key(uri);
                 let guard_state = minimal_state(text, version);
+                let symbols_identity = SymbolsIdentity::for_document(
+                    &normalized_uri,
+                    &guard_state.generation,
+                    guard_state.current_generation(),
+                );
                 let identity = PushDiagnosticIdentity::for_document(
                     &normalized_uri,
                     &guard_state.generation,
@@ -225,7 +241,7 @@ impl LspServer {
                     }),
                     PushDiagnosticsDisposition::Replacement,
                 );
-                self.clear_document_symbols(uri);
+                self.clear_document_symbols_for_identity(&symbols_identity);
 
                 return Ok(());
             }
@@ -326,6 +342,11 @@ impl LspServer {
             // (created above, never edited yet), so this publication always
             // succeeds synchronously.
             let doc_generation = doc_state.current_generation();
+            // Accepted-ticket identity for this open's parse-derived symbol
+            // commit (#11674): the store mutation validates it at the sink
+            // boundary, not merely before the handler section.
+            let symbol_identity =
+                SymbolsIdentity::for_document(&normalized_uri, &generation, doc_generation);
             let snapshot = Arc::new(ParsedSnapshot::from_parse_result(
                 doc_generation,
                 text,
@@ -337,7 +358,7 @@ impl LspServer {
             self.documents.lock().insert(normalized_uri.clone(), doc_state);
 
             if let Some(ref ast) = ast_arc {
-                self.reindex_document_symbols(uri, ast, text);
+                self.commit_document_symbols_from_ast(&symbol_identity, ast, text);
                 // Update the workspace-wide index for cross-file features.
                 // Indexing runs in a background task so the handler returns
                 // immediately without blocking on file I/O or symbol extraction.
@@ -449,7 +470,9 @@ impl LspServer {
                     return Ok(());
                 }
             } else {
-                self.clear_document_symbols(uri);
+                // Current parse failure supersedes old exact symbols via the
+                // sink's declared clear policy (#11674).
+                self.clear_document_symbols_for_identity(&symbol_identity);
             }
 
             // Notify coordinator that all work (parse + index) is complete (may trigger recovery)
@@ -687,6 +710,11 @@ impl LspServer {
                         version,
                         doc_state.generation.clone(),
                     );
+                    let symbols_identity = SymbolsIdentity::for_document(
+                        &normalized_uri,
+                        &doc_state.generation,
+                        doc_state.current_generation(),
+                    );
                     let identity = PushDiagnosticIdentity::for_document(
                         &normalized_uri,
                         &doc_state.generation,
@@ -703,7 +731,7 @@ impl LspServer {
                         }),
                         PushDiagnosticsDisposition::Clear,
                     );
-                    self.clear_document_symbols(uri);
+                    self.clear_document_symbols_for_identity(&symbols_identity);
 
                     return Ok(());
                 }
@@ -727,6 +755,11 @@ impl LspServer {
                         version,
                         doc_state.generation.clone(),
                     );
+                    let symbols_identity = SymbolsIdentity::for_document(
+                        &normalized_uri,
+                        &doc_state.generation,
+                        doc_state.current_generation(),
+                    );
                     let identity = PushDiagnosticIdentity::for_document(
                         &normalized_uri,
                         &doc_state.generation,
@@ -743,7 +776,7 @@ impl LspServer {
                         }),
                         PushDiagnosticsDisposition::Clear,
                     );
-                    self.clear_document_symbols(uri);
+                    self.clear_document_symbols_for_identity(&symbols_identity);
 
                     return Ok(());
                 }
@@ -762,6 +795,11 @@ impl LspServer {
                         text.to_string(),
                         version,
                         doc_state.generation.clone(),
+                    );
+                    let symbols_identity = SymbolsIdentity::for_document(
+                        &normalized_uri,
+                        &doc_state.generation,
+                        doc_state.current_generation(),
                     );
                     let identity = PushDiagnosticIdentity::for_document(
                         &normalized_uri,
@@ -787,7 +825,7 @@ impl LspServer {
                         }),
                         PushDiagnosticsDisposition::Replacement,
                     );
-                    self.clear_document_symbols(uri);
+                    self.clear_document_symbols_for_identity(&symbols_identity);
 
                     return Ok(());
                 }
@@ -1210,12 +1248,20 @@ impl LspServer {
     /// newer edit can still land in.
     pub(crate) fn run_post_parse_side_effects(&self, ticket: parse_worker::PublishedParseTicket) {
         let ast_arc = ticket.snapshot.ast().cloned();
+        // The outer wrapper below is cheap coalescing only (#11674): the
+        // symbol store mutation itself re-validates this exact ticket at the
+        // document-symbol sink boundary.
+        let symbol_identity = SymbolsIdentity::for_document(
+            &self.normalize_uri_key(&ticket.uri),
+            &ticket.document_instance,
+            ticket.generation,
+        );
 
         let symbols_committed = self.commit_parse_effect_if_current(&ticket, || {
             if let Some(ref ast) = ast_arc {
-                self.reindex_document_symbols(&ticket.uri, ast, &ticket.text);
+                self.commit_document_symbols_from_ast(&symbol_identity, ast, &ticket.text);
             } else {
-                self.clear_document_symbols(&ticket.uri);
+                self.clear_document_symbols_for_identity(&symbol_identity);
             }
         });
 

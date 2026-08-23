@@ -19,6 +19,7 @@ pub(crate) mod diagnostics;
 mod diagnostics_sink;
 mod dispatch;
 mod document_access;
+mod document_symbols_sink;
 /// File discovery abstraction for workspace scanning
 pub mod file_discovery;
 /// File watcher change debouncer for bulk operation handling
@@ -55,6 +56,8 @@ mod workspace_progress;
 
 #[cfg(test)]
 mod diagnostics_sink_tests;
+#[cfg(test)]
+mod document_symbols_sink_tests;
 #[cfg(test)]
 mod open_buffer_authority_tests;
 
@@ -425,6 +428,17 @@ pub struct LspServer {
     /// adding production synchronization.
     #[cfg(test)]
     pub(crate) diagnostic_after_snapshot_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Accepted-ticket document-symbol sink (#11674): per-URI record of the
+    /// last committed local symbol ticket + monotonic sequence. The
+    /// irreversible `symbol_index` replacement/clear for parser-triggered
+    /// paths happens inside this sink's critical section -- see
+    /// [`document_symbols_sink`]. The committed identity is also the anchor
+    /// #6729's document-symbol result-ID row must consume.
+    document_symbols_sink: document_symbols_sink::DocumentSymbolsSink,
+    /// Test-only barrier between symbol extraction and the sink-boundary
+    /// mutation (#11674 falsifiers).
+    #[cfg(test)]
+    document_symbols_before_commit_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// Optional AI inline-completion backend.
     ///
     /// When `Some`, the `handle_inline_completion` handler will attempt
