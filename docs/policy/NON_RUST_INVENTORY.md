@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11218 |
-| Rust-family files | 3420 |
-| Non-Rust files | 7798 |
-| Allowlisted | 5523 |
-| Unclassified | 2275 |
+| Total tracked files | 11262 |
+| Rust-family files | 3444 |
+| Non-Rust files | 7818 |
+| Allowlisted | 5545 |
+| Unclassified | 2273 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 371 |
-| documentation | 2568 |
+| config | 380 |
+| documentation | 2578 |
 | generated | 2 |
 | production | 300 |
-| test | 1817 |
+| test | 1820 |
 | tooling | 465 |
-| unclassified | 2275 |
+| unclassified | 2273 |
 
 ## Unclassified files
 
@@ -63,8 +63,6 @@
 | `aqua.yaml` | `yaml` |
 | `archive/crates/tree-sitter-perl-rs/benchmark_results/comparison_results.json` | `json` |
 | `archive/crates/tree-sitter-perl-rs/edge_case_test_output.txt` | `txt` |
-| `archive/crates/tree-sitter-perl-rs/proptest-regressions/fuzz_tests.txt` | `txt` |
-| `archive/crates/tree-sitter-perl-rs/proptest-regressions/tests.txt` | `txt` |
 | `archive/crates/tree-sitter-perl-rs/src/bin/benchmark_parsers.rs.disabled` | `disabled` |
 | `archive/crates/tree-sitter-perl-rs/src/bsearch.h` | `h` |
 | `archive/crates/tree-sitter-perl-rs/src/grammar.js` | `js` |
@@ -2351,6 +2349,7 @@
 | `.changes/unreleased/product-11739-Fixed-001500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-11740-Fixed-200900.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-11845-Security-034645.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-11900-Added-223000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2857,6 +2856,7 @@
 | `.github/workflows/ripr.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/scoop-bump.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/security-reconciliation.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/semantic-close-containment.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/sublime-dap-real-host.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/sublime-package-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/sublime-real-host.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -2953,6 +2953,9 @@
 | `.spec/10413-semantic-close-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10413-semantic-close-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10413-semantic-close-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10794-workspace-symbol-query-profile-substrate/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10794-workspace-symbol-query-profile-substrate/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10794-workspace-symbol-query-profile-substrate/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3080,6 +3083,12 @@
 | `.spec/4998-external-include-root-authority/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/4998-external-include-root-authority/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/4998-external-include-root-authority/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/6931-parse-diagnostic-anchor/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/6931-parse-diagnostic-anchor/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/6931-parse-diagnostic-anchor/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8048-true-eof-final-newline-equivalence/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8048-true-eof-final-newline-equivalence/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8048-true-eof-final-newline-equivalence/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8305-organize-imports-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8305-organize-imports-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8305-organize-imports-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3166,6 +3175,8 @@
 | `archive/crates/tree-sitter-perl-rs/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `archive/crates/tree-sitter-perl-rs/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `archive/crates/tree-sitter-perl-rs/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `archive/crates/tree-sitter-perl-rs/proptest-regressions/fuzz_tests.txt` | test | `non-rust-proptest-default-layout-regressions` | parser/property-tests |
+| `archive/crates/tree-sitter-perl-rs/proptest-regressions/tests.txt` | test | `non-rust-proptest-default-layout-regressions` | parser/property-tests |
 | `archive/crates/tree-sitter-perl-rs/test.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `archive/crates/tree-sitter-perl-rs/tests/fixtures/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `archive/crates/tree-sitter-perl-rs/tests/fixtures/anti_patterns/begin_heredoc.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -3798,6 +3809,7 @@
 | `crates/perl-workspace/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-workspace/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-workspace/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-workspace/proptest-regressions/workspace_symbol_query.txt` | test | `non-rust-proptest-default-layout-regressions` | parser/property-tests |
 | `crates/perl-workspace/src/workspace/snapshots/perl_workspace__workspace__workspace_index__reindex_workshape_measurement__reindex_workshape_receipt.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-workspace/tests/fixtures/multi_file/use_lib_script/lib/MyThing.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `crates/perl-workspace/tests/fixtures/multi_file/use_lib_script/script/main.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -5700,6 +5712,14 @@
 | `policy/ci-risk-packs.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ci-whitelist-exceptions.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/clippy-debt.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/clippy-lints.d/00-active.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/clippy-lints.d/10-panic-ast.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/clippy-lints.d/20-silent-async.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/clippy-lints.d/30-unsafe-memory.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/clippy-lints.d/40-numeric.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/clippy-lints.d/50-file-api.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/clippy-lints.d/60-reviewability.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/clippy-lints.d/70-iteration-suppression.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/clippy-lints.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/framework-adapters.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/generated-status-contract.toml` | config | `non-rust-policy-ledgers` | release/ci |

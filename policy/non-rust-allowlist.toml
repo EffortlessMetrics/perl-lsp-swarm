@@ -721,6 +721,22 @@ created = "2026-05-07"
 review_after = "2026-08-07"
 
 [[allow]]
+id = "non-rust-proptest-default-layout-regressions"
+glob = "**/proptest-regressions/*.txt"
+kind = "test_regression_corpus"
+language = "text"
+surface = "fixtures"
+classification = "test"
+owner = "parser/property-tests"
+reason = "proptest default-layout regression seeds persisted as proptest-regressions/<name>.txt; permanent test corpus."
+covered_by = [
+  "cargo test --workspace",
+]
+broad_glob_reason = "proptest's default persistence path writes `<name>.txt` under crate-level `proptest-regressions/` directories anywhere in the tree; the literal directory component scopes the glob to regression seeds only."
+created = "2026-08-23"
+review_after = "2026-11-23"
+
+[[allow]]
 id = "non-rust-corpus-loading-fixtures"
 glob = "crates/perl-corpus/tests/fixtures/loading/*.txt"
 kind = "test_fixture"
