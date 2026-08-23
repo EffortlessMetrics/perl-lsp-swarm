@@ -561,10 +561,13 @@ TEST_API_APPEND = r'''
 test_api_text = read(TEST_API)
 if "test_apply_generic_ai_completion_settings" in test_api_text:
     raise RuntimeError(f"{TEST_API}: one-shot helpers already present")
-last_close = test_api_text.rfind("\n}")
-if last_close < 0:
-    raise RuntimeError(f"{TEST_API}: final impl close missing")
-write(TEST_API, test_api_text[:last_close] + TEST_API_APPEND + test_api_text[last_close:])
+impl_end_marker = (
+    "\n}\n\n/// Public snapshot of the installed parse worker's counters (test-only)."
+)
+impl_end = test_api_text.find(impl_end_marker)
+if impl_end < 0:
+    raise RuntimeError(f"{TEST_API}: public test-only LspServer impl close missing")
+write(TEST_API, test_api_text[:impl_end] + TEST_API_APPEND + test_api_text[impl_end:])
 
 # ---------------------------------------------------------------------------
 # Runtime first-effect tests: generic, construction/network, stale authority,
