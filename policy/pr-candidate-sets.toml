@@ -159,16 +159,15 @@ review_state = "blocking_findings_recorded"
 
 [[claim.candidates]]
 pr = 6623
-relationship = "superseded"
-target_pr = 6612
+relationship = "not_proven"
 unique_delta = [
   "Contains a broad positive-expectation population over dormant fixtures."
 ]
 open_findings = [
   "Widens the parser-accuracy denominator beyond the controlling issue.",
-  "Its own description declares it supersedes #6612, contradicting this record's direction; unresolved by direct inspection."
+  "Its own description declares it supersedes #6612, contradicting this record's #6620/#6623-superseded-by-#6612 edge; the direction is unresolved, so no target is asserted here."
 ]
-disposition = "Closed unmerged with contested supersession direction recorded; resolve from branch history in the next reconciliation packet."
+disposition = "Closed unmerged with contested supersession direction recorded as not_proven; resolve from branch history in the next reconciliation packet before asserting any winner."
 
 [claim.candidates.observation]
 head_sha = "896368e1aa0dc89f5a3c08bbd6d2e0bbd16a0574"

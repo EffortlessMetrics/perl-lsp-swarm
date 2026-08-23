@@ -72,12 +72,20 @@ struct Candidate {
     observation: CandidateObservation,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ObservationState {
+    Open,
+    Closed,
+    Merged,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct CandidateObservation {
     head_sha: String,
     /// Base branch recorded with the observation; live mode fails on drift.
     base_ref: String,
-    state: String,
+    state: ObservationState,
     observed_at: String,
     #[serde(default)]
     acceptance_evidence: Vec<String>,
@@ -145,15 +153,27 @@ struct LiveHead {
 /// Observation age beyond which live evidence is treated as drifted.
 const OBSERVATION_MAX_AGE_SECONDS: i64 = 30 * 24 * 60 * 60;
 
+/// Future-dated observations are rejected beyond this clock-skew allowance.
+const CLOCK_SKEW_TOLERANCE_SECONDS: i64 = 300;
+
 /// Finding codes that make recorded dispositions untrustworthy for a claim.
-const DRIFT_FINDING_CODES: [&str; 6] = [
+const DRIFT_FINDING_CODES: [&str; 8] = [
     "STALE_HEAD_OBSERVATION",
     "STALE_BASE_OBSERVATION",
     "STALE_STATE_OBSERVATION",
     "STATE_OBSERVATION_STALE_CLOSED",
+    "OBSERVATION_STATE_MISMATCH",
     "OBSERVATION_EXPIRED",
+    "OBSERVATION_TIME_FUTURE",
     "OBSERVATION_TIME_UNPARSEABLE",
 ];
+
+/// Live state fetched directly for a candidate absent from open cross-references.
+#[derive(Clone, Copy, Debug)]
+struct AbsentLiveState {
+    open: bool,
+    merged: bool,
+}
 
 #[derive(Debug, Serialize)]
 struct Receipt {
@@ -191,7 +211,8 @@ fn main() -> Result<()> {
     let observed_at = now.to_rfc3339();
     let mut findings = validate_policy(&policy);
     let live = if args.live { check_live_state(&policy, now, &mut findings) } else { Vec::new() };
-    apply_drift_downgrades(&mut policy.claim, &findings);
+    let downgrades = apply_drift_downgrades(&mut policy.claim, &findings);
+    findings.extend(downgrades);
     findings.sort_by(|left, right| {
         (left.level, &left.claim_id, left.issue, left.pr, left.code, &left.message).cmp(&(
             right.level,
@@ -293,6 +314,11 @@ fn validate_policy(policy: &Policy) -> Vec<Finding> {
             ));
         }
         validate_claim(claim, &mut global_prs, &mut findings);
+    }
+    // Observed entries are checked in a second pass against the complete
+    // candidate universe so validity cannot depend on claim declaration order.
+    for claim in &policy.claim {
+        validate_observed_entries(claim, &global_prs, &mut findings);
     }
     findings
 }
@@ -419,8 +445,6 @@ fn validate_claim(claim: &Claim, global_prs: &mut BTreeSet<u64>, findings: &mut 
         }
         validate_relationship(claim, candidate, &local_prs, findings);
     }
-
-    validate_observed_entries(claim, global_prs, findings);
     if let Some(cycle) = find_relationship_cycle(claim) {
         let path = cycle.iter().map(|pr| format!("#{pr}")).collect::<Vec<_>>().join(" -> ");
         findings.push(claim_error(
@@ -650,12 +674,56 @@ fn check_live_state(
             policy.claim.iter().filter(|claim| claim.issue == issue).collect();
         let observed_prs: BTreeSet<u64> =
             claims_for_issue.iter().flat_map(|claim| claim.observed.iter().map(|o| o.pr)).collect();
+        // Verify candidates that are absent from open cross-references directly
+        // against their pull request, instead of trusting recorded state.
+        let mut absent = BTreeMap::new();
+        for claim in &claims_for_issue {
+            for candidate in &claim.candidates {
+                if discovered.contains_key(&candidate.pr) || absent.contains_key(&candidate.pr) {
+                    continue;
+                }
+                match fetch_absent_live_state(&policy.repository, candidate.pr) {
+                    Ok(live) => {
+                        absent.insert(candidate.pr, live);
+                    }
+                    Err(error) => findings.push(Finding {
+                        level: "error",
+                        code: "LIVE_SOURCE_UNAVAILABLE",
+                        claim_id: Some(claim.claim_id.clone()),
+                        issue: Some(issue),
+                        pr: Some(candidate.pr),
+                        message: error.to_string(),
+                    }),
+                }
+            }
+        }
         let (issue_findings, state) =
-            evaluate_live_issue(issue, &claims_for_issue, &observed_prs, &discovered, now);
+            evaluate_live_issue(issue, &claims_for_issue, &observed_prs, &discovered, &absent, now);
         findings.extend(issue_findings);
         live.push(state);
     }
     live
+}
+
+/// Fetches state/merged directly so terminal records are verified, not inferred
+/// from cross-reference absence alone.
+fn fetch_absent_live_state(repository: &str, pr: u64) -> Result<AbsentLiveState> {
+    let endpoint = format!("repos/{repository}/pulls/{pr}");
+    let output = Command::new("gh")
+        .args(["api", "-H", "Accept: application/vnd.github+json", &endpoint])
+        .output()
+        .with_context(|| format!("reading live PR #{pr}"))?;
+    if !output.status.success() {
+        return Err(eyre!(
+            "gh api failed for PR #{pr}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let detail: Value = serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("decoding live PR #{pr}"))?;
+    let open = detail.get("state").and_then(Value::as_str) == Some("open");
+    let merged = detail.get("merged").and_then(Value::as_bool).unwrap_or(false);
+    Ok(AbsentLiveState { open, merged })
 }
 
 /// Pure per-issue evaluation of recorded observations against discovered live
@@ -666,13 +734,14 @@ fn evaluate_live_issue(
     claims: &[&Claim],
     observed_prs: &BTreeSet<u64>,
     discovered: &BTreeMap<u64, LiveHead>,
+    absent: &BTreeMap<u64, AbsentLiveState>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> (Vec<Finding>, LiveClaimState) {
     let mut findings = Vec::new();
     let candidates: Vec<&Candidate> = claims.iter().flat_map(|claim| &claim.candidates).collect();
     let declared: BTreeSet<u64> = candidates
         .iter()
-        .filter(|candidate| candidate.observation.state == "open")
+        .filter(|candidate| candidate.observation.state == ObservationState::Open)
         .map(|candidate| candidate.pr)
         .collect();
     let discovered_prs: BTreeSet<u64> = discovered.keys().copied().collect();
@@ -714,22 +783,21 @@ fn evaluate_live_issue(
                         ),
                     );
                 }
-                if candidate.observation.state != "open" {
+                if candidate.observation.state != ObservationState::Open {
                     push_attributed_error(
                         &mut findings,
                         issue,
                         candidate.pr,
                         "STATE_OBSERVATION_STALE_CLOSED",
                         &owners,
-                        format!(
-                            "candidate is recorded '{}' but is an open cross-reference",
-                            candidate.observation.state
-                        ),
+                        "candidate is recorded closed/merged but is an open cross-reference"
+                            .to_string(),
                     );
                 }
             }
             None => {
-                if candidate.observation.state == "open" {
+                let recorded_open = candidate.observation.state == ObservationState::Open;
+                if recorded_open {
                     push_attributed_error(
                         &mut findings,
                         issue,
@@ -738,21 +806,68 @@ fn evaluate_live_issue(
                         &owners,
                         "candidate is recorded open but is not an open cross-reference".to_string(),
                     );
+                } else if let Some(live) = absent.get(&candidate.pr) {
+                    if live.open {
+                        push_attributed_error(
+                            &mut findings,
+                            issue,
+                            candidate.pr,
+                            "STATE_OBSERVATION_STALE_CLOSED",
+                            &owners,
+                            "candidate is recorded closed/merged but the pull request is open again"
+                                .to_string(),
+                        );
+                    } else if live.merged
+                        != (candidate.observation.state == ObservationState::Merged)
+                    {
+                        push_attributed_error(
+                            &mut findings,
+                            issue,
+                            candidate.pr,
+                            "OBSERVATION_STATE_MISMATCH",
+                            &owners,
+                            format!(
+                                "recorded state {:?} differs from live closed/merged={}",
+                                candidate.observation.state, live.merged
+                            ),
+                        );
+                    }
                 }
             }
         }
-        if let Some(code) = observation_time_finding(&candidate.observation.observed_at, now) {
-            push_attributed_error(
-                &mut findings,
-                issue,
-                candidate.pr,
-                code,
-                &owners,
-                format!(
-                    "observation time '{}' does not provide current evidence (max age {}s)",
-                    candidate.observation.observed_at, OBSERVATION_MAX_AGE_SECONDS
-                ),
-            );
+        // Unparseable/future timestamps break evidence integrity for every
+        // record; age expiry only matters where the disposition still guides
+        // live action, not for terminal closed/merged history.
+        match observation_time_finding(&candidate.observation.observed_at, now) {
+            Some(code @ ("OBSERVATION_TIME_UNPARSEABLE" | "OBSERVATION_TIME_FUTURE")) => {
+                push_attributed_error(
+                    &mut findings,
+                    issue,
+                    candidate.pr,
+                    code,
+                    &owners,
+                    format!(
+                        "observation time '{}' is not usable evidence",
+                        candidate.observation.observed_at
+                    ),
+                );
+            }
+            Some("OBSERVATION_EXPIRED")
+                if candidate.observation.state == ObservationState::Open =>
+            {
+                push_attributed_error(
+                    &mut findings,
+                    issue,
+                    candidate.pr,
+                    "OBSERVATION_EXPIRED",
+                    &owners,
+                    format!(
+                        "observation time '{}' does not provide current evidence (max age {}s)",
+                        candidate.observation.observed_at, OBSERVATION_MAX_AGE_SECONDS
+                    ),
+                );
+            }
+            _ => {}
         }
     }
     for claim in claims {
@@ -819,7 +934,11 @@ fn push_attributed_error(
     }
 }
 
-fn apply_drift_downgrades(claims: &mut [Claim], findings: &[Finding]) {
+/// Downgrades every claim carrying attributed drift evidence to `not_proven`
+/// and returns one explicit warning per downgrade so receipt consumers can
+/// distinguish declared from drift-downgraded claims.
+fn apply_drift_downgrades(claims: &mut [Claim], findings: &[Finding]) -> Vec<Finding> {
+    let mut downgrades = Vec::new();
     for claim in claims {
         let drifted = findings.iter().any(|finding| {
             finding.level == "error"
@@ -827,9 +946,21 @@ fn apply_drift_downgrades(claims: &mut [Claim], findings: &[Finding]) {
                 && finding.claim_id.as_deref() == Some(claim.claim_id.as_str())
         });
         if drifted && claim.state != ClaimState::NotProven {
+            let previous = claim.state;
             claim.state = ClaimState::NotProven;
+            downgrades.push(Finding {
+                level: "warning",
+                code: "CLAIM_DOWNGRADED_BY_DRIFT",
+                claim_id: Some(claim.claim_id.clone()),
+                issue: Some(claim.issue),
+                pr: None,
+                message: format!(
+                    "claim state downgraded from {previous:?} to not_proven by live drift evidence"
+                ),
+            });
         }
     }
+    downgrades
 }
 
 fn observation_head_is_stale(candidate: &Candidate, live_head: &str) -> bool {
@@ -847,8 +978,14 @@ fn observation_time_finding(
 ) -> Option<&'static str> {
     match chrono::DateTime::parse_from_rfc3339(observed_at) {
         Ok(parsed) => {
-            let age = now.timestamp().saturating_sub(parsed.timestamp());
-            (age > OBSERVATION_MAX_AGE_SECONDS).then_some("OBSERVATION_EXPIRED")
+            let delta = now.timestamp().saturating_sub(parsed.timestamp());
+            if delta < -CLOCK_SKEW_TOLERANCE_SECONDS {
+                Some("OBSERVATION_TIME_FUTURE")
+            } else if delta > OBSERVATION_MAX_AGE_SECONDS {
+                Some("OBSERVATION_EXPIRED")
+            } else {
+                None
+            }
         }
         Err(_) => Some("OBSERVATION_TIME_UNPARSEABLE"),
     }
@@ -893,6 +1030,8 @@ fn discover_open_cross_references(repository: &str, issue: u64) -> Result<BTreeM
     let Some(page_list) = pages.as_array() else {
         return Err(eyre!("timeline response for issue #{issue} was not an array"));
     };
+    // Collect unique numbers first; a PR may be cross-referenced repeatedly.
+    let mut numbers = BTreeSet::new();
     for page in page_list {
         let Some(events) = page.as_array() else {
             continue;
@@ -907,36 +1046,37 @@ fn discover_open_cross_references(repository: &str, issue: u64) -> Result<BTreeM
             {
                 continue;
             }
+            let repository_suffix = format!("/repos/{repository}").to_lowercase();
             let same_repository = source_issue
                 .get("repository_url")
                 .and_then(Value::as_str)
-                .is_some_and(|url| url.ends_with(&format!("/repos/{repository}")));
+                .is_some_and(|url| url.to_lowercase().ends_with(&repository_suffix));
             if !same_repository {
                 continue;
             }
             if let Some(number) = source_issue.get("number").and_then(Value::as_u64) {
-                let endpoint = format!("repos/{repository}/pulls/{number}");
-                let detail = Command::new("gh")
-                    .args(["api", "-H", "Accept: application/vnd.github+json", &endpoint])
-                    .output()
-                    .with_context(|| format!("reading live PR #{number}"))?;
-                if !detail.status.success() {
-                    return Err(eyre!(
-                        "gh api failed for PR #{number}: {}",
-                        String::from_utf8_lossy(&detail.stderr).trim()
-                    ));
-                }
-                let detail: Value = serde_json::from_slice(&detail.stdout)
-                    .with_context(|| format!("decoding live PR #{number}"))?;
-                let sha = detail.pointer("/head/sha").and_then(Value::as_str);
-                let base_ref = detail.pointer("/base/ref").and_then(Value::as_str);
-                if let (Some(sha), Some(base_ref)) = (sha, base_ref) {
-                    prs.insert(
-                        number,
-                        LiveHead { sha: sha.to_string(), base_ref: base_ref.to_string() },
-                    );
-                }
+                numbers.insert(number);
             }
+        }
+    }
+    for number in numbers {
+        let endpoint = format!("repos/{repository}/pulls/{number}");
+        let detail = Command::new("gh")
+            .args(["api", "-H", "Accept: application/vnd.github+json", &endpoint])
+            .output()
+            .with_context(|| format!("reading live PR #{number}"))?;
+        if !detail.status.success() {
+            return Err(eyre!(
+                "gh api failed for PR #{number}: {}",
+                String::from_utf8_lossy(&detail.stderr).trim()
+            ));
+        }
+        let detail: Value = serde_json::from_slice(&detail.stdout)
+            .with_context(|| format!("decoding live PR #{number}"))?;
+        let sha = detail.pointer("/head/sha").and_then(Value::as_str);
+        let base_ref = detail.pointer("/base/ref").and_then(Value::as_str);
+        if let (Some(sha), Some(base_ref)) = (sha, base_ref) {
+            prs.insert(number, LiveHead { sha: sha.to_string(), base_ref: base_ref.to_string() });
         }
     }
     Ok(prs)
@@ -999,8 +1139,8 @@ mod tests {
             disposition: "reviewed disposition".to_string(),
             observation: CandidateObservation {
                 head_sha: format!("{pr:040x}"),
-                state: "open".to_string(),
-                observed_at: "2026-01-01T00:00:00Z".to_string(),
+                state: ObservationState::Open,
+                observed_at: "2026-08-01T00:00:00Z".to_string(),
                 base_ref: "main".to_string(),
                 acceptance_evidence: vec!["reviewed proof".to_string()],
                 review_state: "reviewed".to_string(),
@@ -1105,7 +1245,7 @@ mod tests {
     #[test]
     fn closed_superseded_candidate_is_valid_history() {
         let mut historical = candidate(11, Relationship::Superseded, Some(10));
-        historical.observation.state = "closed".to_string();
+        historical.observation.state = ObservationState::Closed;
         assert!(
             validate_policy(&policy(claim(
                 ClaimState::Reconciled,
@@ -1130,7 +1270,8 @@ mod tests {
         let content = fs::read_to_string(&path).unwrap_or_else(|error| {
             panic!("reading workflow contract {}: {error}", path.display())
         });
-        let mut declared_types = pull_request_types_block(&content);
+        let declared_types = pull_request_types_block(&content)
+            .unwrap_or_else(|| panic!("on.pull_request.types must exist"));
         let mut expected_types = vec![
             "converted_to_draft",
             "edited",
@@ -1141,10 +1282,11 @@ mod tests {
             "synchronize",
         ];
         // The contract requires exactly these lifecycle routes.
+        let mut sorted_declared = declared_types.clone();
         expected_types.sort_unstable();
-        declared_types.sort_unstable();
+        sorted_declared.sort_unstable();
         assert_eq!(
-            declared_types, expected_types,
+            sorted_declared, expected_types,
             "workflow must declare exactly the pull_request lifecycle routes"
         );
         assert!(content.contains("schedule:"), "scheduled reconciliation route required");
@@ -1153,12 +1295,13 @@ mod tests {
     }
 
     /// Parses the `types:` list under `on.pull_request` so dropped or renamed
-    /// lifecycle entries fail instead of matching unrelated substrings.
-    fn pull_request_types_block(content: &str) -> Vec<String> {
-        let mut lines = content.lines().enumerate();
+    /// lifecycle entries fail instead of matching unrelated substrings. The
+    /// scan is bounded to the pull_request block (indent >= 4) so a `types:`
+    /// key under any other event can never satisfy the contract.
+    fn pull_request_types_block(content: &str) -> Option<Vec<String>> {
+        let mut lines = content.lines();
         let mut in_pull_request = false;
-        let mut types: Option<Vec<String>> = None;
-        while let Some((_, line)) = lines.next() {
+        while let Some(line) = lines.next() {
             if !in_pull_request {
                 if line.trim_end() == "  pull_request:" {
                     in_pull_request = true;
@@ -1167,11 +1310,14 @@ mod tests {
             }
             let trimmed = line.trim_start();
             let indented = line.len() - trimmed.len();
-            if trimmed.is_empty() || (indented < 2 && !trimmed.starts_with('#')) {
-                break;
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
             }
-            if indented >= 4 && trimmed.starts_with("types:") {
-                let inline: Option<String> = trimmed
+            if indented < 4 {
+                return None;
+            }
+            if trimmed.starts_with("types:") {
+                let inline = trimmed
                     .strip_prefix("types:")
                     .map(|value| value.trim().to_string())
                     .filter(|value| !value.is_empty());
@@ -1185,7 +1331,7 @@ mod tests {
                         .collect(),
                     None => Vec::new(),
                 };
-                for (_, entry) in lines.by_ref() {
+                for entry in lines.by_ref() {
                     let item = entry.trim_start();
                     let item_indent = entry.len() - item.len();
                     if item_indent < 6 || !item.starts_with("- ") {
@@ -1193,11 +1339,10 @@ mod tests {
                     }
                     collected.push(item[2..].trim().to_string());
                 }
-                types = Some(collected);
-                break;
+                return Some(collected);
             }
         }
-        types.unwrap_or_else(|| panic!("on.pull_request.types block must exist and be a list"))
+        None
     }
 
     #[test]
@@ -1349,8 +1494,6 @@ mod tests {
             vec![candidate(20, Relationship::CurrentCandidate, None)],
         );
         other.claim_id = "test.other_claim".to_string();
-        owned.candidates[0].observation.observed_at = "2026-08-01T00:00:00Z".to_string();
-        other.candidates[0].observation.observed_at = "2026-08-01T00:00:00Z".to_string();
 
         let mut discovered = BTreeMap::new();
         discovered.insert(10, LiveHead { sha: "f".repeat(40), base_ref: "release".to_string() });
@@ -1359,7 +1502,8 @@ mod tests {
             .insert(20, LiveHead { sha: format!("{:040x}", 20), base_ref: "main".to_string() });
 
         let claims = vec![&owned, &other];
-        let (findings, _) = evaluate_live_issue(1, &claims, &BTreeSet::new(), &discovered, now);
+        let (findings, _) =
+            evaluate_live_issue(1, &claims, &BTreeSet::new(), &discovered, &BTreeMap::new(), now);
         drop(claims);
 
         for code in ["STALE_HEAD_OBSERVATION", "STALE_BASE_OBSERVATION"] {
@@ -1393,17 +1537,19 @@ mod tests {
         let reappeared = candidate(12, Relationship::SalvageSource, None);
         let mut historical = claim(ClaimState::NotProven, vec![vanished, reappeared]);
         historical.claim_id = "test.history".to_string();
-        historical.candidates[1].observation.state = "closed".to_string();
-        for candidate in &mut historical.candidates {
-            candidate.observation.observed_at = "2026-08-01T00:00:00Z".to_string();
-        }
+        historical.candidates[1].observation.state = ObservationState::Closed;
         let claims = vec![&historical];
 
         let mut discovered = BTreeMap::new();
         discovered
             .insert(12, LiveHead { sha: format!("{:040x}", 12), base_ref: "main".to_string() });
 
-        let (findings, _) = evaluate_live_issue(1, &claims, &BTreeSet::new(), &discovered, now);
+        // Candidate 12 is verified closed-unmerged directly; no mismatch.
+        let mut absent = BTreeMap::new();
+        absent.insert(12, AbsentLiveState { open: false, merged: false });
+
+        let (findings, _) =
+            evaluate_live_issue(1, &claims, &BTreeSet::new(), &discovered, &absent, now);
         for code in ["STALE_STATE_OBSERVATION", "STATE_OBSERVATION_STALE_CLOSED"] {
             let attributed: Vec<&Finding> =
                 findings.iter().filter(|finding| finding.code == code).collect();
@@ -1497,13 +1643,15 @@ mod tests {
     }
 
     #[test]
-    fn all_six_drift_codes_drive_downgrades() {
+    fn all_drift_codes_drive_downgrades() {
         for code in [
             "STALE_HEAD_OBSERVATION",
             "STALE_BASE_OBSERVATION",
             "STALE_STATE_OBSERVATION",
             "STATE_OBSERVATION_STALE_CLOSED",
+            "OBSERVATION_STATE_MISMATCH",
             "OBSERVATION_EXPIRED",
+            "OBSERVATION_TIME_FUTURE",
             "OBSERVATION_TIME_UNPARSEABLE",
         ] {
             assert!(
@@ -1512,5 +1660,169 @@ mod tests {
             );
         }
         assert!(!DRIFT_FINDING_CODES.contains(&"UNASSIGNED_OPEN_CROSS_REFERENCE"));
+    }
+
+    #[test]
+    fn observed_conflicts_are_order_independent() {
+        let mut first = policy(claim(
+            ClaimState::NotProven,
+            vec![candidate(10, Relationship::SalvageSource, None)],
+        ));
+        first.claim[0].observed.push(ObservedCrossReference { pr: 20, reason: "ops".into() });
+        let mut second =
+            claim(ClaimState::NotProven, vec![candidate(20, Relationship::CurrentCandidate, None)]);
+        second.claim_id = "test.second".to_string();
+        let mut reversed = Policy {
+            schema_version: 2,
+            repository: first.repository.clone(),
+            claim: vec![second.clone()],
+        };
+        reversed.claim.push(first.claim[0].clone());
+        first.claim.push(second);
+        for (label, candidate_policy) in
+            [("candidate-first", &first), ("observed-first", &reversed)]
+        {
+            let policy_findings = validate_policy(candidate_policy);
+            let conflicts: Vec<&Finding> = policy_findings
+                .iter()
+                .filter(|finding| finding.code == "OBSERVED_PR_CONFLICT")
+                .collect();
+            assert_eq!(conflicts.len(), 1, "{label}: conflict must fire exactly once");
+            assert!(
+                conflicts[0].message.contains("#20"),
+                "{label}: conflict must name PR 20: {}",
+                conflicts[0].message
+            );
+        }
+    }
+
+    #[test]
+    fn future_observations_rejected_but_skew_tolerated() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-21T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(
+            observation_time_finding("2026-09-01T00:00:00Z", now),
+            Some("OBSERVATION_TIME_FUTURE")
+        );
+        assert_eq!(
+            observation_time_finding("2026-08-21T00:02:00Z", now),
+            None,
+            "small clock skew within tolerance is accepted"
+        );
+    }
+
+    #[test]
+    fn expiry_applies_only_to_open_candidates() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-21T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let stale_open = candidate(10, Relationship::CurrentCandidate, None);
+        let mut terminal = candidate(11, Relationship::SalvageSource, None);
+        terminal.observation.state = ObservationState::Closed;
+        for record in [&stale_open, &terminal] {
+            // helper default observed_at 2026-08-01 is fresh; force an old one
+            let mut old = record.clone();
+            old.observation.observed_at = "2026-05-01T00:00:00Z".to_string();
+            let mut historical = claim(ClaimState::NotProven, vec![old]);
+            historical.claim_id = format!("test.expiry.{:?}", record.pr).to_string();
+            let claims = vec![&historical];
+            let (findings, _) = evaluate_live_issue(
+                1,
+                &claims,
+                &BTreeSet::new(),
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                now,
+            );
+            let expired = findings.iter().any(|finding| finding.code == "OBSERVATION_EXPIRED");
+            if record.observation.state == ObservationState::Open {
+                assert!(expired, "open candidates must respect expiry: {findings:?}");
+            } else {
+                assert!(!expired, "terminal records keep frozen history: {findings:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn merged_record_must_match_live_merge_state() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-21T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let mut recorded = candidate(30, Relationship::SalvageSource, None);
+        recorded.observation.state = ObservationState::Merged;
+        let mut historical = claim(ClaimState::NotProven, vec![recorded]);
+        historical.claim_id = "test.merged".to_string();
+        let claims = vec![&historical];
+        let mut absent = BTreeMap::new();
+        absent.insert(30, AbsentLiveState { open: false, merged: false });
+        let (findings, _) =
+            evaluate_live_issue(1, &claims, &BTreeSet::new(), &BTreeMap::new(), &absent, now);
+        assert!(
+            findings.iter().any(|finding| finding.code == "OBSERVATION_STATE_MISMATCH"),
+            "recorded merged but live closed-unmerged must fail: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_observation_state_fails_at_parse_time() {
+        let raw = r#"
+schema_version = 2
+repository = "owner/repo"
+[[claim]]
+issue = 1
+claim_id = "c"
+state = "not_proven"
+decision = "d"
+required_harvest = ["h"]
+close_or_retarget = ["r"]
+[[claim.candidates]]
+pr = 10
+relationship = "salvage_source"
+unique_delta = ["u"]
+disposition = "x"
+[claim.candidates.observation]
+head_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+base_ref = "main"
+state = "OPEN"
+observed_at = "2026-08-01T00:00:00Z"
+acceptance_evidence = ["e"]
+review_state = "reviewed"
+"#;
+        let error = toml::from_str::<Policy>(raw)
+            .expect_err("non-canonical state spelling must fail at parse time");
+        assert!(
+            error.to_string().contains("unknown variant"),
+            "parse error must name the invalid variant: {error}"
+        );
+    }
+
+    #[test]
+    fn types_parser_does_not_escape_the_pull_request_block() {
+        let decoy = "\
+on:
+  pull_request:
+    branches: [main]
+  workflow_run:
+    workflows: [x]
+schedule:
+  - cron: '0 * * * *'
+";
+        assert!(
+            pull_request_types_block(decoy).is_none(),
+            "a types key outside on.pull_request must not satisfy the contract"
+        );
+        let with_types = "\
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, closed]
+  schedule:
+    - cron: '0 * * * *'
+";
+        assert_eq!(
+            pull_request_types_block(with_types),
+            Some(vec!["opened".to_string(), "closed".to_string()])
+        );
     }
 }
