@@ -17,7 +17,8 @@ Implementation order per the issue's Codex execution packet:
 
 Proof gates (all green on the candidate):
 
-- [x] `cargo test -p xtask --lib --locked writer_preflight` — 44 passed.
+- [x] `cargo test -p xtask --lib --locked writer_preflight` — 45 passed
+  (44 at first publication + the #12059 review-repair falsifier).
 - [x] `cargo fmt -p xtask -- --check` — clean.
 - [x] `cargo clippy -p xtask --lib --locked -- -D warnings` — clean.
 

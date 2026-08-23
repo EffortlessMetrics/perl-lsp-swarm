@@ -1,9 +1,9 @@
 # Acceptance: #11633 — typed writer-preflight subject and decision core
 
 Every item is proven by the focused suite
-`cargo test -p xtask --lib --locked writer_preflight` (44 tests) unless a
-different proof is named. Falsifier numbers refer to #11633's shift-left
-list.
+`cargo test -p xtask --lib --locked writer_preflight` (45 tests after the
+#12059 review repair) unless a different proof is named. Falsifier numbers
+refer to #11633's shift-left list.
 
 - [x] One pure typed domain owns writer-preflight subjects, observations,
   decisions, and reasons (`xtask/src/writer_preflight/`; no I/O imports;
@@ -36,7 +36,7 @@ Proof commands:
 
 ```bash
 cargo fmt -p xtask -- --check
-cargo test -p xtask --lib --locked writer_preflight   # 44 passed
+cargo test -p xtask --lib --locked writer_preflight   # 45 passed
 cargo clippy -p xtask --lib --locked -- -D warnings
 ```
 
