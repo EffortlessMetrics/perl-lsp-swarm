@@ -1255,9 +1255,126 @@ fn live_dispatch_receipt_carries_canonical_provider_identity()
     );
     // config_fingerprint must be a non-empty string.
     let fingerprint =
-        trace["config_fingerprint"].as_str().ok_or("config_fingerprint must be a string")?;
+        trace["config_fingerprint"].as_str().ok_or("config_fingerprint must not be empty")?;
     assert!(!fingerprint.is_empty(), "config_fingerprint must not be empty");
     // dynamic_boundary is a static invariant.
     assert_eq!(trace["dynamic_boundary"], json!(false));
+    Ok(())
+}
+
+/// Single-range and one-element multi-range requests must share one strict
+/// admission geometry: the same endpoint rows admit or refuse on both
+/// surfaces, and neither surface clamps invalid geometry into edits.
+#[test]
+fn single_range_and_one_element_multi_range_share_admission_geometry()
+-> Result<(), Box<dyn std::error::Error>> {
+    fn range(sl: u32, sc: u32, el: u32, ec: u32) -> Value {
+        json!({
+            "start": { "line": sl, "character": sc },
+            "end": { "line": el, "character": ec }
+        })
+    }
+
+    for (label, source, requested) in [
+        ("trailing-empty-eof-line point", "my$x=1;\n", range(1, 0, 1, 0)),
+        ("surrogate-split end character", "a🦀b\n", range(0, 0, 0, 2)),
+        ("end line outside the document", "my$x=1;\n", range(0, 0, 9, 0)),
+    ] {
+        let uri = format!("file:///shared-geometry-{label}.pl").replace(' ', "-");
+
+        let single = LspServer::new();
+        advertise(&single, Surface::Range);
+        single.test_apply_did_open(&uri, source, 1)?;
+        let single_result = single.handle_range_formatting_policy(
+            Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "range": requested,
+                "options": { "tabSize": 4, "insertSpaces": true },
+            })),
+            None,
+        )?;
+
+        let multi = LspServer::new();
+        advertise(&multi, Surface::Ranges);
+        multi.test_apply_did_open(&uri, source, 1)?;
+        let multi_result = multi.handle_ranges_formatting_policy(
+            Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "ranges": [requested],
+                "options": { "tabSize": 4, "insertSpaces": true },
+            })),
+            None,
+        );
+
+        match (source.contains('🦀'), source.lines().count()) {
+            // The EOF-line point admits on both surfaces.
+            (false, _) if requested["end"]["line"].as_u64() == Some(1) => {
+                assert_eq!(single_result, Some(json!([])), "{label}: single must admit");
+                let edits = multi_result.map_err(|error| {
+                    Box::<dyn std::error::Error>::from(format!("{label}: multi refused: {error:?}"))
+                })?;
+                assert_eq!(edits, Some(json!([])), "{label}: one-element multi must admit");
+            }
+            // Invalid geometry refuses on both surfaces without edits.
+            _ => {
+                assert_eq!(single_result, Some(json!([])), "{label}: single must refuse to edit");
+                let trace = receipt(&single)?;
+                assert_eq!(trace["decision"], "blocked", "{label}");
+                assert_eq!(trace["reason"], "unsafe_range", "{label}");
+                assert_eq!(trace["actual_engine"], "unknown", "{label}");
+
+                let error =
+                    multi_result.err().ok_or_else(|| format!("{label}: multi must reject"))?;
+                assert_eq!(error.code, -32602, "{label}");
+                let data = error.data.ok_or("{label}: missing plan evidence")?;
+                assert_eq!(data["reason"], "invalid_position", "{label}");
+                let multi_trace = receipt(&multi)?;
+                assert_eq!(multi_trace["decision"], "blocked", "{label}");
+                assert_eq!(multi_trace["result_count"], 0, "{label}");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// A CRLF terminator-boundary endpoint (one past the line body in UTF-16
+/// units) refuses before any engine runs. The pre-policy seam ran native
+/// formatting for such endpoints because its permissive validator counted the
+/// carriage return; the shared strict mapper owns that boundary now.
+#[test]
+fn crlf_terminator_boundary_endpoint_refuses_before_the_engine_runs()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::Range);
+    let runtime = Arc::new(MockSubprocessRuntime::new());
+    server.test_install_formatter_runtime(runtime.clone());
+    let uri = "file:///crlf-boundary-formatting.pl";
+    server.test_apply_did_open(uri, "aa\r\nbb\r\n", 1)?;
+
+    let result = server.handle_range_formatting_policy(
+        Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 3 }
+            },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })),
+        None,
+    )?;
+
+    assert_eq!(result, Some(json!([])), "a terminator-boundary endpoint must not edit");
+    let trace = receipt(&server)?;
+    assert_eq!(trace["decision"], "blocked");
+    assert_eq!(trace["reason"], "unsafe_range");
+    assert_eq!(
+        trace["actual_engine"], "unknown",
+        "refusal must happen before the formatter engine runs"
+    );
+    assert!(
+        runtime.invocations().is_empty(),
+        "refused range formatting must never reach an external engine"
+    );
     Ok(())
 }

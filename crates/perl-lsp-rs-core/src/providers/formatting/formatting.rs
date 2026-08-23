@@ -9,6 +9,9 @@
 mod legacy;
 
 use crate::hashing::fnv1a64_hex;
+use crate::providers::formatting::range_admission::{
+    AdmittedFormatRange, RangePositionError, SourceGeometry, admit_format_range,
+};
 pub use crate::providers::formatting_types::{
     FormatPosition, FormatRange, FormatTextEdit, FormattedDocument, FormattingOptions,
 };
@@ -198,6 +201,11 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
     }
 
     /// Format a range and retain the explicit terminal decision.
+    ///
+    /// One strict admission maps both requested UTF-16 endpoints onto the
+    /// current source before any engine runs. Invalid lines, characters past a
+    /// line end, surrogate splits, and reversed ranges refuse as one typed
+    /// result; nothing is clamped and no fallback may run for them.
     pub fn format_range_decision(
         &self,
         content: &str,
@@ -206,21 +214,25 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
         context: &FormatContext,
     ) -> Result<FormattingDecision, FormattingError> {
         let target = FormatRequestTarget::Range { range: to_native_range(range) };
-        if !range_is_admissible(content, range) {
-            return Ok(refused_decision(
-                content,
-                self.mode,
-                FormatEngine::Unknown,
-                target,
-                context,
-                FormatReasonCode::UnsafeRange,
-                "request a valid complete source range",
-            ));
-        }
+        let geometry = SourceGeometry::new(content);
+        let admitted = match admit_format_range(&geometry, content, range) {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                return Ok(refused_decision(
+                    content,
+                    self.mode,
+                    FormatEngine::Unknown,
+                    target,
+                    context,
+                    FormatReasonCode::UnsafeRange,
+                    error.next_action(),
+                ));
+            }
+        };
 
         match self.mode {
             FormatterMode::Native | FormatterMode::Compat => {
-                self.native_range_decision(content, range, options, context)
+                self.native_range_decision(content, &geometry, admitted, options, context)
             }
             FormatterMode::ExternalLegacy if is_whole_document_range(content, range) => {
                 self.external_document_decision(content, options, context, target)
@@ -262,17 +274,18 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
     fn native_range_decision(
         &self,
         content: &str,
-        range: &FormatRange,
+        geometry: &SourceGeometry,
+        admitted: AdmittedFormatRange,
         options: &FormattingOptions,
         context: &FormatContext,
     ) -> Result<FormattingDecision, FormattingError> {
-        let native_range = to_native_range(range);
+        let native_range = to_native_range(&admitted.requested);
         let mut config = native_format_config(options, self.perltidy_config.as_ref(), false);
         config.mode = self.mode;
         let mut typed =
             NativeFormatter::new().format_range_typed(content, native_range, &config, context);
         bind_lsp_options(&mut typed.outcome.identity.config_fingerprint, options);
-        project_native_range(content, range, options, typed)
+        project_native_range(content, geometry, &admitted, options, typed)
     }
 
     fn external_document_decision(
@@ -353,7 +366,8 @@ fn project_native_document(
 
 fn project_native_range(
     content: &str,
-    range: &FormatRange,
+    geometry: &SourceGeometry,
+    admitted: &AdmittedFormatRange,
     options: &FormattingOptions,
     typed: TypedFormatResult,
 ) -> Result<FormattingDecision, FormattingError> {
@@ -366,19 +380,143 @@ fn project_native_range(
             return Ok(FormattingDecision { document: unchanged_document(content), outcome });
         }
         FormatDisposition::Applied => {
-            let edits: Vec<_> = result.edits.into_iter().map(native_edit_to_format_edit).collect();
-            finalize_outcome(&mut outcome, content, &result.formatted, &edits);
-            return Ok(FormattingDecision {
-                document: FormattedDocument { text: result.formatted, edits },
-                outcome,
-            });
+            let span = match admitted.allowed_edit_span(content, geometry) {
+                Ok(span) => span,
+                Err(_) => {
+                    return Ok(unproven_range_projection(content, outcome));
+                }
+            };
+            return match contained_native_edits(content, geometry, span, result.edits) {
+                Ok(edits) => {
+                    finalize_outcome(&mut outcome, content, &result.formatted, &edits);
+                    Ok(FormattingDecision {
+                        document: FormattedDocument { text: result.formatted, edits },
+                        outcome,
+                    })
+                }
+                Err(_) => Ok(unproven_range_projection(content, outcome)),
+            };
         }
         FormatDisposition::NoChange => {}
     }
 
-    let document = whitespace_range_fallback(content, range, options);
-    finalize_outcome(&mut outcome, content, &document.text, &document.edits);
-    Ok(FormattingDecision { document, outcome })
+    // One admitted plan governs projection: after a legitimate native
+    // no-change, LSP whitespace options apply strictly inside the admitted
+    // bytes. Refusals, failures, stale snapshots, and ambiguous geometry never
+    // reach this line.
+    if let Some((replacement, updated)) = whitespace_within_admitted(content, admitted, options) {
+        let edits =
+            vec![FormatTextEdit { range: admitted.requested.clone(), new_text: replacement }];
+        finalize_outcome(&mut outcome, content, &updated, &edits);
+        return Ok(FormattingDecision {
+            document: FormattedDocument { text: updated, edits },
+            outcome,
+        });
+    }
+    finalize_outcome(&mut outcome, content, content, &[]);
+    Ok(FormattingDecision { document: unchanged_document(content), outcome })
+}
+
+/// Why an applied native projection was downgraded to one typed not-proven
+/// outcome with no edits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EditContainmentRejection {
+    /// An edit endpoint did not resolve against the admitted source.
+    UnmappableEditPosition(RangePositionError),
+    /// An edit replaced a reversed byte interval.
+    ReversedEdit,
+    /// An edit escaped the canonical admitted span.
+    EscapedAdmittedSpan { start_byte: usize, end_byte: usize, span: (usize, usize) },
+}
+
+/// Downgrade an applied projection to one typed not-proven outcome with no
+/// edits so a containment failure can never escape as a successful edit set.
+fn unproven_range_projection(content: &str, mut outcome: FormatOutcome) -> FormattingDecision {
+    outcome.disposition = FormatDisposition::FailedOrNotProven;
+    outcome.reason = FormatReasonCode::InstrumentFailure;
+    outcome.next_action =
+        Some("retain the unchanged source and report the formatter evidence".to_string());
+    FormattingDecision { document: unchanged_document(content), outcome }
+}
+
+/// Map engine-emitted range edits onto exact admitted bytes and verify each
+/// stays inside the canonical admitted span (admitted bytes plus the recorded
+/// complete-line widening).
+fn contained_native_edits(
+    content: &str,
+    geometry: &SourceGeometry,
+    span: (usize, usize),
+    native_edits: Vec<crate::tooling::perltidy::TextEdit>,
+) -> Result<Vec<FormatTextEdit>, EditContainmentRejection> {
+    let mut mapped = Vec::with_capacity(native_edits.len());
+    for edit in native_edits {
+        let start_byte = geometry
+            .byte_offset(content, edit.range.start.line, edit.range.start.character)
+            .map_err(EditContainmentRejection::UnmappableEditPosition)?;
+        let end_byte = geometry
+            .byte_offset(content, edit.range.end.line, edit.range.end.character)
+            .map_err(EditContainmentRejection::UnmappableEditPosition)?;
+        if end_byte < start_byte {
+            return Err(EditContainmentRejection::ReversedEdit);
+        }
+        if start_byte < span.0 || end_byte > span.1 {
+            return Err(EditContainmentRejection::EscapedAdmittedSpan {
+                start_byte,
+                end_byte,
+                span,
+            });
+        }
+        mapped.push(FormatTextEdit {
+            range: FormatRange::new(
+                FormatPosition::new(edit.range.start.line, edit.range.start.character),
+                FormatPosition::new(edit.range.end.line, edit.range.end.character),
+            ),
+            new_text: edit.new_text,
+        });
+    }
+    Ok(mapped)
+}
+
+/// Apply LSP whitespace options strictly inside the admitted bytes.
+///
+/// The replacement covers exactly the admitted interval — endpoints and end
+/// exclusivity are honored, no line is widened into the edit, and final-newline
+/// options act only when the admitted target reaches true EOF. Returns the
+/// replacement text and the fully spliced document when anything changed.
+fn whitespace_within_admitted(
+    content: &str,
+    admitted: &AdmittedFormatRange,
+    options: &FormattingOptions,
+) -> Option<(String, String)> {
+    if admitted.is_empty() {
+        return None;
+    }
+    let slice = content.get(admitted.start_byte..admitted.end_byte)?;
+    let mut projected = String::with_capacity(slice.len());
+    if options.trim_trailing_whitespace.unwrap_or(false) {
+        projected.push_str(&trim_trailing_whitespace(slice));
+    } else {
+        projected.push_str(slice);
+    }
+    if admitted.end_byte == content.len() {
+        if options.trim_final_newlines.unwrap_or(false) {
+            while projected.ends_with('\n') {
+                projected.pop();
+            }
+        }
+        if options.insert_final_newline.unwrap_or(false) && !projected.ends_with('\n') {
+            projected.push('\n');
+        }
+    }
+    if projected == slice {
+        return None;
+    }
+
+    let mut updated = String::with_capacity(content.len() - slice.len() + projected.len());
+    updated.push_str(&content[..admitted.start_byte]);
+    updated.push_str(&projected);
+    updated.push_str(&content[admitted.end_byte..]);
+    Some((projected, updated))
 }
 
 fn finalize_outcome(
@@ -537,50 +675,6 @@ fn native_edit_to_format_edit(edit: crate::tooling::perltidy::TextEdit) -> Forma
     }
 }
 
-fn whitespace_range_fallback(
-    content: &str,
-    range: &FormatRange,
-    options: &FormattingOptions,
-) -> FormattedDocument {
-    let lines: Vec<&str> = content.lines().collect();
-    let start_line = range.start.line as usize;
-    let end_line = (range.end.line as usize).min(lines.len().saturating_sub(1));
-
-    if start_line >= lines.len() || end_line < start_line {
-        return unchanged_document(content);
-    }
-
-    let line_ending = if content.contains("\r\n") { "\r\n" } else { "\n" };
-    let text_to_format = lines[start_line..=end_line].join(line_ending);
-    let raw = apply_lsp_whitespace_options(&text_to_format, options);
-    let formatted = raw.trim_end_matches(['\r', '\n']).to_string();
-    if formatted == text_to_format {
-        return unchanged_document(content);
-    }
-
-    let line_segments: Vec<&str> = content.split_inclusive('\n').collect();
-    let start_offset = line_segments.iter().take(start_line).map(|line| line.len()).sum::<usize>();
-    let end_line_body = line_segments[end_line].trim_end_matches(['\r', '\n']);
-    let end_offset = line_segments.iter().take(end_line).map(|line| line.len()).sum::<usize>()
-        + end_line_body.len();
-    let mut updated =
-        String::with_capacity(content.len() - (end_offset - start_offset) + formatted.len());
-    updated.push_str(&content[..start_offset]);
-    updated.push_str(&formatted);
-    updated.push_str(&content[end_offset..]);
-
-    FormattedDocument {
-        text: updated,
-        edits: vec![FormatTextEdit {
-            range: FormatRange::new(
-                FormatPosition::new(start_line as u32, 0),
-                FormatPosition::new(end_line as u32, utf16_len(lines[end_line]) as u32),
-            ),
-            new_text: formatted,
-        }],
-    }
-}
-
 fn apply_lsp_whitespace_options(content: &str, options: &FormattingOptions) -> String {
     let mut output = content.to_string();
 
@@ -621,14 +715,6 @@ fn to_native_range(range: &FormatRange) -> TextRange {
         TextPosition::new(range.start.line, range.start.character),
         TextPosition::new(range.end.line, range.end.character),
     )
-}
-
-fn range_is_admissible(content: &str, range: &FormatRange) -> bool {
-    let line_count = content.lines().count();
-    let start_line = range.start.line as usize;
-    start_line < line_count
-        && range.end.line >= range.start.line
-        && (range.end.line > range.start.line || range.end.character >= range.start.character)
 }
 
 fn is_whole_document_range(content: &str, range: &FormatRange) -> bool {
@@ -824,10 +910,159 @@ mod decision_projection_tests {
         );
         Ok(())
     }
-}
 
-fn utf16_len(s: &str) -> usize {
-    s.chars().map(|ch| if ch as u32 >= 0x10000 { 2 } else { 1 }).sum()
+    fn range_options() -> FormattingOptions {
+        FormattingOptions {
+            tab_size: 4,
+            insert_spaces: true,
+            trim_trailing_whitespace: None,
+            insert_final_newline: None,
+            trim_final_newlines: None,
+        }
+    }
+
+    /// A syntactically valid fixture supplies a fully-formed outcome envelope;
+    /// tests then pin only the disposition under projection.
+    fn base_outcome(disposition: FormatDisposition, reason: FormatReasonCode) -> FormatOutcome {
+        let mut typed = NativeFormatter::new().format_document_typed(
+            "my $x = 1;\n",
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+        typed.outcome.disposition = disposition;
+        typed.outcome.reason = reason;
+        typed.outcome
+    }
+
+    fn applied_typed(source: &str, edit: crate::tooling::perltidy::TextEdit) -> TypedFormatResult {
+        TypedFormatResult {
+            result: crate::tooling::perltidy::FormatResult {
+                formatted: source.to_string(),
+                changed: true,
+                edits: vec![edit],
+                diagnostics: Vec::new(),
+            },
+            outcome: base_outcome(FormatDisposition::Applied, FormatReasonCode::Applied),
+        }
+    }
+
+    #[test]
+    fn escaping_native_edit_downgrades_to_not_proven_with_no_edits() {
+        let source = "abc\ndef\n";
+        // Admitted target covers line zero only; the fabricated engine edit
+        // reaches into line one, so projection must fail closed.
+        let admitted = admitted_fixture(source, 0, 0, 0, 3);
+        let geometry = SourceGeometry::new(source);
+        let escaping_edit = crate::tooling::perltidy::TextEdit {
+            range: crate::tooling::perltidy::TextRange::new(
+                crate::tooling::perltidy::TextPosition::new(0, 0),
+                crate::tooling::perltidy::TextPosition::new(1, 3),
+            ),
+            new_text: "XYZ".to_string(),
+        };
+        let typed = applied_typed(source, escaping_edit);
+
+        let decision = project_native_range(source, &geometry, &admitted, &range_options(), typed)
+            .expect("projection must not error on containment failure");
+
+        assert_eq!(decision.outcome.disposition, FormatDisposition::FailedOrNotProven);
+        assert_eq!(decision.outcome.reason, FormatReasonCode::InstrumentFailure);
+        assert!(decision.document.edits.is_empty(), "an escaping edit must not be projected");
+        assert_eq!(decision.document.text, source, "failed containment keeps the source");
+    }
+
+    #[test]
+    fn whitespace_projection_cannot_rewrite_bytes_outside_the_admitted_interval() {
+        let source = "# trailing   \nsecond\n";
+        let geometry = SourceGeometry::new(source);
+        let mut options = range_options();
+        options.trim_trailing_whitespace = Some(true);
+
+        // The trailing spaces sit outside the requested interval, so the
+        // projection must stay a legitimate no-change.
+        let partial = admitted_fixture(source, 0, 0, 0, 10);
+        let decision =
+            project_native_range(source, &geometry, &partial, &options, no_change_typed(source))
+                .expect("projection must not error");
+        assert_eq!(decision.outcome.disposition, FormatDisposition::NoChange);
+        assert!(decision.document.edits.is_empty());
+        assert_eq!(decision.document.text, source);
+
+        // Covering the whole line body admits exactly those bytes.
+        let full_body = admitted_fixture(source, 0, 0, 0, 13);
+        let decision =
+            project_native_range(source, &geometry, &full_body, &options, no_change_typed(source))
+                .expect("projection must not error");
+        assert_eq!(decision.outcome.disposition, FormatDisposition::Applied);
+        assert_eq!(decision.document.edits.len(), 1);
+        assert_eq!(decision.document.edits[0].range.start.character, 0);
+        assert_eq!(decision.document.edits[0].range.end.character, 13);
+        assert_eq!(decision.document.edits[0].new_text, "# trailing");
+        assert_eq!(decision.document.text, "# trailing\nsecond\n");
+    }
+
+    #[test]
+    fn final_newline_options_act_only_when_the_target_reaches_true_eof() {
+        let geometry_source = "# t   \nmore";
+        let geometry = SourceGeometry::new(geometry_source);
+        let mut options = range_options();
+        options.insert_final_newline = Some(true);
+
+        // A mid-document slice never grows a newline.
+        let mid_document = admitted_fixture(geometry_source, 0, 0, 0, 5);
+        let decision = project_native_range(
+            geometry_source,
+            &geometry,
+            &mid_document,
+            &options,
+            no_change_typed(geometry_source),
+        )
+        .expect("projection must not error");
+        assert_eq!(decision.outcome.disposition, FormatDisposition::NoChange);
+
+        // A target reaching true EOF of an unterminated document inserts the
+        // final newline exactly at the admitted boundary.
+        let to_eof = admitted_fixture(geometry_source, 1, 0, 1, 4);
+        let decision = project_native_range(
+            geometry_source,
+            &geometry,
+            &to_eof,
+            &options,
+            no_change_typed(geometry_source),
+        )
+        .expect("projection must not error");
+        assert_eq!(decision.outcome.disposition, FormatDisposition::Applied);
+        assert_eq!(decision.document.text, "# t   \nmore\n");
+        assert_eq!(decision.document.edits.len(), 1);
+        assert_eq!(decision.document.edits[0].range.start.line, 1);
+        assert_eq!(decision.document.edits[0].range.start.character, 0);
+        assert_eq!(decision.document.edits[0].range.end.character, 4);
+        assert_eq!(decision.document.edits[0].new_text, "more\n");
+    }
+
+    fn admitted_fixture(source: &str, sl: u32, sc: u32, el: u32, ec: u32) -> AdmittedFormatRange {
+        let geometry = SourceGeometry::new(source);
+        match admit_format_range(
+            &geometry,
+            source,
+            &FormatRange::new(FormatPosition::new(sl, sc), FormatPosition::new(el, ec)),
+        ) {
+            Ok(admitted) => admitted,
+            Err(error) => panic!("test fixture range must admit: {error}"),
+        }
+    }
+
+    fn no_change_typed(source: &str) -> TypedFormatResult {
+        TypedFormatResult {
+            result: crate::tooling::perltidy::FormatResult {
+                formatted: source.to_string(),
+                changed: false,
+                edits: Vec::new(),
+                diagnostics: Vec::new(),
+            },
+            outcome: base_outcome(FormatDisposition::NoChange, FormatReasonCode::AlreadyFormatted),
+        }
+    }
 }
 
 const fn formatter_mode_name(mode: FormatterMode) -> &'static str {
