@@ -20,7 +20,14 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # `.index_file(url, ...)` re-index call in
 # crates/perl-lsp-rs/src/runtime/workspace.rs (checker-equivalent count on the
 # combined tree, base #11916-era = 702).
-compatibility_baseline = 701
+# Growth 701 -> 704 by #11944 (#11937 Variable-class cross-file candidate
+# withdrawal). Explicit attribution of every added call site, all from one
+# reviewed squash-merged PR (checker-equivalent per-file scan over
+# git ls-tree blobs, base 704e872c6 = 701):
+#   crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs
+#     109 -> 110 (+1)
+#   crates/perl-lsp-rs/src/runtime/language/completion.rs 2 -> 4 (+2)
+compatibility_baseline = 704
 
 # Live identity is the URI argument plus an owner-supplied non-zero NonZeroU32
 # generation; #11305 owns didOpen/didSave migration. Exact source paths are the
