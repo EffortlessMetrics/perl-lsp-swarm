@@ -322,14 +322,21 @@ fn generic_schema_fields_are_behavior_backed_by_runtime_config() {
     assert_eq!(server.perltidy_indent_columns, Some(2));
     assert_eq!(server.perltidy_tabs, Some(false));
     assert_eq!(server.perltidy_timeout_secs, 12);
-    assert!(server.ai_completion.user_enabled);
-    assert_eq!(server.ai_completion.model, "fixture-model");
+    // #4997: activation/selection fields from the generic schema are rejected;
+    // compiled defaults survive. Envelope fields remain behavior-backed.
+    assert!(!server.ai_completion.user_enabled);
+    assert_eq!(
+        server.ai_completion.activation_authority,
+        perl_lsp_rs_core::config::AiActivationAuthority::Unavailable
+    );
+    assert_eq!(server.ai_completion.provider, "openai_compat");
+    assert_eq!(server.ai_completion.model, "gpt-4o-mini");
     assert_eq!(server.ai_completion.timeout_ms, 2200);
     assert_eq!(server.ai_completion.max_output_tokens, 96);
     assert_eq!(server.ai_completion.max_inflight, 2);
     assert!(!server.ai_completion.fallback);
     assert!(server.ai_completion.local_model_mode);
-    assert!(!server.ai_completion.streaming.user_enabled);
+    assert!(server.ai_completion.streaming.user_enabled);
     assert_eq!(server.ai_completion.streaming.update_debounce_ms, 80);
 
     let mut workspace = WorkspaceConfig::default();
@@ -387,6 +394,27 @@ fn generic_schema_excludes_security_sensitive_lsp_settings() -> Result<(), Box<d
     assert!(ai.get("apiKeyEnv").is_none());
     assert!(ai.get("apiKeyHeader").is_none());
     assert!(ai.get("apiKeyPrefix").is_none());
+
+    // #4997: activation and selection fields remain documented for the future
+    // trusted adapter but advertise no generic client transport.
+    for activation_field in ["enabled", "provider", "model"] {
+        let field = ai
+            .get(activation_field)
+            .unwrap_or_else(|| panic!("aiCompletion.{activation_field} must stay documented"));
+        assert_eq!(
+            field["x-perllsp-transports"],
+            json!([]),
+            "aiCompletion.{activation_field} must not advertise client transports (#4997)",
+        );
+        assert_eq!(field["x-perllsp-scope"], json!("machine"));
+    }
+    let streaming_enabled =
+        &perl["aiCompletion"]["properties"]["streaming"]["properties"]["enabled"];
+    assert_eq!(
+        streaming_enabled["x-perllsp-transports"],
+        json!([]),
+        "streaming.enabled must not advertise client transports (#4997)",
+    );
 
     Ok(())
 }
