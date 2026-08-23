@@ -16,22 +16,24 @@ assignment and a read-back — that perl5db evaluates in its **current** (stoppe
 frame:
 
 ```rust
-// crates/perl-dap/src/debug_adapter/variables.rs:568
+// crates/perl-dap/src/debug_adapter/variables.rs:594
 let commands = vec![format!("p {name} = {value}"), format!("p {name}")];
 ```
 
 The request's `variablesReference` is checked only for being positive
-(`crates/perl-dap/src/debug_adapter/variables.rs:468-478`); its encoded frame
-identity is never decoded, so a `setVariable` issued through a scope reference of
-a non-current frame silently mutates the current frame's same-name variable (or
-nothing visible) today.
-
-Meanwhile `handle_scopes` advertises `Locals`/`Package`/`Globals` scopes for
-**every** frame id (`crates/perl-dap/src/debug_adapter/frames.rs:152-207`), so a
-conforming DAP client can reach that frame-blind write path through non-current
-frames. Issue #11324 therefore asks for the exact disposition before any
-implementation leaf (#11325) is selected: supported, limited, unsupported, or
-not_proven with the missing evidence named.
+(`crates/perl-dap/src/debug_adapter/variables.rs:494-504`); its encoded frame
+identity is never decoded, so every writable path is a current-frame `p`
+evaluation by construction. The *minting* side is already gated: since #10563
+(merged as PR #11806), `scopes` serves only the exact current stopped frame and
+returns an empty scope list for any other frame id
+(`crates/perl-dap/src/debug_adapter/frames.rs:257-266`), `variables` refuses
+scope references not bound to that frame plus all `Package`/`Globals` references
+(`crates/perl-dap/src/debug_adapter/variables.rs:117-140`), and the code carries
+the explicit note that the typed frame authority of #9045/#9046 will replace
+this compatibility floor (`crates/perl-dap/src/debug_adapter/frames.rs:69-74`).
+Issue #11324 therefore asks for the exact disposition before any implementation
+leaf (#11325) is selected: supported, limited, unsupported, or not_proven with
+the missing evidence named.
 
 ## Decision Drivers
 
@@ -65,14 +67,14 @@ Integration (current `main`):
 
 | ID | Fact | Source |
 |----|------|--------|
-| E7 | Native sessions launch stock `perl -d`. | `crates/perl-dap/src/debug_adapter/process.rs:485` |
-| E8 | `handle_set_variable` is frame-blind: after validating name/value it sends `p {name} = {value}` + `p {name}`; the scope reference's frame is never decoded. | `crates/perl-dap/src/debug_adapter/variables.rs:447-651` (send :568; sole ref check :468-478) |
-| E9 | Locals enumeration is a B walk of the **current** CV's padlist (`$DB::sub` or `B::main_cv()`), with the DAP frame id consumed as a **pad-depth index** (`$va[-(1+$fi)]`); its own contract comment states that for non-recursive frames from different subs, `frame_id=0` is the only meaningful choice. | `crates/perl-dap/src/debug_adapter/variables.rs:405-444` (comment :408-411, CV :420, pad index :425) |
-| E10 | `stackTrace` parses `T` text; frame ids are adapter-assigned display indexes with no backend identity. | `crates/perl-dap/src/debug_adapter/frames.rs:28`, `crates/perl-dap/src/debug_adapter/parsing.rs:87-120`, `crates/perl-dap/src/stack/parser.rs:184-191` (`starting_id: 1`) |
-| E11 | Scopes are advertised for every frame id, so clients can issue `setVariable` through non-current frames' scope references today. | `crates/perl-dap/src/debug_adapter/frames.rs:152-207` |
+| E7 | Native sessions launch stock `perl -d`. | `crates/perl-dap/src/debug_adapter/process.rs:503` |
+| E8 | `handle_set_variable` is frame-blind: after validating name/value it sends `p {name} = {value}` + `p {name}`; the scope reference's frame is never decoded, so every write is a current-frame `p` evaluation. | `crates/perl-dap/src/debug_adapter/variables.rs:473-681` (send :594; sole ref check :494-504) |
+| E9 | Locals enumeration is a B walk of the **current** CV's padlist only (`$DB::sub` or `B::main_cv()`), with the pad selection hardcoded to the innermost pad (`frame = 0`); no frame-id-to-pad indexing remains. The helper is deliberately opaque about aggregate contents pending #7358. | `crates/perl-dap/src/debug_adapter/variables.rs:427-470` (comment :427-441, CV :446, pad-index template :450-451, `frame = 0` :468), invoked at :299 |
+| E10 | `stackTrace` parses `T` text; frame ids are adapter-assigned, per-stop-rebound display indexes with no backend identity. | `crates/perl-dap/src/debug_adapter/frames.rs:20-104` (`T` at :104), `crates/perl-dap/src/debug_adapter/parsing.rs:87-120`, `crates/perl-dap/src/stack/parser.rs:184-191` (`starting_id: 1`) |
+| E11 | Observation is already gated to the exact current stopped frame: `scopes` returns an empty scope list for any other frame id and serves only `Locals` (+ captured `Arguments`); `variables` returns honest-empty for scope references not bound to that frame and for `Package`/`Globals` kinds. Landed by #10563 (PR #11806). | `crates/perl-dap/src/debug_adapter/frames.rs:257-266`, `:289-309`; `crates/perl-dap/src/debug_adapter/variables.rs:117-140` |
 | E12 | The canonical `DebugBackend` trait has **no** set-variable/mutation operation at all; mutation exists only in the DAP frontend's direct `p` writes. | `crates/perl-dap/src/backend/mod.rs` (`trait DebugBackend` method list) |
 | E13 | The ptkdb external-peer path explicitly negotiates no variable setting ("ptkdb v1 does not set variables"). | `crates/perl-dap/src/backend/capabilities.rs:258` |
-| E14 | The exact selected-frame observation substrate this ruling would build on (#9046) is not merged (still OPEN, verified 2026-08-24). | GitHub issue #9046 |
+| E14 | The typed selected-frame observation substrate this ruling would build on is not merged: #9046 and #9045 are still OPEN; current main carries only the `exact_current_stopped_frame_id` compatibility floor, whose own comment defers to #9045/#9046. | GitHub issues #9046, #9045 (OPEN, verified 2026-08-24); `crates/perl-dap/src/debug_adapter/frames.rs:69-83` |
 
 Protocol (Debug Adapter Protocol specification, `SetVariableRequest` /
 `ScopesRequest` / `SetExpressionRequest`):
@@ -130,9 +132,10 @@ research PR, only superseded by a materially different backend.
 
 ### Sub-ruling B: unsupported now — every shipped integration primitive
 
-- The B/PADLIST locals helper observes only the current CV's own recursion pads
-  and consumes the DAP frame id as a pad depth — it is observation-only for the
-  current sub and structurally cannot address a different caller sub (E9).
+- The B/PADLIST locals helper observes only the current CV's innermost pad, with
+  the pad selection hardcoded to the innermost frame — it is observation-only
+  for the current frame's sub and structurally cannot address a different
+  caller sub (E9).
 - The canonical backend model has no mutation operation (E12), and the ptkdb
   peer path negotiates no variable setting (E13).
 - `T` is textual and read-only (E10).
@@ -178,14 +181,20 @@ than implementation guidance."
 
 ### Honest refusal path (required interim behavior)
 
-Until a mechanism is proven and admitted, a `setVariable` whose
-`variablesReference` decodes to a scope reference of a frame other than the
-current stop **must fail** with a descriptive error message (E16), following the
-repo's `restartFrame`/`terminateThreads` precedent (E18) — it must not silently
-evaluate in the current frame as it does today (E8, E11). This ADR records the
-requirement; wiring the guard into the mutation train's lowering/canonical
-target work (#10774/#10891) is a production change outside this docs-only
-claim.
+Current main already refuses non-current frames at the minting surface: scopes
+and variables return honest-empty for anything not bound to the exact current
+stopped frame (E11, landed by #10563), so no non-current-frame scope reference
+can reach the write path today. The remaining obligation is forward-looking:
+`handle_set_variable` itself never decodes the scope reference (E8), so the
+current-frame-only write invariant currently holds by minting-side accident
+rather than by handler contract. When the typed frame authority (#9045/#9046)
+or any future selected-frame work mints scope references for non-current frames
+again, `setVariable` through such a reference **must fail** with a descriptive
+error message (E16), following the repo's `restartFrame`/`terminateThreads`
+precedent (E18) — it must not silently evaluate in the current frame. This ADR
+records the requirement; wiring the guard into the mutation train's
+lowering/canonical target work (#10774/#10891) is a production change outside
+this docs-only claim.
 
 ### Consequence for #11325
 
@@ -236,8 +245,9 @@ architecture/security programme.
   later.
 - Two negative mechanism families (frame-switch commands, shipped primitives)
   are settled durably and cannot consume further research cycles.
-- The frame-blind `setVariable` hazard (E8, E11) is now a recorded, cited
-  obligation for the mutation train instead of implicit behavior.
+- The current-frame-only write invariant is now recorded with its
+  DAP-conformant refusal path, so the #10563 minting gate cannot be silently
+  eroded when selected-frame work (#9045/#9046) lands.
 - Current-frame mutation remains releasable and independent, per #11324's
   baseline requirement.
 
