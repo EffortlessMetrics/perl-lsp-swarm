@@ -1523,7 +1523,9 @@ mod tests {
         );
 
         let mut claims_mut = [owned, other];
-        apply_drift_downgrades(&mut claims_mut, &findings);
+        let downgrades = apply_drift_downgrades(&mut claims_mut, &findings);
+        assert_eq!(downgrades.len(), 1);
+        assert_eq!(downgrades[0].code, "CLAIM_DOWNGRADED_BY_DRIFT");
         assert_eq!(claims_mut[0].state, ClaimState::NotProven);
         assert_eq!(claims_mut[1].state, ClaimState::Reconciled);
     }
