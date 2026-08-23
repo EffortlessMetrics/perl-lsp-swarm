@@ -1091,3 +1091,229 @@ fn architecture_fence_forbids_lsp_parser_graph_provider_and_scheduler_ownership(
         }
     }
 }
+
+#[test]
+fn execution_profile_contract_is_constructible_and_serializable() -> Result<(), Box<dyn Error>> {
+    let profile = ReachabilityExecutionProfile::new(
+        ReachabilityProfileId::new("interactive-liveness-v1")?,
+        1,
+        ReachabilityExecutionPurpose::Interactive,
+        vec![ReachabilityOperationKind::ProductionClosure],
+        vec![ReachabilityFactFamilyId::new("runtime-edges")?],
+        ReachabilityCancellationPolling::AtDeclaredCheckpoints,
+        ReachabilityRetentionLimits {
+            max_explanation_items: Some(200),
+            max_output_bytes: Some(64 * 1024),
+        },
+        "performance-authority-2026-08",
+        vec![String::from("profile notes the interactive ceiling")],
+    )?;
+    assert_eq!(profile.profile_id().as_str(), "interactive-liveness-v1");
+    assert_eq!(profile.version(), 1);
+    assert_eq!(profile.purpose(), ReachabilityExecutionPurpose::Interactive);
+    assert_eq!(profile.selected_operation_kinds(), &[ReachabilityOperationKind::ProductionClosure]);
+    assert_eq!(profile.selected_fact_families()[0].as_str(), "runtime-edges");
+    assert_eq!(
+        profile.cancellation_polling(),
+        ReachabilityCancellationPolling::AtDeclaredCheckpoints
+    );
+    assert_eq!(profile.retention().max_explanation_items, Some(200));
+    assert_eq!(profile.retention().max_output_bytes, Some(64 * 1024));
+    assert_eq!(profile.defaults_source(), "performance-authority-2026-08");
+    assert_eq!(profile.limitations(), ["profile notes the interactive ceiling"]);
+
+    // Validation fails closed on empty identity, zero version, and missing
+    // kinds or defaults source.
+    assert!(ReachabilityProfileId::new("").is_err());
+    assert!(
+        ReachabilityExecutionProfile::new(
+            ReachabilityProfileId::new("p")?,
+            0,
+            ReachabilityExecutionPurpose::Proof,
+            vec![ReachabilityOperationKind::Classification],
+            Vec::new(),
+            ReachabilityCancellationPolling::AtDeclaredCheckpoints,
+            ReachabilityRetentionLimits { max_explanation_items: None, max_output_bytes: None },
+            "authority",
+            Vec::new(),
+        )
+        .is_err()
+    );
+    assert!(
+        ReachabilityExecutionProfile::new(
+            ReachabilityProfileId::new("p")?,
+            1,
+            ReachabilityExecutionPurpose::Batch,
+            Vec::new(),
+            Vec::new(),
+            ReachabilityCancellationPolling::AtDeclaredCheckpoints,
+            ReachabilityRetentionLimits { max_explanation_items: None, max_output_bytes: None },
+            "authority",
+            Vec::new(),
+        )
+        .is_err()
+    );
+    assert!(
+        ReachabilityExecutionProfile::new(
+            ReachabilityProfileId::new("p")?,
+            1,
+            ReachabilityExecutionPurpose::Batch,
+            vec![ReachabilityOperationKind::Classification],
+            Vec::new(),
+            ReachabilityCancellationPolling::AtDeclaredCheckpoints,
+            ReachabilityRetentionLimits { max_explanation_items: None, max_output_bytes: None },
+            "",
+            Vec::new(),
+        )
+        .is_err()
+    );
+
+    let serialized = serde_json::to_string(&profile)?;
+    let decoded: ReachabilityExecutionProfile = serde_json::from_str(&serialized)?;
+    assert_eq!(decoded, profile);
+    Ok(())
+}
+
+#[test]
+fn contract_surface_accessors_are_reachable_and_errors_render() -> Result<(), Box<dyn Error>> {
+    // Budget surface.
+    let justification = ReachabilityUnlimitedJustification::new(
+        ReachabilityWorkDimension::NodesAdmitted,
+        "reviewed-2026-08",
+        10,
+    )?;
+    assert_eq!(justification.reason(), "reviewed-2026-08");
+    let mut limits = BTreeMap::new();
+    limits.insert(ReachabilityWorkDimension::NodesAdmitted, 4);
+    let operation_budget = ReachabilityWorkBudget::new(
+        ReachabilityProfileId::new("surface-profile")?,
+        vec![ReachabilityOperationKind::Classification],
+        limits,
+        BTreeMap::new(),
+    )?;
+    assert_eq!(operation_budget.profile_id().as_str(), "surface-profile");
+    assert_eq!(
+        operation_budget.selected_operation_kinds(),
+        &[ReachabilityOperationKind::Classification]
+    );
+    assert_eq!(
+        operation_budget.limit_for(ReachabilityWorkDimension::NodesAdmitted),
+        Some(ReachabilityDimensionLimit::Bounded(4))
+    );
+    assert_eq!(operation_budget.limit_for(ReachabilityWorkDimension::EdgesAdmitted), None);
+
+    // Subject, tracker, and stage-output surface.
+    let subject = ReachabilityOperationSubject::new(
+        ReachabilityOperationId::new("surface-op")?,
+        ReachabilityOperationKind::Classification,
+        vec![
+            snapshot_identity("snapshot-a", "gen-1")?,
+            ReachabilitySubjectIdentity::new(
+                ReachabilitySubjectIdentityKind::WorkBudgetProfile,
+                "surface-profile",
+                None,
+            )?,
+        ],
+        ReachabilityProfileId::new("surface-profile")?,
+    )?;
+    let mut tracker = ReachabilityWorkTracker::new(subject.clone(), operation_budget)?;
+    assert_eq!(tracker.subject().operation_id().as_str(), "surface-op");
+    assert_eq!(tracker.budget().profile_id().as_str(), "surface-profile");
+    tracker.charge(ReachabilityWorkDimension::NodesAdmitted, 4)?;
+    let _ = tracker.charge(ReachabilityWorkDimension::NodesAdmitted, 1);
+    tracker.poll_checkpoint(
+        &ReachabilityStageId::new("classification")?,
+        &ScriptedControl::cancelling()?,
+    );
+    let receipt = tracker.finish();
+    assert_eq!(receipt.exhausted_attempts().len(), 1);
+    assert_eq!(receipt.checkpoints_observed().len(), 1);
+    assert_eq!(receipt.checkpoints_observed()[0].as_str(), "classification");
+    assert!(receipt.terminal().is_some_and(|terminal| terminal.is_resource_exhausted()));
+
+    let stage_output = ReachabilityStageOutput::new(
+        ReachabilityStageId::new("classification")?,
+        ReachabilitySubjectIdentity::new(
+            ReachabilitySubjectIdentityKind::StageOutput,
+            "classification-1",
+            None,
+        )?,
+    );
+    assert_eq!(stage_output.stage().as_str(), "classification");
+    assert_eq!(stage_output.output().as_str(), "classification-1");
+
+    // Ledger surface.
+    let runtime = ReachabilityFactFamilyId::new("runtime-edges")?;
+    let mut families = BTreeMap::new();
+    families.insert(runtime.clone(), ReachabilityFactFamilyStatus::Complete);
+    let ledger = ReachabilityFactFamilyLedger::new(families);
+    assert!(ledger.requires_complete(std::slice::from_ref(&runtime)));
+    assert_eq!(
+        ledger.status(&ReachabilityFactFamilyId::new("missing-family")?),
+        ReachabilityFactFamilyStatus::Missing
+    );
+    assert!(
+        !ledger.requires_complete(&[runtime, ReachabilityFactFamilyId::new("missing-family")?])
+    );
+
+    // Error surface renders without panicking and stays fail-closed.
+    let rendered = format!(
+        "{} {} {}",
+        ReachabilityContractError::BudgetProfileMismatch,
+        ReachabilityChargeError::Exhausted {
+            dimension: ReachabilityWorkDimension::NodesAdmitted,
+            limit: 4,
+            charged: 4,
+        },
+        ReachabilityWorkHonestyError::ReuseWithoutDeclaredIdentity {
+            stage: ReachabilityStageId::new("classification")?,
+        }
+    );
+    assert!(rendered.contains("profile does not match"));
+    assert!(rendered.contains("nodes-admitted"));
+    assert!(rendered.contains("without a declared current subject identity"));
+    Ok(())
+}
+
+#[test]
+fn bounded_view_surface_exposes_its_view_profile_and_returned_bounds() -> Result<(), Box<dyn Error>>
+{
+    let mut tracker = new_tracker(ReachabilityWorkDimension::NodesAdmitted, 100)?;
+    tracker.note_instrument_evidence(instrument_identity()?);
+    let output = ReachabilitySubjectIdentity::new(
+        ReachabilitySubjectIdentityKind::StageOutput,
+        "classification-1",
+        None,
+    )?;
+    tracker.complete_stage(
+        ReachabilityStageId::new("classification")?,
+        Some(output.clone()),
+        Vec::new(),
+    );
+    let outcome = ReachabilityOperationOutcome::<Vec<String>>::complete(
+        ReachabilitySemanticOutcome::Complete,
+        Some(vec![String::from("a"), String::from("b"), String::from("c")]),
+        tracker.finish(),
+    )?;
+    let source = outcome
+        .bounded_view_source(output, snapshot_identity("snapshot-a", "gen-1")?)
+        .ok_or("complete outcome must mint the view source")?;
+    let view = ReachabilityBoundedView::new(
+        source,
+        ReachableViewProfileId::new("source-partition-v1")?,
+        2,
+        128,
+        Some(3),
+        Some(1),
+        true,
+        Some(String::from("item-limit")),
+    )?;
+    assert_eq!(view.view_profile().as_str(), "source-partition-v1");
+    assert_eq!(view.items_returned(), 2);
+    assert_eq!(view.bytes_returned(), 128);
+    assert_eq!(view.known_total(), Some(3));
+    assert_eq!(view.omitted_count(), Some(1));
+    assert!(view.truncated());
+    assert_eq!(view.truncation_reason(), Some("item-limit"));
+    Ok(())
+}
