@@ -34,7 +34,11 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # shared post-parse seam and lifecycle.rs #8041 re-cohere + stale-index
 # reconciliation; -3 index_file at lifecycle.rs close-handoff reload ->
 # index_initial_file role rename and two tests.rs fixtures).
-compatibility_baseline = 697
+# Burndown 697 -> 696 by #11305 fixture rebaseline (lifted from the closed
+# duplicate #11940 @ 254f0e214): the document_access gen-0 builder fixture
+# dropped one .index_file_with_generation(...) call; the scorecard coordinator
+# re-seed added a canonical index_live_file caller identity (not counted).
+compatibility_baseline = 696
 
 # Structural recurrence control (#11305): files under these prefixes must
 # never call compatibility source APIs at all -- live commits go through
@@ -68,6 +72,7 @@ caller_paths = [
   "crates/perl-lsp-rs/src/runtime/language/misc.rs",
   "crates/perl-lsp-rs/src/runtime/language/navigation.rs",
   "crates/perl-lsp-rs/src/runtime/language/provider_decision_live_trace_tests.rs",
+  "crates/perl-lsp-rs/src/runtime/language/references_tier_scorecard_tests.rs",
   "crates/perl-lsp-rs/src/runtime/language/rename.rs",
   "crates/perl-lsp-rs/src/runtime/test_api.rs",
   "crates/perl-lsp-rs/src/runtime/text_sync.rs",
