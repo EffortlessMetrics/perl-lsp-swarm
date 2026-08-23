@@ -33,6 +33,7 @@ pub fn detect_heredoc_antipatterns(source: &str) -> Vec<Diagnostic> {
                 message: d.message,
                 related_information: Vec::new(),
                 tags: Vec::new(),
+                fixable: false,
                 suggestion: d.suggested_fix,
             }
         })
@@ -62,5 +63,28 @@ fn antipattern_code(pattern: &AntiPattern) -> &'static str {
         AntiPattern::RegexCodeBlockHeredoc { .. } => DiagnosticCode::HeredocInRegexCode.as_str(),
         AntiPattern::EvalStringHeredoc { .. } => DiagnosticCode::HeredocInEval.as_str(),
         AntiPattern::TiedHandleHeredoc { .. } => DiagnosticCode::HeredocTiedHandle.as_str(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::diagnostics::DiagnosticsProvider;
+    use perl_parser::Parser;
+    use std::sync::Arc;
+
+    #[test]
+    fn format_heredoc_diagnostic_reaches_provider_as_non_fixable_pl800() {
+        let source = "format REPORT =\n<<'END'\nName: @<<<<\n$name\nEND\n.\n";
+        let output = Parser::new(source).parse_with_recovery();
+        let ast = Arc::new(output.ast);
+        let diagnostics =
+            DiagnosticsProvider::new().get_diagnostics(&ast, &output.diagnostics, source, None);
+
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code.as_deref() == Some("PL800"))
+            .expect("format heredoc must be reported by the provider as PL800");
+        assert_eq!(diagnostic.code.as_deref(), Some("PL800"));
+        assert!(!diagnostic.fixable);
     }
 }

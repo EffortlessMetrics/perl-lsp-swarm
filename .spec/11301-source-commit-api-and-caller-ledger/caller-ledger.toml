@@ -15,7 +15,19 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # Structural gap: PR CI validates the PR head tree, so a green PR can push
 # post-merge main over this baseline; combined-tree evaluation is tracked on
 # #11916.
-compatibility_baseline = 702
+# Burndown 702 -> 701 by #11938 (#8896 containment leaf): removing the
+# reversed-direction `handle_configuration` application arm deleted its
+# `.index_file(url, ...)` re-index call in
+# crates/perl-lsp-rs/src/runtime/workspace.rs (checker-equivalent count on the
+# combined tree, base #11916-era = 702).
+# Growth 701 -> 704 by #11944 (#11937 Variable-class cross-file candidate
+# withdrawal). Explicit attribution of every added call site, all from one
+# reviewed squash-merged PR (checker-equivalent per-file scan over
+# git ls-tree blobs, base 704e872c6 = 701):
+#   crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs
+#     109 -> 110 (+1)
+#   crates/perl-lsp-rs/src/runtime/language/completion.rs 2 -> 4 (+2)
+compatibility_baseline = 704
 
 # Live identity is the URI argument plus an owner-supplied non-zero NonZeroU32
 # generation; #11305 owns didOpen/didSave migration. Exact source paths are the

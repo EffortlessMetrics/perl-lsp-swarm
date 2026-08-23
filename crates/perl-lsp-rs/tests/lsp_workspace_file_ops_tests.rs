@@ -1031,7 +1031,8 @@ fn test_will_delete_files_warns_for_cross_file_symbol_usage_without_module_impor
 }
 
 #[test]
-fn test_apply_edit_single_line() -> Result<(), Box<dyn std::error::Error>> {
+fn client_sent_workspace_apply_edit_is_method_not_found() -> Result<(), Box<dyn std::error::Error>>
+{
     let server = create_test_server();
 
     // Initialize the server
@@ -1043,18 +1044,9 @@ fn test_apply_edit_single_line() -> Result<(), Box<dyn std::error::Error>> {
     let _ = make_request(&server, "initialize", Some(init_params));
     send_initialized(&server);
 
-    // Open a document
-    let open_params = json!({
-        "textDocument": {
-            "uri": "file:///test/workspace/test.pl",
-            "languageId": "perl",
-            "version": 1,
-            "text": "print 'Hello';\nprint 'World';\n"
-        }
-    });
-    let _ = make_request(&server, "textDocument/didOpen", Some(open_params));
-
-    // Apply an edit
+    // `workspace/applyEdit` is a standard server→client request (#8896): a
+    // client-originated request must be rejected at method routing instead of
+    // reaching edit application handling.
     let params = json!({
         "edit": {
             "changes": {
@@ -1071,16 +1063,16 @@ fn test_apply_edit_single_line() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let result = make_request(&server, "workspace/applyEdit", Some(params));
-
-    // Should return success
-    let response = result?.ok_or("expected applyEdit response")?;
-    assert_eq!(response.get("applied"), Some(&json!(true)));
+    let error = make_request(&server, "workspace/applyEdit", Some(params))
+        .err()
+        .ok_or("client-sent workspace/applyEdit must be rejected, not answered with a result")?;
+    assert!(error.starts_with("-32601"), "expected MethodNotFound, got {error}");
     Ok(())
 }
 
 #[test]
-fn test_apply_edit_multi_line() -> Result<(), Box<dyn std::error::Error>> {
+fn client_sent_workspace_configuration_is_method_not_found()
+-> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
     // Initialize the server
@@ -1092,102 +1084,16 @@ fn test_apply_edit_multi_line() -> Result<(), Box<dyn std::error::Error>> {
     let _ = make_request(&server, "initialize", Some(init_params));
     send_initialized(&server);
 
-    // Open a document
-    let open_params = json!({
-        "textDocument": {
-            "uri": "file:///test/workspace/test.pl",
-            "languageId": "perl",
-            "version": 1,
-            "text": "print 'Hello';\nprint 'World';\nprint 'End';\n"
-        }
-    });
-    let _ = make_request(&server, "textDocument/didOpen", Some(open_params));
-
-    // Apply a multi-line edit
+    // `workspace/configuration` is a standard server→client request (#8896):
+    // the server must not answer client-originated configuration requests.
     let params = json!({
-        "edit": {
-            "changes": {
-                "file:///test/workspace/test.pl": [
-                    {
-                        "range": {
-                            "start": {"line": 0, "character": 0},
-                            "end": {"line": 1, "character": 14}
-                        },
-                        "newText": "# Combined print\nprint 'Hello World';"
-                    }
-                ]
-            }
-        }
+        "items": [{ "section": "perl.workspace.includePaths" }]
     });
 
-    let result = make_request(&server, "workspace/applyEdit", Some(params));
-
-    // Should return success
-    let response = result?.ok_or("expected applyEdit response")?;
-    assert_eq!(response.get("applied"), Some(&json!(true)));
-    Ok(())
-}
-
-#[test]
-fn test_apply_edit_no_document() -> Result<(), Box<dyn std::error::Error>> {
-    let server = create_test_server();
-
-    // Initialize the server
-    let init_params = json!({
-        "processId": 1234,
-        "rootUri": "file:///test/workspace",
-        "capabilities": {}
-    });
-    let _ = make_request(&server, "initialize", Some(init_params));
-    send_initialized(&server);
-
-    // Try to apply edit to non-existent document
-    let params = json!({
-        "edit": {
-            "changes": {
-                "file:///test/workspace/nonexistent.pl": [
-                    {
-                        "range": {
-                            "start": {"line": 0, "character": 0},
-                            "end": {"line": 0, "character": 0}
-                        },
-                        "newText": "new text"
-                    }
-                ]
-            }
-        }
-    });
-
-    let result = make_request(&server, "workspace/applyEdit", Some(params));
-
-    // Should still return success (edit was "applied" even if document doesn't exist)
-    let response = result?.ok_or("expected applyEdit response")?;
-    assert_eq!(response.get("applied"), Some(&json!(true)));
-    Ok(())
-}
-
-#[test]
-fn test_apply_edit_invalid_params() -> Result<(), Box<dyn std::error::Error>> {
-    let server = create_test_server();
-
-    // Initialize the server
-    let init_params = json!({
-        "processId": 1234,
-        "rootUri": "file:///test/workspace",
-        "capabilities": {}
-    });
-    let _ = make_request(&server, "initialize", Some(init_params));
-    send_initialized(&server);
-
-    // Send invalid params (no edit field)
-    let params = json!({});
-
-    let result = make_request(&server, "workspace/applyEdit", Some(params));
-
-    // Should return failure
-    let response = result?.ok_or("expected applyEdit response")?;
-    assert_eq!(response.get("applied"), Some(&json!(false)));
-    assert!(response.get("failureReason").is_some());
+    let error = make_request(&server, "workspace/configuration", Some(params)).err().ok_or(
+        "client-sent workspace/configuration must be rejected, not answered with a result",
+    )?;
+    assert!(error.starts_with("-32601"), "expected MethodNotFound, got {error}");
     Ok(())
 }
 

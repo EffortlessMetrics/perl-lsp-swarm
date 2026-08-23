@@ -312,6 +312,7 @@ fn walk_security_node(
                     message: "Consider using open() with a pipe, or IPC::Run for safer command execution with proper input validation".to_string(),
                 }],
                 tags: Vec::new(),
+                fixable: false,
                 suggestion: Some(
                     "Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution"
                         .to_string(),
@@ -406,6 +407,7 @@ fn check_global_signal_handler_assignment(
             message: "Localized signal handlers avoid leaking exception or warning hooks across unrelated code.".to_string(),
         }],
         tags: Vec::new(),
+        fixable: false,
         suggestion: Some(format!(
             "Use `local $SIG{{{}}} = ...` if the handler should be scoped",
             signal_handler.signal_name
@@ -493,6 +495,7 @@ fn check_eval_node(block: &Node, eval_node: &Node, diagnostics: &mut Vec<Diagnos
             message: "String eval executes arbitrary Perl code at runtime. If the string contains user input, this allows code injection.".to_string(),
         }],
         tags: Vec::new(),
+        fixable: false,
         suggestion: Some(
             "Use eval { } for exception handling, or consider safer alternatives like Try::Tiny"
                 .to_string(),
@@ -539,6 +542,7 @@ fn check_two_arg_open(name: &str, args: &[Node], node: &Node, diagnostics: &mut 
             message: "Two-argument open combines mode and filename, which can allow shell injection if the filename is derived from user input".to_string(),
         }],
         tags: Vec::new(),
+        fixable: false,
         suggestion: Some("Replace with 3-arg form: open(my $fh, '>', $file)".to_string()),
     });
 }
@@ -578,6 +582,7 @@ fn check_string_eval(name: &str, args: &[Node], node: &Node, diagnostics: &mut V
             message: "String eval executes arbitrary Perl code at runtime. If the string contains user input, this allows code injection.".to_string(),
         }],
         tags: Vec::new(),
+        fixable: false,
         suggestion: Some(
             "Use eval { } for exception handling, or consider safer alternatives like Try::Tiny"
                 .to_string(),
@@ -605,6 +610,7 @@ fn check_system_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>)
             message: "Use the list form system($cmd, @args) to avoid shell injection when arguments come from user input".to_string(),
         }],
         tags: Vec::new(),
+        fixable: false,
         suggestion: Some(
             "Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection"
                 .to_string(),
@@ -632,6 +638,7 @@ fn check_exec_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             message: "Use the list form exec($cmd, @args) to avoid shell injection when arguments come from user input".to_string(),
         }],
         tags: Vec::new(),
+        fixable: false,
         suggestion: Some(
             "Use the list form: exec($cmd, @args) instead of exec(\"$cmd @args\") to avoid shell injection"
                 .to_string(),
@@ -695,6 +702,7 @@ fn check_pipe_open(name: &str, args: &[Node], node: &Node, diagnostics: &mut Vec
             message: "Use the list form open(my $fh, '-|', $cmd, @args) to avoid shell injection when arguments come from user input".to_string(),
         }],
         tags: Vec::new(),
+        fixable: false,
         suggestion: Some(
             "Use the list form: open(my $fh, '-|', $cmd, @args) for safer command execution"
                 .to_string(),
@@ -747,6 +755,7 @@ fn check_readpipe(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             message: "Use open(my $fh, '-|', $cmd, @args) or IPC::Run for safer command execution with proper input validation".to_string(),
         }],
         tags: Vec::new(),
+        fixable: false,
         suggestion: Some(
             "Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution"
                 .to_string(),

@@ -230,7 +230,6 @@ impl LspServer {
             }
             "perl/showAst" => self.handle_show_ast_dispatch(request.params),
             "experimental/testDiscovery" => self.handle_test_discovery_dispatch(request.params),
-            "workspace/configuration" => self.handle_configuration_dispatch(request.params),
             "workspace/didChangeWatchedFiles" => {
                 self.handle_did_change_watched_files_dispatch(request.params)
             }
@@ -253,7 +252,6 @@ impl LspServer {
             "workspace/didDeleteFiles" => self.handle_did_delete_files_dispatch(request.params),
             "workspace/willCreateFiles" => self.handle_will_create_files_dispatch(request.params),
             "workspace/didCreateFiles" => self.handle_did_create_files_dispatch(request.params),
-            "workspace/applyEdit" => self.handle_apply_edit_dispatch(request.params),
             "workspace/textDocumentContent" => {
                 self.handle_text_document_content_dispatch(request.params)
             }
