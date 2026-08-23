@@ -1275,10 +1275,10 @@ fn single_range_and_one_element_multi_range_share_admission_geometry()
         })
     }
 
-    for (label, source, requested) in [
-        ("trailing-empty-eof-line point", "my$x=1;\n", range(1, 0, 1, 0)),
-        ("surrogate-split end character", "a🦀b\n", range(0, 0, 0, 2)),
-        ("end line outside the document", "my$x=1;\n", range(0, 0, 9, 0)),
+    for (label, source, requested, admits) in [
+        ("trailing-empty-eof-line point", "my$x=1;\n", range(1, 0, 1, 0), true),
+        ("surrogate-split end character", "a🦀b\n", range(0, 0, 0, 2), false),
+        ("end line outside the document", "my$x=1;\n", range(0, 0, 9, 0), false),
     ] {
         let uri = format!("file:///shared-geometry-{label}.pl").replace(' ', "-");
 
@@ -1306,43 +1306,40 @@ fn single_range_and_one_element_multi_range_share_admission_geometry()
             None,
         );
 
-        match (source.contains('🦀'), source.lines().count()) {
-            // The EOF-line point admits on both surfaces.
-            (false, _) if requested["end"]["line"].as_u64() == Some(1) => {
-                let single_edits = single_result.map_err(|error| {
-                    Box::<dyn std::error::Error>::from(format!(
-                        "{label}: single refused: {error:?}"
-                    ))
-                })?;
-                assert_eq!(single_edits, Some(json!([])), "{label}: single must admit");
-                let edits = multi_result.map_err(|error| {
-                    Box::<dyn std::error::Error>::from(format!("{label}: multi refused: {error:?}"))
-                })?;
-                assert_eq!(edits, Some(json!([])), "{label}: one-element multi must admit");
-            }
+        // The expected outcome is an explicit row field so a future invalid
+        // row can never route into the admit arm through an incidental guard.
+        if admits {
+            let single_edits = single_result.map_err(|error| {
+                Box::<dyn std::error::Error>::from(format!("{label}: single refused: {error:?}"))
+            })?;
+            assert_eq!(single_edits, Some(json!([])), "{label}: single must admit");
+            let edits = multi_result.map_err(|error| {
+                Box::<dyn std::error::Error>::from(format!("{label}: multi refused: {error:?}"))
+            })?;
+            assert_eq!(edits, Some(json!([])), "{label}: one-element multi must admit");
+        } else {
             // Invalid geometry refuses on both surfaces through one admission
             // vocabulary: the shared strict plan mapping rejects before any
             // engine runs, with identical typed evidence.
-            _ => {
-                let single_error = single_result.err().ok_or("{label}: single must reject")?;
-                assert_eq!(single_error.code, -32602, "{label}");
-                let single_data = single_error.data.ok_or("{label}: missing plan evidence")?;
-                assert_eq!(single_data["reason"], "invalid_position", "{label}");
-                let single_trace = receipt(&single)?;
-                assert_eq!(single_trace["decision"], "blocked", "{label}");
-                assert_eq!(single_trace["reason"], "invalid_position", "{label}");
-                assert_eq!(single_trace["actual_engine"], "not_started", "{label}");
-                assert_eq!(single_trace["result_count"], 0, "{label}");
+            let single_error =
+                single_result.err().ok_or_else(|| format!("{label}: single must reject"))?;
+            assert_eq!(single_error.code, -32602, "{label}");
+            let single_data =
+                single_error.data.ok_or_else(|| format!("{label}: missing plan evidence"))?;
+            assert_eq!(single_data["reason"], "invalid_position", "{label}");
+            let single_trace = receipt(&single)?;
+            assert_eq!(single_trace["decision"], "blocked", "{label}");
+            assert_eq!(single_trace["reason"], "invalid_position", "{label}");
+            assert_eq!(single_trace["actual_engine"], "not_started", "{label}");
+            assert_eq!(single_trace["result_count"], 0, "{label}");
 
-                let error =
-                    multi_result.err().ok_or_else(|| format!("{label}: multi must reject"))?;
-                assert_eq!(error.code, -32602, "{label}");
-                let data = error.data.ok_or("{label}: missing plan evidence")?;
-                assert_eq!(data["reason"], "invalid_position", "{label}");
-                let multi_trace = receipt(&multi)?;
-                assert_eq!(multi_trace["decision"], "blocked", "{label}");
-                assert_eq!(multi_trace["result_count"], 0, "{label}");
-            }
+            let error = multi_result.err().ok_or_else(|| format!("{label}: multi must reject"))?;
+            assert_eq!(error.code, -32602, "{label}");
+            let data = error.data.ok_or_else(|| format!("{label}: missing plan evidence"))?;
+            assert_eq!(data["reason"], "invalid_position", "{label}");
+            let multi_trace = receipt(&multi)?;
+            assert_eq!(multi_trace["decision"], "blocked", "{label}");
+            assert_eq!(multi_trace["result_count"], 0, "{label}");
         }
     }
 

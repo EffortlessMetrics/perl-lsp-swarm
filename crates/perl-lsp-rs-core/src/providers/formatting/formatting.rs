@@ -500,7 +500,10 @@ fn whitespace_within_admitted(
     }
     if admitted.end_byte == content.len() {
         if options.trim_final_newlines.unwrap_or(false) {
-            while projected.ends_with('\n') {
+            // A bare CR ends a line under the shared geometry, so strip the
+            // complete trailing terminator — never leave a dangling CR after
+            // popping an LF from a CRLF pair.
+            while projected.ends_with(['\r', '\n']) {
                 projected.pop();
             }
         }
@@ -875,6 +878,7 @@ fn line_ending_kind(source: &str) -> (bool, bool, bool) {
 
 #[cfg(test)]
 mod decision_projection_tests {
+    #![allow(clippy::expect_used)]
     use super::*;
 
     #[test]
@@ -1040,16 +1044,50 @@ mod decision_projection_tests {
         assert_eq!(decision.document.edits[0].new_text, "more\n");
     }
 
+    #[test]
+    fn trim_final_newlines_at_true_eof_strips_the_complete_terminator() {
+        // Under the shared geometry a bare CR ends a line, so trimming the
+        // final newline at true EOF must remove the complete terminator —
+        // including any directly preceding carriage return — exactly like the
+        // replaced legacy fallback. A dangling CR would keep a separator in
+        // the user document while the outcome claims Applied.
+        for (label, source, expected) in
+            [("LF", "x\n", "x"), ("CRLF", "x\r\n", "x"), ("bare CR", "x\r", "x")]
+        {
+            let geometry = SourceGeometry::new(source);
+            let mut options = range_options();
+            options.trim_final_newlines = Some(true);
+
+            // The end line is the terminal empty line, so the admitted target
+            // reaches true EOF and its exclusive end covers the separator.
+            let admitted = admitted_fixture(source, 0, 0, 1, 0);
+            let decision = project_native_range(
+                source,
+                &geometry,
+                &admitted,
+                &options,
+                no_change_typed(source),
+            )
+            .expect("projection must not error");
+
+            assert_eq!(decision.outcome.disposition, FormatDisposition::Applied, "{label}");
+            assert_eq!(
+                decision.document.text, expected,
+                "{label} trim must leave no dangling terminator"
+            );
+            assert_eq!(decision.document.edits.len(), 1, "{label}");
+            assert_eq!(decision.document.edits[0].new_text, expected, "{label}");
+        }
+    }
+
     fn admitted_fixture(source: &str, sl: u32, sc: u32, el: u32, ec: u32) -> AdmittedFormatRange {
         let geometry = SourceGeometry::new(source);
-        match admit_format_range(
+        admit_format_range(
             &geometry,
             source,
             &FormatRange::new(FormatPosition::new(sl, sc), FormatPosition::new(el, ec)),
-        ) {
-            Ok(admitted) => admitted,
-            Err(error) => panic!("test fixture range must admit: {error}"),
-        }
+        )
+        .expect("test fixture range must admit")
     }
 
     fn no_change_typed(source: &str) -> TypedFormatResult {
