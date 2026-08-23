@@ -109,12 +109,11 @@ fn excluding_the_alias_spelling_leaves_the_policy_filtered_behavior_intact()
         provider.get_document_diagnostics_with_context(&uri, content, None, &context, None),
     )?;
 
-    // The merged row is policy-filtered, so nothing is promoted and the
-    // ordinary core diagnostic stands exactly as before the cut existed.
-    assert_eq!(
-        items_with_code(&items, "PL603").len(),
-        1,
-        "policy-filtered merges must not lose the ordinary diagnostic: {items:#?}"
+    // Excluding one approved spelling removes the whole logical alias row,
+    // including the ordinary built-in twin.
+    assert!(
+        items_with_code(&items, "PL603").is_empty(),
+        "policy-filtered aliases must not reappear as ordinary twins: {items:#?}"
     );
     assert!(
         items_with_code(&items, "native.security.system_exec").is_empty(),

@@ -46,7 +46,7 @@ pub use result_identity::{
 };
 pub use semantic::{
     NativeCriticPolicy, UnresolvedNativeFindingIdentity, account_unresolved_native_identities,
-    critic_source_identity_for_uri, native_finding_candidates,
+    critic_source_identity_for_uri, filtered_builtin_promotions, native_finding_candidates,
     native_finding_candidates_with_accounting, normalize_with_native_policy,
     surviving_builtin_promotions,
 };

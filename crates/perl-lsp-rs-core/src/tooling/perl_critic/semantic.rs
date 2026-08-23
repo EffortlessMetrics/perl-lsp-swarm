@@ -230,6 +230,45 @@ pub fn surviving_builtin_promotions(
     promoted
 }
 
+/// Exact ordinary-diagnostic keys hidden by exclusion or suppression of a
+/// normalized row containing a built-in contributor.
+///
+/// Include filters and severity thresholds continue to affect only the native
+/// critic engine. Exclusion and source suppression are different: once either
+/// removes a merged alias row, the ordinary built-in twin must not reappear as
+/// a duplicate product finding.
+#[must_use]
+pub fn filtered_builtin_promotions(
+    normalized: &[NormalizedCriticFinding],
+    policy: &NativeCriticPolicy<'_>,
+) -> std::collections::HashSet<(String, usize, usize)> {
+    normalized
+        .iter()
+        .filter(|finding| {
+            let admits = |value: &String| {
+                value.as_str() == finding.public_code()
+                    || finding.approved_aliases().iter().any(|alias| alias.code() == value.as_str())
+            };
+            policy.exclude.iter().any(admits) || policy.suppressions.suppresses_normalized(finding)
+        })
+        .flat_map(|finding| {
+            finding
+                .contributors()
+                .iter()
+                .filter(|contributor| {
+                    contributor.identity().origin() == CriticFindingOrigin::BuiltInDiagnostic
+                })
+                .map(|contributor| {
+                    (
+                        contributor.identity().code().to_string(),
+                        finding.range().start.byte,
+                        finding.range().end.byte,
+                    )
+                })
+        })
+        .collect()
+}
+
 /// Normalize candidates and apply native policy exactly once post-merge.
 ///
 /// Order: canonical alias merge, then severity threshold, then

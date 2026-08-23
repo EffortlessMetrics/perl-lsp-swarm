@@ -649,7 +649,8 @@ impl PullDiagnosticsProvider {
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
     ) -> (Vec<LspDiagnostic>, std::collections::HashSet<(String, usize, usize)>) {
         use perl_lsp_rs_core::tooling::perl_critic::{
-            CriticSuppressionMap, NativeCriticPolicy, native_finding_candidates_with_accounting,
+            CriticSuppressionMap, NativeCriticPolicy, filtered_builtin_promotions,
+            native_finding_candidates_with_accounting, normalize_critic_findings,
             normalize_with_native_policy,
         };
 
@@ -687,7 +688,7 @@ impl PullDiagnosticsProvider {
             .into_iter()
             .map(|observation| observation.into_candidate(content, source_identity))
             .collect();
-        let all_candidates = candidates.into_iter().chain(builtin_candidates);
+        let all_candidates: Vec<_> = candidates.into_iter().chain(builtin_candidates).collect();
 
         let suppressions = CriticSuppressionMap::from_source(content);
         let policy = NativeCriticPolicy::new(
@@ -696,15 +697,17 @@ impl PullDiagnosticsProvider {
             &context.native_critic_exclude,
             &suppressions,
         );
+        let unfiltered = normalize_critic_findings(all_candidates.clone());
         let normalized = normalize_with_native_policy(all_candidates, &policy);
         let promoted =
             perl_lsp_rs_core::tooling::perl_critic::surviving_builtin_promotions(&normalized);
+        let filtered = filtered_builtin_promotions(&unfiltered, &policy);
 
         let rows = normalized
             .iter()
             .map(|finding| self.normalized_finding_to_lsp_diagnostic(uri, content, finding))
             .collect();
-        (rows, promoted)
+        (rows, promoted.union(&filtered).cloned().collect())
     }
 
     fn normalized_finding_to_lsp_diagnostic(

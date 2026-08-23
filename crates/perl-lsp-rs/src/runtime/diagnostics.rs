@@ -2043,7 +2043,8 @@ impl LspServer {
         diagnostics: &mut Vec<InternalDiagnostic>,
     ) {
         use perl_lsp_rs_core::tooling::perl_critic::{
-            NativeCriticPolicy, native_finding_candidates_with_accounting,
+            NativeCriticPolicy, filtered_builtin_promotions,
+            native_finding_candidates_with_accounting, normalize_critic_findings,
             normalize_with_native_policy,
         };
 
@@ -2095,7 +2096,7 @@ impl LspServer {
         // in this single normalization call so an alias pair becomes one
         // logical row before LSP projection.
         let builtin_candidates = builtin_critic_overlap_candidates(ast, doc_text, source_identity);
-        let all_candidates = candidates.into_iter().chain(builtin_candidates);
+        let all_candidates: Vec<_> = candidates.into_iter().chain(builtin_candidates).collect();
 
         let suppressions =
             perl_lsp_rs_core::tooling::perl_critic::CriticSuppressionMap::from_source(doc_text);
@@ -2105,6 +2106,7 @@ impl LspServer {
             &native_exclude,
             &suppressions,
         );
+        let unfiltered = normalize_critic_findings(all_candidates.clone());
         let normalized = normalize_with_native_policy(all_candidates, &policy);
 
         // A surviving merged row supersedes its ordinary built-in twin: the
@@ -2116,8 +2118,11 @@ impl LspServer {
         // removed and the ordinary diagnostic stands as before.
         let promoted =
             perl_lsp_rs_core::tooling::perl_critic::surviving_builtin_promotions(&normalized);
+        let filtered = filtered_builtin_promotions(&unfiltered, &policy);
+        let suppressed_or_excluded =
+            promoted.union(&filtered).cloned().collect::<std::collections::HashSet<_>>();
         diagnostics.retain(|diagnostic| {
-            !promoted.contains(&(
+            !suppressed_or_excluded.contains(&(
                 diagnostic.code.clone().unwrap_or_default(),
                 diagnostic.range.0,
                 diagnostic.range.1,
@@ -3181,6 +3186,10 @@ mod tests {
             !text.contains("native.security.backtick_exec"),
             "excluding PL601 must remove the backtick logical row; got: {text:?}"
         );
+        assert!(
+            !text.contains("PL601"),
+            "excluding PL601 must remove the ordinary built-in twin; got: {text:?}"
+        );
     }
 
     #[test]
@@ -3212,6 +3221,10 @@ mod tests {
         assert!(
             !text.contains("native.security.system_exec"),
             "PL603 selector must suppress the system_exec logical row; got: {text:?}"
+        );
+        assert!(
+            !text.contains("PL603"),
+            "PL603 selector must suppress the ordinary built-in twin; got: {text:?}"
         );
     }
 
