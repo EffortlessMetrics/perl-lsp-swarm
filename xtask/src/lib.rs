@@ -7,4 +7,5 @@ pub mod file_identity;
 pub mod git_ancestry;
 pub mod publication_drift;
 pub mod rust_hygiene;
+pub mod source_authority;
 pub mod worktree_cleanup;

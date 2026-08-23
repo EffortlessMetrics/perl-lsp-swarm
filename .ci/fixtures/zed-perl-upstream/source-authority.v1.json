@@ -1,0 +1,250 @@
+{
+  "schema_version": "zed-source-authority.v1",
+  "packet_root": ".ci/fixtures/zed-perl-upstream",
+  "external_write_policy": "maintainer_manual_checkpoint_only",
+  "manifest_file": "source-authority.v1.json",
+  "generators": [
+    { "path": "scripts/apply-zed-perl-upstream.sh" },
+    { "path": "scripts/apply-zed-core-perl-defaults.sh" },
+    { "path": "scripts/check-zed-core-perl-defaults.sh" },
+    { "path": "scripts/check-zed-registry-update-packet.sh" },
+    { "path": "scripts/check-zed-upstream-candidate.sh" },
+    { "path": "scripts/check-zed-upstream-submission-packet.sh" },
+    { "path": "scripts/zed_host/finalize.py" },
+    { "path": "scripts/zed_host/prepare.py" }
+  ],
+  "inputs": [
+    {
+      "id": "codex-train",
+      "subject": "codex-train.v1.json",
+      "authority": "canonical_stage_spec",
+      "digest": "54425f06c9bff9ea601ea08b50aefa6c6a5fbf180a1a19710f7dbe2b77e21285",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "convergence-record",
+      "subject": "convergence.v1.json",
+      "authority": "receipt_evidence",
+      "digest": "a0df4adf380ecf2d6c871aaf4fa75d5ab3beb1a54b487328276bf0808d28bdff",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "default-order-contract",
+      "subject": "default-order.v1.json",
+      "authority": "canonical_stage_spec",
+      "digest": "f63e0c2d9acaf78f04790c61b5a8b33d14ea47d6b4bb4255c5be1a599dbef917",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "managed-downloads-contract",
+      "subject": "managed-downloads.v1.json",
+      "authority": "canonical_stage_spec",
+      "digest": "54f192d8a5ccc02495fc07eb110f2fd703f26fed01b5ea18658949303b1420d1",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "managed-targets-state",
+      "subject": "manifest.toml",
+      "authority": "receipt_evidence",
+      "digest": "2240d7bacd3c5425c88f19ad68705ea8f2f45755d352a89b45eb15e8d9441e54",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "settings-behavior-observation",
+      "subject": "settings-behavior.v1.json",
+      "authority": "receipt_evidence",
+      "digest": "7cfc88f5330479faa23ab7629afbbea1c33c1caed1963ff8d6ac731a74717c0b",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "settings-contract",
+      "subject": "settings-contract.v1.json",
+      "authority": "canonical_stage_spec",
+      "digest": "06f2ef1b29a23345d7fcbdd8b35b3aa239b54803002c962a707b9d4f11e9ea32",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "zed-defaults-state",
+      "subject": "zed-defaults.json",
+      "authority": "receipt_evidence",
+      "digest": "5426a3ee0a255a78e56d905340e8279119fbaa273d9357d1ac676be9bcc2da0c",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "default-order-receipt-template",
+      "subject": "receipts/default-order-template.json",
+      "authority": "canonical_stage_spec",
+      "digest": "81a42fd4aaee4fdbec87e2dcc27c032aae7b82e008af42fe8cd37325da075c2b",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "exact-source-observations-template",
+      "subject": "receipts/exact-source-observations-template.json",
+      "authority": "canonical_stage_spec",
+      "digest": "4571d8b9cea0b96f79f02c9bd2678546d68893febca648a99c1df3071235333c",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "exact-source-receipt-template",
+      "subject": "receipts/exact-source-template.json",
+      "authority": "canonical_stage_spec",
+      "digest": "a70530173751bf1e75c99871b3daca43593b55e78585b35a8d26a0d33dc88b5f",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "managed-asset-receipt-template",
+      "subject": "receipts/managed-asset-template.json",
+      "authority": "canonical_stage_spec",
+      "digest": "5ffc962cfdf4b77113781718a0f5503418ff3c91d8b639e035ebc41c61b8757c",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "public-registry-subject",
+      "subject": "receipts/public-registry-subject.v1.json",
+      "authority": "receipt_evidence",
+      "digest": "fc4e1b4e6fbc3e64a4c9624ca20b73c6985ef858d62ffdd5d6870eb84017b459",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "public-registry-receipt-template",
+      "subject": "receipts/public-registry-template.json",
+      "authority": "canonical_stage_spec",
+      "digest": "4057e0fe1d6525c0d95dff2ebce89defc7b28214752317b57dfe2e7d05b26769",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "settings-behavior-receipt-template",
+      "subject": "receipts/settings-behavior-template.json",
+      "authority": "canonical_stage_spec",
+      "digest": "049c1e268feed00c8c008612ffebac308a57b4809e2dd817d09a46e8c285b88f",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "registry-update-manifest",
+      "subject": "registry/manifest.toml",
+      "authority": "receipt_evidence",
+      "digest": "00ad9d8059983af0a0f729b38bd7f0fa2933b4c1343bdf507611091f56616089",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "registry-pr-body",
+      "subject": "registry/pr-body.md",
+      "authority": "rendered_external_body",
+      "digest": "75b2f1f410db1af8c2d9340f88b6421e714d18abf52d77efe154166a73c44e39",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "submission-changed-files-map",
+      "subject": "submission/changed-files.v1.json",
+      "authority": "receipt_evidence",
+      "digest": "dae49077a36d10f404becd746eab936a13a7156e9931f04ab2553466e17df11c",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "submission-manifest",
+      "subject": "submission/manifest.toml",
+      "authority": "receipt_evidence",
+      "digest": "7c6f280975d4f7b5ab74a454129c0c39267181cbf9187a063735d3cedea6f4ed",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "submission-pr-body",
+      "subject": "submission/pr-body.md",
+      "authority": "rendered_external_body",
+      "digest": "0cef071c80f6c4e0e89c2c6bde4ee8483a30ca796e39951b216e01b2eb70d5d6",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "zed-core-compatibility-matrix",
+      "subject": "zed-core/compatibility-matrix.v1.json",
+      "authority": "receipt_evidence",
+      "digest": "9d25a8d665601a0a9d4d9125d7395743a2dd36af6387a493e363eac48d96978e",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "zed-core-manifest",
+      "subject": "zed-core/manifest.toml",
+      "authority": "receipt_evidence",
+      "digest": "cc58e6f6f95930559d439a6c6339d3521bcfa99dcbee621b30831f411272a937",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "zed-core-defaults-patch",
+      "subject": "zed-core/perl-defaults.patch",
+      "authority": "rendered_external_body",
+      "digest": "7b4eec64f22308479d4ee934f23e6fd894f6cab9930aef1adc89bb8d58645122",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "candidate-extension-cargo-manifest",
+      "subject": "zed-perl/Cargo.toml",
+      "authority": "rendered_external_body",
+      "digest": "135f4448b099782c9456e1550ca56ad88a02b9e3da5b6cf3af38795e4a34057b",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "candidate-extension-readme",
+      "subject": "zed-perl/README.md",
+      "authority": "rendered_external_body",
+      "digest": "c51695f3702a086fcadd3cfdb2c2bb66b822ad3ec347d3453a59688efec52408",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "candidate-extension-toml",
+      "subject": "zed-perl/extension.toml",
+      "authority": "rendered_external_body",
+      "digest": "0425d3c93be9a8f14df6dd2d37d6e680256e94231190bc0e30300afc4ae3fb9d",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "candidate-language-config",
+      "subject": "zed-perl/languages/perl/config.toml",
+      "authority": "rendered_external_body",
+      "digest": "812fbe2a5fde4caa542f18fa116e3c97aedebebd794107852de81967ee42d498",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "candidate-semantic-token-rules",
+      "subject": "zed-perl/languages/perl/semantic_token_rules.json",
+      "authority": "rendered_external_body",
+      "digest": "56474eb599d59e40e86898c5d6c2599aefc639d12ff5cc0f5b804b9d47a4db05",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "candidate-extension-source",
+      "subject": "zed-perl/src/perl.rs",
+      "authority": "rendered_external_body",
+      "digest": "74214c2116f600a800c1601a400e50658a830249a91b3df640ddbd4560083a13",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    }
+  ]
+}
