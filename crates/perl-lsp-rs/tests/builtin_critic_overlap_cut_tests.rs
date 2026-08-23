@@ -123,6 +123,28 @@ fn excluding_the_alias_spelling_leaves_the_policy_filtered_behavior_intact()
 }
 
 #[test]
+fn source_suppression_removes_the_whole_alias_row() -> Result<(), Box<dyn std::error::Error>> {
+    let uri: Uri = "file:///cut_suppressed_doc.pl".parse()?;
+    let content = "## no critic PL603\nsystem('ls -la');\n";
+
+    let provider = PullDiagnosticsProvider::new();
+    let items = items_from_report(provider.get_document_diagnostics_with_context(
+        &uri,
+        content,
+        None,
+        &PullDiagnosticsContext::new(),
+        None,
+    ))?;
+
+    assert!(
+        items_with_code(&items, "PL603").is_empty()
+            && items_with_code(&items, "native.security.system_exec").is_empty(),
+        "source suppression must remove ordinary and native aliases: {items:#?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn backtick_and_readpipe_retain_separate_canonical_rows() -> Result<(), Box<dyn std::error::Error>>
 {
     let uri: Uri = "file:///cut_backtick_readpipe.pl".parse()?;

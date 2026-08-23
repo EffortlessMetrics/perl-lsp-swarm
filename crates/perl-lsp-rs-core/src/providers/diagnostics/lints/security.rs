@@ -1165,22 +1165,22 @@ mod tests {
         assert_eq!(observations[0].identity().shape(), CriticFindingShape::Backtick);
         assert_eq!(observations[0].severity(), Severity::Harsh);
         assert_eq!(observations[0].range(), diags[0].range);
+    }
 
-        #[test]
-        fn qx_string_emits_ordinary_diagnostic_and_qx_shaped_observation() {
-            let source = "my $out = qx(ls -la);";
-            let diags = security_diags(source);
-            assert!(
-                diags.iter().any(|d| d.code.as_deref() == Some("PL601")),
-                "ordinary PL601 must remain: {diags:?}"
-            );
+    #[test]
+    fn qx_string_emits_ordinary_diagnostic_and_qx_shaped_observation() {
+        let source = "my $out = qx(ls -la);";
+        let diags = security_diags(source);
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("PL601")),
+            "ordinary PL601 must remain: {diags:?}"
+        );
 
-            let observations = security_observations(source);
-            assert_eq!(observations.len(), 1);
-            assert_eq!(observations[0].identity().code(), "PL601");
-            assert_eq!(observations[0].identity().shape(), CriticFindingShape::Qx);
-            assert_eq!(observations[0].severity(), Severity::Harsh);
-        }
+        let observations = security_observations(source);
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].identity().code(), "PL601");
+        assert_eq!(observations[0].identity().shape(), CriticFindingShape::Qx);
+        assert_eq!(observations[0].severity(), Severity::Harsh);
     }
 
     #[test]

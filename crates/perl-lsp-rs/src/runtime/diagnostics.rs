@@ -2998,6 +2998,14 @@ mod tests {
             "native backtick-exec should be deduped to PL601 (same severity after #5285); got: {text:?}"
         );
         assert!(
+            text.contains("PL601"),
+            "qx-exec should be present as PL601 after merging; got: {text:?}"
+        );
+        assert!(
+            !text.contains("native.security.qx_readpipe"),
+            "native qx-exec should be deduped to PL601; got: {text:?}"
+        );
+        assert!(
             text.contains("PL404"),
             "undef-comparison finding should be present (PL404 after dedup); got: {text:?}"
         );
