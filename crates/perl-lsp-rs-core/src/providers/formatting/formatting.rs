@@ -387,14 +387,33 @@ fn project_native_range(
                 }
             };
             return match contained_native_edits(content, geometry, span, result.edits) {
-                Ok(edits) => {
-                    finalize_outcome(&mut outcome, content, &result.formatted, &edits);
+                Ok((_, native_updated)) if native_updated == result.formatted => {
+                    let Some((replacement, updated)) =
+                        projected_native_range(content, admitted, &result.formatted, options)
+                    else {
+                        return Ok(unproven_range_projection(content, outcome));
+                    };
+                    if content
+                        .get(admitted.start_byte..admitted.end_byte)
+                        .is_some_and(|slice| replacement == slice)
+                    {
+                        finalize_outcome(&mut outcome, content, content, &[]);
+                        return Ok(FormattingDecision {
+                            document: unchanged_document(content),
+                            outcome,
+                        });
+                    }
+                    let edits = vec![FormatTextEdit {
+                        range: admitted.requested.clone(),
+                        new_text: replacement,
+                    }];
+                    finalize_outcome(&mut outcome, content, &updated, &edits);
                     Ok(FormattingDecision {
-                        document: FormattedDocument { text: result.formatted, edits },
+                        document: FormattedDocument { text: updated, edits },
                         outcome,
                     })
                 }
-                Err(_) => Ok(unproven_range_projection(content, outcome)),
+                Ok(_) | Err(_) => Ok(unproven_range_projection(content, outcome)),
             };
         }
         FormatDisposition::NoChange => {}
@@ -439,16 +458,16 @@ fn unproven_range_projection(content: &str, mut outcome: FormatOutcome) -> Forma
     FormattingDecision { document: unchanged_document(content), outcome }
 }
 
-/// Map engine-emitted range edits onto exact admitted bytes and verify each
-/// stays inside the canonical admitted span (admitted bytes plus the recorded
-/// complete-line widening).
+/// Map engine-emitted range edits onto source bytes and verify each stays
+/// inside the exact admitted span.
 fn contained_native_edits(
     content: &str,
     geometry: &SourceGeometry,
     span: (usize, usize),
     native_edits: Vec<crate::tooling::perltidy::TextEdit>,
-) -> Result<Vec<FormatTextEdit>, EditContainmentRejection> {
+) -> Result<(Vec<FormatTextEdit>, String), EditContainmentRejection> {
     let mut mapped = Vec::with_capacity(native_edits.len());
+    let mut byte_spans = Vec::with_capacity(native_edits.len());
     for edit in native_edits {
         let start_byte = geometry
             .byte_offset(content, edit.range.start.line, edit.range.start.character)
@@ -466,6 +485,7 @@ fn contained_native_edits(
                 span,
             });
         }
+        byte_spans.push((start_byte, end_byte, edit.new_text.clone()));
         mapped.push(FormatTextEdit {
             range: FormatRange::new(
                 FormatPosition::new(edit.range.start.line, edit.range.start.character),
@@ -474,7 +494,45 @@ fn contained_native_edits(
             new_text: edit.new_text,
         });
     }
-    Ok(mapped)
+    byte_spans.sort_by_key(|(start_byte, _, _)| *start_byte);
+    let mut updated = String::with_capacity(content.len());
+    let mut cursor = 0;
+    for (start_byte, end_byte, new_text) in byte_spans {
+        if start_byte < cursor {
+            return Err(EditContainmentRejection::ReversedEdit);
+        }
+        updated.push_str(&content[cursor..start_byte]);
+        updated.push_str(&new_text);
+        cursor = end_byte;
+    }
+    updated.push_str(&content[cursor..]);
+    Ok((mapped, updated))
+}
+
+/// Apply LSP whitespace options to the native result without allowing them to
+/// escape the exact admitted source interval.
+fn projected_native_range(
+    content: &str,
+    admitted: &AdmittedFormatRange,
+    formatted: &str,
+    options: &FormattingOptions,
+) -> Option<(String, String)> {
+    let suffix = content.get(admitted.end_byte..)?;
+    if !formatted.ends_with(suffix) {
+        return None;
+    }
+    let formatted_end = formatted.len().checked_sub(suffix.len())?;
+    let native_slice = formatted.get(admitted.start_byte..formatted_end)?;
+    let projected = apply_lsp_whitespace_options_with_eof(
+        native_slice,
+        options,
+        admitted.end_byte == content.len(),
+    );
+    let mut updated = String::with_capacity(formatted.len() - native_slice.len() + projected.len());
+    updated.push_str(&formatted[..admitted.start_byte]);
+    updated.push_str(&projected);
+    updated.push_str(suffix);
+    Some((projected, updated))
 }
 
 /// Apply LSP whitespace options strictly inside the admitted bytes.
@@ -507,7 +565,7 @@ fn whitespace_within_admitted(
                 projected.pop();
             }
         }
-        if options.insert_final_newline.unwrap_or(false) && !projected.ends_with('\n') {
+        if options.insert_final_newline.unwrap_or(false) && !projected.ends_with(['\r', '\n']) {
             projected.push('\n');
         }
     }
@@ -679,17 +737,26 @@ fn native_edit_to_format_edit(edit: crate::tooling::perltidy::TextEdit) -> Forma
 }
 
 fn apply_lsp_whitespace_options(content: &str, options: &FormattingOptions) -> String {
+    apply_lsp_whitespace_options_with_eof(content, options, true)
+}
+
+fn apply_lsp_whitespace_options_with_eof(
+    content: &str,
+    options: &FormattingOptions,
+    allow_final_newline: bool,
+) -> String {
     let mut output = content.to_string();
 
     if options.trim_trailing_whitespace.unwrap_or(false) {
         output = trim_trailing_whitespace(&output);
     }
-    if options.trim_final_newlines.unwrap_or(false) {
-        while output.ends_with('\n') {
-            output.pop();
-        }
+    if allow_final_newline && options.trim_final_newlines.unwrap_or(false) {
+        output.truncate(output.trim_end_matches(['\r', '\n']).len());
     }
-    if options.insert_final_newline.unwrap_or(false) && !output.ends_with('\n') {
+    if allow_final_newline
+        && options.insert_final_newline.unwrap_or(false)
+        && !output.ends_with(['\r', '\n'])
+    {
         output.push('\n');
     }
 
@@ -698,14 +765,19 @@ fn apply_lsp_whitespace_options(content: &str, options: &FormattingOptions) -> S
 
 fn trim_trailing_whitespace(content: &str) -> String {
     let mut result = String::with_capacity(content.len());
-    for line in content.split_inclusive('\n') {
-        if let Some(without_nl) = line.strip_suffix('\n') {
-            result.push_str(without_nl.trim_end_matches([' ', '\t']));
-            result.push('\n');
-        } else {
-            result.push_str(line.trim_end_matches([' ', '\t']));
-        }
+    let bytes = content.as_bytes();
+    let mut line_start = 0;
+    while let Some(offset) =
+        bytes[line_start..].iter().position(|byte| matches!(byte, b'\r' | b'\n'))
+    {
+        let newline = line_start + offset;
+        let ending_len =
+            usize::from(bytes[newline] == b'\r' && bytes.get(newline + 1) == Some(&b'\n')) + 1;
+        result.push_str(content[line_start..newline].trim_end_matches([' ', '\t']));
+        result.push_str(&content[newline..newline + ending_len]);
+        line_start = newline + ending_len;
     }
+    result.push_str(content[line_start..].trim_end_matches([' ', '\t']));
     result
 }
 

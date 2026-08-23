@@ -198,6 +198,64 @@ fn whitespace_options_edit_exactly_inside_the_admitted_bytes()
 }
 
 #[test]
+fn native_range_composes_whitespace_options_after_native_formatting()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider =
+        FormattingProvider::new(RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) });
+    let mut formatting_options = options();
+    formatting_options.insert_final_newline = Some(true);
+    let source = "my$x=1;";
+    let range = FormatRange::whole_document(source);
+
+    let decision =
+        provider.format_range_decision(source, &range, &formatting_options, &context())?;
+
+    assert_eq!(decision.outcome.disposition, FormatDisposition::Applied);
+    assert_eq!(decision.document.text, "my $x = 1;\n");
+    assert_eq!(decision.document.edits.len(), 1);
+    assert_eq!(decision.document.edits[0].range, range);
+    assert_eq!(decision.document.edits[0].new_text, "my $x = 1;\n");
+    Ok(())
+}
+
+#[test]
+fn native_partial_range_that_widens_is_downgraded_without_edits()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider =
+        FormattingProvider::new(RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) });
+    let source = "my$x=1;\n";
+    let range = FormatRange::new(FormatPosition::new(0, 2), FormatPosition::new(0, 3));
+
+    let decision = provider.format_range_decision(source, &range, &options(), &context())?;
+
+    assert_eq!(decision.outcome.disposition, FormatDisposition::FailedOrNotProven);
+    assert_eq!(decision.outcome.reason, FormatReasonCode::InstrumentFailure);
+    assert!(decision.document.edits.is_empty());
+    assert_eq!(decision.document.text, source);
+    Ok(())
+}
+
+#[test]
+fn final_newline_options_recognize_crlf_and_bare_cr() -> Result<(), Box<dyn std::error::Error>> {
+    let provider =
+        FormattingProvider::new(RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) });
+    let mut trim = options();
+    trim.trim_final_newlines = Some(true);
+
+    for source in ["# comment\r\n", "# comment\r"] {
+        let decision = provider.format_document_decision(source, &trim, &context())?;
+        assert_eq!(
+            decision.outcome.disposition,
+            FormatDisposition::Applied,
+            "source={source:?}, reason={:?}",
+            decision.outcome.reason
+        );
+        assert_eq!(decision.document.text, "# comment", "source={source:?}");
+    }
+    Ok(())
+}
+
+#[test]
 fn whitespace_options_preserve_crlf_outside_the_admitted_line()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider =

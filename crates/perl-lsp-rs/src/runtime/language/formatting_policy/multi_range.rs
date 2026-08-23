@@ -4,8 +4,9 @@
 
 use serde::Serialize;
 
-use perl_lsp_rs_core::providers::formatting::range_admission::{
-    RangePositionError, SourceGeometry,
+use perl_lsp_rs_core::providers::formatting::{
+    FormatPosition, FormatRange,
+    range_admission::{RangePositionError, SourceGeometry, admit_format_range},
 };
 
 use super::super::{
@@ -92,6 +93,7 @@ impl PlanError {
         Self { reason, message: message.into() }
     }
 
+    #[cfg(test)]
     fn from_position_error(error: RangePositionError) -> Self {
         Self::new(error.reason(), error.message())
     }
@@ -133,18 +135,20 @@ fn admit_wire_range(
 ) -> Result<NormalizedRange, PlanError> {
     let wire = parse_range(value, label)
         .map_err(|error| PlanError::new("invalid_range", error.message))?;
-    let start_byte = geometry
-        .byte_offset(source, wire.start.line, wire.start.character)
-        .map_err(PlanError::from_position_error)?;
-    let end_byte = geometry
-        .byte_offset(source, wire.end.line, wire.end.character)
-        .map_err(PlanError::from_position_error)?;
-    if end_byte < start_byte {
-        return Err(PlanError::reversed_range(label));
-    }
+    let requested = FormatRange::new(
+        FormatPosition::new(wire.start.line, wire.start.character),
+        FormatPosition::new(wire.end.line, wire.end.character),
+    );
+    let admitted =
+        admit_format_range(&geometry, source, &requested).map_err(|error| match error {
+            perl_lsp_rs_core::providers::formatting::RangeAdmissionError::Reversed => {
+                PlanError::reversed_range(label)
+            }
+            error => PlanError::new(error.reason(), error.message()),
+        })?;
     Ok(NormalizedRange::between(
-        PositionRecord::at(wire.start.line, wire.start.character, start_byte),
-        PositionRecord::at(wire.end.line, wire.end.character, end_byte),
+        PositionRecord::at(wire.start.line, wire.start.character, admitted.start_byte),
+        PositionRecord::at(wire.end.line, wire.end.character, admitted.end_byte),
     ))
 }
 
@@ -270,33 +274,15 @@ fn compose_edits(
                     format!("formatter edit for normalized range {owner} is reversed"),
                 ));
             }
-            // Native range formatting is line-oriented: a partial-line request
-            // may legitimately produce an edit covering the touched lines. Keep
-            // the safety boundary at those lines while still rejecting edits
-            // that escape the admitted line set.
-            let (allowed_start, allowed_end) = if admitted.start.line == admitted.end.line
-                && admitted.end.character == admitted.start.character
-            {
-                (admitted.start.byte, admitted.end.byte)
-            } else if admitted.end.character == 0 {
-                let (start, _) = geometry
-                    .line_span(source, admitted.start.line)
-                    .map_err(PlanError::from_position_error)?;
-                (start, admitted.end.byte)
-            } else {
-                let (start, _) = geometry
-                    .line_span(source, admitted.start.line)
-                    .map_err(PlanError::from_position_error)?;
-                let (_, end) = geometry
-                    .line_span(source, admitted.end.line)
-                    .map_err(PlanError::from_position_error)?;
-                (start, end)
-            };
+            // Every formatter edit must stay within the exact byte interval
+            // admitted for its owning request. A line-oriented formatter that
+            // widens a partial request is therefore downgraded, not clipped.
+            let (allowed_start, allowed_end) = (admitted.start.byte, admitted.end.byte);
             if start_byte < allowed_start || end_byte > allowed_end {
                 return Err(PlanError::new(
                     "edit_outside_range",
                     format!(
-                        "formatter edit {start_byte}..{end_byte} escapes admitted line span {allowed_start}..{allowed_end}"
+                        "formatter edit {start_byte}..{end_byte} escapes admitted range {allowed_start}..{allowed_end}"
                     ),
                 ));
             }

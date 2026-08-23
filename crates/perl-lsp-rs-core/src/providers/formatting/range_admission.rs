@@ -251,26 +251,17 @@ impl AdmittedFormatRange {
 
     /// Canonical containment span engine-emitted edits must stay inside.
     ///
-    /// An empty point admits only its own byte. Any other admitted target
-    /// widens to the complete touched line bodies — never across the exclusive
-    /// end — which is the same canonical widening rule the atomic multi-range
-    /// planner enforces.
+    /// The default range contract is exact: an engine edit may not escape the
+    /// requested byte interval. Syntax- or trivia-aware widening, when
+    /// introduced, must be represented by a separate explicit admission
+    /// contract rather than inferred from line boundaries.
     pub fn allowed_edit_span(
         &self,
         source: &str,
         geometry: &SourceGeometry,
     ) -> Result<(usize, usize), RangePositionError> {
-        if self.is_empty() {
-            return Ok((self.start_byte, self.end_byte));
-        }
-        if self.requested.end.character == 0 {
-            let (line_start, _) = geometry.line_span(source, self.requested.start.line)?;
-            Ok((line_start, self.end_byte))
-        } else {
-            let (line_start, _) = geometry.line_span(source, self.requested.start.line)?;
-            let (_, line_end) = geometry.line_span(source, self.requested.end.line)?;
-            Ok((line_start, line_end))
-        }
+        let _ = (source, geometry);
+        Ok((self.start_byte, self.end_byte))
     }
 }
 
@@ -416,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn allowed_edit_spans_widen_only_to_touched_line_bodies() {
+    fn allowed_edit_spans_match_the_requested_bytes() {
         let source = "abc\ndef\nghi";
         let geometry = SourceGeometry::new(source);
 
@@ -424,17 +415,17 @@ mod tests {
         assert_eq!(exact_point.allowed_edit_span(source, &geometry).expect("span"), (3, 3));
 
         let same_line = admitted(source, range(0, 1, 0, 2));
-        assert_eq!(same_line.allowed_edit_span(source, &geometry).expect("span"), (0, 3));
+        assert_eq!(same_line.allowed_edit_span(source, &geometry).expect("span"), (1, 2));
 
         let end_at_next_line_zero = admitted(source, range(0, 1, 1, 0));
         assert_eq!(
             end_at_next_line_zero.allowed_edit_span(source, &geometry).expect("span"),
-            (0, 4),
-            "end-at-next-line-character-zero excludes the end line body"
+            (1, 4),
+            "end-at-next-line-character-zero keeps the requested start exact"
         );
 
         let multiline = admitted(source, range(0, 1, 2, 2));
-        assert_eq!(multiline.allowed_edit_span(source, &geometry).expect("span"), (0, 11));
+        assert_eq!(multiline.allowed_edit_span(source, &geometry).expect("span"), (1, 10));
 
         let unterminated_tail = admitted(source, range(1, 0, 2, 3));
         assert_eq!(unterminated_tail.allowed_edit_span(source, &geometry).expect("span"), (4, 11));

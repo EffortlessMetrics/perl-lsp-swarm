@@ -57,7 +57,6 @@ sub world{return "world";}
             "sub world {\n",
             "    return \"world\";\n",
             "}\n",
-            "\n",
         )
     );
 
@@ -96,7 +95,7 @@ sub another_clean {
             "textDocument": { "uri": doc_uri },
             "range": {
                 "start": { "line": 8, "character": 0 },
-                "end": { "line": 8, "character": 30 }
+                "end": { "line": 8, "character": 27 }
             },
             "options": {
                 "tabSize": 4,
@@ -313,7 +312,7 @@ fn test_formatting_disabled_via_configuration_returns_no_edits() -> TestResult {
             "textDocument": { "uri": doc_uri },
             "range": {
                 "start": { "line": 0, "character": 0 },
-                "end": { "line": 0, "character": 26 }
+                "end": { "line": 0, "character": 27 }
             },
             "options": {
                 "tabSize": 4,
@@ -429,7 +428,7 @@ fn test_native_formatting_policies_route_through_range_formatting() -> TestResul
             "textDocument": { "uri": doc_uri },
             "range": {
                 "start": { "line": 1, "character": 0 },
-                "end": { "line": 1, "character": 34 }
+                "end": { "line": 1, "character": 33 }
             },
             "options": {
                 "tabSize": 4,
