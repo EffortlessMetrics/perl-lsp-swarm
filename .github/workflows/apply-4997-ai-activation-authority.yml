@@ -139,6 +139,35 @@ jobs:
           path.write_text(text, encoding="utf-8")
           PY
 
+      - name: Preserve trusted activation setup in project opt-out tests
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/maintenance/apply_4997_ai_activation_authority.py")
+          text = path.read_text(encoding="utf-8")
+          marker = '''# ---------------------------------------------------------------------------
+          # Declarative authority: generic sources may tune safe preferences, but may not
+          # arm/select the remote backend.
+          # ---------------------------------------------------------------------------
+          '''
+          insertion = r'''replace_exact(
+              CONFIG,
+              '        let mut config = ServerConfig::default();\n'
+              '        config.update_from_value(&serde_json::json!({\n'
+              '            "aiCompletion": { "enabled": true }\n'
+              '        }));\n',
+              '        let mut config = ServerConfig::default();\n'
+              '        config.ai_completion.user_enabled = true;\n'
+              '        recompute_ai_completion_effective(&mut config.ai_completion);\n',
+              count=2,
+          )
+
+          '''
+          assert text.count(marker) == 1, text.count(marker)
+          path.write_text(text.replace(marker, insertion + marker), encoding="utf-8")
+          PY
+
       - name: Apply count-checked cutover
         run: python3 scripts/maintenance/apply_4997_ai_activation_authority.py
 
