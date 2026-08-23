@@ -15,7 +15,7 @@ use super::{
     JsonRpcError, LspServer, Mutex, Node, NonZeroU32, Ordering, Parser, Value,
     diagnostics_sink::{PushDiagnosticIdentity, PushDiagnosticsDisposition},
     document_symbols_sink::DocumentSymbolIdentity as SymbolsIdentity,
-    json, parse_worker, source_path_from_uri, workspace_progress,
+    json, parse_worker, source_path_from_uri,
 };
 use crate::protocol::invalid_params;
 use crate::state::{DegradationTier, FIRST_ACCEPTED_DOCUMENT_GENERATION, ParsedSnapshot};
@@ -150,6 +150,13 @@ impl LspServer {
                     guard_state.current_generation(),
                 );
                 self.documents.lock().insert(normalized_uri.clone(), guard_state);
+                // Guarded no-parse document: terminal readiness state (#11675).
+                self.mark_active_document_guarded(
+                    &normalized_uri,
+                    &symbols_identity.document_instance,
+                    symbols_identity.generation,
+                    "template_parse_skipped",
+                );
 
                 let _outcome = self.commit_push_diagnostics(
                     &identity,
@@ -189,6 +196,13 @@ impl LspServer {
                     guard_state.current_generation(),
                 );
                 self.documents.lock().insert(normalized_uri.clone(), guard_state);
+                // Guarded no-parse document: terminal readiness state (#11675).
+                self.mark_active_document_guarded(
+                    &normalized_uri,
+                    &symbols_identity.document_instance,
+                    symbols_identity.generation,
+                    "oversize_file_limit",
+                );
 
                 let _outcome = self.commit_push_diagnostics(
                     &identity,
@@ -224,6 +238,13 @@ impl LspServer {
                     guard_state.current_generation(),
                 );
                 self.documents.lock().insert(normalized_uri.clone(), guard_state);
+                // Guarded no-parse document: terminal readiness state (#11675).
+                self.mark_active_document_guarded(
+                    &normalized_uri,
+                    &symbols_identity.document_instance,
+                    symbols_identity.generation,
+                    "binary_content",
+                );
 
                 let _outcome = self.commit_push_diagnostics(
                     &identity,
@@ -347,15 +368,34 @@ impl LspServer {
             // boundary, not merely before the handler section.
             let symbol_identity =
                 SymbolsIdentity::for_document(&normalized_uri, &generation, doc_generation);
+            // Active-document parser readiness for this exact generation is
+            // installed BEFORE the accepted state lands (#11675): the entry
+            // starts pending and can only advance through the acceptance and
+            // required-effect stages below.
+            self.install_active_document_pending(&normalized_uri, uri, &generation, doc_generation);
             let snapshot = Arc::new(ParsedSnapshot::from_parse_result(
                 doc_generation,
                 text,
                 ast_arc.clone(),
                 errors,
             ));
-            doc_state.publish_parsed_if_current(doc_generation, snapshot);
+            doc_state.publish_parsed_if_current(doc_generation, Arc::clone(&snapshot));
 
             self.documents.lock().insert(normalized_uri.clone(), doc_state);
+            let acceptance_class = if ast_arc.is_none() {
+                crate::runtime::readiness::ParserAcceptanceClass::Failed
+            } else if !snapshot.parse_errors_arc().is_empty() {
+                crate::runtime::readiness::ParserAcceptanceClass::RecoveredOrLimited
+            } else {
+                crate::runtime::readiness::ParserAcceptanceClass::Clean
+            };
+            self.mark_active_document_parser_accepted(
+                &normalized_uri,
+                &generation,
+                doc_generation,
+                acceptance_class,
+                None,
+            );
 
             if let Some(ref ast) = ast_arc {
                 self.commit_document_symbols_from_ast(&symbol_identity, ast, text);
@@ -375,7 +415,6 @@ impl LspServer {
                     let documents_for_task =
                         parse_worker::DocumentsHandle(Arc::clone(&self.documents));
                     let normalized_uri_owned = normalized_uri.clone();
-                    let outbound = self.outbound.clone();
                     let task_counter = Arc::clone(&self.pending_index_task_count);
                     task_counter.fetch_add(1, Ordering::SeqCst);
 
@@ -403,15 +442,12 @@ impl LspServer {
                         );
                         match committed {
                             Some(SourceCommitOutcome::Accepted | SourceCommitOutcome::NoOp) => {
-                                if generation.load(Ordering::Acquire)
-                                    == FIRST_ACCEPTED_DOCUMENT_GENERATION.get()
-                                {
-                                    workspace_progress::send_active_document_ready_notification(
-                                        &outbound,
-                                        &uri_owned,
-                                        u64::from(FIRST_ACCEPTED_DOCUMENT_GENERATION.get()),
-                                    );
-                                }
+                                // Active-document readiness is minted by the
+                                // accepted-ticket readiness state machine
+                                // (#11675) when the required core effects
+                                // attach -- NOT by this workspace-index
+                                // commit. Workspace-index lifecycle
+                                // bookkeeping below stays here.
                                 if matches!(
                                     coordinator_clone.state(),
                                     IndexState::Building { phase: IndexPhase::Idle, .. }
@@ -648,6 +684,16 @@ impl LspServer {
                 let next_gen = doc_state.generation.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
                 let target_version = version;
 
+                // Pending readiness for the exact replacement generation,
+                // installed before any parse work for it begins (#11675).
+                // Supersedes the prior generation's readiness by construction.
+                self.install_active_document_pending(
+                    &normalized_uri,
+                    uri,
+                    &doc_state.generation,
+                    next_gen,
+                );
+
                 // Apply incremental changes with UTF-16 aware mapping
                 use crate::textdoc::{Doc, PosEnc, apply_changes};
                 use lsp_types::TextDocumentContentChangeEvent;
@@ -721,6 +767,13 @@ impl LspServer {
                         doc_state.current_generation(),
                     );
                     documents.insert(normalized_uri.clone(), doc_state);
+                    // Guarded no-parse document: terminal readiness state (#11675).
+                    self.mark_active_document_guarded(
+                        &normalized_uri,
+                        &symbols_identity.document_instance,
+                        symbols_identity.generation,
+                        "template_parse_skipped",
+                    );
                     drop(documents);
 
                     let _outcome = self.commit_push_diagnostics(
@@ -766,6 +819,13 @@ impl LspServer {
                         doc_state.current_generation(),
                     );
                     documents.insert(normalized_uri.clone(), doc_state);
+                    // Guarded no-parse document: terminal readiness state (#11675).
+                    self.mark_active_document_guarded(
+                        &normalized_uri,
+                        &symbols_identity.document_instance,
+                        symbols_identity.generation,
+                        "oversize_file_limit",
+                    );
                     drop(documents);
 
                     let _outcome = self.commit_push_diagnostics(
@@ -807,6 +867,13 @@ impl LspServer {
                         doc_state.current_generation(),
                     );
                     documents.insert(normalized_uri.clone(), doc_state);
+                    // Guarded no-parse document: terminal readiness state (#11675).
+                    self.mark_active_document_guarded(
+                        &normalized_uri,
+                        &symbols_identity.document_instance,
+                        symbols_identity.generation,
+                        "binary_content",
+                    );
                     drop(documents);
 
                     let _outcome = self.commit_push_diagnostics(
@@ -894,6 +961,14 @@ impl LspServer {
                     // stranding the pending-parse counter (#3618 settle-
                     // before-increment race). `enqueue`'s return value
                     // is no longer needed by this caller.
+                    // Pending readiness for the exact target generation,
+                    // installed before the parse job begins (#11675).
+                    self.install_active_document_pending(
+                        &normalized_uri,
+                        uri,
+                        &generation_handle,
+                        next_gen,
+                    );
                     worker.enqueue(
                         uri.to_string(),
                         normalized_uri,
@@ -1157,6 +1232,21 @@ impl LspServer {
                 let generation_for_index_task = doc_state.generation.clone();
                 let t_commit_start = std::time::Instant::now();
                 documents.insert(normalized_uri.clone(), doc_state);
+                // The synchronous parse published its snapshot: the exact
+                // ticket for this generation is now accepted (#11675).
+                self.mark_active_document_parser_accepted(
+                    &normalized_uri,
+                    &generation_for_index_task,
+                    next_gen,
+                    if snapshot.ast().is_none() {
+                        crate::runtime::readiness::ParserAcceptanceClass::Failed
+                    } else if !snapshot.parse_errors_arc().is_empty() {
+                        crate::runtime::readiness::ParserAcceptanceClass::RecoveredOrLimited
+                    } else {
+                        crate::runtime::readiness::ParserAcceptanceClass::Clean
+                    },
+                    None,
+                );
 
                 // Must drop the lock before calling publish_diagnostics
                 drop(documents);
@@ -1248,6 +1338,28 @@ impl LspServer {
     /// newer edit can still land in.
     pub(crate) fn run_post_parse_side_effects(&self, ticket: parse_worker::PublishedParseTicket) {
         let ast_arc = ticket.snapshot.ast().cloned();
+        // The async worker's publish is the acceptance event for this exact
+        // ticket (#11675); classify the parser outcome for the readiness
+        // state machine. A non-clean degradation tier is carried as the
+        // limitation that keeps recovered results out of exact clean
+        // readiness.
+        let acceptance_limitation = match ticket.snapshot.degradation_tier() {
+            DegradationTier::Full => None,
+            tier => Some(format!("{tier:?}")),
+        };
+        self.mark_active_document_parser_accepted(
+            &self.normalize_uri_key(&ticket.uri),
+            &ticket.document_instance,
+            ticket.generation,
+            if ast_arc.is_none() {
+                crate::runtime::readiness::ParserAcceptanceClass::Failed
+            } else if !ticket.snapshot.parse_errors_arc().is_empty() {
+                crate::runtime::readiness::ParserAcceptanceClass::RecoveredOrLimited
+            } else {
+                crate::runtime::readiness::ParserAcceptanceClass::Clean
+            },
+            acceptance_limitation,
+        );
         // The outer wrapper below is cheap coalescing only (#11674): the
         // symbol store mutation itself re-validates this exact ticket at the
         // document-symbol sink boundary.
@@ -1309,7 +1421,6 @@ impl LspServer {
                 let document_instance = Arc::clone(&ticket.document_instance);
                 let task_counter = Arc::clone(&self.pending_index_task_count);
                 let settle_notified_by_worker = ticket.settle_notified_by_worker;
-                let outbound = self.outbound.clone();
                 task_counter.fetch_add(1, Ordering::SeqCst);
 
                 let task = move || {
@@ -1343,19 +1454,10 @@ impl LspServer {
                             }
                         },
                     );
-                    // An accepted edit commit is the same freshness fact the
-                    // didOpen background task already announces: the active
-                    // document's index entry is now current at this
-                    // generation. Emitting it here gives clients (and
-                    // integration tests) one deterministic per-document
-                    // readiness signal for edits, not just opens.
-                    if matches!(indexed, Some(SourceCommitOutcome::Accepted)) {
-                        workspace_progress::send_active_document_ready_notification(
-                            &outbound,
-                            &uri_owned,
-                            u64::from(expected_generation),
-                        );
-                    }
+                    // Active-document readiness for this edit's generation
+                    // is minted by the readiness state machine (#11675) when
+                    // its required core effects attach -- not by this
+                    // workspace index commit.
                     match indexed {
                         Some(SourceCommitOutcome::RejectedStale) => tracing::debug!(
                             uri = %uri_owned,

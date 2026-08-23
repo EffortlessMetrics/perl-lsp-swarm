@@ -132,6 +132,7 @@ impl LspServer {
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
             document_symbols_sink: super::document_symbols_sink::DocumentSymbolsSink::default(),
+            active_document_readiness: super::readiness::ActiveDocumentParserReadiness::default(),
             #[cfg(test)]
             document_symbols_before_commit_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
@@ -319,6 +320,7 @@ impl LspServer {
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
             document_symbols_sink: super::document_symbols_sink::DocumentSymbolsSink::default(),
+            active_document_readiness: super::readiness::ActiveDocumentParserReadiness::default(),
             #[cfg(test)]
             document_symbols_before_commit_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
@@ -447,6 +449,7 @@ impl LspServer {
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
             document_symbols_sink: super::document_symbols_sink::DocumentSymbolsSink::default(),
+            active_document_readiness: super::readiness::ActiveDocumentParserReadiness::default(),
             #[cfg(test)]
             document_symbols_before_commit_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),

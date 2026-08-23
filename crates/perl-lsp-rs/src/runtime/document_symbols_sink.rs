@@ -186,6 +186,12 @@ impl LspServer {
                     sequence,
                     "Committed document symbols at sink boundary"
                 );
+                self.attach_active_document_effect(
+                    &identity.normalized_uri,
+                    &identity.document_instance,
+                    identity.generation,
+                    crate::runtime::readiness::CoreEffectKind::DocumentSymbols,
+                );
                 DocumentSymbolCommitOutcome::CommittedCurrent
             }
             DocumentSymbolsDisposition::Clear => {
@@ -195,6 +201,12 @@ impl LspServer {
                     generation = identity.generation,
                     sequence,
                     "Committed document-symbol clear at sink boundary"
+                );
+                self.attach_active_document_effect(
+                    &identity.normalized_uri,
+                    &identity.document_instance,
+                    identity.generation,
+                    crate::runtime::readiness::CoreEffectKind::DocumentSymbols,
                 );
                 DocumentSymbolCommitOutcome::SafeClearCommitted
             }
