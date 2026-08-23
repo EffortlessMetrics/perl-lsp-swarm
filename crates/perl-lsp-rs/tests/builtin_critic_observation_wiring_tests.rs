@@ -104,6 +104,63 @@ fn observation_type_exposes_no_general_or_diagnostic_derived_construction() {
 }
 
 #[test]
+fn built_in_observation_defines_exactly_the_seven_documented_named_constructors() {
+    let module = production_source("tooling/perl_critic/built_in_observation.rs");
+    const CONSTRUCTORS: [&str; 7] = [
+        "literal_undef_comparison",
+        "potentially_undef_comparison",
+        "backtick_exec",
+        "qx_exec",
+        "readpipe_exec",
+        "system_call",
+        "exec_call",
+    ];
+    // The fixed non-constructor public surface: accessors plus the one
+    // normalization binding. Anything else declared `pub fn` is an undeclared
+    // eighth constructor and must turn this gate red until this list is
+    // consciously updated.
+    const NON_CONSTRUCTOR_PUBLIC_FNS: [&str; 6] =
+        ["identity", "severity", "range", "message", "explanation", "into_candidate"];
+
+    for constructor in CONSTRUCTORS {
+        assert!(
+            module.contains(&format!("pub fn {constructor}(")),
+            "the documented constructor {constructor} must exist on BuiltInCriticObservation"
+        );
+    }
+
+    let mut declared_public_fns: Vec<&str> = module
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            trimmed
+                .strip_prefix("pub fn ")
+                .or_else(|| trimmed.strip_prefix("pub const fn "))?
+                .split('(')
+                .next()
+        })
+        .collect();
+    declared_public_fns.sort_unstable();
+
+    let mut expected_public_fns: Vec<&str> = Vec::new();
+    expected_public_fns.extend_from_slice(&CONSTRUCTORS);
+    expected_public_fns.extend_from_slice(&NON_CONSTRUCTOR_PUBLIC_FNS);
+    expected_public_fns.sort_unstable();
+
+    assert_eq!(
+        declared_public_fns.len(),
+        expected_public_fns.len(),
+        "BuiltInCriticObservation must declare exactly {} public functions (7 constructors + 6 accessors); found {declared_public_fns:?}",
+        expected_public_fns.len()
+    );
+    assert_eq!(
+        declared_public_fns, expected_public_fns,
+        "the reviewed overlap cohort admits exactly the seven documented constructors; \
+         a new public constructor or accessor must update this explicit list consciously"
+    );
+}
+
+#[test]
 fn push_cut_chains_builtin_candidates_into_one_native_normalization() {
     let source = runtime_source("runtime/diagnostics.rs");
     assert!(

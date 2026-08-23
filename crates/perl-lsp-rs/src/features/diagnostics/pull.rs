@@ -555,6 +555,9 @@ impl PullDiagnosticsProvider {
     /// merged row removes its ordinary built-in twin (matched by the
     /// producer-declared contributor code and exact byte range) so an alias
     /// pair becomes exactly one logical product row before LSP projection.
+    /// Each retiring twin's suggestion and related information enrich its
+    /// merged row first, so user-visible remediation bytes stay exactly what
+    /// the ordinary surface rendered before the twin was superseded.
     fn policy_critic_rows_with_promotions(
         &self,
         uri: &Uri,
@@ -571,7 +574,7 @@ impl PullDiagnosticsProvider {
                 diagnostics
             }
             CriticEngine::Native => {
-                let (rows, promoted) = self.native_critic_rows_and_promotions(
+                let (normalized, promoted) = self.native_critic_normalized_rows_and_promotions(
                     uri,
                     ast,
                     content,
@@ -584,14 +587,38 @@ impl PullDiagnosticsProvider {
                 // keys come from producer-declared identities and exact
                 // ranges — never severity or message coincidence. If policy
                 // filtered a merged row out, its ordinary diagnostic stands.
+                let mut retired_twins: HashMap<(String, usize, usize), InternalDiagnostic> =
+                    HashMap::new();
                 internal_base.retain(|diagnostic| {
-                    !promoted.contains(&(
+                    let key = (
                         diagnostic.code.clone().unwrap_or_default(),
                         diagnostic.range.0,
                         diagnostic.range.1,
-                    ))
+                    );
+                    if promoted.contains(&key) {
+                        retired_twins.entry(key).or_insert_with(|| diagnostic.clone());
+                        false
+                    } else {
+                        true
+                    }
                 });
-                rows
+                normalized
+                    .iter()
+                    .map(|finding| {
+                        let key = (
+                            finding.public_code().to_string(),
+                            finding.range().start.byte,
+                            finding.range().end.byte,
+                        );
+                        let retired_twin = retired_twins.get(&key);
+                        self.normalized_finding_to_lsp_diagnostic(
+                            uri,
+                            content,
+                            finding,
+                            retired_twin,
+                        )
+                    })
+                    .collect()
             }
         }
     }
@@ -636,18 +663,23 @@ impl PullDiagnosticsProvider {
         }
     }
 
-    /// Add native critic policy diagnostics.
+    /// Normalize native plus built-in overlap candidates into logical critic
+    /// rows, and report which merged rows supersede ordinary built-in twins.
     ///
-    /// Returns the converted merged rows plus the exact ordinary-diagnostic
-    /// keys superseded by surviving built-in contributors (#11918).
-    fn native_critic_rows_and_promotions(
+    /// Returns the normalized rows and the surviving promotion keys; LSP
+    /// projection happens at the caller so a retiring twin can enrich its
+    /// merged row with producer-owned remediation before it is discarded.
+    fn native_critic_normalized_rows_and_promotions(
         &self,
         uri: &Uri,
         ast: &std::sync::Arc<perl_parser::ast::Node>,
         content: &str,
         context: &PullDiagnosticsContext,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
-    ) -> (Vec<LspDiagnostic>, std::collections::HashSet<(String, usize, usize)>) {
+    ) -> (
+        Vec<perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding>,
+        std::collections::HashSet<(String, usize, usize)>,
+    ) {
         use perl_lsp_rs_core::tooling::perl_critic::{
             CriticSuppressionMap, NativeCriticPolicy, native_finding_candidates_with_accounting,
             normalize_with_native_policy,
@@ -699,19 +731,22 @@ impl PullDiagnosticsProvider {
         let normalized = normalize_with_native_policy(all_candidates, &policy);
         let promoted =
             perl_lsp_rs_core::tooling::perl_critic::surviving_builtin_promotions(&normalized);
-
-        let rows = normalized
-            .iter()
-            .map(|finding| self.normalized_finding_to_lsp_diagnostic(uri, content, finding))
-            .collect();
-        (rows, promoted)
+        (normalized, promoted)
     }
 
+    /// Project one normalized critic row to an LSP diagnostic.
+    ///
+    /// `retired_twin` carries the superseded ordinary diagnostic when this row
+    /// merged over a built-in overlap twin (#11918 review): the twin owns the
+    /// row's user-visible remediation, so its suggestion line and related
+    /// information are rendered here exactly as the twin rendered them before
+    /// the cut retired it.
     fn normalized_finding_to_lsp_diagnostic(
         &self,
-        _uri: &Uri,
+        uri: &Uri,
         text: &str,
         finding: &perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding,
+        retired_twin: Option<&InternalDiagnostic>,
     ) -> LspDiagnostic {
         let range =
             lsp_range_from_offsets(text, finding.range().start.byte, finding.range().end.byte);
@@ -726,14 +761,22 @@ impl PullDiagnosticsProvider {
             "explanation": finding.explanation(),
         }));
 
+        let mut message = finding.message().to_string();
+        if let Some(suggestion) = retired_twin.and_then(|twin| twin.suggestion.as_deref()) {
+            message.push_str("\nSuggestion: ");
+            message.push_str(suggestion);
+        }
+        let related_information = retired_twin
+            .and_then(|twin| to_lsp_related_information(uri, text, &twin.related_information));
+
         LspDiagnostic {
             range,
             severity,
             code,
             code_description: None,
             source: Some("perl-lsp".to_string()),
-            message: finding.message().to_string(),
-            related_information: None,
+            message,
+            related_information,
             tags: None,
             data,
         }

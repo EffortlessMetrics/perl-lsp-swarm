@@ -90,6 +90,14 @@ mod tests {
     }
 
     #[test]
+    fn qx_document_yields_no_checked_observations() {
+        // Negative gate (#11918 review): the backtick emitter guard excludes
+        // the `qx(` spelling, so a qx() document yields zero observations at
+        // this collection seam.
+        assert!(observations_for("my $out = qx('ls -la');\n").is_empty());
+    }
+
+    #[test]
     fn observations_always_carry_the_builtin_origin() {
         let ast = must(Parser::new("system('ls');\n").parse());
         let ast = std::sync::Arc::new(ast);

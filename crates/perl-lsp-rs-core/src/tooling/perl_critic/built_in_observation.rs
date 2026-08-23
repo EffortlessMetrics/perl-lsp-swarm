@@ -91,6 +91,13 @@ impl BuiltInCriticObservation {
     }
 
     /// Built-in PL601 `qx` command execution.
+    ///
+    /// Deferral note (#11918 review): there is no live emission until the
+    /// parser/lexer exposes the `qx` shape distinctly. QuoteCommand token text
+    /// arrives verbatim including its `qx(` prefix, which the backtick guard
+    /// (`is_backtick_string`) excludes, so no emitter branch constructs this
+    /// today. Constructing it now is dead code by design; the constructor stays
+    /// because the reviewed overlap identity and shape are already registered.
     #[must_use]
     pub fn qx_exec(
         severity: Severity,
@@ -204,8 +211,11 @@ impl BuiltInCriticObservation {
     /// The byte span observed at the emission branch is resolved into the
     /// exact multi-coordinate source range with the same position authority
     /// the native candidates use, so alias merging compares identical range
-    /// identity. Remediation availability stays producer-owned by the
-    /// ordinary core diagnostic surface; the observation itself carries none.
+    /// identity. Remediation stays owned by the ordinary core diagnostic
+    /// surface: the observation itself carries none, and each transport cut
+    /// site enriches a surviving merged row from its retiring ordinary twin
+    /// before discarding that twin, so the user-visible remediation bytes are
+    /// never duplicated away from the producer branch that authored them.
     #[must_use]
     pub fn into_candidate(
         self,

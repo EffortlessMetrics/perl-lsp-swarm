@@ -74,6 +74,77 @@ fn exact_system_document_yields_one_merged_product_row() -> Result<(), Box<dyn s
 }
 
 #[test]
+fn merged_row_preserves_the_retired_twin_suggestion_text_verbatim()
+-> Result<(), Box<dyn std::error::Error>> {
+    let uri: Uri = "file:///cut_system_suggestion_doc.pl".parse()?;
+    let content = "system('ls -la');\n";
+
+    let provider = PullDiagnosticsProvider::new();
+    let items = items_from_report(provider.get_document_diagnostics_with_context(
+        &uri,
+        content,
+        None,
+        &PullDiagnosticsContext::new(),
+        None,
+    ))?;
+
+    let pl603_rows = items_with_code(&items, "PL603");
+    assert_eq!(pl603_rows.len(), 1, "one merged PL603 row: {items:#?}");
+    let row = pl603_rows[0];
+
+    // Byte compatibility (#11918 review): the merged row must render the
+    // exact Suggestion text the ordinary emitter appends today, so retiring
+    // the twin cannot lose remediation content.
+    assert!(
+        row.message.contains(
+            "system() executes a shell command. Ensure input is sanitized.\nSuggestion: Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection"
+        ),
+        "merged message must carry the twin's verbatim Suggestion text: {}",
+        row.message
+    );
+
+    // The twin's relatedInformation must survive the retirement too.
+    let related = row.related_information.as_deref().unwrap_or_default();
+    assert!(
+        related.iter().any(|info| info.message
+            == "Use the list form system($cmd, @args) to avoid shell injection when arguments come from user input"),
+        "merged row must keep the twin's related information: {related:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn qx_document_yields_zero_observations_and_zero_pl601_rows_at_the_cut()
+-> Result<(), Box<dyn std::error::Error>> {
+    let uri: Uri = "file:///cut_qx_negative_gate.pl".parse()?;
+    let content = "my $out = qx('ls -la');\n";
+
+    let provider = PullDiagnosticsProvider::new();
+    let items = items_from_report(provider.get_document_diagnostics_with_context(
+        &uri,
+        content,
+        None,
+        &PullDiagnosticsContext::new(),
+        None,
+    ))?;
+
+    // Negative gate (#11918 review): no built-in observation may exist for a
+    // qx() document, so no PL601-coded row may appear and the backtick
+    // emitter's presentation must not leak through any merged row.
+    assert!(
+        items_with_code(&items, "PL601").is_empty(),
+        "a qx document must not produce a PL601 row at the cut: {items:#?}"
+    );
+    assert!(
+        items
+            .iter()
+            .all(|diagnostic| !diagnostic.message.starts_with("Command execution detected")),
+        "the backtick presentation must not appear for a qx document: {items:#?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn legacy_engine_keeps_the_ordinary_core_row_unchanged() -> Result<(), Box<dyn std::error::Error>> {
     let uri: Uri = "file:///cut_legacy_doc.pl".parse()?;
     let content = "system('ls -la');\n";

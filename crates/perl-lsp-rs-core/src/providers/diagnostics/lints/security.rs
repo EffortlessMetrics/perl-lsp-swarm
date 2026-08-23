@@ -841,8 +841,11 @@ fn check_readpipe(
 
 /// Check if a string value represents a backtick command execution.
 ///
-/// The parser stores backtick literals (`` `cmd` ``) and qx(cmd) as
-/// `String { value: "`cmd`", interpolated: true }`.
+/// The lexer keeps quote delimiters, so QuoteCommand token text arrives
+/// verbatim: backtick literals keep their backticks (`` `cmd` ``), while
+/// `qx(cmd)` arrives with its full source text including the `qx(` prefix.
+/// Only the backtick-delimited form therefore satisfies this predicate; the
+/// `qx` spelling has no live PL601 emission today.
 fn is_backtick_string(value: &str) -> bool {
     value.starts_with('`') && value.ends_with('`') && value.len() >= 2
 }
@@ -1145,6 +1148,28 @@ mod tests {
         assert_eq!(observations[0].identity().shape(), CriticFindingShape::Backtick);
         assert_eq!(observations[0].severity(), Severity::Harsh);
         assert_eq!(observations[0].range(), diags[0].range);
+    }
+
+    #[test]
+    fn qx_document_emits_no_pl601_and_no_overlap_observation() {
+        // Negative gate (#11918 review): QuoteCommand text arrives verbatim
+        // with its `qx(` prefix, `is_backtick_string` excludes it, so a qx()
+        // document must yield zero PL601 diagnostics and zero checked
+        // observations at this emitter layer.
+        let source = "my $out = qx('ls -la');\n";
+        let ast = must(Parser::new(source).parse());
+        let mut diags = vec![];
+        let mut observations = vec![];
+        check_security_with_observations(&ast, &mut diags, &mut observations);
+
+        assert!(
+            diags.iter().all(|d| d.code.as_deref() != Some("PL601")),
+            "a qx document must not fire PL601: {diags:?}"
+        );
+        assert!(
+            observations.is_empty(),
+            "a qx document must not emit any overlap observation: {observations:?}"
+        );
     }
 
     #[test]

@@ -2113,18 +2113,41 @@ impl LspServer {
         // proposition. Removal keys come from producer-declared contributor
         // identities and exact ranges — never from severity or message
         // coincidence. If policy filtered the merged row out, nothing is
-        // removed and the ordinary diagnostic stands as before.
+        // removed and the ordinary diagnostic stands as before. Each retiring
+        // twin's suggestion and related information enrich its merged row so
+        // the user-visible remediation bytes stay exactly what the twin
+        // rendered before it was superseded (#11918 review).
         let promoted =
             perl_lsp_rs_core::tooling::perl_critic::surviving_builtin_promotions(&normalized);
+        let mut retired_twins: std::collections::HashMap<
+            (String, usize, usize),
+            InternalDiagnostic,
+        > = std::collections::HashMap::new();
         diagnostics.retain(|diagnostic| {
-            !promoted.contains(&(
+            let key = (
                 diagnostic.code.clone().unwrap_or_default(),
                 diagnostic.range.0,
                 diagnostic.range.1,
-            ))
+            );
+            if promoted.contains(&key) {
+                retired_twins.entry(key).or_insert_with(|| diagnostic.clone());
+                return false;
+            }
+            true
         });
-
-        diagnostics.extend(normalized.iter().map(normalized_critic_finding_to_diagnostic));
+        diagnostics.extend(normalized.iter().map(|finding| {
+            let mut diagnostic = normalized_critic_finding_to_diagnostic(finding);
+            let key = (
+                finding.public_code().to_string(),
+                finding.range().start.byte,
+                finding.range().end.byte,
+            );
+            if let Some(retired_twin) = retired_twins.remove(&key) {
+                diagnostic.suggestion = retired_twin.suggestion;
+                diagnostic.related_information = retired_twin.related_information;
+            }
+            diagnostic
+        }));
     }
 
     /// Collect external perlcritic diagnostics if the feature is enabled.
@@ -3030,6 +3053,81 @@ mod tests {
             !text.contains("TestingAndDebugging::RequireUseStrict"),
             "native critic engine should not publish legacy built-in critic policy IDs; got: {text:?}"
         );
+    }
+
+    #[test]
+    fn exact_system_document_pushes_exactly_one_merged_row_with_both_contributors_and_remediation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Count-level push-side mirror of the pull cut proof (#11918 review):
+        // one exact system() document must publish exactly one PL603 row that
+        // carries both contributor identities (built-in presentation wins, the
+        // native spelling survives only as a contributor) plus the retired
+        // twin's preserved Suggestion text. The workspace diagnostic surface is
+        // the server-initiated path whose renderer appends twin suggestions.
+        let (server, _buf) = make_server_with_capture();
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        let uri = "file:///native_cut_merged_system_push_test.pl";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "system('ls -la');\n"
+            }
+        })))?;
+
+        let report = server
+            .handle_workspace_diagnostic(Some(json!({
+                "identifier": "perl-lsp",
+                "previousResultIds": []
+            })))?
+            .ok_or("workspace diagnostic response missing")?;
+        let items = report["items"].as_array().ok_or("workspace diagnostic items missing")?;
+        let file_report = items
+            .iter()
+            .find(|item| item["uri"].as_str() == Some(uri))
+            .ok_or("workspace diagnostic report missing opened document")?;
+        let diagnostics =
+            file_report["items"].as_array().ok_or("workspace diagnostic report missing items")?;
+
+        let pl603_rows: Vec<&Value> =
+            diagnostics.iter().filter(|diagnostic| diagnostic["code"] == json!("PL603")).collect();
+        assert_eq!(
+            pl603_rows.len(),
+            1,
+            "exactly one logical PL603 product row may exist on the push path: {diagnostics:#?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic["code"] != json!("native.security.system_exec")),
+            "the native spelling must survive only as a contributor, not a second row: {diagnostics:#?}"
+        );
+
+        let row = pl603_rows[0];
+        let message = row["message"].as_str().expect("row must carry a string message");
+        assert!(
+            message.contains("system() executes a shell command"),
+            "merged presentation must keep the built-in emitter message: {message}"
+        );
+        assert!(
+            message.contains(
+                "\nSuggestion: Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection"
+            ),
+            "merged row must preserve the retiring twin's Suggestion text verbatim: {message}"
+        );
+        assert_eq!(
+            row["severity"],
+            json!(2),
+            "matched declarations project to the LSP warning scale the twin always had"
+        );
+        let related = row["relatedInformation"].as_array().cloned().unwrap_or_default();
+        assert!(
+            related.iter().any(|info| info["message"]
+                == json!("Use the list form system($cmd, @args) to avoid shell injection when arguments come from user input")),
+            "merged row must keep the twin's related information: {related:?}"
+        );
+        Ok(())
     }
 
     #[test]
