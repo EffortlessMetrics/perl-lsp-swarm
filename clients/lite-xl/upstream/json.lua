@@ -75,6 +75,26 @@ local OBJECT_MT = { [CONTAINER_TAG] = "object" }
 local NUMBER_MT = { [CONTAINER_TAG] = "number" }
 local NUMBER_LEXEME_KEY = {}
 
+-- LuaJIT and Lua 5.1/5.2 do not provide math.type. Keep the numeric
+-- representation policy usable across the Lite XL runtime family.
+local has_native_integer_type = math.type ~= nil
+local math_type = math.type or function(value)
+  if type(value) ~= "number" then
+    return nil
+  end
+  -- A legacy Lua number is a double, so values beyond 2^53 cannot be
+  -- classified as exact integers even when their rounded value is integral.
+  return value % 1 == 0 and value >= -9007199254740991
+      and value <= 9007199254740991 and "integer" or "float"
+end
+
+local function integer_lexeme(value)
+  if has_native_integer_type then
+    return tostring(value)
+  end
+  return string.format("%.0f", value)
+end
+
 json.null = setmetatable({}, {
   __name = "json.null",
   __tostring = function()
@@ -344,8 +364,8 @@ local function encode_number(val)
   end
   -- (#11183) Lua 5.4 integers render exactly through tostring; %.14g would
   -- corrupt integers beyond 14 significant digits.
-  if math.type(val) == "integer" then
-    return tostring(val)
+  if math_type(val) == "integer" then
+    return integer_lexeme(val)
   end
   return string.format("%.14g", val)
 end
@@ -601,7 +621,7 @@ local function parse_number(str, i)
   -- whose canonical form equals its lexeme stays an ordinary Lua integer;
   -- every other valid number keeps its exact lexeme in a typed value rather
   -- than being rounded through a float.
-  if math.type(n) == "integer" and string.format("%d", n) == s then
+  if math_type(n) == "integer" and integer_lexeme(n) == s then
     return n, x
   end
   return json.number(s), x
