@@ -1890,203 +1890,203 @@ exit_status=0
     Updating crates.io index
  Downloading crates ...
   Downloaded adler2 v2.0.1
-  Downloaded autocfg v1.5.0
-  Downloaded http v1.4.0
-  Downloaded once_cell v1.21.4
-  Downloaded proptest v1.11.0
-  Downloaded form_urlencoded v1.2.2
-  Downloaded thread_local v1.1.9
+  Downloaded anstream v1.0.0
+  Downloaded anstyle-query v1.1.5
+  Downloaded base64 v0.23.1
   Downloaded same-file v1.0.6
-  Downloaded strum v0.28.0
-  Downloaded rustc-hash v2.1.3
-  Downloaded time-macros v0.2.27
-  Downloaded symlink v0.1.0
-  Downloaded signal-hook-registry v1.4.8
-  Downloaded untrusted v0.9.0
-  Downloaded thiserror v2.0.20
-  Downloaded smallvec v1.15.1
-  Downloaded powerfmt v0.2.0
-  Downloaded portable-atomic v1.13.1
-  Downloaded zerofrom-derive v0.1.7
-  Downloaded thiserror-impl v2.0.20
-  Downloaded sha2 v0.11.0
-  Downloaded zerofrom v0.1.7
-  Downloaded pin-project-lite v0.2.17
-  Downloaded sharded-slab v0.1.7
-  Downloaded serde_spanned v1.1.1
-  Downloaded unarray v0.1.4
-  Downloaded walkdir v2.5.0
-  Downloaded which v8.0.5
-  Downloaded miniz_oxide v0.8.9
-  Downloaded icu_normalizer v2.2.0
-  Downloaded yoke-derive v0.8.2
-  Downloaded str_indices v0.4.4
-  Downloaded zmij v1.0.21
-  Downloaded socket2 v0.6.3
-  Downloaded writeable v0.6.3
-  Downloaded zeroize v1.8.2
-  Downloaded toml_parser v1.1.3+spec-1.1.0
-  Downloaded tinystr v0.8.3
-  Downloaded tracing-appender v0.2.5
-  Downloaded serde_derive v1.0.229
-  Downloaded toml_writer v1.1.2+spec-1.1.0
-  Downloaded zerovec-derive v0.11.3
-  Downloaded tempfile v3.27.0
-  Downloaded yoke v0.8.2
-  Downloaded nix v0.31.3
-  Downloaded rusty-fork v0.3.1
-  Downloaded tracing-attributes v0.1.31
   Downloaded toml v1.1.4+spec-1.1.0
-  Downloaded strum_macros v0.28.0
-  Downloaded rustls-pki-types v1.14.1
-  Downloaded uuid v1.24.0
-  Downloaded tracing-core v0.1.36
-  Downloaded ureq-proto v0.6.1
-  Downloaded unicode-ident v1.0.24
-  Downloaded serde v1.0.229
-  Downloaded rustls-webpki v0.103.13
-  Downloaded toml_datetime v1.1.1+spec-1.1.0
-  Downloaded zerotrie v0.2.4
-  Downloaded insta v1.48.0
-  Downloaded similar v2.7.0
-  Downloaded rand v0.9.4
-  Downloaded typenum v1.20.0
-  Downloaded url v2.5.8
-  Downloaded ropey v1.6.1
-  Downloaded shlex v2.0.1
-  Downloaded serde_json v1.0.151
-  Downloaded utf8_iter v1.0.4
-  Downloaded tracing-log v0.2.0
-  Downloaded rand_chacha v0.9.0
-  Downloaded zerovec v0.11.6
-  Downloaded tagptr v0.2.0
-  Downloaded regex v1.13.1
-  Downloaded quote v1.0.45
-  Downloaded idna v1.1.0
-  Downloaded ureq v3.4.0
-  Downloaded tokio-macros v2.7.0
-  Downloaded icu_normalizer_data v2.2.0
-  Downloaded serde_core v1.0.229
-  Downloaded lsp-types v0.97.0
+  Downloaded memchr v2.8.3
+  Downloaded portable-atomic v1.13.1
+  Downloaded clap_derive v4.6.4
+  Downloaded zerofrom-derive v0.1.7
   Downloaded wait-timeout v0.2.1
+  Downloaded zmij v1.0.21
+  Downloaded tokio-macros v2.7.0
+  Downloaded similar v2.7.0
+  Downloaded powerfmt v0.2.0
+  Downloaded version_check v0.9.5
+  Downloaded ppv-lite86 v0.2.21
+  Downloaded litemap v0.8.2
+  Downloaded toml_writer v1.1.2+spec-1.1.0
+  Downloaded subtle v2.6.1
+  Downloaded utf8-zero v0.8.1
+  Downloaded icu_normalizer_data v2.2.0
+  Downloaded untrusted v0.9.0
+  Downloaded unarray v0.1.4
+  Downloaded idna v1.1.0
+  Downloaded icu_properties_data v2.2.0
+  Downloaded zerofrom v0.1.7
+  Downloaded utf8parse v0.2.2
+  Downloaded strum v0.28.0
+  Downloaded yoke-derive v0.8.2
+  Downloaded zeroize v1.8.2
+  Downloaded thread_local v1.1.9
+  Downloaded zerovec-derive v0.11.3
+  Downloaded yoke v0.8.2
+  Downloaded zerovec v0.11.6
+  Downloaded zerotrie v0.2.4
+  Downloaded typenum v1.20.0
+  Downloaded rustls-webpki v0.103.13
+  Downloaded ureq v3.4.0
+  Downloaded serde_json v1.0.151
+  Downloaded ropey v1.6.1
   Downloaded winnow v1.0.2
+  Downloaded webpki-roots v1.0.7
   Downloaded tracing-subscriber v0.3.23
   Downloaded time v0.3.47
-  Downloaded version_check v0.9.5
-  Downloaded time-core v0.1.8
-  Downloaded webpki-roots v1.0.7
-  Downloaded potential_utf v0.1.5
-  Downloaded parking_lot_core v0.9.12
-  Downloaded matchers v0.2.0
-  Downloaded quick-error v1.2.3
-  Downloaded num-traits v0.2.19
-  Downloaded num-conv v0.2.1
-  Downloaded md5 v0.8.1
-  Downloaded lock_api v0.4.14
-  Downloaded is_terminal_polyfill v1.70.2
-  Downloaded idna_adapter v1.2.2
+  Downloaded regex v1.13.1
+  Downloaded serde v1.0.229
   Downloaded zerocopy v0.8.48
-  Downloaded syn v3.0.2
-  Downloaded rustix v1.1.4
-  Downloaded regex-syntax v0.8.11
   Downloaded syn v2.0.117
-  Downloaded icu_properties v2.2.0
+  Downloaded regex-syntax v0.8.11
+  Downloaded syn v3.0.2
+  Downloaded url v2.5.8
   Downloaded rustls v0.23.40
+  Downloaded rustix v1.1.4
+  Downloaded tracing-core v0.1.36
+  Downloaded serde_derive v1.0.229
+  Downloaded tracing v0.1.44
+  Downloaded unicode-ident v1.0.24
+  Downloaded toml_parser v1.1.3+spec-1.1.0
+  Downloaded socket2 v0.6.3
+  Downloaded libc v0.2.186
+  Downloaded sharded-slab v0.1.7
+  Downloaded serde_core v1.0.229
+  Downloaded rand v0.9.4
+  Downloaded regex-automata v0.4.16
+  Downloaded nix v0.31.3
+  Downloaded sha2 v0.11.0
+  Downloaded walkdir v2.5.0
+  Downloaded ureq-proto v0.6.1
+  Downloaded tracing-attributes v0.1.31
+  Downloaded tempfile v3.27.0
+  Downloaded smallvec v1.15.1
+  Downloaded shlex v2.0.1
+  Downloaded scopeguard v1.2.0
+  Downloaded rustls-pki-types v1.14.1
+  Downloaded str_indices v0.4.4
+  Downloaded writeable v0.6.3
+  Downloaded which v8.0.5
+  Downloaded tracing-log v0.2.0
+  Downloaded tracing-appender v0.2.5
+  Downloaded time-macros v0.2.27
+  Downloaded tagptr v0.2.0
+  Downloaded tokio v1.53.1
   Downloaded synstructure v0.13.2
   Downloaded simd-adler32 v0.3.9
-  Downloaded tracing v0.1.44
-  Downloaded rand_core v0.9.5
-  Downloaded proc-macro2 v1.0.106
-  Downloaded ppv-lite86 v0.2.21
-  Downloaded phf_macros v0.14.0
-  Downloaded percent-encoding v2.3.2
-  Downloaded litrs v1.0.0
-  Downloaded litemap v0.8.2
-  Downloaded libc v0.2.186
-  Downloaded lazy_static v1.5.0
-  Downloaded hashbrown v0.17.0
-  Downloaded utf8parse v0.2.2
-  Downloaded regex-automata v0.4.16
-  Downloaded utf8-zero v0.8.1
-  Downloaded phf_generator v0.14.0
-  Downloaded icu_collections v2.2.0
-  Downloaded hybrid-array v0.4.13
-  Downloaded crc32fast v1.5.0
+  Downloaded rusty-fork v0.3.1
   Downloaded moka v0.12.16
-  Downloaded icu_locale_core v2.2.0
-  Downloaded phf_shared v0.14.0
-  Downloaded linux-raw-sys v0.12.1
-  Downloaded tokio v1.53.1
-  Downloaded memchr v2.8.3
-  Downloaded icu_provider v2.2.0
-  Downloaded icu_properties_data v2.2.0
-  Downloaded fluent-uri v0.1.4
-  Downloaded flate2 v1.1.9
-  Downloaded crossbeam-epoch v0.9.20
-  Downloaded clap_derive v4.6.4
-  Downloaded cfg-if v1.0.4
-  Downloaded phf v0.14.0
-  Downloaded parking_lot v0.12.5
-  Downloaded nu-ansi-term v0.50.3
-  Downloaded log v0.4.29
-  Downloaded itoa v1.0.18
-  Downloaded httparse v1.10.1
-  Downloaded displaydoc v0.2.5
-  Downloaded crossbeam-utils v0.8.21
-  Downloaded cpufeatures v0.3.0
-  Downloaded block-buffer v0.12.1
-  Downloaded siphasher v1.0.2
-  Downloaded getrandom v0.4.2
-  Downloaded crypto-common v0.2.2
-  Downloaded scopeguard v1.2.0
+  Downloaded tinystr v0.8.3
+  Downloaded uuid v1.24.0
+  Downloaded toml_datetime v1.1.1+spec-1.1.0
+  Downloaded strum_macros v0.28.0
+  Downloaded proptest v1.11.0
+  Downloaded symlink v0.1.0
+  Downloaded mio v1.2.0
+  Downloaded insta v1.48.0
+  Downloaded hashbrown v0.17.0
+  Downloaded icu_normalizer v2.2.0
   Downloaded cc v1.4.2
-  Downloaded getrandom v0.3.4
-  Downloaded equivalent v1.0.2
-  Downloaded deranged v0.5.8
-  Downloaded clap_lex v1.1.0
-  Downloaded clap_builder v4.6.6
-  Downloaded cfg_aliases v0.2.1
-  Downloaded bitflags v2.11.1
-  Downloaded subtle v2.6.1
-  Downloaded stable_deref_trait v1.2.1
+  Downloaded siphasher v1.0.2
+  Downloaded miniz_oxide v0.8.9
+  Downloaded lsp-types v0.97.0
+  Downloaded icu_locale_core v2.2.0
+  Downloaded getrandom v0.4.2
+  Downloaded crossbeam-utils v0.8.21
+  Downloaded proc-macro2 v1.0.106
+  Downloaded num-traits v0.2.19
+  Downloaded log v0.4.29
   Downloaded indexmap v2.14.0
+  Downloaded icu_properties v2.2.0
+  Downloaded httparse v1.10.1
+  Downloaded ring v0.17.14
   Downloaded crossbeam-channel v0.5.15
   Downloaded cookie v0.18.1
+  Downloaded const-oid v0.10.2
+  Downloaded block-buffer v0.12.1
+  Downloaded thiserror v2.0.20
+  Downloaded phf v0.14.0
+  Downloaded parking_lot_core v0.9.12
+  Downloaded parking_lot v0.12.5
+  Downloaded once_cell v1.21.4
+  Downloaded litrs v1.0.0
+  Downloaded http v1.4.0
+  Downloaded fluent-uri v0.1.4
+  Downloaded anyhow v1.0.104
+  Downloaded hybrid-array v0.4.13
+  Downloaded flate2 v1.1.9
+  Downloaded bytes v1.11.1
+  Downloaded bit-vec v0.8.0
+  Downloaded phf_shared v0.14.0
+  Downloaded lock_api v0.4.14
+  Downloaded is_terminal_polyfill v1.70.2
+  Downloaded digest v0.11.3
+  Downloaded crypto-common v0.2.2
+  Downloaded colorchoice v1.0.5
+  Downloaded utf8_iter v1.0.4
+  Downloaded matchers v0.2.0
+  Downloaded bit-set v0.8.0
+  Downloaded potential_utf v0.1.5
+  Downloaded percent-encoding v2.3.2
+  Downloaded num-conv v0.2.1
+  Downloaded lazy_static v1.5.0
+  Downloaded clap_lex v1.1.0
+  Downloaded cfg-if v1.0.4
+  Downloaded serde_spanned v1.1.1
+  Downloaded rand_chacha v0.9.0
+  Downloaded idna_adapter v1.2.2
+  Downloaded document-features v0.2.12
+  Downloaded crc32fast v1.5.0
   Downloaded bitflags v1.3.2
+  Downloaded rustc-hash v2.1.3
+  Downloaded quote v1.0.45
+  Downloaded quick-error v1.2.3
+  Downloaded pin-project-lite v0.2.17
+  Downloaded nu-ansi-term v0.50.3
+  Downloaded itoa v1.0.18
+  Downloaded getrandom v0.2.17
+  Downloaded thiserror-impl v2.0.20
+  Downloaded strsim v0.11.1
+  Downloaded stable_deref_trait v1.2.1
+  Downloaded signal-hook-registry v1.4.8
+  Downloaded icu_provider v2.2.0
+  Downloaded icu_collections v2.2.0
+  Downloaded find-msvc-tools v0.1.10
   Downloaded cookie_store v0.22.1
   Downloaded console v0.16.4
-  Downloaded ring v0.17.14
-  Downloaded clap v4.6.6
+  Downloaded bitflags v2.11.1
   Downloaded rand_xorshift v0.4.0
-  Downloaded getrandom v0.2.17
+  Downloaded rand_core v0.9.5
+  Downloaded phf_generator v0.14.0
+  Downloaded md5 v0.8.1
   Downloaded fastrand v2.4.1
-  Downloaded document-features v0.2.12
-  Downloaded digest v0.11.3
-  Downloaded const-oid v0.10.2
-  Downloaded bytes v1.11.1
-  Downloaded colorchoice v1.0.5
-  Downloaded bit-set v0.8.0
-  Downloaded strsim v0.11.1
-  Downloaded serde_repr v0.1.20
-  Downloaded heck v0.5.0
-  Downloaded find-msvc-tools v0.1.10
-  Downloaded bit-vec v0.8.0
-  Downloaded base64 v0.23.1
-  Downloaded aho-corasick v1.1.4
-  Downloaded fnv v1.0.7
   Downloaded errno v0.3.14
-  Downloaded mio v1.2.0
-  Downloaded anstyle-query v1.1.5
-  Downloaded anyhow v1.0.104
-  Downloaded anstyle v1.0.14
+  Downloaded displaydoc v0.2.5
+  Downloaded heck v0.5.0
+  Downloaded getrandom v0.3.4
+  Downloaded form_urlencoded v1.2.2
+  Downloaded equivalent v1.0.2
+  Downloaded crossbeam-epoch v0.9.20
+  Downloaded cpufeatures v0.3.0
+  Downloaded cfg_aliases v0.2.1
+  Downloaded clap_builder v4.6.6
+  Downloaded deranged v0.5.8
+  Downloaded autocfg v1.5.0
+  Downloaded fnv v1.0.7
+  Downloaded clap v4.6.6
+  Downloaded aho-corasick v1.1.4
+  Downloaded time-core v0.1.8
+  Downloaded linux-raw-sys v0.12.1
+  Downloaded serde_repr v0.1.20
+  Downloaded phf_macros v0.14.0
   Downloaded anstyle-parse v1.0.0
-  Downloaded anstream v1.0.0
+  Downloaded anstyle v1.0.14
    Compiling proc-macro2 v1.0.106
    Compiling quote v1.0.45
    Compiling unicode-ident v1.0.24
    Compiling serde_core v1.0.229
-   Compiling cfg-if v1.0.4
    Compiling libc v0.2.186
+   Compiling cfg-if v1.0.4
    Compiling serde v1.0.229
    Compiling smallvec v1.15.1
    Compiling memchr v2.8.3
@@ -2094,8 +2094,8 @@ exit_status=0
    Compiling syn v3.0.2
    Compiling itoa v1.0.18
    Compiling zmij v1.0.21
-   Compiling once_cell v1.21.4
    Compiling serde_json v1.0.151
+   Compiling once_cell v1.21.4
    Compiling stable_deref_trait v1.2.1
    Compiling bitflags v1.3.2
    Compiling fluent-uri v0.1.4
@@ -2112,40 +2112,41 @@ exit_status=0
    Compiling displaydoc v0.2.5
    Compiling serde_repr v0.1.20
    Compiling tracing-core v0.1.36
-   Compiling pin-project-lite v0.2.17
    Compiling siphasher v1.0.2
-   Compiling writeable v0.6.3
-   Compiling zerovec v0.11.6
-   Compiling thiserror v2.0.20
    Compiling litemap v0.8.2
+   Compiling zerovec v0.11.6
+   Compiling writeable v0.6.3
    Compiling lsp-types v0.97.0
+   Compiling pin-project-lite v0.2.17
+   Compiling thiserror v2.0.20
    Compiling tinystr v0.8.3
    Compiling potential_utf v0.1.5
    Compiling icu_locale_core v2.2.0
    Compiling phf_shared v0.14.0
    Compiling zerotrie v0.2.4
-   Compiling tracing-attributes v0.1.31
    Compiling strum_macros v0.28.0
+   Compiling tracing-attributes v0.1.31
    Compiling thiserror-impl v2.0.20
-   Compiling icu_normalizer_data v2.2.0
-   Compiling fastrand v2.4.1
    Compiling icu_properties_data v2.2.0
+   Compiling fastrand v2.4.1
+   Compiling icu_normalizer_data v2.2.0
    Compiling utf8_iter v1.0.4
-   Compiling phf_generator v0.14.0
    Compiling icu_collections v2.2.0
+   Compiling phf_generator v0.14.0
    Compiling strum v0.28.0
    Compiling tracing v0.1.44
    Compiling icu_provider v2.2.0
    Compiling perl-token v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-token)
    Compiling phf_macros v0.14.0
-   Compiling icu_properties v2.2.0
    Compiling icu_normalizer v2.2.0
+   Compiling icu_properties v2.2.0
    Compiling phf v0.14.0
    Compiling perl-semantic-facts v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-semantic-facts)
-   Compiling parking_lot_core v0.9.12
    Compiling percent-encoding v2.3.2
+   Compiling parking_lot_core v0.9.12
    Compiling typenum v1.20.0
    Compiling hybrid-array v0.4.13
+   Compiling idna_adapter v1.2.2
 warning: missing documentation for a struct
   --> crates/perl-semantic-facts/src/lib.rs:24:9
    |
@@ -3977,7 +3978,6 @@ warning: missing documentation for a method
 536 |     pub fn is_detected(&self) -> bool {
     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-   Compiling idna_adapter v1.2.2
    Compiling perl-regex v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-regex)
 warning: missing documentation for a module
  --> crates/perl-regex/src/lib.rs:6:1
@@ -4129,8 +4129,6 @@ warning: missing documentation for a struct field
 5 |     pub max_branch_reset_branches: usize,
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-   Compiling shlex v2.0.1
-   Compiling scopeguard v1.2.0
    Compiling perl-position-tracking v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-position-tracking)
    Compiling perl-ast-v2 v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-ast-v2)
    Compiling perl-ast v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-ast)
@@ -4177,13 +4175,15 @@ warning: missing documentation for an associated constant
    Compiling perl-lexer v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-lexer)
 warning: `perl-ast` (lib) generated 37 warnings (35 duplicates)
    Compiling find-msvc-tools v0.1.10
+   Compiling shlex v2.0.1
+   Compiling scopeguard v1.2.0
    Compiling getrandom v0.4.2
    Compiling regex-syntax v0.8.11
 warning: `perl-regex` (lib) generated 24 warnings
    Compiling perl-parser-core v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-parser-core)
 warning: `perl-semantic-facts` (lib) generated 298 warnings
-   Compiling cc v1.4.2
    Compiling lock_api v0.4.14
+   Compiling cc v1.4.2
    Compiling idna v1.1.0
    Compiling form_urlencoded v1.2.2
    Compiling aho-corasick v1.1.4
@@ -4191,55 +4191,52 @@ warning: `perl-semantic-facts` (lib) generated 298 warnings
    Compiling url v2.5.8
    Compiling parking_lot v0.12.5
    Compiling ring v0.17.14
-   Compiling crypto-common v0.2.2
    Compiling block-buffer v0.12.1
-   Compiling winnow v1.0.2
-   Compiling crossbeam-utils v0.8.21
-   Compiling const-oid v0.10.2
+   Compiling crypto-common v0.2.2
    Compiling log v0.4.29
+   Compiling winnow v1.0.2
+   Compiling const-oid v0.10.2
+   Compiling crossbeam-utils v0.8.21
    Compiling digest v0.11.3
    Compiling toml_parser v1.1.3+spec-1.1.0
    Compiling perl-symbol v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-symbol)
    Compiling toml_datetime v1.1.1+spec-1.1.0
    Compiling serde_spanned v1.1.1
-   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling same-file v1.0.6
    Compiling bitflags v2.11.1
+   Compiling toml_writer v1.1.2+spec-1.1.0
    Compiling cpufeatures v0.3.0
    Compiling zeroize v1.8.2
-   Compiling same-file v1.0.6
-   Compiling walkdir v2.5.0
    Compiling rustls-pki-types v1.14.1
    Compiling sha2 v0.11.0
    Compiling toml v1.1.4+spec-1.1.0
+   Compiling walkdir v2.5.0
    Compiling perl-uri v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-uri)
    Compiling getrandom v0.2.17
-   Compiling getrandom v0.3.4
-   Compiling httparse v1.10.1
-   Compiling bytes v1.11.1
    Compiling utf8parse v0.2.2
+   Compiling bytes v1.11.1
+   Compiling httparse v1.10.1
    Compiling untrusted v0.9.0
+   Compiling getrandom v0.3.4
    Compiling crc32fast v1.5.0
    Compiling anstyle-parse v1.0.0
    Compiling perl-workspace v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-workspace)
-   Compiling rustls v0.23.40
    Compiling crossbeam-epoch v0.9.20
-   Compiling anstyle-query v1.1.5
-   Compiling lazy_static v1.5.0
-   Compiling anstyle v1.0.14
    Compiling is_terminal_polyfill v1.70.2
-   Compiling colorchoice v1.0.5
    Compiling powerfmt v0.2.0
-   Compiling simd-adler32 v0.3.9
-   Compiling anyhow v1.0.104
    Compiling portable-atomic v1.13.1
-   Compiling rustix v1.1.4
+   Compiling colorchoice v1.0.5
+   Compiling rustls v0.23.40
+   Compiling anyhow v1.0.104
+   Compiling simd-adler32 v0.3.9
+   Compiling lazy_static v1.5.0
    Compiling adler2 v2.0.1
-   Compiling miniz_oxide v0.8.9
-   Compiling deranged v0.5.8
+   Compiling anstyle v1.0.14
+   Compiling anstyle-query v1.1.5
+   Compiling rustix v1.1.4
    Compiling anstream v1.0.0
-   Compiling sharded-slab v0.1.7
+   Compiling miniz_oxide v0.8.9
    Compiling perl-module v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-module)
-   Compiling rustls-webpki v0.103.13
 warning: missing documentation for a function
    --> crates/perl-module/src/import/mod.rs:566:1
     |
@@ -4252,33 +4249,36 @@ note: the lint level is defined here
   1 | #![warn(missing_docs)]
     |         ^^^^^^^^^^^^
 
-   Compiling http v1.4.0
+   Compiling sharded-slab v0.1.7
+   Compiling rustls-webpki v0.103.13
+   Compiling deranged v0.5.8
 warning: `perl-module` (lib) generated 1 warning
+   Compiling http v1.4.0
    Compiling crossbeam-channel v0.5.15
    Compiling tracing-log v0.2.0
-   Compiling regex v1.13.1
    Compiling matchers v0.2.0
+   Compiling regex v1.13.1
    Compiling thread_local v1.1.9
-   Compiling perl-test-must v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-test-must)
-   Compiling clap_lex v1.1.0
-   Compiling rustc-hash v2.1.3
-   Compiling strsim v0.11.1
-   Compiling perl-pod v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-pod)
    Compiling subtle v2.6.1
-   Compiling zerocopy v0.8.48
-   Compiling base64 v0.23.1
    Compiling nu-ansi-term v0.50.3
+   Compiling linux-raw-sys v0.12.1
+   Compiling strsim v0.11.1
+   Compiling rustc-hash v2.1.3
+   Compiling perl-pod v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-pod)
+   Compiling clap_lex v1.1.0
    Compiling time-core v0.1.8
    Compiling num-conv v0.2.1
-   Compiling linux-raw-sys v0.12.1
    Compiling cfg_aliases v0.2.1
+   Compiling base64 v0.23.1
+   Compiling perl-test-must v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-test-must)
+   Compiling zerocopy v0.8.48
+   Compiling ureq-proto v0.6.1
+   Compiling perl-tdd-support v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-tdd-support)
    Compiling nix v0.31.3
    Compiling time v0.3.47
-   Compiling tracing-subscriber v0.3.23
-   Compiling ureq-proto v0.6.1
-   Compiling perl-semantic-analyzer v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-semantic-analyzer)
    Compiling clap_builder v4.6.6
-   Compiling perl-tdd-support v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-tdd-support)
+   Compiling perl-semantic-analyzer v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-semantic-analyzer)
+   Compiling tracing-subscriber v0.3.23
    Compiling flate2 v1.1.9
    Compiling rand_core v0.9.5
    Compiling perl-lsp-rs-core v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-lsp-rs-core)
@@ -4288,14 +4288,14 @@ warning: `perl-module` (lib) generated 1 warning
    Compiling clap_derive v4.6.4
    Compiling errno v0.3.14
    Compiling symlink v0.1.0
-   Compiling tagptr v0.2.0
    Compiling perl-line-index v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-line-index)
    Compiling utf8-zero v0.8.1
-   Compiling autocfg v1.5.0
-   Compiling equivalent v1.0.2
    Compiling perl-subprocess-runtime v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-subprocess-runtime)
-   Compiling num-traits v0.2.19
+   Compiling autocfg v1.5.0
+   Compiling tagptr v0.2.0
+   Compiling equivalent v1.0.2
    Compiling moka v0.12.16
+   Compiling num-traits v0.2.19
    Compiling perl-lsp-perltidy v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-lsp-perltidy)
    Compiling tempfile v3.27.0
    Compiling clap v4.6.6
@@ -4309,18 +4309,18 @@ warning: `perl-module` (lib) generated 1 warning
    Compiling socket2 v0.6.3
    Compiling mio v1.2.0
    Compiling perl-test-facts v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-test-facts)
-   Compiling tokio v1.53.1
    Compiling ppv-lite86 v0.2.21
+   Compiling tokio v1.53.1
    Compiling wait-timeout v0.2.1
-   Compiling perl-lsp-rs v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-lsp-rs)
-   Compiling bit-vec v0.8.0
    Compiling quick-error v1.2.3
+   Compiling perl-lsp-rs v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-lsp-rs)
    Compiling fnv v1.0.7
-   Compiling rusty-fork v0.3.1
+   Compiling bit-vec v0.8.0
    Compiling bit-set v0.8.0
+   Compiling rusty-fork v0.3.1
    Compiling rand_chacha v0.9.0
-   Compiling rand v0.9.4
    Compiling rand_xorshift v0.4.0
+   Compiling rand v0.9.4
    Compiling perl-ripr-facts v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-ripr-facts)
 warning: missing documentation for a function
    --> crates/perl-ripr-facts/src/lib.rs:643:1
@@ -4349,10 +4349,10 @@ warning: missing documentation for a function
 761 | | ) -> i32 {
     | |________^
 
-   Compiling which v8.0.5
    Compiling console v0.16.4
-   Compiling md5 v0.8.1
+   Compiling which v8.0.5
 warning: `perl-ripr-facts` (lib) generated 2 warnings
+   Compiling md5 v0.8.1
    Compiling similar v2.7.0
    Compiling unarray v0.1.4
    Compiling proptest v1.11.0
@@ -4370,7 +4370,7 @@ warning: variant `TrustedUserOperator` is never constructed
     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
 warning: `perl-lsp-rs` (lib) generated 1 warning
-    Finished `test` profile [optimized + debuginfo] target(s) in 3m 47s
+    Finished `test` profile [optimized + debuginfo] target(s) in 3m 48s
      Running tests/ai_activation_authority_contract.rs (target/debug/deps/ai_activation_authority_contract-4187dc40297d122e)
 
 running 1 test
@@ -6461,13 +6461,13 @@ warning: variant `TrustedUserOperator` is never constructed
 
 warning: `perl-lsp-rs` (lib) generated 1 warning
    Compiling perl-lsp-rs-core v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-lsp-rs-core)
-    Finished `test` profile [optimized + debuginfo] target(s) in 3.38s
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.31s
      Running tests/perllsp_settings_schema_tests.rs (target/debug/deps/perllsp_settings_schema_tests-fa3e17a77b00f878)
 
 running 5 tests
-test generic_schema_excludes_security_sensitive_lsp_settings ... ok
-test generic_schema_fields_are_behavior_backed_by_runtime_config ... ok
 test generic_formatter_schema_excludes_external_process_modes ... ok
+test generic_schema_fields_are_behavior_backed_by_runtime_config ... ok
+test generic_schema_excludes_security_sensitive_lsp_settings ... ok
 test generic_settings_schema_is_server_native_and_namespaced ... ok
 test removed_client_test_runner_authority_stays_absent_from_current_surfaces ... ok
 
@@ -8621,49 +8621,3385 @@ warning: function `range` is never used
     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
 warning: function `client_configuration_ignores_ai_endpoint_and_credential_fields_from_didChange` should have a snake case name
-    --> crates/perl-lsp-rs-core/src/config/mod.rs:5505:8
+    --> crates/perl-lsp-rs-core/src/config/mod.rs:5504:8
      |
-5505 |     fn client_configuration_ignores_ai_endpoint_and_credential_fields_from_didChange() {
+5504 |     fn client_configuration_ignores_ai_endpoint_and_credential_fields_from_didChange() {
      |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case: `client_configuration_ignores_ai_endpoint_and_credential_fields_from_did_change`
      |
      = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
 
 warning: `perl-lsp-rs-core` (lib test) generated 11 warnings (run `cargo fix --lib -p perl-lsp-rs-core --tests` to apply 9 suggestions)
-    Finished `test` profile [optimized + debuginfo] target(s) in 1m 21s
+    Finished `test` profile [optimized + debuginfo] target(s) in 1m 20s
      Running unittests src/lib.rs (target/debug/deps/perl_lsp_rs_core-a5cc929b0d85ba62)
 
 running 2 tests
 test config::tests::generic_ai_completion_cannot_arm_or_select_but_safe_preferences_still_apply ... ok
-test config::tests::project_opt_out_clears_when_ai_completion_section_removed ... FAILED
+test config::tests::project_opt_out_clears_when_ai_completion_section_removed ... ok
 
-failures:
-
----- config::tests::project_opt_out_clears_when_ai_completion_section_removed stdout ----
-
-thread 'config::tests::project_opt_out_clears_when_ai_completion_section_removed' (10854) panicked at crates/perl-lsp-rs-core/src/config/mod.rs:5491:9:
-assertion failed: config.ai_completion.enabled
-stack backtrace:
-   0: __rustc::rust_begin_unwind
-             at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/panicking.rs:689:5
-   1: core::panicking::panic_fmt
-             at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/panicking.rs:80:14
-   2: core::panicking::panic
-             at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/panicking.rs:150:5
-   3: perl_lsp_rs_core::config::tests::project_opt_out_clears_when_ai_completion_section_removed
-   4: perl_lsp_rs_core::config::tests::project_opt_out_clears_when_ai_completion_section_removed::{{closure}}
-             at ./src/config/mod.rs:5475:67
-   5: core::ops::function::FnOnce::call_once
-             at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/ops/function.rs:250:5
-   6: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
-             at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/ops/function.rs:250:5
-note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 3254 filtered out; finished in 0.00s
 
 
-failures:
-    config::tests::project_opt_out_clears_when_ai_completion_section_removed
+exit_status=0
 
-test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 3254 filtered out; finished in 0.21s
+## inline\ completion\ first\ effect cargo test -p perl-lsp-rs --features expose_lsp_test_api --test lsp_ai_inline_completion_tests --locked
+ Downloading crates ...
+  Downloaded half v2.7.1
+  Downloaded tinytemplate v1.2.1
+  Downloaded slab v0.4.12
+  Downloaded either v1.15.0
+  Downloaded page_size v0.6.0
+  Downloaded serial_test v4.0.1
+  Downloaded termtree v0.5.1
+  Downloaded futures-core v0.3.32
+  Downloaded rand_core v0.10.1
+  Downloaded criterion-plot v0.8.2
+  Downloaded zerocopy-derive v0.8.48
+  Downloaded itertools v0.13.0
+  Downloaded rand v0.10.2
+  Downloaded oorandom v11.1.5
+  Downloaded futures-executor v0.3.32
+  Downloaded predicates-core v1.0.10
+  Downloaded difflib v0.4.0
+  Downloaded predicates-tree v1.0.13
+  Downloaded plotters-backend v0.3.7
+  Downloaded static_assertions v1.1.0
+  Downloaded predicates v3.1.4
+  Downloaded iana-time-zone v0.1.65
+  Downloaded rayon-core v1.13.0
+  Downloaded chacha20 v0.10.0
+  Downloaded crossbeam-deque v0.8.6
+  Downloaded ciborium v0.2.2
+  Downloaded assert_cmd v2.2.2
+  Downloaded serial_test_derive v4.0.1
+  Downloaded glob v0.3.4
+  Downloaded futures-task v0.3.32
+  Downloaded criterion v0.8.2
+  Downloaded plotters v0.3.7
+  Downloaded rayon v1.12.0
+  Downloaded futures-util v0.3.32
+  Downloaded ciborium-io v0.2.2
+  Downloaded ciborium-ll v0.2.2
+  Downloaded chrono v0.4.45
+  Downloaded float-cmp v0.10.0
+  Downloaded cast v0.3.0
+  Downloaded alloca v0.4.0
+  Downloaded plotters-svg v0.3.7
+  Downloaded bstr v1.12.1
+  Downloaded anes v0.1.6
+  Downloaded normalize-line-endings v0.3.0
+   Compiling serde v1.0.229
+   Compiling rand_core v0.10.1
+   Compiling getrandom v0.4.2
+warning: missing documentation for a module
+ --> crates/perl-regex/src/lib.rs:6:1
+  |
+6 | pub mod analyzer;
+  | ^^^^^^^^^^^^^^^^
+  |
+note: the lint level is defined here
+ --> crates/perl-regex/src/lib.rs:1:9
+  |
+1 | #![warn(missing_docs)]
+  |         ^^^^^^^^^^^^
 
-error: test failed, to rerun pass `-p perl-lsp-rs-core --lib`
+warning: missing documentation for a module
+ --> crates/perl-regex/src/lib.rs:7:1
+  |
+7 | pub mod error;
+  | ^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> crates/perl-regex/src/lib.rs:8:1
+  |
+8 | pub mod prelude;
+  | ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> crates/perl-regex/src/lib.rs:9:1
+  |
+9 | pub mod validator;
+  | ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> crates/perl-regex/src/analyzer/mod.rs:26:1
+   |
+26 | pub struct RegexAnalyzer;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> crates/perl-regex/src/analyzer/mod.rs:78:5
+   |
+78 |     pub fn hover_text_for_regex(pattern: &str, modifiers: &str) -> String {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-regex/src/analyzer/capture.rs:221:5
+    |
+221 |     pub name: String,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-regex/src/analyzer/capture.rs:222:5
+    |
+222 |     pub index: usize,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-regex/src/analyzer/capture.rs:223:5
+    |
+223 |     pub pattern: String,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> crates/perl-regex/src/validator/mod.rs:23:1
+   |
+23 | pub struct RegexFinding {
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-regex/src/validator/mod.rs:24:5
+   |
+24 |     pub offset: usize,
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-regex/src/validator/mod.rs:25:5
+   |
+25 |     pub message: &'static str,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> crates/perl-regex/src/validator/mod.rs:28:1
+   |
+28 | pub struct RegexValidator {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> crates/perl-regex/src/validator/mod.rs:39:5
+   |
+39 |     pub fn new() -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> crates/perl-regex/src/validator/mod.rs:43:5
+   |
+43 |     pub fn with_config(config: RegexValidationConfig) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> crates/perl-regex/src/validator/mod.rs:47:5
+   |
+47 |     pub fn config(&self) -> &RegexValidationConfig {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> crates/perl-regex/src/validator/mod.rs:87:5
+   |
+87 |     pub fn detects_code_execution(&self, pattern: &str) -> bool {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> crates/perl-regex/src/validator/mod.rs:91:5
+   |
+91 |     pub fn detect_nested_quantifiers(&self, pattern: &str) -> bool {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> crates/perl-regex/src/validator/mod.rs:95:5
+   |
+95 |     pub fn find_code_execution(&self, pattern: &str, start_pos: usize) -> Option<RegexFinding> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates/perl-regex/src/validator/mod.rs:109:5
+    |
+109 |     pub fn find_nested_quantifier(&self, pattern: &str, start_pos: usize) -> Option<RegexFinding> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+ --> crates/perl-regex/src/validator/config.rs:2:1
+  |
+2 | pub struct RegexValidationConfig {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+ --> crates/perl-regex/src/validator/config.rs:3:5
+  |
+3 |     pub max_nesting: usize,
+  |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+ --> crates/perl-regex/src/validator/config.rs:4:5
+  |
+4 |     pub max_unicode_properties: usize,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+ --> crates/perl-regex/src/validator/config.rs:5:5
+  |
+5 |     pub max_branch_reset_branches: usize,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `perl-regex` (lib) generated 24 warnings
+   Compiling num-traits v0.2.19
+   Compiling zerocopy v0.8.48
+   Compiling zerocopy-derive v0.8.48
+   Compiling tempfile v3.27.0
+   Compiling lsp-types v0.97.0
+   Compiling perl-semantic-facts v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-semantic-facts)
+   Compiling perl-source-identity v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-source-identity)
+   Compiling uuid v1.24.0
+   Compiling either v1.15.0
+   Compiling rayon-core v1.13.0
+   Compiling moka v0.12.16
+warning: missing documentation for a struct
+  --> crates/perl-semantic-facts/src/lib.rs:24:9
+   |
+24 |         pub struct $name(pub u64);
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+28 | id_newtype!(FileId);
+   | ------------------- in this macro invocation
+   |
+note: the lint level is defined here
+  --> crates/perl-semantic-facts/src/lib.rs:1:9
+   |
+ 1 | #![warn(missing_docs)]
+   |         ^^^^^^^^^^^^
+   = note: this warning originates in the macro `id_newtype` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a struct
+  --> crates/perl-semantic-facts/src/lib.rs:24:9
+   |
+24 |         pub struct $name(pub u64);
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+29 | id_newtype!(ScopeId);
+   | -------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `id_newtype` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a struct
+  --> crates/perl-semantic-facts/src/lib.rs:24:9
+   |
+24 |         pub struct $name(pub u64);
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+30 | id_newtype!(EntityId);
+   | --------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `id_newtype` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a struct
+  --> crates/perl-semantic-facts/src/lib.rs:24:9
+   |
+24 |         pub struct $name(pub u64);
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+31 | id_newtype!(AnchorId);
+   | --------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `id_newtype` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a struct
+  --> crates/perl-semantic-facts/src/lib.rs:24:9
+   |
+24 |         pub struct $name(pub u64);
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+32 | id_newtype!(OccurrenceId);
+   | ------------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `id_newtype` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a struct
+  --> crates/perl-semantic-facts/src/lib.rs:24:9
+   |
+24 |         pub struct $name(pub u64);
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+33 | id_newtype!(EdgeId);
+   | ------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `id_newtype` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a struct
+  --> crates/perl-semantic-facts/src/lib.rs:24:9
+   |
+24 |         pub struct $name(pub u64);
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+34 | id_newtype!(DiagnosticId);
+   | ------------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `id_newtype` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for an enum
+  --> crates/perl-semantic-facts/src/lib.rs:37:1
+   |
+37 | pub enum EntityKind {
+   | ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:38:5
+   |
+38 |     Package,
+   |     ^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:39:5
+   |
+39 |     Class,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:40:5
+   |
+40 |     Role,
+   |     ^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:41:5
+   |
+41 |     Subroutine,
+   |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:42:5
+   |
+42 |     Method,
+   |     ^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:43:5
+   |
+43 |     Variable,
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:44:5
+   |
+44 |     Constant,
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:45:5
+   |
+45 |     Field,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:46:5
+   |
+46 |     Label,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:47:5
+   |
+47 |     Format,
+   |     ^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:48:5
+   |
+48 |     Module,
+   |     ^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:49:5
+   |
+49 |     GeneratedMember,
+   |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:50:5
+   |
+50 |     ExternalSymbol,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:51:5
+   |
+51 |     Unknown,
+   |     ^^^^^^^
+
+warning: missing documentation for an enum
+  --> crates/perl-semantic-facts/src/lib.rs:55:1
+   |
+55 | pub enum OccurrenceKind {
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:56:5
+   |
+56 |     Definition,
+   |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:57:5
+   |
+57 |     Reference,
+   |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:58:5
+   |
+58 |     Read,
+   |     ^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:59:5
+   |
+59 |     Write,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:60:5
+   |
+60 |     Call,
+   |     ^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:61:5
+   |
+61 |     MethodCall,
+   |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:62:5
+   |
+62 |     StaticMethodCall,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:63:5
+   |
+63 |     CoderefReference,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:64:5
+   |
+64 |     TypeglobReference,
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:65:5
+   |
+65 |     Import,
+   |     ^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:66:5
+   |
+66 |     Export,
+   |     ^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:67:5
+   |
+67 |     Inheritance,
+   |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:68:5
+   |
+68 |     RoleComposition,
+   |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:69:5
+   |
+69 |     GeneratedUse,
+   |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:70:5
+   |
+70 |     DynamicBoundary,
+   |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+  --> crates/perl-semantic-facts/src/lib.rs:74:1
+   |
+74 | pub enum EdgeKind {
+   | ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:75:5
+   |
+75 |     Defines,
+   |     ^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:76:5
+   |
+76 |     References,
+   |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:77:5
+   |
+77 |     Reads,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:78:5
+   |
+78 |     Writes,
+   |     ^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:79:5
+   |
+79 |     Calls,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:80:5
+   |
+80 |     ImportsModule,
+   |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:81:5
+   |
+81 |     ImportsSymbol,
+   |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:82:5
+   |
+82 |     ExportsSymbol,
+   |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:83:5
+   |
+83 |     ExportsGroup,
+   |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:84:5
+   |
+84 |     Inherits,
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:85:5
+   |
+85 |     ComposesRole,
+   |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:86:5
+   |
+86 |     MemberOf,
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:87:5
+   |
+87 |     GeneratedFrom,
+   |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:88:5
+   |
+88 |     AliasOf,
+   |     ^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:89:5
+   |
+89 |     DependsOn,
+   |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:90:5
+   |
+90 |     DynamicBoundary,
+   |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+  --> crates/perl-semantic-facts/src/lib.rs:94:1
+   |
+94 | pub enum Provenance {
+   | ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:95:5
+   |
+95 |     ExactAst,
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:96:5
+   |
+96 |     DesugaredAst,
+   |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:97:5
+   |
+97 |     SemanticAnalyzer,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:98:5
+   |
+98 |     FrameworkSynthesis,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/lib.rs:99:5
+   |
+99 |     ImportExportInference,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:100:5
+    |
+100 |     PragmaInference,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:101:5
+    |
+101 |     NameHeuristic,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:102:5
+    |
+102 |     SearchFallback,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:103:5
+    |
+103 |     DynamicBoundary,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+   --> crates/perl-semantic-facts/src/lib.rs:112:1
+    |
+112 | pub enum Confidence {
+    | ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:113:5
+    |
+113 |     High,
+    |     ^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:114:5
+    |
+114 |     Medium,
+    |     ^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:115:5
+    |
+115 |     Low,
+    |     ^^^
+
+warning: missing documentation for a struct
+   --> crates/perl-semantic-facts/src/lib.rs:119:1
+    |
+119 | pub struct AnchorFact {
+    | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:120:5
+    |
+120 |     pub id: AnchorId,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:121:5
+    |
+121 |     pub file_id: FileId,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:122:5
+    |
+122 |     pub span_start_byte: u32,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:123:5
+    |
+123 |     pub span_end_byte: u32,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:124:5
+    |
+124 |     pub scope_id: Option<ScopeId>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:125:5
+    |
+125 |     pub provenance: Provenance,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:126:5
+    |
+126 |     pub confidence: Confidence,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> crates/perl-semantic-facts/src/lib.rs:130:1
+    |
+130 | pub struct EntityFact {
+    | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:131:5
+    |
+131 |     pub id: EntityId,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:132:5
+    |
+132 |     pub kind: EntityKind,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:133:5
+    |
+133 |     pub canonical_name: String,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:134:5
+    |
+134 |     pub anchor_id: Option<AnchorId>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:135:5
+    |
+135 |     pub scope_id: Option<ScopeId>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:136:5
+    |
+136 |     pub provenance: Provenance,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:137:5
+    |
+137 |     pub confidence: Confidence,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> crates/perl-semantic-facts/src/lib.rs:141:1
+    |
+141 | pub struct OccurrenceFact {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:142:5
+    |
+142 |     pub id: OccurrenceId,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:143:5
+    |
+143 |     pub kind: OccurrenceKind,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:144:5
+    |
+144 |     pub entity_id: Option<EntityId>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:145:5
+    |
+145 |     pub anchor_id: AnchorId,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:146:5
+    |
+146 |     pub scope_id: Option<ScopeId>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:147:5
+    |
+147 |     pub provenance: Provenance,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:148:5
+    |
+148 |     pub confidence: Confidence,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> crates/perl-semantic-facts/src/lib.rs:152:1
+    |
+152 | pub struct EdgeFact {
+    | ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:153:5
+    |
+153 |     pub id: EdgeId,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:154:5
+    |
+154 |     pub kind: EdgeKind,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:155:5
+    |
+155 |     pub from_entity_id: EntityId,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:156:5
+    |
+156 |     pub to_entity_id: EntityId,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:157:5
+    |
+157 |     pub via_occurrence_id: Option<OccurrenceId>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:158:5
+    |
+158 |     pub provenance: Provenance,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:159:5
+    |
+159 |     pub confidence: Confidence,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> crates/perl-semantic-facts/src/lib.rs:163:1
+    |
+163 | pub struct DiagnosticFact {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:164:5
+    |
+164 |     pub id: DiagnosticId,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:165:5
+    |
+165 |     pub code: Option<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:166:5
+    |
+166 |     pub message: String,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:167:5
+    |
+167 |     pub primary_anchor_id: AnchorId,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:168:5
+    |
+168 |     pub related_anchor_ids: Vec<AnchorId>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:169:5
+    |
+169 |     pub scope_id: Option<ScopeId>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:170:5
+    |
+170 |     pub provenance: Provenance,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:171:5
+    |
+171 |     pub confidence: Confidence,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+   --> crates/perl-semantic-facts/src/lib.rs:231:1
+    |
+231 | pub enum ImportKind {
+    | ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:232:5
+    |
+232 |     Use,
+    |     ^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:233:5
+    |
+233 |     UseEmpty,
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:234:5
+    |
+234 |     UseExplicitList,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:235:5
+    |
+235 |     UseTag,
+    |     ^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:236:5
+    |
+236 |     Require,
+    |     ^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:237:5
+    |
+237 |     RequireThenImport,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:238:5
+    |
+238 |     UseConstant,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:239:5
+    |
+239 |     DynamicRequire,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+   --> crates/perl-semantic-facts/src/lib.rs:250:1
+    |
+250 | pub enum ImportSymbols {
+    | ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:251:5
+    |
+251 |     Default,
+    |     ^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:252:5
+    |
+252 |     None,
+    |     ^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:253:5
+    |
+253 |     Explicit(Vec<String>),
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:254:5
+    |
+254 |     Tags(Vec<String>),
+    |     ^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:255:5
+    |
+255 |     Mixed { tags: Vec<String>, names: Vec<String> },
+    |     ^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:255:13
+    |
+255 |     Mixed { tags: Vec<String>, names: Vec<String> },
+    |             ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:255:32
+    |
+255 |     Mixed { tags: Vec<String>, names: Vec<String> },
+    |                                ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:256:5
+    |
+256 |     Dynamic,
+    |     ^^^^^^^
+
+warning: missing documentation for an enum
+   --> crates/perl-semantic-facts/src/lib.rs:349:1
+    |
+349 | pub enum VisibleSymbolSource {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:350:5
+    |
+350 |     LocalLexical,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:351:5
+    |
+351 |     LocalPackage,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:352:5
+    |
+352 |     ExplicitImport,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:353:5
+    |
+353 |     DefaultExport,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:354:5
+    |
+354 |     ExportTag,
+    |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:355:5
+    |
+355 |     Constant,
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:356:5
+    |
+356 |     Generated,
+    |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:357:5
+    |
+357 |     External,
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:358:5
+    |
+358 |     DynamicUnknown,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:371:5
+    |
+371 |     ExactQualified,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:372:5
+    |
+372 |     SamePackage,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:373:5
+    |
+373 |     ExplicitImport,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:374:5
+    |
+374 |     DefaultExport,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:375:5
+    |
+375 |     WorkspaceCandidate,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:376:5
+    |
+376 |     Heuristic,
+    |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:386:5
+    |
+386 |     ExactQualifiedName,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:387:5
+    |
+387 |     SamePackage,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:388:5
+    |
+388 |     ExplicitImport { module: String },
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:388:22
+    |
+388 |     ExplicitImport { module: String },
+    |                      ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:389:5
+    |
+389 |     DefaultExport { module: String },
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/lib.rs:389:21
+    |
+389 |     DefaultExport { module: String },
+    |                     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:390:5
+    |
+390 |     WorkspaceSymbol,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:391:5
+    |
+391 |     HeuristicNameMatch,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:684:5
+    |
+684 |     Diagnostics,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:685:5
+    |
+685 |     Completion,
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:686:5
+    |
+686 |     Hover,
+    |     ^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:687:5
+    |
+687 |     Definition,
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:688:5
+    |
+688 |     References,
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:689:5
+    |
+689 |     Rename,
+    |     ^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:690:5
+    |
+690 |     SafeDelete,
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:691:5
+    |
+691 |     WorkspaceSymbols,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:692:5
+    |
+692 |     DocumentSymbols,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:693:5
+    |
+693 |     SemanticTokens,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:722:5
+    |
+722 |     Fresh,
+    |     ^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:723:5
+    |
+723 |     Stale,
+    |     ^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:724:5
+    |
+724 |     Unknown,
+    |     ^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/lib.rs:725:5
+    |
+725 |     NotApplicable,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:18:5
+   |
+18 |     Declaration,
+   |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:19:5
+   |
+19 |     Occurrence,
+   |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:20:5
+   |
+20 |     Import,
+   |     ^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:21:5
+   |
+21 |     Module,
+   |     ^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:22:5
+   |
+22 |     Boundary,
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:34:5
+   |
+34 |     Known(String),
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:35:5
+   |
+35 |     Unknown,
+   |     ^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:56:5
+   |
+56 |     Known(Provenance),
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:57:5
+   |
+57 |     Unknown,
+   |     ^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:64:5
+   |
+64 |     Known(Confidence),
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:65:5
+   |
+65 |     Unknown,
+   |     ^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:72:5
+   |
+72 |     Parser,
+   |     ^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:73:5
+   |
+73 |     Hir,
+   |     ^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:74:5
+   |
+74 |     PirA,
+   |     ^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:75:5
+   |
+75 |     SemanticAnalyzer,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:76:5
+   |
+76 |     WorkspaceIndex,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:77:5
+   |
+77 |     FrameworkAdapter,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:78:5
+   |
+78 |     Unknown,
+   |     ^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:85:5
+   |
+85 |     Begin,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:86:5
+   |
+86 |     UnitCheck,
+   |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:87:5
+   |
+87 |     Check,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:88:5
+   |
+88 |     Init,
+   |     ^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:89:5
+   |
+89 |     End,
+   |     ^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:90:5
+   |
+90 |     Runtime,
+   |     ^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:91:5
+   |
+91 |     Unknown,
+   |     ^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:98:5
+   |
+98 |     Fresh,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-semantic-facts/src/envelope.rs:99:5
+   |
+99 |     Stale,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:100:5
+    |
+100 |     Unknown,
+    |     ^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:101:5
+    |
+101 |     NotApplicable,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:108:5
+    |
+108 |     pub anchor_id: Option<AnchorId>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:109:5
+    |
+109 |     pub file_id: FileId,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:110:5
+    |
+110 |     pub start_byte: u32,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:111:5
+    |
+111 |     pub end_byte: u32,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:131:5
+    |
+131 |     ExactSource,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:132:5
+    |
+132 |     GeneratedFromSource,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:133:5
+    |
+133 |     DynamicValue,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:134:5
+    |
+134 |     CompatibilityBoundary,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:135:5
+    |
+135 |     UnsupportedEffect,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:136:5
+    |
+136 |     MissingGeneration,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:137:5
+    |
+137 |     UnknownProvenance,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:138:5
+    |
+138 |     UnknownConfidence,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:139:5
+    |
+139 |     UnknownLifecycle,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:140:5
+    |
+140 |     StaleDependency,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:142:5
+    |
+142 |     Unknown,
+    |     ^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:149:5
+    |
+149 |     DynamicValue,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:150:5
+    |
+150 |     DynamicRequire,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:151:5
+    |
+151 |     DynamicIncludePath,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:152:5
+    |
+152 |     CompileTimeExecution,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:153:5
+    |
+153 |     SymbolicReference,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:154:5
+    |
+154 |     Compatibility,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:155:5
+    |
+155 |     ExternalEnvironment,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:156:5
+    |
+156 |     Unsupported,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:163:5
+    |
+163 |     Degrade,
+    |     ^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:164:5
+    |
+164 |     Refuse,
+    |     ^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:171:5
+    |
+171 |     pub boundary_id: Option<FactId>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:172:5
+    |
+172 |     pub kind: BoundaryKind,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:173:5
+    |
+173 |     pub disposition: BoundaryDisposition,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:174:5
+    |
+174 |     pub reason_code: SemanticReasonCode,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:194:5
+    |
+194 |     pub dependency_key: String,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:195:5
+    |
+195 |     pub generation: SourceGeneration,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:210:5
+    |
+210 |     Exact,
+    |     ^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:211:5
+    |
+211 |     Degraded,
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:212:5
+    |
+212 |     Refused,
+    |     ^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:213:5
+    |
+213 |     Stale,
+    |     ^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:220:5
+    |
+220 |     pub fact_id: FactId,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:221:5
+    |
+221 |     pub entity_id: Option<EntityId>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:222:5
+    |
+222 |     pub kind: SemanticFactKind,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:223:5
+    |
+223 |     pub anchor: SourceAnchor,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:224:5
+    |
+224 |     pub source_generation: SourceGeneration,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:225:5
+    |
+225 |     pub scope_id: Option<ScopeId>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:226:5
+    |
+226 |     pub package: Option<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:227:5
+    |
+227 |     pub lifecycle: LifecyclePhase,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:228:5
+    |
+228 |     pub producer: SemanticProducer,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:229:5
+    |
+229 |     pub provenance: SemanticProvenance,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:230:5
+    |
+230 |     pub confidence: SemanticConfidence,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:231:5
+    |
+231 |     pub freshness: SemanticFreshness,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:232:5
+    |
+232 |     pub boundary: Option<BoundaryLink>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/envelope.rs:235:5
+    |
+235 |     pub reason_code: SemanticReasonCode,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:479:5
+    |
+479 |     ScalarContext,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:480:5
+    |
+480 |     ListContext,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:481:5
+    |
+481 |     VoidContext,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:482:5
+    |
+482 |     ConditionalControl,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:483:5
+    |
+483 |     LoopControl,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:484:5
+    |
+484 |     ExceptionControl,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:485:5
+    |
+485 |     DynamicValue,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:486:5
+    |
+486 |     RecoveredSyntax,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:487:5
+    |
+487 |     GeneratedNoSource,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:488:5
+    |
+488 |     BudgetExhausted,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/envelope.rs:489:5
+    |
+489 |     Unsupported,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-semantic-facts/src/framework_checked/model.rs:52:18
+   |
+52 |     Unresolved { reason: String },
+   |                  ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-semantic-facts/src/framework_checked/model.rs:54:17
+   |
+54 |     Ambiguous { reason: String },
+   |                 ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-semantic-facts/src/framework_checked/model.rs:56:19
+   |
+56 |     Unavailable { reason: String },
+   |                   ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:425:5
+    |
+425 |     UnsupportedSchema,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:426:5
+    |
+426 |     NonProduction,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:427:5
+    |
+427 |     DescriptorMismatch,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:428:5
+    |
+428 |     GenerationMismatch,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:429:5
+    |
+429 |     CancelledInput,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:430:5
+    |
+430 |     MissingPolicyIdentity,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:431:5
+    |
+431 |     InvalidContentDigest,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:432:5
+    |
+432 |     InvalidSelectorEvidence,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:433:5
+    |
+433 |     InvalidModuleEvidence,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:434:5
+    |
+434 |     InvalidConfigurationEvidence,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:435:5
+    |
+435 |     MissingInputIdentity,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:436:5
+    |
+436 |     InputIdentityMismatch,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:437:5
+    |
+437 |     MissingContributingEvidence,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:438:5
+    |
+438 |     UnrelatedContributingEvidence,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:439:5
+    |
+439 |     InsufficientConfidence,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:440:5
+    |
+440 |     IncompleteModuleUniverse,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:441:5
+    |
+441 |     RequiredModulePresent,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:442:5
+    |
+442 |     InvalidVersionEvidence,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:443:5
+    |
+443 |     UnsupportedVersionConstraint,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:444:5
+    |
+444 |     VersionConstraintNotSatisfied,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:445:5
+    |
+445 |     VersionConstraintSatisfied,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:446:5
+    |
+446 |     MissingConfigurationEvidence,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:447:5
+    |
+447 |     ConfigurationRuleNotSatisfied,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:448:5
+    |
+448 |     NonAuthoritativeOutcome,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:455:5
+    |
+455 |     pub input_identity: DetectionInputIdentity,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:456:5
+    |
+456 |     pub descriptor: AdapterDescriptor,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:457:5
+    |
+457 |     pub outcome: DetectionOutcome,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:458:5
+    |
+458 |     pub authoritative: bool,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:459:5
+    |
+459 |     pub error: Option<DetectionAuthorityError>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:467:5
+    |
+467 |     pub descriptor: AdapterDescriptor,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:468:5
+    |
+468 |     pub project_generation: SourceGeneration,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:469:5
+    |
+469 |     pub outcome: DetectionOutcome,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:471:5
+    |
+471 |     pub version_evidence: Option<ModuleVersionEvidence>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:473:5
+    |
+473 |     pub input_identity: Option<DetectionInputIdentity>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:475:5
+    |
+475 |     pub contributing_modules: Vec<ModuleActivationIdentity>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:477:5
+    |
+477 |     pub configuration_evidence: Option<DetectionConfigurationEvidence>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:515:5
+    |
+515 | /     pub fn with_contributing_modules(
+516 | |         mut self,
+517 | |         contributing_modules: Vec<ModuleActivationIdentity>,
+518 | |     ) -> Self {
+    | |_____________^
+
+warning: missing documentation for a method
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:524:5
+    |
+524 |     pub fn with_version_evidence(mut self, evidence: ModuleVersionEvidence) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:530:5
+    |
+530 |     pub fn with_configuration_evidence(mut self, evidence: DetectionConfigurationEvidence) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates/perl-semantic-facts/src/framework_checked/model.rs:536:5
+    |
+536 |     pub fn is_detected(&self) -> bool {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+   Compiling ureq v3.4.0
+   Compiling half v2.7.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling crossbeam-deque v0.8.6
+   Compiling alloca v0.4.0
+   Compiling predicates-core v1.0.10
+   Compiling plotters-backend v0.3.7
+   Compiling ciborium-io v0.2.2
+   Compiling futures-task v0.3.32
+   Compiling slab v0.4.12
+   Compiling futures-core v0.3.32
+   Compiling futures-util v0.3.32
+   Compiling ciborium-ll v0.2.2
+   Compiling rusty-fork v0.3.1
+   Compiling perl-position-tracking v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-position-tracking)
+   Compiling plotters-svg v0.3.7
+warning: `perl-semantic-facts` (lib) generated 298 warnings
+   Compiling perl-ast-v2 v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-ast-v2)
+   Compiling perl-ast v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-ast)
+   Compiling perl-lexer v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-lexer)
+warning: missing documentation for an associated constant
+   --> crates/perl-ast/src/ast.rs:188:15
+    |
+188 |               $(pub const $constant: Self = Self($name);)+
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+209 | / define_field_ids! {
+210 | |     (STATEMENTS, "statements"),
+211 | |     (EXPRESSION, "expression"),
+212 | |     (VARIABLE, "variable"),
+...   |
+246 | |     (PARTIAL, "partial"),
+247 | | }
+    | |_- in this macro invocation
+    |
+note: the lint level is defined here
+   --> crates/perl-ast/src/lib.rs:1:9
+    |
+  1 | #![warn(missing_docs)]
+    |         ^^^^^^^^^^^^
+    = note: this warning originates in the macro `define_field_ids` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for an associated constant
+   --> crates/perl-ast/src/ast.rs:188:15
+    |
+188 |               $(pub const $constant: Self = Self($name);)+
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+209 | / define_field_ids! {
+210 | |     (STATEMENTS, "statements"),
+211 | |     (EXPRESSION, "expression"),
+212 | |     (VARIABLE, "variable"),
+...   |
+246 | |     (PARTIAL, "partial"),
+247 | | }
+    | |_- in this macro invocation
+    |
+    = note: this warning originates in the macro `define_field_ids` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+   Compiling perl-pragma v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-pragma)
+   Compiling perl-parser-core v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-parser-core)
+warning: `perl-ast` (lib) generated 37 warnings (35 duplicates)
+   Compiling perl-symbol v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-symbol)
+   Compiling rand_chacha v0.9.0
+   Compiling itertools v0.13.0
+   Compiling perl-workspace v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-workspace)
+   Compiling perl-tdd-support v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-tdd-support)
+   Compiling perl-lsp-perltidy v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-lsp-perltidy)
+   Compiling perl-module v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-module)
+   Compiling float-cmp v0.10.0
+warning: missing documentation for a function
+   --> crates/perl-module/src/import/mod.rs:566:1
+    |
+566 | pub fn parse_qw_arg_list(trimmed: &str) -> Option<Vec<String>> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: the lint level is defined here
+   --> crates/perl-module/src/lib.rs:1:9
+    |
+  1 | #![warn(missing_docs)]
+    |         ^^^^^^^^^^^^
+
+   Compiling chacha20 v0.10.0
+   Compiling perl-semantic-analyzer v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-semantic-analyzer)
+warning: `perl-module` (lib) generated 1 warning
+   Compiling perl-parser v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-parser)
+   Compiling perl-lsp-rs-core v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-lsp-rs-core)
+   Compiling termtree v0.5.1
+   Compiling cast v0.3.0
+   Compiling assert_cmd v2.2.2
+   Compiling difflib v0.4.0
+   Compiling iana-time-zone v0.1.65
+   Compiling perl-lsp-rs v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-lsp-rs)
+   Compiling normalize-line-endings v0.3.0
+   Compiling chrono v0.4.45
+   Compiling predicates v3.1.4
+   Compiling criterion-plot v0.8.2
+   Compiling predicates-tree v1.0.13
+   Compiling proptest v1.11.0
+   Compiling rand v0.10.2
+   Compiling perl-ripr-facts v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-ripr-facts)
+   Compiling rayon v1.12.0
+warning: missing documentation for a function
+   --> crates/perl-ripr-facts/src/lib.rs:643:1
+    |
+643 | / pub fn run_cli<I, S>(args: I) -> i32
+644 | | where
+645 | |     I: IntoIterator<Item = S>,
+646 | |     S: Into<String>,
+    | |____________________^
+    |
+note: the lint level is defined here
+   --> crates/perl-ripr-facts/src/lib.rs:1:9
+    |
+  1 | #![warn(missing_docs)]
+    |         ^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> crates/perl-ripr-facts/src/lib.rs:753:1
+    |
+753 | / pub fn run_ripr_facts_with_diff(
+754 | |     schema: &str,
+755 | |     root: &str,
+756 | |     base: Option<&str>,
+...   |
+760 | |     out: &str,
+761 | | ) -> i32 {
+    | |________^
+
+   Compiling perl-dap v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-dap)
+   Compiling plotters v0.3.7
+warning: `perl-ripr-facts` (lib) generated 2 warnings
+   Compiling ciborium v0.2.2
+   Compiling futures-executor v0.3.32
+   Compiling tinytemplate v1.2.1
+   Compiling bstr v1.12.1
+   Compiling page_size v0.6.0
+   Compiling serial_test_derive v4.0.1
+   Compiling glob v0.3.4
+   Compiling oorandom v11.1.5
+   Compiling anes v0.1.6
+   Compiling criterion v0.8.2
+   Compiling perl-corpus v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-corpus)
+warning: missing documentation for a module
+   --> crates/perl-corpus/src/lib.rs:223:1
+    |
+223 | pub mod api;
+    | ^^^^^^^^^^^
+    |
+note: the lint level is defined here
+   --> crates/perl-corpus/src/lib.rs:1:9
+    |
+  1 | #![warn(missing_docs)]
+    |         ^^^^^^^^^^^^
+
+warning: missing documentation for a module
+   --> crates/perl-corpus/src/lib.rs:226:1
+    |
+226 | pub mod concepts;
+    | ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+   --> crates/perl-corpus/src/lib.rs:231:1
+    |
+231 | pub mod r#gen;
+    | ^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+   --> crates/perl-corpus/src/lib.rs:233:1
+    |
+233 | pub mod gold;
+    | ^^^^^^^^^^^^
+
+warning: missing documentation for a module
+   --> crates/perl-corpus/src/lib.rs:234:1
+    |
+234 | pub mod index;
+    | ^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+   --> crates/perl-corpus/src/lib.rs:235:1
+    |
+235 | pub mod inventory;
+    | ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+   --> crates/perl-corpus/src/lib.rs:236:1
+    |
+236 | pub mod lint;
+    | ^^^^^^^^^^^^
+
+warning: missing documentation for a module
+   --> crates/perl-corpus/src/lib.rs:237:1
+    |
+237 | pub mod loading;
+    | ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+   --> crates/perl-corpus/src/lib.rs:238:1
+    |
+238 | pub mod meta;
+    | ^^^^^^^^^^^^
+
+warning: missing documentation for a module
+   --> crates/perl-corpus/src/lib.rs:239:1
+    |
+239 | pub mod metadata;
+    | ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+   --> crates/perl-corpus/src/lib.rs:240:1
+    |
+240 | pub mod metadata_backfill;
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+   --> crates/perl-corpus/src/lib.rs:241:1
+    |
+241 | pub mod prelude;
+    | ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> crates/perl-corpus/src/concepts.rs:20:1
+   |
+20 | pub struct ConceptRegistryFile {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:22:5
+   |
+22 |     pub concept: Vec<ConceptRow>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> crates/perl-corpus/src/concepts.rs:27:1
+   |
+27 | pub struct ConceptRow {
+   | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:28:5
+   |
+28 |     pub id: String,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:29:5
+   |
+29 |     pub status: String,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:30:5
+   |
+30 |     pub scope: ConceptScope,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:31:5
+   |
+31 |     pub fixtures: ConceptFixtures,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:32:5
+   |
+32 |     pub expect: ConceptExpect,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:33:5
+   |
+33 |     pub snapshots: ConceptSnapshots,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:34:5
+   |
+34 |     pub run: ConceptRun,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> crates/perl-corpus/src/concepts.rs:39:1
+   |
+39 | pub struct ConceptScope {
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:40:5
+   |
+40 |     pub crates: Vec<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:41:5
+   |
+41 |     pub risk_tags: Vec<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> crates/perl-corpus/src/concepts.rs:46:1
+   |
+46 | pub struct ConceptFixtures {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:48:5
+   |
+48 |     pub floors: Vec<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:50:5
+   |
+50 |     pub variants: Vec<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> crates/perl-corpus/src/concepts.rs:55:1
+   |
+55 | pub struct ConceptExpect {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:56:5
+   |
+56 |     pub panic: bool,
+   |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:57:5
+   |
+57 |     pub timeout: bool,
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:58:5
+   |
+58 |     pub mode: String,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> crates/perl-corpus/src/concepts.rs:63:1
+   |
+63 | pub struct ConceptSnapshots {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:64:5
+   |
+64 |     pub tokens: bool,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:65:5
+   |
+65 |     pub ast: bool,
+   |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:66:5
+   |
+66 |     pub spans: bool,
+   |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> crates/perl-corpus/src/concepts.rs:71:1
+   |
+71 | pub struct ConceptRun {
+   | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:72:5
+   |
+72 |     pub pr: bool,
+   |     ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:73:5
+   |
+73 |     pub nightly: bool,
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:74:5
+   |
+74 |     pub release: bool,
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> crates/perl-corpus/src/concepts.rs:78:1
+   |
+78 | pub struct LoadedConcept {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:79:5
+   |
+79 |     pub source_file: String,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/concepts.rs:80:5
+   |
+80 |     pub row: ConceptRow,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+  --> crates/perl-corpus/src/concepts.rs:83:1
+   |
+83 | pub fn load_concept_registry() -> Result<Vec<LoadedConcept>> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> crates/perl-corpus/src/gen/mod.rs:1:1
+  |
+1 | pub mod ambiguity;
+  | ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> crates/perl-corpus/src/gen/mod.rs:2:1
+  |
+2 | pub mod builtins;
+  | ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> crates/perl-corpus/src/gen/mod.rs:3:1
+  |
+3 | pub mod control_flow;
+  | ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> crates/perl-corpus/src/gen/mod.rs:4:1
+  |
+4 | pub mod declarations;
+  | ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> crates/perl-corpus/src/gen/mod.rs:5:1
+  |
+5 | pub mod expressions;
+  | ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> crates/perl-corpus/src/gen/mod.rs:6:1
+  |
+6 | pub mod filetest;
+  | ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> crates/perl-corpus/src/gen/mod.rs:7:1
+  |
+7 | pub mod format_statements;
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> crates/perl-corpus/src/gen/mod.rs:8:1
+  |
+8 | pub mod glob;
+  | ^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> crates/perl-corpus/src/gen/mod.rs:9:1
+  |
+9 | pub mod heredoc;
+  | ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> crates/perl-corpus/src/gen/mod.rs:10:1
+   |
+10 | pub mod io;
+   | ^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> crates/perl-corpus/src/gen/mod.rs:11:1
+   |
+11 | pub mod list_ops;
+   | ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> crates/perl-corpus/src/gen/mod.rs:12:1
+   |
+12 | pub mod object_oriented;
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> crates/perl-corpus/src/gen/mod.rs:13:1
+   |
+13 | pub mod phasers;
+   | ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> crates/perl-corpus/src/gen/mod.rs:15:1
+   |
+15 | pub mod quote_like;
+   | ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> crates/perl-corpus/src/gen/mod.rs:16:1
+   |
+16 | pub mod qw;
+   | ^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> crates/perl-corpus/src/gen/mod.rs:17:1
+   |
+17 | pub mod regex;
+   | ^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> crates/perl-corpus/src/gen/mod.rs:18:1
+   |
+18 | pub mod sigils;
+   | ^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> crates/perl-corpus/src/gen/mod.rs:19:1
+   |
+19 | pub mod special_vars;
+   | ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> crates/perl-corpus/src/gen/mod.rs:20:1
+   |
+20 | pub mod tie;
+   | ^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> crates/perl-corpus/src/gen/mod.rs:21:1
+   |
+21 | pub mod whitespace;
+   | ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+  --> crates/perl-corpus/src/gen/declarations.rs:47:1
+   |
+47 | pub fn variable_declaration() -> impl Strategy<Value = String> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/gold.rs:15:20
+   |
+15 |     NoDiagnostic { code: String },
+   |                    ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/gold.rs:20:9
+   |
+20 |         code: String,
+   |         ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/gold.rs:22:9
+   |
+22 |         byte_offset: Option<usize>,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/gold.rs:24:9
+   |
+24 |         message_contains: Option<String>,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/gold.rs:29:23
+   |
+29 |     DiagnosticCount { code: String, count: usize },
+   |                       ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/gold.rs:29:37
+   |
+29 |     DiagnosticCount { code: String, count: usize },
+   |                                     ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/gold.rs:35:5
+   |
+35 |     pub diagnostics: Vec<GoldAssertion>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/gold.rs:41:5
+   |
+41 |     pub name: String,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/gold.rs:42:5
+   |
+42 |     pub fixture_path: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/gold.rs:43:5
+   |
+43 |     pub expected: GoldExpected,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:129:21
+    |
+129 |     HoverContains { needle: String },
+    |                     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:131:19
+    |
+131 |     HoverAbsent { needle: String },
+    |                   ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:138:5
+    |
+138 |     pub kind: HoverAssertionKind,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:139:5
+    |
+139 |     pub line: u32,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:140:5
+    |
+140 |     pub character: u32,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:142:5
+    |
+142 |     pub rationale: String,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:148:5
+    |
+148 |     pub version: u32,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:149:5
+    |
+149 |     pub fixture: String,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:150:5
+    |
+150 |     pub assertions: Vec<HoverAssertion>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:156:5
+    |
+156 |     pub name: String,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:157:5
+    |
+157 |     pub fixture_path: PathBuf,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:158:5
+    |
+158 |     pub hover_assertions: Vec<HoverAssertion>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:220:16
+    |
+220 |     GotoLine { expected_line: u32 },
+    |                ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:227:5
+    |
+227 |     pub kind: GotoAssertionKind,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:228:5
+    |
+228 |     pub line: u32,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:229:5
+    |
+229 |     pub character: u32,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:231:5
+    |
+231 |     pub rationale: String,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:237:5
+    |
+237 |     pub version: u32,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:238:5
+    |
+238 |     pub fixture: String,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:239:5
+    |
+239 |     pub assertions: Vec<GotoAssertion>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:245:5
+    |
+245 |     pub name: String,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:246:5
+    |
+246 |     pub fixture_path: PathBuf,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:247:5
+    |
+247 |     pub goto_assertions: Vec<GotoAssertion>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:301:22
+    |
+301 |     CompletionTop1 { expected_label: String },
+    |                      ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:303:22
+    |
+303 |     CompletionTop5 { expected_label: String },
+    |                      ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:305:25
+    |
+305 |     CompletionPresent { expected_label: String },
+    |                         ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:307:29
+    |
+307 |     CompletionNoiseAbsent { forbidden_label: String },
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:314:5
+    |
+314 |     pub kind: CompletionAssertionKind,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:315:5
+    |
+315 |     pub line: u32,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:316:5
+    |
+316 |     pub character: u32,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:318:5
+    |
+318 |     pub rationale: String,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:324:5
+    |
+324 |     pub version: u32,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:325:5
+    |
+325 |     pub fixture: String,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:326:5
+    |
+326 |     pub assertions: Vec<CompletionAssertion>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:332:5
+    |
+332 |     pub name: String,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:333:5
+    |
+333 |     pub fixture_path: PathBuf,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:334:5
+    |
+334 |     pub completion_assertions: Vec<CompletionAssertion>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:392:21
+    |
+392 |     SymbolPresent { name: String },
+    |                     ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:394:20
+    |
+394 |     SymbolAbsent { name: String },
+    |                    ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:396:19
+    |
+396 |     SymbolCount { count: usize },
+    |                   ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:403:5
+    |
+403 |     pub kind: DocumentSymbolAssertionKind,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:405:5
+    |
+405 |     pub rationale: String,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:411:5
+    |
+411 |     pub version: u32,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:412:5
+    |
+412 |     pub fixture: String,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:413:5
+    |
+413 |     pub assertions: Vec<DocumentSymbolAssertion>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:419:5
+    |
+419 |     pub name: String,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:420:5
+    |
+420 |     pub fixture_path: PathBuf,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:421:5
+    |
+421 |     pub symbol_assertions: Vec<DocumentSymbolAssertion>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:481:30
+    |
+481 |     RenameEditCountAtLeast { min: usize },
+    |                              ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:488:5
+    |
+488 |     pub kind: RenameAssertionKind,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:489:5
+    |
+489 |     pub line: u32,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:490:5
+    |
+490 |     pub character: u32,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:491:5
+    |
+491 |     pub new_name: String,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:493:5
+    |
+493 |     pub rationale: String,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:499:5
+    |
+499 |     pub version: u32,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:500:5
+    |
+500 |     pub fixture: String,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:501:5
+    |
+501 |     pub assertions: Vec<RenameAssertion>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:507:5
+    |
+507 |     pub name: String,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:508:5
+    |
+508 |     pub fixture_path: PathBuf,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/gold.rs:509:5
+    |
+509 |     pub rename_assertions: Vec<RenameAssertion>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:14:5
+   |
+14 |     pub schema_version: u32,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:15:5
+   |
+15 |     pub files: usize,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:16:5
+   |
+16 |     pub sections: usize,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:17:5
+   |
+17 |     pub cases: usize,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:18:5
+   |
+18 |     pub ids: InventoryIds,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:19:5
+   |
+19 |     pub tags: InventoryTags,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:20:5
+   |
+20 |     pub flags: BTreeMap<String, usize>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:21:5
+   |
+21 |     pub markers: InventoryMarkers,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:22:5
+   |
+22 |     pub generators: Vec<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:23:5
+   |
+23 |     pub concept_mapping_available: bool,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:24:5
+   |
+24 |     pub expectations_available: bool,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:25:5
+   |
+25 |     pub fixtures_without_concepts: Vec<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:26:5
+   |
+26 |     pub fixtures_without_expectations: Vec<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> crates/perl-corpus/src/inventory.rs:30:1
+   |
+30 | pub struct InventoryIds {
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:31:5
+   |
+31 |     pub explicit: usize,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:32:5
+   |
+32 |     pub generated: usize,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:33:5
+   |
+33 |     pub missing_explicit_ids: usize,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:34:5
+   |
+34 |     pub generated_ids: Vec<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:35:5
+   |
+35 |     pub duplicate_effective_ids: Vec<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:36:5
+   |
+36 |     pub duplicate_explicit_ids: Vec<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:37:5
+   |
+37 |     pub id_source_breakdown: BTreeMap<String, usize>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> crates/perl-corpus/src/inventory.rs:41:1
+   |
+41 | pub struct InventoryTags {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:42:5
+   |
+42 |     pub known: Vec<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:43:5
+   |
+43 |     pub unknown: Vec<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> crates/perl-corpus/src/inventory.rs:47:1
+   |
+47 | pub struct InventoryMarkers {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:48:5
+   |
+48 |     pub expected_error: usize,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:49:5
+   |
+49 |     pub wip: usize,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/inventory.rs:50:5
+   |
+50 |     pub parser_sensitive: usize,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/lint.rs:224:5
+    |
+224 |     pub max_sections_per_file: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/lint.rs:225:5
+    |
+225 |     pub check_unknown_tags: bool,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/lint.rs:226:5
+    |
+226 |     pub check_unknown_flags: bool,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/lint.rs:227:5
+    |
+227 |     pub require_perl_version: bool,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/lint.rs:243:5
+    |
+243 |     pub errors: Vec<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/perl-corpus/src/lint.rs:244:5
+    |
+244 |     pub warnings: Vec<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates/perl-corpus/src/lint.rs:248:5
+    |
+248 |     pub fn is_ok(&self) -> bool {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+ --> crates/perl-corpus/src/loading/dir.rs:6:1
+  |
+6 | pub fn parse_dir(dir: &Path) -> Result<Vec<Section>> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+ --> crates/perl-corpus/src/loading/file.rs:5:1
+  |
+5 | pub fn parse_file(path: &Path) -> Result<Vec<Section>> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> crates/perl-corpus/src/metadata/mod.rs:2:1
+  |
+2 | pub mod parser;
+  | ^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+  --> crates/perl-corpus/src/metadata/parser.rs:13:1
+   |
+13 | pub fn parse_sections(text: &str, path: &Path) -> Vec<Section> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+ --> crates/perl-corpus/src/metadata/section.rs:6:5
+  |
+6 |     Explicit,
+  |     ^^^^^^^^
+
+warning: missing documentation for a variant
+ --> crates/perl-corpus/src/metadata/section.rs:7:5
+  |
+7 |     Generated,
+  |     ^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/metadata/section.rs:13:5
+   |
+13 |     pub raw: String,
+   |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/metadata/section.rs:14:5
+   |
+14 |     pub format: ExpectedFormat,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-corpus/src/metadata/section.rs:20:5
+   |
+20 |     TreeSitterSexp,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-corpus/src/metadata/section.rs:21:5
+   |
+21 |     AstJson,
+   |     ^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-corpus/src/metadata/section.rs:22:5
+   |
+22 |     DiagnosticsJson,
+   |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-corpus/src/metadata/section.rs:23:5
+   |
+23 |     PlainText,
+   |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/perl-corpus/src/metadata/section.rs:24:5
+   |
+24 |     Unknown,
+   |     ^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/metadata_backfill.rs:10:5
+   |
+10 |     pub scanned: usize,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/perl-corpus/src/metadata_backfill.rs:11:5
+   |
+11 |     pub updated: Vec<PathBuf>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> crates/perl-corpus/src/metadata_backfill.rs:15:5
+   |
+15 |     pub fn updated_count(&self) -> usize {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> crates/perl-lsp-rs/src/runtime/file_watcher_debounce.rs:643:13
+    |
+643 |         let mut snapshot = WatcherPressureSnapshot {
+    |             ----^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling insta v1.48.0
+   Compiling serial_test v4.0.1
+warning: `perl-corpus` (lib) generated 186 warnings
+   Compiling static_assertions v1.1.0
+warning: `perl-lsp-rs` (lib) generated 1 warning (run `cargo fix --lib -p perl-lsp-rs` to apply 1 suggestion)
+error[E0599]: no method named `test_apply_generic_ai_completion_settings` found for struct `LspServer` in the current scope
+   --> crates/perl-lsp-rs/tests/lsp_ai_inline_completion_tests.rs:663:12
+    |
+663 |     server.test_apply_generic_ai_completion_settings(json!({
+    |     -------^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `LspServer`
+
+error[E0599]: no method named `test_seed_ai_transport` found for struct `LspServer` in the current scope
+   --> crates/perl-lsp-rs/tests/lsp_ai_inline_completion_tests.rs:702:12
+    |
+702 |     server.test_seed_ai_transport(&endpoint, "PATH", 100, true);
+    |            ^^^^^^^^^^^^^^^^^^^^^^ method not found in `LspServer`
+
+error[E0599]: no method named `test_apply_generic_ai_completion_settings` found for struct `LspServer` in the current scope
+   --> crates/perl-lsp-rs/tests/lsp_ai_inline_completion_tests.rs:703:12
+    |
+703 |     server.test_apply_generic_ai_completion_settings(json!({
+    |     -------^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `LspServer`
+
+error[E0599]: no method named `test_ai_backend_available` found for struct `LspServer` in the current scope
+   --> crates/perl-lsp-rs/tests/lsp_ai_inline_completion_tests.rs:711:17
+    |
+711 |         !server.test_ai_backend_available(),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `LspServer`
+
+error[E0599]: no method named `test_set_ai_project_opt_out` found for struct `LspServer` in the current scope
+   --> crates/perl-lsp-rs/tests/lsp_ai_inline_completion_tests.rs:757:12
+    |
+757 |     server.test_set_ai_project_opt_out(true);
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `test_set_root_path` with a similar name
+    |
+757 -     server.test_set_ai_project_opt_out(true);
+757 +     server.test_set_root_path(true);
+    |
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `perl-lsp-rs` (test "lsp_ai_inline_completion_tests") due to 5 previous errors
 
 exit_status=101
