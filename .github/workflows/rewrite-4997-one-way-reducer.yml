@@ -1,0 +1,89 @@
+name: Rewrite #4997 as one-way reducers
+
+on:
+  push:
+    branches:
+      - agent/4997-ai-activation-authority
+    paths:
+      - scripts/maintenance/rewrite_4997_one_way_reducer.py.gz.b64
+      - .github/workflows/rewrite-4997-one-way-reducer.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rewrite-4997-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rewrite:
+    if: >-
+      github.repository == 'EffortlessMetrics/perl-lsp-swarm' &&
+      github.ref_name == 'agent/4997-ai-activation-authority'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout current draft branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/4997-ai-activation-authority
+          fetch-depth: 0
+
+      - name: Retain rewrite payload and reset to current main
+        run: |
+          base64 --decode scripts/maintenance/rewrite_4997_one_way_reducer.py.gz.b64 \
+            | gzip --decompress > /tmp/rewrite_4997_one_way_reducer.py
+          python3 -m py_compile /tmp/rewrite_4997_one_way_reducer.py
+          git fetch origin main
+          git reset --hard origin/main
+
+      - name: Apply count-checked one-way reducer cut
+        run: python3 /tmp/rewrite_4997_one_way_reducer.py
+
+      - name: Format and validate Rust surfaces
+        run: |
+          cargo fmt --all
+          python3 -m json.tool schemas/perllsp-settings.schema.json >/dev/null
+          python3 -m json.tool vscode-extension/package.json >/dev/null
+          cargo test -p perl-lsp-rs-core --test ai_activation_authority_contract --locked
+          cargo test -p perl-lsp-rs-core --test perllsp_settings_schema_tests --locked
+          cargo test -p perl-lsp-rs-core --lib ai_completion --locked
+          cargo test -p perl-lsp-rs --features expose_lsp_test_api \
+            --test lsp_ai_inline_completion_tests --locked
+          cargo clippy -p perl-lsp-rs-core -p perl-lsp-rs \
+            --all-targets --all-features --locked -- -D warnings
+
+      - name: Set up repository-owned VS Code toolchain
+        uses: ./.github/actions/setup-vscode-toolchain
+
+      - name: Validate first-party client transport and guidance
+        working-directory: vscode-extension
+        run: |
+          npm run typecheck:test
+          npm run compile:test
+          node scripts/run-jest.js --runTestsByPath \
+            src/test/languageClientConfiguration.test.ts \
+            src/test/extensionWorkspaceGuidance.test.ts
+          npm run fmt:check
+
+      - name: Validate repository contracts
+        run: |
+          cargo xtask check-architecture
+          cargo xtask check-test-wiring
+          cargo xtask docs-check
+          git diff --check
+
+      - name: Publish one clean implementation commit
+        env:
+          EXPECTED_OLD_HEAD: ${{ github.sha }}
+          BRANCH: agent/4997-ai-activation-authority
+        run: |
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git add -A
+          git diff --cached --check
+          git commit -m 'security(ai-completion): make generic activation reducer-only (#4997)'
+          git push \
+            --force-with-lease=refs/heads/$BRANCH:$EXPECTED_OLD_HEAD \
+            origin HEAD:refs/heads/$BRANCH
