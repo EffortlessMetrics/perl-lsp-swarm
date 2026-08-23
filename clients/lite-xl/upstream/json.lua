@@ -29,7 +29,11 @@
 --   base blob: eb36b8fa947ff1189b02ce03d257b80a86fdac64
 -- Local patch (#11197): malformed JSON now terminates decoding with exactly one
 -- typed decode failure at the json.decode boundary instead of continuing into
--- incidental Lua exceptions. Encode behavior is unchanged from upstream.
+-- incidental Lua exceptions.
+-- Local patch (#11136): JSON null, arrays and objects carry collision-free
+-- in-memory identities (json.null singleton plus private container tagging) so
+-- decoded null never vanishes, empty arrays/objects survive round trips, and
+-- the forgeable "{{json::null}}" / sentinel-string encoding path is gone.
 
 local json = { _version = "0.1.2" }
 
@@ -39,8 +43,96 @@ local json = { _version = "0.1.2" }
 -- load-bearing error transport and never carries state between decodes.
 local error_message = ""
 
--- Lets us explicitly add null values to table elements
-json.null = "{{json::null}}"
+-------------------------------------------------------------------------------
+-- Typed JSON value identities (#11136)
+--
+-- json.null is a unique module-private singleton: it can never be confused
+-- with Lua nil, false, or any ordinary string, so decoded null survives
+-- container assignment and re-encodes as null. The historical
+-- "{{json::null}}" magic string was forgeable by ordinary payload data and is
+-- gone; that text is now just a string.
+--
+-- Containers decoded from JSON carry a private metatable tag keyed by the
+-- CONTAINER_TAG upvalue, which is never exported, so the tag cannot be forged
+-- from outside the module. Array identity therefore survives empty containers
+-- and re-encoding instead of being guessed from table shape. Callers build
+-- typed values explicitly through json.array()/json.object(); foreign
+-- metatables stay inert and fall back to the documented ordinary-table
+-- encoding policy below.
+-------------------------------------------------------------------------------
+
+local CONTAINER_TAG = {}
+local ARRAY_MT = { [CONTAINER_TAG] = "array" }
+local OBJECT_MT = { [CONTAINER_TAG] = "object" }
+
+json.null = setmetatable({}, {
+  __name = "json.null",
+  __tostring = function()
+    return "json.null"
+  end,
+})
+
+--- True exactly for the unique JSON null identity.
+function json.is_null(v)
+  return v == json.null
+end
+
+--- True for values carrying the private JSON array tag (decoded arrays and
+--- json.array() results).
+function json.is_array(v)
+  local mt = getmetatable(v)
+  return mt ~= nil and mt[CONTAINER_TAG] == "array"
+end
+
+--- True for values carrying the private JSON object tag (decoded objects and
+--- json.object() results).
+function json.is_object(v)
+  local mt = getmetatable(v)
+  return mt ~= nil and mt[CONTAINER_TAG] == "object"
+end
+
+--- Build an explicit JSON array value from a dense Lua sequence. The source
+--- is validated (numeric keys only, no sparseness) and copied; misuse raises
+--- a precise deterministic error instead of guessing a shape. Nested values
+--- are taken as-is; express JSON null fields as json.null.
+function json.array(t)
+  if type(t) ~= "table" then
+    error("invalid table: expected table for json.array, got " .. type(t))
+  end
+  local n = 0
+  for k in pairs(t) do
+    if type(k) ~= "number" then
+      error("invalid table: mixed or invalid key types")
+    end
+    n = n + 1
+  end
+  if n ~= #t then
+    error("invalid table: sparse array")
+  end
+  local res = {}
+  for i = 1, n do
+    res[i] = t[i]
+  end
+  return setmetatable(res, ARRAY_MT)
+end
+
+--- Build an explicit JSON object value from a Lua table with string keys.
+--- Entries are copied into a freshly tagged table; non-string keys raise a
+--- precise deterministic error. Express JSON null fields as json.null (plain
+--- Lua nil fields cannot exist in a Lua table and are absent, not null).
+function json.object(t)
+  if type(t) ~= "table" then
+    error("invalid table: expected table for json.object, got " .. type(t))
+  end
+  local res = {}
+  for k, v in pairs(t) do
+    if type(k) ~= "string" then
+      error("invalid table: mixed or invalid key types")
+    end
+    res[k] = v
+  end
+  return setmetatable(res, OBJECT_MT)
+end
 
 -- Treat numbers longer than 14 digits as a string by adding this to the
 -- beginning of the string for encoder to recognize. This prevents any data
@@ -91,7 +183,13 @@ local function encode_table(val, stack)
 
   stack[val] = true
 
-  if rawget(val, 1) ~= nil or next(val) == nil then
+  -- Typed container identity wins over shape guessing (#11136). Untagged
+  -- tables keep the upstream heuristic: obvious non-empty array or empty
+  -- table takes the array branch, everything else the object branch.
+  local mt = getmetatable(val)
+  local tag = mt and mt[CONTAINER_TAG] or nil
+
+  if tag == "array" or (tag == nil and (rawget(val, 1) ~= nil or next(val) == nil)) then
     -- Treat as array -- check keys are valid and it is not sparse
     local n = 0
     for k in pairs(val) do
@@ -110,12 +208,16 @@ local function encode_table(val, stack)
     stack[val] = nil
     if #res > 0 then
       return "[" .. table.concat(res, ",") .. "]"
+    elseif tag == "array" then
+      -- An explicitly typed empty array keeps its [] identity; an untagged
+      -- empty plain table preserves the upstream {} compatibility default.
+      return "[]"
     else
       return "{}"
     end
 
   else
-    -- Treat as an object
+    -- Treat as an object (typed or by the upstream heuristic)
     for k, v in pairs(val) do
       if type(k) ~= "string" then
         error("invalid table: mixed or invalid key types")
@@ -129,9 +231,10 @@ end
 
 
 local function encode_string(val)
-  if val == json.null then
-    return "null"
-  elseif
+  -- (#11136) json.null is a unique table identity, so no ordinary string can
+  -- equal it; "{{json::null}}" encodes quoted like any other string. The
+  -- number_flag prefix protocol below is numeric-identity territory (#11183).
+  if
     #val > number_flag_len
     and
     string.sub(val, 1, number_flag_len) == json.number_flag
@@ -162,6 +265,11 @@ local type_func_map = {
 
 
 encode = function(val, stack)
+  -- The unique null identity encodes as null before table dispatch; it is a
+  -- table internally but must never take the container paths.
+  if val == json.null then
+    return "null"
+  end
   local t = type(val)
   local f = type_func_map[t]
   if f then
@@ -277,7 +385,9 @@ local literals      = create_set("true", "false", "null")
 local literal_map = {
   [ "true"  ] = true,
   [ "false" ] = false,
-  [ "null"  ] = nil,
+  -- (#11136) JSON null keeps its unique identity instead of collapsing to
+  -- Lua nil, so array slots and object fields holding null are preserved.
+  [ "null"  ] = json.null,
 }
 
 
@@ -392,7 +502,9 @@ end
 
 
 local function parse_array(str, i)
-  local res = {}
+  -- (#11136) decoded arrays carry the private array tag so identity, including
+  -- the empty case, survives past decode.
+  local res = setmetatable({}, ARRAY_MT)
   local n = 1
   i = i + 1
   while 1 do
@@ -421,7 +533,9 @@ end
 
 
 local function parse_object(str, i)
-  local res = {}
+  -- (#11136) decoded objects carry the private object tag so identity,
+  -- including the empty case, survives past decode.
+  local res = setmetatable({}, OBJECT_MT)
   i = i + 1
   while 1 do
     local key, val
@@ -505,12 +619,13 @@ end
 ---
 --- Decode one complete JSON document.
 ---
---- Success returns exactly one value: the decoded result. That result may be
---- nil (JSON null) or false (JSON false).
+--- Success returns exactly one value: the decoded result. That value is never
+--- nil: JSON null decodes to the json.null identity and JSON false to false,
+--- so a nil first return value means failure. Decoded arrays/objects carry
+--- private typed-container tags (#11136).
 --- Malformed input returns nil plus one typed error table (see the Decode
---- section above). Test the second return value to distinguish failure from
---- valid null/false results.
---- A non-string argument raises an argument error (programmer misuse).
+--- section above). A non-string argument raises an argument error (programmer
+--- misuse).
 ---
 function json.decode(str)
   if type(str) ~= "string" then
