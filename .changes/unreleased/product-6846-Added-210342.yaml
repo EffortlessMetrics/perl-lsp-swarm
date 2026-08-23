@@ -1,0 +1,9 @@
+project: product
+component: Language server
+kind: Added
+body: Added truthful provider-port adapters for current parser, semantic-analyzer, workspace-index, and already-canonical compiler or framework facts, with explicit completeness, generation, freshness, and producer boundaries.
+time: 2026-08-11T21:03:42Z
+custom:
+  PR: "6846"
+  Slug: semantic-provider-fact-adapters
+  Breaking: "no"
