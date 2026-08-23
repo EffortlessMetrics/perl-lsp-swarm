@@ -55,22 +55,28 @@ use perl_workspace::semantic_shadow_compare::{
 /// | `Dynamic` | Dynamic boundary observed; no reliable semantic result | Suppress or block |
 /// | `LegacyFallback` | Semantic path unavailable; semantic data absent | Defer to legacy |
 ///
-/// Per-provider payloads differ (`S` / `L` are provider-specific types) but
-/// the four-arm structure is universal.
+/// One instantiation fixes a single `S` and a single `L`: every arm of that
+/// instantiation holds those same two types.  Where a provider's exact and
+/// ambiguous payloads differ in shape (definition's single candidate vs its
+/// candidate list), the provider wraps them in its own cutover-result
+/// container rather than instantiating this enum with two payload types.
 ///
-/// # Per-provider mapping
+/// # Indicative per-provider vocabulary
 ///
-/// | Provider | `Exact(S)` | `Ambiguous(S)` | `Dynamic` | `LegacyFallback(L)` |
-/// |---|---|---|---|---|
-/// | definition | `DefinitionCandidate` | `Vec<DC>` | – | `Option<Location>` |
-/// | references | `Vec<OccurrenceFact>` | `Vec<OF>` | – | `Vec<Location>` |
-/// | hover | hover result | multiple | dynamic | `Option<String>` |
-/// | rename | `RenamePlan` | blocked-ambiguous | dynamic | – |
-/// | safe-delete | `Allowed` | – | dynamic | – |
-/// | diagnostics | `Warn` | `WeakWarn` | `Suppress` | – |
-/// | completion | candidates | lower-ranked | dynamic | – |
-/// | semantic-tokens | token list | – | – | legacy tokens |
-/// | PIR references | exact ranges | – | dynamic | legacy ranges |
+/// Payload names below describe what each provider's semantic path produces;
+/// they are indicative, not type-level facts about `S`.
+///
+/// | Provider | Semantic payload(s) | Dynamic | Legacy fallback |
+/// |---|---|---|---|
+/// | definition | candidate / candidate list | – | `Option<Location>` |
+/// | references | occurrence range list | – | `Vec<Location>` |
+/// | hover | hover result / multiple | dynamic | `Option<String>` |
+/// | rename | plan / blocked-ambiguous | dynamic | – |
+/// | safe-delete | allowed | dynamic | – |
+/// | diagnostics | warn / weak-warn | suppress | – |
+/// | completion | candidates / lower-ranked | dynamic | – |
+/// | semantic-tokens | token list | – | legacy tokens |
+/// | PIR references | exact ranges | dynamic | legacy ranges |
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderVerdict<S, L> {
     /// Semantic path produced one confident, exact answer.  Use it as-is.
@@ -137,8 +143,9 @@ pub struct ShadowOldPathOutput<T> {
     pub value: T,
     /// Receipt summary derived from `value`.
     ///
-    /// Use [`summarize_identities`] with identities extracted from `value` to
-    /// produce this; do not construct [`ShadowResultSummary`] by hand.
+    /// Use [`perl_workspace::semantic_shadow_compare::summarize_identities`]
+    /// with identities extracted from `value` to produce this; do not
+    /// construct [`ShadowResultSummary`] by hand.
     pub summary: ShadowResultSummary,
 }
 
@@ -273,12 +280,12 @@ where
 ///
 /// | PIR field | Canonical field | Derivation |
 /// |---|---|---|
-/// | `compiler_candidate_count` | `new_result.match_count` | direct |
-/// | `legacy_candidate_count` | `old_result.match_count` | direct |
+/// | `compiler_ranges` | `new_result` | identities from actual ranges as `{start}..{end}`; match_count = distinct ranges |
+/// | `legacy_ranges` | `old_result` | same range-identity derivation as the compiler path |
 /// | `missing_from_compiler` | `notes` | formatted as note entries |
 /// | `extra_in_compiler` | `notes` | formatted as note entries |
 /// | `range_disagreements` | `notes` | formatted as note entries |
-/// | `refusal_reason` | `old_result.available` / `notes` | refusal → `Unavailable` verdict |
+/// | `refusal_reason` | `old_result.available` / `notes` | typed reason; label derived centrally → notes; refusal → `Unavailable` verdict |
 /// | `provider_behavior_changed` | `notes` | flag in notes when `true` |
 /// | `latency` | (not in canonical shape) | elided; callers may log separately |
 /// | `fact_source_traces` | `fact_source_traces` | direct |
@@ -286,6 +293,9 @@ where
 /// The canonical shape also carries `schema_version`, `query` (always
 /// `ShadowQueryName::FindReferences` for PIR), and `input` (the symbol name).
 pub mod pir_adapter {
+    use crate::providers::navigation::references_pir_shadow::{
+        PirShadowRefusalReason, RangeDisagreement,
+    };
     use perl_semantic_facts::ProviderFactTrace;
     use perl_workspace::semantic_shadow_compare::{
         SemanticShadowCompareReceipt, ShadowQueryInput, ShadowQueryName, ShadowResultSummary,
@@ -304,20 +314,24 @@ pub mod pir_adapter {
     pub struct PirReceiptAdapter {
         /// Symbol name (sigil + bare name) that was queried.
         pub symbol: String,
-        /// Number of distinct reference ranges from the compiler (PIR-A) path.
-        pub compiler_candidate_count: usize,
-        /// Number of distinct reference ranges from the legacy path.
-        pub legacy_candidate_count: usize,
+        /// Distinct reference ranges found by the compiler (PIR-A) path, as
+        /// `(start, end)` byte offsets.
+        pub compiler_ranges: Vec<(usize, usize)>,
+        /// Distinct reference ranges found by the legacy path, as `(start, end)`
+        /// byte offsets.
+        pub legacy_ranges: Vec<(usize, usize)>,
         /// Legacy-only ranges not found by the compiler, as `(start, end)` byte offsets.
         pub missing_from_compiler: Vec<(usize, usize)>,
         /// Compiler-only ranges not found in the legacy result.
         pub extra_in_compiler: Vec<(usize, usize)>,
+        /// Near-match sites where both paths agree a reference exists but
+        /// disagree on exact byte offsets.
+        pub range_disagreements: Vec<RangeDisagreement>,
         /// Whether the underlying extractor reported a behavior change.
         pub provider_behavior_changed: bool,
-        /// Why the comparison was refused, expressed as a string label.
-        /// `None` when the comparison ran.  Use the PIR enum's `Debug` label
-        /// or a short kebab-case string (e.g. `"not_same_file_lexical"`).
-        pub refusal_reason_label: Option<String>,
+        /// Why the comparison was refused, using the PIR shadow's typed reason.
+        /// `None` when the comparison ran.
+        pub refusal_reason: Option<PirShadowRefusalReason>,
         /// Typed fact-source traces from the PIR receipt (passed through unchanged).
         pub fact_source_traces: Vec<ProviderFactTrace>,
     }
@@ -327,30 +341,18 @@ pub mod pir_adapter {
         ///
         /// All fields in the output are derived from `self`; none are hardcoded.
         pub fn into_canonical(self) -> SemanticShadowCompareReceipt {
-            let refused = self.refusal_reason_label.is_some();
+            let refused = self.refusal_reason.is_some();
 
             // Old (legacy) path summary: always available unless refused.
-            let old_result = if refused {
-                summarize_identities(None)
-            } else {
-                let identities =
-                    (0..self.legacy_candidate_count).map(|i| format!("legacy:{i}")).collect();
-                summarize_identities(Some(identities))
-            };
+            let old_result = pir_old_summary(&self.legacy_ranges, refused);
 
             // New (compiler) path summary: available only when comparison ran.
-            let new_result = if refused {
-                summarize_identities(None)
-            } else {
-                let identities =
-                    (0..self.compiler_candidate_count).map(|i| format!("compiler:{i}")).collect();
-                summarize_identities(Some(identities))
-            };
+            let new_result = pir_new_summary(&self.compiler_ranges, refused);
 
             // Derive notes from the PIR-specific fields.
             let mut notes: Vec<String> = Vec::new();
-            if let Some(ref label) = self.refusal_reason_label {
-                notes.push(format!("pir_refusal: {label}"));
+            if let Some(reason) = self.refusal_reason {
+                notes.push(format!("pir_refusal: {}", pir_refusal_reason_label(reason)));
             }
             if !self.missing_from_compiler.is_empty() {
                 notes.push(format!(
@@ -362,6 +364,12 @@ pub mod pir_adapter {
                 notes.push(format!(
                     "pir_extra_in_compiler: {} ranges",
                     self.extra_in_compiler.len()
+                ));
+            }
+            if !self.range_disagreements.is_empty() {
+                notes.push(format!(
+                    "pir_range_disagreements: {} ranges",
+                    self.range_disagreements.len()
                 ));
             }
             if self.provider_behavior_changed {
@@ -382,10 +390,11 @@ pub mod pir_adapter {
         /// (i.e. the PIR shadow did not run).
         #[must_use]
         pub fn was_refused(&self) -> bool {
-            self.refusal_reason_label.is_some()
+            self.refusal_reason.is_some()
         }
 
-        /// Returns `true` if the compiler found more or equal ranges vs legacy.
+        /// Returns `true` if the compiler reported no ranges that the legacy
+        /// path did not also report (i.e. `extra_in_compiler` is empty).
         ///
         /// Used in scorecard gate assertions: `extra_in_compiler == 0` is the
         /// precondition for PIR promotion (per the PR3 plan-reviewed spec on
@@ -396,25 +405,59 @@ pub mod pir_adapter {
         }
     }
 
+    /// Stable identity string for one byte-offset range, shared by both
+    /// compare paths so equal ranges produce equal identities.
+    fn range_identity(&(start, end): &(usize, usize)) -> String {
+        format!("{start}..{end}")
+    }
+
+    /// Deterministic kebab-case label for a typed PIR refusal reason.
+    ///
+    /// Centralized so every caller derives identical note text from the same
+    /// reason.  The match is deliberately exhaustive without a wildcard: if
+    /// the upstream enum gains a variant, this function fails to compile until
+    /// it is given an explicit stable label.
+    fn pir_refusal_reason_label(reason: PirShadowRefusalReason) -> String {
+        match reason {
+            PirShadowRefusalReason::FeatureDisabled => "feature_disabled".to_string(),
+            PirShadowRefusalReason::NotSameFileLexical => "not_same_file_lexical".to_string(),
+            PirShadowRefusalReason::NoAnchoredFacts => "no_anchored_facts".to_string(),
+            PirShadowRefusalReason::ProviderBehaviorChanged => {
+                "provider_behavior_changed".to_string()
+            }
+            PirShadowRefusalReason::NoExactFacts => "no_exact_facts".to_string(),
+            PirShadowRefusalReason::DynamicBoundary => "dynamic_boundary".to_string(),
+            PirShadowRefusalReason::ShadowObserved => "shadow_observed".to_string(),
+        }
+    }
+
     /// Build a [`ShadowResultSummary`] that represents a PIR path output.
     ///
-    /// Identities are positional (`"compiler:0"`, `"compiler:1"`, …) because
-    /// PIR ranges are not yet correlated to named symbols in the framework.
-    /// The migration to stable identities is left to #9086/#9087.
-    pub fn pir_new_summary(candidate_count: usize, refused: bool) -> ShadowResultSummary {
+    /// Identities are derived from the actual ranges via `range_identity`
+    /// (`"{start}..{end}"`), so two paths returning the same ranges produce
+    /// intersecting identity sets and an honest `Same` verdict; `match_count`
+    /// is the number of distinct ranges after deduplication.  Correlating
+    /// ranges to named symbols is left to #9086/#9087.
+    pub fn pir_new_summary(
+        compiler_ranges: &[(usize, usize)],
+        refused: bool,
+    ) -> ShadowResultSummary {
         if refused {
             return summarize_identities(None);
         }
-        let identities = (0..candidate_count).map(|i| format!("compiler:{i}")).collect();
+        let identities: Vec<String> = compiler_ranges.iter().map(range_identity).collect();
         summarize_identities(Some(identities))
     }
 
     /// Build a [`ShadowResultSummary`] that represents a legacy path output.
-    pub fn pir_old_summary(candidate_count: usize, refused: bool) -> ShadowResultSummary {
+    ///
+    /// Same range-identity derivation as [`pir_new_summary`], applied to the
+    /// legacy path's actual ranges.
+    pub fn pir_old_summary(legacy_ranges: &[(usize, usize)], refused: bool) -> ShadowResultSummary {
         if refused {
             return summarize_identities(None);
         }
-        let identities = (0..candidate_count).map(|i| format!("legacy:{i}")).collect();
+        let identities: Vec<String> = legacy_ranges.iter().map(range_identity).collect();
         summarize_identities(Some(identities))
     }
 }
@@ -423,6 +466,11 @@ pub mod pir_adapter {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
+    use crate::providers::navigation::references_pir_shadow::{
+        PirShadowRefusalReason, RangeDisagreement,
+    };
     use perl_semantic_facts::{
         Confidence, Provenance, ProviderFactFreshness, ProviderFactSourceKind, ProviderFactTrace,
         ProviderFallbackState, ProviderSurface,
@@ -617,7 +665,6 @@ mod tests {
     fn run_shadow_compare_old_path_runs_before_new_path() {
         // Verify evaluation order: old runs before new.
         // We detect this with a shared counter via a cell.
-        use std::cell::Cell;
         let counter = Cell::new(0u32);
         let old_order = Cell::new(0u32);
         let new_order = Cell::new(0u32);
@@ -651,12 +698,15 @@ mod tests {
     fn pir_adapter_no_refusal_produces_derived_summaries() {
         let adapter = PirReceiptAdapter {
             symbol: "x".to_string(),
-            compiler_candidate_count: 3,
-            legacy_candidate_count: 2,
+            // Legacy result is a strict subset of the compiler result, so
+            // `extra_in_compiler` is the only difference list.
+            compiler_ranges: vec![(1, 2), (10, 11), (30, 31)],
+            legacy_ranges: vec![(1, 2), (30, 31)],
             missing_from_compiler: vec![],
             extra_in_compiler: vec![(10, 11)],
+            range_disagreements: vec![],
             provider_behavior_changed: false,
-            refusal_reason_label: None,
+            refusal_reason: None,
             fact_source_traces: vec![],
         };
 
@@ -668,8 +718,14 @@ mod tests {
         assert_eq!(receipt.input.symbol, "x");
         assert_eq!(receipt.old_result.match_count, 2);
         assert_eq!(receipt.new_result.match_count, 3);
+        assert_eq!(receipt.old_result.identities, vec!["1..2".to_string(), "30..31".to_string()]);
+        assert_eq!(
+            receipt.new_result.identities,
+            vec!["1..2".to_string(), "10..11".to_string(), "30..31".to_string()]
+        );
         assert!(receipt.new_result.available);
         assert!(receipt.old_result.available);
+        assert_eq!(receipt.verdict, ShadowCompareVerdict::Improved);
         // Extra-in-compiler note must be present.
         assert!(
             receipt.notes.iter().any(|n| n.contains("pir_extra_in_compiler")),
@@ -682,12 +738,13 @@ mod tests {
     fn pir_adapter_refusal_yields_unavailable_verdict() {
         let adapter = PirReceiptAdapter {
             symbol: "y".to_string(),
-            compiler_candidate_count: 0,
-            legacy_candidate_count: 0,
+            compiler_ranges: vec![],
+            legacy_ranges: vec![],
             missing_from_compiler: vec![],
             extra_in_compiler: vec![],
+            range_disagreements: vec![],
             provider_behavior_changed: false,
-            refusal_reason_label: Some("not_same_file_lexical".to_string()),
+            refusal_reason: Some(PirShadowRefusalReason::NotSameFileLexical),
             fact_source_traces: vec![],
         };
 
@@ -705,12 +762,15 @@ mod tests {
     fn pir_adapter_missing_from_compiler_note_included() {
         let adapter = PirReceiptAdapter {
             symbol: "z".to_string(),
-            compiler_candidate_count: 1,
-            legacy_candidate_count: 3,
-            missing_from_compiler: vec![(5, 6), (20, 21)],
+            // Compiler result is a strict subset of the legacy result, so
+            // `extra_in_compiler` stays empty.
+            compiler_ranges: vec![(5, 6)],
+            legacy_ranges: vec![(5, 6), (20, 21), (30, 31)],
+            missing_from_compiler: vec![(20, 21), (30, 31)],
             extra_in_compiler: vec![],
+            range_disagreements: vec![],
             provider_behavior_changed: false,
-            refusal_reason_label: None,
+            refusal_reason: None,
             fact_source_traces: vec![],
         };
 
@@ -734,12 +794,13 @@ mod tests {
     fn pir_adapter_behavior_changed_note_included() {
         let adapter = PirReceiptAdapter {
             symbol: "w".to_string(),
-            compiler_candidate_count: 2,
-            legacy_candidate_count: 2,
+            compiler_ranges: vec![(1, 2), (3, 4)],
+            legacy_ranges: vec![(1, 2), (3, 4)],
             missing_from_compiler: vec![],
             extra_in_compiler: vec![],
+            range_disagreements: vec![],
             provider_behavior_changed: true,
-            refusal_reason_label: None,
+            refusal_reason: None,
             fact_source_traces: vec![],
         };
 
@@ -767,12 +828,13 @@ mod tests {
 
         let adapter = PirReceiptAdapter {
             symbol: "t".to_string(),
-            compiler_candidate_count: 0,
-            legacy_candidate_count: 0,
+            compiler_ranges: vec![],
+            legacy_ranges: vec![],
             missing_from_compiler: vec![],
             extra_in_compiler: vec![],
+            range_disagreements: vec![],
             provider_behavior_changed: false,
-            refusal_reason_label: Some("dynamic_boundary".to_string()),
+            refusal_reason: Some(PirShadowRefusalReason::DynamicBoundary),
             fact_source_traces: vec![trace],
         };
 
@@ -781,20 +843,89 @@ mod tests {
         assert_eq!(receipt.fact_source_traces[0].source, ProviderFactSourceKind::DynamicBoundary);
     }
 
+    /// The equal-count boundary: identical ranges on both paths must produce
+    /// intersecting identity sets and a `Same` verdict.  Positional identities
+    /// (`legacy:N` / `compiler:N`) made this case classify as `Ambiguous`
+    /// because the two identity namespaces never intersect.
     #[test]
-    fn pir_summary_helpers_derive_from_count() {
-        let summary = pir_adapter::pir_new_summary(3, false);
+    fn pir_adapter_equal_counts_identical_ranges_yield_same_verdict() {
+        let ranges = vec![(10, 12), (20, 24), (30, 36)];
+        let adapter = PirReceiptAdapter {
+            symbol: "eq".to_string(),
+            compiler_ranges: ranges.clone(),
+            legacy_ranges: ranges,
+            missing_from_compiler: vec![],
+            extra_in_compiler: vec![],
+            range_disagreements: vec![],
+            provider_behavior_changed: false,
+            refusal_reason: None,
+            fact_source_traces: vec![],
+        };
+
+        let receipt = adapter.into_canonical();
+        assert_eq!(receipt.verdict, ShadowCompareVerdict::Same);
+        assert_eq!(receipt.old_result.match_count, 3);
+        assert_eq!(receipt.new_result.match_count, 3);
+        assert_eq!(receipt.old_result.identities, receipt.new_result.identities);
+    }
+
+    /// Equal counts whose near-match offsets disagree must stay `Ambiguous`
+    /// (identity sets differ at the same count) and must surface the
+    /// disagreement in the notes; count equality alone never implies `Same`.
+    #[test]
+    fn pir_adapter_equal_counts_divergent_ranges_stay_ambiguous_with_note() {
+        let adapter = PirReceiptAdapter {
+            symbol: "amb".to_string(),
+            compiler_ranges: vec![(10, 12), (20, 24)],
+            legacy_ranges: vec![(10, 13), (20, 25)],
+            missing_from_compiler: vec![],
+            extra_in_compiler: vec![],
+            range_disagreements: vec![
+                RangeDisagreement {
+                    variable: "$x".to_string(),
+                    compiler_range: (10, 12),
+                    legacy_range: (10, 13),
+                },
+                RangeDisagreement {
+                    variable: "$y".to_string(),
+                    compiler_range: (20, 24),
+                    legacy_range: (20, 25),
+                },
+            ],
+            provider_behavior_changed: false,
+            refusal_reason: None,
+            fact_source_traces: vec![],
+        };
+
+        let receipt = adapter.into_canonical();
+        assert_eq!(receipt.verdict, ShadowCompareVerdict::Ambiguous);
+        assert_ne!(receipt.old_result.identities, receipt.new_result.identities);
+        assert!(
+            receipt.notes.iter().any(|n| n.contains("pir_range_disagreements: 2 ranges")),
+            "range_disagreements note must appear, got {:?}",
+            receipt.notes
+        );
+    }
+
+    #[test]
+    fn pir_summary_helpers_derive_from_ranges() {
+        let summary = pir_adapter::pir_new_summary(&[(1, 2), (3, 4), (5, 6)], false);
         assert!(summary.available);
         assert_eq!(summary.match_count, 3);
-        assert_eq!(summary.identities.len(), 3);
-        assert_eq!(summary.identities[0], "compiler:0");
+        assert_eq!(
+            summary.identities,
+            vec!["1..2".to_string(), "3..4".to_string(), "5..6".to_string()]
+        );
 
-        let refused = pir_adapter::pir_new_summary(3, true);
+        let deduped = pir_adapter::pir_new_summary(&[(1, 2), (1, 2), (3, 4)], false);
+        assert_eq!(deduped.match_count, 2);
+
+        let refused = pir_adapter::pir_new_summary(&[(1, 2)], true);
         assert!(!refused.available);
         assert_eq!(refused.match_count, 0);
 
-        let old_summary = pir_adapter::pir_old_summary(2, false);
-        assert_eq!(old_summary.match_count, 2);
-        assert_eq!(old_summary.identities[0], "legacy:0");
+        let old_summary = pir_adapter::pir_old_summary(&[(7, 8)], false);
+        assert_eq!(old_summary.match_count, 1);
+        assert_eq!(old_summary.identities, vec!["7..8".to_string()]);
     }
 }
