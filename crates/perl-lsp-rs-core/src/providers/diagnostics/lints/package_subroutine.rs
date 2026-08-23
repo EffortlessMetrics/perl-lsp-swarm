@@ -68,6 +68,7 @@ pub fn check_missing_package_declaration(
             related_information: Vec::new(),
             tags: Vec::new(),
             fixable: false,
+            critic_observation: None,
             suggestion: Some("Add 'package MyModule;' at the top of the file".to_string()),
         });
     }
@@ -107,6 +108,7 @@ pub fn check_duplicate_package(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                     related_information: Vec::new(),
                     tags: Vec::new(),
                     fixable: false,
+                    critic_observation: None,
                     suggestion: Some(format!(
                         "Remove the duplicate 'package {};' declaration",
                         name
@@ -168,6 +170,7 @@ pub fn check_duplicate_subroutine(node: &Node, diagnostics: &mut Vec<Diagnostic>
                 related_information: Vec::new(),
                 tags: Vec::new(),
                 fixable: false,
+                critic_observation: None,
                 suggestion: Some(format!(
                     "Remove or rename the duplicate 'sub {}' definition",
                     display_name

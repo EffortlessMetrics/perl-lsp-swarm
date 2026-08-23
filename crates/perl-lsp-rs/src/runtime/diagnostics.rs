@@ -463,6 +463,7 @@ impl PullDiagnosticsOrchestrator {
                         tags: Vec::new(),
                         suggestion: None,
                         fixable,
+                        critic_observation: None,
                     });
                 }
             }
@@ -2042,9 +2043,10 @@ impl LspServer {
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         diagnostics: &mut Vec<InternalDiagnostic>,
     ) {
+        use perl_lsp_rs_core::providers::diagnostics::take_critic_overlap_observations;
         use perl_lsp_rs_core::tooling::perl_critic::{
-            NativeCriticPolicy, native_finding_candidates_with_accounting,
-            normalize_with_native_policy,
+            BuiltInCriticObservation, NativeCriticPolicy, built_in_observation_candidates,
+            native_finding_candidates_with_accounting, normalize_with_native_policy,
         };
 
         let (critic_engine, severity, profile, native_profile, native_include, native_exclude) = {
@@ -2084,11 +2086,24 @@ impl LspServer {
         // once post-merge. Findings without a registered producer-owned
         // identity are rejected here rather than guessed, and every rejection
         // is accounted for instead of silently vanishing.
+        //
+        // Core lint emitters that declared a reviewed critic overlap
+        // observation surrender their ordinary diagnostic here (#11918): the
+        // logical row comes out of this same normalization, merged with the
+        // native alias and carrying both contributor identities.
+        let overlap_observations: Vec<BuiltInCriticObservation> =
+            take_critic_overlap_observations(diagnostics);
         let candidates = native_finding_candidates_with_accounting(
             subject,
             registry.check_unfiltered(&critic_context),
             source_identity,
-        );
+        )
+        .into_iter()
+        .chain(built_in_observation_candidates(
+            overlap_observations,
+            doc_text,
+            source_identity,
+        ));
         let suppressions =
             perl_lsp_rs_core::tooling::perl_critic::CriticSuppressionMap::from_source(doc_text);
         let policy = NativeCriticPolicy::new(
@@ -2293,6 +2308,7 @@ impl LspServer {
                         tags: Vec::new(),
                         suggestion: None,
                         fixable,
+                        critic_observation: None,
                     });
                 }
             }
@@ -2330,6 +2346,11 @@ impl LspServer {
 /// when the native perlcritic engine and built-in lints report the same finding
 /// (e.g. `RequireUseStrictRule` ↔ PL100).  When collapsing, prefer built-in PL*
 /// codes over native-critic codes.  (#5088)
+///
+/// The reviewed overlap pairs migrated into the normalized critic seam
+/// (#11918) are exempt: their duplicate prevention happens upstream at
+/// producer-owned emission, so a regression that re-splits those rows must
+/// surface as duplicate diagnostics instead of being silently hidden here.
 fn dedup_overlapping_diagnostics(diagnostics: &mut Vec<perl_lsp_rs_core::providers::Diagnostic>) {
     // Sort so that PL* codes come before native.* codes at the same (range, severity).
     diagnostics.sort_by(|a, b| {
@@ -2348,7 +2369,39 @@ fn dedup_overlapping_diagnostics(diagnostics: &mut Vec<perl_lsp_rs_core::provide
         a.range == b.range
             && a.severity == b.severity
             && (is_native_critic_code(a.code.as_deref()) ^ is_native_critic_code(b.code.as_deref()))
+            && !is_upstream_merged_alias_pair(a.code.as_deref(), b.code.as_deref())
     });
+}
+
+/// Whether one `(PL* code, native rule id)` pair is a reviewed alias whose
+/// duplicate prevention moved upstream into the normalized critic seam
+/// (#11918).
+///
+/// These are exactly the reviewed alias pairs of the migrated producer
+/// cohort; every other overlap pair keeps the transport-level coincidence
+/// dedup until its own producers migrate.
+fn is_upstream_merged_alias_pair(a_code: Option<&str>, b_code: Option<&str>) -> bool {
+    let a_is_pl = matches!(a_code, Some("PL404" | "PL601" | "PL603" | "PL604" | "PL606"));
+    let b_is_pl = matches!(b_code, Some("PL404" | "PL601" | "PL603" | "PL604" | "PL606"));
+    let a_is_native_alias = matches!(
+        a_code,
+        Some(
+            "native.common.undef_comparison"
+                | "native.security.backtick_exec"
+                | "native.security.qx_readpipe"
+                | "native.security.system_exec"
+        )
+    );
+    let b_is_native_alias = matches!(
+        b_code,
+        Some(
+            "native.common.undef_comparison"
+                | "native.security.backtick_exec"
+                | "native.security.qx_readpipe"
+                | "native.security.system_exec"
+        )
+    );
+    (a_is_pl && b_is_native_alias) || (b_is_pl && a_is_native_alias)
 }
 
 /// Returns `true` if the code string looks like a native-critic code (not a PL* code).
@@ -2454,6 +2507,7 @@ fn normalized_critic_finding_to_diagnostic(
         tags: Vec::new(),
         suggestion: None,
         fixable: finding.has_available_fix(),
+        critic_observation: None,
     }
 }
 
@@ -2506,6 +2560,7 @@ fn builtin_violation_to_diagnostic(
         tags: Vec::new(),
         suggestion: None,
         fixable: is_fixable_diagnostic(&violation.policy),
+        critic_observation: None,
     }
 }
 
@@ -3142,6 +3197,13 @@ mod tests {
             !text.contains("native.security.backtick_exec"),
             "excluding PL601 must remove the backtick logical row; got: {text:?}"
         );
+        // #11918: exclusion by the compatibility spelling removes the whole
+        // logical row — the built-in contributor no longer survives beside
+        // the excluded native alias.
+        assert!(
+            !text.contains("PL601"),
+            "excluding PL601 must remove the complete alias row; got: {text:?}"
+        );
     }
 
     #[test]
@@ -3173,6 +3235,115 @@ mod tests {
         assert!(
             !text.contains("native.security.system_exec"),
             "PL603 selector must suppress the system_exec logical row; got: {text:?}"
+        );
+        // #11918: the merged logical row is the product row, so suppressing
+        // by the built-in spelling removes the built-in contributor's
+        // presentation too — the whole row disappears, not just the native
+        // half.
+        assert!(
+            !text.contains("PL603"),
+            "suppression must remove the complete alias row, PL603 included; got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn native_critic_overlap_rows_merge_into_one_product_row_before_projection() {
+        // #11918 duplicate-count proof: with the transport-level XOR dedup
+        // retired for the migrated alias pairs, only the normalized seam
+        // prevents duplicates. `system()` fires both the PL603 core lint and
+        // the native rule; the published set must carry exactly one row.
+        let (server, buf) = make_server_with_capture();
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        server.test_configure_native_critic_profile("strict");
+        let uri = "file:///native_critic_overlap_merge_test.pl";
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "use strict;\nuse warnings;\nsystem('ls');\n"
+                }
+            })))
+            .unwrap();
+
+        server.publish_diagnostics(uri);
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let bytes = buf.lock().clone();
+        let text = String::from_utf8(bytes).unwrap_or_default();
+        assert!(
+            !text.contains("native.security.system_exec"),
+            "the native spelling must not appear as a separate row; got: {text:?}"
+        );
+        // The transport may publish the same set more than once; every
+        // published set must carry exactly one merged PL603 row. The row
+        // signature `"code":"PL603","codeDescription` matches only the outer
+        // diagnostic code, not the data-block echo.
+        for published in text.split(r#""method":"textDocument/publishDiagnostics""#).skip(1) {
+            assert_eq!(
+                published.matches(r#""code":"PL603","codeDescription"#).count(),
+                1,
+                "each published set carries exactly one merged PL603 row; got: {published:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_critic_overlap_rows_stay_distinct_per_reviewed_shape() {
+        // #11918: `qx` and backtick are two reviewed PL601 shapes; each keeps
+        // its own logical row (qx merges with the native qx alias, backtick
+        // with the native backtick alias) and readpipe stays PL606.
+        let (server, buf) = make_server_with_capture();
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        server.test_configure_native_critic_profile("strict");
+        let uri = "file:///native_critic_overlap_shapes_test.pl";
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "use strict;\nuse warnings;\nmy $a = `ls`;\nmy $b = qx(date);\nmy $c = readpipe('id');\nprint $a . $b . $c;\n"
+                }
+            })))
+            .unwrap();
+
+        server.publish_diagnostics(uri);
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let bytes = buf.lock().clone();
+        let text = String::from_utf8(bytes).unwrap_or_default();
+        let count_rows = |published: &str, code: &str| {
+            published.matches(&format!(r#""code":"{code}","codeDescription"#)).count()
+        };
+        let mut checked_any_publish = false;
+        for published in text.split(r#""method":"textDocument/publishDiagnostics""#).skip(1) {
+            if !published.contains("PL601") && !published.contains("PL606") {
+                continue;
+            }
+            checked_any_publish = true;
+            assert_eq!(
+                count_rows(published, "PL601"),
+                2,
+                "backtick and qx each keep one merged row: {published:?}"
+            );
+            assert_eq!(
+                count_rows(published, "PL606"),
+                1,
+                "readpipe keeps its own row: {published:?}"
+            );
+        }
+        assert!(
+            checked_any_publish,
+            "at least one published set must carry the command-execution rows; got: {text:?}"
+        );
+        assert!(
+            !text.contains("native.security.backtick_exec")
+                && !text.contains("native.security.qx_readpipe"),
+            "native spellings ride inside the merged rows, not beside them: {text:?}"
         );
     }
 
@@ -3316,14 +3487,22 @@ mod tests {
             }),
             "native critic engine should add native assignment-in-condition finding to workspace diagnostics: {report}"
         );
+        // #11918: the literal-undef comparison merges into one logical row
+        // presented with the built-in spelling; the native spelling rides
+        // inside the row as a contributor instead of appearing beside it.
         assert!(
             diagnostics.iter().any(|diag| {
-                diag["code"].as_str() == Some("native.common.undef_comparison")
+                diag["code"].as_str() == Some("PL404")
                     && diag["source"].as_str() == Some("perl-lsp")
-                    && diag["message"].as_str()
-                        == Some("Using '==' with undef -- use defined() to check first")
+                    && diag["message"].as_str().is_some_and(|message| message.contains("defined"))
             }),
-            "native critic engine should add native undef-comparison finding to workspace diagnostics: {report}"
+            "merged literal-undef comparison row should be presented as PL404: {report}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diag| diag["code"].as_str() == Some("native.common.undef_comparison")),
+            "native undef spelling must not appear as a separate row: {report}"
         );
         assert!(
             diagnostics.iter().any(|diag| {
@@ -3385,20 +3564,29 @@ mod tests {
             "native critic engine should add native unchecked open/close finding to workspace diagnostics: {report}"
         );
         assert!(
-            diagnostics.iter().any(|diag| {
-                diag["code"].as_str() == Some("native.security.backtick_exec")
-                    && diag["source"].as_str() == Some("perl-lsp")
-                    && diag["message"].as_str() == Some("Command execution detected")
-            }),
-            "native critic engine should add native backtick execution finding to workspace diagnostics: {report}"
+            diagnostics.iter().filter(|diag| diag["code"].as_str() == Some("PL601")).count() == 2,
+            "backtick and qx rows merge per reviewed shape into two PL601 rows: {report}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diag| diag["code"].as_str() == Some("native.security.backtick_exec")),
+            "native backtick spelling must not appear as a separate row: {report}"
         );
         assert!(
             diagnostics.iter().any(|diag| {
-                diag["code"].as_str() == Some("native.security.qx_readpipe")
+                diag["code"].as_str() == Some("PL606")
                     && diag["source"].as_str() == Some("perl-lsp")
-                    && diag["message"].as_str() == Some("qx/readpipe command execution detected")
+                    && diag["message"].as_str()
+                        == Some("readpipe() executes a shell command (equivalent to qx//). Ensure input is sanitized.")
             }),
-            "native critic engine should add native qx/readpipe finding to workspace diagnostics: {report}"
+            "merged readpipe row should be presented as PL606: {report}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diag| diag["code"].as_str() == Some("native.security.qx_readpipe")),
+            "native qx/readpipe spelling must not appear as a separate row: {report}"
         );
         assert!(
             diagnostics.iter().any(|diag| {
@@ -3410,11 +3598,26 @@ mod tests {
         );
         assert!(
             diagnostics.iter().any(|diag| {
-                diag["code"].as_str() == Some("native.security.system_exec")
+                diag["code"].as_str() == Some("PL603")
                     && diag["source"].as_str() == Some("perl-lsp")
-                    && diag["message"].as_str() == Some("system() executes a shell command")
+                    && diag["message"].as_str()
+                        == Some("system() executes a shell command. Ensure input is sanitized.")
             }),
-            "native critic engine should add native system/exec finding to workspace diagnostics: {report}"
+            "merged system row should be presented as PL603: {report}"
+        );
+        assert!(
+            diagnostics.iter().any(|diag| {
+                diag["code"].as_str() == Some("PL604")
+                    && diag["source"].as_str() == Some("perl-lsp")
+                    && diag["message"].as_str().is_some_and(|m| m.starts_with("exec()"))
+            }),
+            "merged exec row should be presented as PL604: {report}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diag| diag["code"].as_str() == Some("native.security.system_exec")),
+            "native system/exec spelling must not appear as a separate row: {report}"
         );
         assert!(
             diagnostics.iter().any(|diag| {

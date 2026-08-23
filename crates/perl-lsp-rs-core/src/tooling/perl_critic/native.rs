@@ -2043,7 +2043,7 @@ fn collect_qx_readpipe_findings(
     }
 }
 
-fn is_qx_string(value: &str) -> bool {
+pub(crate) fn is_qx_string(value: &str) -> bool {
     let Some(rest) = value.strip_prefix("qx") else {
         return false;
     };
@@ -2071,7 +2071,7 @@ fn collect_backtick_exec_findings(
     }
 }
 
-fn is_backtick_string(value: &str) -> bool {
+pub(crate) fn is_backtick_string(value: &str) -> bool {
     value.starts_with('`') && value.ends_with('`') && value.len() >= 2
 }
 
@@ -2453,7 +2453,7 @@ fn missing_pod_sections(source: &str) -> Vec<MissingPodSection> {
         .collect()
 }
 
-fn range_for_byte_span(content: &str, start: usize, end: usize) -> Range {
+pub(crate) fn range_for_byte_span(content: &str, start: usize, end: usize) -> Range {
     let start = start.min(content.len());
     let end = end.min(content.len()).max(start);
     let start_position = position_for_byte_offset(content, start);

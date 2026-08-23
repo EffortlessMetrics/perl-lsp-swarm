@@ -363,7 +363,7 @@ impl PullDiagnosticsProvider {
 
                 // Wire workspace semantic queries when available (pull-text path).
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                let base_diagnostics: Vec<_> = {
+                let core_diagnostics: Vec<_> = {
                     let semantic_diags =
                         context.workspace_index.as_ref().and_then(|workspace_index| {
                             workspace_index.with_semantic_queries_for_uri(
@@ -382,37 +382,33 @@ impl PullDiagnosticsProvider {
                                 },
                             )
                         });
-                    semantic_diags
-                        .unwrap_or_else(|| {
-                            provider.get_diagnostics_with_path(
-                                &ast,
-                                &parse_errors,
-                                content,
-                                Some(&resolver),
-                                &search_paths,
-                                source_path.as_deref(),
-                            )
-                        })
-                        .into_iter()
-                        .map(|d| self.to_lsp_diagnostic_with_context(uri, content, d, context))
-                        .collect()
+                    semantic_diags.unwrap_or_else(|| {
+                        provider.get_diagnostics_with_path(
+                            &ast,
+                            &parse_errors,
+                            content,
+                            Some(&resolver),
+                            &search_paths,
+                            source_path.as_deref(),
+                        )
+                    })
                 };
                 #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-                let base_diagnostics: Vec<_> = provider
-                    .get_diagnostics_with_path(
-                        &ast,
-                        &parse_errors,
-                        content,
-                        Some(&resolver),
-                        &search_paths,
-                        source_path.as_deref(),
-                    )
-                    .into_iter()
-                    .map(|d| self.to_lsp_diagnostic_with_context(uri, content, d, context))
-                    .collect();
+                let core_diagnostics: Vec<_> = provider.get_diagnostics_with_path(
+                    &ast,
+                    &parse_errors,
+                    content,
+                    Some(&resolver),
+                    &search_paths,
+                    source_path.as_deref(),
+                );
 
-                let mut diagnostics = base_diagnostics;
-
+                let mut core_diagnostics = core_diagnostics;
+                // Critic composition runs over the producer-owned core rows so
+                // declared overlap observations can enter the normalized seam
+                // before LSP projection (#11918); surviving rows are mapped
+                // afterwards.
+                let mut critic_rows: Vec<LspDiagnostic> = Vec::new();
                 let critic_generation =
                     doc_state.map(|state| state.current_generation()).unwrap_or(0);
                 self.add_policy_critic_diagnostics(
@@ -424,10 +420,15 @@ impl PullDiagnosticsProvider {
                         &uri.to_string(),
                         critic_generation,
                     ),
-                    &mut diagnostics,
+                    &mut core_diagnostics,
+                    &mut critic_rows,
                 );
 
-                diagnostics
+                core_diagnostics
+                    .into_iter()
+                    .map(|d| self.to_lsp_diagnostic_with_context(uri, content, d, context))
+                    .chain(critic_rows)
+                    .collect()
             }
             Err(error) => {
                 vec![self.parse_error_to_diagnostic_with_context(uri, content, &error, context)]
@@ -544,6 +545,11 @@ impl PullDiagnosticsProvider {
     }
 
     /// Add configured policy critic diagnostics.
+    ///
+    /// Under the native engine this also consumes core diagnostics whose
+    /// emitter declared a reviewed critic overlap observation: those ordinary
+    /// rows are replaced by the normalized logical rows appended to
+    /// `critic_rows`, merged with their native aliases (#11918).
     fn add_policy_critic_diagnostics(
         &self,
         uri: &Uri,
@@ -551,11 +557,12 @@ impl PullDiagnosticsProvider {
         content: &str,
         context: &PullDiagnosticsContext,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
-        diagnostics: &mut Vec<LspDiagnostic>,
+        core_diagnostics: &mut Vec<InternalDiagnostic>,
+        critic_rows: &mut Vec<LspDiagnostic>,
     ) {
         match context.critic_engine {
             CriticEngine::Legacy => {
-                self.add_builtin_critic_diagnostics(uri, ast, content, diagnostics);
+                self.add_builtin_critic_diagnostics(uri, ast, content, critic_rows);
             }
             CriticEngine::Native => {
                 self.add_native_critic_diagnostics(
@@ -564,7 +571,8 @@ impl PullDiagnosticsProvider {
                     content,
                     context,
                     source_identity,
-                    diagnostics,
+                    core_diagnostics,
+                    critic_rows,
                 );
             }
         }
@@ -604,6 +612,7 @@ impl PullDiagnosticsProvider {
                 tags: Vec::new(),
                 suggestion: None,
                 fixable: is_fixable_diagnostic(&violation.policy),
+                critic_observation: None,
             };
 
             diagnostics.push(self.to_lsp_diagnostic(uri, content, internal_diag));
@@ -618,10 +627,13 @@ impl PullDiagnosticsProvider {
         content: &str,
         context: &PullDiagnosticsContext,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
-        diagnostics: &mut Vec<LspDiagnostic>,
+        core_diagnostics: &mut Vec<InternalDiagnostic>,
+        critic_rows: &mut Vec<LspDiagnostic>,
     ) {
+        use perl_lsp_rs_core::providers::diagnostics::take_critic_overlap_observations;
         use perl_lsp_rs_core::tooling::perl_critic::{
-            CriticSuppressionMap, NativeCriticPolicy, native_finding_candidates_with_accounting,
+            BuiltInCriticObservation, CriticSuppressionMap, NativeCriticPolicy,
+            built_in_observation_candidates, native_finding_candidates_with_accounting,
             normalize_with_native_policy,
         };
 
@@ -643,11 +655,24 @@ impl PullDiagnosticsProvider {
         // once post-merge. Findings without a registered producer-owned
         // identity are rejected here rather than guessed, and every rejection
         // is accounted for instead of silently vanishing.
+        //
+        // Core lint emitters that declared a reviewed critic overlap
+        // observation surrender their ordinary diagnostic here (#11918): the
+        // logical row comes out of this same normalization, merged with the
+        // native alias and carrying both contributor identities.
+        let overlap_observations: Vec<BuiltInCriticObservation> =
+            take_critic_overlap_observations(core_diagnostics);
         let candidates = native_finding_candidates_with_accounting(
             &uri.to_string(),
             registry.check_unfiltered(&critic_context),
             source_identity,
-        );
+        )
+        .into_iter()
+        .chain(built_in_observation_candidates(
+            overlap_observations,
+            content,
+            source_identity,
+        ));
         let suppressions = CriticSuppressionMap::from_source(content);
         let policy = NativeCriticPolicy::new(
             severity_threshold,
@@ -657,7 +682,7 @@ impl PullDiagnosticsProvider {
         );
 
         for finding in normalize_with_native_policy(candidates, &policy) {
-            diagnostics.push(self.normalized_finding_to_lsp_diagnostic(uri, content, &finding));
+            critic_rows.push(self.normalized_finding_to_lsp_diagnostic(uri, content, &finding));
         }
     }
 
@@ -754,7 +779,7 @@ impl PullDiagnosticsProvider {
 
             // Wire workspace semantic queries when available (pull-state path).
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-            let base_diagnostics: Vec<_> = {
+            let core_diagnostics: Vec<_> = {
                 let semantic_diags = context.workspace_index.as_ref().and_then(|workspace_index| {
                     workspace_index.with_semantic_queries_for_uri(&uri_str, |file_id, queries| {
                         provider.get_diagnostics_with_path_and_semantics(
@@ -769,37 +794,31 @@ impl PullDiagnosticsProvider {
                         )
                     })
                 });
-                semantic_diags
-                    .unwrap_or_else(|| {
-                        provider.get_diagnostics_with_path(
-                            ast,
-                            parse_errors,
-                            &doc_state.text,
-                            Some(&resolver),
-                            &search_paths,
-                            source_path.as_deref(),
-                        )
-                    })
-                    .into_iter()
-                    .map(|d| self.to_lsp_diagnostic_with_context(uri, &doc_state.text, d, context))
-                    .collect()
+                semantic_diags.unwrap_or_else(|| {
+                    provider.get_diagnostics_with_path(
+                        ast,
+                        parse_errors,
+                        &doc_state.text,
+                        Some(&resolver),
+                        &search_paths,
+                        source_path.as_deref(),
+                    )
+                })
             };
             #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-            let base_diagnostics: Vec<_> = provider
-                .get_diagnostics_with_path(
-                    ast,
-                    parse_errors,
-                    &doc_state.text,
-                    Some(&resolver),
-                    &search_paths,
-                    source_path.as_deref(),
-                )
-                .into_iter()
-                .map(|d| self.to_lsp_diagnostic_with_context(uri, &doc_state.text, d, context))
-                .collect();
+            let core_diagnostics: Vec<_> = provider.get_diagnostics_with_path(
+                ast,
+                parse_errors,
+                &doc_state.text,
+                Some(&resolver),
+                &search_paths,
+                source_path.as_deref(),
+            );
 
-            let mut diagnostics = base_diagnostics;
-
+            let mut core_diagnostics = core_diagnostics;
+            // Critic composition over producer-owned core rows first (#11918);
+            // surviving rows map to LSP afterwards.
+            let mut critic_rows: Vec<LspDiagnostic> = Vec::new();
             self.add_policy_critic_diagnostics(
                 uri,
                 ast,
@@ -809,8 +828,14 @@ impl PullDiagnosticsProvider {
                     &uri.to_string(),
                     doc_state.current_generation(),
                 ),
-                &mut diagnostics,
+                &mut core_diagnostics,
+                &mut critic_rows,
             );
+            let mut diagnostics: Vec<LspDiagnostic> = core_diagnostics
+                .into_iter()
+                .map(|d| self.to_lsp_diagnostic_with_context(uri, &doc_state.text, d, context))
+                .chain(critic_rows)
+                .collect();
 
             // Add dead code diagnostics from workspace-wide symbol analysis
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
@@ -1767,27 +1792,31 @@ mod tests {
         assert_eq!(data["suppressionKey"], "native.common.deprecated_defined");
         assert_eq!(data["fixable"], true);
 
+        // #11918: the literal-undef comparison merges with its built-in PL404
+        // observation into one logical row presented with the built-in
+        // spelling; the native spelling rides inside the row, not beside it.
         let undef_comparison = items
             .iter()
             .find(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.common.undef_comparison"),
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL404"),
                 )
             })
-            .ok_or("expected native undef-comparison finding")?;
+            .ok_or("expected merged undef-comparison row")?;
         assert_eq!(undef_comparison.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(undef_comparison.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(
-            undef_comparison.message,
-            "Using '==' with undef -- use defined() to check first"
+        assert!(
+            undef_comparison.message.contains("defined"),
+            "merged row carries the producer message: {}",
+            undef_comparison.message
         );
-        let data = undef_comparison
-            .data
-            .as_ref()
-            .ok_or("native undef-comparison data should be populated")?;
-        assert_eq!(data["code"], "native.common.undef_comparison");
-        assert_eq!(data["suppressionKey"], "native.common.undef_comparison");
-        assert_eq!(data["fixable"], true);
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.common.undef_comparison"),
+                )
+            }),
+            "native undef-comparison spelling must not appear as a separate row"
+        );
 
         let stale_dollar_at = items
             .iter()
@@ -1898,41 +1927,47 @@ mod tests {
         assert_eq!(data["suppressionKey"], "native.io.unchecked_open_close");
         assert_eq!(data["fixable"], false);
 
-        let backtick_exec = items
+        // #11918: backtick and qx each keep one merged PL601 row per reviewed
+        // shape; the native spellings ride inside the merged rows.
+        let pl601_rows = items
             .iter()
-            .find(|diag| {
+            .filter(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL601"),
+                )
+            })
+            .count();
+        assert_eq!(pl601_rows, 2, "backtick and qx each merge into one PL601 row");
+        assert!(
+            !items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
                     |code| matches!(code, NumberOrString::String(value) if value == "native.security.backtick_exec"),
                 )
-            })
-            .ok_or("expected native backtick execution finding")?;
-        assert_eq!(backtick_exec.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(backtick_exec.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(backtick_exec.message, "Command execution detected");
-        let data = backtick_exec
-            .data
-            .as_ref()
-            .ok_or("native backtick execution data should be populated")?;
-        assert_eq!(data["code"], "native.security.backtick_exec");
-        assert_eq!(data["suppressionKey"], "native.security.backtick_exec");
-        assert_eq!(data["fixable"], false);
+            }),
+            "native backtick spelling must not appear as a separate row"
+        );
 
-        let qx_readpipe = items
+        let readpipe = items
             .iter()
             .find(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.security.qx_readpipe"),
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL606"),
                 )
             })
-            .ok_or("expected native qx/readpipe finding")?;
-        assert_eq!(qx_readpipe.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(qx_readpipe.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(qx_readpipe.message, "qx/readpipe command execution detected");
-        let data =
-            qx_readpipe.data.as_ref().ok_or("native qx/readpipe data should be populated")?;
-        assert_eq!(data["code"], "native.security.qx_readpipe");
-        assert_eq!(data["suppressionKey"], "native.security.qx_readpipe");
-        assert_eq!(data["fixable"], false);
+            .ok_or("expected merged readpipe row")?;
+        assert_eq!(readpipe.source.as_deref(), Some("perl-lsp"));
+        assert_eq!(
+            readpipe.message,
+            "readpipe() executes a shell command (equivalent to qx//). Ensure input is sanitized."
+        );
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.security.qx_readpipe"),
+                )
+            }),
+            "native qx/readpipe spelling must not appear as a separate row"
+        );
 
         let string_eval = items
             .iter()
@@ -1951,22 +1986,37 @@ mod tests {
         assert_eq!(data["suppressionKey"], "native.security.string_eval");
         assert_eq!(data["fixable"], false);
 
+        // #11918: system and exec merge with their built-in PL603/PL604
+        // observations; the native spelling rides inside the merged rows.
         let system_exec = items
             .iter()
             .find(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.security.system_exec"),
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL603"),
                 )
             })
-            .ok_or("expected native system/exec finding")?;
+            .ok_or("expected merged system row")?;
         assert_eq!(system_exec.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(system_exec.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(system_exec.message, "system() executes a shell command");
-        let data =
-            system_exec.data.as_ref().ok_or("native system/exec data should be populated")?;
-        assert_eq!(data["code"], "native.security.system_exec");
-        assert_eq!(data["suppressionKey"], "native.security.system_exec");
-        assert_eq!(data["fixable"], false);
+        assert_eq!(
+            system_exec.message,
+            "system() executes a shell command. Ensure input is sanitized."
+        );
+        assert!(
+            items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL604"),
+                )
+            }),
+            "expected merged exec row"
+        );
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.security.system_exec"),
+                )
+            }),
+            "native system/exec spelling must not appear as a separate row"
+        );
 
         let unused = items
             .iter()
@@ -2281,6 +2331,118 @@ mod tests {
                 matches!(code, NumberOrString::String(value) if value == "TestingAndDebugging::RequireUseStrict")
             })
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn pull_overlap_rows_merge_into_one_product_row_before_projection()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #11918: the pull transport historically had no XOR dedup at all, so
+        // the core PL603 row and the native system row appeared as duplicates.
+        // The normalized seam now merges them for both transports.
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///overlap.pl".parse()?;
+        let mut context = PullDiagnosticsContext::new();
+        context.critic_engine = CriticEngine::Native;
+        context.native_critic_profile = "strict".to_string();
+
+        let items = get_full_items(provider.get_document_diagnostics_with_context(
+            &uri,
+            "use strict;\nuse warnings;\nsystem('ls');\n",
+            None,
+            &context,
+            None,
+        ));
+
+        let pl603 = items
+            .iter()
+            .filter(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL603"),
+                )
+            })
+            .count();
+        assert_eq!(pl603, 1, "exactly one merged logical row carries PL603: {items:?}");
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(|code| {
+                    matches!(code, NumberOrString::String(value) if value == "native.security.system_exec")
+                })
+            }),
+            "the native spelling must ride inside the merged row: {items:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pull_overlap_merges_respect_reviewed_shapes_and_distinct_findings()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///shapes.pl".parse()?;
+        let mut context = PullDiagnosticsContext::new();
+        context.critic_engine = CriticEngine::Native;
+        context.native_critic_profile = "strict".to_string();
+
+        let items = get_full_items(provider.get_document_diagnostics_with_context(
+            &uri,
+            "use strict;\nuse warnings;\nmy $a = `ls`;\nmy $b = qx(date);\nmy $c = readpipe('id');\nif (5 == undef) { }\nif ($undeclared_var == 5) { }\nprint $a . $b . $c;\n",
+            None,
+            &context,
+            None,
+        ));
+
+        let count_code = |needle: &str| {
+            items
+                .iter()
+                .filter(|diag| {
+                    diag.code.as_ref().is_some_and(
+                        |code| matches!(code, NumberOrString::String(value) if value == needle),
+                    )
+                })
+                .count()
+        };
+        assert_eq!(count_code("PL601"), 2, "backtick and qx each keep one row: {items:?}");
+        assert_eq!(count_code("PL606"), 1, "readpipe keeps its own row: {items:?}");
+        assert_eq!(count_code("PL604"), 0, "no exec finding in this document: {items:?}");
+        // Literal-undef PL404 merges with its native alias into one row; the
+        // data-flow PL404 stays a distinct built-in-only row.
+        assert_eq!(count_code("PL404"), 2, "literal and data-flow PL404 rows: {items:?}");
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(|code| {
+                    matches!(code, NumberOrString::String(value) if value == "native.common.undef_comparison")
+                })
+            }),
+            "the native literal spelling rides inside its merged row: {items:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pull_suppression_by_compat_spelling_removes_the_complete_alias_row()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///suppress.pl".parse()?;
+        let mut context = PullDiagnosticsContext::new();
+        context.critic_engine = CriticEngine::Native;
+        context.native_critic_profile = "strict".to_string();
+
+        let items = get_full_items(provider.get_document_diagnostics_with_context(
+            &uri,
+            "## no critic PL603\nuse strict;\nuse warnings;\nsystem('ls');\n",
+            None,
+            &context,
+            None,
+        ));
+
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL603"),
+                )
+            }),
+            "suppression must remove the whole logical row in the pull path too: {items:?}"
+        );
         Ok(())
     }
 
