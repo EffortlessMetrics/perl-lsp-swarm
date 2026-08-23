@@ -21,6 +21,11 @@
 //! missing debug one — predates the reviewed source, so accepting it would
 //! skip the pre-build and make these tests silently exercise stale code.
 
+#![expect(
+    clippy::expect_used,
+    reason = "test-only resolution barriers must fail loudly, not degrade into the cargo fallback"
+)]
+
 use perl_tdd_support::must;
 use std::path::Path;
 use std::process::Command;

@@ -2353,6 +2353,10 @@ mod tests {
     // Tests are permitted to use `.expect()` on Result/Option per the repo's
     // coding standards (unlike production code, where it is banned).
     #![allow(clippy::expect_used)]
+    #![expect(
+        clippy::panic,
+        reason = "test-only barrier failure is a hard test error, not a production path"
+    )]
 
     use super::*;
 
