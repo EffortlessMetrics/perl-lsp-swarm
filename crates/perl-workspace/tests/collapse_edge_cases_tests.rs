@@ -603,7 +603,10 @@ fn test_no_duplicate_module_declarations_in_lib_rs() -> TestResult {
         vec!["discovery", "folder", "ignore", "monitoring", "slo", "state_machine", "workspace"];
 
     for module_name in modules {
-        let pub_mod_decl = format!("pub mod {}", module_name);
+        // Exact declaration match: a semicolon keeps prefix-sharing module
+        // names (`workspace` vs `workspace_symbol_query`, #10794) from being
+        // counted as duplicates of each other.
+        let pub_mod_decl = format!("pub mod {};", module_name);
         let count = content.matches(&pub_mod_decl).count();
 
         assert!(
