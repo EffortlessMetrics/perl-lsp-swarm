@@ -544,39 +544,31 @@ const SCHEMA_DELTAS: &[SchemaDeltaRow] = &[
     SchemaDeltaRow {
         row_id: "DELTA-URI-DEFAULT",
         area: "URI representation: default generated String Uri",
-        incumbent_evidence:
-            "0.97 src/uri.rs: newtype `Uri(fluent_uri::Uri<String>)` around fluent-uri 0.1.4; parse errors surface as typed Result",
-        candidate_evidence:
-            "0.11.0 src/generated/common.rs:28: plain `pub struct Uri(pub String)` with no parse step",
+        incumbent_evidence: "0.97 src/uri.rs: newtype `Uri(fluent_uri::Uri<String>)` around fluent-uri 0.1.4; parse errors surface as typed Result",
+        candidate_evidence: "0.11.0 src/generated/common.rs:28: plain `pub struct Uri(pub String)` with no parse step",
         classification: "public_api_only_difference",
-        migration_note:
-            "qualified-URI preservation and DocumentUriKey/#8156/#8484 interaction must be proven before choosing; parse fallibility moves from construction-time to trust-the-wire",
+        migration_note: "qualified-URI preservation and DocumentUriKey/#8156/#8484 interaction must be proven before choosing; parse fallibility moves from construction-time to trust-the-wire",
     },
     SchemaDeltaRow {
         row_id: "DELTA-URI-URL",
         area: "URI representation: optional `url` feature (url::Url 2.5.8)",
         incumbent_evidence: "n/a - incumbent has no url-backed mode",
-        candidate_evidence:
-            "0.11.0 Cargo.toml.orig features.url = [\"dep:url\"]; common.rs:66 type alias",
+        candidate_evidence: "0.11.0 Cargo.toml.orig features.url = [\"dep:url\"]; common.rs:66 type alias",
         classification: "schema_equivalent_representation_difference",
-        migration_note:
-            "alternative only; feature choice deferred to migration lane with adapter-boundary proof, not import-edit minimization",
+        migration_note: "alternative only; feature choice deferred to migration lane with adapter-boundary proof, not import-edit minimization",
     },
     SchemaDeltaRow {
         row_id: "DELTA-URI-FLUENT",
         area: "URI representation: optional `fluent-uri` feature (fluent_uri 0.4.1)",
         incumbent_evidence: "incumbent pins fluent-uri 0.1.4 internally",
-        candidate_evidence:
-            "0.11.0 Cargo.toml.orig features.fluent-uri = [\"dep:fluent-uri\"]; common.rs:68 Uri<String>",
+        candidate_evidence: "0.11.0 Cargo.toml.orig features.fluent-uri = [\"dep:fluent-uri\"]; common.rs:68 Uri<String>",
         classification: "schema_equivalent_representation_difference",
-        migration_note:
-            "closest wire behavior to incumbent but still a major fluent-uri version jump; same URI submatrix proof obligations as DELTA-URI-DEFAULT",
+        migration_note: "closest wire behavior to incumbent but still a major fluent-uri version jump; same URI submatrix proof obligations as DELTA-URI-DEFAULT",
     },
     SchemaDeltaRow {
         row_id: "DELTA-TYPEHIERARCHY-FIELD",
         area: "ServerCapabilities.type_hierarchy_provider field",
-        incumbent_evidence:
-            "verified absent from 0.97 default AND proposed surfaces (only TypeHierarchy request types + client capability exist); repo compensates via JSON patch + experimental injection",
+        incumbent_evidence: "verified absent from 0.97 default AND proposed surfaces (only TypeHierarchy request types + client capability exist); repo compensates via JSON patch + experimental injection",
         candidate_evidence: "typed Option<TypeHierarchyProvider> at structures.rs:6062",
         classification: "incumbent_defect_corrected_by_candidate",
         migration_note: "PATCH-TYPEHIERARCHY exits when the typed field serializes identically",
@@ -584,8 +576,7 @@ const SCHEMA_DELTAS: &[SchemaDeltaRow] = &[
     SchemaDeltaRow {
         row_id: "DELTA-RANGESSUPPORT-FIELD",
         area: "DocumentRangeFormattingOptions.ranges_support field (LSP 3.18)",
-        incumbent_evidence:
-            "verified absent from 0.97 (only document_range_formatting_provider exists); repo hand-patches rangesSupport into JSON",
+        incumbent_evidence: "verified absent from 0.97 (only document_range_formatting_provider exists); repo hand-patches rangesSupport into JSON",
         candidate_evidence: "typed Option<bool> at structures.rs:7113 (+ DocumentRangesFormattingOptions twin :9807)",
         classification: "incumbent_defect_corrected_by_candidate",
         migration_note: "PATCH-RANGESSUPPORT exits; 3.18 conformance matrix stays advertisement authority",
@@ -593,73 +584,182 @@ const SCHEMA_DELTAS: &[SchemaDeltaRow] = &[
     SchemaDeltaRow {
         row_id: "DELTA-INLINECOMPLETION-FIELD",
         area: "ServerCapabilities.inline_completion_provider field (LSP 3.18)",
-        incumbent_evidence:
-            "present in 0.97 ONLY behind its non-selected `proposed` cargo feature (lib.rs ~1954); default compiled surface lacks it",
+        incumbent_evidence: "present in 0.97 ONLY behind its non-selected `proposed` cargo feature (lib.rs ~1954); default compiled surface lacks it",
         candidate_evidence: "typed by default at structures.rs:6082",
         classification: "incumbent_defect_corrected_by_candidate",
-        migration_note:
-            "candidate removes the proposed-gating hazard without enabling any unstable surface; PATCH-INLINECOMPLETION static half exits",
+        migration_note: "candidate removes the proposed-gating hazard without enabling any unstable surface; PATCH-INLINECOMPLETION static half exits",
     },
     SchemaDeltaRow {
         row_id: "DELTA-INSERTTEXTMODES",
         area: "completionProvider.completionItem.insertTextModes server shape",
-        incumbent_evidence:
-            "not modeled in 0.97; repo injects numeric array [1,2] manually (invalid server shape per #2892/#8032)",
-        candidate_evidence:
-            "also NOT modeled in 0.11.0 (InsertTextMode enum + client capability only) - candidate is correct not to model it",
+        incumbent_evidence: "not modeled in 0.97; repo injects numeric array [1,2] manually (invalid server shape per #2892/#8032)",
+        candidate_evidence: "also NOT modeled in 0.11.0 (InsertTextMode enum + client capability only) - candidate is correct not to model it",
         classification: "intentional_repository_extension",
-        migration_note:
-            "invalid_current_protocol_shape: remove under #8032, never migrate as parity (PATCH-INSERTTEXTMODES)",
+        migration_note: "invalid_current_protocol_shape: remove under #8032, never migrate as parity (PATCH-INSERTTEXTMODES)",
     },
     SchemaDeltaRow {
         row_id: "DELTA-STABLE-PROPOSED",
         area: "stable vs proposed cargo-surface split",
         incumbent_evidence: "0.97 has a `proposed = []` feature with explicit no-semver guarantee note",
-        candidate_evidence:
-            "0.11.0 exposes one surface with no proposed/stable split (features: url|fluent-uri only)",
+        candidate_evidence: "0.11.0 exposes one surface with no proposed/stable split (features: url|fluent-uri only)",
         classification: "public_api_only_difference",
-        migration_note:
-            "maturity boundary moves fully repository-owned (#7113 validator + admitted-profile ledger); absence of a proposed feature neither advertises proposals nor blocks an admitted generated type",
+        migration_note: "maturity boundary moves fully repository-owned (#7113 validator + admitted-profile ledger); absence of a proposed feature neither advertises proposals nor blocks an admitted generated type",
     },
     SchemaDeltaRow {
         row_id: "DELTA-UNKNOWN-ENUMS",
         area: "unknown enum value tolerance",
         incumbent_evidence: "exactly one serde(other) catch-all across 0.97 src (closed enums otherwise)",
-        candidate_evidence:
-            "open enums throughout: 220 `Custom(...)` variants in enumerations.rs alone (e.g. InsertTextMode::AsIs|AdjustIndentation|Custom(any))",
+        candidate_evidence: "open enums throughout: 220 `Custom(...)` variants in enumerations.rs alone (e.g. InsertTextMode::AsIs|AdjustIndentation|Custom(any))",
         classification: "schema_equivalent_representation_difference",
-        migration_note:
-            "wire acceptance for unknown values widens; #7113 validator remains the admission oracle, snapshots stay behavior evidence only",
+        migration_note: "wire acceptance for unknown values widens; #7113 validator remains the admission oracle, snapshots stay behavior evidence only",
     },
     SchemaDeltaRow {
         row_id: "DELTA-NULL-ABSENT",
         area: "null vs absent wire states on optional fields",
         incumbent_evidence: "0.97 uses skip_serializing_if extensively (448 occurrences verified in src)",
-        candidate_evidence:
-            "498 skip_serializing_if = \"Option::is_none\" occurrences in structures.rs; explicit null only where metamodel requires",
+        candidate_evidence: "498 skip_serializing_if = \"Option::is_none\" occurrences in structures.rs; explicit null only where metamodel requires",
         classification: "schema_equivalent_representation_difference",
-        migration_note:
-            "distinct wire states preserved on both sides; do not flatten null-vs-absent during migration (#11802 falsifier 8)",
+        migration_note: "distinct wire states preserved on both sides; do not flatten null-vs-absent during migration (#11802 falsifier 8)",
     },
     SchemaDeltaRow {
         row_id: "DELTA-DIRECTION-MODEL",
         area: "request/notification direction types",
         incumbent_evidence: "0.97 request.rs/notification.rs trait-based declarations",
-        candidate_evidence:
-            "dedicated generated requests.rs / notifications.rs modules encoding method direction",
+        candidate_evidence: "dedicated generated requests.rs / notifications.rs modules encoding method direction",
         classification: "schema_equivalent_representation_difference",
-        migration_note:
-            "#8896 route/method dispatch authority unchanged by this inventory; direction typing is a compile-time aid only",
+        migration_note: "#8896 route/method dispatch authority unchanged by this inventory; direction typing is a compile-time aid only",
     },
 ];
+
+// ---------------------------------------------------------------------------
+// Manual-extension registry and derived downstream denominators
+// ---------------------------------------------------------------------------
+
+/// One registered manual JSON/extension seam beyond the four capability
+/// patches. Every production known-field patch must have exactly one row.
+struct ExtensionSeamRow {
+    row_id: &'static str,
+    anchor: &'static str,
+    seam_behavior: &'static str,
+    disposition: &'static str,
+    owner: &'static str,
+}
+
+const EXTENSION_SEAMS: &[ExtensionSeamRow] = &[
+    ExtensionSeamRow {
+        row_id: "SEAM-EXPERIMENTAL-TYPEHIERARCHY",
+        anchor: "crates/perl-lsp-rs-core/src/protocol/capabilities/experimental.rs:10 insert_experimental_capability",
+        seam_behavior: "injects experimental.typeHierarchyProvider=true into the typed ServerCapabilities.experimental value because the default 0.97 surface cannot carry the typed field; detection support in capability_map.rs reads it back",
+        disposition: "selected_substrate_manual_schema_extension",
+        owner: "#11803 removes the workaround when the adapter serializes the typed field; keep negative gate for experimental.inlineCompletionProvider",
+    },
+    ExtensionSeamRow {
+        row_id: "SEAM-CAPMAP-DETECTION",
+        anchor: "crates/perl-lsp-rs-core/src/capability_map.rs feature_ids_from_caps experimental readback (test pin ~line 505)",
+        seam_behavior: "maps client capability objects back to feature ids, including the type-hierarchy-via-experimental workaround path",
+        disposition: "compatibility_with_exit",
+        owner: "#11803 exit together with SEAM-EXPERIMENTAL-TYPEHIERARCHY; detection of real typed fields replaces the workaround branch",
+    },
+    ExtensionSeamRow {
+        row_id: "SEAM-RUNTIME-DYNAMIC-INLINECOMPLETION",
+        anchor: "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs dynamic-client removal (~lines 781-815)",
+        seam_behavior: "strips top-level inlineCompletionProvider from initialize output when the client opts into dynamic registration; behavioral protocol logic independent of which crate supplies the type",
+        disposition: "adapter_protocol_type",
+        owner: "stays in lifecycle code through LT02/LT03; only its input type changes with #11803",
+    },
+];
+
+/// Field-name needles whose test-file occurrences form the snapshot falsifier
+/// population counted mechanically below.
+const PATCH_FIELD_NEEDLES: &[&str] =
+    &["typeHierarchyProvider", "rangesSupport", "inlineCompletionProvider", "insertTextModes"];
+
+/// Distinct test files under crates/*/tests referencing any patched field.
+fn count_falsifier_files(root: &Path) -> Result<Vec<String>> {
+    let crates_dir = root.join("crates");
+    let mut matches = std::collections::BTreeSet::new();
+    for entry in walkdir::WalkDir::new(&crates_dir).max_depth(3).into_iter().filter_map(Result::ok)
+    {
+        let path = entry.path();
+        let is_test = path.extension().and_then(std::ffi::OsStr::to_str) == Some("rs")
+            && path
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .map(|name| name == std::ffi::OsStr::new("tests"))
+                == Some(true);
+        if !is_test || !entry.file_type().is_file() {
+            continue;
+        }
+        let contents = fs::read_to_string(path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        if PATCH_FIELD_NEEDLES.iter().any(|needle| contents.contains(needle)) {
+            if let Some(relative) = path.strip_prefix(root).ok().and_then(|p| p.to_str()) {
+                matches.insert(relative.replace('\\', "/"));
+            }
+        }
+    }
+    Ok(matches.into_iter().collect())
+}
+
+/// Mechanically derived downstream-denominator summary rows (LT02=#11803,
+/// LT03=#11804, LT04=#11805).
+fn render_downstream_section(denominator: &Denominator, falsifier_files: &[String]) -> String {
+    let mut output = String::new();
+    let lt02_edges =
+        denominator.edges.iter().filter(|edge| edge.disposition == "adapter_protocol_type").count();
+    let doomed_edges = denominator
+        .edges
+        .iter()
+        .filter(|edge| edge.disposition == "lower_wire_remove_before_switch")
+        .count();
+    let manual_rows = CAPABILITY_PATCHES.len() + EXTENSION_SEAMS.len();
+    let typed_once = CAPABILITY_PATCHES
+        .iter()
+        .filter(|row| row.disposition == "selected_substrate_generated_type")
+        .count();
+
+    output.push_str("## 6. Manual-extension registry (beyond section 3 patch rows)\n\n");
+    output.push_str("| Row ID | Anchor | Seam behavior | Disposition | Owner |\n");
+    output.push_str("| --- | --- | --- | --- | --- |\n");
+    for row in EXTENSION_SEAMS {
+        for cell in [row.row_id, row.anchor, row.seam_behavior, row.disposition, row.owner] {
+            output.push_str("| ");
+            output.push_str(&escape_cell(cell));
+        }
+        output.push_str(" |\n");
+    }
+    output.push('\n');
+
+    output.push_str("## 7. Derived downstream denominators\n\n");
+    output.push_str("Mechanically derived from this matrix; no re-research needed:\n\n");
+    output.push_str(&format!(
+        "- **LT02 / #11803 migration population:** {} surviving direct Cargo edges (`adapter_protocol_type`: perl-lsp-rs, perl-lsp-rs-core) carrying 2 public nominal re-export anchors (`ServerCapabilities` at perl-lsp-rs-core/src/protocol/capabilities.rs:23, `Location` at perl-lsp-rs-core/src/providers/navigation/mod.rs:58), {} typed-once patch rows, plus SEAM-RUNTIME-DYNAMIC-INLINECOMPLETION as a type-consumer. Doomed edges excluded: {} (`lower_wire_remove_before_switch`, owners #9632/#9893).\n",
+        lt02_edges, typed_once, doomed_edges
+    ));
+    output.push_str(&format!(
+        "- **LT03 / #11804 representation convergence:** {} manual-extension rows total ({} patches + {} seams), {} serialization-delta rows to converge, URI submatrix decision (DELTA-URI-DEFAULT/URL/FLUENT) with #8156/#8484 proof obligations.\n",
+        manual_rows, CAPABILITY_PATCHES.len(), EXTENSION_SEAMS.len(), SCHEMA_DELTAS.len()
+    ));
+    output.push_str(&format!(
+        "- **LT04 / #11805 proof closure:** {} snapshot/contract falsifier files currently assert patched bytes (mechanically counted under crates/*/tests against needles: {}). Wire-neutrality guards stay authoritative: crates/perl-workspace-core/tests/dependency_contract.rs (forbids lsp-types below the adapter) and the perl-ripr-facts manifest contract comment (deliberately avoids perl-workspace because it transitively pulls lsp-types).\n",
+        falsifier_files.len(),
+        PATCH_FIELD_NEEDLES.join(", ")
+    ));
+    output.push_str(&format!(
+        "- Changing any needle, patch row, or seam above must flip the matching falsifier population; a silent zero-count is `not_proven`, never green.\n\n"
+    ));
+
+    output
+}
 
 pub fn run(check: bool) -> Result<()> {
     let root = project_root()?;
     let path = root.join(MATRIX_PATH);
     let receipt_path = root.join(RECEIPT_PATH);
     let denominator = collect_denominator(&root)?;
-    let generated = render_matrix(&denominator);
-    let receipt = render_receipt(&denominator)?;
+    let falsifier_files = count_falsifier_files(&root)?;
+    let generated = render_matrix(&denominator, &falsifier_files);
+    let receipt = render_receipt(&denominator, &falsifier_files)?;
 
     if check {
         let existing =
@@ -705,7 +805,7 @@ pub fn run(check: bool) -> Result<()> {
     Ok(())
 }
 
-fn render_matrix(denominator: &Denominator) -> String {
+fn render_matrix(denominator: &Denominator, falsifier_files: &[String]) -> String {
     let mut output = String::new();
     output.push_str("# Protocol-Type Substrate Matrix\n\n");
     output.push_str("Status: generated (inventory-only; no Cargo/API/protocol behavior change)\n");
@@ -772,6 +872,7 @@ fn render_matrix(denominator: &Denominator) -> String {
     output.push('\n');
 
     output.push_str(&render_denominator_section(denominator));
+    output.push_str(&render_downstream_section(denominator, falsifier_files));
 
     output.push_str("## 5. Serialization/API delta matrix vs incumbent 0.97 (classified against #7113 schema authority)\n\n");
     output.push_str(
@@ -877,7 +978,7 @@ fn push_patch_row(output: &mut String, row: &CapabilityPatchRow) {
     output.push_str(" |\n");
 }
 
-fn render_receipt(denominator: &Denominator) -> Result<String> {
+fn render_receipt(denominator: &Denominator, falsifier_files: &[String]) -> Result<String> {
     let mut record = Vec::new();
     for field in SUBSTRATE_RECORD {
         record.push(serde_json::json!({
@@ -946,12 +1047,21 @@ fn render_receipt(denominator: &Denominator) -> Result<String> {
         "evidence_pin_date": EVIDENCE_PIN_DATE,
         "substrate_checksum_sha256": GLT_CHECKSUM_SHA256,
         "dispositions_vocabulary": DISPOSITIONS,
+        "snapshot_falsifier_files": falsifier_files,
+        "snapshot_falsifier_file_count": falsifier_files.len(),
         "sections": {
             "substrate_record": record,
             "candidates": candidates,
             "capability_patches": patches,
             "cargo_denominator": cargo_denominator,
             "schema_deltas": deltas,
+            "extension_seams": EXTENSION_SEAMS.iter().map(|row| serde_json::json!({
+                "row_id": row.row_id,
+                "anchor": row.anchor,
+                "seam_behavior": row.seam_behavior,
+                "disposition": row.disposition,
+                "owner": row.owner,
+            })).collect::<Vec<_>>(),
         },
     });
     let mut pretty = serde_json::to_string_pretty(&receipt)
@@ -1093,9 +1203,52 @@ mod tests {
         }
     }
 
+    /// Deterministic falsifier fixture mirroring the real scan output shape.
+    fn fixture_falsifiers() -> Vec<String> {
+        vec![
+            "crates/perl-lsp-rs/tests/lsp_cap_snap.rs".to_string(),
+            "crates/perl-lsp-rs/tests/lsp_caps_contract_shapes.rs".to_string(),
+        ]
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn falsifier_scan_counts_files_mentioning_patched_fields() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let crates = dir.path().join("crates").join("demo");
+        std::fs::create_dir_all(crates.join("tests")).expect("mkdir tests");
+        std::fs::create_dir_all(crates.join("src")).expect("mkdir src");
+        std::fs::write(
+            crates.join("tests").join("contract.rs"),
+            "assert!(caps[\"rangesSupport\"].is_object());",
+        )
+        .expect("write test file");
+        std::fs::write(crates.join("src").join("lib.rs"), "fn x() { let _ = 1; }")
+            .expect("write src file");
+        let found =
+            count_falsifier_files(dir.path()).expect("scan must succeed on tempdir fixture");
+        assert_eq!(found, vec!["crates/demo/tests/contract.rs".to_string()]);
+    }
+
+    #[test]
+    fn derived_denominators_appear_in_rendered_output() {
+        let denominator = fixture_denominator();
+        let rendered = render_matrix(&denominator, &fixture_falsifiers());
+        for needle in [
+            "## 6. Manual-extension registry",
+            "## 7. Derived downstream denominators",
+            "SEAM-EXPERIMENTAL-TYPEHIERARCHY",
+            "SEAM-RUNTIME-DYNAMIC-INLINECOMPLETION",
+            "**LT02 / #11803 migration population:** 1 surviving direct Cargo edges",
+            "**LT04 / #11805 proof closure:** 2 snapshot/contract falsifier files",
+        ] {
+            assert!(rendered.contains(needle), "matrix missing derived content {needle}");
+        }
+    }
+
     #[test]
     fn rendered_matrix_contains_substrate_and_discriminating_rows() {
-        let rendered = render_matrix(&fixture_denominator());
+        let rendered = render_matrix(&fixture_denominator(), &fixture_falsifiers());
         for needle in [
             "gen-lsp-types 0.11.0",
             GLT_CHECKSUM_SHA256,
@@ -1112,7 +1265,7 @@ mod tests {
 
     #[test]
     fn dispositions_are_package_neutral() {
-        let rendered = render_matrix(&fixture_denominator());
+        let rendered = render_matrix(&fixture_denominator(), &fixture_falsifiers());
         for legacy in [
             "typed_ls_types_stable",
             "typed_ls_types_proposed",
@@ -1159,8 +1312,15 @@ mod tests {
     #[test]
     fn two_consecutive_renders_are_byte_identical() -> Result<()> {
         let denominator = fixture_denominator();
-        assert_eq!(render_matrix(&denominator), render_matrix(&denominator));
-        assert_eq!(render_receipt(&denominator)?, render_receipt(&denominator)?);
+        let falsifiers = fixture_falsifiers();
+        assert_eq!(
+            render_matrix(&denominator, &falsifiers),
+            render_matrix(&denominator, &falsifiers)
+        );
+        assert_eq!(
+            render_receipt(&denominator, &falsifiers)?,
+            render_receipt(&denominator, &falsifiers)?
+        );
         Ok(())
     }
 
@@ -1196,7 +1356,9 @@ mod tests {
     #[allow(clippy::expect_used)]
     fn receipt_is_well_formed_json_with_required_sections() {
         let denominator = fixture_denominator();
-        let receipt = render_receipt(&denominator).expect("receipt must serialize in tests");
+        let falsifiers = fixture_falsifiers();
+        let receipt =
+            render_receipt(&denominator, &falsifiers).expect("receipt must serialize in tests");
         let parsed: serde_json::Value = serde_json::from_str(receipt.trim())
             .expect("generated receipt must be well-formed JSON");
         assert_eq!(parsed["schema_version"], 1);
@@ -1214,9 +1376,11 @@ mod tests {
             sections["cargo_denominator"]["direct_edges"].as_array().map(Vec::len),
             Some(denominator.edges.len())
         );
+        assert_eq!(sections["schema_deltas"].as_array().map(Vec::len), Some(SCHEMA_DELTAS.len()));
         assert_eq!(
-            sections["schema_deltas"].as_array().map(Vec::len),
-            Some(SCHEMA_DELTAS.len())
+            sections["extension_seams"].as_array().map(Vec::len),
+            Some(EXTENSION_SEAMS.len())
         );
+        assert_eq!(parsed["snapshot_falsifier_file_count"], falsifiers.len() as u64);
     }
 }

@@ -284,6 +284,29 @@
         }
       ]
     },
+    "extension_seams": [
+      {
+        "anchor": "crates/perl-lsp-rs-core/src/protocol/capabilities/experimental.rs:10 insert_experimental_capability",
+        "disposition": "selected_substrate_manual_schema_extension",
+        "owner": "#11803 removes the workaround when the adapter serializes the typed field; keep negative gate for experimental.inlineCompletionProvider",
+        "row_id": "SEAM-EXPERIMENTAL-TYPEHIERARCHY",
+        "seam_behavior": "injects experimental.typeHierarchyProvider=true into the typed ServerCapabilities.experimental value because the default 0.97 surface cannot carry the typed field; detection support in capability_map.rs reads it back"
+      },
+      {
+        "anchor": "crates/perl-lsp-rs-core/src/capability_map.rs feature_ids_from_caps experimental readback (test pin ~line 505)",
+        "disposition": "compatibility_with_exit",
+        "owner": "#11803 exit together with SEAM-EXPERIMENTAL-TYPEHIERARCHY; detection of real typed fields replaces the workaround branch",
+        "row_id": "SEAM-CAPMAP-DETECTION",
+        "seam_behavior": "maps client capability objects back to feature ids, including the type-hierarchy-via-experimental workaround path"
+      },
+      {
+        "anchor": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs dynamic-client removal (~lines 781-815)",
+        "disposition": "adapter_protocol_type",
+        "owner": "stays in lifecycle code through LT02/LT03; only its input type changes with #11803",
+        "row_id": "SEAM-RUNTIME-DYNAMIC-INLINECOMPLETION",
+        "seam_behavior": "strips top-level inlineCompletionProvider from initialize output when the client opts into dynamic registration; behavioral protocol logic independent of which crate supplies the type"
+      }
+    ],
     "schema_deltas": [
       {
         "area": "URI representation: default generated String Uri",
@@ -442,5 +465,23 @@
       }
     ]
   },
+  "snapshot_falsifier_file_count": 15,
+  "snapshot_falsifier_files": [
+    "crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs",
+    "crates/perl-lsp-rs/tests/lsp_3_17_lifecycle_tests.rs",
+    "crates/perl-lsp-rs/tests/lsp_batteries_e2e_workflow_test.rs",
+    "crates/perl-lsp-rs/tests/lsp_cap_snap.rs",
+    "crates/perl-lsp-rs/tests/lsp_capabilities_contract.rs",
+    "crates/perl-lsp-rs/tests/lsp_capabilities_contract_full.rs",
+    "crates/perl-lsp-rs/tests/lsp_capabilities_contract_lock.rs",
+    "crates/perl-lsp-rs/tests/lsp_caps_contract_shapes.rs",
+    "crates/perl-lsp-rs/tests/lsp_feature_gating_test.rs",
+    "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs",
+    "crates/perl-lsp-rs/tests/lsp_schema_validation.rs",
+    "crates/perl-lsp-rs/tests/lsp_smoke_e2e.rs",
+    "crates/perl-lsp-rs/tests/lsp_type_hierarchy_test.rs",
+    "crates/perllsp/tests/ripr_seam_proof_capability_negotiation.rs",
+    "crates/perllsp/tests/ripr_seam_proof_sublime_lsp_2_13_profile.rs"
+  ],
   "substrate_checksum_sha256": "b64887ac3a8083427ae935a7296db876871582cd57eac077564f8bc18fa49116"
 }
