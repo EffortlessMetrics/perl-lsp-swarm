@@ -20,6 +20,14 @@
         production callers after evidence-sort migration; legacy-slot mapping
         divergent for loose-ineligible queries); match_tier / is_subsequence
         removed with the migration;
+        fuzz target `symbol_query_ranking` **retargeted** onto the canonical
+        owner (`WorkspaceSymbolQueryProfile::compile` + `match_searchable_key`
+        + `WorkspaceSymbolMatchEvidence::compare`): its ranking half mutated
+        the deleted shim, but the mutation surface (compile → admit → total
+        deterministic ordering) survives at the owner;
+        `fuzz/Cargo.toml` gains the `perl-workspace` path dep; verified
+        `cargo check -p perl-parser-fuzz --bin symbol_query_ranking --locked`
+        green in `fuzz/`; ci-nightly.yml matrix entry unchanged (target kept);
       - workspace_index inline matcher + matches_query_text + local
         is_subsequence → consume profile/evidence;
       - MIN_LOOSE_MATCH_QUERY_CHARS re-exports stay as deprecated-forwarding
