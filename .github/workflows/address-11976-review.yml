@@ -1,6 +1,12 @@
 name: Address PR #11976 review
 
 on:
+  push:
+    branches:
+      - fix/4997-generic-channel-ai-arm
+    paths:
+      - scripts/maintenance/address_11976_review.py
+      - .github/workflows/address-11976-review.yml
   pull_request:
     branches: [main]
     types: [synchronize]
@@ -12,15 +18,12 @@ permissions:
   contents: write
 
 concurrency:
-  group: address-11976-${{ github.event.pull_request.number }}
+  group: address-11976-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   repair:
-    if: >-
-      github.repository == 'EffortlessMetrics/perl-lsp-swarm' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.head_ref == 'fix/4997-generic-channel-ai-arm'
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
 
