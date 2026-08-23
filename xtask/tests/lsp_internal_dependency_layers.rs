@@ -34,12 +34,17 @@ macro_rules! layer {
 }
 
 const LAYERS: &[LayerRow] = &[
+    layer!("active_document_readiness_tests", ObservabilityTest),
     layer!("client_requests", AdapterPolicy),
     layer!("constructors", ProductComposition),
     layer!("diagnostic_debounce", ApplicationServices),
     layer!("diagnostics", ApplicationServices),
+    layer!("diagnostics_sink", AdapterPolicy),
+    layer!("diagnostics_sink_tests", ObservabilityTest),
     layer!("dispatch", AdapterPolicy),
     layer!("document_access", ApplicationServices),
+    layer!("document_symbols_sink", AdapterPolicy),
+    layer!("document_symbols_sink_tests", ObservabilityTest),
     layer!("file_discovery", ApplicationServices),
     layer!("file_watcher_debounce", ApplicationServices),
     layer!("language", ApplicationServices),
