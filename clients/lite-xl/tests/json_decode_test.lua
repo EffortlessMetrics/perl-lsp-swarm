@@ -1,4 +1,4 @@
--- Deterministic focused tests for clients/lite-xl/upstream/json.lua (#11197).
+-- Deterministic focused tests for clients/lite-xl/upstream/json.lua (#11197, #11136).
 --
 -- Run:
 --   lua clients/lite-xl/tests/json_decode_test.lua [path-to-json-module]
@@ -10,6 +10,12 @@
 -- exceptions ("attempt to index a nil value", "attempt to concatenate a nil
 -- value", "table index is nil", "invalid unicode codepoint"), proving these
 -- tests discriminate the terminal-error behavior rather than passing vacuously.
+--
+-- Mutation falsifiers (#11136 proof): revert only one typed-value behavior at a
+-- time (null identity to Lua nil; array tagging removed; null restored to the
+-- "{{json::null}}" magic string) and the matching round-trip assertions below
+-- must FAIL, proving the typed-value tests discriminate rather than pass
+-- vacuously on an untagged codec.
 --
 -- No framework: plain asserts, one process, deterministic, exit code carries
 -- the result. Compatible with the Lite XL Lua runtime family (5.4).
@@ -92,7 +98,7 @@ do
   ok(f == false, "valid JSON false survives as false")
 
   local n = json.decode("null")
-  ok(n == nil, "valid JSON null decodes to nil")
+  ok(n == json.null, "valid JSON null decodes to the unique json.null identity")
 
   local e = json.decode("{}")
   ok(type(e) == "table" and next(e) == nil, "valid empty object decodes")
@@ -162,6 +168,7 @@ do
 
   local good = json.decode('{"ok":[true,null,"x"]}')
   ok(type(good) == "table" and good.ok[1] == true, "valid-after-garbage decodes independently")
+  ok(good.ok[2] == json.null, "null element inside a later valid decode keeps identity")
   ok(json.last_error() == "", "last_error cleared by successful decode")
 
   -- Valid-after-garbage does not partially apply: the failed decode returned
@@ -178,6 +185,166 @@ do
   ok(ran == false, "non-string argument raises argument error")
   ok(type(exc) == "string" and string.find(exc, "expected argument of type string", 1, true),
     "argument error names the misuse: " .. tostring(exc))
+end
+
+-- ---------------------------------------------------------------------------
+-- Typed JSON value identities (#11136)
+--
+-- JSON null, arrays (including empty) and objects (including empty) keep
+-- collision-free in-memory identities; encoding respects them. Decoded shape
+-- AND re-encoded bytes are asserted for each round trip.
+-- ---------------------------------------------------------------------------
+
+local function roundtrip(input, want_bytes, label)
+  local v = json.decode(input)
+  ok(v ~= nil, label .. ": decode yields a value")
+  local out = json.encode(v)
+  ok(out == want_bytes,
+    label .. ": re-encodes to '" .. tostring(out) .. "' want '" .. tostring(want_bytes) .. "'")
+  return v
+end
+
+do
+  -- Null identity is unique and non-forgeable.
+  local n = json.decode("null")
+  ok(n == json.null and n ~= nil and n ~= false and n ~= "",
+    "json.null is one distinct non-nil identity")
+  ok(json.is_null(json.null), "is_null recognizes the singleton")
+  ok(not json.is_null(nil) and not json.is_null(false) and not json.is_null(0),
+    "is_null rejects nil, false, numbers")
+
+  -- The old magic-string sentinel is dead: that text is now an ordinary string.
+  local s = json.decode('"{{json::null}}"')
+  ok(s == "{{json::null}}", "old null sentinel text decodes as an ordinary string")
+  ok(json.encode(s) == '"{{json::null}}"', "sentinel-text string encodes quoted, never as null")
+  ok(not json.is_null(s), "sentinel-text string is not the null identity")
+
+  -- Required structural round trips with byte-exact re-encoding.
+  roundtrip("null", "null", "null round trip")
+  roundtrip("[]", "[]", "empty array round trip")
+  roundtrip("[null]", "[null]", "array with null keeps cardinality")
+  roundtrip('[false, null, [], {}]', '[false,null,[],{}]', "mixed scalar/empty round trip")
+  roundtrip('[[[]], {"e": [{}]}]', '[[[]],{"e":[{}]}]', "nested empty children round trip")
+
+  -- Empty object: decoded shape plus byte-stable single-key re-encoding.
+  local eo = roundtrip("{}", "{}", "empty object round trip")
+  ok(type(eo) == "table" and next(eo) == nil and json.is_object(eo),
+    "empty object decodes to an object-tagged table")
+
+  -- Multi-key object: key order is not semantic, so assert structurally.
+  local o = json.decode('{"a": null, "b": [], "c": {}}')
+  ok(o.a == json.null and json.is_array(o.b) and #o.b == 0
+    and json.is_object(o.c) and next(o.c) == nil,
+    "null/empty-array/empty-object fields all survive decode")
+  local back = json.decode(json.encode(o))
+  ok(back.a == json.null and json.is_array(back.b) and next(back.b) == nil
+    and json.is_object(back.c) and next(back.c) == nil,
+    "multi-key null/empty fields survive encode+redecode")
+end
+
+do
+  -- Explicit constructors at ambiguous protocol boundaries (#11136 contract 7).
+  local a = json.array({ 1, 2 })
+  ok(json.is_array(a) and json.encode(a) == "[1,2]", "array constructor tags and encodes")
+  ok(json.encode(json.array({})) == "[]", "empty array constructor emits []")
+  local ob = json.object({ k = "v", flag = false })
+  ok(json.is_object(ob), "object constructor tags")
+  ok(json.encode(json.object({})) == "{}", "empty object constructor emits {}")
+
+  -- Ordinary untagged tables keep upstream source compatibility.
+  ok(json.encode({ 1, 2 }) == "[1,2]", "plain non-empty array still encodes as array")
+  ok(json.encode({}) == "{}", "plain empty table still encodes as {} (reviewed default)")
+  ok(json.encode({ k = 1 }) == '{"k":1}', "plain map still encodes as object")
+end
+
+do
+  -- Constructor misuse fails deterministically instead of guessing a shape.
+  local cases = {
+    { function() return json.array(nil) end, "array(nil)" },
+    { function() return json.array("x") end, "array(string)" },
+    { function() return json.array({ [1] = 1, [3] = 3 }) end, "sparse array" },
+    { function() return json.array({ [0] = 0 }) end, "zero-key array" },
+    { function() return json.object(nil) end, "object(nil)" },
+    { function() return json.object({ [1] = "n" }) end, "numeric object key" },
+  }
+  for _, case in ipairs(cases) do
+    local ran, exc = pcall(case[1])
+    ok(ran == false and type(exc) == "string" and #exc > 0,
+      "constructor rejects " .. case[2] .. " deterministically: " .. tostring(exc))
+  end
+end
+
+do
+  -- Forged lookalike metatables stay inert: no private tag, no typed behavior.
+  local forged_array = setmetatable({}, { json_type = "array" })
+  local forged_object = setmetatable({}, { __jsontype = "object" })
+  ok(json.encode(forged_array) == "{}", "forged json_type=array does not emit []")
+  ok(json.encode(forged_object) == "{}", "forged __jsontype=object does not emit tagged object")
+  ok(not json.is_array(forged_array) and not json.is_object(forged_object),
+    "predicates ignore foreign metatables")
+  ok(json.decode("[]") ~= forged_array and getmetatable(json.decode("{}")) ~= nil,
+    "decoded containers carry only module-private tagging")
+end
+
+do
+  -- Sparse / mixed / cyclic values fail honestly at the encode boundary.
+  local arr = json.decode("[1, 2, 3]")
+  arr[2] = nil
+  local ran, exc = pcall(json.encode, arr)
+  ok(ran == false and string.find(exc, "sparse array", 1, true),
+    "mid-hole array fails sparse validation: " .. tostring(exc))
+
+  -- A trailing hole is indistinguishable from a shorter dense sequence under
+  -- Lua's border rule; encoding follows the dense prefix exactly as upstream
+  -- did. Documented boundary, not silent shape-guessing.
+  local trail = json.decode("[1, 2, 3]")
+  trail[3] = nil
+  ok(json.encode(trail) == "[1,2]",
+    "trailing hole truncates to the dense prefix (upstream border rule)")
+
+  local mixed = json.object({ x = 1 })
+  mixed[1] = 2
+  ran, exc = pcall(json.encode, mixed)
+  ok(ran == false and string.find(exc, "mixed or invalid key types", 1, true),
+    "tagged object with numeric key fails honestly: " .. tostring(exc))
+
+  local plain_mixed = {}
+  plain_mixed.a = 1
+  plain_mixed[1] = 2
+  ran, exc = pcall(json.encode, plain_mixed)
+  ok(ran == false and string.find(exc, "invalid table", 1, true),
+    "plain mixed-key table fails honestly: " .. tostring(exc))
+
+  local cyc = json.array({ 1 })
+  cyc[2] = cyc
+  ran, exc = pcall(json.encode, cyc)
+  ok(ran == false and string.find(exc, "circular reference", 1, true),
+    "cyclic tagged array fails circular detection: " .. tostring(exc))
+
+  local pcyc = {}
+  pcyc.self = pcyc
+  ran, exc = pcall(json.encode, pcyc)
+  ok(ran == false and string.find(exc, "circular reference", 1, true),
+    "cyclic plain table still detected: " .. tostring(exc))
+end
+
+do
+  -- workspace/configuration result slots: absent vs null vs present value.
+  local req = json.decode('[{"section": "x"}, null]')
+  ok(#req == 2 and json.is_object(req[1]) and req[1].section == "x"
+    and req[2] == json.null,
+    "configuration result array preserves cardinality across null slots")
+  ok(json.encode(json.array({ json.object({ section = "x" }), json.null }))
+    == '[{"section":"x"},null]',
+    "client-built configuration response keeps null slot distinct from absence")
+
+  -- Server response result=false versus result=null stay distinct.
+  local rf = json.decode('{"id":5,"result":false}')
+  local rn = json.decode('{"id":5,"result":null}')
+  ok(rf.result == false, "result=false survives as Lua false")
+  ok(rn.result == json.null, "result=null survives as json.null, not nil/false")
+  ok(json.encode(rf.result) == "false" and json.encode(rn.result) == "null",
+    "false and null results encode distinctly")
 end
 
 print(string.format("%s: %d passed, %d failed (%s)",

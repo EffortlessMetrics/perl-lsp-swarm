@@ -2510,7 +2510,7 @@ language = "lua"
 surface = "editor"
 classification = "production"
 owner = "editor/lite-xl"
-reason = "Exact upstream lite-xl-lsp json.lua (base d1432ae, blob eb36b8fa) staged for the Lite XL integration train, carrying only the #11197 terminal typed-decode-error patch."
+reason = "Exact upstream lite-xl-lsp json.lua (base d1432ae, blob eb36b8fa) staged for the Lite XL integration train, carrying only the #11197 terminal typed-decode-error patch and the #11136 typed JSON null/array/object identity patch."
 covered_by = [
   "lua clients/lite-xl/tests/json_decode_test.lua",
   "cargo xtask check-file-policy",
