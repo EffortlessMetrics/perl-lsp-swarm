@@ -692,10 +692,11 @@ fn count_falsifier_files(root: &Path) -> Result<Vec<String>> {
         }
         let contents = fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
-        if PATCH_FIELD_NEEDLES.iter().any(|needle| contents.contains(needle)) {
-            if let Some(relative) = path.strip_prefix(root).ok().and_then(|p| p.to_str()) {
-                matches.insert(relative.replace('\\', "/"));
-            }
+        if PATCH_FIELD_NEEDLES.iter().any(|needle| contents.contains(needle))
+            && let Some(relative) =
+                path.strip_prefix(root).ok().and_then(|p| p.to_str())
+        {
+            matches.insert(relative.replace('\\', "/"));
         }
     }
     Ok(matches.into_iter().collect())
@@ -745,9 +746,10 @@ fn render_downstream_section(denominator: &Denominator, falsifier_files: &[Strin
         falsifier_files.len(),
         PATCH_FIELD_NEEDLES.join(", ")
     ));
-    output.push_str(&format!(
-        "- Changing any needle, patch row, or seam above must flip the matching falsifier population; a silent zero-count is `not_proven`, never green.\n\n"
-    ));
+    output.push_str(
+        "- Changing any needle, patch row, or seam above must flip the matching falsifier population; \
+         a silent zero-count is `not_proven`, never green.\n\n",
+    );
 
     output
 }
