@@ -1,0 +1,9 @@
+project: product
+component: Correctness and reliability
+kind: Bugfix
+body: Made raw discovery working-directory validation reject rooted POSIX paths, Windows drive spellings, and Windows separators identically on every reader host, so evidence captured on one platform can no longer pass or fail check-discovery depending on the validating platform.
+time: 2026-08-23T00:00:00Z
+custom:
+  PR: "11992"
+  Slug: host-independent-discovery-working-directory
+  Breaking: "no"

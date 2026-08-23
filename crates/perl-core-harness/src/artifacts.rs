@@ -591,8 +591,14 @@ impl DiscoveryRawEnvelope {
             bail!("unsupported raw discovery schema: {}", self.schema_version);
         }
         self.subject.validate().context("validating the discovery subject")?;
+        // check-discovery validates evidence captured on other hosts, so the
+        // working-directory spelling must be judged identically everywhere:
+        // a rooted POSIX path is not `Path::is_absolute` on Windows readers,
+        // and Windows drive or separator spellings are not rooted on Unix.
         if self.working_directory.trim().is_empty()
-            || Path::new(&self.working_directory).is_absolute()
+            || Path::new(&self.working_directory).has_root()
+            || self.working_directory.contains('\\')
+            || self.working_directory.contains(':')
         {
             bail!(
                 "raw discovery working directory must be recorded relative to the prepared tree, found {}",
@@ -2433,13 +2439,17 @@ mod tests {
 
     #[test]
     fn raw_envelope_rejects_absolute_working_directories() -> TestResult {
-        let mut leaked = raw_envelope(b"base/ok.t\n", b"");
-        leaked.working_directory = "/home/runner/work/perl/t".into();
-        let Err(error) = leaked.validate() else {
-            bail!("an absolute host path must not be published as evidence");
-        };
-        if !error.to_string().contains("relative to the prepared tree") {
-            bail!("unexpected working-directory error: {error}");
+        for host_path in
+            ["/home/runner/work/perl/t", "\\home\\runner\\work\\perl\\t", "C:\\perl\\t", "C:t"]
+        {
+            let mut leaked = raw_envelope(b"base/ok.t\n", b"");
+            leaked.working_directory = host_path.into();
+            let Err(error) = leaked.validate() else {
+                bail!("host path {host_path} must not be published as evidence");
+            };
+            if !error.to_string().contains("relative to the prepared tree") {
+                bail!("unexpected working-directory error: {error}");
+            }
         }
         Ok(())
     }
