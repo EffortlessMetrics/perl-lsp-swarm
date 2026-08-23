@@ -18,12 +18,15 @@ use std::{fs::File, io::Read};
 
 use crate::tooling::perl_critic::NativeCriticProfile;
 
+mod critic_state;
 mod dependency_detection;
 mod metadata_dependencies;
 mod native_build_hints;
 pub mod perl_oracle_env;
 pub mod toolchain_profile;
 
+pub(crate) use critic_state::CriticSettingsCandidate;
+pub use critic_state::{EffectiveCriticState, EffectiveNativeCriticConfig};
 pub use dependency_detection::detect_dependency_include_paths;
 pub use metadata_dependencies::{
     DeclaredDependency, DeclaredDependencySource, detect_declared_dependencies,
@@ -403,100 +406,19 @@ impl ServerConfig {
             self.next_edit.enabled = enabled;
         }
 
-        if let Some(critic) = settings.get("perlcritic") {
-            if let Some(enabled) = critic.get("enabled").and_then(|v| v.as_bool()) {
-                self.perlcritic_enabled = enabled;
-            }
-            if let Some(severity) = critic.get("severity").and_then(|v| v.as_u64()) {
-                let clamped = severity.clamp(1, 5) as u8;
-                if clamped as u64 != severity {
-                    tracing::warn!(
-                        target: "perl_lsp::config",
-                        setting = "perlcritic.severity",
-                        value = severity,
-                        valid_range = "1-5",
-                        "perlcritic severity out of range; clamped to {}",
-                        clamped,
-                    );
-                }
-                self.perlcritic_severity = clamped;
-            }
-            // Security: do NOT honour LSP-channel perlcritic.profile / theme (issue #5001).
-            // Subprocess profile paths may only be applied via trusted project config
-            // (`.perl-lsp.toml` → `apply_to_server_config`).
-        }
-
-        // Native `critic.*` settings are the product-surface keys. They are parsed
-        // after `perlcritic.*` so they win when both are present (see #3276): the
-        // legacy `perlcritic.*` block above seeds the shared severity/enabled state,
-        // and the native block below overrides it.
-        if let Some(critic) = settings.get("critic") {
-            if let Some(enabled) = critic.get("enabled").and_then(|v| v.as_bool()) {
-                self.perlcritic_enabled = enabled;
-            }
-            if let Some(severity) = critic.get("severity").and_then(|v| v.as_u64()) {
-                let clamped = severity.clamp(1, 5) as u8;
-                if clamped as u64 != severity {
-                    tracing::warn!(
-                        target: "perl_lsp::config",
-                        setting = "critic.severity",
-                        value = severity,
-                        valid_range = "1-5",
-                        "critic severity out of range; clamped to {}",
-                        clamped,
-                    );
-                }
-                self.perlcritic_severity = clamped;
-            }
-            if let Some(engine) = critic.get("engine").and_then(|v| v.as_str()) {
-                match parse_critic_engine(engine) {
-                    Some(CriticEngine::Native) => self.critic_engine = CriticEngine::Native,
-                    Some(CriticEngine::Legacy) => {
-                        tracing::warn!(
-                            target: "perl_lsp::config",
-                            setting = "critic.engine",
-                            value = %engine,
-                            "ignoring legacy critic.engine from LSP settings channel; \
-                             use .perl-lsp.toml for trusted legacy subprocess configuration",
-                        );
-                    }
-                    None => tracing::warn!(
-                        target: "perl_lsp::config",
-                        setting = "critic.engine",
-                        value = %engine,
-                        valid = CRITIC_ENGINE_VALID_OPTIONS,
-                        "unrecognized critic.engine value; keeping current setting",
-                    ),
+        // Critic settings advance as ONE accepted transaction (#8253): the
+        // legacy `perlcritic.*` keys seed shared enablement/severity and the
+        // native `critic.*` keys override them (#3276), but both blocks are
+        // validated together before any sibling mutates. A payload with any
+        // invalid critic sibling is rejected whole, retaining the complete
+        // prior accepted state and emitting exactly one deduplicated condition.
+        match CriticSettingsCandidate::parse_lsp_update(settings) {
+            Ok(candidate) => {
+                if !candidate.is_empty() {
+                    candidate.apply_to(self);
                 }
             }
-            if let Some(profile) = critic.get("profile").and_then(|v| v.as_str()) {
-                match NativeCriticProfile::parse(profile) {
-                    Some(profile) => self.native_critic_profile = profile.to_string(),
-                    None => tracing::warn!(
-                        target: "perl_lsp::config",
-                        setting = "critic.profile",
-                        value = %profile,
-                        valid = NativeCriticProfile::VALID_OPTIONS,
-                        "unrecognized critic.profile value; keeping current setting",
-                    ),
-                }
-            }
-            if let Some(include) = string_array(critic.get("include")) {
-                warn_unknown_rule_ids(
-                    CriticRuleIdSource::ClientSettings,
-                    "critic.include",
-                    &include,
-                );
-                self.native_critic_include = include;
-            }
-            if let Some(exclude) = string_array(critic.get("exclude")) {
-                warn_unknown_rule_ids(
-                    CriticRuleIdSource::ClientSettings,
-                    "critic.exclude",
-                    &exclude,
-                );
-                self.native_critic_exclude = exclude;
-            }
+            Err(rejection) => rejection.emit_single_condition(),
         }
 
         if let Some(formatting) = settings.get("formatting") {
@@ -630,7 +552,6 @@ impl ServerConfig {
         warn_on_type_mismatch(settings, "inlayHints", "parameterHints", "boolean");
         warn_on_type_mismatch(settings, "inlayHints", "typeHints", "boolean");
         warn_on_type_mismatch(settings, "diagnostics", "enabled", "boolean");
-        warn_on_type_mismatch(settings, "critic", "enabled", "boolean");
         warn_on_type_mismatch(settings, "formatting", "enabled", "boolean");
     }
 
@@ -797,11 +718,6 @@ const FORMATTER_MODE_VALID_OPTIONS: &str = "native, compat (perltidy-compat), ex
 /// client-settings channel. External process selection remains project-owned.
 const CLIENT_FORMATTER_MODE_VALID_OPTIONS: &str =
     "native, compat (perltidy-compat), off (disabled, none)";
-
-/// Human-readable list of accepted `critic.engine` values, used in
-/// `tracing::warn!` messages when a user supplies an unrecognized value.
-/// Kept in sync with [`parse_critic_engine`].
-const CRITIC_ENGINE_VALID_OPTIONS: &str = "native, legacy (external, perlcritic)";
 
 /// Human-readable values accepted for `critic.engine` on the LSP client-settings
 /// channel. Legacy subprocess aliases remain available only through trusted
@@ -2201,23 +2117,6 @@ impl ProjectConfig {
     /// Only fields explicitly set in the TOML override defaults; unset fields are untouched.
     /// LSP `didChangeConfiguration` is expected to run after this, overriding any values here.
     pub fn apply_to_server_config(&self, config: &mut ServerConfig) {
-        if let Some(enabled) = self.diagnostics.perlcritic {
-            config.perlcritic_enabled = enabled;
-        }
-        if let Some(severity) = self.diagnostics.perlcritic_severity {
-            let clamped = severity.clamp(1, 5);
-            if clamped != severity {
-                tracing::warn!(
-                    target: "perl_lsp::config",
-                    setting = "diagnostics.perlcritic_severity",
-                    value = severity,
-                    valid_range = "1-5",
-                    "perlcritic_severity out of range; clamped to {}",
-                    clamped,
-                );
-            }
-            config.perlcritic_severity = clamped;
-        }
         if let Some(hints) = self.features.inlay_hints {
             config.inlay_hints_enabled = hints;
         }
@@ -2266,41 +2165,18 @@ impl ProjectConfig {
                 ),
             }
         }
-        if let Some(ref engine) = self.critic.engine {
-            match parse_critic_engine(engine) {
-                Some(engine) => config.critic_engine = engine,
-                None => tracing::warn!(
-                    target: "perl_lsp::config",
-                    setting = "critic.engine",
-                    value = %engine,
-                    valid = CRITIC_ENGINE_VALID_OPTIONS,
-                    "unrecognized critic.engine value in .perl-lsp.toml; \
-                     keeping current setting",
-                ),
+        // Critic initialization from the trusted project file also advances as
+        // ONE accepted transaction (#8253): `[diagnostics]` enablement/severity
+        // and `[critic]` engine/profile/include/exclude are validated together,
+        // and an invalid sibling rejects the whole candidate while the complete
+        // prior accepted state is retained with one deduplicated condition.
+        match CriticSettingsCandidate::parse_project_config(&self.diagnostics, &self.critic) {
+            Ok(candidate) => {
+                if !candidate.is_empty() {
+                    candidate.apply_to(config);
+                }
             }
-        }
-        if let Some(ref profile) = self.critic.profile {
-            match NativeCriticProfile::parse(profile) {
-                Some(profile) => config.native_critic_profile = profile.to_string(),
-                None => tracing::warn!(
-                    target: "perl_lsp::config",
-                    setting = "critic.profile",
-                    value = %profile,
-                    valid = NativeCriticProfile::VALID_OPTIONS,
-                    "unrecognized critic.profile value in .perl-lsp.toml; \
-                     keeping current setting",
-                ),
-            }
-        }
-        if let Some(ref include) = self.critic.include {
-            let normalized = normalize_string_list(include);
-            warn_unknown_rule_ids(CriticRuleIdSource::ProjectFile, "critic.include", &normalized);
-            config.native_critic_include = normalized;
-        }
-        if let Some(ref exclude) = self.critic.exclude {
-            let normalized = normalize_string_list(exclude);
-            warn_unknown_rule_ids(CriticRuleIdSource::ProjectFile, "critic.exclude", &normalized);
-            config.native_critic_exclude = normalized;
+            Err(rejection) => rejection.emit_single_condition(),
         }
         if let Some(ref profile) = self.formatting.perltidy_profile {
             config.perltidy_profile = Some(profile.clone());
