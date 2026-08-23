@@ -6,6 +6,7 @@ on:
       - agent/4997-ai-activation-authority
     paths:
       - scripts/maintenance/patch_4997_current.py
+      - scripts/maintenance/patch_4997_generation.py
       - scripts/maintenance/apply_4997_ai_activation_authority.py
       - .github/workflows/apply-4997-ai-activation-authority.yml
       - .spec/4997-ai-activation-authority/last-validation.log
@@ -35,6 +36,9 @@ jobs:
 
       - name: Adapt the one-shot editor to current source
         run: python3 scripts/maintenance/patch_4997_current.py
+
+      - name: Make the authority generation ABA-safe
+        run: python3 scripts/maintenance/patch_4997_generation.py
 
       - name: Apply count-checked cutover
         run: python3 scripts/maintenance/apply_4997_ai_activation_authority.py
@@ -117,6 +121,7 @@ jobs:
         run: |
           rm -- scripts/maintenance/apply_4997_ai_activation_authority.py
           rm -- scripts/maintenance/patch_4997_current.py
+          rm -- scripts/maintenance/patch_4997_generation.py
           rm -- .github/workflows/apply-4997-ai-activation-authority.yml
           rm -f -- .spec/4997-ai-activation-authority/last-validation.log
           git config user.name EffortlessSteven
