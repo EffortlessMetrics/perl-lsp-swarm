@@ -1292,7 +1292,7 @@ fn single_range_and_one_element_multi_range_share_admission_geometry()
                 "options": { "tabSize": 4, "insertSpaces": true },
             })),
             None,
-        )?;
+        );
 
         let multi = LspServer::new();
         advertise(&multi, Surface::Ranges);
@@ -1309,19 +1309,30 @@ fn single_range_and_one_element_multi_range_share_admission_geometry()
         match (source.contains('🦀'), source.lines().count()) {
             // The EOF-line point admits on both surfaces.
             (false, _) if requested["end"]["line"].as_u64() == Some(1) => {
-                assert_eq!(single_result, Some(json!([])), "{label}: single must admit");
+                let single_edits = single_result.map_err(|error| {
+                    Box::<dyn std::error::Error>::from(format!(
+                        "{label}: single refused: {error:?}"
+                    ))
+                })?;
+                assert_eq!(single_edits, Some(json!([])), "{label}: single must admit");
                 let edits = multi_result.map_err(|error| {
                     Box::<dyn std::error::Error>::from(format!("{label}: multi refused: {error:?}"))
                 })?;
                 assert_eq!(edits, Some(json!([])), "{label}: one-element multi must admit");
             }
-            // Invalid geometry refuses on both surfaces without edits.
+            // Invalid geometry refuses on both surfaces through one admission
+            // vocabulary: the shared strict plan mapping rejects before any
+            // engine runs, with identical typed evidence.
             _ => {
-                assert_eq!(single_result, Some(json!([])), "{label}: single must refuse to edit");
-                let trace = receipt(&single)?;
-                assert_eq!(trace["decision"], "blocked", "{label}");
-                assert_eq!(trace["reason"], "unsafe_range", "{label}");
-                assert_eq!(trace["actual_engine"], "unknown", "{label}");
+                let single_error = single_result.err().ok_or("{label}: single must reject")?;
+                assert_eq!(single_error.code, -32602, "{label}");
+                let single_data = single_error.data.ok_or("{label}: missing plan evidence")?;
+                assert_eq!(single_data["reason"], "invalid_position", "{label}");
+                let single_trace = receipt(&single)?;
+                assert_eq!(single_trace["decision"], "blocked", "{label}");
+                assert_eq!(single_trace["reason"], "invalid_position", "{label}");
+                assert_eq!(single_trace["actual_engine"], "not_started", "{label}");
+                assert_eq!(single_trace["result_count"], 0, "{label}");
 
                 let error =
                     multi_result.err().ok_or_else(|| format!("{label}: multi must reject"))?;
@@ -1339,9 +1350,10 @@ fn single_range_and_one_element_multi_range_share_admission_geometry()
 }
 
 /// A CRLF terminator-boundary endpoint (one past the line body in UTF-16
-/// units) refuses before any engine runs. The pre-policy seam ran native
-/// formatting for such endpoints because its permissive validator counted the
-/// carriage return; the shared strict mapper owns that boundary now.
+/// units) refuses through the shared strict mapper before any engine runs.
+/// The pre-policy seam ran native formatting for such endpoints because its
+/// permissive validator counted the carriage return; the shared admission
+/// vocabulary owns that boundary now, identically to the multi-range surface.
 #[test]
 fn crlf_terminator_boundary_endpoint_refuses_before_the_engine_runs()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -1352,24 +1364,32 @@ fn crlf_terminator_boundary_endpoint_refuses_before_the_engine_runs()
     let uri = "file:///crlf-boundary-formatting.pl";
     server.test_apply_did_open(uri, "aa\r\nbb\r\n", 1)?;
 
-    let result = server.handle_range_formatting_policy(
-        Some(json!({
-            "textDocument": { "uri": uri, "version": 1 },
-            "range": {
-                "start": { "line": 0, "character": 0 },
-                "end": { "line": 0, "character": 3 }
-            },
-            "options": { "tabSize": 4, "insertSpaces": true },
-        })),
-        None,
-    )?;
+    let error = server
+        .handle_range_formatting_policy(
+            Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 3 }
+                },
+                "options": { "tabSize": 4, "insertSpaces": true },
+            })),
+            None,
+        )
+        .err()
+        .ok_or("a terminator-boundary endpoint must be refused")?;
 
-    assert_eq!(result, Some(json!([])), "a terminator-boundary endpoint must not edit");
+    assert_eq!(error.code, -32602);
+    let data = error.data.ok_or("missing refusal evidence")?;
+    assert_eq!(data["reason"], "invalid_position");
+    assert!(
+        data["formatting_receipt"]["decision"] == json!("blocked"),
+        "refusal must record a blocked receipt"
+    );
     let trace = receipt(&server)?;
-    assert_eq!(trace["decision"], "blocked");
-    assert_eq!(trace["reason"], "unsafe_range");
+    assert_eq!(trace["reason"], "invalid_position");
     assert_eq!(
-        trace["actual_engine"], "unknown",
+        trace["actual_engine"], "not_started",
         "refusal must happen before the formatter engine runs"
     );
     assert!(
