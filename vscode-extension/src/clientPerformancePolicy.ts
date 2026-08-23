@@ -84,7 +84,7 @@ export function validateClientMetricRatchet(
     errors.push('relative regression ratio must be at least 1');
   }
 
-  if (ratchet.policy === 'informational') {
+  if (ratchet.policy === 'informational' || ratchet.kind === 'informational_metric') {
     if (ratchet.absolute_ceiling !== null || ratchet.relative_regression_ratio !== null) {
       errors.push('informational metrics cannot carry blocking/advisory thresholds');
     }
@@ -166,6 +166,20 @@ export function evaluateClientMetricRatchet(
       policy: ratchet.policy,
       status: 'not_proven',
       reasons: ['current candidate metric is not observed'],
+    };
+  }
+
+  if (
+    ratchet.relative_regression_ratio !== null &&
+    (evidence.previous_public === null ||
+      evidence.previous_public.availability !== 'observed' ||
+      evidence.previous_public.value === null)
+  ) {
+    return {
+      metric_id: ratchet.metric_id,
+      policy: ratchet.policy,
+      status: 'not_proven',
+      reasons: ['relative regression ratio requires an observed previous-public baseline'],
     };
   }
 

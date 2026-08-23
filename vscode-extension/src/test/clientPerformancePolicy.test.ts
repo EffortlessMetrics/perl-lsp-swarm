@@ -161,6 +161,85 @@ describe('client performance ratchet policy', () => {
       'informational metrics cannot be blocking',
     );
   });
+
+  test('rejects thresholds on informational metric kinds even under advisory policy', () => {
+    const policy: ClientMetricRatchet = {
+      ...ratchet(),
+      kind: 'informational_metric',
+      policy: 'advisory',
+      absolute_ceiling: 100,
+    };
+    expect(validateClientMetricRatchet(evidence(), policy)).toContain(
+      'informational metrics cannot carry blocking/advisory thresholds',
+    );
+  });
+
+  test('detects a relative regression against an observed previous baseline', () => {
+    const policy: ClientMetricRatchet = {
+      ...ratchet(),
+      absolute_ceiling: null,
+      relative_regression_ratio: 1.5,
+    };
+
+    const within = evidence();
+    within.previous_public = observation(100);
+    within.current_candidate = observation(150);
+    expect(evaluateClientMetricRatchet(within, policy)).toMatchObject({ status: 'pass' });
+
+    const breached = evidence();
+    breached.previous_public = observation(100);
+    breached.current_candidate = observation(151);
+    expect(evaluateClientMetricRatchet(breached, policy)).toMatchObject({
+      status: 'regressed',
+      reasons: expect.arrayContaining(['current/previous ratio 1.510 exceeds 1.5']),
+    });
+  });
+
+  test('keeps a zero previous-public baseline detectable under a relative ratio', () => {
+    const policy: ClientMetricRatchet = {
+      ...ratchet(),
+      absolute_ceiling: null,
+      relative_regression_ratio: 1.5,
+    };
+
+    const flat = evidence();
+    flat.previous_public = observation(0);
+    flat.current_candidate = observation(0);
+    expect(evaluateClientMetricRatchet(flat, policy)).toMatchObject({ status: 'pass' });
+
+    const lifted = evidence();
+    lifted.previous_public = observation(0);
+    lifted.current_candidate = observation(1);
+    expect(evaluateClientMetricRatchet(lifted, policy)).toMatchObject({
+      status: 'regressed',
+      reasons: expect.arrayContaining([
+        'current value regressed from a zero previous-public baseline',
+      ]),
+    });
+  });
+
+  test('reports not_proven when a relative ratchet lacks an observed previous baseline', () => {
+    const policy: ClientMetricRatchet = {
+      ...ratchet(),
+      absolute_ceiling: null,
+      relative_regression_ratio: 1.5,
+    };
+
+    const absent = evidence();
+    absent.previous_public = null;
+    expect(evaluateClientMetricRatchet(absent, policy)).toEqual({
+      metric_id: 'pretrigger_network_requests',
+      policy: 'blocking',
+      status: 'not_proven',
+      reasons: ['relative regression ratio requires an observed previous-public baseline'],
+    });
+
+    const unobserved = evidence();
+    unobserved.previous_public = observation(null, 'not_proven');
+    expect(evaluateClientMetricRatchet(unobserved, policy)).toMatchObject({
+      status: 'not_proven',
+    });
+  });
 });
 
 describe('committed client perf policy record', () => {
