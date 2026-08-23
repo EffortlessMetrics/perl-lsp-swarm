@@ -8,6 +8,11 @@
 //! vanish from the product normalized set — this gate turns that regression
 //! red instead.
 
+#![expect(
+    clippy::panic,
+    reason = "test-only barrier failure is a hard test error, not a production path"
+)]
+
 use std::fs;
 use std::path::Path;
 
