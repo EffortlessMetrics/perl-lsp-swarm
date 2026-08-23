@@ -7,6 +7,13 @@
 //! bare `native_finding_candidates`, undeclared emission shapes silently
 //! vanish from the product normalized set — this gate turns that regression
 //! red instead.
+//!
+//! #11919 extends the gate to the two remaining raw-producer consumers (the
+//! quickfix surface and the `perl.runCritic` command surface): both must feed
+//! their candidates through the accounting entrypoint AND apply the shared
+//! post-merge policy (`normalize_with_native_policy`) so alias-aware
+//! exclusion/suppression can never leave a second spelling active on a
+//! consumer surface.
 
 #![expect(
     clippy::panic,
@@ -18,6 +25,16 @@ use std::path::Path;
 
 const ACCOUNTING_ENTRYPOINT: &str = "native_finding_candidates_with_accounting(";
 const UNACCOUNTED_ENTRYPOINT: &str = "native_finding_candidates(";
+const POST_MERGE_POLICY_ENTRYPOINT: &str = "normalize_with_native_policy(";
+
+/// Every production site that turns native critic findings into user-visible
+/// rows must route through the shared accounting + post-merge policy path.
+const NATIVE_CONSUMER_SOURCES: [&str; 4] = [
+    "runtime/diagnostics.rs",
+    "features/diagnostics/pull.rs",
+    "runtime/language/code_actions.rs",
+    "execute_command/provider.rs",
+];
 
 fn production_source(rel_path: &str) -> String {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -46,8 +63,28 @@ fn pull_diagnostics_native_path_accounts_for_rejected_producer_identities() {
 }
 
 #[test]
+fn code_action_native_path_accounts_for_rejected_producer_identities() {
+    let source = production_source("runtime/language/code_actions.rs");
+    assert!(
+        source.contains(ACCOUNTING_ENTRYPOINT),
+        "runtime/language/code_actions.rs must route native candidates through the \
+         accounting entrypoint (#7475, #11919)"
+    );
+}
+
+#[test]
+fn execute_command_native_path_accounts_for_rejected_producer_identities() {
+    let source = production_source("execute_command/provider.rs");
+    assert!(
+        source.contains(ACCOUNTING_ENTRYPOINT),
+        "execute_command/provider.rs must route native candidates through the \
+         accounting entrypoint (#7475, #11919)"
+    );
+}
+
+#[test]
 fn no_production_site_uses_the_unaccounted_candidate_entrypoint() {
-    for rel_path in ["runtime/diagnostics.rs", "features/diagnostics/pull.rs"] {
+    for rel_path in NATIVE_CONSUMER_SOURCES {
         let source = production_source(rel_path);
         let unaccounted_sites: Vec<usize> = source
             .match_indices(UNACCOUNTED_ENTRYPOINT)
@@ -57,6 +94,24 @@ fn no_production_site_uses_the_unaccounted_candidate_entrypoint() {
         assert!(
             unaccounted_sites.is_empty(),
             "{rel_path} bypasses rejection accounting at byte offsets {unaccounted_sites:?} (#7475)"
+        );
+    }
+}
+
+#[test]
+fn every_native_consumer_applies_the_post_merge_normalized_policy() {
+    // #11919: a consumer that filters raw findings by rule ID before (or
+    // instead of) the post-merge policy can leave a second registered spelling
+    // active after an alias-aware exclusion or suppression — exactly the
+    // bullet-7 defect. Every consumer must apply
+    // `normalize_with_native_policy` to its candidates and iterate only the
+    // admitted normalized rows.
+    for rel_path in NATIVE_CONSUMER_SOURCES {
+        let source = production_source(rel_path);
+        assert!(
+            source.contains(POST_MERGE_POLICY_ENTRYPOINT),
+            "{rel_path} must apply the shared post-merge policy so alias exclusion/suppression \
+             cannot leave a second spelling active (#7475 bullet 7, #11919)"
         );
     }
 }
