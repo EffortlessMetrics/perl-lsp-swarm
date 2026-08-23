@@ -160,7 +160,7 @@ pub fn run(write: bool, check: bool, only: Option<StatusSubsystem>) -> Result<()
             let roadmap_path = root.join("docs/project/ROADMAP.md");
             let original_roadmap =
                 fs::read_to_string(&roadmap_path).context("reading docs/project/ROADMAP.md")?;
-            let updated_roadmap = lsp::update_roadmap(&root, &original_roadmap)?;
+            let updated_roadmap = lsp::update_roadmap(&original_roadmap, &compliance_table)?;
             if updated_roadmap != original_roadmap {
                 files_to_update.push(("docs/project/ROADMAP.md", roadmap_path, updated_roadmap));
             }

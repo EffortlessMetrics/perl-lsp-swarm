@@ -17,6 +17,12 @@ workflow = ".github/workflows/methodology-gate.yml"
 required = false
 contract_role = "advisory-workflow-shape"
 
+[[check]]
+name = "Semantic Close Containment"
+workflow = ".github/workflows/semantic-close-containment.yml"
+required = false
+contract_role = "advisory-workflow-shape"
+
 # `[[checks]]` is the emitted status-context inventory. The fields answer
 # different questions and must not be inferred from each other:
 #
@@ -199,3 +205,16 @@ policy_role = "advisory"
 applicability = "always-or-scoped-noop"
 enforcement = "neither"
 reason = "The static contract reports repository policy drift but is not yet protected by GitHub."
+
+[[checks]]
+name = "Semantic close containment (advisory)"
+producer = "repository-job"
+workflow = ".github/workflows/semantic-close-containment.yml"
+job = "containment"
+workflow_result = "propagate"
+events = ["pull_request_target", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "always-or-scoped-noop"
+enforcement = "neither"
+reason = "CP00 containment guard (#10413) fails internally contradictory terminal close relations and NOT_PROVEN evidence before semantic evaluation; required-promotion review stays under #10168."

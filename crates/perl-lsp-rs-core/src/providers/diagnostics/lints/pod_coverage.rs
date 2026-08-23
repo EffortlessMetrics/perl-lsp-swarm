@@ -95,6 +95,7 @@ pub fn check_pod_coverage(node: &Node, source: &str, diagnostics: &mut Vec<Diagn
             message: format!("Exported subroutine '{}' has no POD documentation", export_name),
             related_information: Vec::new(),
             tags: Vec::new(),
+            fixable: false,
             suggestion: Some(format!(
                 "Add '=head2 {}' documentation before or near the subroutine definition",
                 export_name

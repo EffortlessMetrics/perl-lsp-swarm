@@ -1,9 +1,8 @@
 //! LSP subsystem status generator.
 //!
-//! Owns LSP coverage counts, protocol compliance table, lsp.md generation,
+//! Owns LSP catalog counts, protocol-surface table, lsp.md generation,
 //! and ROADMAP.md compliance table sync.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use color_eyre::eyre::{Context, Result};
@@ -15,10 +14,8 @@ use super::replace_block;
 // ---------------------------------------------------------------------------
 
 pub(super) struct LspCoverage {
-    pub ux_percent: usize,
     pub ux_implemented: usize,
     pub ux_total: usize,
-    pub protocol_percent: usize,
     pub protocol_implemented: usize,
     pub protocol_total: usize,
 }
@@ -50,13 +47,7 @@ pub(super) fn count_lsp_coverage(root: &Path) -> Result<LspCoverage> {
         })
         .collect();
 
-    let ux_percent = if ux_trackable.is_empty() {
-        0
-    } else {
-        ((ux_implemented.len() as f64 / ux_trackable.len() as f64) * 100.0).round() as usize
-    };
-
-    // Protocol Compliance: every catalog feature, regardless of
+    // Protocol surface labels: every catalog feature, regardless of
     // `counts_in_coverage` and regardless of maturity.
     //
     // `Planned` features stay in this denominator on purpose. They are protocol
@@ -64,7 +55,7 @@ pub(super) fn count_lsp_coverage(root: &Path) -> Result<LspCoverage> {
     // them would let the headline reach 100% by planning the gap away — and it
     // would disagree with `compute_compliance_table`, which counts every
     // feature. That disagreement is the #6909 defect: two denominators for one
-    // "Protocol Compliance" claim rendered into the same document, where the
+    // protocol-surface claim rendered into the same document, where the
     // headline reported `123/123 — 100%` beside a table reporting
     // `123/125 — 98%`. One denominator, shared with the table, is the fix.
     let protocol_trackable: Vec<_> = catalog.feature.iter().collect();
@@ -81,18 +72,9 @@ pub(super) fn count_lsp_coverage(root: &Path) -> Result<LspCoverage> {
         })
         .collect();
 
-    let protocol_percent = if protocol_trackable.is_empty() {
-        0
-    } else {
-        ((protocol_implemented.len() as f64 / protocol_trackable.len() as f64) * 100.0).round()
-            as usize
-    };
-
     Ok(LspCoverage {
-        ux_percent,
         ux_implemented: ux_implemented.len(),
         ux_total: ux_trackable.len(),
-        protocol_percent,
         protocol_implemented: protocol_implemented.len(),
         protocol_total: protocol_trackable.len(),
     })
@@ -107,48 +89,7 @@ pub(super) fn compute_compliance_table(root: &Path) -> Result<String> {
     let catalog = perl_lsp_rs_core::feature_catalog::read_catalog(&features_path)
         .with_context(|| format!("loading {}", features_path.display()))?;
 
-    let mut by_area: BTreeMap<String, (usize, usize)> = BTreeMap::new(); // (implemented, total)
-
-    for f in &catalog.feature {
-        let entry = by_area.entry(f.area.clone()).or_insert((0, 0));
-        entry.1 += 1;
-        if matches!(
-            f.maturity,
-            perl_lsp_rs_core::feature_catalog::Maturity::Ga
-                | perl_lsp_rs_core::feature_catalog::Maturity::Production
-                | perl_lsp_rs_core::feature_catalog::Maturity::Preview
-        ) {
-            entry.0 += 1;
-        }
-    }
-
-    let mut lines: Vec<String> = Vec::new();
-    lines.push("| Area | Implemented | Total | Coverage |".to_string());
-    lines.push("|------|-------------|-------|----------|".to_string());
-
-    let mut total_impl: usize = 0;
-    let mut total_all: usize = 0;
-
-    for (area, (impl_count, total)) in &by_area {
-        let pct = if *total == 0 {
-            0
-        } else {
-            ((*impl_count as f64 / *total as f64) * 100.0).round() as usize
-        };
-        lines.push(format!("| {area} | {impl_count} | {total} | {pct}% |"));
-        total_impl += impl_count;
-        total_all += total;
-    }
-
-    let overall_pct = if total_all == 0 {
-        0
-    } else {
-        ((total_impl as f64 / total_all as f64) * 100.0).round() as usize
-    };
-    lines
-        .push(format!("| **Overall** | **{total_impl}** | **{total_all}** | **{overall_pct}%** |"));
-
-    Ok(lines.join("\n"))
+    Ok(perl_lsp_rs_core::feature_catalog::render_navigation_table(&catalog))
 }
 
 // ---------------------------------------------------------------------------
@@ -160,31 +101,37 @@ pub(super) fn generate_lsp_status(
     compliance_table: &str,
     original: &str,
 ) -> Result<String> {
-    let lsp_target_pct: usize = 100;
-    let lsp_status = if cov.ux_percent >= lsp_target_pct { "PASS" } else { "In progress" };
-    let lsp_table_row = format!(
-        "| **LSP Coverage** | {}% ({}/{} advertised features, `features.toml`) | {}% | {} |",
-        cov.ux_percent, cov.ux_implemented, cov.ux_total, lsp_target_pct, lsp_status
-    );
+    // #6731 containment leaf: catalog maturity labels are declarations, not
+    // behavior evidence. Until every promoted row names an exact current
+    // behavior-evidence owner, this projection must refuse to publish an
+    // aggregate percentage or a passing verdict. Derived counts remain as
+    // navigation data only; the evidence state renders `not_proven`.
+    let coverage_row = "| **LSP Catalog** | not_proven — no exact current behavior-evidence \
+                        owner (#6731); catalog rows below are navigation only |"
+        .to_string();
 
     let lsp_coverage_bullet = format!(
-        "- **LSP Coverage**: {}% user-visible feature coverage ({}/{} advertised features from `features.toml`)",
-        cov.ux_percent, cov.ux_implemented, cov.ux_total
+        "- **Advertised ga/production rows**: {} of {} catalog-tracked advertised rows declare \
+         ga/production (navigation count from `features.toml`)",
+        cov.ux_implemented, cov.ux_total
     );
     let protocol_compliance_bullet = format!(
-        "- **Protocol Compliance**: {}% overall LSP protocol support ({}/{} including plumbing)",
-        cov.protocol_percent, cov.protocol_implemented, cov.protocol_total
+        "- **Protocol surface labels**: {} of {} declared rows carry ga/production/preview labels \
+         (navigation only)",
+        cov.protocol_implemented, cov.protocol_total
     );
-
-    let lsp_target = if cov.ux_percent >= lsp_target_pct {
-        "**Target**: maintain 100% LSP coverage (no regressions)".to_string()
-    } else {
-        format!("**Target**: 100% LSP coverage (from current {}%)", cov.ux_percent)
-    };
+    let evidence_bullet =
+        "- **Evidence state**: not_proven — cells without an exact current behavior-evidence owner \
+         render `not_proven`, never inherited green"
+            .to_string();
+    let lsp_target =
+        "**Target**: every promoted cell names exact current behavior and subject evidence (#6731)"
+            .to_string();
 
     let bullets_content = [
         lsp_coverage_bullet.as_str(),
         protocol_compliance_bullet.as_str(),
+        evidence_bullet.as_str(),
         "",
         lsp_target.as_str(),
     ]
@@ -195,7 +142,7 @@ pub(super) fn generate_lsp_status(
         &text,
         "<!-- BEGIN: LSP_COVERAGE -->",
         "<!-- END: LSP_COVERAGE -->",
-        &lsp_table_row,
+        &coverage_row,
     )?;
     text = replace_block(
         &text,
@@ -216,13 +163,12 @@ pub(super) fn generate_lsp_status(
 // ROADMAP.md update (keeps compliance table in sync)
 // ---------------------------------------------------------------------------
 
-pub(super) fn update_roadmap(root: &Path, original: &str) -> Result<String> {
-    let compliance_table = compute_compliance_table(root)?;
+pub(super) fn update_roadmap(original: &str, catalog_table: &str) -> Result<String> {
     replace_block(
         original,
         "<!-- BEGIN: COMPLIANCE_TABLE -->",
         "<!-- END: COMPLIANCE_TABLE -->",
-        &compliance_table,
+        catalog_table,
     )
 }
 
@@ -242,17 +188,15 @@ mod tests {
         let cov = count_lsp_coverage(&root)?;
         assert!(cov.ux_total > 0, "expected non-zero ux_total");
         assert!(cov.protocol_total > 0, "expected non-zero protocol_total");
-        assert!(cov.ux_percent <= 100, "ux_percent should be <= 100, got {}", cov.ux_percent);
         Ok(())
     }
 
-    /// The protocol-compliance headline and the compliance table are rendered
-    /// into the same document and make the same claim, so they must be computed
-    /// from the same numerator and denominator.
+    /// The advertised-rows bullet and the catalog-table Overall row make the
+    /// same declaration-count claim, so they must be computed from the same
+    /// numerator and denominator.
     ///
-    /// Regression for #6909: the headline previously dropped `Planned` features
-    /// from its denominator only, so it published `123/123 — 100%` directly
-    /// above a table publishing `123/125 — 98%`.
+    /// Regression for #6909, adapted by #6731: the claim is now navigation-only
+    /// counts, but one denominator per claim still holds.
     #[test]
     fn protocol_headline_and_compliance_table_share_one_denominator() -> Result<()> {
         let root = project_root()?;
@@ -262,32 +206,30 @@ mod tests {
         let overall = table
             .lines()
             .find(|line| line.contains("**Overall**"))
-            .ok_or_else(|| eyre!("compliance table is missing its Overall row"))?;
+            .ok_or_else(|| eyre!("catalog table is missing its Overall row"))?;
         let cells: Vec<usize> = overall
             .split('|')
-            .filter_map(|cell| cell.trim().trim_matches('*').trim_end_matches('%').parse().ok())
+            .filter_map(|cell| cell.trim().trim_matches('*').parse().ok())
             .collect();
-        let [table_implemented, table_total, table_percent] = cells[..] else {
-            panic!("could not read numerator/denominator/percent from Overall row: {overall}");
+        let [table_implemented, table_total] = cells[..] else {
+            panic!("could not read declared/total counts from Overall row: {overall}");
         };
 
         assert_eq!(
-            (cov.protocol_implemented, cov.protocol_total, cov.protocol_percent),
-            (table_implemented, table_total, table_percent),
-            "headline reports {}/{} = {}% but the table reports {}/{} = {}%; \
-             one Protocol Compliance claim must not render two denominators (#6909)",
+            (cov.protocol_implemented, cov.protocol_total),
+            (table_implemented, table_total),
+            "headline reports {}/{} but the table reports {}/{}; \
+             one protocol-surface claim must not render two denominators (#6909)",
             cov.protocol_implemented,
             cov.protocol_total,
-            cov.protocol_percent,
             table_implemented,
             table_total,
-            table_percent,
         );
         Ok(())
     }
 
     /// A feature the project has acknowledged but not implemented must stay in
-    /// the denominator, so the headline cannot reach 100% by planning a gap away.
+    /// the denominator, so a planned gap cannot be counted away.
     #[test]
     fn planned_features_remain_in_the_protocol_denominator() -> Result<()> {
         let root = project_root()?;
@@ -299,19 +241,94 @@ mod tests {
             catalog.feature.len(),
             "every catalog feature belongs in the protocol denominator",
         );
+        Ok(())
+    }
 
-        let planned = catalog
-            .feature
-            .iter()
-            .filter(|f| f.maturity == perl_lsp_rs_core::feature_catalog::Maturity::Planned)
-            .count();
-        if planned > 0 {
+    /// #6731 containment recurrence control: the generated status must render
+    /// `not_proven` evidence state and navigation-labeled counts, and must never
+    /// reintroduce an aggregate percentage or a passing verdict derived from
+    /// maturity declarations.
+    #[test]
+    fn generated_lsp_status_renders_not_proven_and_never_a_passing_verdict() -> Result<()> {
+        let root = project_root()?;
+        let cov = count_lsp_coverage(&root)?;
+        let table = compute_compliance_table(&root)?;
+        let original = std::fs::read_to_string(root.join("docs/project/status/lsp.md"))?;
+
+        let generated = generate_lsp_status(&cov, &table, &original)?;
+
+        let coverage_block = block(&generated, "LSP_COVERAGE")?;
+        assert!(
+            coverage_block.contains("not_proven"),
+            "LSP Coverage row must render not_proven without an evidence owner: {coverage_block}"
+        );
+
+        let bullets_block = block(&generated, "LSP_METRICS_BULLETS")?;
+        assert!(
+            bullets_block.contains("not_proven"),
+            "metrics bullets must state the not_proven evidence state: {bullets_block}"
+        );
+        assert!(
+            bullets_block.contains("navigation"),
+            "derived counts must be labeled navigation only: {bullets_block}"
+        );
+
+        // Scan every generated region: aggregate percentages and passing
+        // verdicts are declaration-count claims, not behavior proof (#6731).
+        let generated_region = [
+            block(&generated, "LSP_COVERAGE")?,
+            block(&generated, "LSP_METRICS_BULLETS")?,
+            block(&generated, "COMPLIANCE_TABLE")?,
+        ]
+        .join("\n");
+        for forbidden in ["PASS", "%"] {
             assert!(
-                cov.protocol_percent < 100,
-                "{planned} planned feature(s) are unimplemented, so protocol compliance \
-                 must not render as 100%",
+                !generated_region.contains(forbidden),
+                "generated LSP status must not contain {forbidden:?} (#6731)"
             );
         }
         Ok(())
+    }
+
+    /// Mutation control: even with a synthetic catalog that reports full
+    /// coverage, the projection must keep refusing a percentage or PASS. This
+    /// fails if anyone reattaches verdict logic to the coverage counters.
+    #[test]
+    fn full_declaration_coverage_still_renders_not_proven() -> Result<()> {
+        let cov = LspCoverage {
+            ux_implemented: 60,
+            ux_total: 60,
+            protocol_implemented: 125,
+            protocol_total: 125,
+        };
+        let table = "| Area | Declared ga/production/preview rows | Total rows |\n\
+                     |------|---------------------------|------------|\n\
+                     | **Overall** | **125** | **125** |";
+        let original = "<!-- BEGIN: LSP_COVERAGE -->\nold\n<!-- END: LSP_COVERAGE -->\n\
+                        <!-- BEGIN: LSP_METRICS_BULLETS -->\nold\n<!-- END: LSP_METRICS_BULLETS -->\n\
+                        <!-- BEGIN: COMPLIANCE_TABLE -->\nold\n<!-- END: COMPLIANCE_TABLE -->\n";
+
+        let generated = generate_lsp_status(&cov, table, original)?;
+
+        assert!(block(&generated, "LSP_COVERAGE")?.contains("not_proven"));
+        assert!(!generated.contains("PASS"), "PASS must never derive from declarations");
+        assert!(
+            !generated.contains('%'),
+            "no percentage may be derived from declarations, even at full coverage"
+        );
+        Ok(())
+    }
+
+    fn block(text: &str, tag: &str) -> Result<String> {
+        let begin = format!("<!-- BEGIN: {tag} -->");
+        let end = format!("<!-- END: {tag} -->");
+        let start = text
+            .find(&begin)
+            .ok_or_else(|| eyre!("generated LSP status is missing begin marker for {tag}"))?;
+        let region = &text[start..];
+        let stop = region
+            .find(&end)
+            .ok_or_else(|| eyre!("generated LSP status is missing end marker for {tag}"))?;
+        Ok(region[..stop].to_string())
     }
 }

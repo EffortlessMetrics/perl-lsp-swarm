@@ -52,6 +52,9 @@ mod workspace_folder;
 #[cfg(feature = "workspace")]
 mod workspace_progress;
 
+#[cfg(test)]
+mod open_buffer_authority_tests;
+
 // Re-export protocol types for backward compatibility
 // Tests and external code import these from perl_lsp::
 pub use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse};
@@ -311,6 +314,14 @@ pub struct LspServer {
     /// setting the old flag to `true` interrupts the in-progress parse
     /// cooperatively (via `Parser::check_cancelled`).
     pub(crate) parse_cancel_flags: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    /// Explicit backing-file transitions observed for open documents (#8041).
+    ///
+    /// Keyed by normalized URI. An external filesystem event may change what
+    /// backs an open document's path, but it must never replace the open
+    /// buffer as the authoritative source. This map records the transition so
+    /// `didSave`/`didClose` can complete the authority handoff
+    /// deterministically instead of guessing from a fresh `path.exists()`.
+    pub(crate) backing_file_transitions: Arc<Mutex<HashMap<String, BackingFileTransition>>>,
     /// Pull diagnostics orchestrator for coordinating diagnostic operations.
     pub(crate) pull_diagnostics_orchestrator: PullDiagnosticsOrchestrator,
     /// Guard that prevents concurrent workspace indexing scans.
@@ -475,6 +486,12 @@ pub struct RuntimePressureSnapshot {
     pub pending_index_tasks: usize,
     /// Number of unique file-watcher URIs waiting in the debounce window.
     pub file_watcher_pending_uris: usize,
+    /// Number of file-watcher URIs currently inside a dispatched batch.
+    ///
+    /// Moving work from pending to active never reports zero total watcher
+    /// pressure (#8064): during a long batch this stays non-zero while
+    /// [`Self::file_watcher_pending_uris`] drains.
+    pub file_watcher_active_subjects: usize,
     /// Number of unique diagnostic URIs waiting in the debounce window.
     pub diagnostic_debounce_pending_uris: usize,
     /// Number of workspace/configuration requests waiting for client replies.
@@ -497,6 +514,31 @@ unsafe impl Sync for LspServer {}
 
 // Note: DocumentState, ServerConfig, and normalize_package_separator are
 // imported from crate::lsp::state::{document, config}
+
+/// Explicit backing-file transition recorded for an open document (#8041).
+///
+/// The authoritative input for an open document is always its editor buffer.
+/// External filesystem events may still change what backs the document's
+/// path; this state records that transition so `didSave` and `didClose` can
+/// complete the authority handoff deterministically:
+///
+/// - [`BackingFileTransition::Changed`] — disk bytes moved on while the
+///   buffer stayed authoritative (watched CHANGED/CREATED was deliberately
+///   not indexed). Close must reload the file from current disk under
+///   closed-file authority; save re-coheres disk with the buffer.
+/// - [`BackingFileTransition::Deleted`] — the backing file is gone. The
+///   buffer keeps authority; save can recreate it, close removes the
+///   remaining subject.
+/// - [`BackingFileTransition::RenamedOrMoved`] — the backing path moved
+///   to `new_uri` via a client file-operation notification. The buffer stays
+///   bound to its original URI until client document lifecycle resolves the
+///   handoff.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BackingFileTransition {
+    Changed,
+    Deleted,
+    RenamedOrMoved { new_uri: String },
+}
 
 // =========================================================================
 // Core accessors and server lifecycle
@@ -744,6 +786,40 @@ impl LspServer {
         uri_keys
     }
 
+    /// Whether a document is currently open for `uri`.
+    ///
+    /// Resolves through normalized URI keys so watcher-supplied spellings
+    /// match how documents are stored.
+    pub(crate) fn document_is_open(&self, uri: &str) -> bool {
+        let documents = self.documents.lock();
+        self.get_document(&documents, uri).is_some()
+    }
+
+    /// Record (or overwrite) the backing-file transition for an open
+    /// document's URI.
+    ///
+    /// Overwriting is deliberate: a later event supersedes earlier ones
+    /// (delete followed by external recreate degrades to ``Changed``,
+    /// whose close-time reload reads whatever currently exists).
+    pub(crate) fn record_backing_file_transition(
+        &self,
+        uri: &str,
+        transition: BackingFileTransition,
+    ) {
+        let key = self.normalize_uri_key(uri);
+        self.backing_file_transitions.lock().insert(key, transition);
+    }
+
+    /// Take the pending backing-file transition for `uri`, if any.
+    ///
+    /// Taking consumes the record: each transition is resolved exactly once
+    /// by `didSave`/`didClose` so stale markers cannot leak into a successor
+    /// session.
+    pub(crate) fn take_backing_file_transition(&self, uri: &str) -> Option<BackingFileTransition> {
+        let key = self.normalize_uri_key(uri);
+        self.backing_file_transitions.lock().remove(&key)
+    }
+
     /// Evict open-document session state for a URI without deleting workspace
     /// index entries for the file on disk.
     ///
@@ -796,6 +872,14 @@ impl LspServer {
     }
 
     /// Evict all state for a file that no longer exists in the workspace.
+    ///
+    /// Open-buffer authority (#8041): when a document is still open for
+    /// `uri`, this removes only backing-file-derived state (workspace index
+    /// entries and path-keyed caches) and records an explicit
+    /// [`BackingFileTransition::Deleted`] so save/close can complete the
+    /// handoff. The open document, its text, client version, generation, and
+    /// session caches stay untouched — a watched disk deletion must not evict
+    /// unsaved editor source.
     pub(crate) fn evict_deleted_file_state(&self, uri: &str) {
         let uri_keys = self.uri_key_variants(uri);
         #[cfg(feature = "workspace")]
@@ -803,6 +887,23 @@ impl LspServer {
             for key in &uri_keys {
                 coordinator.index().remove_file(key);
             }
+        }
+
+        if self.document_is_open(uri) {
+            self.record_backing_file_transition(uri, BackingFileTransition::Deleted);
+            for key in &uri_keys {
+                if let Some(path) = source_path_from_uri(key) {
+                    self.pod_cache.lock().remove(&path);
+
+                    #[cfg(not(target_arch = "wasm32"))]
+                    self.pull_diagnostics_orchestrator.invalidate_file_cache(&path);
+                }
+            }
+            tracing::debug!(
+                uri,
+                "backing file deleted while document open; open buffer remains authoritative (#8041)"
+            );
+            return;
         }
 
         self.evict_open_document_session_state(uri);
@@ -861,15 +962,19 @@ impl LspServer {
             .lock()
             .as_ref()
             .map_or(0, diagnostic_debounce::DiagnosticDebouncer::pending_uris);
-        let file_watcher_pending_uris = self
+        let watcher_pressure = self
             .file_watcher_debouncer
             .lock()
             .as_ref()
-            .map_or(0, file_watcher_debounce::FileWatcherDebouncer::pending_uris);
+            .map(file_watcher_debounce::FileWatcherDebouncer::pressure);
+        let file_watcher_pending_uris = watcher_pressure.as_ref().map_or(0, |p| p.pending_subjects);
 
         RuntimePressureSnapshot {
             pending_index_tasks: self.pending_index_task_count.load(Ordering::SeqCst),
             file_watcher_pending_uris,
+            file_watcher_active_subjects: watcher_pressure
+                .as_ref()
+                .map_or(0, |p| p.active_subjects),
             diagnostic_debounce_pending_uris,
             pending_workspace_configuration_requests: self
                 .pending_workspace_configuration_requests
@@ -1386,15 +1491,22 @@ impl LspServer {
 
     /// Schedule a file watcher URI for debounced batch processing.
     ///
-    /// Returns `true` if a debouncer is installed (production runtime) and the
-    /// URI was queued, `false` if no debouncer is present (unit-test path).
+    /// Returns `true` only when the URI is genuinely queued for debounced
+    /// processing (accepted, or coalesced into an already-pending subject).
+    /// Returns `false` when no debouncer is installed (unit-test path) or the
+    /// debouncer reports a degraded admission — worker spawn failure,
+    /// saturated pending set, or shutdown — so callers fall back to immediate
+    /// synchronous processing instead of losing events behind false success
+    /// (#8064).
     pub fn schedule_file_watcher_uri(&self, uri: &str) -> bool {
         let guard = self.file_watcher_debouncer.lock();
-        if let Some(ref d) = *guard {
-            d.schedule(uri);
-            true
-        } else {
-            false
+        match guard.as_ref() {
+            None => false,
+            Some(debouncer) => matches!(
+                debouncer.try_schedule(uri),
+                file_watcher_debounce::WatcherAdmission::Accepted
+                    | file_watcher_debounce::WatcherAdmission::Coalesced
+            ),
         }
     }
 }
@@ -1714,6 +1826,44 @@ mod tests {
         Ok(())
     }
 
+    /// Caller-side half of admission truthfulness (#8064): every degraded
+    /// disposition must surface as `false` from `schedule_file_watcher_uri`
+    /// so the didChangeWatchedFiles handler takes the immediate-processing
+    /// seam (workspace.rs) instead of losing events behind apparent queueing.
+    #[test]
+    fn schedule_file_watcher_uri_falls_back_on_degraded_admissions() {
+        use file_watcher_debounce::FileWatcherDebouncer;
+
+        // Unavailable: worker spawn failure.
+        let server = LspServer::new();
+        server.install_file_watcher_debouncer(FileWatcherDebouncer::unavailable_for_test());
+        assert!(!server.schedule_file_watcher_uri("file:///degraded/unavailable.pl"));
+        assert_eq!(
+            server.runtime_pressure_snapshot().file_watcher_pending_uris,
+            0,
+            "rejected admission must not absorb the event into pending state"
+        );
+
+        // Overflowed: saturated pending set refuses new subjects.
+        let server = LspServer::new();
+        server.install_file_watcher_debouncer(FileWatcherDebouncer::saturated_for_test(|_| {}));
+        assert!(
+            server.schedule_file_watcher_uri("file:///degraded/cap0.pl"),
+            "first subject fits the tiny cap"
+        );
+        assert!(!server.schedule_file_watcher_uri("file:///degraded/overflow.pl"));
+
+        // ShuttingDown: after teardown, late events are refused.
+        {
+            let guard = server.file_watcher_debouncer.lock();
+            assert!(guard.is_some(), "debouncer installed");
+            if let Some(debouncer) = guard.as_ref() {
+                debouncer.shutdown_now();
+            }
+        }
+        assert!(!server.schedule_file_watcher_uri("file:///degraded/late.pl"));
+    }
+
     #[test]
     fn source_path_from_uri_accepts_absolute_filesystem_paths()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1739,30 +1889,98 @@ mod tests {
     }
 
     #[test]
-    fn end_position_handles_trailing_final_newline() {
+    fn eof_offset_projection_preserves_terminal_line_identity() {
+        use ropey::Rope;
+        use std::sync::Arc;
+
         let server = LspServer::new();
-        let content = "package Foo;\n";
-        let pos = server.get_document_end_position(content);
-        assert_eq!(pos, json!({"line": 1, "character": 0}));
+
+        let lf = "package Foo;\n";
+        let crlf = "package Foo;\r\n";
+        let bare_cr = "a\rb";
+        for (uri, content) in [
+            ("file:///eof-lf.pl", lf),
+            ("file:///eof-crlf.pl", crlf),
+            ("file:///eof-cr.pl", bare_cr),
+        ] {
+            server.documents.lock().insert(
+                uri.to_string(),
+                DocumentState::from_parts(
+                    Rope::from_str(content),
+                    content.to_string(),
+                    1,
+                    Arc::new(AtomicU32::new(0)),
+                ),
+            );
+        }
+
+        let documents = server.documents.lock();
+        let lf_doc = documents.get("file:///eof-lf.pl").expect("lf doc");
+        let crlf_doc = documents.get("file:///eof-crlf.pl").expect("crlf doc");
+        let cr_doc = documents.get("file:///eof-cr.pl").expect("cr doc");
+
+        // A terminal separator ends the last content line, so true EOF sits on
+        // the final empty line (#10220): byte length alone would report (0, N).
+        assert_eq!(server.offset_to_pos16(lf_doc, lf.len()), (1, 0));
+        assert_eq!(server.offset_to_pos16(crlf_doc, crlf.len()), (1, 0));
+        // Bare CR is an admitted separator: EOF follows the second line.
+        assert_eq!(server.offset_to_pos16(cr_doc, bare_cr.len()), (1, 1));
     }
 
     #[test]
-    fn end_position_handles_missing_final_newline() {
+    fn eof_offset_projection_counts_utf16_not_bytes() {
+        use ropey::Rope;
+        use std::sync::Arc;
+
         let server = LspServer::new();
-        let content = "package Foo;";
-        let pos = server.get_document_end_position(content);
-        assert_eq!(pos, json!({"line": 0, "character": content.len()}));
+        let text = "#!/usr/bin/perl😀"; // 15 ASCII chars + one non-BMP char
+        server.documents.lock().insert(
+            "file:///eof-emoji.pl".to_string(),
+            DocumentState::from_parts(
+                Rope::from_str(text),
+                text.to_string(),
+                1,
+                Arc::new(AtomicU32::new(0)),
+            ),
+        );
+        let documents = server.documents.lock();
+        let doc = documents.get("file:///eof-emoji.pl").expect("emoji doc");
+        // The source is 19 bytes long; the wire position counts UTF-16 units.
+        assert_eq!(server.offset_to_pos16(doc, text.len()), (0, 17));
     }
 
     #[test]
-    // Left nested rather than collapsed into a let-chain. Collapsing it
-    // registers a new gap under `enforce-new-ripr` that this PR could not
-    // discharge: focused unit tests, an integration test, and moving this
-    // suppression between the seam and the function were all tried, and
-    // none cleared it. The nested form matches main. The exact gap-identity
-    // rule is NOT established -- see the NOT_PROVEN note on PR #9674 before
-    // assuming one. See #9528.
-    #[allow(clippy::collapsible_if)]
+    fn lifecycle_eof_projection_agrees_with_formatter_geometry() {
+        use ropey::Rope;
+        use std::sync::Arc;
+
+        let server = LspServer::new();
+        let sources =
+            ["", "package Foo;", "package Foo;\n", "a\r\n", "a\r", "#!/usr/bin/perl😀", "x\n\r\nz"];
+        for (idx, content) in sources.iter().enumerate() {
+            let uri = format!("file:///eof-parity-{idx}.pl");
+            server.documents.lock().insert(
+                uri.clone(),
+                DocumentState::from_parts(
+                    Rope::from_str(content),
+                    (*content).to_string(),
+                    1,
+                    Arc::new(AtomicU32::new(0)),
+                ),
+            );
+            let documents = server.documents.lock();
+            let doc = documents.get(&uri).expect("parity doc");
+            let projected = server.offset_to_pos16(doc, content.len());
+            let range = FormatRange::whole_document(content);
+            assert_eq!(
+                projected,
+                (range.end.line, range.end.character),
+                "lifecycle EOF projection diverges from formatter geometry for {content:?}"
+            );
+        }
+    }
+
+    #[test]
     fn code_action_append_uses_document_end() {
         use ropey::Rope;
         use std::sync::Arc;
@@ -1776,30 +1994,71 @@ mod tests {
             DocumentState::from_parts(rope, text.to_string(), 1, Arc::new(AtomicU32::new(0))),
         );
 
-        let result =
-            server.handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}})));
-        if let Ok(Some(result)) = result {
-            if let Some(actions) = result.as_array() {
-                assert!(!actions.is_empty());
-                let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
-                let end = server.get_document_end_position(text);
-                assert_eq!(edit["start"], end);
-                assert_eq!(edit["end"], end);
-            }
-        }
+        let result = server
+            .handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}})))
+            .expect("pragma code action handler must succeed");
+        let result = result.expect("handler must return an action response");
+        let actions = result.as_array().expect("response must be an action array");
+        assert!(!actions.is_empty(), "missing pragma must yield an action");
+        let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
+        let expected_end = json!({"line": 0, "character": text.chars().count()});
+        assert_eq!(edit["start"], expected_end);
+        assert_eq!(edit["end"], expected_end);
     }
 
     #[test]
-    fn formatting_edit_has_correct_end_position() {
-        let code = "sub test{my$x=1;return$x;}";
-        let server = LspServer::new();
-        let end = server.get_document_end_position(code);
-        let range = FormatRange::whole_document(code);
+    fn code_action_append_projects_utf16_eof_not_byte_columns() {
+        use ropey::Rope;
+        use std::sync::Arc;
 
-        if let (Some(line), Some(character)) = (end["line"].as_u64(), end["character"].as_u64()) {
-            assert_eq!(range.end.line, line as u32);
-            assert_eq!(range.end.character, character as u32);
-        }
+        let server = LspServer::new();
+        let uri = "file:///utf16-eof.pl";
+        // Unterminated shebang: pragma insertion lands at true EOF, and the
+        // tail is a non-BMP character so byte counting and UTF-16 disagree.
+        let text = "#!/usr/bin/perl😀";
+        let rope = Rope::from_str(text);
+        server.documents.lock().insert(
+            uri.to_string(),
+            DocumentState::from_parts(rope, text.to_string(), 1, Arc::new(AtomicU32::new(0))),
+        );
+
+        let result = server
+            .handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}})))
+            .expect("pragma code action handler must succeed");
+        let result = result.expect("handler must return an action response");
+        let actions = result.as_array().expect("response must be an action array");
+        assert!(!actions.is_empty(), "missing pragma must yield an action");
+        let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
+        // Byte columns would report character 19; true EOF is unit 17.
+        assert_eq!(edit["start"], json!({"line": 0, "character": 17}));
+        assert_eq!(edit["end"], json!({"line": 0, "character": 17}));
+    }
+
+    #[test]
+    fn code_action_append_projects_bare_cr_separator_before_eof() {
+        use ropey::Rope;
+        use std::sync::Arc;
+
+        let server = LspServer::new();
+        let uri = "file:///bare-cr-eof.pl";
+        // Lone CR is an admitted line separator; true EOF is line 1, not the
+        // single-line byte column the split('\n') helper reported.
+        let text = "#!/usr/bin/perl\rwarn 'x';";
+        let rope = Rope::from_str(text);
+        server.documents.lock().insert(
+            uri.to_string(),
+            DocumentState::from_parts(rope, text.to_string(), 1, Arc::new(AtomicU32::new(0))),
+        );
+
+        let result = server
+            .handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}})))
+            .expect("pragma code action handler must succeed");
+        let result = result.expect("handler must return an action response");
+        let actions = result.as_array().expect("response must be an action array");
+        assert!(!actions.is_empty(), "missing pragma must yield an action");
+        let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
+        assert_eq!(edit["start"], json!({"line": 1, "character": 9}));
+        assert_eq!(edit["end"], json!({"line": 1, "character": 9}));
     }
 
     #[test]

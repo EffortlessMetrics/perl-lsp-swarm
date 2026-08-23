@@ -821,20 +821,35 @@ impl ExecuteCommandProvider {
         let profile =
             NativeCriticProfile::parse_legacy(&cfg.profile).unwrap_or(NativeCriticProfile::Strict);
         let registry = NativeCriticRegistry::for_profile_with_config(profile, &critic_config);
-
         let file = file_path.to_string_lossy();
-        let mut formatted_violations: Vec<_> = registry
-            .check(&critic_context)
+
+        use perl_lsp_rs_core::tooling::perl_critic::{
+            CriticSuppressionMap, NativeCriticPolicy, critic_source_identity_for_uri,
+            native_finding_candidates_with_accounting, normalize_with_native_policy,
+        };
+        let candidates = native_finding_candidates_with_accounting(
+            &file,
+            registry.check_unfiltered(&critic_context),
+            critic_source_identity_for_uri(&file, 0),
+        );
+        let suppressions = CriticSuppressionMap::from_source(code_text);
+        let policy = NativeCriticPolicy::new(
+            cfg.severity.clamp(1, 5),
+            &critic_config.include,
+            &critic_config.exclude,
+            &suppressions,
+        );
+
+        let mut formatted_violations: Vec<_> = normalize_with_native_policy(candidates, &policy)
             .into_iter()
             .map(|finding| {
-                let violation = finding.to_violation(file.as_ref());
                 self.format_violation(
-                    &violation.policy,
-                    &violation.description,
-                    &violation.explanation,
-                    violation.severity as u8,
-                    (violation.range.start.line + 1) as usize,
-                    (violation.range.start.column + 1) as usize,
+                    finding.public_code(),
+                    finding.message(),
+                    finding.explanation().unwrap_or_default(),
+                    finding.severity() as u8,
+                    (finding.range().start.line + 1) as usize,
+                    (finding.range().start.column + 1) as usize,
                     &file,
                 )
             })

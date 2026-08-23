@@ -1,5 +1,6 @@
 //! BDD tests for quick-fix handlers added in this release:
-//!   PL700 - Unused import (`fix_unused_import`)
+//!   PL700 - Unused import (WITHDRAWN, #11079 — no import-removal action may
+//!           return; the diagnostic stays a non-fixable advisory)
 //!   PL501 - Deprecated `$[` array base (`fix_deprecated_array_base`)
 //!   PL602 - Global signal handler (`fix_security_signal_handler`)
 //!
@@ -26,6 +27,7 @@ fn make_diag(start: usize, end: usize, code: &str, message: &str) -> Diagnostic 
         related_information: Vec::new(),
         tags: Vec::new(),
         suggestion: None,
+        fixable: false,
     }
 }
 
@@ -53,11 +55,34 @@ fn find_action(actions: &[CodeAction], pred: impl Fn(&str) -> bool) -> Option<&C
 }
 
 // ===========================================================================
-// PL700 - Unused import
+// PL700 - Unused import: WITHDRAWN (#11079)
+//
+// The prose-driven whole-line removal edit is withdrawn until the exact
+// replacement trains land (#1719 explicit-symbol removal, #8322 complete
+// module-load assessment). A PL700 diagnostic must produce no import-removal
+// action at all — no enabled edit, no empty/no-op stand-in.
 // ===========================================================================
 
+fn assert_no_unused_import_action(
+    actions: &[CodeAction],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let offending = actions
+        .iter()
+        .filter(|action| {
+            action.diagnostics.iter().any(|code| code == "PL700")
+                || action.title.contains("Remove unused 'use")
+                || action.title.contains("Remove unused import")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        offending.is_empty(),
+        "the PL700 import-removal action is withdrawn (#11079); got: {offending:?}"
+    );
+    Ok(())
+}
+
 #[test]
-fn unused_import_produces_remove_action() -> Result<(), Box<dyn std::error::Error>> {
+fn withdrawn_pl700_produces_no_remove_action() -> Result<(), Box<dyn std::error::Error>> {
     // GIVEN a file that imports a module but never uses it
     let source = "use strict;\nuse List::Util;\nmy $x = 1;\n";
 
@@ -69,20 +94,15 @@ fn unused_import_produces_remove_action() -> Result<(), Box<dyn std::error::Erro
     // WHEN code actions are requested for the diagnostic range
     let actions = actions_for(source, &[diag]);
 
-    // THEN there is an action offering removal of the import
-    let action = find_action(&actions, |t| t.contains("List::Util"))
-        .ok_or_else(|| format!("no remove action in: {:?}", actions))?;
-
-    assert_eq!(action.title, "Remove unused 'use List::Util;'");
-    assert_eq!(action.kind, CodeActionKind::QuickFix);
-    assert!(action.is_preferred, "the removal action should be preferred");
+    // THEN no action offers removal of the import
+    assert_no_unused_import_action(&actions)?;
 
     Ok(())
 }
 
 #[test]
-fn unused_import_edit_deletes_entire_line() -> Result<(), Box<dyn std::error::Error>> {
-    // GIVEN a source where the unused import is sandwiched between other lines
+fn withdrawn_pl700_cannot_delete_entire_line() -> Result<(), Box<dyn std::error::Error>> {
+    // GIVEN a source where the previously-removable import sits between others
     let source = "use strict;\nuse POSIX;\nuse warnings;\n";
     let use_start = source.find("use POSIX;").ok_or("marker not found")?;
     let use_end = use_start + "use POSIX;".len();
@@ -90,42 +110,48 @@ fn unused_import_edit_deletes_entire_line() -> Result<(), Box<dyn std::error::Er
     let diag = make_diag(use_start, use_end, "PL700", "Module 'POSIX' appears to be unused");
     let actions = actions_for(source, &[diag]);
 
-    let action = find_action(&actions, |t| t.contains("POSIX"))
-        .ok_or_else(|| format!("no POSIX action in: {:?}", actions))?;
-    let result = edited(source, action);
-
-    // THEN the `use POSIX;\n` line is completely removed - no blank line left
-    assert_eq!(result, "use strict;\nuse warnings;\n");
+    assert_no_unused_import_action(&actions)?;
+    // No quick fix may delete or blank the diagnosed import line. (The
+    // separate organize-imports family is #8305's concern, not this
+    // containment.)
+    for action in &actions {
+        if action.kind != CodeActionKind::QuickFix {
+            continue;
+        }
+        for change in &action.edit.changes {
+            let covered = &source[change.location.start..change.location.end];
+            let deletes_import = covered.contains("use POSIX;");
+            assert!(
+                !(deletes_import && change.new_text.is_empty()),
+                "a quick fix still deletes the diagnosed import line: {action:?}"
+            );
+        }
+    }
 
     Ok(())
 }
 
 #[test]
-fn unused_import_at_start_of_file_leaves_no_blank_line() -> Result<(), Box<dyn std::error::Error>> {
+fn withdrawn_pl700_at_start_of_file_produces_no_edit() -> Result<(), Box<dyn std::error::Error>> {
     let source = "use LWP::UserAgent;\nuse strict;\n";
     let use_end = "use LWP::UserAgent;".len();
 
     let diag = make_diag(0, use_end, "PL700", "Module 'LWP::UserAgent' appears to be unused");
     let actions = actions_for(source, &[diag]);
 
-    let action = find_action(&actions, |t| t.contains("LWP::UserAgent"))
-        .ok_or_else(|| format!("no LWP::UserAgent action in: {:?}", actions))?;
-    let result = edited(source, action);
-    assert_eq!(result, "use strict;\n");
+    assert_no_unused_import_action(&actions)?;
 
     Ok(())
 }
 
 #[test]
-fn unused_import_title_uses_module_name_from_message() -> Result<(), Box<dyn std::error::Error>> {
+fn withdrawn_pl700_message_prose_grants_no_authority() -> Result<(), Box<dyn std::error::Error>> {
     let source = "use Foo::Bar::Baz;\n";
     let use_end = "use Foo::Bar::Baz;".len();
     let diag = make_diag(0, use_end, "PL700", "Module 'Foo::Bar::Baz' appears to be unused");
     let actions = actions_for(source, &[diag]);
 
-    let action = find_action(&actions, |t| t.contains("Foo::Bar::Baz"))
-        .ok_or_else(|| format!("no Foo::Bar::Baz action in: {:?}", actions))?;
-    assert_eq!(action.title, "Remove unused 'use Foo::Bar::Baz;'");
+    assert_no_unused_import_action(&actions)?;
 
     Ok(())
 }
@@ -380,9 +406,11 @@ fn signal_handler_non_char_boundary_range_is_ignored() -> Result<(), Box<dyn std
 // ===========================================================================
 
 #[test]
-fn all_three_new_codes_reach_their_handlers() -> Result<(), Box<dyn std::error::Error>> {
-    // Smoke test: each code reaches at least one action when given a trivially
-    // correct diagnostic, confirming the dispatch table is wired up correctly.
+fn surviving_new_codes_reach_handlers_while_pl700_stays_withdrawn()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Dispatch-table smoke test: the surviving codes still reach their
+    // handlers, and the withdrawn PL700 family produces no import action in
+    // the same response.
 
     let source = "use strict;\nuse Foo;\n$[ = 0;\n$SIG{__DIE__} = sub {};\n";
     let mut parser = Parser::new(source);
@@ -395,7 +423,7 @@ fn all_three_new_codes_reach_their_handlers() -> Result<(), Box<dyn std::error::
     let sig_stmt_end = source[sig_start..].find(";\n").ok_or("sig stmt end not found")? + sig_start;
 
     let diags = vec![
-        // PL700 - unused import
+        // PL700 - unused import (withdrawn, #11079)
         make_diag(
             foo_start,
             foo_start + "use Foo;".len(),
@@ -410,11 +438,21 @@ fn all_three_new_codes_reach_their_handlers() -> Result<(), Box<dyn std::error::
 
     let actions = provider.get_code_actions(&ast, (0, source.len()), &diags);
 
-    let has_pl700 = actions.iter().any(|a| a.title.contains("use Foo"));
+    assert_no_unused_import_action(&actions)?;
+    let has_use_foo_deletion = actions.iter().any(|a| {
+        a.kind == CodeActionKind::QuickFix
+            && a.edit.changes.iter().any(|change| {
+                (&source[change.location.start..change.location.end]).contains("use Foo;")
+                    && change.new_text.is_empty()
+            })
+    });
     let has_pl501 = actions.iter().any(|a| a.title.contains("$['"));
     let has_pl602 = actions.iter().any(|a| a.title.contains("local"));
 
-    assert!(has_pl700, "PL700 route not producing action; actions: {:?}", actions);
+    assert!(
+        !has_use_foo_deletion,
+        "a quick fix still deletes the diagnosed import line; actions: {actions:?}"
+    );
     assert!(has_pl501, "PL501 route not producing action; actions: {:?}", actions);
     assert!(has_pl602, "PL602 route not producing action; actions: {:?}", actions);
 

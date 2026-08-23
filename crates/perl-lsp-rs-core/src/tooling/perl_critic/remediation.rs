@@ -104,7 +104,8 @@ mod tests {
 
     use super::{CriticRemediationClass, CriticRemediationEligibility};
     use crate::tooling::perl_critic::{
-        CriticCategory, CriticFinding, CriticFix, CriticTextEdit, FixSafety, Severity,
+        CriticCategory, CriticFinding, CriticFindingShape, CriticFix, CriticTextEdit, FixSafety,
+        Severity,
     };
 
     const RULE_ID: &str = "native.test.remediation";
@@ -129,6 +130,7 @@ mod tests {
             message: "test finding".to_string(),
             explanation: "test explanation".to_string(),
             suppression_key: RULE_ID.to_string(),
+            observed_shape: CriticFindingShape::General,
             related: Vec::new(),
             fix,
         }

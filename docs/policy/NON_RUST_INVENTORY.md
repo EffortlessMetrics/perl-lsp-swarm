@@ -6,18 +6,18 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11181 |
-| Rust-family files | 3408 |
-| Non-Rust files | 7773 |
-| Allowlisted | 5498 |
+| Total tracked files | 11218 |
+| Rust-family files | 3420 |
+| Non-Rust files | 7798 |
+| Allowlisted | 5523 |
 | Unclassified | 2275 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 355 |
-| documentation | 2559 |
+| config | 371 |
+| documentation | 2568 |
 | generated | 2 |
 | production | 300 |
 | test | 1817 |
@@ -2532,6 +2532,22 @@
 | `.ci/README-coverage.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.ci/benchmark-thresholds.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/blockers.yaml` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/corpus_manifest.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/invalid-cohort-slice-5016-6239.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/invalid-completed-authority-4997-5022.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/invalid-controller-fanin-missing.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/invalid-phase-terminal-5001-5023.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/invalid-phases-deny-2333.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/invalid-predecessor-successor-5231-5968.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/invalid-proof-level-5901-6282.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/invalid-unproven-provenance-4998-5021.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/valid-atomic-cohort-3020.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/valid-atomic-minimal-leaf.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/valid-controller-fanin-present.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/valid-fanin-1929.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/valid-phase-leaf-2624.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/valid-superseded-transfer.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/close-proof-contract/fixtures/valid-true-duplicate.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/common-corpus-baseline.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/common-corpus-manifest.txt` | config | `non-rust-ci-config` | release/ci |
 | `.ci/coverage-baseline.txt` | config | `non-rust-ci-config` | release/ci |
@@ -2940,6 +2956,9 @@
 | `.spec/10894-editor-host-reliability/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11079-pl700-removal-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11079-pl700-removal-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11079-pl700-removal-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11301-source-commit-api-and-caller-ledger/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11301-source-commit-api-and-caller-ledger/caller-ledger.toml` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11301-source-commit-api-and-caller-ledger/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3058,6 +3077,12 @@
 | `.spec/4542-wave4-completion/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/4542-wave4-completion/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/4542-wave4-completion/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/4998-external-include-root-authority/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/4998-external-include-root-authority/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/4998-external-include-root-authority/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8305-organize-imports-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8305-organize-imports-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8305-organize-imports-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/964-dap-stack-frame-lifecycle/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/964-dap-stack-frame-lifecycle/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/964-dap-stack-frame-lifecycle/context.md` | documentation | `non-rust-root-governance-docs` | docs |
