@@ -6,6 +6,7 @@
 
 use std::fmt;
 
+use crate::tooling::perl_critic::BuiltInCriticObservation;
 use perl_diagnostics::codes::DiagnosticSeverity;
 use perl_diagnostics::{ByteSpan, InvalidByteSpan};
 
@@ -34,6 +35,14 @@ pub struct Diagnostic {
     pub suggestion: Option<String>,
     /// Whether the producer has a currently available safe remediation.
     pub fixable: bool,
+    /// Producer-declared critic overlap observation (#11918). `None` for
+    /// every diagnostic outside the reviewed built-in/native overlap cohort.
+    ///
+    /// The ordinary diagnostic and its severity stay intact; this carried
+    /// observation is the producer's independent critic-scale declaration
+    /// consumed by the normalized critic seam when the native engine
+    /// composes the logical row.
+    pub critic_observation: Option<BuiltInCriticObservation>,
 }
 
 /// Failure converting the migration-only provider diagnostic into the canonical type.
@@ -89,6 +98,7 @@ impl TryFrom<Diagnostic> for perl_diagnostics::Diagnostic {
             tags,
             suggestion: _,
             fixable: _,
+            critic_observation: _,
         } = inner;
 
         let code_text = code.ok_or(DiagnosticConversionError::MissingCode)?;
@@ -151,6 +161,7 @@ impl Diagnostic {
             tags: Vec::new(),
             suggestion: None,
             fixable: false,
+            critic_observation: None,
         }
     }
 
@@ -193,6 +204,28 @@ impl RelatedInformation {
     pub fn new(location: (usize, usize), message: impl Into<String>) -> Self {
         Self { location, message: message.into() }
     }
+}
+
+/// Remove producer-declared critic overlap observations from a collected
+/// diagnostic set, returning the observations (#11918).
+///
+/// Diagnostics that carried an observation are removed from the set: their
+/// logical row is produced by the normalized critic seam, which merges the
+/// observation with its native alias and applies policy once. The relative
+/// order of the remaining diagnostics is preserved.
+pub fn take_critic_overlap_observations(
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<BuiltInCriticObservation> {
+    let mut observations = Vec::new();
+    let mut retained = Vec::with_capacity(diagnostics.len());
+    for diagnostic in diagnostics.drain(..) {
+        match diagnostic.critic_observation {
+            Some(observation) => observations.push(observation),
+            None => retained.push(diagnostic),
+        }
+    }
+    *diagnostics = retained;
+    observations
 }
 
 #[cfg(test)]
@@ -246,6 +279,38 @@ mod tests {
             perl_diagnostics::Diagnostic::try_from(diagnostic),
             Err(DiagnosticConversionError::InvalidRange(_))
         ));
+    }
+
+    #[test]
+    fn take_critic_overlap_observations_consumes_carriers_and_keeps_order() {
+        use super::take_critic_overlap_observations;
+        use crate::tooling::perl_critic::{BuiltInCriticObservation, Severity};
+
+        let plain_first =
+            Diagnostic::new((0, 4), DiagnosticSeverity::Warning, "unrelated").with_code("PL403");
+        let carrier = Diagnostic {
+            critic_observation: Some(BuiltInCriticObservation::pl603_system(
+                Severity::Harsh,
+                (10, 20),
+                "system() executes a shell command.".to_string(),
+                None,
+            )),
+            ..Diagnostic::new((10, 20), DiagnosticSeverity::Warning, "system").with_code("PL603")
+        };
+        let plain_last =
+            Diagnostic::new((30, 34), DiagnosticSeverity::Warning, "tail").with_code("PL605");
+
+        let mut diagnostics = vec![plain_first, carrier, plain_last];
+        let observations = take_critic_overlap_observations(&mut diagnostics);
+
+        assert_eq!(observations.len(), 1, "exactly the carrying row surrenders its observation");
+        assert_eq!(observations[0].identity().code(), "PL603");
+        assert_eq!(diagnostics.len(), 2, "the ordinary carrier row is replaced by the seam");
+        assert_eq!(
+            diagnostics.iter().map(|d| d.code.as_deref()).collect::<Vec<_>>(),
+            vec![Some("PL403"), Some("PL605")],
+            "surviving diagnostics keep their relative order"
+        );
     }
 
     #[test]

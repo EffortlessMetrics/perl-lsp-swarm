@@ -373,12 +373,18 @@ mod tests {
         let uri = "file:///workspace/fresh-open.pl";
         let text = "my $value = 1;\n";
 
-        server.test_apply_did_open(uri, text, 1)?;
+        // A real didOpen mints generation 1 since #11305; generation 0
+        // remains the baseline of documents kept out of the parser entirely
+        // (template/oversized/binary opens), so build that fixture directly.
+        server
+            .documents
+            .lock()
+            .insert(server.normalize_uri_key(uri), crate::state::DocumentState::new(text, 1));
 
         assert_eq!(
             server.document_generation(uri),
             Some(0),
-            "didOpen must start at document_generation == 0 before any didChange"
+            "the synthetic parser-excluded document must sit at generation 0"
         );
         assert!(
             !server.workspace_index_stale_for_document(uri),
@@ -441,9 +447,11 @@ mod tests {
             .index_coordinator
             .as_ref()
             .ok_or("test server must have an index coordinator")?;
+        // didOpen mints generation 1 and the edit above advances it to 2
+        // (#11305), so the current snapshot must be indexed at 2.
         coordinator
             .index()
-            .index_file_with_generation(url::Url::parse(target_uri)?, target_text.to_string(), 1)
+            .index_file_with_generation(url::Url::parse(target_uri)?, target_text.to_string(), 2)
             .map_err(std::io::Error::other)?;
 
         assert!(
@@ -504,7 +512,13 @@ mod tests {
         let uri = "file:///workspace/unindexed-open.pl";
         let text = "package UnindexedOpen;\nsub target {}\n";
 
-        server.test_apply_did_open(uri, text, 1)?;
+        // Generation 0 is no longer a real didOpen outcome (#11305 mints 1);
+        // it remains the baseline of parser-excluded documents, so insert the
+        // fixture directly.
+        server
+            .documents
+            .lock()
+            .insert(server.normalize_uri_key(uri), crate::state::DocumentState::new(text, 1));
         let coordinator = server
             .index_coordinator
             .as_ref()
@@ -573,8 +587,8 @@ mod tests {
 
         assert_eq!(
             server.document_generation(uri),
-            Some(1),
-            "the edited document must be at generation 1"
+            Some(2),
+            "the edited document must be at generation 2 (open mints 1, #11305)"
         );
         assert_eq!(
             coordinator.index().indexed_generation(uri),
@@ -609,10 +623,8 @@ mod tests {
             .index_coordinator
             .as_ref()
             .ok_or("test server must have an index coordinator")?;
-        coordinator
-            .index()
-            .index_file_with_generation(url::Url::parse(uri)?, text.to_string(), 0)
-            .map_err(std::io::Error::other)?;
+        // The inline didOpen background commit (#11305) has already published
+        // the pre-edit source as this document's index entry at generation 1.
 
         // Real production edit that drives the binary guard: generation is
         // bumped, `parsed` is reset to `None`, and no re-index is scheduled.
@@ -626,12 +638,12 @@ mod tests {
 
         assert_eq!(
             server.document_generation(uri),
-            Some(1),
-            "the edit must advance the open document generation"
+            Some(2),
+            "the edit must advance the open document generation (open mints 1, #11305)"
         );
         assert_eq!(
             coordinator.index().indexed_generation(uri),
-            Some(0),
+            Some(1),
             "the pre-edit index entry must still be present at its older generation"
         );
         assert!(

@@ -79,6 +79,11 @@ def main() -> int:
 
     actual: dict[str, list[str]] = {}
     compatibility: list[tuple[str, str]] = []
+    banned_prefixes = ledger.get("compatibility_banned_prefixes", [])
+    if not isinstance(banned_prefixes, list) or not all(
+        isinstance(prefix, str) and prefix for prefix in banned_prefixes
+    ):
+        raise SystemExit("compatibility_banned_prefixes must be a list of non-empty strings")
     tracked_sources = subprocess.check_output(
         ["git", "ls-files", "-z", "--", "*.rs"], cwd=ROOT
     ).decode("utf-8").split("\0")
@@ -88,6 +93,18 @@ def main() -> int:
         if methods:
             actual[relative] = methods
             compatibility.extend((relative, method) for method in methods if method in compatible)
+
+    # Structural recurrence control (#11305): banned source regions must never
+    # call a compatibility API at all, regardless of the global baseline.
+    # Prefix matching fails closed: any tracked file whose path starts with a
+    # banned prefix is covered.
+    for relative, method in compatibility:
+        for prefix in banned_prefixes:
+            if relative.startswith(prefix):
+                raise SystemExit(
+                    f"compatibility ban violated: {relative} calls {method} "
+                    f"(banned prefix {prefix})"
+                )
 
     actual_paths = set(actual)
     missing = sorted(actual_paths - expected)
@@ -124,7 +141,8 @@ def main() -> int:
 
     print(
         f"source-commit-api ledger valid: {len(actual_paths)} caller files, "
-        f"{len(compatibility)} compatibility calls, {len(owners)} owner rows; "
+        f"{len(compatibility)} compatibility calls, {len(owners)} owner rows, "
+        f"{len(banned_prefixes)} banned prefixes; "
         f"canonical APIs: {', '.join(sorted(canonical))}; "
         f"compatibility APIs: {', '.join(sorted(compatible))}\n"
         "caller files:\n" + "\n".join(f"- {path}" for path in sorted(actual_paths))

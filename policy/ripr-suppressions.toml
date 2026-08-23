@@ -11,7 +11,7 @@ schema_version = 1
 policy = "ripr-suppressions"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-08-17"
+updated = "2026-08-23"
 
 # -----------------------------------------------------------------------------
 # Generated status docs: validated through status-generation checks, not
@@ -2612,3 +2612,59 @@ created = "2026-08-21"
 review_after = "2026-09-21"
 expires = "2026-11-21"
 removal_criteria = "EffortlessMetrics/ripr#1429 is fixed or ripr can connect comparison_evidence_schema.rs to evidence_payload.rs; then delete or narrow this entry and rerun the enforce-new-ripr gate. Remove or narrow it immediately if any future receipt reports a class other than no_static_path or weakly_exposed, especially reachable_unrevealed or an actual candidate-specific seam; that condition is automatic do-not-merge unless a separate evidence-backed review justifies the disposition."
+
+# ----------------------------------------------------------------------------
+# Target-matrix assembly and drift validation: the module's real oracles live
+# in sibling modules ripr cannot associate with this production file.
+#
+# PR #6766 (issue #6660) adds crates/perl-core-harness/src/target_contracts/
+# matrix.rs. The enforce-new-ripr receipt at head 14f724c16 (run
+# 32592580668) reports all 105 gate-actionable diff-scoped findings inside
+# this single production file: 91 no_static_path plus 14 reachable_unrevealed
+# (the ripr 0.9.x weakly_gripped class canonicalizes to reachable_unrevealed).
+# The reachable_unrevealed probes name related tests in artifacts.rs
+# (legacy_terminated_without_code_outcome_is_not_silently_current,
+# legacy_text_only_envelope_is_not_silently_v2) whose oracle_strength ripr
+# itself reports as none — the analyzer associated the wrong module's tests
+# and concluded observation=no, instead of connecting the module's own
+# cfg(test) oracle target_contract_tests (tests.rs) and the integration
+# harness tests/target_contract_review.rs.
+#
+# Coverage evidence:
+#   - checked_in_target_matrix_is_valid_and_stable exercises read_matrix over
+#     the checked-in bundle end to end (index.validate, part loading,
+#     assemble happy path) and pins fingerprint stability to an exact digest;
+#   - index_assemble_rejects_part_count_mismatch_with_exact_message asserts
+#     the exact loaded-vs-declared rejection for 0-of-1 and 2-of-1 parts;
+#   - index_assemble_combines_parts_into_the_declared_matrix observes the
+#     assembled schema version, version row, claim boundary, topology source
+#     identity, and concatenated sorted target IDs;
+#   - matrix_part_rejects_empty_and_unsorted_rows_with_exact_messages closes
+#     the TargetMatrixPart::validate rejections;
+#   - validate_exact_error_variants_for_common_fields,
+#     validate_exact_error_variants_for_target_kinds, and
+#     selector_and_collection_errors_are_exact_and_load_bearing hold exact
+#     error-message oracles over the shared validators matrix.rs calls;
+#   - compared_drift_is_recomputed_from_the_observed_matrix and
+#     checked_in_blead_drift_is_explicitly_not_proven cover the drift
+#     comparison contract including false-conclusion rejection.
+#
+# The matcher is classification-qualified: this entry admits only
+# no_static_path and reachable_unrevealed (including the weakly_gripped
+# canonicalization), exactly the two classes the candidate receipt reports.
+# Any future receipt reporting static_unknown, infection_unknown, or any
+# other class in this file is an automatic do-not-merge condition requiring
+# removal or narrowing of this entry or a separate evidence-backed review.
+# ----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-target-matrix-static-tracing"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-core-harness/src/target_contracts/matrix.rs"]
+classification = ["no_static_path", "reachable_unrevealed", "weakly_gripped"]
+owner = "proof-lane"
+issue = "#6660"
+reason = "PR #6766 (issue #6660) adds target_contracts/matrix.rs (cross-target ownership, fingerprint, and topology-drift validation). The enforce-new-ripr receipt at head 14f724c16 reports all 105 actionable diff-scoped findings in this one production file (91 no_static_path, 14 reachable_unrevealed incl. canonicalized weakly_gripped), while the reachable_unrevealed probes cite artifacts.rs tests with ripr-reported oracle_strength=none as their related tests: the analyzer cannot connect the module's sibling-cfg(test) oracle target_contract_tests nor tests/target_contract_review.rs to this file, the documented EffortlessMetrics/ripr#1429 association limitation combined with the #1428 sibling-test-file class. The seams are materially covered by exact-oracle focused tests: checked_in_target_matrix_is_valid_and_stable (bundle load through assemble plus pinned fingerprint), index_assemble_rejects_part_count_mismatch_with_exact_message, index_assemble_combines_parts_into_the_declared_matrix, matrix_part_rejects_empty_and_unsorted_rows_with_exact_messages, the validate_exact_error_variants_* families, selector_and_collection_errors_are_exact_and_load_bearing, and the two drift-contract tests. This entry admits exactly no_static_path and reachable_unrevealed (weakly_gripped canonicalization included); any other reported class is do-not-merge until re-dispositioned."
+created = "2026-08-23"
+review_after = "2026-09-23"
+expires = "2026-11-23"
+removal_criteria = "EffortlessMetrics/ripr#1429 is fixed so diff-scoped analysis connects sibling cfg(test) modules and tests/ harnesses to production owners, or targeted mutation replaces this advisory path for target contracts; then delete this entry and rerun the enforce-new-ripr gate. Remove or narrow it immediately if a future receipt reports any class outside no_static_path / reachable_unrevealed / weakly_gripped in this file, or an actionable seam the listed oracles demonstrably do not observe; that condition is automatic do-not-merge unless a separate evidence-backed review justifies the disposition."

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 4998,
-  "reason": "#4998 fail-closed external include roots: one actionable sentence added to the perl-lsp.externalIncludePaths markdownDescription stating that server-side application is pending a trusted configuration transport. Only package.json grows (58170 -> 58306 bytes); every other packaged entry is byte-identical.",
-  "base_baseline_file_sha256": "5fd137d8d989b9ae457d765ce001ea77dc5bfeec6161b4b814e60e9c5d71e517",
-  "candidate_baseline_file_sha256": "7d24b2a9cc9653790b955a84124949a15d0f1cfa2e1994964f8e0c818d76f71c",
-  "base_inventory_sha256": "86bdbcda8099542244f4ab88121dd7c913bb4d06b6de6c733e0a0756daa0a227",
-  "candidate_inventory_sha256": "a18d9dc92dec8337e1885300530d30f3b179044e648da7c9b7df3cc24f2a8a13"
+  "owner_issue": 7276,
+  "reason": "#7276 ptkdb claim-boundary candidate: package.json grows 58306->58690 bytes (external-peer manifest copy) and out/extension.js grows 1462804->1465391 bytes (fail-closed dangling externalDebugger rejection); every other packaged entry is byte-identical after normalizing vsce archive asset names.",
+  "base_baseline_file_sha256": "7d24b2a9cc9653790b955a84124949a15d0f1cfa2e1994964f8e0c818d76f71c",
+  "candidate_baseline_file_sha256": "86d37aec8d47610d247c297a2b9c1592419fb8e6ea301de42318006a93c8d690",
+  "base_inventory_sha256": "a18d9dc92dec8337e1885300530d30f3b179044e648da7c9b7df3cc24f2a8a13",
+  "candidate_inventory_sha256": "9ffef8327470dc624893f58b6ca0ac5b04262acebc7ea9d6eaed77fed657373e"
 }

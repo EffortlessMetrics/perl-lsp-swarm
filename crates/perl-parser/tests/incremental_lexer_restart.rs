@@ -1,8 +1,8 @@
 #![cfg(feature = "incremental")]
-//! Public-contract tests for correctness-first live lexer restart.
+//! Public-contract tests for generation-bound stored lexer restart.
 
 use perl_lexer::{PerlLexer, Token, TokenType};
-use perl_parser::incremental::LexRestartStrategy;
+use perl_parser::incremental::{LexRestartStrategy, MAX_STORED_LEX_CHECKPOINTS};
 use perl_parser::{Edit, IncrementalState, apply_edits};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -51,11 +51,13 @@ fn empty_edit_batch_reports_unchanged_without_lexer_or_parser_work() -> TestResu
 
     assert_eq!(result.lex_restart.strategy, LexRestartStrategy::Unchanged);
     assert_eq!(result.lex_restart.restart_byte, source.len());
+    assert_eq!(result.lex_restart.old_prefix_bytes_replayed, 0);
     assert_eq!(result.lex_restart.relexed_bytes, 0);
     assert_eq!(result.lex_restart.reused_prefix_tokens, token_count);
     assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
     assert_eq!(result.reused_tokens, token_count);
     assert_eq!(result.reparsed_bytes, 0);
+    assert!(result.lex_restart.stored_checkpoint_count > 0);
     assert!(result.changed_ranges.is_empty());
     assert_eq!(state.source(), source);
     assert_tokens_equal(state.tokens(), &fresh_tokens(source));
@@ -75,7 +77,8 @@ fn late_equal_width_edit_retains_prefix_and_relexes_the_complete_suffix() -> Tes
     let mut state = IncrementalState::new(source.to_string());
     let result = apply_edits(&mut state, &[edit])?;
 
-    assert_eq!(result.lex_restart.strategy, LexRestartStrategy::LiveCheckpointToEof);
+    assert_eq!(result.lex_restart.strategy, LexRestartStrategy::StoredCheckpointToEof);
+    assert_eq!(result.lex_restart.old_prefix_bytes_replayed, 0);
     assert!(result.lex_restart.restart_byte > 0);
     assert!(result.lex_restart.reused_prefix_tokens > 0);
     assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
@@ -91,98 +94,31 @@ fn late_equal_width_edit_retains_prefix_and_relexes_the_complete_suffix() -> Tes
 #[test]
 fn stateful_and_source_boundary_edits_match_fresh_lexing() -> TestResult {
     let fixtures = [
-        (
-            "division",
-            "my $x = 10 / 2; my $after = 1;",
-            "/ 2",
-            "/ 3",
-            LexRestartStrategy::LiveCheckpointToEof,
-        ),
-        (
-            "regex",
-            "my $ok = /foo/; my $after = 1;",
-            "foo",
-            "bar",
-            LexRestartStrategy::LiveCheckpointToEof,
-        ),
-        (
-            "quote-single",
-            "my $x = q{foo}; my $after = 1;",
-            "foo",
-            "bar",
-            LexRestartStrategy::LiveCheckpointToEof,
-        ),
-        (
-            "quote-double",
-            "my $x = qq{foo}; my $after = 1;",
-            "foo",
-            "bar",
-            LexRestartStrategy::LiveCheckpointToEof,
-        ),
-        (
-            "quote-words",
-            "my @x = qw(foo bar); my $after = 1;",
-            "foo",
-            "baz",
-            LexRestartStrategy::LiveCheckpointToEof,
-        ),
-        (
-            "quote-command",
-            "my $x = qx{echo foo}; my $after = 1;",
-            "foo",
-            "bar",
-            LexRestartStrategy::LiveCheckpointToEof,
-        ),
-        (
-            "substitution",
-            "$x =~ s/foo/bar/; my $after = 1;",
-            "foo",
-            "baz",
-            LexRestartStrategy::LiveCheckpointToEof,
-        ),
-        (
-            "transliteration",
-            "$x =~ tr/a-z/A-Z/; my $after = 1;",
-            "a-z",
-            "b-z",
-            LexRestartStrategy::LiveCheckpointToEof,
-        ),
-        (
-            "prototype",
-            "sub f($$) { return 1; } my $after = 1;",
-            "return 1",
-            "return 2",
-            LexRestartStrategy::LiveCheckpointToEof,
-        ),
-        (
-            "unicode",
-            "my $x = \"café\"; my $after = 1;",
-            "é",
-            "ø",
-            LexRestartStrategy::LiveCheckpointToEof,
-        ),
-        (
-            "crlf",
-            "my $x = 1;\r\nmy $y = 2;\r\n",
-            "= 2",
-            "= 3",
-            LexRestartStrategy::LiveCheckpointToEof,
-        ),
-        (
-            "heredoc-body",
-            "my $value = <<EOF;\nbody\nEOF\nprint $value;\n",
-            "body",
-            "changed",
-            LexRestartStrategy::FullRelex,
-        ),
+        ("division", "my $x = 10 / 2; my $after = 1;", "/ 2", "/ 3"),
+        ("regex", "my $ok = /foo/; my $after = 1;", "foo", "bar"),
+        ("quote-single", "my $x = q{foo}; my $after = 1;", "foo", "bar"),
+        ("quote-double", "my $x = qq{foo}; my $after = 1;", "foo", "bar"),
+        ("quote-words", "my @x = qw(foo bar); my $after = 1;", "foo", "baz"),
+        ("quote-command", "my $x = qx{echo foo}; my $after = 1;", "foo", "bar"),
+        ("substitution", "$x =~ s/foo/bar/; my $after = 1;", "foo", "baz"),
+        ("transliteration", "$x =~ tr/a-z/A-Z/; my $after = 1;", "a-z", "b-z"),
+        ("prototype", "sub f($$) { return 1; } my $after = 1;", "return 1", "return 2"),
+        ("unicode", "my $x = \"café\"; my $after = 1;", "é", "ø"),
+        ("crlf", "my $x = 1;\r\nmy $y = 2;\r\n", "= 2", "= 3"),
+        ("heredoc-body", "my $value = <<EOF;\nbody\nEOF\nprint $value;\n", "body", "changed"),
     ];
 
-    for (name, source, needle, replacement, expected_strategy) in fixtures {
+    for (name, source, needle, replacement) in fixtures {
         let edit = replacing_edit(source, needle, replacement)?;
         let mut state = IncrementalState::new(source.to_string());
         let result = apply_edits(&mut state, &[edit])?;
 
-        assert_eq!(result.lex_restart.strategy, expected_strategy, "{name} restart strategy");
+        assert_eq!(
+            result.lex_restart.strategy,
+            LexRestartStrategy::StoredCheckpointToEof,
+            "{name} unexpectedly abandoned the stored-checkpoint path"
+        );
+        assert_eq!(result.lex_restart.old_prefix_bytes_replayed, 0, "{name}");
         assert_eq!(result.lex_restart.reused_suffix_tokens, 0, "{name}");
         assert_tokens_equal(state.tokens(), &fresh_tokens(state.source()));
     }
@@ -190,7 +126,7 @@ fn stateful_and_source_boundary_edits_match_fresh_lexing() -> TestResult {
 }
 
 #[test]
-fn method_context_edit_matches_fresh_lexing_after_complete_state_restore() -> TestResult {
+fn method_context_edit_matches_fresh_lexing_after_stored_state_restore() -> TestResult {
     let source = "my $value = $object->method(); my $after = 1;";
     let start = source.find("method").ok_or("method name is missing")?;
     let edit = Edit {
@@ -202,7 +138,8 @@ fn method_context_edit_matches_fresh_lexing_after_complete_state_restore() -> Te
     let mut state = IncrementalState::new(source.to_string());
     let result = apply_edits(&mut state, &[edit])?;
 
-    assert_eq!(result.lex_restart.strategy, LexRestartStrategy::LiveCheckpointToEof);
+    assert_eq!(result.lex_restart.strategy, LexRestartStrategy::StoredCheckpointToEof);
+    assert_eq!(result.lex_restart.old_prefix_bytes_replayed, 0);
     assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
     assert_tokens_equal(state.tokens(), &fresh_tokens(state.source()));
     Ok(())
@@ -223,24 +160,27 @@ fn large_edit_reports_full_relex_instead_of_checkpoint_reuse() -> TestResult {
 
     assert_eq!(result.lex_restart.strategy, LexRestartStrategy::FullRelex);
     assert_eq!(result.lex_restart.restart_byte, 0);
+    assert_eq!(result.lex_restart.old_prefix_bytes_replayed, 0);
     assert_eq!(result.lex_restart.reused_prefix_tokens, 0);
     assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
     assert_eq!(result.lex_restart.relexed_bytes, state.source().len());
+    assert!(result.lex_restart.stored_checkpoint_count <= MAX_STORED_LEX_CHECKPOINTS);
     assert_tokens_equal(state.tokens(), &fresh_tokens(state.source()));
     Ok(())
 }
 
 #[test]
-fn queued_heredoc_checkpoint_falls_back_with_downstream_span_parity() -> TestResult {
+fn timeout_sensitive_heredoc_state_selects_an_earlier_safe_checkpoint_with_span_parity()
+-> TestResult {
     let source = "my $value = <<EOF;\nbody\nEOF\nmy $after = 1;\n";
     let edit = replacing_edit(source, "body", "changed")?;
     let mut state = IncrementalState::new(source.to_string());
 
     let result = apply_edits(&mut state, &[edit])?;
 
-    assert_eq!(result.lex_restart.strategy, LexRestartStrategy::FullRelex);
-    assert_eq!(result.lex_restart.restart_byte, 0);
-    assert_eq!(result.lex_restart.relexed_bytes, state.source().len());
+    assert_eq!(result.lex_restart.strategy, LexRestartStrategy::StoredCheckpointToEof);
+    assert_eq!(result.lex_restart.old_prefix_bytes_replayed, 0);
+    assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
 
     let expected = fresh_tokens(state.source());
     assert_tokens_equal(state.tokens(), &expected);

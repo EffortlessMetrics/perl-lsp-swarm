@@ -9,6 +9,7 @@ pub perl_dap::api::BreakpointError::LineOutOfRange(i64, usize)
 pub perl_dap::api::BreakpointError::ParseError(alloc::string::String)
 pub fn perl_dap::breakpoint::BreakpointError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::breakpoint::BreakpointError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::breakpoint::BreakpointError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub enum perl_dap::api::FrameCategory
 pub perl_dap::api::FrameCategory::Core
 pub perl_dap::api::FrameCategory::Eval
@@ -86,6 +87,7 @@ pub fn perl_dap::security::SecurityError::eq(&self, other: &perl_dap::security::
 pub fn perl_dap::security::SecurityError::from(error: perl_parser_core::syntax::path_security::WorkspacePathError) -> Self
 pub fn perl_dap::security::SecurityError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::security::SecurityError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::security::SecurityError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub enum perl_dap::api::StackParseError
 pub perl_dap::api::StackParseError::RegexError(regex::error::Error)
 pub perl_dap::api::StackParseError::UnrecognizedFormat(alloc::string::String)
@@ -93,6 +95,7 @@ pub fn perl_dap::api::StackParseError::from(source: regex::error::Error) -> Self
 pub fn perl_dap::api::StackParseError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn perl_dap::api::StackParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::api::StackParseError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::api::StackParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub enum perl_dap::api::ValidationError
 pub perl_dap::api::ValidationError::AssignmentOperator(alloc::string::String)
 pub perl_dap::api::ValidationError::Backticks
@@ -103,6 +106,7 @@ pub perl_dap::api::ValidationError::RegexMutation(alloc::string::String)
 pub fn perl_dap::api::ValidationError::clone(&self) -> perl_dap::api::ValidationError
 pub fn perl_dap::api::ValidationError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::api::ValidationError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::api::ValidationError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub enum perl_dap::api::ValidationReason
 pub perl_dap::api::ValidationReason::BlankLine
 pub perl_dap::api::ValidationReason::CommentLine
@@ -125,6 +129,7 @@ pub fn perl_dap::api::VariableParseError::from(source: regex::error::Error) -> S
 pub fn perl_dap::api::VariableParseError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn perl_dap::api::VariableParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::api::VariableParseError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::api::VariableParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub struct perl_dap::api::AstBreakpointValidator
 pub fn perl_dap::api::AstBreakpointValidator::new(source: &str) -> core::result::Result<Self, perl_dap::breakpoint::BreakpointError>
 pub fn perl_dap::api::AstBreakpointValidator::is_executable_line(&self, line: i64) -> bool
@@ -398,9 +403,8 @@ pub fn perl_dap::backend::external_peer::ExternalPeerMode::eq(&self, other: &per
 pub fn perl_dap::backend::external_peer::ExternalPeerMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::backend::external_peer::ExternalDebuggerPeerBackend
 pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::connect<A: std::net::socket_addr::ToSocketAddrs>(addr: A, timeout: core::time::Duration) -> perl_dap::backend::BackendResult<Self>
-pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::from_connected_stream(stream: std::net::tcp::TcpStream, timeout: core::time::Duration) -> perl_dap::backend::BackendResult<Self>
-pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::from_connected_stream_with_token(stream: std::net::tcp::TcpStream, timeout: core::time::Duration, expected_token: core::option::Option<alloc::string::String>) -> perl_dap::backend::BackendResult<Self>
-pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::listen(host: &str, port: u16, timeout: core::time::Duration) -> perl_dap::backend::BackendResult<(Self, core::net::socket_addr::SocketAddr)>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::from_connected_stream_with_token(stream: std::net::tcp::TcpStream, timeout: core::time::Duration, expected_token: perl_dap::backend::external_peer::PeerSessionToken) -> perl_dap::backend::BackendResult<Self>
+pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::listen(_host: &str, _port: u16, _timeout: core::time::Duration) -> perl_dap::backend::BackendResult<(Self, core::net::socket_addr::SocketAddr)>
 pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::drop(&mut self)
 pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::attach(&mut self, _params: perl_dap::backend::AttachBackendParams) -> perl_dap::backend::BackendResult<perl_dap::backend::AttachResult>
 pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::capabilities(&self) -> perl_dap::backend::capabilities::DebugBackendCapabilities
@@ -421,6 +425,14 @@ pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::stack_trac
 pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::step_in(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
 pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::step_out(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
 pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::variables(&mut self, variables_ref: perl_dap::model::VariablesRef) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugVariable>>
+pub struct perl_dap::backend::external_peer::PeerSessionToken(_)
+pub fn perl_dap::backend::external_peer::PeerSessionToken::clone(&self) -> perl_dap::backend::external_peer::PeerSessionToken
+pub fn perl_dap::backend::external_peer::PeerSessionToken::eq(&self, other: &perl_dap::backend::external_peer::PeerSessionToken) -> bool
+pub type perl_dap::backend::external_peer::PeerSessionToken::Error = perl_dap::backend::BackendError
+pub fn perl_dap::backend::external_peer::PeerSessionToken::try_from(value: &str) -> core::result::Result<Self, Self::Error>
+pub type perl_dap::backend::external_peer::PeerSessionToken::Error = perl_dap::backend::BackendError
+pub fn perl_dap::backend::external_peer::PeerSessionToken::try_from(value: alloc::string::String) -> core::result::Result<Self, Self::Error>
+pub fn perl_dap::backend::external_peer::PeerSessionToken::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const perl_dap::backend::external_peer::DEFAULT_PEER_TIMEOUT: core::time::Duration
 pub mod perl_dap::backend::native_perldb
 pub struct perl_dap::backend::native_perldb::NativePerlDbBackend
@@ -491,30 +503,34 @@ pub fn perl_dap::backend::peer_launch::MirrorPeerBridge::poll_events(&mut self) 
 pub struct perl_dap::backend::peer_launch::PeerListenEndpoint
 pub perl_dap::backend::peer_launch::PeerListenEndpoint::addr: core::net::socket_addr::SocketAddr
 pub perl_dap::backend::peer_launch::PeerListenEndpoint::control: perl_dap::backend::capabilities::ControlMode
-pub perl_dap::backend::peer_launch::PeerListenEndpoint::token: alloc::string::String
 pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::bind(host: &str, port: u16, control: perl_dap::backend::capabilities::ControlMode) -> core::io::error::Result<(std::net::tcp::TcpListener, Self)>
 pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::env_vars(&self) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::session_credential(&self) -> perl_dap::backend::external_peer::PeerSessionToken
+pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::session_token(&self) -> alloc::string::String
 pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::clone(&self) -> perl_dap::backend::peer_launch::PeerListenEndpoint
 pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::eq(&self, other: &perl_dap::backend::peer_launch::PeerListenEndpoint) -> bool
-pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const perl_dap::backend::peer_launch::DEFAULT_LISTEN_HANDSHAKE_TIMEOUT: core::time::Duration
 pub const perl_dap::backend::peer_launch::ENV_PEER_ADDR: &str
 pub const perl_dap::backend::peer_launch::ENV_PEER_MODE: &str
 pub const perl_dap::backend::peer_launch::ENV_PEER_TOKEN: &str
 pub fn perl_dap::backend::peer_launch::control_mode_env_str(mode: perl_dap::backend::capabilities::ControlMode) -> &'static str
 pub fn perl_dap::backend::peer_launch::prepare_mirror_listen_session(config: &perl_dap::backend::peer_launch::ExternalPeerLaunchConfig) -> core::io::error::Result<(std::net::tcp::TcpListener, perl_dap::backend::peer_launch::PeerListenEndpoint, perl_dap::backend::peer_launch::MirrorPeerBridge)>
-pub fn perl_dap::backend::peer_launch::run_mirror_listen_session_socket(editor: std::net::tcp::TcpStream, peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<alloc::string::String>) -> core::io::error::Result<()>
-pub fn perl_dap::backend::peer_launch::run_mirror_listen_session_stdio(peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<alloc::string::String>) -> core::io::error::Result<()>
+pub fn perl_dap::backend::peer_launch::run_mirror_listen_session_socket(editor: std::net::tcp::TcpStream, peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<perl_dap::backend::external_peer::PeerSessionToken>) -> core::io::error::Result<()>
+pub fn perl_dap::backend::peer_launch::run_mirror_listen_session_stdio(peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<perl_dap::backend::external_peer::PeerSessionToken>) -> core::io::error::Result<()>
 pub fn perl_dap::backend::peer_launch::static_mirror_capabilities() -> serde_json::value::Value
 pub enum perl_dap::backend::BackendError
 pub perl_dap::backend::BackendError::Engine(alloc::string::String)
 pub perl_dap::backend::BackendError::NotConnected
 pub perl_dap::backend::BackendError::Protocol(alloc::string::String)
+pub perl_dap::backend::BackendError::ResourceLimit(alloc::string::String)
 pub perl_dap::backend::BackendError::Timeout(alloc::string::String)
 pub perl_dap::backend::BackendError::Transport(alloc::string::String)
 pub perl_dap::backend::BackendError::Unsupported(alloc::string::String)
+pub fn perl_dap::backend::BackendError::clone(&self) -> perl_dap::backend::BackendError
 pub fn perl_dap::backend::BackendError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::backend::BackendError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::backend::BackendError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub enum perl_dap::backend::EvaluateContext
 pub perl_dap::backend::EvaluateContext::Hover
 pub perl_dap::backend::EvaluateContext::Other(alloc::string::String)
@@ -639,12 +655,21 @@ pub fn perl_dap::backend::peer_launch::MirrorPeerBridge::poll_events(&mut self) 
 pub struct perl_dap::backend::PeerListenEndpoint
 pub perl_dap::backend::PeerListenEndpoint::addr: core::net::socket_addr::SocketAddr
 pub perl_dap::backend::PeerListenEndpoint::control: perl_dap::backend::capabilities::ControlMode
-pub perl_dap::backend::PeerListenEndpoint::token: alloc::string::String
 pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::bind(host: &str, port: u16, control: perl_dap::backend::capabilities::ControlMode) -> core::io::error::Result<(std::net::tcp::TcpListener, Self)>
 pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::env_vars(&self) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::session_credential(&self) -> perl_dap::backend::external_peer::PeerSessionToken
+pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::session_token(&self) -> alloc::string::String
 pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::clone(&self) -> perl_dap::backend::peer_launch::PeerListenEndpoint
 pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::eq(&self, other: &perl_dap::backend::peer_launch::PeerListenEndpoint) -> bool
-pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::backend::PeerSessionToken(_)
+pub fn perl_dap::backend::external_peer::PeerSessionToken::clone(&self) -> perl_dap::backend::external_peer::PeerSessionToken
+pub fn perl_dap::backend::external_peer::PeerSessionToken::eq(&self, other: &perl_dap::backend::external_peer::PeerSessionToken) -> bool
+pub type perl_dap::backend::external_peer::PeerSessionToken::Error = perl_dap::backend::BackendError
+pub fn perl_dap::backend::external_peer::PeerSessionToken::try_from(value: &str) -> core::result::Result<Self, Self::Error>
+pub type perl_dap::backend::external_peer::PeerSessionToken::Error = perl_dap::backend::BackendError
+pub fn perl_dap::backend::external_peer::PeerSessionToken::try_from(value: alloc::string::String) -> core::result::Result<Self, Self::Error>
+pub fn perl_dap::backend::external_peer::PeerSessionToken::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::backend::SetBackendBreakpointsParams
 pub perl_dap::backend::SetBackendBreakpointsParams::breakpoints: alloc::vec::Vec<perl_dap::model::DebugBreakpoint>
 pub perl_dap::backend::SetBackendBreakpointsParams::source: perl_dap::model::DebugSource
@@ -723,8 +748,8 @@ pub fn perl_dap::backend::intersect_dap_capabilities(catalog: &perl_dap::backend
 pub fn perl_dap::backend::prepare_mirror_listen_session(config: &perl_dap::backend::peer_launch::ExternalPeerLaunchConfig) -> core::io::error::Result<(std::net::tcp::TcpListener, perl_dap::backend::peer_launch::PeerListenEndpoint, perl_dap::backend::peer_launch::MirrorPeerBridge)>
 pub fn perl_dap::backend::run_external_peer_session(stream: std::net::tcp::TcpStream, bridge: perl_dap::backend::peer_bridge::DapPeerBridge, poll_interval: core::time::Duration) -> core::io::error::Result<()>
 pub fn perl_dap::backend::run_external_peer_session_stdio(bridge: perl_dap::backend::peer_bridge::DapPeerBridge, poll_interval: core::time::Duration) -> core::io::error::Result<()>
-pub fn perl_dap::backend::run_mirror_listen_session_socket(editor: std::net::tcp::TcpStream, peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<alloc::string::String>) -> core::io::error::Result<()>
-pub fn perl_dap::backend::run_mirror_listen_session_stdio(peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<alloc::string::String>) -> core::io::error::Result<()>
+pub fn perl_dap::backend::run_mirror_listen_session_socket(editor: std::net::tcp::TcpStream, peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<perl_dap::backend::external_peer::PeerSessionToken>) -> core::io::error::Result<()>
+pub fn perl_dap::backend::run_mirror_listen_session_stdio(peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<perl_dap::backend::external_peer::PeerSessionToken>) -> core::io::error::Result<()>
 pub fn perl_dap::backend::static_mirror_capabilities() -> serde_json::value::Value
 pub type perl_dap::backend::BackendResult<T> = core::result::Result<T, perl_dap::backend::BackendError>
 pub mod perl_dap::breakpoint
@@ -733,6 +758,7 @@ pub perl_dap::breakpoint::BreakpointError::LineOutOfRange(i64, usize)
 pub perl_dap::breakpoint::BreakpointError::ParseError(alloc::string::String)
 pub fn perl_dap::breakpoint::BreakpointError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::breakpoint::BreakpointError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::breakpoint::BreakpointError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub enum perl_dap::breakpoint::SearchDirection
 pub perl_dap::breakpoint::SearchDirection::Backward
 pub perl_dap::breakpoint::SearchDirection::Both
@@ -836,22 +862,6 @@ pub fn perl_dap::breakpoints::BreakpointStore::clone(&self) -> perl_dap::breakpo
 pub fn perl_dap::breakpoints::BreakpointStore::default() -> Self
 pub fn perl_dap::breakpoints::BreakpointStore::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::breakpoints::interpolate_logpoint_message(template: &str, variables: &std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>) -> alloc::string::String
-pub mod perl_dap::bridge_adapter
-pub struct perl_dap::bridge_adapter::BridgeAdapter
-pub fn perl_dap::bridge_adapter::BridgeAdapter::new() -> Self
-pub async fn perl_dap::bridge_adapter::BridgeAdapter::proxy_messages(&mut self) -> anyhow::Result<()>
-pub async fn perl_dap::bridge_adapter::BridgeAdapter::shutdown(&mut self) -> anyhow::Result<()>
-pub async fn perl_dap::bridge_adapter::BridgeAdapter::spawn_pls_dap(&mut self) -> anyhow::Result<()>
-pub fn perl_dap::bridge_adapter::BridgeAdapter::with_env_config(env_config: perl_dap::bridge_adapter::DapBridgeEnvConfig) -> Self
-pub fn perl_dap::bridge_adapter::BridgeAdapter::default() -> Self
-pub fn perl_dap::bridge_adapter::BridgeAdapter::drop(&mut self)
-pub perl_dap::bridge_adapter::DapBridgeEnvConfig::perl5lib_passthrough: bool
-pub perl_dap::bridge_adapter::DapBridgeEnvConfig::perl5opt_passthrough: bool
-pub const fn perl_dap::bridge_adapter::DapBridgeEnvConfig::new(perl5lib_passthrough: bool, perl5opt_passthrough: bool) -> Self
-pub fn perl_dap::bridge_adapter::DapBridgeEnvConfig::clone(&self) -> perl_dap::bridge_adapter::DapBridgeEnvConfig
-pub fn perl_dap::bridge_adapter::DapBridgeEnvConfig::eq(&self, other: &perl_dap::bridge_adapter::DapBridgeEnvConfig) -> bool
-pub fn perl_dap::bridge_adapter::DapBridgeEnvConfig::default() -> perl_dap::bridge_adapter::DapBridgeEnvConfig
-pub fn perl_dap::bridge_adapter::DapBridgeEnvConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod perl_dap::command_args
 pub fn perl_dap::command_args::format_command_args(args: &[alloc::string::String]) -> alloc::vec::Vec<alloc::string::String>
 pub mod perl_dap::config
@@ -940,6 +950,7 @@ pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::clone(&self) ->
 pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::eq(&self, other: &perl_dap::debug_adapter::var_ref::VariableReferenceError) -> bool
 pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub enum perl_dap::debug_adapter::DapMessage
 pub perl_dap::debug_adapter::DapMessage::Event
 pub perl_dap::debug_adapter::DapMessage::Event::body: core::option::Option<serde_json::value::Value>
@@ -980,6 +991,7 @@ pub perl_dap::eval::ValidationError::RegexMutation(alloc::string::String)
 pub fn perl_dap::api::ValidationError::clone(&self) -> perl_dap::api::ValidationError
 pub fn perl_dap::api::ValidationError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::api::ValidationError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::api::ValidationError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub struct perl_dap::eval::SafeEvaluator
 pub fn perl_dap::api::SafeEvaluator::new() -> Self
 pub fn perl_dap::api::SafeEvaluator::validate(&self, expression: &str) -> perl_dap::api::ValidationResult
@@ -1260,6 +1272,7 @@ pub fn perl_dap::peer_protocol::framing::PeerFrameError::from(source: perl_lsp_r
 pub fn perl_dap::peer_protocol::framing::PeerFrameError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn perl_dap::peer_protocol::framing::PeerFrameError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::peer_protocol::framing::PeerFrameError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::framing::PeerFrameError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub struct perl_dap::peer_protocol::framing::PeerFrameDecoder
 pub fn perl_dap::peer_protocol::framing::PeerFrameDecoder::new() -> Self
 pub fn perl_dap::peer_protocol::framing::PeerFrameDecoder::push(&mut self, bytes: &[u8])
@@ -1573,6 +1586,7 @@ pub fn perl_dap::peer_protocol::framing::PeerFrameError::from(source: perl_lsp_r
 pub fn perl_dap::peer_protocol::framing::PeerFrameError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn perl_dap::peer_protocol::framing::PeerFrameError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::peer_protocol::framing::PeerFrameError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::framing::PeerFrameError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub enum perl_dap::peer_protocol::PeerMessage
 pub perl_dap::peer_protocol::PeerMessage::Event(perl_dap::peer_protocol::message::PeerEvent)
 pub perl_dap::peer_protocol::PeerMessage::Request(perl_dap::peer_protocol::message::PeerRequest)
@@ -2293,6 +2307,7 @@ pub fn perl_dap::security::SecurityError::eq(&self, other: &perl_dap::security::
 pub fn perl_dap::security::SecurityError::from(error: perl_parser_core::syntax::path_security::WorkspacePathError) -> Self
 pub fn perl_dap::security::SecurityError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::security::SecurityError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::security::SecurityError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub const perl_dap::security::DEFAULT_TIMEOUT_MS: u32
 pub const perl_dap::security::MAX_TIMEOUT_MS: u32
 pub fn perl_dap::security::validate_condition(condition: &str) -> core::result::Result<(), perl_dap::security::SecurityError>
@@ -2301,7 +2316,6 @@ pub fn perl_dap::security::validate_path(path: &std::path::Path, workspace_root:
 pub fn perl_dap::security::validate_timeout(timeout_ms: u32) -> core::result::Result<u32, perl_dap::security::SecurityError>
 pub mod perl_dap::server
 pub enum perl_dap::server::DapMode
-pub perl_dap::server::DapMode::Bridge
 pub perl_dap::server::DapMode::Native
 pub fn perl_dap::DapMode::clone(&self) -> perl_dap::DapMode
 pub fn perl_dap::DapMode::eq(&self, other: &perl_dap::DapMode) -> bool
@@ -2320,6 +2334,7 @@ pub struct perl_dap::server::DapSocketBindError
 pub perl_dap::server::DapSocketBindError::port: u16
 pub fn perl_dap::DapSocketBindError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::DapSocketBindError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::DapSocketBindError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub mod perl_dap::session_plan
 pub struct perl_dap::session_plan::DebugSessionPlanBuilder
 pub fn perl_dap::session_plan::DebugSessionPlanBuilder::breakpoint(self, breakpoint: perl_dap::model::DebugBreakpoint) -> Self
@@ -2377,6 +2392,7 @@ pub fn perl_dap::api::StackParseError::from(source: regex::error::Error) -> Self
 pub fn perl_dap::api::StackParseError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn perl_dap::api::StackParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::api::StackParseError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::api::StackParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub struct perl_dap::stack::PerlFrameClassifier
 pub fn perl_dap::api::PerlFrameClassifier::new() -> Self
 pub fn perl_dap::api::PerlFrameClassifier::with_library_path(self, path: impl core::convert::Into<alloc::string::String>) -> Self
@@ -2599,6 +2615,7 @@ pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::clone(&self) ->
 pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::eq(&self, other: &perl_dap::debug_adapter::var_ref::VariableReferenceError) -> bool
 pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub mod perl_dap::variables
 pub enum perl_dap::variables::PerlValue
 pub perl_dap::variables::PerlValue::Array(alloc::vec::Vec<perl_dap::value::PerlValue>)
@@ -2646,6 +2663,7 @@ pub fn perl_dap::api::VariableParseError::from(source: regex::error::Error) -> S
 pub fn perl_dap::api::VariableParseError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn perl_dap::api::VariableParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::api::VariableParseError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::api::VariableParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub struct perl_dap::variables::PerlVariableRenderer
 pub fn perl_dap::api::PerlVariableRenderer::new() -> Self
 pub fn perl_dap::api::PerlVariableRenderer::with_max_array_preview(self, count: usize) -> Self
@@ -2722,7 +2740,6 @@ pub fn perl_dap::debug_adapter::DapMessage::fmt(&self, f: &mut core::fmt::Format
 pub fn perl_dap::debug_adapter::DapMessage::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::debug_adapter::DapMessage::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub enum perl_dap::DapMode
-pub perl_dap::DapMode::Bridge
 pub perl_dap::DapMode::Native
 pub fn perl_dap::DapMode::clone(&self) -> perl_dap::DapMode
 pub fn perl_dap::DapMode::eq(&self, other: &perl_dap::DapMode) -> bool
@@ -2834,14 +2851,6 @@ pub fn perl_dap::breakpoints::BreakpointStore::set_breakpoints(&self, args: &per
 pub fn perl_dap::breakpoints::BreakpointStore::clone(&self) -> perl_dap::breakpoints::BreakpointStore
 pub fn perl_dap::breakpoints::BreakpointStore::default() -> Self
 pub fn perl_dap::breakpoints::BreakpointStore::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_dap::BridgeAdapter
-pub fn perl_dap::bridge_adapter::BridgeAdapter::new() -> Self
-pub async fn perl_dap::bridge_adapter::BridgeAdapter::proxy_messages(&mut self) -> anyhow::Result<()>
-pub async fn perl_dap::bridge_adapter::BridgeAdapter::shutdown(&mut self) -> anyhow::Result<()>
-pub async fn perl_dap::bridge_adapter::BridgeAdapter::spawn_pls_dap(&mut self) -> anyhow::Result<()>
-pub fn perl_dap::bridge_adapter::BridgeAdapter::with_env_config(env_config: perl_dap::bridge_adapter::DapBridgeEnvConfig) -> Self
-pub fn perl_dap::bridge_adapter::BridgeAdapter::default() -> Self
-pub fn perl_dap::bridge_adapter::BridgeAdapter::drop(&mut self)
 pub struct perl_dap::CancelArguments
 pub perl_dap::CancelArguments::progress_id: core::option::Option<alloc::string::String>
 pub perl_dap::CancelArguments::request_id: core::option::Option<i64>
@@ -2909,13 +2918,6 @@ pub fn perl_dap::protocol::ContinueResponseBody::clone(&self) -> perl_dap::proto
 pub fn perl_dap::protocol::ContinueResponseBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::protocol::ContinueResponseBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::protocol::ContinueResponseBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub perl_dap::DapBridgeEnvConfig::perl5lib_passthrough: bool
-pub perl_dap::DapBridgeEnvConfig::perl5opt_passthrough: bool
-pub const fn perl_dap::bridge_adapter::DapBridgeEnvConfig::new(perl5lib_passthrough: bool, perl5opt_passthrough: bool) -> Self
-pub fn perl_dap::bridge_adapter::DapBridgeEnvConfig::clone(&self) -> perl_dap::bridge_adapter::DapBridgeEnvConfig
-pub fn perl_dap::bridge_adapter::DapBridgeEnvConfig::eq(&self, other: &perl_dap::bridge_adapter::DapBridgeEnvConfig) -> bool
-pub fn perl_dap::bridge_adapter::DapBridgeEnvConfig::default() -> perl_dap::bridge_adapter::DapBridgeEnvConfig
-pub fn perl_dap::bridge_adapter::DapBridgeEnvConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::DapConfig
 pub perl_dap::DapConfig::log_level: alloc::string::String
 pub perl_dap::DapConfig::mode: perl_dap::DapMode
@@ -2929,6 +2931,7 @@ pub struct perl_dap::DapSocketBindError
 pub perl_dap::DapSocketBindError::port: u16
 pub fn perl_dap::DapSocketBindError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::DapSocketBindError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::DapSocketBindError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub struct perl_dap::DataBreakpoint
 pub perl_dap::DataBreakpoint::access_type: core::option::Option<alloc::string::String>
 pub perl_dap::DataBreakpoint::condition: core::option::Option<alloc::string::String>
@@ -3409,6 +3412,7 @@ pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::clone(&self) ->
 pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::eq(&self, other: &perl_dap::debug_adapter::var_ref::VariableReferenceError) -> bool
 pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub struct perl_dap::VariablesArguments
 pub perl_dap::VariablesArguments::count: core::option::Option<i64>
 pub perl_dap::VariablesArguments::filter: core::option::Option<alloc::string::String>
