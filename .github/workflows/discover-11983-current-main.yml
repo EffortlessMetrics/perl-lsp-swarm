@@ -30,7 +30,7 @@ jobs:
           ref: repair/11983-current-main
           fetch-depth: 0
 
-      - name: Replay conflicted patches and expose rejected hunks
+      - name: Replay conflicted patches and expose second-commit conflicts
         shell: bash
         run: |
           set -uo pipefail
@@ -59,8 +59,59 @@ jobs:
               git apply --reject --recount --whitespace=nowarn "$patch" || true
             done
 
+            python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one current-main anchor, found {count}")
+              file.write_text(text.replace(old, new), encoding="utf-8")
+
+          text_sync = "crates/perl-lsp-rs/src/runtime/text_sync.rs"
+          replace_exact(
+              text_sync,
+              "    Arc, AtomicBool, AtomicU32, CodeFormatter, DocumentState, FormattingOptions, HashMap,\n"
+              "    JsonRpcError, LspServer, Mutex, Node, NonZeroU32, Ordering, Parser, Value,\n",
+              "    Arc, AtomicBool, AtomicU32, DocumentState, HashMap, JsonRpcError, LspServer, Mutex,\n"
+              "    Node, NonZeroU32, Ordering, Parser, Value,\n",
+          )
+
+          lifecycle = "crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs"
+          replace_exact(
+              lifecycle,
+              "    Arc, AtomicU32, CodeFormatter, FormattingOptions, JsonRpcError, LspServer, NonZeroU32, Value,\n"
+              "    invalid_params, json, source_path_from_uri,\n",
+              "    Arc, AtomicU32, JsonRpcError, LspServer, NonZeroU32, Value, invalid_params, json,\n"
+              "    source_path_from_uri,\n",
+          )
+
+          e2e = Path("crates/perl-lsp-rs/tests/lsp_batteries_e2e_workflow_test.rs")
+          e2e_text = e2e.read_text(encoding="utf-8")
+          required = (
+              "// True-EOF policy (#8048/#11873): whole-document replace edits extend through\n"
+              "    // true EOF"
+          )
+          if required not in e2e_text:
+              raise SystemExit("current-main true-EOF formatting oracle is missing")
+          if '"my $result = calculate(5, 3);\\n",\n            "\\n",' in e2e_text:
+              raise SystemExit("stale extra-newline expectation returned")
+
+          rejects = [
+              Path(text_sync + ".rej"),
+              Path(lifecycle + ".rej"),
+              Path(str(e2e) + ".rej"),
+          ]
+          for reject in rejects:
+              if not reject.exists():
+                  raise SystemExit(f"expected accounted-for reject missing: {reject}")
+              reject.unlink()
+          PY
+
             if find . -name '*.rej' -print -quit | grep -q .; then
-              echo "REJECTED_HUNKS"
+              echo "UNEXPECTED_REJECTED_HUNKS"
               find . -name '*.rej' -print -exec sh -c 'echo "--- $1"; cat "$1"' _ {} \;
               exit 1
             fi
