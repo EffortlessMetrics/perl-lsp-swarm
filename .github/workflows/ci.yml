@@ -413,8 +413,8 @@ jobs:
             echo "GITHUB_RUN_ATTEMPT=${GITHUB_RUN_ATTEMPT:-<unset>}"
             df -h . "${CARGO_TARGET_DIR:-target}" || true
             timeout --signal=TERM --kill-after=5s 30s \
-              du -h --max-depth=1 "${CARGO_TARGET_DIR:-target}" 2>/dev/null |
-              sort -rh | head -n 20 || true
+              bash -c 'du -h --max-depth=1 -- "$1" 2>/dev/null | sort -rh | head -n 20' \
+              _ "${CARGO_TARGET_DIR:-target}" || true
           } >> target/receipts/logs/pr-fast-disk-pressure.log || true
 
       - name: Upload PR-fast receipt
