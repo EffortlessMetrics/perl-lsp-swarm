@@ -83,6 +83,165 @@ fn ready_ids(statuses: &[NodeStatus]) -> Vec<String> {
         .collect()
 }
 
+#[test]
+fn manifest_sections_reveal_identity_values() -> Result<()> {
+    // Discriminating per-section assertions over the typed model at the
+    // pinned digest: each top-level section's identity is asserted, not just
+    // parsed. (Values are facts of the pinned manifest revision; a classified
+    // #11625 revision moves the digest pin and this test together.)
+    let manifest = parse_manifest(&real_value()?)?;
+    assert!(validate_manifest(&manifest).is_ok(), "pinned manifest must validate");
+    assert_eq!(manifest.programme.parent_programme_issue, 8133, "parent programme issue");
+    assert_eq!(manifest.programme.controller_issue, 4240, "programme controller issue");
+    assert_eq!(manifest.programme.evidence_controller_issue, 8479, "evidence controller issue");
+    assert_eq!(manifest.programme.home_programme, "module-programme", "home programme");
+    assert_eq!(manifest.authority_planes.len(), 8, "authority plane count");
+    assert!(
+        manifest.authority_planes[0].plane.contains("durable module programme decisions"),
+        "first plane identity"
+    );
+    let roles: Vec<&str> =
+        manifest.train_role_vocabulary.iter().map(|entry| entry.role.as_str()).collect();
+    assert_eq!(
+        roles,
+        vec![
+            "controller",
+            "spec",
+            "evidence",
+            "implementation",
+            "cutover",
+            "retirement",
+            "proof",
+            "fan_in",
+            "claim",
+            "external_gate"
+        ],
+        "train role vocabulary identity"
+    );
+    assert!(
+        manifest.evidence_semantics.not_proven_law.contains("never pass"),
+        "not-proven law wording"
+    );
+    assert!(
+        manifest
+            .external_authorities
+            .iter()
+            .any(|authority| authority.id == "#EXPLICIT-AUTHORIZATION"),
+        "external authorization authority present"
+    );
+    assert!(
+        manifest.open_decisions_routed_elsewhere.iter().any(|decision| decision.id == "OD1"),
+        "OD1 routed to #10554"
+    );
+    assert_eq!(
+        manifest.case_work_packet_bindings.consumers,
+        vec!["M00S".to_string(), "P11A".to_string(), "P11F".to_string()],
+        "binding consumers identity"
+    );
+    assert_eq!(
+        manifest.case_work_packet_bindings.status, "structurally_pending",
+        "binding status identity"
+    );
+    let profile_ids: Vec<&str> =
+        manifest.claim_profiles.iter().map(|profile| profile.id.as_str()).collect();
+    assert_eq!(
+        profile_ids,
+        vec![
+            "module_contract_grounded",
+            "module_static_resolution_core",
+            "module_live_runtime_cutover",
+            "module_exact_process_resolution_core",
+            "module_exact_process_semantic_edit",
+            "module_exact_process_full_closeout"
+        ],
+        "claim profile identity"
+    );
+    assert!(
+        manifest
+            .cross_programme_imports
+            .iter()
+            .any(|import| import.authority == "#10554" && import.relation == "consumed law"),
+        "#10554 consumed-law import present"
+    );
+    assert_eq!(manifest.revision_governance.owner_node, "C01", "revision governance owner");
+    assert_eq!(manifest.revision_governance.owner_issue, 11625, "revision governance issue");
+    assert_eq!(manifest.nodes.len(), 52, "node count identity");
+    let c01 = manifest
+        .nodes
+        .iter()
+        .find(|node| node.node_id == "C01")
+        .ok_or_else(|| color_eyre::eyre::eyre!("C01 missing"))?;
+    assert_eq!(
+        c01.review_forward.lenses,
+        vec!["claim-ceiling honesty".to_string(), "dependency-type faithfulness".to_string()]
+    );
+    assert_eq!(c01.obligations.changelog, "none (internal contract)");
+    Ok(())
+}
+
+#[test]
+fn render_binding_reveals_both_worktree_states() -> Result<()> {
+    let loaded = load_manifest()?;
+    let clean = render_binding(
+        &TreeBinding { tree_head: "B".repeat(40), dirty_paths: 0, manifest_dirty: false },
+        &loaded,
+    );
+    assert!(clean.contains("worktree: clean"), "clean branch must render: {clean}");
+    assert!(clean.contains("manifest_state: committed"), "committed branch must render: {clean}");
+    let dirty = render_binding(
+        &TreeBinding { tree_head: "C".repeat(40), dirty_paths: 7, manifest_dirty: true },
+        &loaded,
+    );
+    assert!(dirty.contains("worktree: dirty:7paths"), "dirty branch must render exactly: {dirty}");
+    assert!(dirty.contains("manifest_state: dirty"), "dirty manifest must render: {dirty}");
+    Ok(())
+}
+
+#[test]
+fn non_edge_import_cannot_carry_a_dependency_edge() -> Result<()> {
+    let mut value = real_value()?;
+    // #3982 is a consumed law, not an import edge: carrying a dependency on
+    // it must be rejected by the import relation law.
+    add_dep(&mut value, "M01", "#3982", "hard")?;
+    let manifest = parse_manifest(&value)?;
+    let outcome = validate_manifest(&manifest);
+    assert!(outcome.is_err(), "non-edge import carrying a dependency must be rejected");
+    let message = outcome.err().map(|error| error.to_string()).unwrap_or_default();
+    assert!(
+        message.contains("non-edge import"),
+        "wrong structural failure for a non-edge import: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn load_errors_name_their_exact_cause() -> Result<()> {
+    let dir = std::env::temp_dir().join("plsw-11626-module-train-tests");
+    std::fs::create_dir_all(&dir).with_context(|| "failed to create test temp dir")?;
+
+    let missing = dir.join("missing.manifest.json");
+    let _ = std::fs::remove_file(&missing);
+    let missing_outcome = load_manifest_from(&missing);
+    assert!(missing_outcome.is_err(), "missing manifest must fail");
+    let missing_message = missing_outcome.err().map(|error| error.to_string()).unwrap_or_default();
+    assert!(
+        missing_message.contains("failed to read"),
+        "missing manifest failure must name the read: {missing_message}"
+    );
+
+    let garbage = dir.join("garbage.manifest.json");
+    std::fs::write(&garbage, b"{ not json").with_context(|| "failed to write garbage fixture")?;
+    let garbage_outcome = load_manifest_from(&garbage);
+    let _ = std::fs::remove_file(&garbage);
+    assert!(garbage_outcome.is_err(), "garbage manifest must fail");
+    let garbage_message = garbage_outcome.err().map(|error| error.to_string()).unwrap_or_default();
+    assert!(
+        garbage_message.contains("not valid JSON"),
+        "garbage manifest failure must name the parse: {garbage_message}"
+    );
+    Ok(())
+}
+
 fn status_for<'a>(statuses: &'a [NodeStatus], node_id: &str) -> Result<&'a NodeStatus> {
     statuses
         .iter()
@@ -197,7 +356,8 @@ fn tampered_manifest_file_fails_closed_at_load() -> Result<()> {
 #[test]
 fn current_manifest_passes_structural_laws() -> Result<()> {
     let manifest = parse_manifest(&real_value()?)?;
-    validate_manifest(&manifest)
+    assert!(validate_manifest(&manifest).is_ok(), "pinned manifest must pass structural laws");
+    Ok(())
 }
 
 #[test]
