@@ -5046,14 +5046,26 @@ our $single_root_var;
             .push(WorkspaceFolderState::new("file:///project".to_string()));
 
         let coordinator = Arc::new(IndexCoordinator::new());
-        let _ = coordinator.index().index_file_str(
+        // Seed through the canonical initial-commit API (#11301), not the
+        // `index_file*` compatibility surface the caller ledger is retiring.
+        // `index_file_str` only parses the URI and delegates here anyway, so
+        // this is the same generation-0 seed with no compatibility growth.
+        let seed = |uri: &str, source: &str| {
+            let url = url::Url::parse(uri)
+                .unwrap_or_else(|error| panic!("test fixture URI {uri} must parse: {error}"));
+            coordinator
+                .index()
+                .index_initial_file(url, source.to_string())
+                .unwrap_or_else(|error| panic!("seeding {uri} must succeed: {error}"));
+        };
+        seed(
             "file:///project/lib/Secrets.pm",
             "package Secrets;\nour $api_token = 1;\nmy $private_token = 2;\n1;\n",
         );
         if let Some(source) = extra_doc_source {
             // Index under the canonical key so a caller can pass an equivalent
             // but differently spelled `doc_uri` and still be the same document.
-            let _ = coordinator.index().index_file_str(&perl_uri::uri_key(doc_uri), source);
+            seed(&perl_uri::uri_key(doc_uri), source);
         }
         coordinator.transition_to_ready(1, 1);
 

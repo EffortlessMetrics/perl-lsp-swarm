@@ -4226,7 +4226,9 @@ fn workspace_variable_completion_preserves_qualified_insertion_without_import()
 fn sigil_prefixed_requests_never_reach_the_workspace_symbol_pass()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    // Canonical initial-commit API (#11301), not the `index_file` compatibility
+    // surface the caller ledger is retiring.
+    index.index_initial_file(
         Url::parse("file:///lib/Foo.pm")?,
         "package Foo;\nour $xylophone = 1;\n1;\n".to_string(),
     )?;
