@@ -42,13 +42,22 @@ local function bound_text(text, limit)
 end
 
 ---Deterministic 32-bit FNV-1a content digest as eight hex characters
----(#11155). Pure arithmetic so every runtime family member produces the same
----value; doubles stay exact because intermediates remain below 2^53. Used to
----give failure logs content identity without retaining any content.
+---(#11155). The multiplication is split through 16-bit halves so every
+---intermediate stays below 2^53: integer runtimes wrap exactly and pure-double
+---runtimes (LuaJIT, Lua 5.1/5.2) never round the low bits, giving every
+---runtime family member the same value. Used to give failure logs content
+---identity without retaining any content.
 local function content_digest(data)
   local hash = 2166136261
   for i = 1, #data do
-    hash = (hash * 16777619 + string.byte(data, i)) % 4294967296
+    local byte = string.byte(data, i)
+    local low = hash % 65536
+    local high = math.floor(hash / 65536)
+    hash = (
+      low * 16777619
+      + (high * 16777619) % 65536 * 65536
+      + byte
+    ) % 4294967296
   end
   return string.format("%08x", hash)
 end

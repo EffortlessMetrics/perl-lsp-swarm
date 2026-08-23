@@ -257,7 +257,7 @@ function util.jsonprettify(code)
     -- automatic retention or rotation (declared limitation), and must never
     -- be enabled for canonical host or CI proof artifacts. Append failures
     -- warn once per session through the editor log and never recurse.
-    local log = io.open(config.plugins.lsp.log_file, "a+")
+    local log, err_open = io.open(config.plugins.lsp.log_file, "a+")
     if log then
       local ok_write, err_write = pcall(
         log.write, log, "Output: \n" .. tostring(code) .. "\n\n")
@@ -274,9 +274,10 @@ function util.jsonprettify(code)
     elseif not trace_failure_warned then
       trace_failure_warned = true
       core.log(
-        "lsp: protocol trace file '%s' could not be opened; "
+        "lsp: protocol trace file '%s' could not be opened (%s); "
           .. "further open failures stay silent for this session",
-        config.plugins.lsp.log_file
+        config.plugins.lsp.log_file,
+        bound_trace_error(err_open)
       )
     end
   end
