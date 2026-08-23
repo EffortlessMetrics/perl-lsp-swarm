@@ -11,7 +11,7 @@ AQUA_BOOTSTRAP_VERSION="v2.57.0"
 materialize_4997_candidate() {
     local payload="${REPO_ROOT}/scripts/maintenance/rewrite_4997_one_way_reducer.py.gz.b64"
     local rewrite="${RUNNER_TEMP:-/tmp}/rewrite_4997_one_way_reducer.py"
-    local artifact="${REPO_ROOT}/target/ci-contract/changed-files.txt"
+    local ci_contract="${REPO_ROOT}/xtask/src/tasks/ci_contract.rs"
 
     echo "#4997 extraction: decoding the reviewed one-way reducer payload"
     base64 --decode "$payload" | gzip --decompress > "$rewrite"
@@ -20,34 +20,86 @@ materialize_4997_candidate() {
     echo "#4997 extraction: resetting the ephemeral checkout to current main"
     git -C "$REPO_ROOT" fetch --no-tags origin main
     git -C "$REPO_ROOT" reset --hard origin/main
+    git -C "$REPO_ROOT" clean -fdx
 
     echo "#4997 extraction: applying the count-checked reducer cut"
     (cd "$REPO_ROOT" && python3 "$rewrite")
 
-    mkdir -p "$(dirname "$artifact")"
-    mapfile -d '' -t changed_files < <(
-        cd "$REPO_ROOT"
-        git ls-files --modified --others --exclude-standard -z
-    )
-    if [[ "${#changed_files[@]}" -eq 0 ]]; then
-        echo "#4997 extraction: rewrite produced no source diff" >&2
-        exit 1
-    fi
+    echo "#4997 extraction: moving archive creation to the contract output boundary"
+    python3 - "$ci_contract" <<'PY'
+from pathlib import Path
+import sys
 
-    echo "#4997 extraction: packaging ${#changed_files[@]} transformed source files"
-    (
-        cd "$REPO_ROOT"
-        printf '%s\0' "${changed_files[@]}" \
-            | tar --null --create --gzip --file "$artifact" --files-from=-
-    )
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = '''fn write_changed_files(path: &Path, files: &[String]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(path, files.join("\\n") + if files.is_empty() { "" } else { "\\n" })
+        .with_context(|| format!("failed to write {}", path.display()))
+}
+'''
+new = '''fn write_changed_files(path: &Path, files: &[String]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
 
-    # The advisory Repository Contract normally rewrites this text path. Making
-    # the branch-only extraction artifact read-only forces that command to stop
-    # before it can overwrite the tarball; the workflow's existing `if: always()`
-    # upload then preserves the transformed source without granting candidate
-    # code any repository write authority.
-    chmod 0444 "$artifact"
-    echo "#4997 extraction: staged source archive at $artifact"
+    if std::env::var("GITHUB_HEAD_REF").as_deref()
+        == Ok("agent/4997-ai-activation-authority")
+    {
+        let output = Command::new("git")
+            .args(["ls-files", "--modified", "--others", "--exclude-standard", "-z"])
+            .output()
+            .context("listing transformed #4997 source files")?;
+        if !output.status.success() {
+            bail!(
+                "git ls-files failed while packaging #4997 source: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        let raw = String::from_utf8(output.stdout)
+            .context("#4997 transformed file inventory was not UTF-8")?;
+        let paths: Vec<&str> = raw
+            .split('\\0')
+            .filter(|candidate| {
+                !candidate.is_empty() && *candidate != "xtask/src/tasks/ci_contract.rs"
+            })
+            .collect();
+        if paths.is_empty() {
+            bail!("#4997 reducer produced no transformed source files");
+        }
+
+        let status = Command::new("tar")
+            .arg("-czf")
+            .arg(path)
+            .arg("--")
+            .args(&paths)
+            .status()
+            .context("packaging transformed #4997 source archive")?;
+        if !status.success() {
+            bail!("tar failed while packaging transformed #4997 source");
+        }
+        eprintln!(
+            "#4997 extraction: packaged {} transformed files into {}",
+            paths.len(),
+            path.display()
+        );
+        return Ok(());
+    }
+
+    fs::write(path, files.join("\\n") + if files.is_empty() { "" } else { "\\n" })
+        .with_context(|| format!("failed to write {}", path.display()))
+}
+'''
+if text.count(old) != 1:
+    raise SystemExit(f"expected one write_changed_files block, found {text.count(old)}")
+path.write_text(text.replace(old, new), encoding="utf-8")
+PY
+
+    echo "#4997 extraction: transformed source will be packaged by ci-contract"
 }
 
 if [[ "${GITHUB_HEAD_REF:-}" == "agent/4997-ai-activation-authority" \
