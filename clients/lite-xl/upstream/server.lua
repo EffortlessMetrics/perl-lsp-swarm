@@ -1301,6 +1301,20 @@ end
 ---request timeouts and process exit so consumers classify them exactly.
 local FRAME_ERROR_KIND = "lsp.frame_error"
 
+-- LuaJIT and Lua 5.1/5.2 do not provide math.tointeger (same runtime guard
+-- as the staged json.lua numeric identity work). Doubles stay exact up to
+-- 2^53, so integral values within that range keep working there; anything
+-- larger fails closed exactly like the overflow class below.
+local math_tointeger = math.tointeger
+if not math_tointeger then
+  math_tointeger = function(value)
+    if value % 1 == 0 and value <= 9007199254740991 and value >= -9007199254740991 then
+      return value
+    end
+    return nil
+  end
+end
+
 ---Builds one bounded framing-failure object. Only small numeric metadata is
 ---retained so hostile streams cannot inflate failure diagnostics, and no
 ---frame or body content is ever copied into the failure.
@@ -1373,9 +1387,9 @@ local function parse_content_length(header_data)
         )
       else
         local numeric = tonumber(value)
-        -- Decimal strings beyond Lua's exact integer range cannot identify a
+        -- Decimal strings beyond the exact integer range cannot identify a
         -- realizable byte count and fail closed instead of approximating.
-        if numeric == nil or math.tointeger(numeric) == nil then
+        if numeric == nil or math_tointeger(numeric) == nil then
           return false, nil, frame_failure("content_length_overflow")
         end
         declared = numeric
