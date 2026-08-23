@@ -2593,3 +2593,38 @@ covered_by = [
 ]
 created = "2026-08-22"
 review_after = "2026-09-22"
+
+# =============================================================================
+# Core harness runner plan/parity contracts (perl_core_harness.runner_plan.v1,
+# perl_core_harness.runner_parity.v1)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-core-harness-runner-plan-schema"
+path = "schemas/perl_core_harness_runner_plan.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Published JSON Schema mirror for the perl_core_harness.runner_plan.v1 runner-plan receipt (#6662); plan building, canonical digests, and scheduling limitations are exercised by the Rust serde/model contract test family."
+covered_by = [
+  "cargo test -p perl-core-harness --locked --test runner_plan_contracts",
+]
+created = "2026-08-23"
+review_after = "2026-11-23"
+
+[[allow]]
+id = "non-rust-core-harness-runner-parity-schema"
+path = "schemas/perl_core_harness_runner_parity.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Published JSON Schema mirror for the perl_core_harness.runner_parity.v1 membership-parity receipt (#6662); parity binding, limitation enforcement, and not-proven boundaries are exercised by the Rust serde/model contract test family."
+covered_by = [
+  "cargo test -p perl-core-harness --locked --test runner_plan_contracts",
+]
+created = "2026-08-23"
+review_after = "2026-11-23"
