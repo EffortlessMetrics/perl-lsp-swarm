@@ -103,23 +103,6 @@ Doomed lower edges are assigned to their removal owners and are NOT part of the 
 | tree-sitter-perl-rs| normal_chain| 2 |
 | xtask| normal_chain| 2 |
 
-## 6. Manual-extension registry (beyond section 3 patch rows)
-
-| Row ID | Anchor | Seam behavior | Disposition | Owner |
-| --- | --- | --- | --- | --- |
-| SEAM-EXPERIMENTAL-TYPEHIERARCHY| crates/perl-lsp-rs-core/src/protocol/capabilities/experimental.rs:10 insert_experimental_capability| injects experimental.typeHierarchyProvider=true into the typed ServerCapabilities.experimental value because the default 0.97 surface cannot carry the typed field; detection support in capability_map.rs reads it back| selected_substrate_manual_schema_extension| #11803 removes the workaround when the adapter serializes the typed field; keep negative gate for experimental.inlineCompletionProvider |
-| SEAM-CAPMAP-DETECTION| crates/perl-lsp-rs-core/src/capability_map.rs feature_ids_from_caps experimental readback (test pin ~line 505)| maps client capability objects back to feature ids, including the type-hierarchy-via-experimental workaround path| compatibility_with_exit| #11803 exit together with SEAM-EXPERIMENTAL-TYPEHIERARCHY; detection of real typed fields replaces the workaround branch |
-| SEAM-RUNTIME-DYNAMIC-INLINECOMPLETION| crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs dynamic-client removal (~lines 781-815)| strips top-level inlineCompletionProvider from initialize output when the client opts into dynamic registration; behavioral protocol logic independent of which crate supplies the type| adapter_protocol_type| stays in lifecycle code through LT02/LT03; only its input type changes with #11803 |
-
-## 7. Derived downstream denominators
-
-Mechanically derived from this matrix; no re-research needed:
-
-- **LT02 / #11803 migration population:** 2 surviving direct Cargo edges (`adapter_protocol_type`: perl-lsp-rs, perl-lsp-rs-core) carrying 2 public nominal re-export anchors (`ServerCapabilities` at perl-lsp-rs-core/src/protocol/capabilities.rs:23, `Location` at perl-lsp-rs-core/src/providers/navigation/mod.rs:58), 3 typed-once patch rows, plus SEAM-RUNTIME-DYNAMIC-INLINECOMPLETION as a type-consumer. Doomed edges excluded: 3 (`lower_wire_remove_before_switch`, owners #9632/#9893).
-- **LT03 / #11804 representation convergence:** 7 manual-extension rows total (4 patches + 3 seams), 11 serialization-delta rows to converge, URI submatrix decision (DELTA-URI-DEFAULT/URL/FLUENT) with #8156/#8484 proof obligations.
-- **LT04 / #11805 proof closure:** 15 snapshot/contract falsifier files currently assert patched bytes (mechanically counted under crates/*/tests against needles: typeHierarchyProvider, rangesSupport, inlineCompletionProvider, insertTextModes). Wire-neutrality guards stay authoritative: crates/perl-workspace-core/tests/dependency_contract.rs (forbids lsp-types below the adapter) and the perl-ripr-facts manifest contract comment (deliberately avoids perl-workspace because it transitively pulls lsp-types).
-- Changing any needle, patch row, or seam above must flip the matching falsifier population; a silent zero-count is `not_proven`, never green.
-
 ## 5. Serialization/API delta matrix vs incumbent 0.97 (classified against #7113 schema authority)
 
 Current snapshots are behavior evidence, not target protocol authority. Classifications use the #11802 corrected vocabulary: incumbent_defect_corrected_by_candidate | candidate_defect | public_api_only_difference | schema_equivalent_representation_difference | intentional_repository_extension | not_proven.
@@ -138,3 +121,19 @@ Current snapshots are behavior evidence, not target protocol authority. Classifi
 | DELTA-NULL-ABSENT| null vs absent wire states on optional fields| skip_serializing_if carried on 448 lines across 0.97 src| 498 skip_serializing_if = "Option::is_none" occurrences in structures.rs; explicit null only where metamodel requires| schema_equivalent_representation_difference| distinct wire states preserved on both sides; do not flatten null-vs-absent during migration (#11802 falsifier 8) |
 | DELTA-DIRECTION-MODEL| request/notification direction types| 0.97 request.rs/notification.rs trait-based declarations| dedicated generated requests.rs / notifications.rs modules encoding method direction| schema_equivalent_representation_difference| #8896 route/method dispatch authority unchanged by this inventory; direction typing is a compile-time aid only |
 
+## 6. Manual-extension registry (beyond section 3 patch rows)
+
+| Row ID | Anchor | Seam behavior | Disposition | Owner |
+| --- | --- | --- | --- | --- |
+| SEAM-EXPERIMENTAL-TYPEHIERARCHY| crates/perl-lsp-rs-core/src/protocol/capabilities/experimental.rs:10 insert_experimental_capability| injects experimental.typeHierarchyProvider=true into the typed ServerCapabilities.experimental value because the default 0.97 surface cannot carry the typed field; detection support in capability_map.rs reads it back| selected_substrate_manual_schema_extension| #11803 removes the workaround when the adapter serializes the typed field; keep negative gate for experimental.inlineCompletionProvider |
+| SEAM-CAPMAP-DETECTION| crates/perl-lsp-rs-core/src/capability_map.rs feature_ids_from_caps experimental readback (test pin ~line 505)| maps client capability objects back to feature ids, including the type-hierarchy-via-experimental workaround path| compatibility_with_exit| #11803 exit together with SEAM-EXPERIMENTAL-TYPEHIERARCHY; detection of real typed fields replaces the workaround branch |
+| SEAM-RUNTIME-DYNAMIC-INLINECOMPLETION| crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs dynamic-client removal (~lines 781-815)| strips top-level inlineCompletionProvider from initialize output when the client opts into dynamic registration; behavioral protocol logic independent of which crate supplies the type| adapter_protocol_type| stays in lifecycle code through LT02/LT03; only its input type changes with #11803 |
+
+## 7. Derived downstream denominators
+
+Mechanically derived from this matrix; no re-research needed:
+
+- **LT02 / #11803 migration population:** 2 surviving direct Cargo edges (`adapter_protocol_type`: perl-lsp-rs, perl-lsp-rs-core) carrying 2 public nominal re-export anchors (`ServerCapabilities` at perl-lsp-rs-core/src/protocol/capabilities.rs:23, `Location` at perl-lsp-rs-core/src/providers/navigation/mod.rs:58), 3 typed-once patch rows, plus SEAM-RUNTIME-DYNAMIC-INLINECOMPLETION as a type-consumer. Doomed edges excluded: 3 (`lower_wire_remove_before_switch`, owners #9632/#9893).
+- **LT03 / #11804 representation convergence:** 7 manual-extension rows total (4 patches + 3 seams), 11 serialization-delta rows to converge, URI submatrix decision (DELTA-URI-DEFAULT/URL/FLUENT) with #8156/#8484 proof obligations.
+- **LT04 / #11805 proof closure:** 15 snapshot/contract falsifier files currently assert patched bytes (mechanically counted under crates/*/tests against needles: typeHierarchyProvider, rangesSupport, inlineCompletionProvider, insertTextModes). Wire-neutrality guards stay authoritative: crates/perl-workspace-core/tests/dependency_contract.rs (forbids lsp-types below the adapter) and the perl-ripr-facts manifest contract comment (deliberately avoids perl-workspace because it transitively pulls lsp-types).
+- Changing any needle, patch row, or seam above must flip the matching falsifier population; a silent zero-count is `not_proven`, never green.

@@ -674,20 +674,18 @@ const EXTENSION_SEAMS: &[ExtensionSeamRow] = &[
 const PATCH_FIELD_NEEDLES: &[&str] =
     &["typeHierarchyProvider", "rangesSupport", "inlineCompletionProvider", "insertTextModes"];
 
-/// Distinct test files under crates/*/tests referencing any patched field.
+/// Distinct test files under crates/*/tests (nested test directories
+/// included, any depth below a crate's tests dir) referencing any patched
+/// field.
 fn count_falsifier_files(root: &Path) -> Result<Vec<String>> {
     let crates_dir = root.join("crates");
     let mut matches = std::collections::BTreeSet::new();
-    for entry in walkdir::WalkDir::new(&crates_dir).max_depth(3).into_iter().filter_map(Result::ok)
-    {
+    for entry in walkdir::WalkDir::new(&crates_dir).into_iter().filter_map(Result::ok) {
         let path = entry.path();
-        let is_test = path.extension().and_then(std::ffi::OsStr::to_str) == Some("rs")
-            && path
-                .parent()
-                .and_then(|parent| parent.file_name())
-                .map(|name| name == std::ffi::OsStr::new("tests"))
-                == Some(true);
-        if !is_test || !entry.file_type().is_file() {
+        let is_test = entry.file_type().is_file()
+            && path.extension().and_then(std::ffi::OsStr::to_str) == Some("rs")
+            && path.iter().any(|component| component == std::ffi::OsStr::new("tests"));
+        if !is_test {
             continue;
         }
         let contents = fs::read_to_string(path)
@@ -707,6 +705,16 @@ fn render_downstream_section(denominator: &Denominator, falsifier_files: &[Strin
     let mut output = String::new();
     let lt02_edges =
         denominator.edges.iter().filter(|edge| edge.disposition == "adapter_protocol_type").count();
+    let lt02_adapter_names = {
+        let mut names: Vec<&str> = denominator
+            .edges
+            .iter()
+            .filter(|edge| edge.disposition == "adapter_protocol_type")
+            .map(|edge| edge.package.as_str())
+            .collect();
+        names.sort_unstable();
+        if names.is_empty() { "none".to_string() } else { names.join(", ") }
+    };
     let doomed_edges = denominator
         .edges
         .iter()
@@ -733,8 +741,8 @@ fn render_downstream_section(denominator: &Denominator, falsifier_files: &[Strin
     output.push_str("## 7. Derived downstream denominators\n\n");
     output.push_str("Mechanically derived from this matrix; no re-research needed:\n\n");
     output.push_str(&format!(
-        "- **LT02 / #11803 migration population:** {} surviving direct Cargo edges (`adapter_protocol_type`: perl-lsp-rs, perl-lsp-rs-core) carrying 2 public nominal re-export anchors (`ServerCapabilities` at perl-lsp-rs-core/src/protocol/capabilities.rs:23, `Location` at perl-lsp-rs-core/src/providers/navigation/mod.rs:58), {} typed-once patch rows, plus SEAM-RUNTIME-DYNAMIC-INLINECOMPLETION as a type-consumer. Doomed edges excluded: {} (`lower_wire_remove_before_switch`, owners #9632/#9893).\n",
-        lt02_edges, typed_once, doomed_edges
+        "- **LT02 / #11803 migration population:** {} surviving direct Cargo edges (`adapter_protocol_type`: {}) carrying 2 public nominal re-export anchors (`ServerCapabilities` at perl-lsp-rs-core/src/protocol/capabilities.rs:23, `Location` at perl-lsp-rs-core/src/providers/navigation/mod.rs:58), {} typed-once patch rows, plus SEAM-RUNTIME-DYNAMIC-INLINECOMPLETION as a type-consumer. Doomed edges excluded: {} (`lower_wire_remove_before_switch`, owners #9632/#9893).\n",
+        lt02_edges, lt02_adapter_names, typed_once, doomed_edges
     ));
     output.push_str(&format!(
         "- **LT03 / #11804 representation convergence:** {} manual-extension rows total ({} patches + {} seams), {} serialization-delta rows to converge, URI submatrix decision (DELTA-URI-DEFAULT/URL/FLUENT) with #8156/#8484 proof obligations.\n",
@@ -745,9 +753,11 @@ fn render_downstream_section(denominator: &Denominator, falsifier_files: &[Strin
         falsifier_files.len(),
         PATCH_FIELD_NEEDLES.join(", ")
     ));
+    // Final section of the document: ends with exactly one trailing newline so
+    // the generated artifact never carries a blank line at EOF.
     output.push_str(
         "- Changing any needle, patch row, or seam above must flip the matching falsifier population; \
-         a silent zero-count is `not_proven`, never green.\n\n",
+         a silent zero-count is `not_proven`, never green.\n",
     );
 
     output
@@ -873,7 +883,6 @@ fn render_matrix(denominator: &Denominator, falsifier_files: &[String]) -> Strin
     output.push('\n');
 
     output.push_str(&render_denominator_section(denominator));
-    output.push_str(&render_downstream_section(denominator, falsifier_files));
 
     output.push_str("## 5. Serialization/API delta matrix vs incumbent 0.97 (classified against #7113 schema authority)\n\n");
     output.push_str(
@@ -901,6 +910,10 @@ fn render_matrix(denominator: &Denominator, falsifier_files: &[String]) -> Strin
         output.push_str(" |\n");
     }
     output.push('\n');
+
+    // Sections 6-7 render last so document sections ascend numerically; this
+    // is also the document tail, so it owns the single trailing newline.
+    output.push_str(&render_downstream_section(denominator, falsifier_files));
 
     output
 }
@@ -1218,17 +1231,71 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let crates = dir.path().join("crates").join("demo");
         std::fs::create_dir_all(crates.join("tests")).expect("mkdir tests");
+        std::fs::create_dir_all(crates.join("tests").join("nested").join("deeper"))
+            .expect("mkdir nested tests");
         std::fs::create_dir_all(crates.join("src")).expect("mkdir src");
         std::fs::write(
             crates.join("tests").join("contract.rs"),
             "assert!(caps[\"rangesSupport\"].is_object());",
         )
         .expect("write test file");
+        std::fs::write(
+            crates.join("tests").join("nested").join("deeper").join("helpers.rs"),
+            "pub fn probe() { let _ = \"typeHierarchyProvider\"; }",
+        )
+        .expect("write nested test file");
         std::fs::write(crates.join("src").join("lib.rs"), "fn x() { let _ = 1; }")
             .expect("write src file");
         let found =
             count_falsifier_files(dir.path()).expect("scan must succeed on tempdir fixture");
-        assert_eq!(found, vec!["crates/demo/tests/contract.rs".to_string()]);
+        assert_eq!(
+            found,
+            vec![
+                "crates/demo/tests/contract.rs".to_string(),
+                "crates/demo/tests/nested/deeper/helpers.rs".to_string(),
+            ]
+        );
+    }
+
+    /// Sections must ascend numerically and the document must end with exactly
+    /// one trailing newline (no blank line at EOF).
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn rendered_sections_ascending_and_single_trailing_newline() {
+        let rendered = render_matrix(&fixture_denominator(), &fixture_falsifiers());
+        let position = |needle: &str| rendered.find(needle).expect("matrix missing section header");
+        let four = position("## 4. Resolved Cargo denominator");
+        let five = position("## 5. Serialization/API delta matrix");
+        let six = position("## 6. Manual-extension registry");
+        let seven = position("## 7. Derived downstream denominators");
+        assert!(four < five && five < six && six < seven, "sections render out of order");
+        assert!(rendered.ends_with('\n'), "document must end with a newline");
+        assert!(!rendered.ends_with("\n\n"), "document must not end with a blank line");
+    }
+
+    /// The LT02 adapter-crate list is derived from the classified denominator,
+    /// not a hardcoded literal.
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn lt02_adapter_names_derive_from_classified_edges() {
+        let mut denominator = fixture_denominator();
+        denominator.edges.push(EdgeRow {
+            package: "perl-lsp-rs".to_string(),
+            dep_kind: "normal".to_string(),
+            profile_class: "production",
+            gate: "-".to_string(),
+            disposition: "adapter_protocol_type",
+            removal_owner: "#11803 migration".to_string(),
+        });
+        let downstream = render_downstream_section(&denominator, &fixture_falsifiers());
+        let lt02_line = downstream
+            .lines()
+            .find(|line| line.starts_with("- **LT02 / #11803 migration population:**"))
+            .expect("LT02 population bullet must exist");
+        assert!(
+            lt02_line.contains("`adapter_protocol_type`: perl-lsp-rs, perl-lsp-rs-core"),
+            "adapter names must be derived from classified edges: {lt02_line}"
+        );
     }
 
     #[test]
