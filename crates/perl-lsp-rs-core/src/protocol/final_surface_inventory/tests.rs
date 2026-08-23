@@ -300,6 +300,118 @@ fn negative_control_compatibility_with_wrong_disposition_fails_render() {
     );
 }
 
+/// RIPR discriminator (#9662 repair): a mutation row flipping away from the
+/// static disposition must be rejected by the coverage checker.
+#[test]
+fn negative_control_mutation_with_wrong_disposition_fails_render() {
+    let rows: Vec<SurfaceRow> = final_surface_rows()
+        .into_iter()
+        .map(|row| {
+            if row.surface_id == "mut.handle_initialize.textDocumentSyncOverride" {
+                let mut wrong = row.clone();
+                wrong.disposition = Disposition::Dynamic;
+                wrong
+            } else {
+                row
+            }
+        })
+        .collect();
+    let error =
+        render_with_rows(&rows).expect_err("mutation rows must retain the static disposition");
+    assert!(
+        error.problems.iter().any(|problem| {
+            problem
+                .contains("malformed mutation row mut.handle_initialize.textDocumentSyncOverride")
+                && problem.contains("disposition must be static")
+        }),
+        "wrong mutation disposition must be rejected, got: {error}"
+    );
+}
+
+/// RIPR discriminator (#9662 repair): a command row flipping away from the
+/// static disposition must be rejected by the coverage checker. Command rows
+/// exist only on the host target (wasm omits execute-command advertisement).
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn negative_control_command_with_wrong_disposition_fails_render() {
+    let rows: Vec<SurfaceRow> = final_surface_rows()
+        .into_iter()
+        .map(|row| {
+            if row.surface_id == "cmd.perl.runTests" {
+                let mut wrong = row.clone();
+                wrong.disposition = Disposition::Unadvertised;
+                wrong
+            } else {
+                row
+            }
+        })
+        .collect();
+    let error =
+        render_with_rows(&rows).expect_err("command rows must retain the static disposition");
+    assert!(
+        error.problems.iter().any(|problem| {
+            problem.contains("malformed command row cmd.perl.runTests")
+                && problem.contains("disposition must be static")
+        }),
+        "wrong command disposition must be rejected, got: {error}"
+    );
+}
+
+/// RIPR discriminator (#9662 repair): a registration row that is *not* a
+/// dynamic registration (an unadvertised finding) must keep the unadvertised
+/// disposition; any other disposition is rejected.
+#[test]
+fn negative_control_unadvertised_registration_finding_with_wrong_disposition_fails_render() {
+    let rows: Vec<SurfaceRow> = final_surface_rows()
+        .into_iter()
+        .map(|row| {
+            if row.surface_id == "reg.client-unregisterCapability" {
+                let mut wrong = row.clone();
+                wrong.disposition = Disposition::Static;
+                wrong
+            } else {
+                row
+            }
+        })
+        .collect();
+    let error = render_with_rows(&rows)
+        .expect_err("non-dynamic registration findings must stay unadvertised");
+    assert!(
+        error.problems.iter().any(|problem| {
+            problem.contains("malformed registration row reg.client-unregisterCapability")
+                && problem.contains("unadvertised finding disposition must be unadvertised")
+        }),
+        "wrong unadvertised-finding disposition must be rejected, got: {error}"
+    );
+}
+
+/// RIPR discriminator (#9662 repair): a refresh-request row flipping away
+/// from the dynamic disposition must be rejected by the coverage checker.
+#[test]
+fn negative_control_refresh_request_with_wrong_disposition_fails_render() {
+    let rows: Vec<SurfaceRow> = final_surface_rows()
+        .into_iter()
+        .map(|row| {
+            if row.surface_id == "ref.workspace/codeLens/refresh" {
+                let mut wrong = row.clone();
+                wrong.disposition = Disposition::Static;
+                wrong
+            } else {
+                row
+            }
+        })
+        .collect();
+    let error =
+        render_with_rows(&rows).expect_err("refresh rows must retain the dynamic disposition");
+    assert!(
+        error.problems.iter().any(|problem| {
+            problem.contains("malformed refresh row ref.workspace/codeLens/refresh")
+                && problem.contains("disposition must be dynamic")
+        }),
+        "wrong refresh disposition must be rejected, got: {error}"
+    );
+}
+
 #[test]
 fn negative_control_hidden_mutation_must_be_ledgered() {
     // The runtime mutation surface is discriminated end-to-end by the
