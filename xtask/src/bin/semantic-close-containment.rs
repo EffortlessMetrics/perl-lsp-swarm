@@ -1041,9 +1041,23 @@ fn has_semantic_close_packet(
     contract.lines().any(|line| {
         let lower = line.to_ascii_lowercase();
         let has_marker = lower.contains("semantic close packet") || lower.contains("close packet");
-        let negated = ["not supplied", "not provided", "missing", "absent", "without"]
-            .iter()
-            .any(|marker| lower.contains(marker));
+        let negated = [
+            "not supplied",
+            "not provided",
+            "missing",
+            "absent",
+            "without",
+            "unavailable",
+            "not available",
+            "not included",
+            "not present",
+            "does not include",
+            "doesn't include",
+            "no semantic close packet",
+            "no close packet",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker));
         let has_concrete_reference = lower.split_once(':').is_some_and(|(_, reference)| {
             reference.contains('/') || reference.contains(".json") || reference.contains("https://")
         });
@@ -1711,6 +1725,18 @@ mod tests {
             MAX_PR_BODY_BYTES,
         )?;
         assert!(!has_semantic_close_packet(&negated_packet, &key, current_repository));
+
+        let unavailable_packet = parse_sections(
+            "## Governing contract\nSemantic close packet for #8035: unavailable at `.spec/8035/issue-close-proof.json`.\n",
+            MAX_PR_BODY_BYTES,
+        )?;
+        assert!(!has_semantic_close_packet(&unavailable_packet, &key, current_repository));
+
+        let absent_packet = parse_sections(
+            "## Governing contract\nNo semantic close packet is available for #8035: `.spec/8035/issue-close-proof.json`.\n",
+            MAX_PR_BODY_BYTES,
+        )?;
+        assert!(!has_semantic_close_packet(&absent_packet, &key, current_repository));
 
         let packet = parse_sections(
             "## Governing contract\nSemantic close packet for #8035: `.spec/8035/issue-close-proof.json`.\n",
