@@ -98,7 +98,10 @@ def check_authority(root: Path, text: str | None = None) -> list[str]:
 
     policy = catalog.get("policy") or {}
     evidence_policy = policy.get("evidence") or {}
+    # Single authority: the TOML-declared qualifying set drives promotion
+    # checks; the module constant is only the fallback when policy omits it.
     declared_qualifying = set(evidence_policy.get("qualifying_classes") or [])
+    qualifying_classes = declared_qualifying or QUALIFYING_EVIDENCE_CLASSES
     non_qualifying_tests = set(evidence_policy.get("non_qualifying_tests") or [])
     promotion = policy.get("promotion") or {}
     for feature_class in FEATURE_CLASSES:
@@ -151,10 +154,10 @@ def check_authority(root: Path, text: str | None = None) -> list[str]:
         # Promotion rules: advertisement, implementation paths, and test-file
         # names can never independently yield proven.
         if maturity == "proven":
-            if evclass not in QUALIFYING_EVIDENCE_CLASSES:
+            if evclass not in qualifying_classes:
                 problems.append(
                     f"{fid}: proven requires qualifying evidence class "
-                    f"({sorted(QUALIFYING_EVIDENCE_CLASSES)}), has {evclass!r}; "
+                    f"({sorted(qualifying_classes)}), has {evclass!r}; "
                     "advertisement alone cannot promote"
                 )
             if owner in (None, "", "unrecorded"):
@@ -177,10 +180,7 @@ def check_authority(root: Path, text: str | None = None) -> list[str]:
 
             class_policy = promotion.get(row.get("feature_class") or "") or {}
             minimum = class_policy.get("minimum_evidence_class")
-            if (
-                minimum is not None
-                and minimum not in QUALIFYING_EVIDENCE_CLASSES
-            ):
+            if minimum is not None and minimum not in qualifying_classes:
                 problems.append(
                     f"{fid}: promotion policy for {row.get('feature_class')} "
                     f"is misconfigured: {minimum!r}"
@@ -277,7 +277,9 @@ def negative_control_fixtures() -> dict[str, str]:
         test="tests/real_behavior.rs",
     )
     return {
-        "drift": BASE_HEADER + "\n" + good_row,
+        # Schema-level controls; projection-drift is covered separately in
+        # run_self_test via a sandbox pair of authority + drifted copy.
+        "missing_receipt_path": BASE_HEADER + "\n" + good_row,
         "advertised_only_promotion": BASE_HEADER
         + "\n"
         + MINIMAL_ROW.format(
