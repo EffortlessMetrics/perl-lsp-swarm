@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 7276,
-  "reason": "#7276 ptkdb claim-boundary candidate: package.json grows 58306->58690 bytes (external-peer manifest copy) and out/extension.js grows 1462804->1465391 bytes (fail-closed dangling externalDebugger rejection); every other packaged entry is byte-identical after normalizing vsce archive asset names.",
-  "base_baseline_file_sha256": "7d24b2a9cc9653790b955a84124949a15d0f1cfa2e1994964f8e0c818d76f71c",
-  "candidate_baseline_file_sha256": "86d37aec8d47610d247c297a2b9c1592419fb8e6ea301de42318006a93c8d690",
-  "base_inventory_sha256": "a18d9dc92dec8337e1885300530d30f3b179044e648da7c9b7df3cc24f2a8a13",
-  "candidate_inventory_sha256": "9ffef8327470dc624893f58b6ca0ac5b04262acebc7ea9d6eaed77fed657373e"
+  "owner_issue": 10200,
+  "reason": "#10200 baseline truth repair: tighten package.json 58690->58529 to the true current size (removing unreviewed headroom absorbed by earlier whole-file bumps); record changelog.md at the archive-measured 19955 (vsce markdown processor rewrites the two now-absolute release-note links; +4 vs the prior 19951 entry). Archive-normalized asset names retained; no file added, removed, or loosened; total recomputed 1638716->1638559.",
+  "base_baseline_file_sha256": "86d37aec8d47610d247c297a2b9c1592419fb8e6ea301de42318006a93c8d690",
+  "candidate_baseline_file_sha256": "bfbb9fe83b3f9dd3465e499f5feae63f35fee687a12c03b295604cac8dd20802",
+  "base_inventory_sha256": "9ffef8327470dc624893f58b6ca0ac5b04262acebc7ea9d6eaed77fed657373e",
+  "candidate_inventory_sha256": "ed86013c61244f07baa66243e70a574a99a79440f6fdfa04de546ceb0f45cd9e"
 }
