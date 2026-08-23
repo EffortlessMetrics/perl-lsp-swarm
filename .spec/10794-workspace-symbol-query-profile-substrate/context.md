@@ -66,8 +66,41 @@ All sites live at `main@ab3cece9d`; counts are exact.
 6. **Generated/framework**: `WorkspaceIndex::search_generated_workspace_symbols`
    (4208–4285): `matches_query_text` closure + `sort_workspace_symbols`;
    browse (trimmed-empty) queries return an empty vec here by design.
+7. **Open-document text-fallback branch** — discovered during repair review,
+   absent from the original inventory above (inventory-completeness defect of
+   this packet, fixed here): `perl-lsp-rs/src/fallback/text.rs:178-201`
+   `extract_text_based_symbols` lowercases the raw query independently
+   (`query.to_lowercase()`, no trim), admits by folded substring containment
+   only (no short-query gate, no subsequence tier), and its rows join the
+   same logical open-document response as P3 via
+   `runtime/workspace.rs::search_open_documents_for_symbols` (:638) →
+   `runtime/document_access.rs:226`. Live reachability:
+   `handle_workspace_symbols_v2` (:423 stale-index skip, :528 empty-index
+   fall-through).
 
-### C. Untouched by this PR (owned elsewhere)
+### C. Disposition of site 7 (recorded decision, not silently migrated)
+
+Site 7 is in-scope by this issue's own rows (it serves the open-document
+response), but Q01's parity mandate forbids migrating it onto
+`match_searchable_key` this slice: its admission is untrimmed, ungated,
+contains-only, which differs from every admitted profile-tier combination for
+(a) whitespace-padded queries, (b) one-char queries, and (c) whitespace-browse
+queries — three externally visible membership changes that would require
+separately named correction fixtures this PR does not plan. Growing a new
+ungated/untrimmed owner operation would exceed Q01's stated profile contract
+and put a second admission authority inside the fresh owner for one degraded
+branch. Per the #9147/#9888 orphan precedent it is therefore inventoried with
+exact owner/handoff instead:
+
+- owner/handoff: response assembly and per-path matcher consolidation belong
+  to #10645/#10642; a parity-correct migration must land with a named
+  correction fixture (or preserve membership bit-for-bit) when those stages
+  touch the open-document composer;
+- until then WS-QP-014 keeps its recorded scope: full-vs-accelerated index
+  tiers of one logical request share one compiled digest (P1); site 7 remains
+  a known independent normalizer inside the degraded open-document response.
+
+### D. Untouched by this PR (owned elsewhere)
 
 - Orphan parser-local provider tree: owned by #9147/#9888; not edited.
 - `perl-symbol::SymbolIndex::search_prefix/search_fuzzy`: accelerator-only

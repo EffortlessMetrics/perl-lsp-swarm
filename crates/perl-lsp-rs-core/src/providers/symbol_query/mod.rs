@@ -1,24 +1,23 @@
-//! Query matching and ranking helpers for workspace symbol search.
+//! Query matching helpers for workspace symbol search.
 //!
-//! This crate has a single responsibility: provide reusable matching and
-//! ranking primitives used by LSP symbol-search providers.
+//! This crate has a single responsibility: provide reusable matching
+//! primitives used by LSP symbol-search providers.
 //!
 //! # Ownership (#10794)
 //!
 //! Query policy moved above `perl-symbol`: admission, tiers, digests, and the
 //! canonical evidence comparator live in
-//! [`perl_workspace::workspace_symbol_query`]. The functions here are thin
-//! forwarding shims kept only so existing call sites and their test suites
-//! keep compiling; they add no policy of their own. Canonical paths should
+//! [`perl_workspace::workspace_symbol_query`]. The function here is a thin
+//! forwarding shim kept only so existing call sites and their test suites
+//! keep compiling; it adds no policy of its own. Canonical paths should
 //! consume the compiled [`WorkspaceSymbolQueryProfile`] directly.
 //!
-//! Compatibility note: `compare_names_by_query` reproduces the legacy numeric
-//! fallback where a non-match shared the subsequence slot during *sorting*.
-//! Live provider paths filter non-matches before sorting, so no admitted row
-//! is affected; this shim disappears when consumers migrate to evidence-based
-//! aggregation (#10645/#10642).
-
-use std::cmp::Ordering;
+//! `compare_names_by_query` was removed in the #10794 repair review: after
+//! both provider paths migrated to evidence-based sorting it had zero
+//! production callers, and its legacy total-order reproduction was divergent
+//! for loose-ineligible queries (an admitted-set substring fell into the
+//! non-match slot). Ordering coverage lives at the canonical owner
+//! (`WorkspaceSymbolMatchEvidence::compare`).
 
 use perl_workspace::workspace_symbol_query::{
     WorkspaceSymbolQueryProfile, WorkspaceSymbolSearchKeyRole as KeyRole, match_searchable_key,
@@ -38,38 +37,9 @@ pub fn matches_query(name: &str, query: &str) -> bool {
     match_searchable_key(&profile, name, KeyRole::Other).is_some()
 }
 
-/// Compares two symbol names by query relevance.
-///
-/// Forwarding shim over the canonical owner (#10794). Ordering (highest to
-/// lowest relevance): exact, prefix, substring, then subsequence-or-non-match
-/// at the legacy fallback slot; within the same slot, shorter raw names first,
-/// lexicographic order last.
-///
-/// Non-matches never reach live sorts (admission filters first); the fallback
-/// slot here exists purely to reproduce the legacy total order bit-for-bit
-/// until consumers migrate to evidence aggregation (#10645/#10642).
-#[must_use]
-pub fn compare_names_by_query(a: &str, b: &str, query: &str) -> Ordering {
-    let profile = WorkspaceSymbolQueryProfile::compile(query);
-    let evidence_a = match_searchable_key(&profile, a, KeyRole::Other);
-    let evidence_b = match_searchable_key(&profile, b, KeyRole::Other);
-
-    // Legacy slots: exact 0 < prefix 1 < substring 2 < subsequence/non-match 3.
-    let slot = |evidence: Option<
-        &perl_workspace::workspace_symbol_query::WorkspaceSymbolMatchEvidence,
-    >| { evidence.map_or(3, |e| e.tier() as u8) };
-    match slot(evidence_a.as_ref()).cmp(&slot(evidence_b.as_ref())) {
-        Ordering::Equal => match a.len().cmp(&b.len()) {
-            Ordering::Equal => a.cmp(b),
-            len_ord => len_ord,
-        },
-        tier_ord => tier_ord,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{compare_names_by_query, matches_query};
+    use super::matches_query;
     use proptest::prelude::*;
 
     #[test]
@@ -86,12 +56,6 @@ mod tests {
         assert!(matches_query("foobar", "  foo  "));
         assert!(matches_query("foobar", "  fb  "));
         assert!(matches_query("anything", "   "));
-    }
-
-    #[test]
-    fn query_ranking_ignores_outer_whitespace() {
-        let ordered = compare_names_by_query("foo", "foobar", "  foo  ");
-        assert!(ordered.is_lt(), "exact trimmed query match must rank before prefix match");
     }
 
     #[test]
@@ -150,55 +114,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn relevance_prefers_exact_then_prefix_then_name_order() {
-        let mut names = ["foxtrot", "foo", "foobar", "alpha"];
-        names.sort_by(|a, b| compare_names_by_query(a, b, "foo"));
-
-        assert_eq!(names, ["foo", "foobar", "alpha", "foxtrot"]);
-    }
-
-    #[test]
-    fn contains_matches_rank_above_fuzzy_matches() {
-        // "get_bar" contains "bar" (tier 2)
-        // "baz_art" has "bar" as subsequence b-a-z-a-r-t: b..a..r (tier 3)
-        let mut names = ["baz_art", "get_bar"];
-        names.sort_by(|a, b| compare_names_by_query(a, b, "bar"));
-
-        assert_eq!(names[0], "get_bar", "substring match should rank above fuzzy");
-    }
-
-    #[test]
-    fn exact_match_beats_everything() {
-        let mut names = ["get_log", "getLogger", "log", "logging"];
-        names.sort_by(|a, b| compare_names_by_query(a, b, "log"));
-
-        assert_eq!(names[0], "log", "exact match should be first");
-    }
-
-    #[test]
-    fn shorter_names_preferred_within_same_tier() {
-        // Both are prefix matches (tier 1), shorter should come first
-        let mut names = ["foobarqux", "foobar"];
-        names.sort_by(|a, b| compare_names_by_query(a, b, "foo"));
-
-        assert_eq!(names[0], "foobar");
-        assert_eq!(names[1], "foobarqux");
-    }
-
-    #[test]
-    fn four_tier_ranking_order() {
-        // exact=0, prefix=1, contains=2, fuzzy=3
-        // "lxoxg" is a fuzzy match for "log" (l..o..g subsequence)
-        let mut names = ["get_log", "lxoxg", "log", "logger"];
-        names.sort_by(|a, b| compare_names_by_query(a, b, "log"));
-
-        assert_eq!(names[0], "log", "tier 0: exact");
-        assert_eq!(names[1], "logger", "tier 1: prefix");
-        assert_eq!(names[2], "get_log", "tier 2: contains");
-        assert_eq!(names[3], "lxoxg", "tier 3: fuzzy");
-    }
-
     proptest! {
         #[test]
         fn case_insensitive_matching_is_equivalent(name in "[a-zA-Z]{1,24}", query in "[a-zA-Z]{0,12}") {
@@ -206,14 +121,6 @@ mod tests {
             let actual = matches_query(&name.to_uppercase(), &query.to_lowercase());
 
             prop_assert_eq!(actual, expected);
-        }
-
-        #[test]
-        fn comparison_is_antisymmetric(a in "[a-zA-Z_]{1,20}", b in "[a-zA-Z_]{1,20}", query in "[a-zA-Z]{0,10}") {
-            let ab = compare_names_by_query(&a, &b, &query);
-            let ba = compare_names_by_query(&b, &a, &query);
-
-            prop_assert_eq!(ab, ba.reverse());
         }
     }
 }

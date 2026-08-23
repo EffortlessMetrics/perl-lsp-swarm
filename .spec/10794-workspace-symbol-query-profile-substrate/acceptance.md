@@ -78,6 +78,35 @@ examined, matches by tier, nonmatches, full-vs-accelerated profile equality,
 profile-mismatch rejections, normalization limitations note. Absence of a
 counter is reported as `not_proven`.
 
+Live instrumentation status (repair review): `WorkspaceSymbolQueryWork` /
+`WorkspaceSymbolQueryWorkReceipt` are owner-level types with no production
+caller yet, so no live counter is asserted. What IS wired live today: the
+`workspace/symbol` v2 canonical index request emits its compiled
+`query_profile_version` + `query_profile_digest` on its decision trace.
+`profiles_compiled_per_request == 1` is **not_proven** live: it holds
+structurally on the v2 index path (one compiled instance feeds both index
+tiers), but provider entry points (`search`, `search_with_candidates`) still
+take `&str` and compile internally, so degraded/open-document requests may
+compile more than once per logical request. Per M12 semantics this is
+recorded `not_proven`, never zero.
+
+## Repair-review addendum (post-CHANGES_REQUIRED)
+
+- Inventory defect fixed: open-document text-fallback matcher site 7
+  (`fallback/text.rs:178-201`) recorded in context.md with disposition —
+  inventoried with handoff to #10645/#10642, not migrated this slice (parity:
+  untrimmed/ungated contains-only admission diverges from all admitted tier
+  combinations; migration requires named correction fixtures out of Q01
+  scope).
+- `symbol_query::compare_names_by_query` deleted instead of kept alive by its
+  own tests: zero production callers after the P2/P3 evidence-sort migration,
+  and its legacy-slot mapping was divergent for loose-ineligible queries
+  (spec rule: removed or forwarding-only with exact exits). Ordering coverage
+  remains at the canonical owner comparator tests.
+- Digest field list in checklist.md corrected: browse flag and loose
+  eligibility are functions of the folded bytes/version/policy id and are not
+  separate digest inputs.
+
 ## Handoffs
 
 - #10645 consumes `match_searchable_key` evidence + comparator without

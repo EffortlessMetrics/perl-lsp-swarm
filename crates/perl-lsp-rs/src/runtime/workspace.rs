@@ -405,7 +405,16 @@ impl LspServer {
         let query_profile =
             perl_workspace::workspace_symbol_query::WorkspaceSymbolQueryProfile::compile(query);
 
-        tracing::debug!(query, cap, "Workspace symbol search v2");
+        // Bounded query-profile observability (#10794): the canonical index
+        // request emits its compiled profile identity. Per-request compile
+        // counts stay `not_proven` until receipt wiring lands (#10645/#10642).
+        tracing::debug!(
+            query,
+            cap,
+            query_profile_version = query_profile.version(),
+            query_profile_digest = query_profile.digest(),
+            "Workspace symbol search v2"
+        );
 
         // Use routing helper for lifecycle-aware dispatch
         #[cfg(feature = "workspace")]
