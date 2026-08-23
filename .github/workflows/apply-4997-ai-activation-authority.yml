@@ -160,7 +160,6 @@ jobs:
               '        let mut config = ServerConfig::default();\n'
               '        config.ai_completion.user_enabled = true;\n'
               '        recompute_ai_completion_effective(&mut config.ai_completion);\n',
-              count=2,
           )
 
           '''
