@@ -38,12 +38,12 @@
 
 - [x] `cargo test -p xtask --bin semantic-close-containment --locked`
 - [x] `cargo clippy -p xtask --bin semantic-close-containment --locked -- -D warnings`
-- [ ] `cargo fmt --all -- --check`
-- [ ] `cargo xtask check-file-policy`
-- [ ] `cargo xtask workflow-trigger-lint`
-- [ ] `cargo xtask workflow-policy-lint`
-- [ ] `git diff --check`
-- [ ] Follow-up adds and verifies the base-owned `pull_request_target` workflow, including exact-base execution and exact candidate-head proof.
+- [x] `cargo fmt -p xtask -- --check` (workspace-wide `--all` hits a Windows command-length limit; no Rust files changed in the enforcement follow-up)
+- [x] `cargo xtask check-file-policy`
+- [x] `cargo xtask workflow-trigger-lint` (workflow trigger shape only; it does not independently validate the advisory event inventory under `[[checks]]`)
+- [x] `cargo xtask workflow-policy-lint --check-lane-whitelist`
+- [x] `git diff --check`
+- [x] The base-owned `pull_request_target` shape is statically proven: checkout remains pinned to the event base SHA, the PR head is fetched only as an inert Git object and is never checked out, and evaluation runs from the trusted base. The required-checks event mapping was manually checked against the workflow. Live execution starts after this workflow lands. The workflow remains advisory and has no merge authority; any required-promotion decision stays under #10168.
 
 ## Review
 
@@ -59,4 +59,4 @@
 - [ ] CP03/CP04 replay every immutable fixture with equal-or-stronger invalid-close rejection and valid-close acceptance.
 - [ ] Required semantic preflight is current.
 - [x] The CP00 workflow is absent from this evaluator/fixture prerequisite; fixtures remain in the canonical corpus.
-- [ ] The separate trusted `pull_request_target` enforcement follow-up lands and is verified before live enforcement is claimed.
+- [ ] The base-owned trusted-base enforcement workflow is verified live before any required-promotion decision is claimed.

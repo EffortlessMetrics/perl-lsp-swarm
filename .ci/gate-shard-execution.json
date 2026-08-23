@@ -35,6 +35,7 @@
     "docs_build": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "adr_link_check": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "non_rust_inventory_check": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
+    "lint_policy": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "v2_bundle_sync": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "nested_lock_check": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "version_sync": {"requires": [], "on_dependency_failure": "blocked_not_proven"}

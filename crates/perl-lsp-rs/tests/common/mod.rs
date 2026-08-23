@@ -7,10 +7,12 @@
 //! - **Response Matching**: Match by ID for request/response pairing
 //! - **Timeouts**: Configurable via env vars, with sensible defaults
 //! - **Quiet Drain**: Wait for server to settle after changes before assertions
-//! - **Portable Spawn**: PERL_LSP_BIN -> canonical perllsp artifact (pre-built
-//!   on miss, honoring CARGO_TARGET_DIR) -> PATH. Never a compile-at-runtime
-//!   fallback: a cargo invocation inside the handshake deadline is the #11848
-//!   stall family, so resolution ends in a loud failure instead.
+//! - **Portable Spawn**: PERL_LSP_BIN -> active-profile perllsp artifact
+//!   (pre-built on miss, honoring CARGO_TARGET_DIR; opposite-profile
+//!   leftovers are refused, never reused) -> PATH. Never a
+//!   compile-at-runtime fallback: a cargo invocation inside the handshake
+//!   deadline is the #11848 stall family, so resolution ends in a loud
+//!   failure instead.
 //!
 //! ## Environment Variables
 //!
@@ -42,7 +44,7 @@ pub mod test_reliability;
 pub mod timeout_scaler;
 
 // Extracted submodules
-mod binary_resolution;
+pub(crate) mod binary_resolution;
 mod handshake;
 pub mod protocol_io;
 

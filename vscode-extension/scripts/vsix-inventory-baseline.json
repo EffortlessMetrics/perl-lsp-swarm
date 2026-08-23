@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "total_files": 29,
-  "total_bytes": 1635609,
+  "total_bytes": 1635745,
   "files": {
     "package.nls.json": 2048,
-    "package.json": 58170,
+    "package.json": 58306,
     "language-configuration.json": 1010,
     "icon.png": 8358,
     "gherkin-language-configuration.json": 510,

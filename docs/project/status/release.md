@@ -8,7 +8,7 @@
 **Current release train**: `v0.17.0` — shipped 2026-06-28 as public beta
 **Release track**: Public beta; this is not a stable/GA claim
 **Workspace version line**: `v0.17.0`
-**Published crate surface**: 33 crates
+**Published crate surface**: 34 crates
 **Release target**: `v0.18.0` is the next public-beta train; no version bump or candidate is staged here
 **Authority**: development `perl-lsp-swarm/main`; release lineage and publication `perl-lsp/master`
 **Ship readiness**: GitHub Release `v0.17.0` was published on 2026-06-28 and observed on 2026-07-17 at `ffee2824938f415e54923112c7b79e3f22040699` with seven platform archives, VSIX, `SHA256SUMS`, and SPDX SBOM. Other channels remain independent facts and are not proven by that receipt.

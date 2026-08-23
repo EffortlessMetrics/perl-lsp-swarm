@@ -478,6 +478,7 @@ fn emit_unreachable(stmt: &Node, diagnostics: &mut Vec<Diagnostic>) {
         message: "Unreachable code: this statement cannot be executed".to_string(),
         related_information: vec![],
         tags: vec![DiagnosticTag::Unnecessary],
+        fixable: false,
         suggestion: Some("Remove unreachable code".to_string()),
     });
 }

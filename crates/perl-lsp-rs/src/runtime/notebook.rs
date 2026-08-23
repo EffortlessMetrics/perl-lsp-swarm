@@ -739,6 +739,48 @@ mod tests {
         Ok(())
     }
 
+    /// Notebook cells opened by VS Code use `vscode-notebook-cell:` URIs.
+    /// The sync sink's URI policy must admit them (#8895 review): cells are
+    /// virtual documents the server keys and stores by that URI, and this is
+    /// the exact flow `handle_notebook_did_open` -> `handle_did_open` serves.
+    #[test]
+    fn notebook_did_open_accepts_vscode_notebook_cell_uris()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new_with_feature_profile(FeatureProfile::All);
+        let notebook_uri = "file:///cell-scheme-test.ipynb";
+        let cell_uri = "vscode-notebook-cell://wsl%2bubuntu/home/u/cell-scheme-test.ipynb#C1";
+
+        server.handle_notebook_did_open(Some(json!({
+            "notebookDocument": {
+                "uri": notebook_uri,
+                "notebookType": "jupyter-notebook",
+                "version": 1,
+                "cells": [
+                    {
+                        "kind": 2,
+                        "document": cell_uri
+                    }
+                ]
+            },
+            "cellTextDocuments": [
+                {
+                    "uri": cell_uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $x = 1;\n"
+                }
+            ]
+        })))?;
+
+        assert!(server.documents_guard().contains_key(cell_uri));
+        assert_eq!(
+            server.notebook_store.get_notebook_for_cell(cell_uri).as_deref(),
+            Some(notebook_uri)
+        );
+
+        Ok(())
+    }
+
     #[test]
     fn notebook_structure_change_updates_cell_mapping_and_execution_summary()
     -> Result<(), Box<dyn std::error::Error>> {

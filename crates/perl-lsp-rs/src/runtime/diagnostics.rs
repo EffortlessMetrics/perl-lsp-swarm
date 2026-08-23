@@ -8,7 +8,10 @@
 use super::*;
 use super::{
     Arc, BuiltInAnalyzer, DiagnosticsProvider, DocumentState, InternalDiagnosticSeverity,
-    JsonRpcError, LspServer, Mutex, Ordering, Value, json, md5, source_path_from_uri,
+    JsonRpcError, LspServer, Mutex, Ordering, Value, json, source_path_from_uri,
+};
+use crate::features::diagnostics::report_identity::{
+    DiagnosticProjectionFragment, PullPositionEncoding, PullReportResultId, compose_report_identity,
 };
 use crate::features::diagnostics::{
     Diagnostic as InternalDiagnostic, DiagnosticTag as InternalDiagnosticTag,
@@ -259,6 +262,11 @@ impl PullDiagnosticsOrchestrator {
             .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
             .or_else(|| server.root_path.lock().clone());
 
+        // The owning folder authority key for the report subject (#7480).
+        // Absent authority stays absent: the report is then served in full
+        // without a reusable result ID instead of minting an unsound one.
+        let root_key = workspace_root.as_ref().map(|path| path.to_string_lossy().into_owned());
+
         // Get include paths for the document
         let include_paths: Vec<String> = server
             .include_paths_for_doc(uri)
@@ -268,6 +276,7 @@ impl PullDiagnosticsOrchestrator {
 
         // Get client capabilities
         let markup_message_support = server.client_capabilities.lock().markup_message_support;
+        let position_encoding = server.client_capabilities.lock().position_encoding;
 
         // Wait for index build, then sample per-document staleness before wiring
         // workspace semantic queries or dead-code analysis into pull diagnostics
@@ -284,6 +293,18 @@ impl PullDiagnosticsOrchestrator {
             }
         };
 
+        // Project-fact subject for the report identity: the live index write
+        // version when the fact tier is fresh for this document, otherwise the
+        // explicit unavailable state (#7480).
+        #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+        let facts_generation = if server.workspace_index_stale_for_document(uri) {
+            None
+        } else {
+            server.workspace_index().map(|index| index.write_version())
+        };
+        #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
+        let facts_generation: Option<u64> = None;
+
         // Build context
         PullDiagnosticsContext {
             perlcritic_enabled,
@@ -296,6 +317,15 @@ impl PullDiagnosticsOrchestrator {
             workspace_root,
             include_paths,
             markup_message_support,
+            identity_root_key: root_key,
+            facts_generation,
+            projection: DiagnosticProjectionFragment {
+                position_encoding: match position_encoding {
+                    crate::textdoc::PosEnc::Utf8 => PullPositionEncoding::Utf8,
+                    crate::textdoc::PosEnc::Utf16 => PullPositionEncoding::Utf16,
+                },
+                markup_messages: markup_message_support,
+            },
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             workspace_index,
         }
@@ -433,6 +463,7 @@ impl PullDiagnosticsOrchestrator {
             Some(Ok(violations)) => {
                 for v in violations {
                     let internal_severity = critic_severity_to_internal(v.severity);
+                    let fixable = is_fixable_diagnostic(&v.policy);
 
                     let Some((start_byte, end_byte)) = critic_range_to_byte_range(
                         doc_text,
@@ -461,6 +492,7 @@ impl PullDiagnosticsOrchestrator {
                         related_information: Vec::new(),
                         tags: Vec::new(),
                         suggestion: None,
+                        fixable,
                     });
                 }
             }
@@ -767,7 +799,14 @@ impl LspServer {
             );
 
             // Add configured policy critic diagnostics.
-            self.collect_policy_critic_diagnostics(ast, &text, &mut diagnostics);
+            let critic_source_identity = critic_source_identity_for(uri, gen_at_snapshot);
+            self.collect_policy_critic_diagnostics(
+                ast,
+                &text,
+                uri,
+                critic_source_identity,
+                &mut diagnostics,
+            );
 
             // Add external perlcritic diagnostics (opt-in)
             self.collect_external_perlcritic_diagnostics(uri, &text, &mut diagnostics);
@@ -873,7 +912,7 @@ impl LspServer {
                         let category = DiagnosticCode::parse_code(code_str)
                             .map(|dc| format!("{:?}", dc.category()))
                             .unwrap_or_else(|| "Other".to_string());
-                        let fixable = is_fixable_diagnostic(code_str);
+                        let fixable = d.fixable;
                         let tag_strings: Vec<String> = d
                             .tags
                             .iter()
@@ -1184,8 +1223,13 @@ impl LspServer {
     ///
     /// # Caching Strategy
     ///
-    /// Uses MD5 hash of document content as result ID for efficient change detection.
-    /// Returns "unchanged" response when content hash matches previousResultId.
+    /// Result IDs are derived from the complete evaluation and projection
+    /// subject (#7480): logical source revision, owning folder authority,
+    /// accepted configuration, project-fact state, resolver environment and
+    /// the negotiated wire projection. Returns "unchanged" only when the
+    /// client's prior resultId parses under the current schema and equals the
+    /// complete current subject; valid-but-not-reusable reports come back in
+    /// full without a resultId.
     pub(super) fn handle_document_diagnostic(
         &self,
         params: Option<Value>,
@@ -1400,11 +1444,16 @@ impl LspServer {
                     ));
                 }
 
-                json!({
+                let mut payload = json!({
                     "kind": "full",
-                    "resultId": full.full_document_diagnostic_report.result_id,
                     "items": items
-                })
+                });
+                // A valid-but-not-reusable subject is served in full without a
+                // resultId (#7480); omit the key instead of emitting null.
+                if let Some(result_id) = &full.full_document_diagnostic_report.result_id {
+                    payload["resultId"] = json!(result_id);
+                }
+                payload
             }
             DocumentDiagnosticReport::Unchanged(unchanged) => {
                 json!({
@@ -1518,7 +1567,7 @@ impl LspServer {
             let category = DiagnosticCode::parse_code(code_str)
                 .map(|dc| format!("{:?}", dc.category()))
                 .unwrap_or_else(|| "Other".to_string());
-            let fixable = is_fixable_diagnostic(code_str);
+            let fixable = d.fixable;
             let tag_strings: Vec<String> = d
                 .tags
                 .iter()
@@ -1539,7 +1588,7 @@ impl LspServer {
     ///
     /// Computes diagnostics for all open documents in the workspace using the
     /// pull-based model. Provides efficient batch processing with incremental
-    /// updates via content-based result IDs.
+    /// updates via complete-subject result IDs (#7480).
     ///
     /// # LSP Protocol
     ///
@@ -1559,7 +1608,7 @@ impl LspServer {
     /// # Performance
     ///
     /// - Cooperative yielding every 8 documents for responsiveness
-    /// - MD5-based content hashing for efficient change detection
+    /// - Complete-subject identity composition for change detection (#7480)
     /// - Lock-free document snapshot to avoid blocking other requests
     pub(super) fn handle_workspace_diagnostic(
         &self,
@@ -1588,6 +1637,37 @@ impl LspServer {
 
         let mut items = Vec::new();
         let markup_message_support = self.client_capabilities.lock().markup_message_support;
+
+        // Hoisted accepted-configuration subject values for report identity
+        // composition (#7480). Per-document resolver roots, folder authority
+        // and fact generation are sampled inside the loop below.
+        let (
+            identity_perlcritic_enabled,
+            identity_perlcritic_severity,
+            identity_perlcritic_profile,
+            identity_critic_engine,
+            identity_native_profile,
+            identity_native_include,
+            identity_native_exclude,
+        ) = {
+            let cfg = self.config.lock();
+            (
+                cfg.perlcritic_enabled,
+                cfg.perlcritic_severity,
+                cfg.perlcritic_profile.clone(),
+                cfg.critic_engine,
+                cfg.native_critic_profile.clone(),
+                cfg.native_critic_include.clone(),
+                cfg.native_critic_exclude.clone(),
+            )
+        };
+        let identity_projection = DiagnosticProjectionFragment {
+            position_encoding: match self.client_capabilities.lock().position_encoding {
+                crate::textdoc::PosEnc::Utf8 => PullPositionEncoding::Utf8,
+                crate::textdoc::PosEnc::Utf16 => PullPositionEncoding::Utf16,
+            },
+            markup_messages: markup_message_support,
+        };
 
         // Collect document snapshots without holding lock.
         // Also capture each document's generation Arc and the generation value
@@ -1738,7 +1818,14 @@ impl LspServer {
                 );
 
                 // Add native critic diagnostics when explicitly selected.
-                self.collect_native_critic_diagnostics(ast, &doc.text, &mut diagnostics);
+                let critic_source_identity = critic_source_identity_for(uri_str, *gen_at_snapshot);
+                self.collect_native_critic_diagnostics(
+                    ast,
+                    &doc.text,
+                    uri_str,
+                    critic_source_identity,
+                    &mut diagnostics,
+                );
 
                 // Add external perlcritic diagnostics (opt-in)
                 self.collect_external_perlcritic_diagnostics(uri_str, &doc.text, &mut diagnostics);
@@ -1773,12 +1860,57 @@ impl LspServer {
                     continue;
                 }
 
-                // Generate result ID
-                let result_id = format!("{:x}", md5::compute(&doc.text));
+                // Complete-subject result identity (#7480): derives the result
+                // ID from the evaluation and projection subject, not from
+                // content alone.
+                let mut identity_context = PullDiagnosticsContext::new();
+                identity_context.perlcritic_enabled = identity_perlcritic_enabled;
+                identity_context.perlcritic_severity = identity_perlcritic_severity.into();
+                identity_context.perlcritic_profile =
+                    identity_perlcritic_profile.clone().filter(|p| !p.trim().is_empty());
+                identity_context.critic_engine = identity_critic_engine;
+                identity_context.native_critic_profile = identity_native_profile.clone();
+                identity_context.native_critic_include = identity_native_include.clone();
+                identity_context.native_critic_exclude = identity_native_exclude.clone();
+                identity_context.include_paths = self
+                    .include_paths_for_doc(uri_str)
+                    .into_iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect();
+                identity_context.identity_root_key = self
+                    .folder_for_doc_uri(uri_str)
+                    .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
+                    .or_else(|| self.root_path.lock().clone())
+                    .map(|path| path.to_string_lossy().into_owned());
+                #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+                {
+                    identity_context.facts_generation = workspace_index_tier_enabled
+                        .then(|| self.workspace_index())
+                        .flatten()
+                        .map(|index| index.write_version());
+                }
+                identity_context.projection = identity_projection;
+
+                let result_id = compose_report_identity(
+                    uri_str,
+                    &doc.text,
+                    Some(u64::from(doc.current_generation())),
+                    &identity_context,
+                    true,
+                );
+                let result_id_json =
+                    result_id.as_ref().map(|id| Value::String(id.as_str().to_string()));
+
+                // `Unchanged` requires a prior ID that parses under the current
+                // schema and equals the complete current subject (#7480).
+                let prev_matches = prev_id.as_deref().is_some_and(|prior| {
+                    PullReportResultId::from_wire(prior)
+                        .is_some_and(|prior| result_id.as_ref() == Some(&prior))
+                });
 
                 // Check if unchanged
-                let report = if let Some(prev) = prev_id {
-                    if prev == result_id {
+                let mut report = if let Some(prev) = prev_id {
+                    if prev_matches {
                         json!({
                             "uri": uri_str,
                             "version": doc.version,
@@ -1857,7 +1989,7 @@ impl LspServer {
                                     let category = DiagnosticCode::parse_code(code_str)
                                         .map(|dc| format!("{:?}", dc.category()))
                                         .unwrap_or_else(|| "Other".to_string());
-                                    let fixable = is_fixable_diagnostic(code_str);
+                                    let fixable = d.fixable;
                                     let tag_strings: Vec<String> =
                                         d.tags.iter().map(|t| match t {
                                             InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
@@ -1880,7 +2012,7 @@ impl LspServer {
                             "uri": uri_str,
                             "version": doc.version,
                             "kind": "full",
-                            "resultId": result_id,
+                            "resultId": result_id_json.clone(),
                             "items": lsp_diagnostics
                         })
                     }
@@ -1956,7 +2088,7 @@ impl LspServer {
                                 let category = DiagnosticCode::parse_code(code_str)
                                     .map(|dc| format!("{:?}", dc.category()))
                                     .unwrap_or_else(|| "Other".to_string());
-                                let fixable = is_fixable_diagnostic(code_str);
+                                let fixable = d.fixable;
                                 let tag_strings: Vec<String> =
                                     d.tags.iter().map(|t| match t {
                                         InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
@@ -1979,10 +2111,18 @@ impl LspServer {
                         "uri": uri_str,
                         "version": doc.version,
                         "kind": "full",
-                        "resultId": result_id,
+                        "resultId": result_id_json.clone(),
                         "items": lsp_diagnostics
                     })
                 };
+
+                // A valid-but-not-reusable subject returns full WITHOUT a
+                // resultId key rather than null (#7480).
+                if report.get("resultId") == Some(&Value::Null)
+                    && let Some(object) = report.as_object_mut()
+                {
+                    object.remove("resultId");
+                }
 
                 items.push(report);
             }
@@ -1995,6 +2135,8 @@ impl LspServer {
         &self,
         ast: &std::sync::Arc<perl_parser::ast::Node>,
         doc_text: &str,
+        subject: &str,
+        source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         diagnostics: &mut Vec<InternalDiagnostic>,
     ) {
         let critic_engine = { self.config.lock().critic_engine };
@@ -2005,7 +2147,13 @@ impl LspServer {
                 diagnostics.extend(violations.iter().map(builtin_violation_to_diagnostic));
             }
             perl_lsp_rs_core::config::CriticEngine::Native => {
-                self.collect_native_critic_diagnostics(ast, doc_text, diagnostics);
+                self.collect_native_critic_diagnostics(
+                    ast,
+                    doc_text,
+                    subject,
+                    source_identity,
+                    diagnostics,
+                );
             }
         }
     }
@@ -2014,8 +2162,15 @@ impl LspServer {
         &self,
         ast: &std::sync::Arc<perl_parser::ast::Node>,
         doc_text: &str,
+        subject: &str,
+        source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         diagnostics: &mut Vec<InternalDiagnostic>,
     ) {
+        use perl_lsp_rs_core::tooling::perl_critic::{
+            NativeCriticPolicy, native_finding_candidates_with_accounting,
+            normalize_with_native_policy,
+        };
+
         let (critic_engine, severity, profile, native_profile, native_include, native_exclude) = {
             let cfg = self.config.lock();
             (
@@ -2031,11 +2186,12 @@ impl LspServer {
             return;
         }
 
+        let severity_threshold = severity.clamp(1, 5);
         let critic_config = crate::perl_critic::CriticConfig {
-            severity: severity.clamp(1, 5),
+            severity: severity_threshold,
             profile,
-            include: native_include,
-            exclude: native_exclude,
+            include: native_include.clone(),
+            exclude: native_exclude.clone(),
             ..crate::perl_critic::CriticConfig::default()
         };
         let critic_context =
@@ -2047,8 +2203,30 @@ impl LspServer {
             &critic_config,
         );
 
-        diagnostics
-            .extend(registry.check(&critic_context).into_iter().map(native_finding_to_diagnostic));
+        // Producer outputs enter the canonical normalized set (#7475): checked
+        // identities at collection, alias merge, then policy applied exactly
+        // once post-merge. Findings without a registered producer-owned
+        // identity are rejected here rather than guessed, and every rejection
+        // is accounted for instead of silently vanishing.
+        let candidates = native_finding_candidates_with_accounting(
+            subject,
+            registry.check_unfiltered(&critic_context),
+            source_identity,
+        );
+        let suppressions =
+            perl_lsp_rs_core::tooling::perl_critic::CriticSuppressionMap::from_source(doc_text);
+        let policy = NativeCriticPolicy::new(
+            severity_threshold,
+            &native_include,
+            &native_exclude,
+            &suppressions,
+        );
+
+        diagnostics.extend(
+            normalize_with_native_policy(candidates, &policy)
+                .iter()
+                .map(normalized_critic_finding_to_diagnostic),
+        );
     }
 
     /// Collect external perlcritic diagnostics if the feature is enabled.
@@ -2209,6 +2387,7 @@ impl LspServer {
             Some(Ok(violations)) => {
                 for v in violations {
                     let internal_severity = critic_severity_to_internal(v.severity);
+                    let fixable = is_fixable_diagnostic(&v.policy);
 
                     let Some((start_byte, end_byte)) = critic_range_to_byte_range(
                         doc_text,
@@ -2237,6 +2416,7 @@ impl LspServer {
                         related_information: Vec::new(),
                         tags: Vec::new(),
                         suggestion: None,
+                        fixable,
                     });
                 }
             }
@@ -2382,16 +2562,36 @@ fn push_diagnostic_source(code: Option<&str>) -> &'static str {
     }
 }
 
-fn native_finding_to_diagnostic(finding: crate::perl_critic::CriticFinding) -> InternalDiagnostic {
+/// Convert one normalized logical critic finding to an internal diagnostic.
+///
+/// This is the only place the push-diagnostics path reads normalized critic
+/// rows; producer spellings never reach this projection directly (#7475).
+fn normalized_critic_finding_to_diagnostic(
+    finding: &perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding,
+) -> InternalDiagnostic {
     InternalDiagnostic {
-        range: (finding.range.start.byte, finding.range.end.byte),
-        severity: critic_severity_to_internal(finding.severity),
-        code: Some(finding.rule_id),
-        message: finding.message,
+        range: (finding.range().start.byte, finding.range().end.byte),
+        severity: critic_severity_to_internal(finding.severity()),
+        code: Some(finding.public_code().to_string()),
+        message: finding.message().to_string(),
         related_information: Vec::new(),
         tags: Vec::new(),
         suggestion: None,
+        fixable: finding.has_available_fix(),
     }
+}
+
+/// Build the logical source subject for one document generation.
+///
+/// The source key is an opaque per-process document identity derived from the
+/// URI; equal generations from different documents therefore cannot merge in
+/// normalization. Every candidate of one call shares it, so output ordering
+/// stays deterministic regardless of hash seed.
+fn critic_source_identity_for(
+    uri: &str,
+    generation: u32,
+) -> perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity {
+    perl_lsp_rs_core::tooling::perl_critic::critic_source_identity_for_uri(uri, generation)
 }
 
 /// Map a Perl::Critic severity onto an internal diagnostic severity.
@@ -2429,6 +2629,7 @@ fn builtin_violation_to_diagnostic(
         related_information: Vec::new(),
         tags: Vec::new(),
         suggestion: None,
+        fixable: is_fixable_diagnostic(&violation.policy),
     }
 }
 
@@ -3035,6 +3236,71 @@ mod tests {
     }
 
     #[test]
+    fn native_critic_exclusion_by_compat_spelling_removes_the_logical_row() {
+        // #7475 discriminating control: excluding a reviewed compatibility
+        // spelling must remove the whole logical alias set. Producer-side
+        // rule-ID gating alone could never honor `PL601`.
+        let (server, buf) = make_server_with_capture();
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        server.test_configure_native_critic_profile("strict");
+        server.test_configure_native_critic_filters(Vec::new(), vec!["PL601".to_string()]);
+        let uri = "file:///native_critic_alias_exclude_test.pl";
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "use strict;\nuse warnings;\nmy $out = `ls`;\nprint $out;\n"
+                }
+            })))
+            .unwrap();
+
+        server.publish_diagnostics(uri);
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let bytes = buf.lock().clone();
+        let text = String::from_utf8(bytes).unwrap_or_default();
+        assert!(
+            !text.contains("native.security.backtick_exec"),
+            "excluding PL601 must remove the backtick logical row; got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn native_critic_suppression_honors_compat_selector_after_normalization() {
+        // #7475 discriminating control: a single-target compatibility
+        // selector suppresses the normalized logical row. Raw producer-side
+        // suppression matched only exact rule IDs and could not honor it.
+        let (server, buf) = make_server_with_capture();
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        server.test_configure_native_critic_profile("strict");
+        let uri = "file:///native_critic_alias_suppression_test.pl";
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "## no critic PL603\nuse strict;\nuse warnings;\nsystem('ls');\n"
+                }
+            })))
+            .unwrap();
+
+        server.publish_diagnostics(uri);
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let bytes = buf.lock().clone();
+        let text = String::from_utf8(bytes).unwrap_or_default();
+        assert!(
+            !text.contains("native.security.system_exec"),
+            "PL603 selector must suppress the system_exec logical row; got: {text:?}"
+        );
+    }
+
+    #[test]
     fn legacy_critic_engine_keeps_legacy_policy_diagnostics_for_push() {
         let (server, buf) = make_server_with_capture();
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
@@ -3200,6 +3466,13 @@ mod tests {
                         == Some("Unreachable code: this statement cannot be executed")
             }),
             "native critic engine should add native unreachable-code finding to workspace diagnostics: {report}"
+        );
+        assert!(
+            diagnostics.iter().any(|diag| {
+                diag["code"].as_str() == Some("native.common.unreachable_code")
+                    && diag["data"]["fixable"] == true
+            }),
+            "push native unreachable-code finding should preserve available remediation: {report}"
         );
         assert!(
             diagnostics.iter().any(|diag| {

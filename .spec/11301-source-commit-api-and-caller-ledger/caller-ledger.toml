@@ -4,7 +4,30 @@ canonical_initial_api = "index_initial_file"
 canonical_initial_batch_api = "index_initial_files_batch"
 canonical_live_api = "index_live_file"
 compatibility_apis = ["index_file", "index_file_str", "index_file_with_generation", "index_files_batch"]
-compatibility_baseline = 694
+# compatibility_baseline reconciled 694 -> 702 by #11916 (#11907-era meta-shard
+# redness). Explicit attribution of every added call site, all from reviewed
+# squash-merged PRs (checker-equivalent count, base c754f41c6 = 694):
+#   completion/tests.rs 103 -> 109 (+6): #11874 (#11858 proof-seam tests),
+#     #11862 (#11158 import-edit withdrawal)
+#   runtime/text_sync/lifecycle.rs 1 -> 3 (+2): #11887 (#8895 protocol
+#     validation), #11893 (#8041 open-buffer authority)
+# By API: index_file 590 -> 597 (+7); index_file_with_generation 37 -> 38 (+1).
+# Structural gap: PR CI validates the PR head tree, so a green PR can push
+# post-merge main over this baseline; combined-tree evaluation is tracked on
+# #11916.
+# Burndown 702 -> 701 by #11938 (#8896 containment leaf): removing the
+# reversed-direction `handle_configuration` application arm deleted its
+# `.index_file(url, ...)` re-index call in
+# crates/perl-lsp-rs/src/runtime/workspace.rs (checker-equivalent count on the
+# combined tree, base #11916-era = 702).
+# Growth 701 -> 704 by #11944 (#11937 Variable-class cross-file candidate
+# withdrawal). Explicit attribution of every added call site, all from one
+# reviewed squash-merged PR (checker-equivalent per-file scan over
+# git ls-tree blobs, base 704e872c6 = 701):
+#   crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs
+#     109 -> 110 (+1)
+#   crates/perl-lsp-rs/src/runtime/language/completion.rs 2 -> 4 (+2)
+compatibility_baseline = 704
 
 # Live identity is the URI argument plus an owner-supplied non-zero NonZeroU32
 # generation; #11305 owns didOpen/didSave migration. Exact source paths are the

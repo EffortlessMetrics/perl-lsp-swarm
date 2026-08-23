@@ -472,7 +472,7 @@ jobs:
             # The cheapest control remains first for fast diagnosis, but the
             # shard runner now records every independent member before it
             # returns the aggregate failure verdict.
-            gates: msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof docs_build adr_link_check non_rust_inventory_check v2_bundle_sync nested_lock_check version_sync
+            gates: msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof docs_build adr_link_check non_rust_inventory_check lint_policy v2_bundle_sync nested_lock_check version_sync
     permissions:
       contents: read
     # Run on every PR push and on push to main/master
@@ -547,6 +547,7 @@ jobs:
           timeout --signal=TERM --kill-after=30s 1200s \
             python3 scripts/ci/run_gate_shard.py \
               --xtask target/debug/xtask \
+              --gate-policy .ci/gate-policy.yaml \
               --receipt-dir target/receipts/shards \
               --summary "target/receipts/shard-summaries/${SHARD_NAME}.json" \
               --subject-sha "$subject_sha" \
