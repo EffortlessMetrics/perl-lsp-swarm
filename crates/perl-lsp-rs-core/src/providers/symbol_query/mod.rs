@@ -2,122 +2,69 @@
 //!
 //! This crate has a single responsibility: provide reusable matching and
 //! ranking primitives used by LSP symbol-search providers.
+//!
+//! # Ownership (#10794)
+//!
+//! Query policy moved above `perl-symbol`: admission, tiers, digests, and the
+//! canonical evidence comparator live in
+//! [`perl_workspace::workspace_symbol_query`]. The functions here are thin
+//! forwarding shims kept only so existing call sites and their test suites
+//! keep compiling; they add no policy of their own. Canonical paths should
+//! consume the compiled [`WorkspaceSymbolQueryProfile`] directly.
+//!
+//! Compatibility note: `compare_names_by_query` reproduces the legacy numeric
+//! fallback where a non-match shared the subsequence slot during *sorting*.
+//! Live provider paths filter non-matches before sorting, so no admitted row
+//! is affected; this shim disappears when consumers migrate to evidence-based
+//! aggregation (#10645/#10642).
 
 use std::cmp::Ordering;
+
+use perl_workspace::workspace_symbol_query::{
+    WorkspaceSymbolQueryProfile, WorkspaceSymbolSearchKeyRole as KeyRole, match_searchable_key,
+};
 
 pub use perl_symbol::MIN_LOOSE_MATCH_QUERY_CHARS;
 
 /// Returns `true` when a symbol name matches the provided query.
 ///
-/// Matching strategy order after trimming leading/trailing query whitespace:
-/// 1. Empty query (matches everything)
-/// 2. Exact case-insensitive match
-/// 3. Prefix case-insensitive match
-/// 4. Contains case-insensitive match
-/// 5. Subsequence/fuzzy case-insensitive match
-///
-/// Tiers 4 and 5 are the *loose* tiers and require a query of at least
-/// [`MIN_LOOSE_MATCH_QUERY_CHARS`] characters. A single-character query
-/// therefore matches only by exact or prefix. (#5335)
+/// Forwarding shim over the canonical owner (#10794). Matching strategy after
+/// trimming leading/trailing query whitespace: empty query matches everything,
+/// then case-insensitive exact/prefix always run, and substring/subsequence
+/// require a folded query of at least [`MIN_LOOSE_MATCH_QUERY_CHARS`] chars.
 #[must_use]
 pub fn matches_query(name: &str, query: &str) -> bool {
-    let query = query.trim();
-    if query.is_empty() {
-        return true;
-    }
-
-    let name_lower = name.to_lowercase();
-    let query_lower = query.to_lowercase();
-
-    if name_lower == query_lower {
-        return true;
-    }
-
-    if name_lower.starts_with(&query_lower) {
-        return true;
-    }
-
-    // Length is measured on the *lowercased* query, because lowercasing can
-    // lengthen a one-character input -- 'İ' (U+0130) lowercases to the two
-    // chars "i\u{307}" -- and it is the lowercased form that the tiers below
-    // actually match against.
-    if query_lower.chars().count() < MIN_LOOSE_MATCH_QUERY_CHARS {
-        return false;
-    }
-
-    if name_lower.contains(&query_lower) {
-        return true;
-    }
-
-    is_subsequence(&name_lower, &query_lower)
+    let profile = WorkspaceSymbolQueryProfile::compile(query);
+    match_searchable_key(&profile, name, KeyRole::Other).is_some()
 }
 
 /// Compares two symbol names by query relevance.
 ///
-/// Ordering (highest to lowest relevance):
-/// 1. Exact match (case-insensitive)
-/// 2. Prefix match
-/// 3. Contains (substring) match
-/// 4. Fuzzy/subsequence match
+/// Forwarding shim over the canonical owner (#10794). Ordering (highest to
+/// lowest relevance): exact, prefix, substring, then subsequence-or-non-match
+/// at the legacy fallback slot; within the same slot, shorter raw names first,
+/// lexicographic order last.
 ///
-/// Within the same tier, shorter names rank higher (closer to the query
-/// length), with lexicographic order as the final tiebreaker.
+/// Non-matches never reach live sorts (admission filters first); the fallback
+/// slot here exists purely to reproduce the legacy total order bit-for-bit
+/// until consumers migrate to evidence aggregation (#10645/#10642).
 #[must_use]
 pub fn compare_names_by_query(a: &str, b: &str, query: &str) -> Ordering {
-    let query_lower = query.trim().to_lowercase();
-    let a_lower = a.to_lowercase();
-    let b_lower = b.to_lowercase();
+    let profile = WorkspaceSymbolQueryProfile::compile(query);
+    let evidence_a = match_searchable_key(&profile, a, KeyRole::Other);
+    let evidence_b = match_searchable_key(&profile, b, KeyRole::Other);
 
-    let a_tier = match_tier(&a_lower, &query_lower);
-    let b_tier = match_tier(&b_lower, &query_lower);
-
-    // Lower tier number = better match
-    match a_tier.cmp(&b_tier) {
-        Ordering::Equal => {
-            // Within the same tier, prefer shorter names (closer to the query)
-            match a.len().cmp(&b.len()) {
-                Ordering::Equal => a.cmp(b),
-                len_ord => len_ord,
-            }
-        }
+    // Legacy slots: exact 0 < prefix 1 < substring 2 < subsequence/non-match 3.
+    let slot = |evidence: Option<
+        &perl_workspace::workspace_symbol_query::WorkspaceSymbolMatchEvidence,
+    >| { evidence.map_or(3, |e| e.tier() as u8) };
+    match slot(evidence_a.as_ref()).cmp(&slot(evidence_b.as_ref())) {
+        Ordering::Equal => match a.len().cmp(&b.len()) {
+            Ordering::Equal => a.cmp(b),
+            len_ord => len_ord,
+        },
         tier_ord => tier_ord,
     }
-}
-
-/// Assigns a numeric tier to a symbol name based on how well it matches the query.
-///
-/// Lower tier = better match:
-/// - 0: exact match
-/// - 1: prefix match
-/// - 2: contains (substring) match
-/// - 3: fuzzy/subsequence or no match (fallback)
-fn match_tier(name_lower: &str, query_lower: &str) -> u8 {
-    if name_lower == query_lower {
-        0
-    } else if name_lower.starts_with(query_lower) {
-        1
-    } else if name_lower.contains(query_lower) {
-        2
-    } else {
-        3
-    }
-}
-
-fn is_subsequence(haystack: &str, needle: &str) -> bool {
-    let mut needle_chars = needle.chars();
-    let mut current = needle_chars.next();
-
-    for ch in haystack.chars() {
-        if let Some(target) = current {
-            if ch == target {
-                current = needle_chars.next();
-            }
-        } else {
-            return true;
-        }
-    }
-
-    current.is_none()
 }
 
 #[cfg(test)]

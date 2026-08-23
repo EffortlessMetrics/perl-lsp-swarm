@@ -65,7 +65,6 @@
 //! # }
 //! ```
 
-use crate::providers::symbol_query::{compare_names_by_query, matches_query};
 use perl_module::path::normalize_package_separator;
 use perl_parser_core::qualified_name::container_name;
 use perl_parser_core::{SourceLocation, ast::Node};
@@ -77,6 +76,9 @@ use perl_semantic_facts::{
 };
 use perl_workspace::semantic_shadow_compare::{
     SemanticShadowCompareReceipt, ShadowQueryInput, ShadowQueryName, summarize_identities,
+};
+use perl_workspace::workspace_symbol_query::{
+    WorkspaceSymbolQueryProfile, WorkspaceSymbolSearchKeyRole, match_searchable_key,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -333,7 +335,7 @@ impl WorkspaceSymbolsProvider {
     /// Results are sorted by relevance: exact matches first, then prefix matches,
     /// then alphabetically.
     ///
-    /// Match strategy is [`matches_query`]'s: single-character queries match by
+    /// Match strategy is the compiled query profile's (#10794): single-character queries match by
     /// exact name or prefix only, longer queries also match by substring and
     /// subsequence. (#5335)
     ///
@@ -351,6 +353,8 @@ impl WorkspaceSymbolsProvider {
         source_map: &HashMap<String, String>,
         candidates: &[String],
     ) -> Vec<WorkspaceSymbol> {
+        // One compiled profile per logical request (#10794).
+        let profile = WorkspaceSymbolQueryProfile::compile(query);
         let mut results = Vec::new();
         let mut seen_candidates = HashSet::new();
         for candidate in candidates {
@@ -360,7 +364,13 @@ impl WorkspaceSymbolsProvider {
 
             if let Some(entries) = self.symbols_by_name.get(candidate) {
                 for (uri, symbol) in entries {
-                    if matches_query(&symbol.name, query) {
+                    if match_searchable_key(
+                        &profile,
+                        &symbol.name,
+                        WorkspaceSymbolSearchKeyRole::BareName,
+                    )
+                    .is_some()
+                    {
                         let Some(source) = source_map.get(uri) else {
                             continue;
                         };
@@ -371,7 +381,7 @@ impl WorkspaceSymbolsProvider {
         }
 
         // Sort by relevance
-        results.sort_by(|a, b| compare_names_by_query(&a.name, &b.name, query));
+        sort_workspace_symbols_by_query_evidence(&mut results, &profile);
 
         results
     }
@@ -396,6 +406,8 @@ impl WorkspaceSymbolsProvider {
         query: &str,
         source_map: &HashMap<String, String>,
     ) -> Vec<WorkspaceSymbol> {
+        // One compiled profile per logical request (#10794).
+        let profile = WorkspaceSymbolQueryProfile::compile(query);
         let mut results = Vec::new();
 
         for (uri, symbols) in &self.documents {
@@ -406,14 +418,20 @@ impl WorkspaceSymbolsProvider {
             };
 
             for symbol in symbols {
-                if matches_query(&symbol.name, query) {
+                if match_searchable_key(
+                    &profile,
+                    &symbol.name,
+                    WorkspaceSymbolSearchKeyRole::BareName,
+                )
+                .is_some()
+                {
                     results.push(self.symbol_to_workspace_symbol(uri, symbol, source));
                 }
             }
         }
 
         // Sort by relevance
-        results.sort_by(|a, b| compare_names_by_query(&a.name, &b.name, query));
+        sort_workspace_symbols_by_query_evidence(&mut results, &profile);
 
         results
     }
@@ -583,6 +601,25 @@ fn signed_count_delta(old_count: usize, new_count: usize) -> String {
     } else {
         format!("-{}", old_count - new_count)
     }
+}
+
+/// Sorts admitted results by the canonical typed evidence comparator (#10794).
+///
+/// Every row was admitted through [`match_searchable_key`], so evidence always
+/// exists; the fallback arm keeps the sort total without inventing a tier.
+fn sort_workspace_symbols_by_query_evidence(
+    results: &mut [WorkspaceSymbol],
+    profile: &WorkspaceSymbolQueryProfile,
+) {
+    results.sort_by(|a, b| {
+        match (
+            match_searchable_key(profile, &a.name, WorkspaceSymbolSearchKeyRole::BareName),
+            match_searchable_key(profile, &b.name, WorkspaceSymbolSearchKeyRole::BareName),
+        ) {
+            (Some(evidence_a), Some(evidence_b)) => evidence_a.compare(&evidence_b),
+            _ => std::cmp::Ordering::Equal,
+        }
+    });
 }
 
 // Symbol kind conversion is handled by perl_symbol::SymbolKind::to_lsp_kind()

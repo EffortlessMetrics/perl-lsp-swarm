@@ -400,6 +400,11 @@ impl LspServer {
             .trim();
         let cap = workspace_symbol_cap();
 
+        // One compiled query profile per logical request (#10794): every index
+        // tier of this request consumes this instance and its digest.
+        let query_profile =
+            perl_workspace::workspace_symbol_query::WorkspaceSymbolQueryProfile::compile(query);
+
         tracing::debug!(query, cap, "Workspace symbol search v2");
 
         // Use routing helper for lifecycle-aware dispatch
@@ -425,9 +430,14 @@ impl LspServer {
                     // Full query path: use workspace index.
                     // Pass the cap into the search so results are bounded before
                     // allocation — early exit at the search boundary, not after collecting.
-                    let mut symbols = coordinator.index().search_source_symbols(query, Some(cap));
+                    let mut symbols = coordinator
+                        .index()
+                        .search_source_symbols_with_profile(&query_profile, Some(cap));
                     symbols.extend(
-                        coordinator.index().search_generated_workspace_symbols(query, Some(cap)),
+                        coordinator.index().search_generated_workspace_symbols_with_profile(
+                            &query_profile,
+                            Some(cap),
+                        ),
                     );
 
                     // Convert to LSP format with cooperative yielding.
@@ -474,7 +484,9 @@ impl LspServer {
                     // open-doc path only when the partial index is also empty.
                     tracing::debug!(reason, "Workspace symbol: querying partial index");
                     if let Some(coordinator) = self.coordinator() {
-                        let symbols = coordinator.index().search_source_symbols(query, Some(cap));
+                        let symbols = coordinator
+                            .index()
+                            .search_source_symbols_with_profile(&query_profile, Some(cap));
                         let lsp_symbols: Vec<LspWorkspaceSymbol> = symbols
                             .iter()
                             .enumerate()
