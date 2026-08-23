@@ -1,3 +1,4 @@
+# Existing branch parent now contains this workflow; this commit is the execution trigger.
 name: Rewrite #4997 as one-way reducers
 
 on:
