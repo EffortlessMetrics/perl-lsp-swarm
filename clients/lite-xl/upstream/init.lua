@@ -221,6 +221,7 @@ lsp.servers_running = {}
 ---@field uri string Canonical document URI captured at admission
 ---@field session_generation integer Open-generation of this URI (1-based)
 ---@field version integer Monotonic LSP protocol version within the session
+---@field mutation_seq integer Accepted-mutation counter within the session
 ---@field open_state string "open" | "closed"
 ---@field pending_changes table[] Accepted changes awaiting the next batch
 
@@ -287,12 +288,16 @@ function lsp.create_document_session(doc, server, uri)
     doc.lsp_changes[server] = nil
   end
 
+  -- Persist the process generation on first admission so every later
+  -- subject of this instance carries the identical identity (#11115/#11108).
+  server.generation = server.generation or lsp.next_server_generation()
   local previous_generation = document_session_open_counters[uri] or 0
   local session = {
-    server_generation = server.generation or lsp.next_server_generation(),
+    server_generation = server.generation,
     uri = uri,
     session_generation = previous_generation + 1,
     version = 0,
+    mutation_seq = 0,
     open_state = "open",
     pending_changes = {},
   }
@@ -300,6 +305,116 @@ function lsp.create_document_session(doc, server, uri)
   lsp.document_sessions[doc] = lsp.document_sessions[doc] or {}
   lsp.document_sessions[doc][server] = session
   return session
+end
+
+-- Local patch (#11108): one immutable request subject per document/root/
+-- provider-bound request, admitted against the live session state before
+-- any callback mutates UI, diagnostics, bytes, lists or navigation. A held
+-- response may stay useful for logs but can never become current product
+-- state once its subject is stale: same caret position is never proof of
+-- the same document/server state. Dispositions map this client's topology:
+-- "generation_replaced" covers both process replacement and provider switch
+-- (one running instance per name), "superseded" covers URI/session
+-- transitions (Save As / close-reopen), "document_closed" covers terminated
+-- sessions, and "stale"/"cursor_moved" cover document and request-specific
+-- currentness (#10657 owns IDs/timeouts; #10833 owns queue supersession;
+-- neither defines admission, which lives here).
+---@class lsp.request.subject
+---@field method string Request method for evidence
+---@field server lsp.server Exact running instance owning the request
+---@field server_name string
+---@field server_generation integer
+---@field doc core.doc|nil Document instance identity, when document-bound
+---@field uri string|nil Canonical URI at send time
+---@field version integer|nil Session version at send time
+---@field session_generation integer|nil Open-session generation at send time
+---@field mutation_seq integer|nil Accepted-mutation count at send time
+---@field line integer|nil Request cursor/query identity, when applicable
+---@field col integer|nil
+
+---Capture one immutable request subject (#11108). Returns nil when a
+---document-bound request has no live session to bind to: such a request is
+---refused instead of sent unprovable.
+---@param method string
+---@param doc core.doc|nil
+---@param server lsp.server
+---@param line integer|nil
+---@param col integer|nil
+---@return lsp.request.subject|nil
+function lsp.make_request_subject(method, doc, server, line, col)
+  local subject = {
+    method = method,
+    server = server,
+    server_name = server.name,
+    -- Persisted instance generation: identical for every request of this
+    -- running process, distinct across replacement instances (#11108).
+    server_generation = server.generation or (function()
+      server.generation = lsp.next_server_generation()
+      return server.generation
+    end)(),
+    line = line,
+    col = col,
+  }
+  if doc then
+    local session = lsp.get_document_session(doc, server)
+    if not session then return nil end
+    subject.doc = doc
+    subject.uri = session.uri
+    subject.version = session.version
+    subject.session_generation = session.session_generation
+    subject.mutation_seq = session.mutation_seq or 0
+  end
+  return subject
+end
+
+---Admit one response against its captured subject (#11108).
+---@param subject lsp.request.subject|nil
+---@return boolean admitted
+---@return string|nil disposition Typed rejection token when not admitted
+function lsp.admit_response(subject)
+  if not subject then return false, "unbound" end
+
+  -- Server instance identity: a replacement instance under the same name,
+  -- from restart or provider switch, can never admit old subjects.
+  local running = lsp.servers_running[subject.server_name]
+  if running ~= subject.server then
+    return false, "generation_replaced"
+  end
+  if (running.generation or 0) ~= subject.server_generation then
+    return false, "generation_replaced"
+  end
+
+  if subject.doc then
+    if not subject.doc.lsp_open then return false, "document_closed" end
+    local session = lsp.get_document_session(subject.doc, running)
+    if not session then return false, "document_closed" end
+    if session.uri ~= subject.uri then return false, "superseded" end
+    if session.session_generation ~= subject.session_generation then
+      return false, "superseded"
+    end
+    -- The response describes exactly the captured accepted state: any
+    -- emitted batch or accepted mutation since makes it stale.
+    if subject.version and session.version ~= subject.version then
+      return false, "stale"
+    end
+    if subject.mutation_seq
+      and (session.mutation_seq or 0) ~= subject.mutation_seq
+    then
+      return false, "stale"
+    end
+  end
+
+  -- Request-specific cursor identity: reusing a position after intervening
+  -- edits does not revive an old subject (the stream checks above already
+  -- rejected that); this catches caret movement alone.
+  if subject.line and subject.doc then
+    local cline, ccol = subject.doc:get_selection()
+    if cline ~= subject.line or ccol ~= subject.col then
+      return false, "cursor_moved"
+    end
+  end
+
+  return true, nil
 end
 
 ---Flag that indicates if last autocomplete request was a trigger
@@ -561,9 +676,27 @@ local function autocomplete_onhover(index, item)
   -- Only send resolve request if data field (which should contain
   -- the item id) is available.
   if completion_item.data then
+    -- Local patch (#11108): resolve requests carry their own subject bound
+    -- to the same document as the admitted completion round; the response
+    -- admits against it before enriching the visible description.
+    local resolved_doc = item.data.subject and item.data.subject.doc or nil
+    local subject = lsp.make_request_subject(
+      'completionItem/resolve', resolved_doc, item.data.server, nil, nil)
+    if not subject then
+      return
+    end
     item.data.server:push_request('completionItem/resolve', {
       params = completion_item,
       callback = function(server, response)
+        -- Local patch (#11108): admission before any effect.
+        local admitted, disposition = lsp.admit_response(subject)
+        if not admitted then
+          core.log_quiet(
+            "[LSP] %s response dropped (%s)",
+            "completionItem/resolve", disposition or "stale"
+          )
+          return
+        end
         if response.result then
           local symbol = response.result
           if symbol.detail and #item.desc <= 0 then
@@ -615,6 +748,20 @@ end
 ---@param index integer
 ---@param item table
 local function autocomplete_onselect(index, item)
+  -- Local patch (#11108): a completion edit computed for one accepted
+  -- document state is revalidated against its stored subject at the
+  -- moment of user selection; stale edits are never applied optimistically
+  -- against newer bytes.
+  if item.data.subject then
+    local admitted, disposition = lsp.admit_response(item.data.subject)
+    if not admitted then
+      core.log_quiet(
+        "[LSP] completion edit refused (%s)", disposition or "stale"
+      )
+      return false
+    end
+  end
+
   local completion = item.data.completion_item
   local dv = get_active_docview()
   local edit_applied = false
@@ -635,7 +782,10 @@ local function autocomplete_onselect(index, item)
         local char = dv.doc:get_char(line, col-1)
         local char_prev = dv.doc:get_char(line, col-2)
         if char:match("%p") or (char == " " and char_prev:match("%p")) then
-          if not util.table_empty(dv.doc.lsp_changes) then
+          -- Local patch (#11108/#11115): pending state is owned by the
+          -- live session, not the legacy doc field.
+          local session = lsp.get_document_session(dv.doc, item.data.server)
+          if session and #session.pending_changes > 0 then
             lsp.update_document(dv.doc, true)
           else
             lsp.request_completion(dv.doc, line, col, true)
@@ -1448,15 +1598,27 @@ function lsp.request_completion(doc, line, col, forced)
         return false
       end
 
+      -- Local patch (#11108): bind this request to its exact subject.
+      local subject = lsp.make_request_subject(
+        'textDocument/completion', doc, server, line, col)
+      if not subject then
+        goto continue
+      end
+
       server:push_request('textDocument/completion', {
         params = request,
         overwrite = true,
         callback = function(server, response)
           lsp.user_typed = false
 
-          -- don't autocomplete if caret position changed
-          local cline, cchar = doc:get_selection()
-          if cline ~= line or cchar ~= col then
+          -- Local patch (#11108): admission before any effect; the caret
+          -- identity alone is no longer proof of document state.
+          local admitted, disposition = lsp.admit_response(subject)
+          if not admitted then
+            core.log_quiet(
+              "[LSP] %s response dropped (%s)",
+              "textDocument/completion", disposition or "stale"
+            )
             return
           end
 
@@ -1557,7 +1719,9 @@ function lsp.request_completion(doc, line, col, forced)
               info = info,
               desc = desc,
               data = {
-                server = server, completion_item = symbol
+                -- Local patch (#11108): carry the admitted request subject
+                -- so deferred edit application revalidates at select time.
+                server = server, completion_item = symbol, subject = subject
               },
               onselect = autocomplete_onselect
             }
@@ -1583,6 +1747,7 @@ function lsp.request_completion(doc, line, col, forced)
           end
         end
       })
+      ::continue::
     end
   end
 end
@@ -1620,13 +1785,25 @@ function lsp.request_signature(doc, line, col, forced, fallback)
         )
       )
     then
+      -- Local patch (#11108): bind this request to its exact subject.
+      local subject = lsp.make_request_subject(
+        'textDocument/signatureHelp', doc, server, line, col)
+      if not subject then
+        goto continue
+      end
+
       server:push_request('textDocument/signatureHelp', {
         params = get_buffer_position_params(doc, line, col),
         overwrite = true,
         callback = function(server, response)
-          -- don't show signature if caret position changed
-          local cline, cchar = doc:get_selection()
-          if cline ~= line or cchar ~= col then
+          -- Local patch (#11108): admission replaces the caret-only guard;
+          -- a stale result neither displays nor falls back.
+          local admitted, disposition = lsp.admit_response(subject)
+          if not admitted then
+            core.log_quiet(
+              "[LSP] %s response dropped (%s)",
+              "textDocument/signatureHelp", disposition or "stale"
+            )
             return
           end
 
@@ -1645,10 +1822,12 @@ function lsp.request_signature(doc, line, col, forced, fallback)
           end
         end
       })
+      ::continue::
       break
     elseif fallback then
       fallback(doc, line, col)
     end
+    ::continue::
   end
 end
 
@@ -1685,9 +1864,26 @@ function lsp.request_hover(doc, line, col, in_tab)
   for _, name in pairs(lsp.get_active_servers(doc.filename, true)) do
     local server = lsp.servers_running[name]
     if server.capabilities.hoverProvider then
+      -- Local patch (#11108): bind this request to its exact subject.
+      local subject = lsp.make_request_subject(
+        'textDocument/hover', doc, server, line, col)
+      if not subject then
+        break
+      end
+
       server:push_request('textDocument/hover', {
         params = get_buffer_position_params(doc, line, col),
         callback = function(server, response)
+          -- Local patch (#11108): admission before any tooltip effect.
+          local admitted, disposition = lsp.admit_response(subject)
+          if not admitted then
+            core.log_quiet(
+              "[LSP] %s response dropped (%s)",
+              "textDocument/hover", disposition or "stale"
+            )
+            return
+          end
+
           if response.result and response.result.contents then
             local range = response.result.range
             local line1, col1, line2, col2
@@ -1776,9 +1972,24 @@ function lsp.request_references(doc, line, col)
     if server.capabilities.hoverProvider then
       local request_params = get_buffer_position_params(doc, line, col)
       request_params.context = {includeDeclaration = true}
+      -- Local patch (#11108): bind this request to its exact subject.
+      local subject = lsp.make_request_subject(
+        'textDocument/references', doc, server, line, col)
+      if not subject then
+        break
+      end
       server:push_request('textDocument/references', {
         params = request_params,
         callback = function(server, response)
+          -- Local patch (#11108): admission before any navigation prompt.
+          local admitted, disposition = lsp.admit_response(subject)
+          if not admitted then
+            core.log_quiet(
+              "[LSP] %s response dropped (%s)",
+              "textDocument/references", disposition or "stale"
+            )
+            return
+          end
           if response.result and #response.result > 0 then
             local references, reference_names = get_references_lists(response.result)
             core.command_view:enter("Filter References", {
@@ -1820,9 +2031,24 @@ function lsp.request_call_hierarchy(doc, line, col)
   for _, name in pairs(lsp.get_active_servers(doc.filename, true)) do
     local server = lsp.servers_running[name]
     if server.capabilities.callHierarchyProvider then
+      -- Local patch (#11108): bind this request to its exact subject.
+      local subject = lsp.make_request_subject(
+        'textDocument/prepareCallHierarchy', doc, server, line, col)
+      if not subject then
+        return
+      end
       server:push_request('textDocument/prepareCallHierarchy', {
         params = get_buffer_position_params(doc, line, col),
         callback = function(server, response)
+          -- Local patch (#11108): admission before any effect.
+          local admitted, disposition = lsp.admit_response(subject)
+          if not admitted then
+            core.log_quiet(
+              "[LSP] %s response dropped (%s)",
+              "textDocument/prepareCallHierarchy", disposition or "stale"
+            )
+            return
+          end
           if response.result and #response.result > 0 then
             -- TODO: Finish implement call hierarchy functionality
             return
@@ -1851,9 +2077,26 @@ function lsp.request_symbol_rename(doc, line, col, new_name)
     if server.capabilities.renameProvider then
       local request_params = get_buffer_position_params(doc, line, col)
       request_params.newName = new_name
+      -- Local patch (#11108): bind this edit-producing request to its exact
+      -- subject; its future workspace-edit application must never mutate a
+      -- generation it was not computed against.
+      local subject = lsp.make_request_subject(
+        'textDocument/rename', doc, server, line, col)
+      if not subject then
+        return
+      end
       server:push_request('textDocument/rename', {
         params = request_params,
         callback = function(server, response)
+          -- Local patch (#11108): admission before any effect.
+          local admitted, disposition = lsp.admit_response(subject)
+          if not admitted then
+            core.log_quiet(
+              "[LSP] %s response dropped (%s)",
+              "textDocument/rename", disposition or "stale"
+            )
+            return
+          end
           if response.result and #response.result.changes then
             for file_uri, changes in pairs(response.result.changes) do
               core.log(file_uri .. " " .. #changes)
@@ -1886,6 +2129,15 @@ function lsp.request_workspace_symbol(doc, symbol)
     if server.capabilities.workspaceSymbolProvider then
       local rs = SymbolResults(symbol)
       core.root_view:get_active_node_default():add_view(rs)
+      -- Local patch (#11108): workspace-level requests omit document
+      -- version (none exists for a query) but retain exact server instance
+      -- and generation identity; the query rides the subject as evidence.
+      local subject = lsp.make_request_subject(
+        'workspace/symbol', nil, server, nil, nil)
+      if not subject then
+        break
+      end
+      subject.query = symbol
       server:push_request('workspace/symbol', {
         params = {
           query = symbol,
@@ -1895,6 +2147,15 @@ function lsp.request_workspace_symbol(doc, symbol)
           -- partialResultToken = "some-other-identifier"
         },
         callback = function(server, response)
+          -- Local patch (#11108): admission before populating results.
+          local admitted, disposition = lsp.admit_response(subject)
+          if not admitted then
+            core.log_quiet(
+              "[LSP] %s response dropped (%s)",
+              "workspace/symbol", disposition or "stale"
+            )
+            return
+          end
           if response.result and #response.result > 0 then
             for index, result in ipairs(response.result) do
               rs:add_result(result)
@@ -1926,6 +2187,13 @@ function lsp.request_document_symbols(doc)
     local server = lsp.servers_running[name]
     if server.capabilities.documentSymbolProvider then
       log(server, "Retrieving document symbols...")
+      -- Local patch (#11108): bind this navigation request to its exact
+      -- subject; the deferred selection revalidates at submit time.
+      local subject = lsp.make_request_subject(
+        'textDocument/documentSymbol', doc, server, nil, nil)
+      if not subject then
+        break
+      end
       server:push_request('textDocument/documentSymbol', {
         params = {
           textDocument = {
@@ -1933,11 +2201,30 @@ function lsp.request_document_symbols(doc)
           }
         },
         callback = function(server, response)
+          -- Local patch (#11108): admission before any navigation prompt.
+          local admitted, disposition = lsp.admit_response(subject)
+          if not admitted then
+            core.log_quiet(
+              "[LSP] %s response dropped (%s)",
+              "textDocument/documentSymbol", disposition or "stale"
+            )
+            return
+          end
           if response.result and response.result and #response.result > 0 then
             local symbols, symbol_names = get_symbol_lists(response.result)
             core.command_view:enter("Find Symbol", {
               submit = function(text, item)
                 if item then
+                  -- Local patch (#11108): revalidate at user-action time;
+                  -- an old target cannot navigate the current session.
+                  local still_current = select(1, lsp.admit_response(subject))
+                  if not still_current then
+                    core.log_quiet(
+                      "[LSP] %s navigation dropped (%s)",
+                      "textDocument/documentSymbol", "subject no longer current"
+                    )
+                    return
+                  end
                   local symbol = symbols[item.name]
                   -- The lsp may return a location object with range
                   -- and uri inside of it or just range as part of
@@ -2003,6 +2290,13 @@ function lsp.request_document_format(doc)
       if not indent_confirmed then
         indent_type, indent_size = config.tab_type, config.indent_size
       end
+      -- Local patch (#11108): bind this edit-producing request to its exact
+      -- subject so returned text edits can never mutate a newer generation.
+      local subject = lsp.make_request_subject(
+        'textDocument/formatting', doc, server, nil, nil)
+      if not subject then
+        break
+      end
       server:push_request('textDocument/formatting', {
         params = {
           textDocument = {
@@ -2020,6 +2314,16 @@ function lsp.request_document_format(doc)
           if response.error and response.error.message then
             log(server, "Error formatting: " .. response.error.message)
           elseif response.result and #response.result > 0 then
+            -- Local patch (#11108): admission before mutating bytes; a
+            -- response computed for an older snapshot is refused.
+            local admitted, disposition = lsp.admit_response(subject)
+            if not admitted then
+              core.log_quiet(
+                "[LSP] %s edits refused (%s)",
+                "textDocument/formatting", disposition or "stale"
+              )
+              return
+            end
             -- Apply edits in reverse, as the ranges don't consider
             -- the intermediate states.
             -- Consider the TextEdits as already sorted.
@@ -2350,6 +2654,9 @@ local function add_change(self, text, line1, col1, line2, col2)
     local session = lsp.get_document_session(self, server)
     if session then
       table.insert(session.pending_changes, change)
+      -- Local patch (#11108): accepted mutations advance the per-session
+      -- sequence so held request subjects can detect unbatched edits too.
+      session.mutation_seq = (session.mutation_seq or 0) + 1
     else
       -- Edits accepted before this document/session admission: their bytes
       -- are already part of the future didOpen snapshot. The legacy queue
