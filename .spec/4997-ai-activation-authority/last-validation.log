@@ -1890,203 +1890,203 @@ exit_status=0
     Updating crates.io index
  Downloading crates ...
   Downloaded adler2 v2.0.1
-  Downloaded anstream v1.0.0
+  Downloaded bit-set v0.8.0
+  Downloaded cfg_aliases v0.2.1
+  Downloaded cfg-if v1.0.4
+  Downloaded anstyle v1.0.14
   Downloaded anstyle-query v1.1.5
-  Downloaded base64 v0.23.1
-  Downloaded same-file v1.0.6
-  Downloaded toml v1.1.4+spec-1.1.0
-  Downloaded memchr v2.8.3
-  Downloaded portable-atomic v1.13.1
-  Downloaded clap_derive v4.6.4
-  Downloaded zerofrom-derive v0.1.7
-  Downloaded wait-timeout v0.2.1
-  Downloaded zmij v1.0.21
-  Downloaded tokio-macros v2.7.0
-  Downloaded similar v2.7.0
-  Downloaded powerfmt v0.2.0
-  Downloaded version_check v0.9.5
-  Downloaded ppv-lite86 v0.2.21
-  Downloaded litemap v0.8.2
-  Downloaded toml_writer v1.1.2+spec-1.1.0
-  Downloaded subtle v2.6.1
-  Downloaded utf8-zero v0.8.1
-  Downloaded icu_normalizer_data v2.2.0
-  Downloaded untrusted v0.9.0
-  Downloaded unarray v0.1.4
-  Downloaded idna v1.1.0
-  Downloaded icu_properties_data v2.2.0
-  Downloaded zerofrom v0.1.7
-  Downloaded utf8parse v0.2.2
-  Downloaded strum v0.28.0
+  Downloaded time-core v0.1.8
+  Downloaded tagptr v0.2.0
+  Downloaded scopeguard v1.2.0
+  Downloaded fnv v1.0.7
+  Downloaded rustc-hash v2.1.3
   Downloaded yoke-derive v0.8.2
+  Downloaded same-file v1.0.6
+  Downloaded rand_xorshift v0.4.0
+  Downloaded matchers v0.2.0
+  Downloaded thiserror-impl v2.0.20
+  Downloaded form_urlencoded v1.2.2
+  Downloaded quote v1.0.45
+  Downloaded quick-error v1.2.3
+  Downloaded md5 v0.8.1
+  Downloaded rand v0.9.4
+  Downloaded powerfmt v0.2.0
+  Downloaded stable_deref_trait v1.2.1
+  Downloaded autocfg v1.5.0
+  Downloaded unarray v0.1.4
+  Downloaded tracing-core v0.1.36
+  Downloaded tokio-macros v2.7.0
+  Downloaded version_check v0.9.5
+  Downloaded httparse v1.10.1
+  Downloaded zerofrom v0.1.7
+  Downloaded utf8_iter v1.0.4
+  Downloaded tracing-appender v0.2.5
+  Downloaded miniz_oxide v0.8.9
+  Downloaded wait-timeout v0.2.1
+  Downloaded utf8-zero v0.8.1
+  Downloaded zmij v1.0.21
   Downloaded zeroize v1.8.2
-  Downloaded thread_local v1.1.9
+  Downloaded writeable v0.6.3
   Downloaded zerovec-derive v0.11.3
+  Downloaded toml v1.1.4+spec-1.1.0
   Downloaded yoke v0.8.2
-  Downloaded zerovec v0.11.6
+  Downloaded uuid v1.24.0
+  Downloaded ureq-proto v0.6.1
+  Downloaded serde_derive v1.0.229
   Downloaded zerotrie v0.2.4
-  Downloaded typenum v1.20.0
-  Downloaded rustls-webpki v0.103.13
-  Downloaded ureq v3.4.0
-  Downloaded serde_json v1.0.151
-  Downloaded ropey v1.6.1
-  Downloaded winnow v1.0.2
-  Downloaded webpki-roots v1.0.7
-  Downloaded tracing-subscriber v0.3.23
-  Downloaded time v0.3.47
+  Downloaded url v2.5.8
   Downloaded regex v1.13.1
-  Downloaded serde v1.0.229
+  Downloaded zerovec v0.11.6
+  Downloaded serde_json v1.0.151
+  Downloaded tracing-subscriber v0.3.23
+  Downloaded winnow v1.0.2
+  Downloaded time v0.3.47
+  Downloaded webpki-roots v1.0.7
+  Downloaded nix v0.31.3
+  Downloaded syn v3.0.2
   Downloaded zerocopy v0.8.48
   Downloaded syn v2.0.117
   Downloaded regex-syntax v0.8.11
-  Downloaded syn v3.0.2
-  Downloaded url v2.5.8
-  Downloaded rustls v0.23.40
   Downloaded rustix v1.1.4
-  Downloaded tracing-core v0.1.36
-  Downloaded serde_derive v1.0.229
+  Downloaded rustls v0.23.40
+  Downloaded ureq v3.4.0
+  Downloaded typenum v1.20.0
+  Downloaded ropey v1.6.1
+  Downloaded moka v0.12.16
   Downloaded tracing v0.1.44
+  Downloaded sha2 v0.11.0
   Downloaded unicode-ident v1.0.24
-  Downloaded toml_parser v1.1.3+spec-1.1.0
   Downloaded socket2 v0.6.3
-  Downloaded libc v0.2.186
   Downloaded sharded-slab v0.1.7
   Downloaded serde_core v1.0.229
-  Downloaded rand v0.9.4
+  Downloaded serde v1.0.229
+  Downloaded toml_parser v1.1.3+spec-1.1.0
   Downloaded regex-automata v0.4.16
-  Downloaded nix v0.31.3
-  Downloaded sha2 v0.11.0
-  Downloaded walkdir v2.5.0
-  Downloaded ureq-proto v0.6.1
-  Downloaded tracing-attributes v0.1.31
   Downloaded tempfile v3.27.0
-  Downloaded smallvec v1.15.1
-  Downloaded shlex v2.0.1
-  Downloaded scopeguard v1.2.0
-  Downloaded rustls-pki-types v1.14.1
-  Downloaded str_indices v0.4.4
-  Downloaded writeable v0.6.3
-  Downloaded which v8.0.5
-  Downloaded tracing-log v0.2.0
-  Downloaded tracing-appender v0.2.5
-  Downloaded time-macros v0.2.27
-  Downloaded tagptr v0.2.0
-  Downloaded tokio v1.53.1
-  Downloaded synstructure v0.13.2
-  Downloaded simd-adler32 v0.3.9
-  Downloaded rusty-fork v0.3.1
-  Downloaded moka v0.12.16
-  Downloaded tinystr v0.8.3
-  Downloaded uuid v1.24.0
-  Downloaded toml_datetime v1.1.1+spec-1.1.0
-  Downloaded strum_macros v0.28.0
+  Downloaded similar v2.7.0
   Downloaded proptest v1.11.0
-  Downloaded symlink v0.1.0
+  Downloaded libc v0.2.186
+  Downloaded portable-atomic v1.13.1
+  Downloaded aho-corasick v1.1.4
+  Downloaded strum_macros v0.28.0
+  Downloaded icu_properties_data v2.2.0
+  Downloaded clap_builder v4.6.6
+  Downloaded which v8.0.5
+  Downloaded time-macros v0.2.27
+  Downloaded smallvec v1.15.1
+  Downloaded simd-adler32 v0.3.9
+  Downloaded rustls-webpki v0.103.13
+  Downloaded tokio v1.53.1
+  Downloaded idna v1.1.0
+  Downloaded hashbrown v0.17.0
+  Downloaded walkdir v2.5.0
+  Downloaded tracing-attributes v0.1.31
+  Downloaded toml_writer v1.1.2+spec-1.1.0
+  Downloaded toml_datetime v1.1.1+spec-1.1.0
+  Downloaded str_indices v0.4.4
+  Downloaded shlex v2.0.1
+  Downloaded rustls-pki-types v1.14.1
   Downloaded mio v1.2.0
   Downloaded insta v1.48.0
-  Downloaded hashbrown v0.17.0
-  Downloaded icu_normalizer v2.2.0
-  Downloaded cc v1.4.2
-  Downloaded siphasher v1.0.2
-  Downloaded miniz_oxide v0.8.9
-  Downloaded lsp-types v0.97.0
-  Downloaded icu_locale_core v2.2.0
-  Downloaded getrandom v0.4.2
-  Downloaded crossbeam-utils v0.8.21
-  Downloaded proc-macro2 v1.0.106
-  Downloaded num-traits v0.2.19
-  Downloaded log v0.4.29
   Downloaded indexmap v2.14.0
-  Downloaded icu_properties v2.2.0
-  Downloaded httparse v1.10.1
-  Downloaded ring v0.17.14
-  Downloaded crossbeam-channel v0.5.15
-  Downloaded cookie v0.18.1
-  Downloaded const-oid v0.10.2
-  Downloaded block-buffer v0.12.1
-  Downloaded thiserror v2.0.20
-  Downloaded phf v0.14.0
-  Downloaded parking_lot_core v0.9.12
-  Downloaded parking_lot v0.12.5
-  Downloaded once_cell v1.21.4
-  Downloaded litrs v1.0.0
   Downloaded http v1.4.0
-  Downloaded fluent-uri v0.1.4
-  Downloaded anyhow v1.0.104
-  Downloaded hybrid-array v0.4.13
-  Downloaded flate2 v1.1.9
-  Downloaded bytes v1.11.1
-  Downloaded bit-vec v0.8.0
-  Downloaded phf_shared v0.14.0
-  Downloaded lock_api v0.4.14
-  Downloaded is_terminal_polyfill v1.70.2
-  Downloaded digest v0.11.3
-  Downloaded crypto-common v0.2.2
-  Downloaded colorchoice v1.0.5
-  Downloaded utf8_iter v1.0.4
-  Downloaded matchers v0.2.0
-  Downloaded bit-set v0.8.0
-  Downloaded potential_utf v0.1.5
-  Downloaded percent-encoding v2.3.2
-  Downloaded num-conv v0.2.1
-  Downloaded lazy_static v1.5.0
-  Downloaded clap_lex v1.1.0
-  Downloaded cfg-if v1.0.4
-  Downloaded serde_spanned v1.1.1
-  Downloaded rand_chacha v0.9.0
-  Downloaded idna_adapter v1.2.2
-  Downloaded document-features v0.2.12
-  Downloaded crc32fast v1.5.0
-  Downloaded bitflags v1.3.2
-  Downloaded rustc-hash v2.1.3
-  Downloaded quote v1.0.45
-  Downloaded quick-error v1.2.3
-  Downloaded pin-project-lite v0.2.17
-  Downloaded nu-ansi-term v0.50.3
-  Downloaded itoa v1.0.18
-  Downloaded getrandom v0.2.17
-  Downloaded thiserror-impl v2.0.20
-  Downloaded strsim v0.11.1
-  Downloaded stable_deref_trait v1.2.1
+  Downloaded zerofrom-derive v0.1.7
+  Downloaded utf8parse v0.2.2
+  Downloaded tracing-log v0.2.0
+  Downloaded tinystr v0.8.3
+  Downloaded synstructure v0.13.2
   Downloaded signal-hook-registry v1.4.8
-  Downloaded icu_provider v2.2.0
+  Downloaded memchr v2.8.3
   Downloaded icu_collections v2.2.0
+  Downloaded cc v1.4.2
+  Downloaded flate2 v1.1.9
+  Downloaded crossbeam-channel v0.5.15
+  Downloaded symlink v0.1.0
+  Downloaded strsim v0.11.1
+  Downloaded icu_properties v2.2.0
+  Downloaded base64 v0.23.1
+  Downloaded icu_normalizer_data v2.2.0
+  Downloaded icu_normalizer v2.2.0
+  Downloaded icu_locale_core v2.2.0
+  Downloaded bytes v1.11.1
+  Downloaded thread_local v1.1.9
+  Downloaded parking_lot v0.12.5
+  Downloaded ring v0.17.14
+  Downloaded num-traits v0.2.19
+  Downloaded lsp-types v0.97.0
+  Downloaded log v0.4.29
+  Downloaded icu_provider v2.2.0
+  Downloaded const-oid v0.10.2
+  Downloaded strum v0.28.0
+  Downloaded serde_spanned v1.1.1
+  Downloaded getrandom v0.4.2
+  Downloaded getrandom v0.3.4
+  Downloaded clap v4.6.6
+  Downloaded untrusted v0.9.0
+  Downloaded siphasher v1.0.2
+  Downloaded proc-macro2 v1.0.106
+  Downloaded lock_api v0.4.14
+  Downloaded hybrid-array v0.4.13
   Downloaded find-msvc-tools v0.1.10
+  Downloaded cookie v0.18.1
+  Downloaded getrandom v0.2.17
+  Downloaded crossbeam-epoch v0.9.20
   Downloaded cookie_store v0.22.1
   Downloaded console v0.16.4
+  Downloaded clap_derive v4.6.4
+  Downloaded subtle v2.6.1
+  Downloaded parking_lot_core v0.9.12
+  Downloaded once_cell v1.21.4
+  Downloaded litrs v1.0.0
+  Downloaded litemap v0.8.2
+  Downloaded fluent-uri v0.1.4
+  Downloaded crossbeam-utils v0.8.21
+  Downloaded crc32fast v1.5.0
   Downloaded bitflags v2.11.1
-  Downloaded rand_xorshift v0.4.0
-  Downloaded rand_core v0.9.5
-  Downloaded phf_generator v0.14.0
-  Downloaded md5 v0.8.1
-  Downloaded fastrand v2.4.1
-  Downloaded errno v0.3.14
-  Downloaded displaydoc v0.2.5
-  Downloaded heck v0.5.0
-  Downloaded getrandom v0.3.4
-  Downloaded form_urlencoded v1.2.2
-  Downloaded equivalent v1.0.2
-  Downloaded crossbeam-epoch v0.9.20
-  Downloaded cpufeatures v0.3.0
-  Downloaded cfg_aliases v0.2.1
-  Downloaded clap_builder v4.6.6
-  Downloaded deranged v0.5.8
-  Downloaded autocfg v1.5.0
-  Downloaded fnv v1.0.7
-  Downloaded clap v4.6.6
-  Downloaded aho-corasick v1.1.4
-  Downloaded time-core v0.1.8
-  Downloaded linux-raw-sys v0.12.1
+  Downloaded thiserror v2.0.20
   Downloaded serde_repr v0.1.20
+  Downloaded rusty-fork v0.3.1
+  Downloaded ppv-lite86 v0.2.21
+  Downloaded phf v0.14.0
+  Downloaded nu-ansi-term v0.50.3
+  Downloaded fastrand v2.4.1
   Downloaded phf_macros v0.14.0
+  Downloaded phf_generator v0.14.0
+  Downloaded digest v0.11.3
+  Downloaded deranged v0.5.8
+  Downloaded anstream v1.0.0
+  Downloaded phf_shared v0.14.0
+  Downloaded lazy_static v1.5.0
+  Downloaded document-features v0.2.12
+  Downloaded displaydoc v0.2.5
+  Downloaded rand_chacha v0.9.0
+  Downloaded pin-project-lite v0.2.17
+  Downloaded cpufeatures v0.3.0
+  Downloaded colorchoice v1.0.5
   Downloaded anstyle-parse v1.0.0
-  Downloaded anstyle v1.0.14
+  Downloaded errno v0.3.14
+  Downloaded equivalent v1.0.2
+  Downloaded itoa v1.0.18
+  Downloaded is_terminal_polyfill v1.70.2
+  Downloaded heck v0.5.0
+  Downloaded potential_utf v0.1.5
+  Downloaded num-conv v0.2.1
+  Downloaded clap_lex v1.1.0
+  Downloaded bitflags v1.3.2
+  Downloaded bit-vec v0.8.0
+  Downloaded anyhow v1.0.104
+  Downloaded rand_core v0.9.5
+  Downloaded percent-encoding v2.3.2
+  Downloaded idna_adapter v1.2.2
+  Downloaded crypto-common v0.2.2
+  Downloaded block-buffer v0.12.1
+  Downloaded linux-raw-sys v0.12.1
    Compiling proc-macro2 v1.0.106
-   Compiling quote v1.0.45
    Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.45
    Compiling serde_core v1.0.229
-   Compiling libc v0.2.186
    Compiling cfg-if v1.0.4
+   Compiling libc v0.2.186
    Compiling serde v1.0.229
    Compiling smallvec v1.15.1
    Compiling memchr v2.8.3
@@ -2099,8 +2099,8 @@ exit_status=0
    Compiling stable_deref_trait v1.2.1
    Compiling bitflags v1.3.2
    Compiling fluent-uri v0.1.4
-   Compiling str_indices v0.4.4
    Compiling heck v0.5.0
+   Compiling str_indices v0.4.4
    Compiling ropey v1.6.1
    Compiling serde_derive v1.0.229
    Compiling synstructure v0.13.2
@@ -2112,41 +2112,40 @@ exit_status=0
    Compiling displaydoc v0.2.5
    Compiling serde_repr v0.1.20
    Compiling tracing-core v0.1.36
-   Compiling siphasher v1.0.2
    Compiling litemap v0.8.2
-   Compiling zerovec v0.11.6
-   Compiling writeable v0.6.3
-   Compiling lsp-types v0.97.0
-   Compiling pin-project-lite v0.2.17
    Compiling thiserror v2.0.20
+   Compiling zerovec v0.11.6
+   Compiling pin-project-lite v0.2.17
+   Compiling lsp-types v0.97.0
+   Compiling siphasher v1.0.2
+   Compiling writeable v0.6.3
    Compiling tinystr v0.8.3
    Compiling potential_utf v0.1.5
    Compiling icu_locale_core v2.2.0
    Compiling phf_shared v0.14.0
    Compiling zerotrie v0.2.4
-   Compiling strum_macros v0.28.0
    Compiling tracing-attributes v0.1.31
+   Compiling strum_macros v0.28.0
    Compiling thiserror-impl v2.0.20
+   Compiling utf8_iter v1.0.4
+   Compiling icu_normalizer_data v2.2.0
    Compiling icu_properties_data v2.2.0
    Compiling fastrand v2.4.1
-   Compiling icu_normalizer_data v2.2.0
-   Compiling utf8_iter v1.0.4
-   Compiling icu_collections v2.2.0
-   Compiling phf_generator v0.14.0
    Compiling strum v0.28.0
+   Compiling phf_generator v0.14.0
+   Compiling icu_collections v2.2.0
    Compiling tracing v0.1.44
    Compiling icu_provider v2.2.0
    Compiling perl-token v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-token)
    Compiling phf_macros v0.14.0
-   Compiling icu_normalizer v2.2.0
    Compiling icu_properties v2.2.0
+   Compiling icu_normalizer v2.2.0
    Compiling phf v0.14.0
    Compiling perl-semantic-facts v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-semantic-facts)
    Compiling percent-encoding v2.3.2
-   Compiling parking_lot_core v0.9.12
    Compiling typenum v1.20.0
+   Compiling parking_lot_core v0.9.12
    Compiling hybrid-array v0.4.13
-   Compiling idna_adapter v1.2.2
 warning: missing documentation for a struct
   --> crates/perl-semantic-facts/src/lib.rs:24:9
    |
@@ -3978,6 +3977,7 @@ warning: missing documentation for a method
 536 |     pub fn is_detected(&self) -> bool {
     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+   Compiling idna_adapter v1.2.2
    Compiling perl-regex v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-regex)
 warning: missing documentation for a module
  --> crates/perl-regex/src/lib.rs:6:1
@@ -4175,15 +4175,15 @@ warning: missing documentation for an associated constant
    Compiling perl-lexer v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-lexer)
 warning: `perl-ast` (lib) generated 37 warnings (35 duplicates)
    Compiling find-msvc-tools v0.1.10
-   Compiling shlex v2.0.1
-   Compiling scopeguard v1.2.0
-   Compiling getrandom v0.4.2
    Compiling regex-syntax v0.8.11
 warning: `perl-regex` (lib) generated 24 warnings
-   Compiling perl-parser-core v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-parser-core)
+   Compiling scopeguard v1.2.0
+   Compiling shlex v2.0.1
 warning: `perl-semantic-facts` (lib) generated 298 warnings
-   Compiling lock_api v0.4.14
+   Compiling getrandom v0.4.2
    Compiling cc v1.4.2
+   Compiling lock_api v0.4.14
+   Compiling perl-parser-core v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-parser-core)
    Compiling idna v1.1.0
    Compiling form_urlencoded v1.2.2
    Compiling aho-corasick v1.1.4
@@ -4193,50 +4193,53 @@ warning: `perl-semantic-facts` (lib) generated 298 warnings
    Compiling ring v0.17.14
    Compiling block-buffer v0.12.1
    Compiling crypto-common v0.2.2
+   Compiling crossbeam-utils v0.8.21
+   Compiling const-oid v0.10.2
    Compiling log v0.4.29
    Compiling winnow v1.0.2
-   Compiling const-oid v0.10.2
-   Compiling crossbeam-utils v0.8.21
    Compiling digest v0.11.3
    Compiling toml_parser v1.1.3+spec-1.1.0
    Compiling perl-symbol v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-symbol)
-   Compiling toml_datetime v1.1.1+spec-1.1.0
    Compiling serde_spanned v1.1.1
-   Compiling same-file v1.0.6
-   Compiling bitflags v2.11.1
-   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling toml_datetime v1.1.1+spec-1.1.0
    Compiling cpufeatures v0.3.0
+   Compiling bitflags v2.11.1
    Compiling zeroize v1.8.2
-   Compiling rustls-pki-types v1.14.1
-   Compiling sha2 v0.11.0
+   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling same-file v1.0.6
    Compiling toml v1.1.4+spec-1.1.0
    Compiling walkdir v2.5.0
+   Compiling rustls-pki-types v1.14.1
+   Compiling sha2 v0.11.0
    Compiling perl-uri v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-uri)
    Compiling getrandom v0.2.17
    Compiling utf8parse v0.2.2
-   Compiling bytes v1.11.1
-   Compiling httparse v1.10.1
    Compiling untrusted v0.9.0
-   Compiling getrandom v0.3.4
+   Compiling bytes v1.11.1
    Compiling crc32fast v1.5.0
+   Compiling getrandom v0.3.4
+   Compiling httparse v1.10.1
    Compiling anstyle-parse v1.0.0
    Compiling perl-workspace v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-workspace)
-   Compiling crossbeam-epoch v0.9.20
-   Compiling is_terminal_polyfill v1.70.2
-   Compiling powerfmt v0.2.0
+   Compiling anstyle-query v1.1.5
    Compiling portable-atomic v1.13.1
-   Compiling colorchoice v1.0.5
+   Compiling rustix v1.1.4
    Compiling rustls v0.23.40
+   Compiling anstyle v1.0.14
+   Compiling lazy_static v1.5.0
    Compiling anyhow v1.0.104
    Compiling simd-adler32 v0.3.9
-   Compiling lazy_static v1.5.0
+   Compiling crossbeam-epoch v0.9.20
+   Compiling colorchoice v1.0.5
+   Compiling powerfmt v0.2.0
    Compiling adler2 v2.0.1
-   Compiling anstyle v1.0.14
-   Compiling anstyle-query v1.1.5
-   Compiling rustix v1.1.4
-   Compiling anstream v1.0.0
+   Compiling is_terminal_polyfill v1.70.2
    Compiling miniz_oxide v0.8.9
+   Compiling anstream v1.0.0
+   Compiling deranged v0.5.8
+   Compiling sharded-slab v0.1.7
    Compiling perl-module v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-module)
+   Compiling rustls-webpki v0.103.13
 warning: missing documentation for a function
    --> crates/perl-module/src/import/mod.rs:566:1
     |
@@ -4249,38 +4252,35 @@ note: the lint level is defined here
   1 | #![warn(missing_docs)]
     |         ^^^^^^^^^^^^
 
-   Compiling sharded-slab v0.1.7
-   Compiling rustls-webpki v0.103.13
-   Compiling deranged v0.5.8
-warning: `perl-module` (lib) generated 1 warning
    Compiling http v1.4.0
+warning: `perl-module` (lib) generated 1 warning
    Compiling crossbeam-channel v0.5.15
    Compiling tracing-log v0.2.0
    Compiling matchers v0.2.0
    Compiling regex v1.13.1
    Compiling thread_local v1.1.9
-   Compiling subtle v2.6.1
-   Compiling nu-ansi-term v0.50.3
-   Compiling linux-raw-sys v0.12.1
-   Compiling strsim v0.11.1
+   Compiling perl-test-must v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-test-must)
+   Compiling base64 v0.23.1
+   Compiling clap_lex v1.1.0
    Compiling rustc-hash v2.1.3
    Compiling perl-pod v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-pod)
-   Compiling clap_lex v1.1.0
-   Compiling time-core v0.1.8
-   Compiling num-conv v0.2.1
-   Compiling cfg_aliases v0.2.1
-   Compiling base64 v0.23.1
-   Compiling perl-test-must v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-test-must)
+   Compiling nu-ansi-term v0.50.3
+   Compiling linux-raw-sys v0.12.1
+   Compiling subtle v2.6.1
    Compiling zerocopy v0.8.48
+   Compiling strsim v0.11.1
+   Compiling cfg_aliases v0.2.1
+   Compiling num-conv v0.2.1
+   Compiling time-core v0.1.8
+   Compiling time v0.3.47
+   Compiling nix v0.31.3
+   Compiling clap_builder v4.6.6
+   Compiling tracing-subscriber v0.3.23
+   Compiling perl-semantic-analyzer v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-semantic-analyzer)
    Compiling ureq-proto v0.6.1
    Compiling perl-tdd-support v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-tdd-support)
-   Compiling nix v0.31.3
-   Compiling time v0.3.47
-   Compiling clap_builder v4.6.6
-   Compiling perl-semantic-analyzer v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-semantic-analyzer)
-   Compiling tracing-subscriber v0.3.23
-   Compiling flate2 v1.1.9
    Compiling rand_core v0.9.5
+   Compiling flate2 v1.1.9
    Compiling perl-lsp-rs-core v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-lsp-rs-core)
    Compiling perl-source-identity v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-source-identity)
    Compiling webpki-roots v1.0.7
@@ -4288,19 +4288,19 @@ warning: `perl-module` (lib) generated 1 warning
    Compiling clap_derive v4.6.4
    Compiling errno v0.3.14
    Compiling symlink v0.1.0
-   Compiling perl-line-index v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-line-index)
    Compiling utf8-zero v0.8.1
-   Compiling perl-subprocess-runtime v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-subprocess-runtime)
-   Compiling autocfg v1.5.0
    Compiling tagptr v0.2.0
+   Compiling autocfg v1.5.0
    Compiling equivalent v1.0.2
-   Compiling moka v0.12.16
-   Compiling num-traits v0.2.19
-   Compiling perl-lsp-perltidy v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-lsp-perltidy)
-   Compiling tempfile v3.27.0
-   Compiling clap v4.6.6
-   Compiling ureq v3.4.0
+   Compiling perl-line-index v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-line-index)
+   Compiling perl-subprocess-runtime v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-subprocess-runtime)
    Compiling perl-parser v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-parser)
+   Compiling perl-lsp-perltidy v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-lsp-perltidy)
+   Compiling num-traits v0.2.19
+   Compiling moka v0.12.16
+   Compiling clap v4.6.6
+   Compiling tempfile v3.27.0
+   Compiling ureq v3.4.0
    Compiling tracing-appender v0.2.5
    Compiling signal-hook-registry v1.4.8
    Compiling perl-dap v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-dap)
@@ -4309,8 +4309,8 @@ warning: `perl-module` (lib) generated 1 warning
    Compiling socket2 v0.6.3
    Compiling mio v1.2.0
    Compiling perl-test-facts v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-test-facts)
-   Compiling ppv-lite86 v0.2.21
    Compiling tokio v1.53.1
+   Compiling ppv-lite86 v0.2.21
    Compiling wait-timeout v0.2.1
    Compiling quick-error v1.2.3
    Compiling perl-lsp-rs v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-lsp-rs)
@@ -4351,12 +4351,12 @@ warning: missing documentation for a function
 
    Compiling console v0.16.4
    Compiling which v8.0.5
-warning: `perl-ripr-facts` (lib) generated 2 warnings
+   Compiling unarray v0.1.4
    Compiling md5 v0.8.1
    Compiling similar v2.7.0
-   Compiling unarray v0.1.4
-   Compiling proptest v1.11.0
    Compiling insta v1.48.0
+warning: `perl-ripr-facts` (lib) generated 2 warnings
+   Compiling proptest v1.11.0
 warning: variant `TrustedUserOperator` is never constructed
    --> crates/perl-lsp-rs/src/runtime/mod.rs:161:5
     |
@@ -4370,7 +4370,7 @@ warning: variant `TrustedUserOperator` is never constructed
     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
 warning: `perl-lsp-rs` (lib) generated 1 warning
-    Finished `test` profile [optimized + debuginfo] target(s) in 3m 48s
+    Finished `test` profile [optimized + debuginfo] target(s) in 3m 36s
      Running tests/ai_activation_authority_contract.rs (target/debug/deps/ai_activation_authority_contract-4187dc40297d122e)
 
 running 1 test
@@ -6461,12 +6461,12 @@ warning: variant `TrustedUserOperator` is never constructed
 
 warning: `perl-lsp-rs` (lib) generated 1 warning
    Compiling perl-lsp-rs-core v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-lsp-rs-core)
-    Finished `test` profile [optimized + debuginfo] target(s) in 3.31s
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.17s
      Running tests/perllsp_settings_schema_tests.rs (target/debug/deps/perllsp_settings_schema_tests-fa3e17a77b00f878)
 
 running 5 tests
-test generic_formatter_schema_excludes_external_process_modes ... ok
 test generic_schema_fields_are_behavior_backed_by_runtime_config ... ok
+test generic_formatter_schema_excludes_external_process_modes ... ok
 test generic_schema_excludes_security_sensitive_lsp_settings ... ok
 test generic_settings_schema_is_server_native_and_namespaced ... ok
 test removed_client_test_runner_authority_stays_absent_from_current_surfaces ... ok
@@ -8629,7 +8629,7 @@ warning: function `client_configuration_ignores_ai_endpoint_and_credential_field
      = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
 
 warning: `perl-lsp-rs-core` (lib test) generated 11 warnings (run `cargo fix --lib -p perl-lsp-rs-core --tests` to apply 9 suggestions)
-    Finished `test` profile [optimized + debuginfo] target(s) in 1m 20s
+    Finished `test` profile [optimized + debuginfo] target(s) in 1m 17s
      Running unittests src/lib.rs (target/debug/deps/perl_lsp_rs_core-a5cc929b0d85ba62)
 
 running 2 tests
@@ -8643,50 +8643,50 @@ exit_status=0
 
 ## inline\ completion\ first\ effect cargo test -p perl-lsp-rs --features expose_lsp_test_api --test lsp_ai_inline_completion_tests --locked
  Downloading crates ...
-  Downloaded half v2.7.1
-  Downloaded tinytemplate v1.2.1
-  Downloaded slab v0.4.12
-  Downloaded either v1.15.0
+  Downloaded alloca v0.4.0
+  Downloaded chacha20 v0.10.0
+  Downloaded futures-task v0.3.32
+  Downloaded cast v0.3.0
+  Downloaded ciborium-ll v0.2.2
+  Downloaded plotters-svg v0.3.7
+  Downloaded anes v0.1.6
+  Downloaded crossbeam-deque v0.8.6
+  Downloaded assert_cmd v2.2.2
+  Downloaded ciborium-io v0.2.2
+  Downloaded ciborium v0.2.2
+  Downloaded termtree v0.5.1
+  Downloaded predicates-core v1.0.10
   Downloaded page_size v0.6.0
   Downloaded serial_test v4.0.1
-  Downloaded termtree v0.5.1
+  Downloaded normalize-line-endings v0.3.0
   Downloaded futures-core v0.3.32
-  Downloaded rand_core v0.10.1
-  Downloaded criterion-plot v0.8.2
-  Downloaded zerocopy-derive v0.8.48
-  Downloaded itertools v0.13.0
-  Downloaded rand v0.10.2
-  Downloaded oorandom v11.1.5
-  Downloaded futures-executor v0.3.32
-  Downloaded predicates-core v1.0.10
-  Downloaded difflib v0.4.0
-  Downloaded predicates-tree v1.0.13
   Downloaded plotters-backend v0.3.7
+  Downloaded either v1.15.0
+  Downloaded float-cmp v0.10.0
+  Downloaded tinytemplate v1.2.1
+  Downloaded rand_core v0.10.1
   Downloaded static_assertions v1.1.0
   Downloaded predicates v3.1.4
-  Downloaded iana-time-zone v0.1.65
+  Downloaded itertools v0.13.0
+  Downloaded half v2.7.1
   Downloaded rayon-core v1.13.0
-  Downloaded chacha20 v0.10.0
-  Downloaded crossbeam-deque v0.8.6
-  Downloaded ciborium v0.2.2
-  Downloaded assert_cmd v2.2.2
-  Downloaded serial_test_derive v4.0.1
-  Downloaded glob v0.3.4
-  Downloaded futures-task v0.3.32
-  Downloaded criterion v0.8.2
-  Downloaded plotters v0.3.7
+  Downloaded zerocopy-derive v0.8.48
   Downloaded rayon v1.12.0
+  Downloaded criterion v0.8.2
+  Downloaded rand v0.10.2
   Downloaded futures-util v0.3.32
-  Downloaded ciborium-io v0.2.2
-  Downloaded ciborium-ll v0.2.2
-  Downloaded chrono v0.4.45
-  Downloaded float-cmp v0.10.0
-  Downloaded cast v0.3.0
-  Downloaded alloca v0.4.0
-  Downloaded plotters-svg v0.3.7
   Downloaded bstr v1.12.1
-  Downloaded anes v0.1.6
-  Downloaded normalize-line-endings v0.3.0
+  Downloaded plotters v0.3.7
+  Downloaded iana-time-zone v0.1.65
+  Downloaded glob v0.3.4
+  Downloaded chrono v0.4.45
+  Downloaded slab v0.4.12
+  Downloaded oorandom v11.1.5
+  Downloaded futures-executor v0.3.32
+  Downloaded serial_test_derive v4.0.1
+  Downloaded predicates-tree v1.0.13
+  Downloaded criterion-plot v0.8.2
+  Downloaded difflib v0.4.0
    Compiling serde v1.0.229
    Compiling rand_core v0.10.1
    Compiling getrandom v0.4.2
@@ -8849,9 +8849,9 @@ warning: `perl-regex` (lib) generated 24 warnings
    Compiling perl-semantic-facts v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-semantic-facts)
    Compiling perl-source-identity v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-source-identity)
    Compiling uuid v1.24.0
-   Compiling either v1.15.0
    Compiling rayon-core v1.13.0
-   Compiling moka v0.12.16
+   Compiling either v1.15.0
+   Compiling ureq v3.4.0
 warning: missing documentation for a struct
   --> crates/perl-semantic-facts/src/lib.rs:24:9
    |
@@ -10683,26 +10683,25 @@ warning: missing documentation for a method
 536 |     pub fn is_detected(&self) -> bool {
     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-   Compiling ureq v3.4.0
-   Compiling half v2.7.1
    Compiling ppv-lite86 v0.2.21
+   Compiling half v2.7.1
+   Compiling moka v0.12.16
    Compiling crossbeam-deque v0.8.6
    Compiling alloca v0.4.0
-   Compiling predicates-core v1.0.10
    Compiling plotters-backend v0.3.7
-   Compiling ciborium-io v0.2.2
-   Compiling futures-task v0.3.32
-   Compiling slab v0.4.12
    Compiling futures-core v0.3.32
-   Compiling futures-util v0.3.32
-   Compiling ciborium-ll v0.2.2
+   Compiling ciborium-io v0.2.2
+   Compiling predicates-core v1.0.10
+   Compiling slab v0.4.12
+   Compiling futures-task v0.3.32
    Compiling rusty-fork v0.3.1
+   Compiling futures-util v0.3.32
    Compiling perl-position-tracking v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-position-tracking)
-   Compiling plotters-svg v0.3.7
+   Compiling ciborium-ll v0.2.2
 warning: `perl-semantic-facts` (lib) generated 298 warnings
    Compiling perl-ast-v2 v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-ast-v2)
-   Compiling perl-ast v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-ast)
    Compiling perl-lexer v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-lexer)
+   Compiling perl-ast v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-ast)
 warning: missing documentation for an associated constant
    --> crates/perl-ast/src/ast.rs:188:15
     |
@@ -10746,13 +10745,11 @@ warning: missing documentation for an associated constant
    Compiling perl-parser-core v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-parser-core)
 warning: `perl-ast` (lib) generated 37 warnings (35 duplicates)
    Compiling perl-symbol v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-symbol)
-   Compiling rand_chacha v0.9.0
-   Compiling itertools v0.13.0
+   Compiling plotters-svg v0.3.7
    Compiling perl-workspace v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-workspace)
    Compiling perl-tdd-support v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-tdd-support)
    Compiling perl-lsp-perltidy v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-lsp-perltidy)
    Compiling perl-module v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-module)
-   Compiling float-cmp v0.10.0
 warning: missing documentation for a function
    --> crates/perl-module/src/import/mod.rs:566:1
     |
@@ -10765,26 +10762,29 @@ note: the lint level is defined here
   1 | #![warn(missing_docs)]
     |         ^^^^^^^^^^^^
 
-   Compiling chacha20 v0.10.0
    Compiling perl-semantic-analyzer v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-semantic-analyzer)
 warning: `perl-module` (lib) generated 1 warning
    Compiling perl-parser v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-parser)
    Compiling perl-lsp-rs-core v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-lsp-rs-core)
-   Compiling termtree v0.5.1
+   Compiling rand_chacha v0.9.0
+   Compiling itertools v0.13.0
+   Compiling float-cmp v0.10.0
+   Compiling chacha20 v0.10.0
    Compiling cast v0.3.0
    Compiling assert_cmd v2.2.2
+   Compiling normalize-line-endings v0.3.0
    Compiling difflib v0.4.0
    Compiling iana-time-zone v0.1.65
+   Compiling termtree v0.5.1
    Compiling perl-lsp-rs v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-lsp-rs)
-   Compiling normalize-line-endings v0.3.0
+   Compiling predicates-tree v1.0.13
    Compiling chrono v0.4.45
    Compiling predicates v3.1.4
-   Compiling criterion-plot v0.8.2
-   Compiling predicates-tree v1.0.13
    Compiling proptest v1.11.0
+   Compiling criterion-plot v0.8.2
    Compiling rand v0.10.2
+   Compiling perl-dap v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-dap)
    Compiling perl-ripr-facts v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-ripr-facts)
-   Compiling rayon v1.12.0
 warning: missing documentation for a function
    --> crates/perl-ripr-facts/src/lib.rs:643:1
     |
@@ -10812,19 +10812,19 @@ warning: missing documentation for a function
 761 | | ) -> i32 {
     | |________^
 
-   Compiling perl-dap v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-dap)
-   Compiling plotters v0.3.7
+   Compiling rayon v1.12.0
 warning: `perl-ripr-facts` (lib) generated 2 warnings
+   Compiling plotters v0.3.7
    Compiling ciborium v0.2.2
    Compiling futures-executor v0.3.32
    Compiling tinytemplate v1.2.1
    Compiling bstr v1.12.1
    Compiling page_size v0.6.0
    Compiling serial_test_derive v4.0.1
-   Compiling glob v0.3.4
    Compiling oorandom v11.1.5
    Compiling anes v0.1.6
-   Compiling criterion v0.8.2
+   Compiling glob v0.3.4
+   Compiling insta v1.48.0
    Compiling perl-corpus v0.17.0 (/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-corpus)
 warning: missing documentation for a module
    --> crates/perl-corpus/src/lib.rs:223:1
@@ -11958,48 +11958,265 @@ warning: variable does not need to be mutable
     |
     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
 
-   Compiling insta v1.48.0
-   Compiling serial_test v4.0.1
+   Compiling criterion v0.8.2
 warning: `perl-corpus` (lib) generated 186 warnings
+   Compiling serial_test v4.0.1
    Compiling static_assertions v1.1.0
 warning: `perl-lsp-rs` (lib) generated 1 warning (run `cargo fix --lib -p perl-lsp-rs` to apply 1 suggestion)
-error[E0599]: no method named `test_apply_generic_ai_completion_settings` found for struct `LspServer` in the current scope
-   --> crates/perl-lsp-rs/tests/lsp_ai_inline_completion_tests.rs:663:12
-    |
-663 |     server.test_apply_generic_ai_completion_settings(json!({
-    |     -------^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `LspServer`
+    Finished `test` profile [optimized + debuginfo] target(s) in 2m 57s
+     Running tests/lsp_ai_inline_completion_tests.rs (target/debug/deps/lsp_ai_inline_completion_tests-741742cb957b04e0)
 
-error[E0599]: no method named `test_seed_ai_transport` found for struct `LspServer` in the current scope
-   --> crates/perl-lsp-rs/tests/lsp_ai_inline_completion_tests.rs:702:12
-    |
-702 |     server.test_seed_ai_transport(&endpoint, "PATH", 100, true);
-    |            ^^^^^^^^^^^^^^^^^^^^^^ method not found in `LspServer`
+running 18 tests
+Content-Length: 208
 
-error[E0599]: no method named `test_apply_generic_ai_completion_settings` found for struct `LspServer` in the current scope
-   --> crates/perl-lsp-rs/tests/lsp_ai_inline_completion_tests.rs:703:12
-    |
-703 |     server.test_apply_generic_ai_completion_settings(json!({
-    |     -------^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `LspServer`
+{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"Perl LSP: Indexing workspace files. Go-to-definition, completion, and workspace search will be available when indexing completes.","type":3}}Content-Length: 93
 
-error[E0599]: no method named `test_ai_backend_available` found for struct `LspServer` in the current scope
-   --> crates/perl-lsp-rs/tests/lsp_ai_inline_completion_tests.rs:711:17
-    |
-711 |         !server.test_ai_backend_available(),
-    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `LspServer`
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":false,"state":"building"}}Content-Length: 208
 
-error[E0599]: no method named `test_set_ai_project_opt_out` found for struct `LspServer` in the current scope
-   --> crates/perl-lsp-rs/tests/lsp_ai_inline_completion_tests.rs:757:12
-    |
-757 |     server.test_set_ai_project_opt_out(true);
-    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    |
-help: there is a method `test_set_root_path` with a similar name
-    |
-757 -     server.test_set_ai_project_opt_out(true);
-757 +     server.test_set_root_path(true);
-    |
+{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"Perl LSP: Indexing workspace files. Go-to-definition, completion, and workspace search will be available when indexing completes.","type":3}}Content-Length: 93
 
-For more information about this error, try `rustc --explain E0599`.
-error: could not compile `perl-lsp-rs` (test "lsp_ai_inline_completion_tests") due to 5 previous errors
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":false,"state":"building"}}Content-Length: 208
+
+{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"Perl LSP: Indexing workspace files. Go-to-definition, completion, and workspace search will be available when indexing completes.","type":3}}Content-Length: 93
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":false,"state":"building"}}Content-Length: 123
+
+{"jsonrpc":"2.0","method":"perl-lsp/active-document-ready","params":{"generation":0,"uri":"file:///ai_project_reducer.pl"}}Content-Length: 127
+
+{"jsonrpc":"2.0","method":"perl-lsp/active-document-ready","params":{"generation":0,"uri":"file:///ai_generic_zero_egress.pl"}}Content-Length: 123
+
+{"jsonrpc":"2.0","method":"perl-lsp/active-document-ready","params":{"generation":0,"uri":"file:///ai_stale_authority.pl"}}Content-Length: 208
+
+{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"Perl LSP: Indexing workspace files. Go-to-definition, completion, and workspace search will be available when indexing completes.","type":3}}Content-Length: 93
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":false,"state":"building"}}Content-Length: 125
+
+{"jsonrpc":"2.0","method":"perl-lsp/active-document-ready","params":{"generation":0,"uri":"file:///ai_generic_authority.pl"}}Content-Length: 2286
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"PL100","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL100"},"data":{"category":"StrictWarnings","code":"PL100","fixable":true,"tags":[]},"message":"Consider adding 'use strict;' for better error checking","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"relatedInformation":[{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_generic_zero_egress.pl"},"message":"Suggestion: Add 'use strict;' at the beginning of your script"},{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_generic_zero_egress.pl"},"message":"Note: The 'use strict' pragma enforces good coding practices by requiring variable declarations, disabling barewords, and preventing symbolic references."}],"severity":2,"source":"perl-lsp"},{"code":"PL101","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL101"},"data":{"category":"StrictWarnings","code":"PL101","fixable":false,"tags":[]},"message":"Consider adding 'use warnings;' for better error detection","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"relatedInformation":[{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_generic_zero_egress.pl"},"message":"Suggestion: Add 'use warnings;' at the beginning of your script"},{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_generic_zero_egress.pl"},"message":"Note: The 'use warnings' pragma enables helpful warning messages about questionable constructs, uninitialized values, and deprecated features."}],"severity":2,"source":"perl-lsp"},{"code":"PL701","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL701"},"data":{"category":"Import","code":"PL701","fixable":false,"tags":[]},"message":"Module 'str' not found. Searched @INC: \n  - lib (workspace includePaths)\n  - . (workspace includePaths)\n  - local/lib/perl5 (workspace includePaths)","range":{"end":{"character":7,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"}],"uri":"file:///ai_generic_zero_egress.pl","version":1}}Content-Length: 2276
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"PL100","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL100"},"data":{"category":"StrictWarnings","code":"PL100","fixable":true,"tags":[]},"message":"Consider adding 'use strict;' for better error checking","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"relatedInformation":[{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_generic_authority.pl"},"message":"Suggestion: Add 'use strict;' at the beginning of your script"},{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_generic_authority.pl"},"message":"Note: The 'use strict' pragma enforces good coding practices by requiring variable declarations, disabling barewords, and preventing symbolic references."}],"severity":2,"source":"perl-lsp"},{"code":"PL101","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL101"},"data":{"category":"StrictWarnings","code":"PL101","fixable":false,"tags":[]},"message":"Consider adding 'use warnings;' for better error detection","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"relatedInformation":[{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_generic_authority.pl"},"message":"Suggestion: Add 'use warnings;' at the beginning of your script"},{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_generic_authority.pl"},"message":"Note: The 'use warnings' pragma enables helpful warning messages about questionable constructs, uninitialized values, and deprecated features."}],"severity":2,"source":"perl-lsp"},{"code":"PL701","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL701"},"data":{"category":"Import","code":"PL701","fixable":false,"tags":[]},"message":"Module 'str' not found. Searched @INC: \n  - lib (workspace includePaths)\n  - . (workspace includePaths)\n  - local/lib/perl5 (workspace includePaths)","range":{"end":{"character":7,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"}],"uri":"file:///ai_generic_authority.pl","version":1}}Content-Length: 2266
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"PL100","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL100"},"data":{"category":"StrictWarnings","code":"PL100","fixable":true,"tags":[]},"message":"Consider adding 'use strict;' for better error checking","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"relatedInformation":[{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_project_reducer.pl"},"message":"Suggestion: Add 'use strict;' at the beginning of your script"},{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_project_reducer.pl"},"message":"Note: The 'use strict' pragma enforces good coding practices by requiring variable declarations, disabling barewords, and preventing symbolic references."}],"severity":2,"source":"perl-lsp"},{"code":"PL101","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL101"},"data":{"category":"StrictWarnings","code":"PL101","fixable":false,"tags":[]},"message":"Consider adding 'use warnings;' for better error detection","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"relatedInformation":[{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_project_reducer.pl"},"message":"Suggestion: Add 'use warnings;' at the beginning of your script"},{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_project_reducer.pl"},"message":"Note: The 'use warnings' pragma enables helpful warning messages about questionable constructs, uninitialized values, and deprecated features."}],"severity":2,"source":"perl-lsp"},{"code":"PL701","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL701"},"data":{"category":"Import","code":"PL701","fixable":false,"tags":[]},"message":"Module 'str' not found. Searched @INC: \n  - lib (workspace includePaths)\n  - . (workspace includePaths)\n  - local/lib/perl5 (workspace includePaths)","range":{"end":{"character":7,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"}],"uri":"file:///ai_project_reducer.pl","version":1}}Content-Length: 89
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":true,"state":"ready"}}Content-Length: 89
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":true,"state":"ready"}}Content-Length: 89
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":true,"state":"ready"}}Content-Length: 2266
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"PL100","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL100"},"data":{"category":"StrictWarnings","code":"PL100","fixable":true,"tags":[]},"message":"Consider adding 'use strict;' for better error checking","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"relatedInformation":[{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_stale_authority.pl"},"message":"Suggestion: Add 'use strict;' at the beginning of your script"},{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_stale_authority.pl"},"message":"Note: The 'use strict' pragma enforces good coding practices by requiring variable declarations, disabling barewords, and preventing symbolic references."}],"severity":2,"source":"perl-lsp"},{"code":"PL101","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL101"},"data":{"category":"StrictWarnings","code":"PL101","fixable":false,"tags":[]},"message":"Consider adding 'use warnings;' for better error detection","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"relatedInformation":[{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_stale_authority.pl"},"message":"Suggestion: Add 'use warnings;' at the beginning of your script"},{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_stale_authority.pl"},"message":"Note: The 'use warnings' pragma enables helpful warning messages about questionable constructs, uninitialized values, and deprecated features."}],"severity":2,"source":"perl-lsp"},{"code":"PL701","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL701"},"data":{"category":"Import","code":"PL701","fixable":false,"tags":[]},"message":"Module 'str' not found. Searched @INC: \n  - lib (workspace includePaths)\n  - . (workspace includePaths)\n  - local/lib/perl5 (workspace includePaths)","range":{"end":{"character":7,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"}],"uri":"file:///ai_stale_authority.pl","version":1}}test generic_ai_settings_cannot_call_an_injected_backend ... ok
+Content-Length: 208
+
+{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"Perl LSP: Indexing workspace files. Go-to-definition, completion, and workspace search will be available when indexing completes.","type":3}}Content-Length: 93
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":false,"state":"building"}}Content-Length: 112
+
+{"jsonrpc":"2.0","method":"perl-lsp/active-document-ready","params":{"generation":0,"uri":"file:///ai_test.pl"}}Content-Length: 489
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"PL001","message":"Expected module name or version, found end of input","range":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"},{"code":"PL001","message":"Expected statement, found end of input","range":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"}],"uri":"file:///ai_test.pl","version":1}}test generic_ai_settings_construct_no_backend_and_open_no_socket ... ok
+Content-Length: 89
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":true,"state":"ready"}}Content-Length: 208
+
+{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"Perl LSP: Indexing workspace files. Go-to-definition, completion, and workspace search will be available when indexing completes.","type":3}}Content-Length: 93
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":false,"state":"building"}}Content-Length: 115
+
+{"jsonrpc":"2.0","method":"perl-lsp/active-document-ready","params":{"generation":0,"uri":"file:///ai_success.pl"}}Content-Length: 492
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"PL001","message":"Expected module name or version, found end of input","range":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"},{"code":"PL001","message":"Expected statement, found end of input","range":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"}],"uri":"file:///ai_success.pl","version":1}}test project_opt_out_blocks_a_retained_trusted_backend_at_first_effect ... ok
+Content-Length: 208
+
+{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"Perl LSP: Indexing workspace files. Go-to-definition, completion, and workspace search will be available when indexing completes.","type":3}}Content-Length: 93
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":false,"state":"building"}}Content-Length: 118
+
+{"jsonrpc":"2.0","method":"perl-lsp/active-document-ready","params":{"generation":0,"uri":"file:///ai_error_nofb.pl"}}Content-Length: 495
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"PL001","message":"Expected module name or version, found end of input","range":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"},{"code":"PL001","message":"Expected statement, found end of input","range":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"}],"uri":"file:///ai_error_nofb.pl","version":1}}Content-Length: 89
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":true,"state":"ready"}}Content-Length: 1019
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"native.testing.require_use_strict","data":{"category":"Other","code":"native.testing.require_use_strict","fixable":true,"tags":[]},"message":"Code does not use strict","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"},{"code":"native.testing.require_use_warnings","data":{"category":"Other","code":"native.testing.require_use_warnings","fixable":true,"tags":[]},"message":"Code does not use warnings","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"},{"code":"PL001","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL001"},"data":{"category":"Parser","code":"PL001","fixable":true,"tags":[]},"message":"Expected statement, found `end of input`","range":{"end":{"character":4,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"}],"uri":"file:///ai_success.pl","version":1}}test test_ai_enabled_success_backend_returns_ai_result ... ok
+Content-Length: 208
+
+{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"Perl LSP: Indexing workspace files. Go-to-definition, completion, and workspace search will be available when indexing completes.","type":3}}Content-Length: 93
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":false,"state":"building"}}Content-Length: 121
+
+{"jsonrpc":"2.0","method":"perl-lsp/active-document-ready","params":{"generation":0,"uri":"file:///ai_invalid_parse.pl"}}Content-Length: 89
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":true,"state":"ready"}}Content-Length: 1016
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"native.testing.require_use_strict","data":{"category":"Other","code":"native.testing.require_use_strict","fixable":true,"tags":[]},"message":"Code does not use strict","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"},{"code":"native.testing.require_use_warnings","data":{"category":"Other","code":"native.testing.require_use_warnings","fixable":true,"tags":[]},"message":"Code does not use warnings","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"},{"code":"PL001","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL001"},"data":{"category":"Parser","code":"PL001","fixable":true,"tags":[]},"message":"Expected statement, found `end of input`","range":{"end":{"character":4,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"}],"uri":"file:///ai_test.pl","version":1}}test test_ai_disabled_returns_deterministic ... ok
+Content-Length: 208
+
+{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"Perl LSP: Indexing workspace files. Go-to-definition, completion, and workspace search will be available when indexing completes.","type":3}}Content-Length: 93
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":false,"state":"building"}}Content-Length: 122
+
+{"jsonrpc":"2.0","method":"perl-lsp/active-document-ready","params":{"generation":0,"uri":"file:///ai_nobackend_nofb.pl"}}Content-Length: 499
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"PL001","message":"Expected module name or version, found end of input","range":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"},{"code":"PL001","message":"Expected statement, found end of input","range":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"}],"uri":"file:///ai_nobackend_nofb.pl","version":1}}Content-Length: 89
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":true,"state":"ready"}}Content-Length: 1022
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"native.testing.require_use_strict","data":{"category":"Other","code":"native.testing.require_use_strict","fixable":true,"tags":[]},"message":"Code does not use strict","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"},{"code":"native.testing.require_use_warnings","data":{"category":"Other","code":"native.testing.require_use_warnings","fixable":true,"tags":[]},"message":"Code does not use warnings","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"},{"code":"PL001","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL001"},"data":{"category":"Parser","code":"PL001","fixable":true,"tags":[]},"message":"Expected statement, found `end of input`","range":{"end":{"character":4,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"}],"uri":"file:///ai_error_nofb.pl","version":1}}test test_ai_error_without_fallback_returns_empty ... ok
+Content-Length: 208
+
+{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"Perl LSP: Indexing workspace files. Go-to-definition, completion, and workspace search will be available when indexing completes.","type":3}}Content-Length: 93
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":false,"state":"building"}}Content-Length: 117
+
+{"jsonrpc":"2.0","method":"perl-lsp/active-document-ready","params":{"generation":0,"uri":"file:///ai_nobackend.pl"}}Content-Length: 494
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"PL001","message":"Expected module name or version, found end of input","range":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"},{"code":"PL001","message":"Expected statement, found end of input","range":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"}],"uri":"file:///ai_nobackend.pl","version":1}}Content-Length: 89
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":true,"state":"ready"}}Content-Length: 711
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"native.testing.require_use_strict","data":{"category":"Other","code":"native.testing.require_use_strict","fixable":true,"tags":[]},"message":"Code does not use strict","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"},{"code":"native.testing.require_use_warnings","data":{"category":"Other","code":"native.testing.require_use_warnings","fixable":true,"tags":[]},"message":"Code does not use warnings","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"}],"uri":"file:///ai_invalid_parse.pl","version":1}}Content-Length: 89
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":true,"state":"ready"}}test test_ai_invalid_parse_output_is_filtered ... ok
+Content-Length: 1026
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"native.testing.require_use_strict","data":{"category":"Other","code":"native.testing.require_use_strict","fixable":true,"tags":[]},"message":"Code does not use strict","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"},{"code":"native.testing.require_use_warnings","data":{"category":"Other","code":"native.testing.require_use_warnings","fixable":true,"tags":[]},"message":"Code does not use warnings","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"},{"code":"PL001","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL001"},"data":{"category":"Parser","code":"PL001","fixable":true,"tags":[]},"message":"Expected statement, found `end of input`","range":{"end":{"character":4,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"}],"uri":"file:///ai_nobackend_nofb.pl","version":1}}Content-Length: 208
+
+{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"Perl LSP: Indexing workspace files. Go-to-definition, completion, and workspace search will be available when indexing completes.","type":3}}Content-Length: 93
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":false,"state":"building"}}Content-Length: 116
+
+{"jsonrpc":"2.0","method":"perl-lsp/active-document-ready","params":{"generation":0,"uri":"file:///ai_error_fb.pl"}}Content-Length: 493
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"PL001","message":"Expected module name or version, found end of input","range":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"},{"code":"PL001","message":"Expected statement, found end of input","range":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"}],"uri":"file:///ai_error_fb.pl","version":1}}test test_ai_no_backend_no_fallback_returns_empty ... ok
+Content-Length: 208
+
+{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"Perl LSP: Indexing workspace files. Go-to-definition, completion, and workspace search will be available when indexing completes.","type":3}}Content-Length: 93
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":false,"state":"building"}}Content-Length: 117
+
+{"jsonrpc":"2.0","method":"perl-lsp/active-document-ready","params":{"generation":0,"uri":"file:///ai_ratelimit.pl"}}Content-Length: 494
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"PL001","message":"Expected module name or version, found end of input","range":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"},{"code":"PL001","message":"Expected statement, found end of input","range":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"}],"uri":"file:///ai_ratelimit.pl","version":1}}Content-Length: 89
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":true,"state":"ready"}}Content-Length: 1021
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"native.testing.require_use_strict","data":{"category":"Other","code":"native.testing.require_use_strict","fixable":true,"tags":[]},"message":"Code does not use strict","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"},{"code":"native.testing.require_use_warnings","data":{"category":"Other","code":"native.testing.require_use_warnings","fixable":true,"tags":[]},"message":"Code does not use warnings","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"},{"code":"PL001","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL001"},"data":{"category":"Parser","code":"PL001","fixable":true,"tags":[]},"message":"Expected statement, found `end of input`","range":{"end":{"character":4,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"}],"uri":"file:///ai_nobackend.pl","version":1}}test test_ai_no_backend_registered_returns_deterministic ... ok
+Content-Length: 208
+
+{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"Perl LSP: Indexing workspace files. Go-to-definition, completion, and workspace search will be available when indexing completes.","type":3}}Content-Length: 93
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":false,"state":"building"}}Content-Length: 115
+
+{"jsonrpc":"2.0","method":"perl-lsp/active-document-ready","params":{"generation":0,"uri":"file:///ai_timeout.pl"}}Content-Length: 492
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"PL001","message":"Expected module name or version, found end of input","range":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"},{"code":"PL001","message":"Expected statement, found end of input","range":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"}],"uri":"file:///ai_timeout.pl","version":1}}Content-Length: 89
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":true,"state":"ready"}}Content-Length: 1020
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"native.testing.require_use_strict","data":{"category":"Other","code":"native.testing.require_use_strict","fixable":true,"tags":[]},"message":"Code does not use strict","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"},{"code":"native.testing.require_use_warnings","data":{"category":"Other","code":"native.testing.require_use_warnings","fixable":true,"tags":[]},"message":"Code does not use warnings","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"},{"code":"PL001","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL001"},"data":{"category":"Parser","code":"PL001","fixable":true,"tags":[]},"message":"Expected statement, found `end of input`","range":{"end":{"character":4,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"}],"uri":"file:///ai_error_fb.pl","version":1}}test test_ai_provider_error_with_fallback_returns_deterministic ... ok
+Content-Length: 208
+
+{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"Perl LSP: Indexing workspace files. Go-to-definition, completion, and workspace search will be available when indexing completes.","type":3}}Content-Length: 93
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":false,"state":"building"}}Content-Length: 129
+
+{"jsonrpc":"2.0","method":"perl-lsp/active-document-ready","params":{"generation":0,"uri":"file:///ai_automatic_local_first.pl"}}Content-Length: 89
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":true,"state":"ready"}}Content-Length: 1021
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"native.testing.require_use_strict","data":{"category":"Other","code":"native.testing.require_use_strict","fixable":true,"tags":[]},"message":"Code does not use strict","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"},{"code":"native.testing.require_use_warnings","data":{"category":"Other","code":"native.testing.require_use_warnings","fixable":true,"tags":[]},"message":"Code does not use warnings","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"},{"code":"PL001","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL001"},"data":{"category":"Parser","code":"PL001","fixable":true,"tags":[]},"message":"Expected statement, found `end of input`","range":{"end":{"character":4,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"}],"uri":"file:///ai_ratelimit.pl","version":1}}test test_ai_rate_limited_with_fallback_returns_deterministic ... ok
+Content-Length: 208
+
+{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"Perl LSP: Indexing workspace files. Go-to-definition, completion, and workspace search will be available when indexing completes.","type":3}}Content-Length: 93
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":false,"state":"building"}}Content-Length: 133
+
+{"jsonrpc":"2.0","method":"perl-lsp/active-document-ready","params":{"generation":0,"uri":"file:///ai_automatic_no_backend_text.pl"}}Content-Length: 89
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":true,"state":"ready"}}Content-Length: 1019
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"native.testing.require_use_strict","data":{"category":"Other","code":"native.testing.require_use_strict","fixable":true,"tags":[]},"message":"Code does not use strict","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"},{"code":"native.testing.require_use_warnings","data":{"category":"Other","code":"native.testing.require_use_warnings","fixable":true,"tags":[]},"message":"Code does not use warnings","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"},{"code":"PL001","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL001"},"data":{"category":"Parser","code":"PL001","fixable":true,"tags":[]},"message":"Expected statement, found `end of input`","range":{"end":{"character":4,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"}],"uri":"file:///ai_timeout.pl","version":1}}test test_ai_timeout_with_fallback_returns_deterministic ... ok
+Content-Length: 208
+
+{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"Perl LSP: Indexing workspace files. Go-to-definition, completion, and workspace search will be available when indexing completes.","type":3}}Content-Length: 93
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":false,"state":"building"}}Content-Length: 133
+
+{"jsonrpc":"2.0","method":"perl-lsp/active-document-ready","params":{"generation":0,"uri":"file:///ai_selected_completion_match.pl"}}Content-Length: 89
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":true,"state":"ready"}}Content-Length: 2296
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"PL100","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL100"},"data":{"category":"StrictWarnings","code":"PL100","fixable":true,"tags":[]},"message":"Consider adding 'use strict;' for better error checking","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"relatedInformation":[{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_automatic_local_first.pl"},"message":"Suggestion: Add 'use strict;' at the beginning of your script"},{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_automatic_local_first.pl"},"message":"Note: The 'use strict' pragma enforces good coding practices by requiring variable declarations, disabling barewords, and preventing symbolic references."}],"severity":2,"source":"perl-lsp"},{"code":"PL101","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL101"},"data":{"category":"StrictWarnings","code":"PL101","fixable":false,"tags":[]},"message":"Consider adding 'use warnings;' for better error detection","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"relatedInformation":[{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_automatic_local_first.pl"},"message":"Suggestion: Add 'use warnings;' at the beginning of your script"},{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_automatic_local_first.pl"},"message":"Note: The 'use warnings' pragma enables helpful warning messages about questionable constructs, uninitialized values, and deprecated features."}],"severity":2,"source":"perl-lsp"},{"code":"PL701","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL701"},"data":{"category":"Import","code":"PL701","fixable":false,"tags":[]},"message":"Module 'str' not found. Searched @INC: \n  - lib (workspace includePaths)\n  - . (workspace includePaths)\n  - local/lib/perl5 (workspace includePaths)","range":{"end":{"character":7,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"}],"uri":"file:///ai_automatic_local_first.pl","version":1}}test test_automatic_request_makes_no_backend_call ... ok
+Content-Length: 208
+
+{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"Perl LSP: Indexing workspace files. Go-to-definition, completion, and workspace search will be available when indexing completes.","type":3}}Content-Length: 93
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":false,"state":"building"}}Content-Length: 136
+
+{"jsonrpc":"2.0","method":"perl-lsp/active-document-ready","params":{"generation":0,"uri":"file:///ai_selected_completion_mismatch.pl"}}Content-Length: 513
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"PL001","message":"Expected module name or version, found end of input","range":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"},{"code":"PL001","message":"Expected statement, found end of input","range":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"}],"uri":"file:///ai_selected_completion_mismatch.pl","version":1}}Content-Length: 89
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":true,"state":"ready"}}Content-Length: 2316
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"PL100","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL100"},"data":{"category":"StrictWarnings","code":"PL100","fixable":true,"tags":[]},"message":"Consider adding 'use strict;' for better error checking","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"relatedInformation":[{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_automatic_no_backend_text.pl"},"message":"Suggestion: Add 'use strict;' at the beginning of your script"},{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_automatic_no_backend_text.pl"},"message":"Note: The 'use strict' pragma enforces good coding practices by requiring variable declarations, disabling barewords, and preventing symbolic references."}],"severity":2,"source":"perl-lsp"},{"code":"PL101","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL101"},"data":{"category":"StrictWarnings","code":"PL101","fixable":false,"tags":[]},"message":"Consider adding 'use warnings;' for better error detection","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"relatedInformation":[{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_automatic_no_backend_text.pl"},"message":"Suggestion: Add 'use warnings;' at the beginning of your script"},{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_automatic_no_backend_text.pl"},"message":"Note: The 'use warnings' pragma enables helpful warning messages about questionable constructs, uninitialized values, and deprecated features."}],"severity":2,"source":"perl-lsp"},{"code":"PL701","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL701"},"data":{"category":"Import","code":"PL701","fixable":false,"tags":[]},"message":"Module 'str' not found. Searched @INC: \n  - lib (workspace includePaths)\n  - . (workspace includePaths)\n  - local/lib/perl5 (workspace includePaths)","range":{"end":{"character":7,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"}],"uri":"file:///ai_automatic_no_backend_text.pl","version":1}}test test_automatic_request_never_shows_backend_text ... ok
+Content-Length: 208
+
+{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"Perl LSP: Indexing workspace files. Go-to-definition, completion, and workspace search will be available when indexing completes.","type":3}}Content-Length: 93
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":false,"state":"building"}}Content-Length: 132
+
+{"jsonrpc":"2.0","method":"perl-lsp/active-document-ready","params":{"generation":0,"uri":"file:///ai_invoked_consults_backend.pl"}}Content-Length: 89
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":true,"state":"ready"}}Content-Length: 2316
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"PL100","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL100"},"data":{"category":"StrictWarnings","code":"PL100","fixable":true,"tags":[]},"message":"Consider adding 'use strict;' for better error checking","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"relatedInformation":[{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_selected_completion_match.pl"},"message":"Suggestion: Add 'use strict;' at the beginning of your script"},{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_selected_completion_match.pl"},"message":"Note: The 'use strict' pragma enforces good coding practices by requiring variable declarations, disabling barewords, and preventing symbolic references."}],"severity":2,"source":"perl-lsp"},{"code":"PL101","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL101"},"data":{"category":"StrictWarnings","code":"PL101","fixable":false,"tags":[]},"message":"Consider adding 'use warnings;' for better error detection","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"relatedInformation":[{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_selected_completion_match.pl"},"message":"Suggestion: Add 'use warnings;' at the beginning of your script"},{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_selected_completion_match.pl"},"message":"Note: The 'use warnings' pragma enables helpful warning messages about questionable constructs, uninitialized values, and deprecated features."}],"severity":2,"source":"perl-lsp"},{"code":"PL701","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL701"},"data":{"category":"Import","code":"PL701","fixable":false,"tags":[]},"message":"Module 'str' not found. Searched @INC: \n  - lib (workspace includePaths)\n  - . (workspace includePaths)\n  - local/lib/perl5 (workspace includePaths)","range":{"end":{"character":7,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"}],"uri":"file:///ai_selected_completion_match.pl","version":1}}test test_invoked_ai_candidate_respects_selected_completion_info_range ... ok
+Content-Length: 89
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":true,"state":"ready"}}Content-Length: 1040
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"native.testing.require_use_strict","data":{"category":"Other","code":"native.testing.require_use_strict","fixable":true,"tags":[]},"message":"Code does not use strict","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"},{"code":"native.testing.require_use_warnings","data":{"category":"Other","code":"native.testing.require_use_warnings","fixable":true,"tags":[]},"message":"Code does not use warnings","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"},{"code":"PL001","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL001"},"data":{"category":"Parser","code":"PL001","fixable":true,"tags":[]},"message":"Expected statement, found `end of input`","range":{"end":{"character":4,"line":0},"start":{"character":4,"line":0}},"severity":1,"source":"perl-lsp"}],"uri":"file:///ai_selected_completion_mismatch.pl","version":1}}test test_invoked_ai_candidate_suppressed_by_mismatched_selected_completion_info ... ok
+Content-Length: 89
+
+{"jsonrpc":"2.0","method":"perl-lsp/index-ready","params":{"ready":true,"state":"ready"}}Content-Length: 2311
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"PL100","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL100"},"data":{"category":"StrictWarnings","code":"PL100","fixable":true,"tags":[]},"message":"Consider adding 'use strict;' for better error checking","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"relatedInformation":[{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_invoked_consults_backend.pl"},"message":"Suggestion: Add 'use strict;' at the beginning of your script"},{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_invoked_consults_backend.pl"},"message":"Note: The 'use strict' pragma enforces good coding practices by requiring variable declarations, disabling barewords, and preventing symbolic references."}],"severity":2,"source":"perl-lsp"},{"code":"PL101","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL101"},"data":{"category":"StrictWarnings","code":"PL101","fixable":false,"tags":[]},"message":"Consider adding 'use warnings;' for better error detection","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"relatedInformation":[{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_invoked_consults_backend.pl"},"message":"Suggestion: Add 'use warnings;' at the beginning of your script"},{"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///ai_invoked_consults_backend.pl"},"message":"Note: The 'use warnings' pragma enables helpful warning messages about questionable constructs, uninitialized values, and deprecated features."}],"severity":2,"source":"perl-lsp"},{"code":"PL701","codeDescription":{"href":"https://docs.perl-lsp.org/errors/PL701"},"data":{"category":"Import","code":"PL701","fixable":false,"tags":[]},"message":"Module 'str' not found. Searched @INC: \n  - lib (workspace includePaths)\n  - . (workspace includePaths)\n  - local/lib/perl5 (workspace includePaths)","range":{"end":{"character":7,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"perl-lsp"}],"uri":"file:///ai_invoked_consults_backend.pl","version":1}}test test_invoked_request_still_consults_backend ... ok
+test stale_trusted_backend_cannot_run_after_authority_replacement ... FAILED
+
+failures:
+
+---- stale_trusted_backend_cannot_run_after_authority_replacement stdout ----
+
+thread 'stale_trusted_backend_cannot_run_after_authority_replacement' (15571) panicked at crates/perl-lsp-rs/tests/lsp_ai_inline_completion_tests.rs:738:5:
+assertion `left == right` failed: a retained backend Arc must not survive authority-generation replacement
+  left: 1
+ right: 0
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/panicking.rs:434:23
+   3: core::panicking::assert_failed::<usize, usize>
+             at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/panicking.rs:394:5
+   4: lsp_ai_inline_completion_tests::stale_trusted_backend_cannot_run_after_authority_replacement
+             at ./tests/lsp_ai_inline_completion_tests.rs:738:5
+   5: lsp_ai_inline_completion_tests::stale_trusted_backend_cannot_run_after_authority_replacement::{{closure}}
+             at ./tests/lsp_ai_inline_completion_tests.rs:725:4
+   6: core::ops::function::FnOnce::call_once
+             at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/ops/function.rs:250:5
+   7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+
+failures:
+    stale_trusted_backend_cannot_run_after_authority_replacement
+
+test result: FAILED. 17 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.49s
+
+error: test failed, to rerun pass `-p perl-lsp-rs --test lsp_ai_inline_completion_tests`
 
 exit_status=101
