@@ -665,6 +665,41 @@ fn abbreviated_base_sha_prefix_matches_like_3957() {
 }
 
 #[test]
+fn malformed_observed_identity_tokens_refuse_without_panicking() {
+    // Reviewer's #12059 falsifier: `full = "ab€def0"` cuts mid-character at
+    // byte 4, so the pre-repair prefix slice panicked on
+    // `full[..expected.len()]`. The repaired comparison must stay total:
+    // no panic, and the unprovable identity routes to the typed refusal —
+    // `base_or_remote_not_proven` (NOT_PROVEN outcome) for the base, never
+    // a silent match.
+    let mut subject = create_subject();
+    subject.expected_base_sha = Some("abcd".to_string());
+
+    let mut observations = healthy_observations();
+    observations.base_sha = Observation::current("ab€def0".to_string());
+    let decision = decide(&subject, &observations);
+    assert_eq!(decision.outcome, WriterPreflightOutcome::NotProven);
+    assert!(has_reason(&decision, WriterPreflightReason::BaseOrRemoteNotProven));
+
+    // Overshort observed token against a well-formed expectation: same law.
+    let mut short_base = healthy_observations();
+    short_base.base_sha = Observation::current("abc".to_string());
+    let short_decision = decide(&subject, &short_base);
+    assert_eq!(short_decision.outcome, WriterPreflightOutcome::NotProven);
+    assert!(has_reason(&short_decision, WriterPreflightReason::BaseOrRemoteNotProven));
+
+    // Candidate/head comparisons refuse through the candidate reason.
+    let mut head_subject = mutate_subject();
+    let mut observations_head = healthy_observations();
+    observations_head.worktrees = Observation::current(healthy_worktrees());
+    observations_head.head_sha = Observation::current("ab€def0".to_string());
+    head_subject.candidate_head_sha = Some("abcd0000".to_string());
+    let head_decision = decide(&head_subject, &observations_head);
+    assert_eq!(head_decision.outcome, WriterPreflightOutcome::Blocked);
+    assert!(has_reason(&head_decision, WriterPreflightReason::WrongOrUnknownCandidate));
+}
+
+#[test]
 fn existing_remote_branch_redirects_create_to_resume() {
     let mut observations = healthy_observations();
     observations.remote_branch =

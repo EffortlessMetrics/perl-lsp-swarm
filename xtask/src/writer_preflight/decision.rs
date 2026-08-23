@@ -4,7 +4,11 @@
 //! [`WriterPreflightObservationSet`] to exactly one
 //! [`WriterPreflightDecision`]. It performs no Git, filesystem, process,
 //! shell, or network calls — the function is total over its inputs and its
-//! only effects are the returned value.
+//! only effects are the returned value. Totality includes malformed input:
+//! identity tokens arrive unvalidated (callers, or #11636 deserializing
+//! observation sets from JSON), so every string comparison guards its own
+//! slicing/charset assumptions and routes malformed identities through the
+//! typed refusal reasons instead of panicking or silently passing.
 //!
 //! # Decision laws (from #11633)
 //!
@@ -688,15 +692,33 @@ fn count_matching_branch(worktrees: &[WorktreeRecord], branch: &str) -> usize {
 /// in issues/plans do not false-negative. This crate cannot import the
 /// bin-side tasks tree (lib/bin split), so the rule is restated here and
 /// pinned by test against the same fixtures.
+///
+/// Totality and refusal semantics (repair after #12059 review): identity
+/// tokens are unvalidated caller/observation strings, so every property
+/// needed by the prefix slice is checked on BOTH operands before slicing —
+/// length, a char boundary at the cut point on `full`, and ASCII-hex
+/// charset on the compared bytes. Exact whole-string equality needs no
+/// slicing and is accepted without charset demands (it cannot panic).
+///
+/// A malformed token never panics and never silently passes: it yields
+/// `false`, i.e. "this identity cannot be proven to match". Callers route
+/// that through the existing typed refusals — `base_or_remote_not_proven`
+/// for the base comparison and `wrong_or_unknown_candidate` for candidate/
+/// head comparisons — because an identity that is not well-formed hex of
+/// sufficient length is precisely an identity that is not proven. This
+/// keeps `decide` total and panic-free over arbitrary deserialized input
+/// (#11636 feeds observation sets from JSON).
 fn sha_matches(full: &str, expected: &str) -> bool {
     const MIN_PREFIX_LEN: usize = 4;
     if expected.eq_ignore_ascii_case(full) {
         return true;
     }
-    expected.len() >= MIN_PREFIX_LEN
-        && expected.len() <= full.len()
-        && expected.chars().all(|c| c.is_ascii_hexdigit())
-        && full[..expected.len()].eq_ignore_ascii_case(expected)
+    let prefixable = expected.len() >= MIN_PREFIX_LEN
+        && full.len() >= expected.len()
+        && full.is_char_boundary(expected.len())
+        && full.as_bytes()[..expected.len()].iter().all(|byte| byte.is_ascii_hexdigit())
+        && expected.chars().all(|c| c.is_ascii_hexdigit());
+    prefixable && full[..expected.len()].eq_ignore_ascii_case(expected)
 }
 
 /// Canonical digest: serde JSON of a closed type (fixed field declaration
