@@ -207,9 +207,6 @@ fn generic_schema_fields_are_behavior_backed_by_runtime_config() {
             "timeoutSecs": 12
         },
         "aiCompletion": {
-            "enabled": true,
-            "provider": "openai_compat",
-            "model": "fixture-model",
             "timeoutMs": 2200,
             "maxOutputTokens": 96,
             "rateLimitRps": 2.0,
@@ -241,8 +238,9 @@ fn generic_schema_fields_are_behavior_backed_by_runtime_config() {
     assert_eq!(server.perltidy_indent_columns, Some(2));
     assert_eq!(server.perltidy_tabs, Some(false));
     assert_eq!(server.perltidy_timeout_secs, 12);
-    assert_eq!(server.ai_completion.user_enabled, true);
-    assert_eq!(server.ai_completion.model, "fixture-model");
+    assert_eq!(server.ai_completion.user_enabled, false);
+    assert_eq!(server.ai_completion.enabled, false);
+    assert_eq!(server.ai_completion.model, "gpt-4o-mini");
     assert_eq!(server.ai_completion.timeout_ms, 2200);
     assert_eq!(server.ai_completion.max_output_tokens, 96);
     assert_eq!(server.ai_completion.max_inflight, 2);
@@ -302,6 +300,9 @@ fn generic_schema_excludes_security_sensitive_lsp_settings() -> Result<(), Box<d
     assert_eq!(perlcritic.get("theme").is_none(), true);
 
     let ai = &perl["aiCompletion"]["properties"];
+    assert_eq!(ai.get("enabled").is_none(), true);
+    assert_eq!(ai.get("provider").is_none(), true);
+    assert_eq!(ai.get("model").is_none(), true);
     assert_eq!(ai.get("endpoint").is_none(), true);
     assert_eq!(ai.get("apiKeyEnv").is_none(), true);
     assert_eq!(ai.get("apiKeyHeader").is_none(), true);

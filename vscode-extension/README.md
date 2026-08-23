@@ -62,15 +62,11 @@ for support-tier boundaries, explanations, previews, and copyable receipts.
 
 ### AI Completion
 
-Perl LSP supports **AI-powered inline completions**, surfaced through VS Code's
-inline-suggestion UI. The feature is **off by default** and only available when
-your language server advertises inline-completion support (`inlineCompletionProvider`).
-
-To enable it, set `perl-lsp.aiCompletion.enabled` to `true` (Settings → search
-`perl-lsp.aiCompletion`). Progressive streaming is controlled separately by
-`perl-lsp.aiCompletion.streaming.enabled`. When the running server advertises
-support and the feature is off, the extension also offers a one-time prompt to
-turn it on.
+The extension retains machine-scoped AI and streaming preferences so a committed
+workspace cannot arm them. Remote AI activation is currently unavailable while
+the server-side trusted user/operator adapter is being built. The setting alone
+does not authorize network access; local deterministic inline completion remains
+available. See the [AI completion contract](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/reference/AI_COMPLETION.md).
 
 ### Quick Start: Demo Project
 

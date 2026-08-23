@@ -249,8 +249,10 @@ fallback) and is parse-safety filtered. Backend trait:
 
 ### Configuration reference
 
-See [AI_COMPLETION.md](AI_COMPLETION.md): `perl-lsp.aiCompletion.enabled`
-(default `false`), timeout, and token controls.
+See [AI_COMPLETION.md](AI_COMPLETION.md). Production remote activation is
+currently unavailable until a server-owned trusted user/operator adapter
+lands; generic LSP settings expose only non-activating preferences and
+resource requests. Deterministic inline completion remains available.
 
 ---
 

@@ -11,26 +11,17 @@ const CLIENT_GLOBAL: &[Source] = &[
     Source::ProjectFile,
     Source::GlobalClientSettings,
 ];
-/// User-channel AI inputs with the project file removed (issues #4955, #4997):
-/// `.perl-lsp.toml` may only opt out of AI completions; it may never arm the
-/// backend or select provider/model, so it is not an input source for any AI
-/// arm/select field. InitializationOptions/GlobalClientSettings remain listed
-/// because the current runtime still honours them via `update_from_value`;
-/// tightening that provenance is the remaining #4997 server-side slice.
+/// Generic AI preference/resource inputs. These may tune non-activating
+/// scheduling and presentation fields only; they carry no arm/select authority.
 const AI_USER_CHANNEL: &[Source] =
     &[Source::CompiledDefault, Source::InitializationOptions, Source::GlobalClientSettings];
-/// Sources of the DERIVED `ai.effective_enabled` value: the user channel plus
-/// `ProjectFile`, because `.perl-lsp.toml enabled = false` feeds
-/// `project_opt_out` and recomputes
-/// `enabled = user_enabled && !project_opt_out`. The project file contributes
-/// here only as a reducer into that derivation; it still has no arm/select
-/// authority over any direct AI activation row (issues #4955, #4997).
-const AI_EFFECTIVE_ENABLED_SOURCES: &[Source] = &[
-    Source::CompiledDefault,
-    Source::InitializationOptions,
-    Source::ProjectFile,
-    Source::GlobalClientSettings,
-];
+/// Remote AI activation and request-identity selection require an independently
+/// admitted server-owned trusted-user/operator observation (#4997).
+const AI_TRUSTED_ARM_SELECT: &[Source] = &[Source::CompiledDefault, Source::TrustedUserSettings];
+/// The effective flag derives from trusted activation plus the project-file
+/// opt-out reducer. Project input can only make the result less permissive.
+const AI_EFFECTIVE_ENABLED_SOURCES: &[Source] =
+    &[Source::CompiledDefault, Source::ProjectFile, Source::TrustedUserSettings];
 const CLIENT_FOLDER: &[Source] = &[
     Source::CompiledDefault,
     Source::InitializationOptions,
@@ -231,7 +222,7 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         AiCompletion.model,
         Global,
         String,
-        AI_USER_CHANNEL,
+        AI_TRUSTED_ARM_SELECT,
         Validation::NonEmptyString,
         KeepLastValid,
         Ordinary,
@@ -259,7 +250,7 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         AiCompletion.provider,
         Global,
         String,
-        AI_USER_CHANNEL,
+        AI_TRUSTED_ARM_SELECT,
         Validation::KnownEnum,
         KeepLastValid,
         Ordinary,
@@ -343,7 +334,7 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         AiCompletion.user_enabled,
         Global,
         Boolean,
-        AI_USER_CHANNEL,
+        AI_TRUSTED_ARM_SELECT,
         Validation::Boolean,
         KeepLastValid,
         Ordinary,

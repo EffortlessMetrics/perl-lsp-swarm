@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Security
+body: "Generic LSP configuration can no longer activate a remote AI backend or select its provider/model identity. Every backend is bound to a server-owned authority generation and rechecks that generation plus project opt-out state immediately before transport work. Remote AI activation remains unavailable until a trusted user/operator adapter lands; deterministic inline completion remains available."
+time: 2026-08-22T23:09:00Z
+custom:
+  PR: "11951"
+  Slug: ai-activation-authority
+  Breaking: "yes"

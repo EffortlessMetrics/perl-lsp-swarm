@@ -44,7 +44,7 @@ The Marketplace package is designed to work with `PATH`, `serverPath`, or runtim
 | `perl-lsp.autoPopulateNewFiles` | `true` | Auto-populate new `.pm` files with a `package` declaration and new `.t` files with `Test::More` boilerplate. Set to `false` to disable. |
 | `perl-lsp.featureProfile` | `"auto"` | Forward a concrete feature profile to `perl-lsp` when needed. |
 | `perl-lsp.disabledFeatures` | `[]` | Array of LSP feature IDs to disable (e.g. `["lsp.hover", "lsp.semantic_tokens"]`). See the feature catalog via `perllsp --features-json`. |
-| `perl-lsp.aiCompletion.enabled` | `false` | Enable AI-assisted inline completion. |
+| `perl-lsp.aiCompletion.enabled` | `false` | Reserved machine-scoped client preference; remote server activation remains unavailable until a trusted user/operator adapter lands. |
 | `perl-lsp.critic.enabled` | `true` | Enable Perl::Critic diagnostics. |
 | `perl-lsp.critic.engine` | `"native"` | Critic engine: `native` (Rust-native) or `legacy` (shells out to `perlcritic`). |
 | `perl-lsp.critic.severity` | `3` | Minimum critic severity to report (1 = least severe, 5 = most severe). |

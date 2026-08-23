@@ -733,17 +733,30 @@ impl LspServer {
             >,
         >,
     ) {
-        *self.ai_inline_backend.lock() = backend;
+        let authority = *self.ai_activation_authority.lock();
+        self.install_ai_backend_for_authority(backend, authority);
     }
 
     /// Configure AI completion settings directly for test purposes.
     ///
     /// Avoids direct access to `self.config` from integration tests.
     pub fn test_configure_ai_completion(&self, enabled: bool, fallback: bool) {
-        let mut cfg = self.config.lock();
-        cfg.ai_completion.user_enabled = enabled;
-        cfg.ai_completion.fallback = fallback;
-        recompute_ai_completion_effective(&mut cfg.ai_completion);
+        let mut authority = self.ai_activation_authority.lock();
+        let next_generation = authority.generation().saturating_add(1);
+        *authority = if enabled {
+            super::AiActivationAuthority::TrustedUserOperator {
+                adapter: "expose_lsp_test_api",
+                generation: next_generation,
+            }
+        } else {
+            super::AiActivationAuthority::Unavailable { generation: next_generation }
+        };
+        drop(authority);
+
+        let mut config = self.config.lock();
+        config.ai_completion.user_enabled = enabled;
+        config.ai_completion.fallback = fallback;
+        recompute_ai_completion_effective(&mut config.ai_completion);
     }
 
     /// Test-only entrypoint for LSP `textDocument/semanticTokens/full`.
@@ -1207,6 +1220,47 @@ impl LspServer {
         if let Some(worker) = self.parse_worker() {
             worker.panic_injector().arm(&normalized_uri, generation);
         }
+    }
+
+    /// Apply an untrusted generic LSP `aiCompletion` object and run the same
+    /// backend refresh performed by configuration notifications.
+    pub fn test_apply_generic_ai_completion_settings(&self, settings: Value) {
+        self.config.lock().update_from_value(&serde_json::json!({ "aiCompletion": settings }));
+        self.refresh_ai_backend();
+    }
+
+    /// Seed a valid-looking transport subject without granting activation.
+    pub fn test_seed_ai_transport(
+        &self,
+        endpoint: &str,
+        api_key_env: &str,
+        timeout_ms: u64,
+        local_model_mode: bool,
+    ) {
+        let mut config = self.config.lock();
+        config.ai_completion.endpoint = endpoint.to_string();
+        config.ai_completion.api_key_env = api_key_env.to_string();
+        config.ai_completion.provider = "openai_compat".to_string();
+        config.ai_completion.model = "authority-test-model".to_string();
+        config.ai_completion.timeout_ms = timeout_ms;
+        config.ai_completion.local_model_mode = local_model_mode;
+    }
+
+    /// Re-run the production backend construction choke point.
+    pub fn test_refresh_ai_backend(&self) {
+        self.refresh_ai_backend();
+    }
+
+    /// Whether production construction currently retains a backend wrapper.
+    pub fn test_ai_backend_available(&self) -> bool {
+        self.ai_inline_backend.lock().is_some()
+    }
+
+    /// Apply the project opt-out reducer without changing trusted authority.
+    pub fn test_set_ai_project_opt_out(&self, opted_out: bool) {
+        let mut config = self.config.lock();
+        config.ai_completion.project_opt_out = opted_out;
+        recompute_ai_completion_effective(&mut config.ai_completion);
     }
 }
 

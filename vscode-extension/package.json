@@ -617,16 +617,16 @@
             "default": false,
             "scope": "machine",
             "order": 10,
-            "description": "Enable AI-powered inline code suggestions. Off by default; requires a language server that advertises inline-completion support. See the README for configuration.",
-            "markdownDescription": "Enable AI-powered inline code suggestions. Off by default; requires a language server that advertises inline-completion support. See the [README](https://github.com/EffortlessMetrics/perl-lsp/tree/master/vscode-extension#ai-completion) for configuration."
+            "description": "Reserved machine-scoped AI preference. Remote server activation is currently unavailable until a trusted user/operator adapter lands; deterministic inline completion remains available.",
+            "markdownDescription": "Reserved machine-scoped AI preference. Remote server activation is currently unavailable until a trusted user/operator adapter lands; deterministic inline completion remains available. See the [AI completion contract](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/reference/AI_COMPLETION.md)."
           },
           "perl-lsp.aiCompletion.streaming.enabled": {
             "type": "boolean",
             "default": true,
             "scope": "machine",
             "order": 20,
-            "description": "Enable progressive streaming for AI completions so results appear as they are generated. Requires aiCompletion.enabled to be true.",
-            "markdownDescription": "Enable progressive streaming for AI completions so results appear as they are generated. Requires `aiCompletion.enabled` to be true."
+            "description": "Reserved machine-scoped streaming preference. It never authorizes remote backend activation.",
+            "markdownDescription": "Reserved machine-scoped streaming preference. It never authorizes remote backend activation; see the [AI completion contract](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/reference/AI_COMPLETION.md)."
           }
         }
       },

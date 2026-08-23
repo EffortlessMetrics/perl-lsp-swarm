@@ -130,6 +130,9 @@ impl LspServer {
             client_setting_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
+            ai_activation_authority: Arc::new(Mutex::new(
+                super::AiActivationAuthority::default(),
+            )),
             ai_inline_backend: Mutex::new(None),
             ai_backend_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(feature = "incremental")]
@@ -313,6 +316,9 @@ impl LspServer {
             client_setting_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
+            ai_activation_authority: Arc::new(Mutex::new(
+                super::AiActivationAuthority::default(),
+            )),
             ai_inline_backend: Mutex::new(None),
             ai_backend_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(feature = "incremental")]
@@ -437,6 +443,9 @@ impl LspServer {
             client_setting_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
+            ai_activation_authority: Arc::new(Mutex::new(
+                super::AiActivationAuthority::default(),
+            )),
             ai_inline_backend: Mutex::new(None),
             ai_backend_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(feature = "incremental")]

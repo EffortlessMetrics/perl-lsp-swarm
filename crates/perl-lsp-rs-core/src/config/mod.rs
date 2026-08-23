@@ -201,19 +201,19 @@ pub struct NextEditConfig {
 /// timeout, error, or when AI is disabled.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AiCompletionConfig {
-    /// Whether the user explicitly enabled AI completions via the LSP client
-    /// configuration channel. Default: false.
+    /// Whether a server-owned trusted user/operator adapter enabled AI completions.
+    /// Generic LSP configuration cannot set this field. Default: false.
     pub user_enabled: bool,
     /// Whether a workspace/project `.perl-lsp.toml` opted out (`enabled = false`).
     /// Project config may only disable AI, never enable it (issue #4997).
     pub project_opt_out: bool,
     /// Effective runtime flag: `user_enabled && !project_opt_out`.
     pub enabled: bool,
-    /// Provider type. Currently only "openai_compat" is supported.
+    /// Trusted provider type. Currently only "openai_compat" is supported.
     pub provider: String,
     /// API endpoint URL.
     pub endpoint: String,
-    /// Model identifier (e.g., "gpt-4o-mini").
+    /// Trusted model identifier (e.g., "gpt-4o-mini").
     pub model: String,
     /// Environment variable name containing the API key.
     pub api_key_env: String,
@@ -552,11 +552,19 @@ impl ServerConfig {
         }
 
         if let Some(ai) = settings.get("aiCompletion") {
-            if let Some(enabled) = ai.get("enabled").and_then(|v| v.as_bool()) {
-                self.ai_completion.user_enabled = enabled;
+            if ai.get("enabled").is_some() {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    setting = "aiCompletion.enabled",
+                    "ignoring AI activation from generic LSP settings; activation requires a server-owned trusted user/operator adapter (#4997)",
+                );
             }
-            if let Some(provider) = ai.get("provider").and_then(|v| v.as_str()) {
-                self.ai_completion.provider = provider.to_string();
+            if ai.get("provider").is_some() {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    setting = "aiCompletion.provider",
+                    "ignoring AI provider selection from generic LSP settings; selection requires trusted activation authority (#4997)",
+                );
             }
             // Security (#5684): do NOT honour LSP-channel endpoint, apiKeyEnv,
             // apiKeyHeader, or apiKeyPrefix. A hostile workspace could redirect
@@ -573,8 +581,12 @@ impl ServerConfig {
                     "ignoring aiCompletion.endpoint from didChangeConfiguration (security: #5684)"
                 );
             }
-            if let Some(model) = ai.get("model").and_then(|v| v.as_str()) {
-                self.ai_completion.model = model.to_string();
+            if ai.get("model").is_some() {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    setting = "aiCompletion.model",
+                    "ignoring AI model selection from generic LSP settings; selection requires trusted activation authority (#4997)",
+                );
             }
             if let Some(_key_env) = ai.get("apiKeyEnv").and_then(|v| v.as_str()) {
                 tracing::warn!(
@@ -5434,90 +5446,36 @@ profile = "recommended"
     /// secret (e.g. `AWS_SECRET_ACCESS_KEY`) and have its value POSTed to an
     /// attacker-chosen endpoint on the first inline-completion request.
     #[test]
-    fn workspace_ai_completion_ignores_untrusted_endpoint_and_credential_settings() -> TestResult {
-        let temp = tempfile::tempdir()?;
-        std::fs::write(
-            temp.path().join(".perl-lsp.toml"),
-            r#"
-[ai_completion]
-enabled = true
-provider = "openai"
-model = "gpt-4"
-endpoint = "http://attacker.example/v1/chat/completions"
-api_key_env = "AWS_SECRET_ACCESS_KEY"
-api_key_header = "X-Attacker-Header"
-api_key_prefix = "Attacker "
-"#,
-        )?;
-        let project = load_project_config(temp.path())?.ok_or("expected parsed project config")?;
-
-        let default_config = ServerConfig::default();
+    fn generic_ai_completion_cannot_arm_or_select_but_safe_preferences_still_apply() {
         let mut config = ServerConfig::default();
-        project.apply_to_server_config(&mut config);
+        config.ai_completion.user_enabled = true;
+        config.ai_completion.provider = "trusted-provider".to_string();
+        config.ai_completion.model = "trusted-model".to_string();
+        recompute_ai_completion_effective(&mut config.ai_completion);
 
-        // The four credential/destination fields must be untouched by the
-        // workspace-supplied TOML — assert per-field, not in aggregate.
-        assert_eq!(
-            config.ai_completion.endpoint, default_config.ai_completion.endpoint,
-            "workspace-supplied endpoint must not change the effective config",
-        );
-        assert_eq!(
-            config.ai_completion.api_key_env, default_config.ai_completion.api_key_env,
-            "workspace-supplied api_key_env must not change the effective config",
-        );
-        assert_eq!(
-            config.ai_completion.api_key_header, default_config.ai_completion.api_key_header,
-            "workspace-supplied api_key_header must not change the effective config",
-        );
-        assert_eq!(
-            config.ai_completion.api_key_prefix, default_config.ai_completion.api_key_prefix,
-            "workspace-supplied api_key_prefix must not change the effective config",
-        );
-
-        // Workspace cannot activate AI or override user-owned provider/model (#4997).
-        assert!(
-            !config.ai_completion.enabled,
-            "workspace-supplied enabled=true must not activate AI completions",
-        );
-        assert!(
-            !config.ai_completion.user_enabled,
-            "workspace-supplied enabled=true must not set user_enabled",
-        );
-        assert_eq!(
-            config.ai_completion.provider, default_config.ai_completion.provider,
-            "workspace-supplied provider must not change the effective config",
-        );
-        assert_eq!(
-            config.ai_completion.model, default_config.ai_completion.model,
-            "workspace-supplied model must not change the effective config",
-        );
-        Ok(())
-    }
-
-    /// Project config may opt out of AI completions when the user enabled them.
-    #[test]
-    fn project_config_can_opt_out_of_user_enabled_ai_completions() {
-        let mut config = ServerConfig::default();
         config.update_from_value(&serde_json::json!({
-            "aiCompletion": { "enabled": true }
+            "aiCompletion": {
+                "enabled": false,
+                "provider": "attacker-provider",
+                "model": "attacker-model",
+                "fallback": false,
+                "streaming": { "updateDebounceMs": 91 }
+            }
         }));
+
         assert!(config.ai_completion.user_enabled);
         assert!(config.ai_completion.enabled);
-
-        let mut project = ProjectConfig::default();
-        project.ai_completion.enabled = Some(false);
-        project.apply_to_server_config(&mut config);
-
-        assert!(config.ai_completion.project_opt_out);
-        assert!(!config.ai_completion.enabled, "project opt-out must disable effective AI");
+        assert_eq!(config.ai_completion.provider, "trusted-provider");
+        assert_eq!(config.ai_completion.model, "trusted-model");
+        assert!(!config.ai_completion.fallback);
+        assert_eq!(config.ai_completion.streaming.update_debounce_ms, 91);
     }
 
     #[test]
     fn project_opt_out_clears_when_ai_completion_section_removed() {
         let mut config = ServerConfig::default();
-        config.update_from_value(&serde_json::json!({
-            "aiCompletion": { "enabled": true }
-        }));
+        config.ai_completion.user_enabled = true;
+        recompute_ai_completion_effective(&mut config.ai_completion);
 
         let mut project = ProjectConfig::default();
         project.ai_completion.enabled = Some(false);

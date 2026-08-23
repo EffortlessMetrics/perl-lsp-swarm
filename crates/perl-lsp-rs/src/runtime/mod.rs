@@ -147,6 +147,82 @@ use crate::fallback::text::extract_text_based_symbols;
 
 // Note: ClientCapabilities imported from crate::lsp::state::document
 
+/// Server-owned authority for remote AI activation and request identity.
+///
+/// No production generic client channel can construct `TrustedUserOperator`.
+/// The temporary generation token is deliberately replaceable by the accepted
+/// configuration subject owned by #10817/#10387/#10909.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AiActivationAuthority {
+    /// No independently admitted user/operator activation exists.
+    ///
+    /// The generation is retained across disablement so a later enable cannot
+    /// recreate an authority identity captured by a stale backend Arc.
+    Unavailable { generation: u64 },
+    /// An exact server-owned adapter admitted activation for one generation.
+    TrustedUserOperator { adapter: &'static str, generation: u64 },
+}
+
+impl Default for AiActivationAuthority {
+    fn default() -> Self {
+        Self::Unavailable { generation: 0 }
+    }
+}
+
+impl AiActivationAuthority {
+    const fn is_trusted(self) -> bool {
+        matches!(self, Self::TrustedUserOperator { .. })
+    }
+
+    const fn adapter(self) -> &'static str {
+        match self {
+            Self::Unavailable { .. } => "unavailable",
+            Self::TrustedUserOperator { adapter, .. } => adapter,
+        }
+    }
+
+    const fn generation(self) -> u64 {
+        match self {
+            Self::Unavailable { generation } => generation,
+            Self::TrustedUserOperator { generation, .. } => generation,
+        }
+    }
+}
+
+/// Backend wrapper that rechecks activation immediately before transport work.
+///
+/// A caller may retain the returned `Arc`, but it cannot use that stale object
+/// after authority replacement, project opt-out, or effective disablement.
+struct AuthorityBoundAiBackend {
+    inner: Arc<dyn perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend>,
+    expected_authority: AiActivationAuthority,
+    current_authority: Arc<Mutex<AiActivationAuthority>>,
+    config: Arc<Mutex<ServerConfig>>,
+}
+
+impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend
+    for AuthorityBoundAiBackend
+{
+    fn stream(
+        &self,
+        req: &perl_lsp_rs_core::providers::inline_completion::BackendRequest,
+        sink: &mut dyn FnMut(
+            perl_lsp_rs_core::providers::inline_completion::StreamChunk,
+        )
+            -> perl_lsp_rs_core::providers::inline_completion::StreamControl,
+    ) -> Result<(), perl_lsp_rs_core::providers::inline_completion::BackendError> {
+        let current = *self.current_authority.lock();
+        let effective_enabled = self.config.lock().ai_completion.enabled;
+        if !self.expected_authority.is_trusted()
+            || current != self.expected_authority
+            || !effective_enabled
+        {
+            return Err(perl_lsp_rs_core::providers::inline_completion::BackendError::Cancelled);
+        }
+        self.inner.stream(req, sink)
+    }
+}
+
 /// LSP server that handles JSON-RPC communication
 pub struct LspServer {
     /// Document contents indexed by URI
@@ -415,11 +491,13 @@ pub struct LspServer {
     /// adding production synchronization.
     #[cfg(test)]
     pub(crate) diagnostic_after_snapshot_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
-    /// Optional AI inline-completion backend.
+    /// Current server-owned AI activation authority. Generic client payloads
+    /// cannot mutate this state.
+    pub(crate) ai_activation_authority: Arc<Mutex<AiActivationAuthority>>,
+    /// Optional authority-bound AI inline-completion backend.
     ///
-    /// When `Some`, the `handle_inline_completion` handler will attempt
-    /// AI-backed completions before falling back to deterministic rules.
-    /// Set to `None` by default; a backend can be registered later.
+    /// Every stored backend is wrapped so a retained `Arc` rechecks the exact
+    /// activation generation and effective opt-out state before transport work.
     pub(crate) ai_inline_backend: Mutex<
         Option<Arc<dyn perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend>>,
     >,
@@ -600,15 +678,34 @@ impl LspServer {
         self.workspace_indexing_invocation_count.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Get the registered AI inline-completion backend, if any.
+    /// Get the registered authority-bound AI inline-completion backend.
     ///
-    /// Returns `None` when no backend has been registered (the default).
-    /// The returned `Arc` is a cheap clone suitable for use outside the lock.
+    /// The returned object performs the final authority/currentness check in
+    /// its `stream` implementation immediately before delegating to transport.
     pub(crate) fn ai_backend(
         &self,
     ) -> Option<Arc<dyn perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend>>
     {
         self.ai_inline_backend.lock().clone()
+    }
+
+    fn install_ai_backend_for_authority(
+        &self,
+        backend: Option<
+            Arc<dyn perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend>,
+        >,
+        authority: AiActivationAuthority,
+    ) {
+        let guarded = backend.map(|inner| {
+            Arc::new(AuthorityBoundAiBackend {
+                inner,
+                expected_authority: authority,
+                current_authority: Arc::clone(&self.ai_activation_authority),
+                config: Arc::clone(&self.config),
+            })
+                as Arc<dyn perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend>
+        });
+        *self.ai_inline_backend.lock() = guarded;
     }
 
     /// Notify the user once when AI completion authentication fails.
@@ -661,26 +758,25 @@ impl LspServer {
         perl_lsp_rs_core::providers::inline_completion::NextEditProvider.suggest(&request)
     }
 
-    /// Refresh the AI inline-completion backend based on current configuration.
+    /// Refresh the AI inline-completion backend from current configuration.
     ///
-    /// When `ai_completion.enabled` is `true` and the API key environment variable
-    /// resolves to a non-empty string, constructs an `OpenAiProvider` and stores it.
-    /// Otherwise clears the backend to `None`, disabling AI completions.
-    ///
-    /// Called during initialization (after project config is loaded) and on every
-    /// `didChangeConfiguration` notification that touches the `aiCompletion` section.
+    /// Construction requires both effective enablement and an independently
+    /// admitted server-owned authority. Generic LSP configuration can change
+    /// non-activating preferences but cannot satisfy this gate (#4997).
     pub(crate) fn refresh_ai_backend(&self) {
         let ai_config = self.config.lock().ai_completion.clone();
+        let authority = *self.ai_activation_authority.lock();
 
-        if !ai_config.enabled {
+        if !ai_config.enabled || !authority.is_trusted() {
             *self.ai_inline_backend.lock() = None;
             return;
         }
 
-        // Resolve API key from configured env var with compatibility aliases for
-        // common OpenAI-compatible providers.
         let Some(api_key) = Self::resolve_ai_api_key(&ai_config) else {
-            tracing::warn!(env_var = %ai_config.api_key_env, "AI completion enabled but API key env var is empty or unset");
+            tracing::warn!(
+                env_var = %ai_config.api_key_env,
+                "AI completion has trusted activation but the API key source is empty or unset"
+            );
             *self.ai_inline_backend.lock() = None;
             return;
         };
@@ -699,12 +795,15 @@ impl LspServer {
             ai_config.rate_limit_rps,
             ai_config.max_inflight,
         ));
-
         let provider =
             perl_lsp_rs_core::providers::ai::OpenAiProvider::new(provider_config, limiter);
-        *self.ai_inline_backend.lock() = Some(Arc::new(provider));
+        self.install_ai_backend_for_authority(Some(Arc::new(provider)), authority);
 
-        tracing::info!(endpoint = %ai_config.endpoint, model = %ai_config.model, "AI inline completion backend configured");
+        tracing::info!(
+            authority_adapter = authority.adapter(),
+            authority_generation = authority.generation(),
+            "AI inline completion backend configured under trusted authority"
+        );
     }
 
     /// Get the subprocess runtime for external tool execution (perltidy, perlcritic).

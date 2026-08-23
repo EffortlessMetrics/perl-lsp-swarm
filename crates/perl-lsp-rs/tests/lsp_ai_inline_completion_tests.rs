@@ -631,3 +631,136 @@ fn test_invoked_ai_candidate_suppressed_by_mismatched_selected_completion_info()
     );
     Ok(())
 }
+
+// ── #4997 activation-authority and first-egress controls ───────────────────
+
+fn invoked_inline_completion_with_context(
+    server: &LspServer,
+    uri: &str,
+    line: u32,
+    character: u32,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(4997_i64)),
+        method: "textDocument/inlineCompletion".into(),
+        params: Some(json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character },
+            "context": { "triggerKind": 1 }
+        })),
+    };
+    let response = server.handle_request(request).ok_or("inline completion response")?;
+    response.result.ok_or("result field present".into())
+}
+
+#[test]
+fn generic_ai_settings_cannot_call_an_injected_backend() -> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_generic_authority.pl";
+    open_doc(&server, uri, "use str");
+
+    server.test_apply_generic_ai_completion_settings(json!({
+        "enabled": true,
+        "provider": "attacker-provider",
+        "model": "attacker-model",
+        "fallback": true,
+        "streaming": { "enabled": true, "updateDebounceMs": 17 }
+    }));
+
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    server
+        .test_install_ai_backend(Some(Arc::new(CountingSlowBackend { calls: Arc::clone(&calls) })));
+
+    let result = invoked_inline_completion_with_context(&server, uri, 0, 7)?;
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "generic LSP configuration must not authorize the backend"
+    );
+    let texts: Vec<&str> = result["items"]
+        .as_array()
+        .ok_or("items array")?
+        .iter()
+        .filter_map(|item| item["insertText"].as_str())
+        .collect();
+    assert!(texts.contains(&"strict;"), "deterministic fallback must remain available");
+    Ok(())
+}
+
+#[test]
+fn generic_ai_settings_construct_no_backend_and_open_no_socket()
+-> Result<(), Box<dyn std::error::Error>> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(true)?;
+    let endpoint =
+        format!("http://127.0.0.1:{}/v1/chat/completions", listener.local_addr()?.port());
+
+    let server = setup_server()?;
+    let uri = "file:///ai_generic_zero_egress.pl";
+    open_doc(&server, uri, "use str");
+    server.test_seed_ai_transport(&endpoint, "PATH", 100, true);
+    server.test_apply_generic_ai_completion_settings(json!({
+        "enabled": true,
+        "provider": "openai_compat",
+        "model": "would-egress-without-authority",
+        "fallback": true
+    }));
+
+    assert!(
+        !server.test_ai_backend_available(),
+        "generic activation must not leave an egress-authorized backend"
+    );
+    let _ = invoked_inline_completion_with_context(&server, uri, 0, 7)?;
+    match listener.accept() {
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+        Ok(_) => return Err("generic activation opened the network socket".into()),
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn stale_trusted_backend_cannot_run_after_authority_replacement()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_stale_authority.pl";
+    open_doc(&server, uri, "use str");
+
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    server.test_configure_ai_completion(true, true);
+    server
+        .test_install_ai_backend(Some(Arc::new(CountingSlowBackend { calls: Arc::clone(&calls) })));
+
+    server.test_configure_ai_completion(false, true);
+    server.test_configure_ai_completion(true, true);
+    let _ = invoked_inline_completion_with_context(&server, uri, 0, 7)?;
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a retained backend Arc must not survive authority-generation replacement"
+    );
+    Ok(())
+}
+
+#[test]
+fn project_opt_out_blocks_a_retained_trusted_backend_at_first_effect()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_project_reducer.pl";
+    open_doc(&server, uri, "use str");
+
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    server.test_configure_ai_completion(true, true);
+    server
+        .test_install_ai_backend(Some(Arc::new(CountingSlowBackend { calls: Arc::clone(&calls) })));
+    server.test_set_ai_project_opt_out(true);
+
+    let _ = invoked_inline_completion_with_context(&server, uri, 0, 7)?;
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "project opt-out must reduce a previously trusted capability"
+    );
+    Ok(())
+}

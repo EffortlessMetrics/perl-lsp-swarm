@@ -181,11 +181,8 @@
         "aiCompletion": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Client-controlled AI completion behavior. Endpoint and credential-routing fields are intentionally excluded because workspace-delivered LSP settings may not redirect source/secret-bearing requests.",
+          "description": "Non-activating AI inline-completion preferences and resource requests. Remote activation, provider, model, destination, and credentials require a server-owned trusted user/operator adapter and are intentionally excluded from generic LSP settings.",
           "properties": {
-            "enabled": { "type": "boolean", "default": false },
-            "provider": { "type": "string", "enum": ["openai_compat"], "default": "openai_compat" },
-            "model": { "type": "string", "default": "gpt-4o-mini" },
             "timeoutMs": { "type": "integer", "minimum": 0, "default": 1800 },
             "maxOutputTokens": { "type": "integer", "minimum": 1, "default": 64 },
             "rateLimitRps": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
