@@ -540,22 +540,24 @@ impl ProviderCompletenessAuthorityReceipt {
     }
 }
 
-/// Test-only verified completeness snapshot. Production issuance is intentionally
-/// absent until an owning adapter supplies a concrete denominator in #6817.
-#[cfg(test)]
+/// Verified completeness snapshot bound to one request.
+///
+/// Production issuance flows through the crate-owned provider adapters in
+/// [`super::super::semantic_port_adapters`] (#6817), which supply a concrete
+/// producer denominator. Public provider implementations still cannot
+/// manufacture a grant from labels or exact-looking enums.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct VerifiedProviderCompletenessSnapshot {
+pub(crate) struct VerifiedProviderCompletenessSnapshot {
     authority: ProviderCompletenessAuthorityReceipt,
     provenance: SemanticProvenance,
     confidence: SemanticConfidence,
     freshness: SemanticFreshness,
 }
 
-#[cfg(test)]
 impl VerifiedProviderCompletenessSnapshot {
     /// Validate a concrete denominator snapshot before it can issue a grant.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn try_new(
+    pub(crate) fn try_new(
         request: &ProviderQueryRequest,
         capability: ProviderQueryCapability,
         producer: SemanticProducer,
@@ -605,8 +607,9 @@ impl VerifiedProviderCompletenessSnapshot {
 /// Exact supported-denominator authority for one request family.
 ///
 /// The type is public so checked results can expose its evidence, but it has no
-/// public constructor. This PR exposes no production issuer: #6817 must add a
-/// crate-owned adapter from a concrete producer denominator snapshot.
+/// public constructor. Crate-owned adapters (#6817) issue grants through
+/// [`ProviderCompletenessGrant::issue_for_request`] from a concrete producer
+/// denominator snapshot; external code cannot manufacture one.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProviderCompletenessGrant {
@@ -617,8 +620,36 @@ pub struct ProviderCompletenessGrant {
 }
 
 impl ProviderCompletenessGrant {
-    #[cfg(test)]
-    pub(super) fn from_verified_snapshot(snapshot: VerifiedProviderCompletenessSnapshot) -> Self {
+    /// Issue a request-bound grant from a concrete producer denominator snapshot.
+    ///
+    /// Crate-internal: only owning adapters can supply the denominator evidence.
+    /// The snapshot is validated against the request before a grant exists.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn issue_for_request(
+        request: &ProviderQueryRequest,
+        producer: SemanticProducer,
+        denominator_id: impl Into<String>,
+        snapshot_id: impl Into<String>,
+        covered_unit_count: u64,
+        provenance: SemanticProvenance,
+        confidence: SemanticConfidence,
+        freshness: SemanticFreshness,
+    ) -> Result<Self, ProviderQueryContractError> {
+        let snapshot = VerifiedProviderCompletenessSnapshot::try_new(
+            request,
+            ProviderQueryCapability::from_query(&request.kind),
+            producer,
+            denominator_id,
+            snapshot_id,
+            covered_unit_count,
+            provenance,
+            confidence,
+            freshness,
+        )?;
+        Ok(Self::from_verified_snapshot(snapshot))
+    }
+
+    pub(crate) fn from_verified_snapshot(snapshot: VerifiedProviderCompletenessSnapshot) -> Self {
         Self {
             authority: snapshot.authority,
             provenance: snapshot.provenance,
@@ -689,7 +720,7 @@ fn range_contains(envelope: &SemanticFactEnvelope, byte_offset: u32) -> bool {
     }
 }
 
-fn validate_envelope_structure(
+pub(crate) fn validate_envelope_structure(
     envelope: &SemanticFactEnvelope,
 ) -> Result<(), ProviderQueryContractError> {
     if envelope.anchor.start_byte > envelope.anchor.end_byte
@@ -723,4 +754,146 @@ pub(crate) fn facts_are_related(left: &ProviderQueryFact, right: &ProviderQueryF
             == Some(right.envelope.fact_id)
         || right.envelope.boundary.as_ref().and_then(|boundary| boundary.boundary_id)
             == Some(left.envelope.fact_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn exact_ready_request() -> ProviderQueryRequest {
+        ProviderQueryRequest::new(
+            ProviderSurface::Hover,
+            "textDocument/hover",
+            ProviderQueryKind::Declaration,
+            ProviderQuerySubject::Entity(EntityId(1)),
+            ProviderQueryContext::new(
+                ProviderIdentity::known("test-project"),
+                ProviderIdentity::known("test-root"),
+                SourceGeneration::Known("gen-1".into()),
+                SourceGeneration::Known("wgen-1".into()),
+                ProviderReadinessRequirement::ActiveDocument,
+                ProviderReadinessState::Ready,
+                ProviderQueryDeadline::None,
+                ProviderCancellationState::Active,
+            ),
+        )
+    }
+
+    fn valid_snapshot_args() -> (
+        SemanticProducer,
+        String,
+        String,
+        u64,
+        SemanticProvenance,
+        SemanticConfidence,
+        SemanticFreshness,
+    ) {
+        (
+            SemanticProducer::Parser,
+            "denominator-1".into(),
+            "snapshot-1".into(),
+            42,
+            SemanticProvenance::Known(Provenance::ExactAst),
+            SemanticConfidence::Known(Confidence::High),
+            SemanticFreshness::Fresh,
+        )
+    }
+
+    // RIPR: exercises the freshness field construction at the snapshot
+    // validation boundary (model.rs:636).
+    #[test]
+    fn snapshot_try_new_accepts_fresh_and_rejects_stale() {
+        let request = exact_ready_request();
+        let (producer, denom, snap, count, prov, conf, fresh) = valid_snapshot_args();
+
+        let ok = VerifiedProviderCompletenessSnapshot::try_new(
+            &request,
+            ProviderQueryCapability::Declarations,
+            producer,
+            &denom,
+            &snap,
+            count,
+            prov,
+            conf,
+            fresh,
+        );
+        assert!(ok.is_ok());
+
+        let stale = VerifiedProviderCompletenessSnapshot::try_new(
+            &request,
+            ProviderQueryCapability::Declarations,
+            producer,
+            &denom,
+            &snap,
+            count,
+            prov,
+            conf,
+            SemanticFreshness::Stale,
+        );
+        assert!(stale.is_err());
+    }
+
+    // RIPR: exercises denominator_id and snapshot_id call sites in
+    // issue_for_request (model.rs:642-643).
+    #[test]
+    fn issue_for_request_validates_denominator_and_snapshot_ids() {
+        let request = exact_ready_request();
+        let (producer, _denom, _snap, count, prov, conf, fresh) = valid_snapshot_args();
+
+        let ok = ProviderCompletenessGrant::issue_for_request(
+            &request,
+            producer,
+            "denominator-a",
+            "snapshot-b",
+            count,
+            prov,
+            conf,
+            fresh,
+        );
+        assert!(ok.is_ok());
+
+        let empty_denom = ProviderCompletenessGrant::issue_for_request(
+            &request,
+            producer,
+            "",
+            "snapshot-b",
+            count,
+            prov,
+            conf,
+            fresh,
+        );
+        assert!(empty_denom.is_err());
+
+        let empty_snap = ProviderCompletenessGrant::issue_for_request(
+            &request,
+            producer,
+            "denominator-a",
+            "",
+            count,
+            prov,
+            conf,
+            fresh,
+        );
+        assert!(empty_snap.is_err());
+    }
+
+    // RIPR: proves the grant matches only its originating request.
+    #[test]
+    fn issued_grant_matches_originating_request() {
+        let request = exact_ready_request();
+        let (producer, denom, snap, count, prov, conf, fresh) = valid_snapshot_args();
+
+        let grant = ProviderCompletenessGrant::issue_for_request(
+            &request, producer, denom, snap, count, prov, conf, fresh,
+        )
+        .expect("valid args must succeed");
+
+        assert!(grant.matches(&request));
+
+        // A non-originating request must not match; an always-true matches()
+        // implementation would otherwise satisfy the positive case above.
+        let mut other = exact_ready_request();
+        other.subject = ProviderQuerySubject::Entity(EntityId(2));
+        assert!(!grant.matches(&other));
+    }
 }

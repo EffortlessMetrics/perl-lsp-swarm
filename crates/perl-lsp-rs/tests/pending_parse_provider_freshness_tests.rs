@@ -178,7 +178,7 @@ fn sub_foo_to_bar_cross_provider_freshness_canary() -> TestResult {
     server.test_apply_text_change_without_reparse(uri, AFTER_TEXT, 2)?;
     assert_eq!(
         server.test_document_generation(uri),
-        Some(1),
+        Some(2),
         "helper must bump the text generation without republishing a snapshot"
     );
 
@@ -270,11 +270,11 @@ fn sub_foo_to_bar_cross_provider_freshness_canary() -> TestResult {
     assert!(!json_contains(&def_gap, "foo"), "gap: definition result must not mention `foo`");
     assert!(!json_contains(&rename_gap, "foo"), "gap: rename result must not mention `foo`");
 
-    // ── Close the gap: publish the generation-1 snapshot ─────────────────
+    // ── Close the gap: publish the generation-2 snapshot ─────────────────
     server.test_publish_parse_for_current_generation(uri)?;
     assert_eq!(
         server.test_document_generation(uri),
-        Some(1),
+        Some(2),
         "publishing the snapshot must not itself advance the text generation"
     );
 
@@ -419,7 +419,7 @@ fn signature_help_never_answers_from_stale_ast_with_matching_name_during_pending
     server.test_apply_text_change_without_reparse(uri, AFTER, 2)?;
     assert_eq!(
         server.test_document_generation(uri),
-        Some(1),
+        Some(2),
         "helper must bump the text generation without republishing a snapshot"
     );
 
@@ -718,7 +718,7 @@ fn providers_answer_normally_with_no_pending_parse_gap() -> TestResult {
     let uri = "file:///no_gap_baseline.pl";
 
     server.test_apply_did_open(uri, BEFORE_TEXT, 1)?;
-    assert_eq!(server.test_document_generation(uri), Some(0));
+    assert_eq!(server.test_document_generation(uri), Some(1)); // #11305 first accepted generation
 
     let sem = server.test_handle_semantic_tokens(Some(json!({"textDocument": {"uri": uri}})))?;
     let decoded = decode_semantic_tokens(&sem, &legend)?;
@@ -805,11 +805,11 @@ fn sub_foo_to_bar_cross_provider_freshness_canary_real_async_worker() -> TestRes
     let (server, legend) = fresh_server_with_real_worker_and_legend()?;
     let uri = "file:///pending_parse_canary_real_async.pl";
 
-    // didOpen is unaffected by this PR (always synchronous) -- generation 0.
+    // didOpen is always synchronous -- first accepted generation 1 (#11305).
     server.test_apply_did_open(uri, BEFORE_TEXT, 1)?;
-    assert_eq!(server.test_document_generation(uri), Some(0));
+    assert_eq!(server.test_document_generation(uri), Some(1)); // #11305 first accepted generation
 
-    // ── Fresh baseline (generation 0) ─────────────────────────────────────
+    // ── Fresh baseline (generation 1) ─────────────────────────────────────
     let sem0 = server.test_handle_semantic_tokens(Some(json!({"textDocument": {"uri": uri}})))?;
     let decoded0 = decode_semantic_tokens(&sem0, &legend)?;
     assert!(
@@ -824,13 +824,13 @@ fn sub_foo_to_bar_cross_provider_freshness_canary_real_async_worker() -> TestRes
     //    that `test_apply_did_change` returning fast means anything on its
     //    own (a synchronous fallback would also return "fast" for a tiny
     //    fixture).
-    server.test_parse_worker_arm_barrier(uri, 1);
+    server.test_parse_worker_arm_barrier(uri, 2);
     server.test_apply_did_change(uri, AFTER_TEXT, 2)?;
     server.test_parse_worker_wait_until_paused();
 
     assert_eq!(
         server.test_document_generation(uri),
-        Some(1),
+        Some(2),
         "the real didChange path must still bump the text generation before returning"
     );
 

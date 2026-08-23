@@ -800,10 +800,16 @@ gates:
     # `--all-targets -D warnings -A missing_docs`. The cohort is additive: add
     # crates here only after they pass the command below locally.
     # This is a scoped cohort assertion, not an exhaustive workspace clean/dirty
-    # census. The remaining 14 crates carry measured findings tracked on #11736
-    # pending the target-kind lint policy decision (2026-08-19 workspace census
-    # on d0f488dd: 3363 findings across 21 then-dirty crates, dominated by
-    # print_*/unwrap/expect in test code).
+    # census. The target-kind lint policy decision has landed in
+    # docs/CLIPPY_POLICY.md ("Target-kind lint contract"): print_stdout and
+    # print_stderr are intentional in tests//examples/ (encoded as file-scoped
+    # reasoned #[expect]s, never config or gate flags); the panic family stays
+    # denied everywhere. The remaining 14 crates carry measured repair tranches
+    # tracked on #11736 (2026-08-23 census on 470277161, warn-neutralized
+    # disjoint-unit method: 3195 test-context findings across those 14 crates;
+    # production --lib/--bins pass clean except one xtask
+    # lines_filter_map_ok). A crate joins when its measured residual under the
+    # contract is zero; see the admission protocol in CLIPPY_POLICY.md.
     #
     # This gate is executed by the advisory PR Smoke job, like the other pr_fast
     # gates. `required: true` makes the pr_fast runner fail on a violation; it
