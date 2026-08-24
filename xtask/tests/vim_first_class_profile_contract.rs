@@ -22,6 +22,10 @@ const VALIDATOR_RELPATH: &str = "scripts/ux/validate_vim_first_class_profile.py"
 const REQUIRED_FAMILIES: [&str; 6] =
     ["baseline_core", "freshness", "save", "recovery", "host_lifecycle", "expanded_activation"];
 
+/// The #11369 pinned prabirshrestha/vim-lsp subject the fan-in consumes.
+const PINNED_VIM_LSP_COMMIT: &str = "e10d186452743beb7b43d2b3427020832f930c2b";
+const PINNED_VIM_LSP_TREE: &str = "dd24cb8e10096c82766143c9fd058105637d72dc";
+
 fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -266,5 +270,139 @@ fn dropped_required_cell_cannot_hide_a_not_proven_dimension() -> Result<(), Box<
     let (ok, output) = copy.validate()?;
     assert!(!ok, "dropping a failing dimension must fail closed");
     assert!(output.contains("family denominator drifted"), "{output}");
+    Ok(())
+}
+
+/// A fabricated registered receipt drives the otherwise-unreachable
+/// reference-validation path (all real families are producer_open today).
+/// One probe fires two independent negative controls: NC3 — the receipt's
+/// declared vim-lsp commit diverges from the #11369 pin, so one Vim build
+/// cannot combine with another; and NC7 — the same journey cell id is bound
+/// by a second family, so families cannot cross-fill each other's
+/// observations. Deterministic and offline: temp-copy files only.
+#[test]
+fn synthetic_registered_receipt_fires_subject_and_cross_fill_controls() -> Result<(), Box<dyn Error>>
+{
+    let root = repo_root()?;
+    let copy = ValidatorCopy::new(&root, "synthetic-receipt")?;
+
+    let receipt_path = copy.root.join(".ci/editor-clients/vim-fanin-probe.v1.json");
+    let receipt = serde_json::json!({
+        "schema_version": "editor_client_compat.v1",
+        "observed_at": "2026-08-23T12:00:00Z",
+        "stage": "exact_source_local",
+        "repository": "EffortlessMetrics/perl-lsp-swarm",
+        "candidate_sha": "a".repeat(40),
+        "platform": {"os": "linux", "os_version": "6.1", "arch": "x86_64"},
+        "host": {
+            "client_id": "vim_vim_lsp",
+            "product": "vim",
+            "version": "9.1",
+            "source_state": "released",
+            "source_ref": "vim/vim v9.1.0",
+            "executable_sha256": format!("sha256:{}", "1".repeat(64))
+        },
+        "integration": {
+            "mode": "generic_lsp",
+            "registration_state": "manual_client_registration",
+            "configuration_sha256": format!("sha256:{}", "2".repeat(64)),
+            "driver_sha256": format!("sha256:{}", "3".repeat(64))
+        },
+        "server": {
+            "executable": "perllsp",
+            "version": "0.13.0",
+            "build_revision": "b".repeat(40),
+            "artifact_sha256": format!("sha256:{}", "4".repeat(64)),
+            "protocol_version": "3.17",
+            "launch_command": ["perllsp", "--stdio"]
+        },
+        "workspace_fixture": {
+            "id": "vim_first_class_fixture",
+            "digest": format!("sha256:{}", "5".repeat(64)),
+            "expectation_set_id": "canonical_expectation_set",
+            "expectation_set_digest": format!("sha256:{}", "6".repeat(64))
+        },
+        "capabilities": {
+            "initialize_snapshot_sha256": format!("sha256:{}", "7".repeat(64)),
+            "position_encodings_offered": ["utf-16"],
+            "position_encoding_basis": "offered",
+            "position_encoding_selected": "utf-16"
+        },
+        "diagnostics": {"advertised_mode": "push", "observed_messages": ["publish_diagnostics"]},
+        "journey": [{
+            "id": "freshness_route_observed",
+            "capability_basis": "not_applicable",
+            "observed": true,
+            "result": "pass",
+            "evidence": ["freshness/route.log"]
+        }],
+        "process_cleanup": "pass",
+        "result": "pass",
+        "limitations": [],
+        "artifacts": [],
+        "claim_boundary": "synthetic probe receipt exercising fan-in controls only"
+    });
+    fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt)?)?;
+    let artifact = ".ci/editor-clients/vim-fanin-probe.v1.json";
+    let digest = format!(
+        "sha256:{}",
+        Sha256::digest(fs::read(&receipt_path)?)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+
+    let equality_for = |commit: &str| {
+        serde_json::json!({
+            "vim_lsp_selected_commit": commit,
+            "vim_lsp_tree_digest": PINNED_VIM_LSP_TREE,
+            "platform_os": "linux",
+            "platform_arch": "x86_64",
+            "perllsp_build_revision": "b".repeat(40),
+            "perllsp_artifact_sha256": format!("sha256:{}", "4".repeat(64)),
+            "candidate_sha": "a".repeat(40),
+            "workspace_fixture_id": "vim_first_class_fixture",
+            "workspace_fixture_digest": format!("sha256:{}", "5".repeat(64)),
+            "expectation_set_id": "canonical_expectation_set",
+            "expectation_set_digest": format!("sha256:{}", "6".repeat(64))
+        })
+    };
+
+    copy.edit_profile(|profile| {
+        // NC3: this reference declares a vim-lsp commit that is not the pin.
+        let wrong_commit = "d".repeat(40);
+        let freshness_reference = serde_json::json!({
+            "artifact": artifact,
+            "artifact_sha256": digest,
+            "fills": "freshness",
+            "journey_cell_ids": ["freshness_route_observed"],
+            "subject_equality": equality_for(&wrong_commit)
+        });
+        profile["inputs"]["freshness"]["state"] = "receipt_registered".into();
+        profile["inputs"]["freshness"]["receipt_references"] =
+            serde_json::json!([freshness_reference]);
+        // NC7: save binds the same journey cell id the freshness reference
+        // already claimed.
+        let save_reference = serde_json::json!({
+            "artifact": artifact,
+            "artifact_sha256": digest,
+            "fills": "save",
+            "journey_cell_ids": ["freshness_route_observed"],
+            "subject_equality": equality_for(PINNED_VIM_LSP_COMMIT)
+        });
+        profile["inputs"]["save"]["state"] = "receipt_registered".into();
+        profile["inputs"]["save"]["receipt_references"] = serde_json::json!([save_reference]);
+    })?;
+
+    let (ok, output) = copy.validate()?;
+    assert!(!ok, "cross-build substitution and cross-fill must fail closed");
+    assert!(
+        output.contains("one Vim build cannot combine with another"),
+        "NC3 did not fire: {output}"
+    );
+    assert!(
+        output.contains("cannot cross-fill each other's observations"),
+        "NC7 did not fire: {output}"
+    );
     Ok(())
 }

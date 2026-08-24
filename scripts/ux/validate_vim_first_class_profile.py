@@ -118,7 +118,13 @@ def load_json(path: Path, violations: Violations, label: str) -> dict | None:
 
 
 def canonical_digest(document: dict) -> str:
-    encoded = json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    # Canonical form shared with the Rust contract test's `canonical_digest`
+    # (`serde_json::to_vec` over `serde_json::Value`): compact separators,
+    # lexicographically sorted keys, and raw UTF-8 output — never `\uXXXX`
+    # escapes — so both computations agree byte-for-byte on every document.
+    encoded = json.dumps(
+        document, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
