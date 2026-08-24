@@ -1341,7 +1341,26 @@ fn dependency_attribution_scope(
     let mut package_dirs = packages;
     package_dirs
         .sort_by(|left, right| right.0.len().cmp(&left.0.len()).then_with(|| left.0.cmp(&right.0)));
-    let rev_deps = crate::tasks::ci_scope::build_reverse_dep_map(metadata);
+    // The resolve graph reflects the currently resolved feature set, so a
+    // dev-, build-, or optional-dependency edge can be absent from it while a
+    // real configuration still links the changed crate. Union every declared
+    // manifest edge into the reverse map: over-approximating reachability only
+    // keeps more findings counted — under-attribution is the one direction
+    // this filter must never take (#11690).
+    let mut rev_deps = crate::tasks::ci_scope::build_reverse_dep_map(metadata);
+    for pkg in metadata.get("packages").and_then(Value::as_array).into_iter().flatten() {
+        let Some(pkg_name) = pkg.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        for dep in pkg.get("dependencies").and_then(Value::as_array).into_iter().flatten() {
+            let Some(dep_name) = dep.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            if !dep_name.is_empty() {
+                rev_deps.entry(dep_name.to_string()).or_default().insert(pkg_name.to_string());
+            }
+        }
+    }
     let dependents = crate::tasks::ci_scope::reverse_dep_closure(
         &changed_packages,
         &rev_deps,
@@ -4794,6 +4813,53 @@ paths = ["archive/["]
                 "{path} must drop out of scope"
             );
         }
+        Ok(())
+    }
+
+    /// A dev/optional edge missing from the resolved graph must still keep its
+    /// dependent in scope: declared manifest edges are unioned in so no real
+    /// linking configuration loses findings (fail-closed, #11690).
+    #[test]
+    fn declared_edges_absent_from_resolve_keep_dependents_in_scope() -> Result<()> {
+        let metadata = json!({
+            "workspace_root": "/ws",
+            "packages": [
+                { "id": "p:a", "name": "gap-base", "manifest_path": "/ws/crates/gap-base/Cargo.toml",
+                  "dependencies": [] },
+                { "id": "p:b", "name": "gap-dep", "manifest_path": "/ws/crates/gap-dep/Cargo.toml",
+                  "dependencies": [ { "name": "gap-base", "optional": true, "kind": null } ] },
+                { "id": "p:c", "name": "gap-lone", "manifest_path": "/ws/crates/gap-lone/Cargo.toml",
+                  "dependencies": [] },
+            ],
+            "resolve": { "nodes": [
+                // gap-dep's optional dependency on gap-base is NOT resolved here.
+                { "id": "p:a", "deps": [] },
+                { "id": "p:b", "deps": [] },
+                { "id": "p:c", "deps": [] },
+            ] },
+        });
+
+        let scope = attribution_for(&metadata, &["crates/gap-base/src/lib.rs"])?;
+        let Some(attribution) = scope.applied() else {
+            bail!("expected applied attribution");
+        };
+
+        assert!(
+            attribution.reachable_packages.contains("gap-dep"),
+            "declared optional dependent must stay in scope"
+        );
+        assert!(
+            !attribution.reachable_packages.contains("gap-lone"),
+            "crate with no manifest edge must drop"
+        );
+        assert_eq!(
+            attribution.resolve("crates/gap-dep/src/lib.rs"),
+            AttributionPathState::InReachablePackage
+        );
+        assert_eq!(
+            attribution.resolve("crates/gap-lone/src/lib.rs"),
+            AttributionPathState::OutOfGraph
+        );
         Ok(())
     }
 
