@@ -514,15 +514,15 @@ is open on `master` readiness tracking.
 The LSP declared-catalog table is auto-generated from `features.toml`.
 
 <!-- BEGIN: COMPLIANCE_TABLE -->
-| Area | Declared ga/production/preview rows | Total rows |
+| Area | Declared proven/preview rows | Total rows |
 |------|---------------------------|------------|
-| debug | 22 | 24 |
+| debug | 0 | 24 |
 | notebook | 2 | 2 |
-| protocol | 9 | 9 |
-| text_document | 53 | 53 |
-| window | 9 | 9 |
-| workspace | 28 | 28 |
-| **Overall** | **123** | **125** |
+| protocol | 0 | 9 |
+| text_document | 15 | 53 |
+| window | 0 | 9 |
+| workspace | 1 | 28 |
+| **Overall** | **18** | **125** |
 
 Counts are navigation only (#6731): maturity labels are declarations without per-row behavior-evidence ownership.
 <!-- END: COMPLIANCE_TABLE -->
