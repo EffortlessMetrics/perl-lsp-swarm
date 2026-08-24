@@ -144,6 +144,16 @@ do
   ok(r ~= nil and deeply_equal(r, {a = 1, b = {x = 1, y = 2}}),
     "objects merge recursively by string key")
 
+  -- typed_object_identity_preserved: tagged object + tagged object stays a
+  -- tagged JSON object (later side's identity wins), matching how copied
+  -- values preserve their container tags.
+  r = safe_merge(json.object({a = 1}), json.object({b = 2}))
+  ok(r ~= nil and json.is_object(r) and json.encode(r) == '{"a":1,"b":2}',
+    "merged tagged objects keep their explicit JSON object identity")
+  r = safe_merge({a = 1}, json.object({b = 2}))
+  ok(r ~= nil and json.is_object(r),
+    "untagged base merged with a typed later object adopts the typed identity")
+
   -- atomic_replace_shorter_array: later shorter array leaves NO tail.
   r = safe_merge({"lib", "vendor"}, {"src"})
   ok(r ~= nil and deeply_equal(r, {"src"}) and #r == 1,

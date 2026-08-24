@@ -579,7 +579,11 @@ local function merge_settings_objects(base, later)
   for k, later_value in pairs(later) do
     out[k] = merge_settings_value(base[k], later_value)
   end
-  return out
+  -- Typed object identity survives merging: the later side takes precedence,
+  -- mirroring copy_settings_value so every produced settings table carries
+  -- the same explicit #11136 container identity it would have been copied
+  -- with (#12215 review).
+  return setmetatable(out, getmetatable(later) or getmetatable(base))
 end
 
 ---Merge one settings value slot (#11143): scalars and scalar-like typed
