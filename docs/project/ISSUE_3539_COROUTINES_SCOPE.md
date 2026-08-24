@@ -20,7 +20,7 @@ historical issue reference:
 ## Current truth at its exact strength
 
 ```text
-DAP threads request: one synthetic main execution context (DAP conformance only)
+DAP threads request: at most one synthetic execution context for the active session (main thread, attached process, or TCP attach; empty before any session)
 CPAN Coro static LSP intelligence: not proven beyond generic Perl behavior
 Coro runtime discovery/lifecycle: not proven
 Coro stack/variables/evaluate: not proven

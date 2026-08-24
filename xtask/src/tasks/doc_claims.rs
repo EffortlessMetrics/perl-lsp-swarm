@@ -195,27 +195,27 @@ const CORO_CLAIM_GUARDS: &[CoroClaimGuard] = &[
             // product fact must not return anywhere in the catalog.
             "Perl is single-threaded",
         ],
-        required: &["one synthetic main execution context"],
+        required: &["at most one synthetic execution context for the active session"],
     },
     CoroClaimGuard {
         file: "crates/perl-dap/features_sot.toml",
         forbidden: CORO_CLAIM_GUARDS_STALE_CATALOG_CLAIMS,
-        required: &["one synthetic main execution context"],
+        required: &["at most one synthetic execution context for the active session"],
     },
     CoroClaimGuard {
         file: "crates/perl-lsp-rs/features_sot.toml",
         forbidden: CORO_CLAIM_GUARDS_STALE_CATALOG_CLAIMS,
-        required: &["one synthetic main execution context"],
+        required: &["at most one synthetic execution context for the active session"],
     },
     CoroClaimGuard {
         file: "crates/perl-lsp-rs-core/features_sot.toml",
         forbidden: CORO_CLAIM_GUARDS_STALE_CATALOG_CLAIMS,
-        required: &["one synthetic main execution context"],
+        required: &["at most one synthetic execution context for the active session"],
     },
     CoroClaimGuard {
         file: "crates/perl-parser/features_sot.toml",
         forbidden: CORO_CLAIM_GUARDS_STALE_CATALOG_CLAIMS,
-        required: &["one synthetic main execution context"],
+        required: &["at most one synthetic execution context for the active session"],
     },
     CoroClaimGuard {
         file: "docs/project/ISSUE_3539_COROUTINES_SCOPE.md",
@@ -236,17 +236,17 @@ const CORO_CLAIM_GUARDS: &[CoroClaimGuard] = &[
             // limitation)" erased Coro and interpreter threads.
             "Single-threaded execution model (Perl limitation)",
         ],
-        required: &["one synthetic main execution context"],
+        required: &["at most one synthetic execution context for the active session"],
     },
     CoroClaimGuard {
         file: "docs/how-to/DEBUGGING.md",
         forbidden: &["- [ ] Multi-threaded debugging support"],
-        required: &["one synthetic main context"],
+        required: &["synthetic per-session execution context"],
     },
     CoroClaimGuard {
         file: "book/src/user-guides/debugging.md",
         forbidden: &["- [ ] Multi-threaded debugging support"],
-        required: &["one synthetic main context"],
+        required: &["synthetic per-session execution context"],
     },
 ];
 
@@ -415,9 +415,14 @@ mod tests {
         ];
         for (file, mutated) in mutations {
             let violations = coro_claim_guard_violations(file, mutated);
+            // Assert the forbidden-literal match itself fired (CORO_CLAIM), not
+            // just a non-empty result: a standalone mutated snippet also omits
+            // the required marker, so a bare non-empty assertion would pass
+            // even if the forbidden table lost its entry (#12273 review).
             assert!(
-                !violations.is_empty(),
-                "mutating {file} back to its stale claim must fail the guard: {mutated}"
+                violations.iter().any(|v| v.starts_with("CORO_CLAIM:")),
+                "mutating {file} back to its stale claim must trip the forbidden-literal \
+                 guard, got only: {violations:?} (mutation: {mutated})"
             );
         }
     }

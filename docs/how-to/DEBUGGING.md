@@ -207,4 +207,4 @@ The debugging system consists of:
 - [ ] Attach to running Perl process
 - [ ] Data structure visualization
 - [ ] Performance profiling integration
-- [ ] Multi-context debugging beyond the one synthetic main context (Coro discovery, interpreter-thread discovery, and selected-context control: not proven)
+- [ ] Multi-context debugging beyond the single synthetic per-session execution context (Coro discovery, interpreter-thread discovery, and selected-context control: not proven)
