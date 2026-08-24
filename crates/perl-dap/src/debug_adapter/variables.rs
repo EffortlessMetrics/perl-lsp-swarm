@@ -456,10 +456,22 @@ impl DebugAdapter {
     /// bound cumulative nodes, bytes, or query duration. Safe bounded lexical
     /// collection snapshots are owned by #7358; until that contract exists this
     /// path stays honest about not having observed the contents.
+    ///
+    /// The same no-user-code contract applies to scalars (#9590's public stdio
+    /// canaries caught the old read chain violating it): the value is read
+    /// through raw slot flags only — references render their address via
+    /// `overload::StrVal` (which bypasses overloaded stringification), strings
+    /// via the PV slot when `SVf_POK` is set, integers via IV, floats via NV,
+    /// and anything carrying no readable slot (a tied proxy, a magical SV) as
+    /// `undef`. The previous `$s->SV->PV`/`->IV` chain invoked tied `FETCH` and
+    /// overloaded `""`/numification on magical values, executing debuggee code
+    /// during a read-only inspection; it also lost NV-only scalars entirely
+    /// (they dumped as `undef`). Reading the referent of a reference is still
+    /// not done here.
     pub(super) fn build_locals_b_eval_cmd() -> String {
         format!(
             concat!(
-                "p eval {{ require B; ",
+                "p eval {{ require B; require overload; ",
                 "my $cv=$DB::sub?B::svref_2object(\\&{{$DB::sub}}):B::main_cv(); ",
                 "my $pl=$cv->PADLIST; ",
                 "my @nm=$pl->NAMES->ARRAY; ",
@@ -478,7 +490,26 @@ impl DebugAdapter {
                 "  my $v; ",
                 "  if ($rt eq 'B::AV') {{ $v='ARRAY(0x0)' }} ",
                 "  elsif ($rt eq 'B::HV') {{ $v='HASH(0x0)' }} ",
-                "  else {{ $v=eval{{$s->SV->PV}}//eval{{$s->SV->IV}}//eval{{$s->IV}}//eval{{$s->PV}}//'undef' }} ",
+                "  else {{ ",
+                "    my $f=eval{{$s->FLAGS}}//0; ",
+                "    if ($f & B::SVf_ROK()) {{ ",
+                "      my $qr=eval{{$s->object_2svref}}; ",
+                "      my $sv=defined $qr?overload::StrVal($qr):''; ",
+                "      if ($sv=~/0x([0-9a-fA-F]+)/) {{ no warnings 'portable'; $v=hex($1) }} ",
+                "      else {{ $v='REF' }} ",
+                "    }} ",
+                "    elsif ($f & B::SVf_POK()) {{ $v=eval{{$s->PV}}//'undef' }} ",
+                "    elsif ($f & B::SVf_IOK()) {{ $v=eval{{$s->IV}}//'undef' }} ",
+                "    elsif ($f & B::SVf_NOK()) {{ $v=eval{{$s->NV}}//'undef' }} ",
+                "    else {{ $v='undef' }} ",
+                "  }} ",
+                // A flagged (wide) PV must not reach perl5db's print: the resulting
+                // "Wide character in print" warning echoes this whole eval back
+                // into the control stream on every locals request and can blow
+                // the bounded capture window. Downgrade to the identical UTF-8
+                // bytes; a value that cannot be downgraded renders an honest
+                // `unicode` marker instead.
+                "  if (defined $v && !ref($v) && utf8::is_utf8($v) && !utf8::downgrade($v,1)) {{ $v='unicode' }} ",
                 "  $o.=\"$pv = $v\\n\" ",
                 "}} $o }}",
             ),
@@ -1154,17 +1185,50 @@ mod hazard_invariant_tests {
     /// A read-only `variables` request must not enumerate or serialize live
     /// aggregates. Bounded lexical collection snapshots are owned by #7358; until
     /// that contract lands, re-introducing an unbudgeted traversal here is a
-    /// regression, so the command template must stay free of it.
+    /// regression, so the command template must stay free of it. The one
+    /// admitted use of `object_2svref` (#9590) is the ROK scalar branch: the
+    /// reference is handed straight to `overload::StrVal` — the documented
+    /// hook-free stringifier — to read the address without invoking overloaded
+    /// `""` (which the raw `->IV` numification path executes on AMG-carrying
+    /// references). It must never feed a traversal.
     #[test]
     fn build_locals_b_eval_cmd_does_not_enumerate_live_collections() {
         let cmd = DebugAdapter::build_locals_b_eval_cmd();
-        for forbidden in ["object_2svref", "Data::Dumper", "Dumper(", "keys %$", "@$r"] {
+        for forbidden in ["Data::Dumper", "Dumper(", "keys %$", "@$r"] {
             assert!(
                 !cmd.contains(forbidden),
                 "lexical introspection must not use {forbidden} \
                  (unbudgeted traversal / debuggee side effects, see #7358): {cmd}"
             );
         }
+        assert_eq!(
+            cmd.matches("object_2svref").count(),
+            1,
+            "object_2svref may only appear in the ROK scalar branch: {cmd}"
+        );
+        assert!(
+            cmd.contains("B::SVf_ROK()"),
+            "the object_2svref read must be gated on SVf_ROK: {cmd}"
+        );
+        assert!(
+            cmd.contains("overload::StrVal($qr)"),
+            "the obtained reference must be consumed only by overload::StrVal: {cmd}"
+        );
+        let rok_branch = cmd
+            .split("B::SVf_ROK()")
+            .nth(1)
+            .unwrap_or_default()
+            .split("elsif")
+            .next()
+            .unwrap_or_default();
+        assert!(
+            rok_branch.contains("object_2svref") && rok_branch.contains("overload::StrVal"),
+            "object_2svref must stay inside the ROK branch: {cmd}"
+        );
+        assert!(
+            cmd.contains("$v='ARRAY(0x0)'") && cmd.contains("$v='HASH(0x0)'"),
+            "aggregate pad entries must keep their opaque non-enumerated markers: {cmd}"
+        );
     }
 
     /// The child-reference codec and child cache serve pages beyond the first 256
@@ -1212,6 +1276,35 @@ mod hazard_invariant_tests {
         assert!(
             cmd.contains("= $v"),
             "Perl emit format must contain '= $v' for parse_assignment compatibility: {cmd}"
+        );
+    }
+
+    #[test]
+    fn build_locals_b_eval_cmd_reads_raw_slots_only() {
+        // #9590's public stdio canaries proved the old read chain
+        // (`$s->SV->PV`/`$s->SV->IV`) executed tied `FETCH` and overloaded
+        // `""`/numification during a read-only locals dump, and lost NV-only
+        // scalars entirely. The command must read raw slots gated on FLAGS,
+        // take reference addresses through `overload::StrVal` (which bypasses
+        // overloaded stringification), cover the NV slot, and never emit a
+        // flagged string into perl5db's print (whose "Wide character" warning
+        // echoes the whole eval back into the control stream).
+        let cmd = DebugAdapter::build_locals_b_eval_cmd();
+        assert!(
+            !cmd.contains("$s->SV->PV") && !cmd.contains("$s->SV->IV"),
+            "the stringify-prone read chain must stay gone: {cmd}"
+        );
+        assert!(cmd.contains("B::SVf_ROK()"), "references must be gated on SVf_ROK: {cmd}");
+        assert!(
+            cmd.contains("overload::StrVal"),
+            "reference addresses must be read hook-free via overload::StrVal: {cmd}"
+        );
+        assert!(cmd.contains("B::SVf_POK()"), "string values must be gated on SVf_POK: {cmd}");
+        assert!(cmd.contains("B::SVf_IOK()"), "integers must be gated on SVf_IOK: {cmd}");
+        assert!(cmd.contains("B::SVf_NOK()"), "floats must be read from the NV slot: {cmd}");
+        assert!(
+            cmd.contains("utf8::downgrade"),
+            "wide PVs must be downgraded before reaching perl5db's print: {cmd}"
         );
     }
 }
