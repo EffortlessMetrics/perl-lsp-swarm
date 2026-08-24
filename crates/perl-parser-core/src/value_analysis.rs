@@ -378,3 +378,13 @@ mod tests {
             AbstractValue::OverBudget
         );
         assert_eq!(
+            evaluate(&expression("(1, 2, 3);")),
+            AbstractValue::Finite(vec![
+                ScalarValue::Integer(1),
+                ScalarValue::Integer(2),
+                ScalarValue::Integer(3)
+            ])
+        );
+    }
+}
+}
