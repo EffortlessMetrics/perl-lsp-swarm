@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Changed
+body: Routed every integration-harness server candidate through the bounded pre-build so cargo fingerprints decide freshness, making it impossible for a target-directory perllsp artifact left by an earlier checkout to be reused merely because it exists and silently test stale code.
+time: 2026-08-23T00:00:00Z
+custom:
+  PR: "12024"
+  Slug: harness-freshness-prebuild-always
+  Breaking: "no"

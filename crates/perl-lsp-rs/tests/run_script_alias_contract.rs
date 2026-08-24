@@ -4,6 +4,11 @@
 //! #8285/#10245. It must remain the same operation as `perl.runFile`: the same
 //! arguments, validation, result, failures, and advertised command identity.
 
+// Integration tests print diagnostic output for CI troubleshooting; this is
+// not the LSP server's stdio transport, so print_stdout/print_stderr don't
+// apply the way they do to production code.
+#![allow(clippy::print_stderr)]
+
 use perl_lsp::execute_command::{ExecuteCommandProvider, command_exists, get_supported_commands};
 use perl_lsp_rs_core::config::WorkspaceConfig;
 use serde_json::Value;

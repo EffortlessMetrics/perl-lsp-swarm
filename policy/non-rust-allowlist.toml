@@ -721,6 +721,22 @@ created = "2026-05-07"
 review_after = "2026-08-07"
 
 [[allow]]
+id = "non-rust-proptest-default-layout-regressions"
+glob = "**/proptest-regressions/*.txt"
+kind = "test_regression_corpus"
+language = "text"
+surface = "fixtures"
+classification = "test"
+owner = "parser/property-tests"
+reason = "proptest default-layout regression seeds persisted as proptest-regressions/<name>.txt; permanent test corpus."
+covered_by = [
+  "cargo test --workspace",
+]
+broad_glob_reason = "proptest's default persistence path writes `<name>.txt` under crate-level `proptest-regressions/` directories anywhere in the tree; the literal directory component scopes the glob to regression seeds only."
+created = "2026-08-23"
+review_after = "2026-11-23"
+
+[[allow]]
 id = "non-rust-corpus-loading-fixtures"
 glob = "crates/perl-corpus/tests/fixtures/loading/*.txt"
 kind = "test_fixture"
@@ -2474,6 +2490,66 @@ covered_by = [
 created = "2026-08-16"
 review_after = "2026-11-16"
 
+[[allow]]
+id = "non-rust-core-harness-target-matrix-schema"
+path = "schemas/perl_core_harness_target_matrix.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Published JSON Schema mirror for the perl_core_harness_target_matrix.v1 recorded target-matrix contract/claim (#6660); the checked-in matrix is validated and fingerprint-ratcheted by the Rust serde/model contract test family."
+covered_by = [
+  "cargo test -p perl-core-harness --locked checked_in_target_matrix_is_valid_and_stable",
+]
+created = "2026-08-19"
+review_after = "2026-11-19"
+
+[[allow]]
+id = "non-rust-core-harness-target-matrix-index-schema"
+path = "schemas/perl_core_harness_target_matrix_index.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Published JSON Schema mirror for the perl_core_harness_target_matrix_index.v1 part index (#6660); index/part decoding is exercised when the pinned matrix is loaded and validated by the Rust serde/model contract."
+covered_by = [
+  "cargo test -p perl-core-harness --locked checked_in_target_matrix_is_valid_and_stable",
+]
+created = "2026-08-19"
+review_after = "2026-11-19"
+
+[[allow]]
+id = "non-rust-core-harness-target-matrix-part-schema"
+path = "schemas/perl_core_harness_target_matrix_part.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Published JSON Schema mirror for the perl_core_harness_target_matrix_part.v1 target-matrix part files (#6660); each part is decoded and cross-validated when the pinned matrix is assembled by the Rust serde/model contract."
+covered_by = [
+  "cargo test -p perl-core-harness --locked checked_in_target_matrix_is_valid_and_stable",
+]
+created = "2026-08-19"
+review_after = "2026-11-19"
+
+[[allow]]
+id = "non-rust-core-harness-target-topology-drift-schema"
+path = "schemas/perl_core_harness_target_topology_drift.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Published JSON Schema mirror for the perl_core_harness_target_topology_drift.v1 receipt (#6660); the checked-in blead drift receipt is validated against the pinned matrix and its not-proven status is asserted by the Rust serde/model contract."
+covered_by = [
+  "cargo test -p perl-core-harness --locked checked_in_blead_drift_is_explicitly_not_proven",
+]
+created = "2026-08-19"
+review_after = "2026-11-19"
+
 # =============================================================================
 # Binary identity protocol (perl_lsp.binary_identity.v1)
 # =============================================================================
@@ -2510,7 +2586,7 @@ language = "lua"
 surface = "editor"
 classification = "production"
 owner = "editor/lite-xl"
-reason = "Exact upstream lite-xl-lsp json.lua (base d1432ae, blob eb36b8fa) staged for the Lite XL integration train, carrying only the #11197 terminal typed-decode-error patch."
+reason = "Exact upstream lite-xl-lsp json.lua (base d1432ae, blob eb36b8fa) staged for the Lite XL integration train, carrying the #11155 bounded-diagnostics, #11197 typed-decode-error, #11136 typed-value, #11183 numeric-identity, #11194 Unicode-validity, and #11186 structural-budget patches."
 covered_by = [
   "lua clients/lite-xl/tests/json_decode_test.lua",
   "cargo xtask check-file-policy",
@@ -2533,3 +2609,200 @@ covered_by = [
 ]
 created = "2026-08-22"
 review_after = "2026-09-22"
+
+# =============================================================================
+# Core harness runner plan/parity contracts (perl_core_harness.runner_plan.v1,
+# perl_core_harness.runner_parity.v1)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-core-harness-runner-plan-schema"
+path = "schemas/perl_core_harness_runner_plan.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Published JSON Schema mirror for the perl_core_harness.runner_plan.v1 runner-plan receipt (#6662); plan building, canonical digests, and scheduling limitations are exercised by the Rust serde/model contract test family."
+covered_by = [
+  "cargo test -p perl-core-harness --locked --test runner_plan_contracts",
+]
+created = "2026-08-23"
+review_after = "2026-11-23"
+
+[[allow]]
+id = "non-rust-core-harness-runner-parity-schema"
+path = "schemas/perl_core_harness_runner_parity.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Published JSON Schema mirror for the perl_core_harness.runner_parity.v1 membership-parity receipt (#6662); parity binding, limitation enforcement, and not-proven boundaries are exercised by the Rust serde/model contract test family."
+covered_by = [
+  "cargo test -p perl-core-harness --locked --test runner_plan_contracts",
+]
+created = "2026-08-23"
+review_after = "2026-11-23"
+
+[[allow]]
+id = "non-rust-litexl-server-transport"
+path = "clients/lite-xl/upstream/server.lua"
+kind = "editor_extension"
+language = "lua"
+surface = "editor"
+classification = "production"
+owner = "editor/lite-xl"
+reason = "Exact upstream lite-xl-lsp server.lua (base d1432ae, blob 33c8ccae) staged for the Lite XL integration train, carrying the #11151 bounded inbound frame-reader patch: explicit parser state, header/body budgets, strict Content-Length validation, remainder ownership, and typed content-free framing failures."
+covered_by = [
+  "lua clients/lite-xl/tests/server_frame_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-init-plugin"
+path = "clients/lite-xl/upstream/init.lua"
+kind = "editor_extension"
+language = "lua"
+surface = "editor"
+classification = "production"
+owner = "editor/lite-xl"
+reason = "Exact upstream lite-xl-lsp init.lua (base d1432ae, blob 7b38c3a9) staged for the Lite XL integration train, carrying the #11115 monotonic document-version patch (one structured per-server/per-document open-session record owning versions, pending changes, server generations, and session identities) and the #11108 request-subject currentness patch (immutable subjects plus one reusable response-admission guard with typed dispositions)."
+covered_by = [
+  "lua clients/lite-xl/tests/init_document_session_test.lua",
+  "lua clients/lite-xl/tests/init_request_currentness_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-init-session-tests"
+path = "clients/lite-xl/tests/init_document_session_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free document-session suite proving exact wire versions, session identities, snapshot capture, and inert terminated sessions; runs against the staged module, the pristine upstream blob, or any single-behavior mutation for red-first and falsifier checks."
+covered_by = [
+  "lua clients/lite-xl/tests/init_document_session_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-init-request-currentness-tests"
+path = "clients/lite-xl/tests/init_request_currentness_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free request-currentness suite proving held responses apply only to their exact server/document subject across edits, restarts, close/reopen, and URI transitions; runs against the staged module or current main for red-first checks and against single-behavior mutations for falsifier checks."
+covered_by = [
+  "lua clients/lite-xl/tests/init_request_currentness_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-diagnostics-store"
+path = "clients/lite-xl/upstream/diagnostics.lua"
+kind = "editor_extension"
+language = "lua"
+surface = "editor"
+classification = "production"
+owner = "editor/lite-xl"
+reason = "Exact upstream lite-xl-lsp diagnostics.lua (base d1432ae, blob c06bec49) staged for the Lite XL integration train, carrying the #11124 generation-bound publication patch: provider/server-generation/document-session/version admission with typed dispositions, deterministic source-attributed projection, and lifecycle-bound cleanup."
+covered_by = [
+  "lua clients/lite-xl/tests/diagnostics_currentness_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-diagnostics-currentness-tests"
+path = "clients/lite-xl/tests/diagnostics_currentness_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free push-diagnostics currentness suite proving stale/future/old-generation rejections, complementary provider composition, unversioned not-proven dispositions, generation-bound delayed rendering, and lifecycle cleanup; runs against the staged modules or the pristine blobs for red-first checks."
+covered_by = [
+  "lua clients/lite-xl/tests/diagnostics_currentness_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-server-frame-tests"
+path = "clients/lite-xl/tests/server_frame_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free inbound-framing suite proving bounded typed frame parsing over a fake process; runs against the staged module, the pristine upstream blob, or any single-behavior mutation for red-first and falsifier checks."
+covered_by = [
+  "lua clients/lite-xl/tests/server_frame_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-util-support"
+path = "clients/lite-xl/upstream/util.lua"
+kind = "editor_extension"
+language = "lua"
+surface = "editor"
+classification = "production"
+owner = "editor/lite-xl"
+reason = "Exact upstream lite-xl-lsp util.lua (base d1432ae, blob 588c101a) staged for the Lite XL integration train, carrying the #11155 guarded sensitive-trace patch (log_file append failures warn once without recursion, documented source-bearing surface, no automatic retention) and the #11162 shell-free external-launch patch (URI classification policy, argv-only platform launchers, testable show_document sequence)."
+covered_by = [
+  "lua clients/lite-xl/tests/server_logging_test.lua",
+  "lua clients/lite-xl/tests/util_show_document_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-server-logging-tests"
+path = "clients/lite-xl/tests/server_logging_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic canary-based redaction suite proving default failure logs keep actionable identity while source/secret bytes stay out, stderr drains bounded with visible truncation, and the explicit trace stays opt-in, guarded, and immediately stoppable; runs against staged or mutated modules."
+covered_by = [
+  "lua clients/lite-xl/tests/server_logging_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-show-document-tests"
+path = "clients/lite-xl/tests/util_show_document_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic argv/scheme falsifier suite proving shell-free external launches across Linux/macOS/Windows shapes, explicit URI dispositions, truthful decline/failure outcomes, and zero shell invocation; runs against the staged module, pristine upstream blob, or a restored shell-construction mutation."
+covered_by = [
+  "lua clients/lite-xl/tests/util_show_document_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"

@@ -1370,6 +1370,7 @@ impl LspServer {
                     related_information: Vec::new(),
                     tags: Vec::new(),
                     fixable: false,
+                    critic_observation: None,
                 })
             })
             .collect()

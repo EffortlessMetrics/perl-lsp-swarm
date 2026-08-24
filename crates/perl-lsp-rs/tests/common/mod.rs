@@ -50,11 +50,12 @@ pub mod protocol_io;
 
 // Re-export everything from extracted submodules for backwards compatibility
 pub use handshake::{
-    await_index_ready, initialize_lsp, initialize_lsp_with_capabilities, shutdown_and_exit,
+    await_index_ready, initialize_lsp, initialize_lsp_with_capabilities,
+    initialize_lsp_with_root_path, shutdown_and_exit,
 };
 pub use protocol_io::{
-    ReadResponseOutcome, drain_until_quiet, read_notification_method, read_notification_timeout,
-    read_response, read_response_matching, read_response_matching_i64,
+    ReadResponseOutcome, drain_until_quiet, read_notification_for_uri, read_notification_method,
+    read_notification_timeout, read_response, read_response_matching, read_response_matching_i64,
     read_response_matching_outcome, read_response_only_timeout, read_response_timeout, send_raw,
     send_raw_message, send_request_no_wait,
 };
@@ -406,65 +407,6 @@ pub fn start_lsp_server() -> LspServer {
     server
 }
 
-#[cfg(test)]
-mod stderr_tests {
-    use super::{STDERR_PARTIAL_MAX_BYTES, STDERR_TAIL_LINES, record_stderr_chunk};
-    use std::collections::VecDeque;
-
-    #[test]
-    fn stderr_fragments_reconstruct_across_reads() {
-        let mut tail = (VecDeque::new(), Vec::new());
-        assert!(record_stderr_chunk(&mut tail, b"warning: split ").is_empty());
-        assert_eq!(
-            record_stderr_chunk(&mut tail, b"across reads\nnext"),
-            vec!["warning: split across reads"]
-        );
-
-        assert_eq!(tail.0.iter().collect::<Vec<_>>(), vec!["warning: split across reads"]);
-        assert_eq!(tail.1, b"next");
-    }
-
-    #[test]
-    fn stderr_preserves_utf8_code_points_split_across_reads() {
-        let mut tail = (VecDeque::new(), Vec::new());
-        let character = "界".as_bytes();
-
-        assert!(record_stderr_chunk(&mut tail, &character[..1]).is_empty());
-        assert_eq!(
-            record_stderr_chunk(&mut tail, &[character[1], character[2], b'\n']),
-            vec!["界"]
-        );
-    }
-
-    #[test]
-    fn unterminated_stderr_keeps_newest_bounded_bytes() {
-        let mut tail = (VecDeque::new(), Vec::new());
-        record_stderr_chunk(
-            &mut tail,
-            format!("old{}new", "x".repeat(STDERR_PARTIAL_MAX_BYTES)).as_bytes(),
-        );
-
-        assert!(tail.1.len() <= STDERR_PARTIAL_MAX_BYTES);
-        assert!(tail.1.ends_with(b"new"));
-        assert!(tail.0.len() <= STDERR_TAIL_LINES);
-    }
-
-    #[test]
-    fn stderr_echo_lines_survive_tail_eviction() {
-        let mut tail = (VecDeque::new(), Vec::new());
-        for index in 0..STDERR_TAIL_LINES {
-            record_stderr_chunk(&mut tail, format!("line {index}\n").as_bytes());
-        }
-
-        let completed = record_stderr_chunk(&mut tail, b"new line\n");
-
-        assert_eq!(completed, vec!["new line"]);
-        assert_eq!(tail.0.len(), STDERR_TAIL_LINES);
-        assert_eq!(tail.0.front().map(String::as_str), Some("line 1"));
-        assert_eq!(tail.0.back().map(String::as_str), Some("new line"));
-    }
-}
-
 pub fn send_request(server: &LspServer, request: Value) -> Value {
     send_request_with_response_timeout(server, request, default_timeout())
 }
@@ -680,5 +622,64 @@ impl Drop for LspServer {
         // 4. Fall back to hard kill if graceful shutdown didn't work
         let _ = self.process.get_mut().unwrap_or_else(|e| e.into_inner()).kill();
         let _ = self.process.get_mut().unwrap_or_else(|e| e.into_inner()).wait();
+    }
+}
+
+#[cfg(test)]
+mod stderr_tests {
+    use super::{STDERR_PARTIAL_MAX_BYTES, STDERR_TAIL_LINES, record_stderr_chunk};
+    use std::collections::VecDeque;
+
+    #[test]
+    fn stderr_fragments_reconstruct_across_reads() {
+        let mut tail = (VecDeque::new(), Vec::new());
+        assert!(record_stderr_chunk(&mut tail, b"warning: split ").is_empty());
+        assert_eq!(
+            record_stderr_chunk(&mut tail, b"across reads\nnext"),
+            vec!["warning: split across reads"]
+        );
+
+        assert_eq!(tail.0.iter().collect::<Vec<_>>(), vec!["warning: split across reads"]);
+        assert_eq!(tail.1, b"next");
+    }
+
+    #[test]
+    fn stderr_preserves_utf8_code_points_split_across_reads() {
+        let mut tail = (VecDeque::new(), Vec::new());
+        let character = "界".as_bytes();
+
+        assert!(record_stderr_chunk(&mut tail, &character[..1]).is_empty());
+        assert_eq!(
+            record_stderr_chunk(&mut tail, &[character[1], character[2], b'\n']),
+            vec!["界"]
+        );
+    }
+
+    #[test]
+    fn unterminated_stderr_keeps_newest_bounded_bytes() {
+        let mut tail = (VecDeque::new(), Vec::new());
+        record_stderr_chunk(
+            &mut tail,
+            format!("old{}new", "x".repeat(STDERR_PARTIAL_MAX_BYTES)).as_bytes(),
+        );
+
+        assert!(tail.1.len() <= STDERR_PARTIAL_MAX_BYTES);
+        assert!(tail.1.ends_with(b"new"));
+        assert!(tail.0.len() <= STDERR_TAIL_LINES);
+    }
+
+    #[test]
+    fn stderr_echo_lines_survive_tail_eviction() {
+        let mut tail = (VecDeque::new(), Vec::new());
+        for index in 0..STDERR_TAIL_LINES {
+            record_stderr_chunk(&mut tail, format!("line {index}\n").as_bytes());
+        }
+
+        let completed = record_stderr_chunk(&mut tail, b"new line\n");
+
+        assert_eq!(completed, vec!["new line"]);
+        assert_eq!(tail.0.len(), STDERR_TAIL_LINES);
+        assert_eq!(tail.0.front().map(String::as_str), Some("line 1"));
+        assert_eq!(tail.0.back().map(String::as_str), Some("new line"));
     }
 }

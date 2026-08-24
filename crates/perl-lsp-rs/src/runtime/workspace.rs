@@ -400,7 +400,21 @@ impl LspServer {
             .trim();
         let cap = workspace_symbol_cap();
 
-        tracing::debug!(query, cap, "Workspace symbol search v2");
+        // One compiled query profile per logical request (#10794): every index
+        // tier of this request consumes this instance and its digest.
+        let query_profile =
+            perl_workspace::workspace_symbol_query::WorkspaceSymbolQueryProfile::compile(query);
+
+        // Bounded query-profile observability (#10794): the canonical index
+        // request emits its compiled profile identity. Per-request compile
+        // counts stay `not_proven` until receipt wiring lands (#10645/#10642).
+        tracing::debug!(
+            query,
+            cap,
+            query_profile_version = query_profile.version(),
+            query_profile_digest = query_profile.digest(),
+            "Workspace symbol search v2"
+        );
 
         // Use routing helper for lifecycle-aware dispatch
         #[cfg(feature = "workspace")]
@@ -425,9 +439,14 @@ impl LspServer {
                     // Full query path: use workspace index.
                     // Pass the cap into the search so results are bounded before
                     // allocation — early exit at the search boundary, not after collecting.
-                    let mut symbols = coordinator.index().search_source_symbols(query, Some(cap));
+                    let mut symbols = coordinator
+                        .index()
+                        .search_source_symbols_with_profile(&query_profile, Some(cap));
                     symbols.extend(
-                        coordinator.index().search_generated_workspace_symbols(query, Some(cap)),
+                        coordinator.index().search_generated_workspace_symbols_with_profile(
+                            &query_profile,
+                            Some(cap),
+                        ),
                     );
 
                     // Convert to LSP format with cooperative yielding.
@@ -474,7 +493,9 @@ impl LspServer {
                     // open-doc path only when the partial index is also empty.
                     tracing::debug!(reason, "Workspace symbol: querying partial index");
                     if let Some(coordinator) = self.coordinator() {
-                        let symbols = coordinator.index().search_source_symbols(query, Some(cap));
+                        let symbols = coordinator
+                            .index()
+                            .search_source_symbols_with_profile(&query_profile, Some(cap));
                         let lsp_symbols: Vec<LspWorkspaceSymbol> = symbols
                             .iter()
                             .enumerate()
@@ -1739,6 +1760,25 @@ impl LspServer {
                 };
 
                 tracing::debug!("File created: {}", uri);
+
+                // Open-buffer authority (#8041): `didCreateFiles` is client
+                // FILE-operation authority, not document lifecycle authority.
+                // When a created path collides with an open document, the
+                // editor buffer stays authoritative; indexing disk bytes here
+                // would silently replace it as the source of workspace facts.
+                // Mirrors the watcher guard in
+                // `process_file_watcher_uri_immediate`: skipping loses at most
+                // one disk refresh for a genuinely closed file, which the next
+                // event or scan recovers.
+                if self.document_is_open(uri) {
+                    self.record_backing_file_transition(uri, BackingFileTransition::Changed);
+                    tracing::debug!(
+                        uri,
+                        "Explicit create for open document — buffer remains \
+                         authoritative; disk re-index skipped (#8041)"
+                    );
+                    continue;
+                }
 
                 // Index the new file if it's a Perl file
                 // Note: Mutation operation - use coordinator with lifecycle tracking

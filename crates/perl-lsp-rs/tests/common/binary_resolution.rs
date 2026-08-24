@@ -3,23 +3,29 @@
 //! Resolution order (fixed for test reliability):
 //! 1. PERL_LSP_BIN env var (explicit override)
 //! 2. Runtime `CARGO_BIN_EXE_perllsp` (when owned by the product package)
-//! 3. Workspace target directory: ONLY the active profile's artifact,
-//!    honoring CARGO_TARGET_DIR, with a bounded pre-build on miss; an
-//!    opposite-profile leftover is refused, never silently reused
+//! 3. Workspace target directory: the ACTIVE profile's artifact, made
+//!    current through a bounded pre-build before any deadline starts
 //! 4. PATH lookup
 //!
 //! There is deliberately NO `cargo run` candidate: a cargo invocation inside
 //! the handshake deadline IS the #11848 stall family — it must wait on the
 //! build-directory lock under suite contention and can compile for minutes.
-//! Every non-env candidate is either an existing executable or a pre-build
-//! performed before any deadline starts; when nothing resolves or spawns,
-//! the harness fails loudly instead of silently degrading into cargo.
+//! Every non-env candidate is either an explicit executable or the product of
+//! a pre-build performed before any deadline starts; when nothing resolves or
+//! spawns, the harness fails loudly instead of silently degrading into cargo.
 //!
-//! Freshness is part of the contract (P2 review on #11905): only the ACTIVE
-//! profile's artifact describes this source tree. An executable left behind
-//! by the opposite profile — e.g. a stale `target/release/perllsp` beside a
-//! missing debug one — predates the reviewed source, so accepting it would
-//! skip the pre-build and make these tests silently exercise stale code.
+//! Freshness is part of the contract (P2 review on #11905, staleness repair
+//! in #11946): only a current ACTIVE-profile artifact describes this source
+//! tree. Existence alone proves nothing — an executable left behind by an
+//! earlier checkout (either profile) predates the reviewed source, so the
+//! target-directory candidate ALWAYS routes through the pre-build, letting
+//! cargo's fingerprints decide whether anything needs rebuilding. Cargo is
+//! the freshness oracle; this file does not reinvent one from mtimes.
+
+#![expect(
+    clippy::expect_used,
+    reason = "test-only resolution barriers must fail loudly, not degrade into the cargo fallback"
+)]
 
 use perl_tdd_support::must;
 use std::path::Path;
@@ -32,12 +38,13 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
     // 1. Explicit override via PERL_LSP_BIN
     // 2. Compile-time CARGO_BIN_EXE (guaranteed correct during `cargo test -p perl-lsp-rs`)
     // 3. Runtime CARGO_BIN_EXE_* (fallback for edge cases)
-    // 4. Workspace target directory: ACTIVE-profile artifact only
+    // 4. Workspace target directory: the ACTIVE-profile artifact, made
+    //    current through the pre-build
     // 5. PATH lookup
     //
-    // IMPORTANT: only the active profile's binary is acceptable here. An
-    // opposite-profile executable may predate the reviewed source; reusing it
-    // would silently test stale code (P2 review on #11905).
+    // IMPORTANT: only a current active profile's binary is acceptable here.
+    // Any executable that predates the reviewed source — either profile —
+    // would silently test stale code (P2 review on #11905, #11946).
     let mut v: Vec<Command> = Vec::new();
 
     // Explicit candidates are authoritative when they point to an existing
@@ -51,36 +58,27 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
         return explicit.into_iter();
     }
 
-    // 3. Workspace target directory (using absolute paths) — active profile
-    //    only, per the freshness contract above.
+    // 3. Workspace target directory (using absolute paths) — the ACTIVE
+    //    profile's artifact, made current before any deadline starts.
+    //    Existence alone is never acceptance: an artifact that predates this
+    //    source tree would silently test stale code (#11946), so the
+    //    candidate always comes from the pre-build, whose cargo fingerprints
+    //    rebuild exactly when the artifact is out of date. An opposite-
+    //    profile executable found beside the build is carried only as
+    //    refusal-diagnostics context — it is never a spawn candidate.
     if let Some(workspace_root) = workspace_root_from_manifest() {
-        match probe_target_artifacts(&workspace_root) {
-            TargetArtifactProbe::ReuseActiveProfile(binary) => {
-                let mut c = Command::new(binary);
+        let found_opposite = opposite_profile_artifact(&target_directory(&workspace_root));
+        match ensure_perllsp_built(&workspace_root) {
+            Ok(built) => {
+                let mut c = Command::new(built);
                 c.arg("--stdio");
                 v.push(c);
             }
-            TargetArtifactProbe::MustBuild { found_opposite } => {
-                // The server binary lives in the `perllsp` package, not in
-                // `perl-lsp-rs` where these tests live, so `cargo test -p
-                // perl-lsp-rs` never builds it. Build it ONCE here — before any
-                // request deadline starts, because no cargo invocation may run
-                // inside one (#11848). A failed build refuses loudly, naming
-                // any opposite-profile artifact that was found and why it was
-                // refused instead of reused.
-                match ensure_perllsp_built(&workspace_root) {
-                    Ok(built) => {
-                        let mut c = Command::new(built);
-                        c.arg("--stdio");
-                        v.push(c);
-                    }
-                    Err(build_errors) => {
-                        must(Err::<Command, _>(refuse_after_failed_build(
-                            &build_errors,
-                            found_opposite.as_deref(),
-                        )));
-                    }
-                }
+            Err(build_errors) => {
+                must(Err::<Command, _>(refuse_after_failed_build(
+                    &build_errors,
+                    found_opposite.as_deref(),
+                )));
             }
         }
     }
@@ -124,37 +122,15 @@ fn existing_candidate_command(path: std::ffi::OsString, source: &str) -> Option<
     Some(command)
 }
 
-/// What probing the workspace target directory may contribute to the suite.
+/// Executable opposite-profile leftover in the target directory, if any.
 ///
-/// The freshness boundary from the P2 review on #11905: only the ACTIVE
-/// profile's artifact (debug for a normal test build) describes this source
-/// tree. An opposite-profile executable left by an earlier checkout would
-/// otherwise be accepted while the required pre-build was skipped, and the
-/// suite would silently exercise stale code.
-#[derive(Debug)]
-enum TargetArtifactProbe {
-    /// Executable present for the active profile; safe to reuse.
-    ReuseActiveProfile(std::path::PathBuf),
-    /// No active-profile artifact. The suite must pre-build one before any
-    /// request deadline (#11848); `found_opposite` carries an executable
-    /// opposite-profile leftover purely as refusal-diagnostics context —
-    /// it is never a spawn candidate.
-    MustBuild { found_opposite: Option<std::path::PathBuf> },
-}
-
-fn probe_target_artifacts(workspace_root: &std::path::Path) -> TargetArtifactProbe {
-    probe_target_artifacts_at(&target_directory(workspace_root))
-}
-
-fn probe_target_artifacts_at(target_dir: &std::path::Path) -> TargetArtifactProbe {
-    let [active, opposite] = active_profile_order();
-    let active_binary = target_dir.join(active).join(perllsp_file_name());
-    if is_executable_file(&active_binary) {
-        return TargetArtifactProbe::ReuseActiveProfile(active_binary);
-    }
+/// Purely refusal-diagnostics context (#11905): it is never a spawn
+/// candidate. The active profile needs no probe — its candidate always comes
+/// from the freshness pre-build (#11946).
+fn opposite_profile_artifact(target_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let [_active, opposite] = active_profile_order();
     let opposite_binary = target_dir.join(opposite).join(perllsp_file_name());
-    let found_opposite = is_executable_file(&opposite_binary).then_some(opposite_binary);
-    TargetArtifactProbe::MustBuild { found_opposite }
+    is_executable_file(&opposite_binary).then_some(opposite_binary)
 }
 
 /// Refusal text after a failed pre-build. Keeps the #11848 cargo-run
@@ -198,14 +174,13 @@ fn workspace_root_from_manifest() -> Option<std::path::PathBuf> {
     )
 }
 
-/// Absolute paths the resolver probes for a prebuilt server binary, in
-/// resolution order.
+/// Absolute artifact paths the resolver considers, in profile order.
 ///
 /// The no-candidate spawn diagnostics print exactly these paths so an
-/// operator sees what the resolver saw — including a custom CARGO_TARGET_DIR,
-/// the exact condition that hid the binary behind the #11848 stalls. Keeping
-/// this as the single authority prevents the diagnostics from drifting back
-/// to hardcoded `workspace/target` paths.
+/// operator sees where the resolver looks — including a custom
+/// CARGO_TARGET_DIR, the exact condition that hid the binary behind the
+/// #11848 stalls. Keeping this as the single authority prevents the
+/// diagnostics from drifting back to hardcoded `workspace/target` paths.
 pub(crate) fn probed_binary_paths() -> Vec<std::path::PathBuf> {
     let Some(workspace_root) = workspace_root_from_manifest() else {
         return Vec::new();
@@ -243,12 +218,16 @@ fn active_profile_order() -> [&'static str; 2] {
     if cfg!(debug_assertions) { ["debug", "release"] } else { ["release", "debug"] }
 }
 
-/// Build the `perllsp` binary once per test process and return its path.
+/// Build (or freshness-verify) the `perllsp` binary once per test process.
 ///
 /// The tests spawn a server owned by a different package, so nothing in
-/// `cargo test -p perl-lsp-rs` guarantees it exists. Building it here — before any
-/// request deadline starts — keeps the cost out of `initialize`, which previously
-/// timed out against an inline `cargo run` that needed roughly a minute to compile.
+/// `cargo test -p perl-lsp-rs` guarantees it exists or is current. Routing
+/// every target-directory candidate through this pre-build — before any
+/// request deadline starts — keeps the cost out of `initialize`, which
+/// previously timed out against an inline `cargo run` that needed roughly a
+/// minute to compile, and lets cargo's fingerprints rebuild exactly when an
+/// existing artifact predates this source tree (#11946). Existence-based
+/// reuse would silently test stale code and is deliberately impossible.
 fn ensure_perllsp_built(workspace_root: &std::path::Path) -> Result<std::path::PathBuf, String> {
     static BUILT: std::sync::OnceLock<Result<std::path::PathBuf, String>> =
         std::sync::OnceLock::new();
@@ -550,23 +529,15 @@ mod tests {
 
     /// The #11905 P2 regression: a normal debug run whose target directory
     /// retains only an opposite-profile (release) executable must NOT reuse
-    /// it. The probe demands a pre-build instead, keeping the leftover purely
-    /// as context for a loud, truthful refusal if that build fails.
+    /// it. The leftover is collected purely as refusal-diagnostics context;
+    /// the spawn candidate always comes from the freshness pre-build.
     #[test]
     fn stale_opposite_profile_artifact_is_refused_not_reused() {
         let root = planted_artifact_workspace("stale-opposite-refused");
         let target_dir = root.join("target");
         let stale = plant_fake_perllsp(&target_dir, super::active_profile_order()[1]);
 
-        let leftover = match super::probe_target_artifacts_at(&target_dir) {
-            super::TargetArtifactProbe::MustBuild { found_opposite } => found_opposite,
-            super::TargetArtifactProbe::ReuseActiveProfile(path) => {
-                must(Err::<Option<std::path::PathBuf>, _>(format!(
-                    "opposite-profile leftover {} must never be reused as a candidate",
-                    path.display()
-                )))
-            }
-        };
+        let leftover = super::opposite_profile_artifact(&target_dir);
         assert_eq!(leftover.as_deref(), Some(stale.as_path()));
         let refusal = super::refuse_after_failed_build("linker failed", leftover.as_deref());
         assert!(refusal.contains(&stale.display().to_string()), "{refusal}");
@@ -579,22 +550,27 @@ mod tests {
         );
     }
 
-    /// When the active profile's own artifact exists, it wins regardless of
-    /// any opposite-profile leftover; the probe never consults the latter.
+    /// The #11946 regression surface: the resolver must not contain an
+    /// existence-based reuse path for the active-profile artifact, because
+    /// an artifact left by an earlier checkout predates the reviewed source.
+    /// With the reuse branch removed, every target-directory candidate comes
+    /// from `ensure_perllsp_built`, so this pins the diagnostics contract
+    /// that replaced probing and keeps the refusal text honest when the
+    /// pre-build fails beside a planted leftover.
     #[test]
-    fn active_profile_artifact_is_preferred_over_an_opposite_profile_leftover() {
-        let root = planted_artifact_workspace("active-preferred");
+    fn failed_prebuild_names_a_planted_leftover_without_reusing_it() {
+        let root = planted_artifact_workspace("prebuild-refuses-leftover");
         let target_dir = root.join("target");
-        let active = plant_fake_perllsp(&target_dir, super::active_profile_order()[0]);
-        plant_fake_perllsp(&target_dir, super::active_profile_order()[1]);
+        plant_fake_perllsp(&target_dir, super::active_profile_order()[0]);
+        let stale = plant_fake_perllsp(&target_dir, super::active_profile_order()[1]);
 
-        let reused = match super::probe_target_artifacts_at(&target_dir) {
-            super::TargetArtifactProbe::ReuseActiveProfile(path) => path,
-            super::TargetArtifactProbe::MustBuild { .. } => must(Err::<std::path::PathBuf, _>(
-                "an existing active-profile artifact must not trigger a rebuild".to_string(),
-            )),
-        };
-        assert_eq!(reused, active);
+        let leftover = super::opposite_profile_artifact(&target_dir);
+        assert_eq!(leftover.as_deref(), Some(stale.as_path()));
+        let refusal =
+            super::refuse_after_failed_build("cargo build -p perllsp failed", leftover.as_deref());
+        assert!(refusal.contains(&stale.display().to_string()), "{refusal}");
+        assert!(refusal.contains("silently test stale code"), "{refusal}");
+        assert!(refusal.contains("#11848"), "{refusal}");
 
         must(
             std::fs::remove_dir_all(&root)
@@ -602,22 +578,15 @@ mod tests {
         );
     }
 
-    /// A bare target directory demands a build, and the refusal text carries
-    /// no opposite-profile clause when there is nothing to refuse.
+    /// A bare target directory contributes no opposite-profile diagnostics,
+    /// and the refusal text carries no opposite-profile clause when there is
+    /// nothing to refuse.
     #[test]
     fn empty_target_directory_requires_a_build_without_opposite_context() {
         let root = planted_artifact_workspace("empty-requires-build");
         let target_dir = root.join("target");
 
-        let found_opposite = match super::probe_target_artifacts_at(&target_dir) {
-            super::TargetArtifactProbe::MustBuild { found_opposite } => found_opposite,
-            super::TargetArtifactProbe::ReuseActiveProfile(path) => {
-                must(Err::<Option<std::path::PathBuf>, _>(format!(
-                    "empty target directory must require a clean build, got reuse of {}",
-                    path.display()
-                )))
-            }
-        };
+        let found_opposite = super::opposite_profile_artifact(&target_dir);
         assert_eq!(found_opposite, None);
         let refusal = super::refuse_after_failed_build("boom", None);
         assert!(refusal.contains("#11848"), "{refusal}");

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 4998,
-  "reason": "#4998 fail-closed external include roots: one actionable sentence added to the perl-lsp.externalIncludePaths markdownDescription stating that server-side application is pending a trusted configuration transport. Only package.json grows (58170 -> 58306 bytes); every other packaged entry is byte-identical.",
-  "base_baseline_file_sha256": "5fd137d8d989b9ae457d765ce001ea77dc5bfeec6161b4b814e60e9c5d71e517",
-  "candidate_baseline_file_sha256": "7d24b2a9cc9653790b955a84124949a15d0f1cfa2e1994964f8e0c818d76f71c",
-  "base_inventory_sha256": "86bdbcda8099542244f4ab88121dd7c913bb4d06b6de6c733e0a0756daa0a227",
-  "candidate_inventory_sha256": "a18d9dc92dec8337e1885300530d30f3b179044e648da7c9b7df3cc24f2a8a13"
+  "owner_issue": 10200,
+  "reason": "#10200 baseline truth repair: tighten package.json 58690->58529 to the true current size; record changelog.md at the archive-measured 19955 (vsce markdown processor rewrites the two now-absolute release-note links); record out/extension.js at the true current build 1465078 (both win32 and CI linux builds agree; the prior 1465391 recorded a larger bundle that no longer builds — undeclared -313 drift since the #7276-era packaging). Archive-normalized asset names retained; no file added, removed, or loosened; total recomputed 1638716->1638246.",
+  "base_baseline_file_sha256": "86d37aec8d47610d247c297a2b9c1592419fb8e6ea301de42318006a93c8d690",
+  "candidate_baseline_file_sha256": "0c0505194ee87ddadae4154dc7d77dd005b2791447d7f0278f1f9078f1eabaeb",
+  "base_inventory_sha256": "9ffef8327470dc624893f58b6ca0ac5b04262acebc7ea9d6eaed77fed657373e",
+  "candidate_inventory_sha256": "5b56dd0d313e33cad431fc52e9e16521d10c4e5cbaa0dda80365bd7f0d2f628e"
 }

@@ -411,6 +411,7 @@ mod tests {
 
         let server = Arc::new(LspServer::new());
         let uri = "file:///test_concurrent_lock.pl";
+        server.advertised_features.lock().formatting = true;
 
         // Generate a large document so the native formatter has enough work
         // to create a measurable window where the lock is released but

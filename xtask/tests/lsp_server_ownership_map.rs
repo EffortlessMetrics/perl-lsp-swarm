@@ -68,6 +68,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8384"
     ),
     row!(
+        "backing_file_transitions",
+        DocumentStore,
+        "Arc<Mutex>",
+        "save/close authority handoff",
+        "document URI + observed transition",
+        false,
+        "#8041"
+    ),
+    row!(
         "initialize_requested",
         ClientSession,
         "AtomicBool",
@@ -111,15 +120,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "workspace-set generation",
         true,
         "#8385"
-    ),
-    row!(
-        "ast_cache",
-        AnalysisServices,
-        "Arc",
-        "analysis-service shutdown",
-        "source + parser generation",
-        false,
-        "#6957"
     ),
     row!(
         "symbol_index",
@@ -563,6 +563,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8400"
     ),
     row!(
+        "formatter_runtime_override",
+        ProductComposition,
+        "Mutex<Option<Arc>>",
+        "test/product composition reset",
+        "process/test subject",
+        true,
+        "#5001"
+    ),
+    row!(
         "skip_perlcritic_command_check",
         ProductComposition,
         "AtomicBool",
@@ -836,6 +845,49 @@ fn ownership_rows_are_unique_and_complete() {
             );
         }
     }
+}
+
+#[test]
+fn new_fields_keep_the_decided_ownership() {
+    let backing_file = OWNERSHIP.iter().find(|row| row.field == "backing_file_transitions");
+    assert_eq!(
+        backing_file.map(|row| (
+            row.owner,
+            row.synchronization,
+            row.reset_boundary,
+            row.identity,
+            row.blocking_work_reachable,
+            row.migration_issue
+        )),
+        Some((
+            TargetOwner::DocumentStore,
+            "Arc<Mutex>",
+            "save/close authority handoff",
+            "document URI + observed transition",
+            false,
+            "#8041"
+        ))
+    );
+
+    let formatter = OWNERSHIP.iter().find(|row| row.field == "formatter_runtime_override");
+    assert_eq!(
+        formatter.map(|row| (
+            row.owner,
+            row.synchronization,
+            row.reset_boundary,
+            row.identity,
+            row.blocking_work_reachable,
+            row.migration_issue
+        )),
+        Some((
+            TargetOwner::ProductComposition,
+            "Mutex<Option<Arc>>",
+            "test/product composition reset",
+            "process/test subject",
+            true,
+            "#5001"
+        ))
+    );
 }
 
 #[test]
