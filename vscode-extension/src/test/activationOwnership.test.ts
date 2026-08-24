@@ -280,6 +280,43 @@ describe('transactional production activation (#7854)', () => {
     await expect(deactivate()).resolves.toBeUndefined();
   });
 
+  test('the activation API stop seam stays a recoverable language-client shutdown', async () => {
+    process.env.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP = '1';
+    const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-activation-'));
+    const context = makeContext(extensionRoot);
+
+    const extensionApi = await activate(context);
+    expect(_extensionActivationStateForTest()?.state).toBe('active');
+
+    // The current-source smoke calls api.stop() mid-session ("language client
+    // shutdown") and keeps using the extension afterwards, so stop must not
+    // perform deactivate()'s terminal teardown of the committed runtime.
+    await extensionApi?.stop();
+
+    expect(_extensionActivationStateForTest()?.state).toBe('active');
+    expect(disposedLabels()).toEqual([]);
+    expect(_activationProjectionsClearedForTest()).toBe(false);
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+      'setContext',
+      'perl-lsp.activated',
+      true,
+    );
+    // The shutdown milestone the smoke asserts after stop is recorded by the
+    // seam itself, exactly as the pre-transaction deactivate did.
+    const metrics = extensionApi?.getLanguageClientStartupMetrics();
+    expect((metrics?.milestones as Record<string, unknown> | undefined)?.shutdown).toEqual(
+      expect.any(Number),
+    );
+
+    // The real terminal path still tears the committed runtime down fully.
+    await deactivate();
+    expect(disposedLabels()).toEqual([...creationOrder()].reverse());
+    expect(_extensionActivationStateForTest()?.lastCleanupReceipt?.terminal_state).toBe(
+      'deactivated',
+    );
+    expect(_activationProjectionsClearedForTest()).toBe(true);
+  });
+
   test('a successful activation commits without extra user-visible effects', async () => {
     process.env.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP = '1';
     const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-activation-'));

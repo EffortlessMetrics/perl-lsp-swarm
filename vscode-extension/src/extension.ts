@@ -1065,7 +1065,7 @@ async function runExtensionActivation(
       getActiveDocumentReadiness,
       markLanguageClientStartupMilestone,
       waitForActiveDocumentReady,
-      stop: deactivate,
+      stop: stopLanguageClientForActivationApi,
     };
   }
 
@@ -1114,7 +1114,7 @@ async function runExtensionActivation(
     getActiveDocumentReadiness,
     markLanguageClientStartupMilestone,
     waitForActiveDocumentReady,
-    stop: deactivate,
+    stop: stopLanguageClientForActivationApi,
   };
 }
 
@@ -1131,6 +1131,23 @@ export async function deactivate() {
   } finally {
     languageClientStartupMetrics.markMilestone('shutdown');
   }
+}
+
+/**
+ * The activation API's `stop` seam: a recoverable language-client shutdown,
+ * not the terminal teardown `deactivate()` performs (#7854).
+ *
+ * Historically `stop` was literally `deactivate`, and `deactivate()` only
+ * stopped the language client. The current-source smoke exercises this seam
+ * mid-session ("language client shutdown") and keeps using the extension
+ * afterwards — diagnostics arrive because the demand listeners survive and
+ * restart the server — so it must stay light: the committed activation
+ * runtime, its registrations, and the output channel stay live, and only the
+ * language client plus the shutdown milestone are touched.
+ */
+async function stopLanguageClientForActivationApi(): Promise<void> {
+  await disposeLanguageClient();
+  languageClientStartupMetrics.markMilestone('shutdown');
 }
 
 /**
