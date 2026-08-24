@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -1246,6 +1247,40 @@ def _nonnegative_integer(value: Any, *, subject: str) -> int:
     return value
 
 
+# Receipt state that the shared cargo cache can restore from an unrelated
+# subject run. Anything left here would be uploaded into this run's
+# gate-receipt artifact and attributed to this subject SHA (#12085).
+RESTORED_RECEIPT_SUBDIRS = ("shard-summaries", "logs", "artifacts")
+
+
+def _clean_restored_receipt_state(receipt_dir: Path, summary_path: Path) -> None:
+    """Remove cache-restored receipt state before any gate runs.
+
+    The workflow's shared cargo cache restores the whole ``target`` tree, so a
+    fresh job can start with receipts, summaries, logs, and artifacts produced
+    by an unrelated SHA. Per-gate receipts are unlinked before each gate, but
+    files belonging to other shards or steps survive until the upload globs
+    sweep them into this run's gate-receipt artifact. Purging up front
+    guarantees every file under the receipt root after cleanup was produced by
+    this subject run (#12085).
+    """
+    receipts_root = receipt_dir.parent
+    targets: list[Path] = [receipt_dir]
+    targets.extend(receipts_root / name for name in RESTORED_RECEIPT_SUBDIRS)
+    if summary_path not in targets:
+        targets.append(summary_path)
+    for target in targets:
+        if target.is_symlink():
+            raise ValueError(
+                f"refusing symlinked receipt path during cleanup: {target}"
+            )
+        if target.is_dir():
+            shutil.rmtree(target)
+        elif target.exists():
+            target.unlink()
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+
+
 def _validate_receipt(
     payload: dict[str, Any],
     *,
@@ -1406,6 +1441,7 @@ class ShardRunner:
         gates: Sequence[str],
         dependency_rules: dict[str, DependencyRule],
         receipt_contract: ReceiptContract,
+        clean_restored_receipts: bool = False,
     ) -> None:
         self.xtask = xtask
         self.gate_policy = gate_policy
@@ -1419,6 +1455,7 @@ class ShardRunner:
         self.current_gate: str | None = None
         self.current_process: subprocess.Popen[bytes] | None = None
         self.interrupted_signal: int | None = None
+        self.clean_restored_receipts = clean_restored_receipts
 
     def _command(self, gate: str) -> list[str]:
         return [
@@ -1622,6 +1659,8 @@ class ShardRunner:
         )
 
     def run(self) -> int:
+        if self.clean_restored_receipts:
+            _clean_restored_receipt_state(self.receipt_dir, self.summary_path)
         self.receipt_dir.mkdir(parents=True, exist_ok=True)
         pending = set(self.gates)
         while pending:
@@ -1715,6 +1754,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--subject-sha", default=os.environ.get("GITHUB_SHA", "")
     )
+    parser.add_argument(
+        "--clean-restored-receipts",
+        action="store_true",
+        help=(
+            "remove cache-restored receipts/summaries/logs/artifacts from "
+            "unrelated subject runs before any gate executes (#12085)"
+        ),
+    )
     parser.add_argument("gates", nargs="+")
     return parser
 
@@ -1757,6 +1804,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         gates=args.gates,
         dependency_rules=dependency_rules,
         receipt_contract=receipt_contract,
+        clean_restored_receipts=args.clean_restored_receipts,
     )
     signal.signal(signal.SIGTERM, runner.handle_signal)
     signal.signal(signal.SIGINT, runner.handle_signal)

@@ -571,6 +571,7 @@ jobs:
               --receipt-dir target/receipts/shards \
               --summary "target/receipts/shard-summaries/${SHARD_NAME}.json" \
               --subject-sha "$subject_sha" \
+              --clean-restored-receipts \
               $SHARD_GATES
           status=$?
           case "$status" in
