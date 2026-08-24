@@ -57,6 +57,14 @@ mod dancer_navigation_tests {
 
         assert_eq!(def_uri, uri, "Definition should stay in the same file");
         assert_eq!(def_line, 1, "Definition should point to `sub helper`");
+
+        // Discriminating control: the inline route itself must be navigable under
+        // exact Dancer2 activation (regression in route synthesis would drop this).
+        let route_resp = goto_def(code, uri, "/status", 2)?;
+        let (route_uri, route_line, _) = semantic::first_location(&route_resp)
+            .ok_or("Expected goto-definition to resolve the inline route symbol")?;
+        assert_eq!(route_uri, uri, "Route definition should stay in the same file");
+        assert_eq!(route_line, 2, "Route definition should point at the route line");
         Ok(())
     }
 
