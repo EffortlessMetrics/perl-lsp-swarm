@@ -2197,8 +2197,7 @@ impl Lowerer {
         if symbol != "ISA" {
             return;
         }
-        if let Some(binding_id) = self.resolve_visible_binding(self.current_scope(), "@", &symbol)
-        {
+        if let Some(binding_id) = self.resolve_visible_binding(self.current_scope(), "@", &symbol) {
             if self
                 .scope_graph
                 .bindings
@@ -2859,7 +2858,8 @@ fn contains_dynamic_package_name(node: &Node) -> bool {
 }
 
 fn is_isa_target(node: &Node) -> bool {
-    matches!(&node.kind, NodeKind::Variable { sigil, name } if sigil == "@" && name == "ISA")
+    matches!(&node.kind, NodeKind::Variable { sigil, name } if sigil == "@"
+        && name.rsplit_once("::").map_or(name == "ISA", |(_, symbol)| symbol == "ISA"))
 }
 
 fn variable_decl_bindings(node: &Node) -> (Vec<VariableBinding>, bool) {
@@ -4070,7 +4070,7 @@ impl<'a> BodyBuilder2<'a> {
                         kind,
                         access: AccessMode::Write,
                     }),
-                    node.location,
+                    variable.location,
                 )
             }
             _ => self.lower_expr(node),
@@ -4296,9 +4296,12 @@ mod isa_lowering_tests {
     fn interpolated_push_isa_is_dynamic() {
         let file = lower("package Child; push @ISA, \"Base::$suffix\"; 1;");
         assert!(file.stash_graph.inheritance_edges.is_empty());
-        assert!(file.stash_graph.dynamic_boundaries.iter().any(|boundary| {
-            boundary.kind == StashDynamicBoundaryKind::DynamicInheritance
-        }));
+        assert!(
+            file.stash_graph
+                .dynamic_boundaries
+                .iter()
+                .any(|boundary| { boundary.kind == StashDynamicBoundaryKind::DynamicInheritance })
+        );
     }
 
     #[test]

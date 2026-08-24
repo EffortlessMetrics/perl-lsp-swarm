@@ -3574,8 +3574,7 @@ impl WorkspaceIndex {
         reindex_metrics::record_eval_sub(eval_sub_start.elapsed());
         let dynamic_boundaries: Vec<perl_semantic_facts::OccurrenceFact> =
             eval_sub_triples.iter().map(|(_, _, occ)| occ.clone()).collect();
-        let (hir_boundary_anchors, hir_boundary_occurrences) =
-            dynamic_isa_facts(uri, ast, file_id);
+        let (hir_boundary_anchors, hir_boundary_occurrences) = dynamic_isa_facts(uri, ast, file_id);
         let mut dynamic_boundaries = dynamic_boundaries;
         dynamic_boundaries.extend(hir_boundary_occurrences);
         #[cfg(test)]
@@ -3668,10 +3667,10 @@ impl WorkspaceIndex {
             crate::semantic::eval_sub_extractor::extract_eval_sub_boundaries(ast, file_id);
         #[cfg(test)]
         reindex_metrics::record_eval_sub(eval_sub_start.elapsed());
-        let (hir_boundary_anchors, hir_boundary_occurrences) =
-            dynamic_isa_facts(uri, ast, file_id);
-        let dynamic_boundaries: Vec<perl_semantic_facts::OccurrenceFact> =
+        let (hir_boundary_anchors, hir_boundary_occurrences) = dynamic_isa_facts(uri, ast, file_id);
+        let mut dynamic_boundaries: Vec<perl_semantic_facts::OccurrenceFact> =
             eval_sub_triples.iter().map(|(_, _, occ)| occ.clone()).collect();
+        dynamic_boundaries.extend(hir_boundary_occurrences);
         #[cfg(test)]
         let generated_member_start = Instant::now();
         let generated_member_facts =
