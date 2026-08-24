@@ -195,9 +195,11 @@ pub fn run(root: &Path, mode: GeneratedPolicyMode, output: Option<PathBuf>) -> R
 
     let mut errors = invalid_entries.clone();
     if mode != GeneratedPolicyMode::Advisory {
-        errors.extend(marker_misses.iter().map(|path| {
-            format!("generated marker found without allowlist entry: {path}")
-        }));
+        errors.extend(
+            marker_misses
+                .iter()
+                .map(|path| format!("generated marker found without allowlist entry: {path}")),
+        );
     }
     if mode == GeneratedPolicyMode::BlockingStrict {
         for entry in &policy.allow {
@@ -287,9 +289,11 @@ mod tests {
             review_after: "2026-02-01".into(),
             broad_glob_reason: None,
         };
-        assert!(validate_entries(&[entry.clone()])
-            .iter()
-            .any(|error| error.contains("requires regenerate")));
+        assert!(
+            validate_entries(&[entry.clone()])
+                .iter()
+                .any(|error| error.contains("requires regenerate"))
+        );
         entry.regenerate = Some("cargo xtask update-status".into());
         assert!(validate_entries(&[entry]).is_empty());
     }
