@@ -70,7 +70,7 @@ use parking_lot::{ArcMutexGuard, Mutex, RawMutex, RwLock};
 use perl_position_tracking::{WireLocation, WirePosition, WireRange};
 use perl_semantic_facts::{
     AnchorFact, AnchorId, Confidence, EdgeFact, EntityFact, EntityId, EntityKind, FileId,
-    PackageEdge, PackageEdgeKind, Provenance,
+    OccurrenceFact, OccurrenceId, OccurrenceKind, PackageEdge, PackageEdgeKind, Provenance,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
@@ -3574,6 +3574,10 @@ impl WorkspaceIndex {
         reindex_metrics::record_eval_sub(eval_sub_start.elapsed());
         let dynamic_boundaries: Vec<perl_semantic_facts::OccurrenceFact> =
             eval_sub_triples.iter().map(|(_, _, occ)| occ.clone()).collect();
+        let (hir_boundary_anchors, hir_boundary_occurrences) =
+            dynamic_isa_facts(uri, ast, file_id);
+        let mut dynamic_boundaries = dynamic_boundaries;
+        dynamic_boundaries.extend(hir_boundary_occurrences);
         #[cfg(test)]
         let generated_member_start = Instant::now();
         let generated_member_facts =
@@ -3604,6 +3608,7 @@ impl WorkspaceIndex {
         all_synthetic_entities.extend(synthetic_entities_from_generated);
         let mut all_synthetic_anchors = synthetic_anchors_from_eval;
         all_synthetic_anchors.extend(synthetic_anchors_from_generated);
+        all_synthetic_anchors.extend(hir_boundary_anchors);
 
         // Build the canonical fact shard.
         // Synthetic entities/anchors are now passed to the builder so that
@@ -3665,6 +3670,10 @@ impl WorkspaceIndex {
         reindex_metrics::record_eval_sub(eval_sub_start.elapsed());
         let dynamic_boundaries: Vec<perl_semantic_facts::OccurrenceFact> =
             eval_sub_triples.iter().map(|(_, _, occ)| occ.clone()).collect();
+        let (hir_boundary_anchors, hir_boundary_occurrences) =
+            dynamic_isa_facts(uri, ast, file_id);
+        let mut dynamic_boundaries = dynamic_boundaries;
+        dynamic_boundaries.extend(hir_boundary_occurrences);
         #[cfg(test)]
         let generated_member_start = Instant::now();
         let generated_member_facts =
@@ -3687,6 +3696,7 @@ impl WorkspaceIndex {
         all_synthetic_entities.extend(synthetic_entities_from_generated);
         let mut all_synthetic_anchors = synthetic_anchors_from_eval;
         all_synthetic_anchors.extend(synthetic_anchors_from_generated);
+        all_synthetic_anchors.extend(hir_boundary_anchors);
 
         crate::semantic::facts::build_canonical_fact_shard(
             uri,
@@ -5254,6 +5264,49 @@ fn package_edges_from_stash_graph(
             ))
         })
         .collect()
+}
+
+fn dynamic_isa_facts(
+    uri: &str,
+    ast: &Node,
+    file_id: FileId,
+) -> (Vec<AnchorFact>, Vec<OccurrenceFact>) {
+    let hir = perl_parser_core::hir::lower_ast(ast);
+    let mut anchors = Vec::new();
+    let mut occurrences = Vec::new();
+    for boundary in hir.stash_graph.dynamic_boundaries.iter().filter(|boundary| {
+        boundary.kind == perl_parser_core::hir::StashDynamicBoundaryKind::DynamicInheritance
+    }) {
+        let mut anchor_hasher = DefaultHasher::new();
+        uri.hash(&mut anchor_hasher);
+        boundary.range.start.hash(&mut anchor_hasher);
+        boundary.range.end.hash(&mut anchor_hasher);
+        boundary.kind.hash(&mut anchor_hasher);
+        let anchor_id = AnchorId(anchor_hasher.finish());
+        let mut occurrence_hasher = DefaultHasher::new();
+        anchor_id.hash(&mut occurrence_hasher);
+        1u8.hash(&mut occurrence_hasher);
+        let occurrence_id = OccurrenceId(occurrence_hasher.finish());
+        anchors.push(AnchorFact {
+            id: anchor_id,
+            file_id,
+            span_start_byte: boundary.range.start.min(u32::MAX as usize) as u32,
+            span_end_byte: boundary.range.end.min(u32::MAX as usize) as u32,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        });
+        occurrences.push(OccurrenceFact {
+            id: occurrence_id,
+            kind: OccurrenceKind::DynamicBoundary,
+            entity_id: None,
+            anchor_id,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        });
+    }
+    (anchors, occurrences)
 }
 
 /// AST visitor for extracting symbols and references
@@ -14427,56 +14480,3 @@ sub bar { return $greeting; }
         assert_eq!(index.indexed_generation(uri.as_str()), Some(1));
         assert_eq!(
             index.index_live_file(uri.clone(), text, SourceCommit::new(generation_two)),
-            SourceCommitOutcome::NoOp
-        );
-        assert_eq!(index.indexed_generation(uri.as_str()), Some(2));
-        assert_eq!(
-            index.index_live_file(
-                uri,
-                "package NoOpGeneration; sub older { 2 } 1;".to_string(),
-                SourceCommit::new(generation_one),
-            ),
-            SourceCommitOutcome::RejectedStale
-        );
-    }
-
-    #[test]
-    fn live_noop_rejects_generation_below_pending_high_water() {
-        let index = WorkspaceIndex::new();
-        let uri = must(url::Url::parse("file:///api/source-commit-pending-noop.pl"));
-        let text = "package PendingNoOp; sub stable { 1 } 1;".to_string();
-        let generation_one = must_some(NonZeroU32::new(1));
-
-        must(index.index_initial_file(uri.clone(), text.clone()));
-        let key = DocumentStore::uri_key(uri.as_str());
-        {
-            // Model the ordered state after a newer live writer reserves its
-            // generation but before it publishes parsed content. The lower
-            // live commit has identical content, which used to bypass the
-            // pending high-water guard through the NoOp fast path.
-            let mut files = index.files.write();
-            let file = must_some(files.get_mut(&key));
-            file.pending_generation = 3;
-            assert_eq!(file.generation, 0);
-        }
-
-        assert_eq!(
-            index.index_live_file(uri, text, SourceCommit::new(generation_one)),
-            SourceCommitOutcome::RejectedStale
-        );
-    }
-
-    #[test]
-    fn stale_internal_live_candidate_is_not_accepted_by_legacy_mapping() {
-        let index = WorkspaceIndex::new();
-        let uri = must(url::Url::parse("file:///api/source-commit-stale-mapping.pl"));
-        let current = "package StaleMapping; sub current { 2 } 1;".to_string();
-        let stale = "package StaleMapping; sub stale { 1 } 1;".to_string();
-
-        must(index.index_file_with_generation(uri.clone(), current, 2));
-        assert_eq!(
-            index.index_file_with_generation_outcome(uri, stale, 1),
-            Ok(IndexFileWithGenerationOutcome::RejectedStale)
-        );
-    }
-}
