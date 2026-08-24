@@ -239,7 +239,7 @@ pub fn command_line(spec: &ChildSpec, executable: Option<&str>) -> String {
             let filter = spec.test_filter.unwrap_or_default();
             let executable = executable.unwrap_or("<unresolved-prebuilt-test-binary>");
             let exact = if spec.exact { " --exact" } else { "" };
-            format!("\"{executable}\" {filter}{exact} -- --test-threads=1")
+            format!("\"{executable}\" {filter}{exact} --test-threads=1")
         }
     }
 }
@@ -1227,6 +1227,20 @@ mod tests {
     }
 
     #[test]
+    fn behavior_command_passes_libtest_options_directly() {
+        let spec = child_specs()
+            .into_iter()
+            .find(|spec| spec.id == "semantic_definition/scalar_variable")
+            .expect("pinned behavior child must exist");
+        assert_eq!(
+            command_line(&spec, Some("target/debug/deps/semantic_definition-test")),
+            "\"target/debug/deps/semantic_definition-test\" \
+semantic_definition_tests::definition_finds_scalar_variable_declaration --exact \
+--test-threads=1"
+        );
+    }
+
+    #[test]
     fn commands_are_atomic_no_composite_operators() {
         for spec in child_specs() {
             let command = command_line(&spec, None);
@@ -1548,11 +1562,11 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
             outcome.aggregate.non_success,
             vec![
                 "compile/semantic_definition",
+                "semantic_definition/client_support_registry",
                 "semantic_definition/scalar_variable",
                 "semantic_definition/subroutine",
                 "semantic_definition/scoped_variable",
                 "semantic_definition/package_qualified_call",
-                "semantic_definition/client_support_registry",
             ],
             "semantic dependents are blocked; the API lane still executes"
         );
