@@ -165,6 +165,20 @@ export class CrashRecoveryArbiter {
     this.activeEpisode = null;
   }
 
+  /**
+   * Clear all episode state, including the recent-episode dedupe history.
+   *
+   * Unlike `resetForExplicitRecovery` (used by explicit user restarts,
+   * managed updates, and deactivation, which keep the dedupe history so a
+   * stale observation for a still-failed generation stays deduplicated),
+   * this method exists for test isolation between independent cases and is
+   * not part of the production recovery flow.
+   */
+  public resetAllEpisodeMemory(): void {
+    this.resetForExplicitRecovery();
+    this.recentEpisodes.clear();
+  }
+
   public automaticAttemptCount(): number {
     return this.automaticAttempts;
   }

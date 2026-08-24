@@ -102,6 +102,10 @@ export { formatIssueDiagnosticInfo } from './supportCommands';
 import { ExtensionLanguageClientLifecycle } from './extensionComposition';
 import type { LifecycleState } from './languageClientLifecycle';
 import {
+  CrashRecoveryArbiter,
+  type CrashObservationSource,
+} from './crashRecoveryArbiter';
+import {
   ServerDemandCoordinator,
   isServerDependentDocument,
   type ServerDemandSnapshot,
@@ -255,16 +259,14 @@ let lastStartupDiagnosis: StartupErrorDiagnosis | undefined;
 let extensionContext: vscode.ExtensionContext | undefined;
 
 /**
- * Mid-session crash recovery state (#4625).
+ * Mid-session crash recovery state (#4625, #7845).
  *
- * `autoRestartAttempts` counts consecutive crash-triggered auto-restart
- * attempts. It is reset to 0 once the server has been stably `Running` for
- * at least `STABLE_RUN_GRACE_MS` (so a transient crash does not permanently
- * exhaust the retry budget, but a tight crash→restart→crash loop is capped).
- *
- * `stableRunningSince` records the timestamp at which the server last reached
- * `Running`; consulted at crash time to decide whether the prior run was long
- * enough to count as a new episode.
+ * `crashRecoveryArbiter` is the single generation-owned recovery arbiter
+ * (#7845): every post-activation crash observation (process exit, watchdog
+ * timeout, or both) is routed through `observeFailure` so one failed
+ * language-client generation authorizes at most one recovery operation. The
+ * arbiter owns the automatic-restart budget and the stable-run grace reset,
+ * consuming the pre-existing constants below rather than minting new policy.
  *
  * `userInitiatedStopPending` is set before a user-driven stop/restart so the
  * crash handler can distinguish an expected `Running → Stopped` transition
@@ -277,10 +279,28 @@ const MAX_AUTO_RESTART_ATTEMPTS = 3;
 const STABLE_RUN_GRACE_MS = 30_000;
 const WATCHDOG_INTERVAL_MS = 30_000;
 const WATCHDOG_TIMEOUT_MS = 10_000;
-let autoRestartAttempts = 0;
+const crashRecoveryArbiter = new CrashRecoveryArbiter(
+  MAX_AUTO_RESTART_ATTEMPTS,
+  STABLE_RUN_GRACE_MS,
+);
 let watchdogTimer: NodeJS.Timeout | undefined;
-let stableRunningSince: number | undefined;
 let userInitiatedStopPending = false;
+
+/**
+ * Fallback failed-generation identity used only when the real lifecycle
+ * controller is absent (unit-test harness). With a live lifecycle the
+ * generation comes from `snapshot.generation`, which increments on every
+ * start/stop and therefore identifies exactly one server process run.
+ */
+let fallbackCrashGeneration = 0;
+
+function currentCrashGeneration(): number {
+  return languageClientLifecycle?.snapshot.generation ?? fallbackCrashGeneration;
+}
+
+function crashProcessIdentity(generation: number): string {
+  return `perl-lsp-generation-${generation}`;
+}
 
 /**
  * Return the best available "server not running" message to show the user.
@@ -342,17 +362,17 @@ export function _setLastStartupDiagnosisForTest(
  * @internal
  */
 export function _resetCrashRecoveryStateForTest(): void {
-  autoRestartAttempts = 0;
-  stableRunningSince = undefined;
+  crashRecoveryArbiter.resetAllEpisodeMemory();
+  fallbackCrashGeneration = 0;
   userInitiatedStopPending = false;
 }
 
 /**
- * Test helper — read the current auto-restart attempt counter.
+ * Test helper — read the current automatic crash-recovery attempt counter.
  * @internal
  */
 export function _autoRestartAttemptsForTest(): number {
-  return autoRestartAttempts;
+  return crashRecoveryArbiter.automaticAttemptCount();
 }
 
 /**
@@ -361,7 +381,10 @@ export function _autoRestartAttemptsForTest(): number {
  * @internal
  */
 export function _markStableRunningForTest(since?: number): void {
-  stableRunningSince = since ?? Date.now() - (STABLE_RUN_GRACE_MS + 1_000);
+  crashRecoveryArbiter.markRunning(
+    currentCrashGeneration(),
+    since ?? Date.now() - (STABLE_RUN_GRACE_MS + 1_000),
+  );
 }
 
 /**
@@ -370,6 +393,15 @@ export function _markStableRunningForTest(since?: number): void {
  */
 export function _setExtensionContextForTest(context: vscode.ExtensionContext): void {
   extensionContext = context;
+}
+
+/**
+ * Test helper — deliver a watchdog-sourced failure observation through the
+ * same production arbiter entry point the watchdog interval calls (#7845).
+ * @internal
+ */
+export function _watchdogFailureForTest(): Promise<void> {
+  return recoverFromObservedCrash('watchdog');
 }
 
 /**
@@ -1708,10 +1740,10 @@ function createLanguageClientLifecycle(
         languageClientStartupMetrics.finishServerStart('ok');
       }
       if (event.newState === LanguageClientState.Running) {
-        // Record when the server last reached Running so the crash handler
-        // (#4625) can decide whether the prior run was stable long enough to
-        // reset the auto-restart attempt counter.
-        stableRunningSince = Date.now();
+        // Record when the server last reached Running so the recovery
+        // arbiter (#7845) can decide whether the prior run was stable long
+        // enough to reset the automatic-restart attempt budget.
+        crashRecoveryArbiter.markRunning(currentCrashGeneration(), Date.now());
       }
       handleClientStateChange(event);
     },
@@ -2718,52 +2750,163 @@ export function handleClientStateChange(event: StateChangeEvent): void {
     return;
   }
 
-  // The server crashed mid-session. Capture a generic diagnosis so
-  // serverNotRunningMessage() returns an actionable hint instead of the stale
-  // "not running" fallback. We can't run probeStartupFailure here (async), so
-  // we set a generic "server stopped" diagnosis; the user can run Health Check
-  // for details.
+  // One authoritative crash-recovery entry point (#7845): the unexpected
+  // process-exit observation is arbitrated by generation + process identity,
+  // so a late duplicate callback for the same failed generation cannot start
+  // a second recovery.
+  void recoverFromObservedCrash('process_exit');
+}
+
+/**
+ * Capture the mid-session failure diagnosis, invalidate the failed
+ * generation's demand state, and surface the failure on the health widget.
+ * Shared by every non-deduped arbiter decision (#7845). Returns the captured
+ * hint for user-facing messages.
+ */
+function recordUnexpectedFailure(): string {
+  const hint = 'The Perl Language Server stopped unexpectedly. Check the Output panel for details.';
   lastStartupDiagnosis = {
     kind: StartupErrorKind.Unknown,
-    hint: 'The Perl Language Server stopped unexpectedly. Check the Output panel for details.',
+    hint,
     remediation:
       'Try restarting the server (Command Palette: "Perl: Restart Server") or run the Health Check.',
   };
-
-  // The generation that satisfied the current demand is gone. Invalidating it
-  // here means a later explicit start (or a newly opened Perl document) is
-  // treated as fresh demand instead of being ignored as already-running.
   serverDemand?.noteStopped();
-
-  // ClientState.Stopped is ambiguous and is rendered neutrally by the widget.
-  // This path has established the stronger meaning: an unexpected mid-session
-  // crash with an actionable diagnosis.
   healthWidget?.setWorkspaceLifecycleState('failed', {
     detail: 'The Perl Language Server stopped unexpectedly.',
     action: 'Restart the server or run the Health Check.',
     reasonCode: 'unexpected_server_stop',
   });
-
-  outputChannel?.info('[lifecycle] Perl Language Server stopped unexpectedly (mid-session crash).');
-
-  // If the prior run was stable long enough, treat this crash as a new
-  // episode and reset the auto-restart budget so transient crashes don't
-  // permanently exhaust it.
-  if (stableRunningSince !== undefined && Date.now() - stableRunningSince >= STABLE_RUN_GRACE_MS) {
-    autoRestartAttempts = 0;
-  }
-  stableRunningSince = undefined;
-
-  void handleUnexpectedServerStop();
+  return hint;
 }
 
 /**
- * Surface an unexpected mid-session server crash and attempt an auto-restart
- * (#4625). Shows a user-visible toast (the diagnosis hint captured above) with
- * `Restart Server` and `Show Output` actions, then retries up to
- * `MAX_AUTO_RESTART_ATTEMPTS` times. Once the budget is exhausted, the toast
- * asks the user to restart manually or run a Health Check.
+ * Surface an unexpected mid-session server failure observed through
+ * `source` (process exit or watchdog) and arbitrate its recovery (#4625,
+ * #7845).
+ *
+ * The observation is routed through the generation-owned
+ * `crashRecoveryArbiter` first: a duplicate observation for a generation
+ * that already has an active or recently settled recovery episode is
+ * deduplicated and performs no recovery work. Only a `start_recovery`
+ * decision captures the crash diagnosis, invalidates the failed generation's
+ * demand state, surfaces the failure, and consumes one automatic-restart
+ * slot; a `crash_budget_exhausted` decision stops looping and asks the user
+ * to intervene.
  */
+async function recoverFromObservedCrash(source: CrashObservationSource): Promise<void> {
+  const failedGeneration = currentCrashGeneration();
+  const decision = crashRecoveryArbiter.observeFailure({
+    failed_generation: failedGeneration,
+    process_identity: crashProcessIdentity(failedGeneration),
+    source,
+    observed_at_ms: Date.now(),
+  });
+
+  if (
+    decision.disposition === 'deduped_existing_episode' ||
+    decision.disposition === 'deduped_previous_episode'
+  ) {
+    outputChannel?.info(
+      `[lifecycle] ${source} observation for generation ${failedGeneration} deduplicated by recovery episode ${decision.episode_id} (${decision.disposition}); no second arbitration.`,
+    );
+    return;
+  }
+
+  const context = extensionContext;
+  const hint = recordUnexpectedFailure();
+
+  outputChannel?.info(
+    `[lifecycle] Perl Language Server failed mid-session (source: ${decision.observation_source}, episode ${decision.episode_id}).`,
+  );
+
+  if (decision.disposition === 'crash_budget_exhausted') {
+    await reportCrashBudgetExhausted();
+    return;
+  }
+
+  const attempt = decision.automatic_attempt;
+  outputChannel?.info(
+    `[lifecycle] Auto-restarting Perl Language Server (attempt ${attempt}/${MAX_AUTO_RESTART_ATTEMPTS})…`,
+  );
+  const message = `Perl Language Server crashed and is restarting automatically (attempt ${attempt}/${MAX_AUTO_RESTART_ATTEMPTS}). ${hint}`;
+  void vscode.window.showErrorMessage(message, 'Show Output').then((selection) => {
+    if (selection === 'Show Output') {
+      outputChannel?.show();
+    }
+  });
+  if (!context) {
+    outputChannel?.info('[lifecycle] Cannot auto-restart: extension context is not available.');
+    crashRecoveryArbiter.settleActiveEpisode('recovery_failed', null);
+    return;
+  }
+  try {
+    await restartServer(context);
+    // The replacement run now owns the next failed-generation identity (in
+    // the unit-test harness the lifecycle controller is absent, so the
+    // fallback generation advances here — after arbitration began — so that
+    // a duplicate observation for the failed generation still dedupes).
+    if (languageClientLifecycle === undefined) {
+      fallbackCrashGeneration += 1;
+    }
+    // restartServer resolves only after the replacement generation finished
+    // its startup finalization (initialize + document replay + readiness
+    // rebound), so the episode settles as recovered only on an accepted
+    // replacement — a spawned process alone is not "recovered" (#7845).
+    crashRecoveryArbiter.settleActiveEpisode('recovered', currentCrashGeneration());
+  } catch (error: unknown) {
+    if (languageClientLifecycle === undefined) {
+      fallbackCrashGeneration += 1;
+    }
+    crashRecoveryArbiter.settleActiveEpisode('recovery_failed', null);
+    // restartServer surfaces its own dialog/log; record the failure and
+    // let the next crash (if any) consume another retry slot.
+    const msg = error instanceof Error ? error.message : String(error);
+    outputChannel?.error(`[lifecycle] Auto-restart attempt ${attempt} failed: ${msg}`);
+  }
+}
+
+/**
+ * Report the arbiter's crash-budget exhaustion to the user (#7845). Called
+ * from `recoverFromObservedCrash` when the arbiter returns
+ * `crash_budget_exhausted`; a manual restart is an explicit user action and
+ * does not consume crash budget.
+ */
+async function reportCrashBudgetExhausted(): Promise<void> {
+  const context = extensionContext;
+  const hint =
+    lastStartupDiagnosis?.hint ??
+    'The Perl Language Server stopped unexpectedly. Check the Output panel for details.';
+
+  // Retry budget exhausted — do not loop. Ask the user to intervene.
+  outputChannel?.info(
+    `[lifecycle] Auto-restart limit reached (${MAX_AUTO_RESTART_ATTEMPTS} attempts). Awaiting manual restart.`,
+  );
+  const exhausted = `Perl Language Server crashed and could not be restarted automatically after ${MAX_AUTO_RESTART_ATTEMPTS} attempts. ${hint}`;
+  const selection = await vscode.window.showErrorMessage(
+    exhausted,
+    'Restart Server',
+    'Run Health Check',
+    'Show Output',
+  );
+  if (selection === 'Restart Server' && context) {
+    // A manual restart is an explicit user restart (#7845): it resets the
+    // automatic crash-recovery budget without ever having consumed it.
+    crashRecoveryArbiter.resetForExplicitRecovery();
+    try {
+      await restartServer(context);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      outputChannel?.error(`[lifecycle] Manual restart failed: ${msg}`);
+    }
+  } else if (selection === 'Run Health Check') {
+    const serverPath = currentServerPath ?? undefined;
+    await vscode.commands.executeCommand('perl-lsp.runHealthCheck', serverPath);
+  } else if (selection === 'Show Output') {
+    outputChannel?.show();
+  }
+}
+
 /**
  * Start a periodic liveness watchdog. Every WATCHDOG_INTERVAL_MS, sends a
  * lightweight workspace/symbol request. If it doesn't respond within
@@ -2788,8 +2931,12 @@ function startWatchdog(): void {
       ]);
     } catch {
       outputChannel.warn('[watchdog] Server unresponsive — triggering restart');
-      autoRestartAttempts = 0;
-      await handleUnexpectedServerStop();
+      // Watchdog observations route through the same arbiter (#7845): a
+      // hung generation is a failure episode keyed by generation + process
+      // identity, so a watchdog timeout and the process exit that follows
+      // deduplicate into one recovery operation. Unlike the legacy path,
+      // the watchdog no longer resets the crash budget before recovering.
+      await recoverFromObservedCrash('watchdog');
     } finally {
       if (watchdogTimeout !== undefined) {
         clearTimeout(watchdogTimeout);
@@ -2803,67 +2950,6 @@ function stopWatchdog(): void {
   if (watchdogTimer) {
     clearInterval(watchdogTimer);
     watchdogTimer = undefined;
-  }
-}
-
-async function handleUnexpectedServerStop(): Promise<void> {
-  const context = extensionContext;
-  const hint =
-    lastStartupDiagnosis?.hint ??
-    'The Perl Language Server stopped unexpectedly. Check the Output panel for details.';
-
-  if (autoRestartAttempts < MAX_AUTO_RESTART_ATTEMPTS) {
-    autoRestartAttempts += 1;
-    const attempt = autoRestartAttempts;
-    outputChannel?.info(
-      `[lifecycle] Auto-restarting Perl Language Server (attempt ${attempt}/${MAX_AUTO_RESTART_ATTEMPTS})\u2026`,
-    );
-    const message = `Perl Language Server crashed and is restarting automatically (attempt ${attempt}/${MAX_AUTO_RESTART_ATTEMPTS}). ${hint}`;
-    void vscode.window.showErrorMessage(message, 'Show Output').then((selection) => {
-      if (selection === 'Show Output') {
-        outputChannel?.show();
-      }
-    });
-    if (!context) {
-      outputChannel?.info('[lifecycle] Cannot auto-restart: extension context is not available.');
-      return;
-    }
-    try {
-      await restartServer(context);
-    } catch (error: unknown) {
-      // restartServer surfaces its own dialog/log; record the failure and
-      // let the next crash (if any) consume another retry slot.
-      const msg = error instanceof Error ? error.message : String(error);
-      outputChannel?.error(`[lifecycle] Auto-restart attempt ${attempt} failed: ${msg}`);
-    }
-    return;
-  }
-
-  // Retry budget exhausted — do not loop. Ask the user to intervene.
-  outputChannel?.info(
-    `[lifecycle] Auto-restart limit reached (${MAX_AUTO_RESTART_ATTEMPTS} attempts). Awaiting manual restart.`,
-  );
-  const exhausted = `Perl Language Server crashed and could not be restarted automatically after ${MAX_AUTO_RESTART_ATTEMPTS} attempts. ${hint}`;
-  const selection = await vscode.window.showErrorMessage(
-    exhausted,
-    'Restart Server',
-    'Run Health Check',
-    'Show Output',
-  );
-  if (selection === 'Restart Server' && context) {
-    // A manual restart resets the auto-restart budget.
-    autoRestartAttempts = 0;
-    try {
-      await restartServer(context);
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      outputChannel?.error(`[lifecycle] Manual restart failed: ${msg}`);
-    }
-  } else if (selection === 'Run Health Check') {
-    const serverPath = currentServerPath ?? undefined;
-    await vscode.commands.executeCommand('perl-lsp.runHealthCheck', serverPath);
-  } else if (selection === 'Show Output') {
-    outputChannel?.show();
   }
 }
 
@@ -2893,10 +2979,11 @@ function disposeClientIntegrations(): void {
 
 async function disposeLanguageClient(): Promise<void> {
   // Extension shutdown is user-initiated; suppress the crash handler and
-  // clear crash-recovery state so a re-activation starts with a fresh budget.
+  // reset crash-recovery state so a re-activation starts with a fresh budget.
+  // Deactivation is an explicit lifecycle action (#7845): it neither consumes
+  // nor leaves armed any crash-recovery episode, timer, or stable-run state.
   userInitiatedStopPending = true;
-  autoRestartAttempts = 0;
-  stableRunningSince = undefined;
+  crashRecoveryArbiter.resetForExplicitRecovery();
   disposeClientIntegrations();
   let shutdownProvedTerminal = false;
   if (languageClientLifecycle) {

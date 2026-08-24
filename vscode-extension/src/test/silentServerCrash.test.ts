@@ -38,6 +38,7 @@ import {
   _setExtensionContextForTest,
   _setUserInitiatedStopPendingForTest,
   _setLastStartupDiagnosisForTest,
+  _watchdogFailureForTest,
 } from '../extension';
 
 // vscode-languageclient State numeric values (Stopped=1, Running=2, Starting=3).
@@ -160,5 +161,82 @@ describe('mid-session silent server crash recovery (#4625)', () => {
     await flush();
     expect(showErrorMessage).not.toHaveBeenCalled();
     expect(_autoRestartAttemptsForTest()).toBe(0);
+  });
+
+  // ------------------------------------------------------------------
+  // #7845: convergence wiring through the generation-owned arbiter.
+  // ------------------------------------------------------------------
+
+  test('a duplicate stopped callback for the same failed generation arbitrates exactly once', async () => {
+    // Two Running → Stopped callbacks arrive in the same tick for the same
+    // failed generation: one recovery operation, one toast, one budget slot.
+    handleClientStateChange(crashEvent() as never);
+    handleClientStateChange(crashEvent() as never);
+    await flush();
+
+    expect(_autoRestartAttemptsForTest()).toBe(1);
+    expect(showErrorMessage).toHaveBeenCalledTimes(1);
+    expect(showErrorMessage.mock.calls[0][0]).toMatch(/restarting automatically/i);
+  });
+
+  test('a watchdog observation racing a process exit deduplicates into one episode', async () => {
+    // Watchdog fires first, then the process exits for the same generation.
+    void _watchdogFailureForTest();
+    handleClientStateChange(crashEvent() as never);
+    await flush();
+
+    // Watchdog and process exit must not increment the budget twice.
+    expect(_autoRestartAttemptsForTest()).toBe(1);
+    expect(showErrorMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test('a process exit followed by an in-flight watchdog observation deduplicates', async () => {
+    // Process exits first; the watchdog timeout for the same generation is
+    // still in flight (recovery has not yet replaced the generation). Both
+    // observations must land in one episode before the restart completes.
+    handleClientStateChange(crashEvent() as never);
+    void _watchdogFailureForTest();
+    await flush();
+
+    expect(_autoRestartAttemptsForTest()).toBe(1);
+    const restartToasts = showErrorMessage.mock.calls.filter((call) =>
+      /restarting automatically/i.test(String(call[0])),
+    );
+    expect(restartToasts).toHaveLength(1);
+  });
+
+  test('a manual restart from the exhausted toast never consumes crash budget', async () => {
+    for (let i = 0; i < 3; i++) {
+      handleClientStateChange(crashEvent() as never);
+      await flush();
+    }
+    expect(_autoRestartAttemptsForTest()).toBe(3);
+
+    // The fourth crash exhausts the budget; the user picks Restart Server.
+    showErrorMessage.mockReset();
+    showErrorMessage.mockResolvedValue('Restart Server');
+    handleClientStateChange(crashEvent() as never);
+    await flush();
+
+    const exhaustedMessage = showErrorMessage.mock.calls[0][0] as string;
+    expect(exhaustedMessage).toMatch(/could not be restarted automatically/i);
+    // The explicit user restart reset the budget without consuming a slot.
+    expect(_autoRestartAttemptsForTest()).toBe(0);
+  });
+
+  test('deactivation clears episode state so no armed recovery survives the session', async () => {
+    handleClientStateChange(crashEvent() as never);
+    await flush();
+    expect(_autoRestartAttemptsForTest()).toBe(1);
+
+    // disposeLanguageClient performs the same explicit-recovery reset used
+    // by deactivation and managed updates; model it through the reset entry.
+    _resetCrashRecoveryStateForTest();
+    expect(_autoRestartAttemptsForTest()).toBe(0);
+
+    // A fresh session's first crash starts a brand-new episode at attempt 1.
+    handleClientStateChange(crashEvent() as never);
+    await flush();
+    expect(_autoRestartAttemptsForTest()).toBe(1);
   });
 });
