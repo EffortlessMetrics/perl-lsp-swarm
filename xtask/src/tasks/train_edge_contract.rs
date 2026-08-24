@@ -1681,6 +1681,47 @@ mod tests {
         run()
     }
 
+    // Adaptation is lossless: every dependency target and provenance byte
+    // survives the class-to-kind mapping (a mutation dropping or rewriting
+    // provenance must fail this equality).
+    #[test]
+    fn adaptation_preserves_targets_and_provenance() -> TestResult {
+        let root = project_root()?;
+        let adaptations = load_adaptations(&root)?;
+        let manifest =
+            load_json(&root.join(".spec/11764-controller-train-graph/train.manifest.json"))?;
+        let mut expected: Vec<(String, String)> = Vec::new();
+        for node in manifest.get("nodes").and_then(Value::as_array).unwrap() {
+            let source = node.get("node_id").and_then(Value::as_str).unwrap();
+            for dependency in node.get("dependencies").and_then(Value::as_array).unwrap() {
+                expected.push((
+                    format!(
+                        "{source}|{}",
+                        dependency.get("target").and_then(Value::as_str).unwrap()
+                    ),
+                    dependency.get("provenance").and_then(Value::as_str).unwrap_or("").to_string(),
+                ));
+            }
+        }
+        let (adapted, _) = adapt_manifest(&manifest, "issue_controller_train.v1", &adaptations)?;
+        let mut actual: Vec<(String, String)> = Vec::new();
+        for edge in adapted.get("edges").and_then(Value::as_array).unwrap() {
+            actual.push((
+                format!(
+                    "{}|{}",
+                    edge.get("source").and_then(Value::as_str).unwrap(),
+                    edge.get("target").and_then(Value::as_str).unwrap()
+                ),
+                edge.get("provenance").and_then(Value::as_str).unwrap_or("").to_string(),
+            ));
+        }
+        expected.sort();
+        actual.sort();
+        assert_eq!(expected.len(), actual.len());
+        assert_eq!(expected, actual);
+        Ok(())
+    }
+
     // Adaptability falsifiers: the landed emacs/controller/module manifests
     // adapt losslessly, and an unknown manifest class fails closed.
     #[test]
