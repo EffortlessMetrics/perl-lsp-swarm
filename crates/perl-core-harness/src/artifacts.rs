@@ -2433,8 +2433,16 @@ mod tests {
 
     #[test]
     fn raw_envelope_rejects_absolute_working_directories() -> TestResult {
+        let mut relative = raw_envelope(b"base/ok.t\n", b"");
+        relative.working_directory = "t".into();
+        relative.validate()?;
+
         let mut leaked = raw_envelope(b"base/ok.t\n", b"");
-        leaked.working_directory = "/home/runner/work/perl/t".into();
+        leaked.working_directory = std::env::current_dir()?
+            .join("prepared-tree")
+            .join("t")
+            .display()
+            .to_string();
         let Err(error) = leaked.validate() else {
             bail!("an absolute host path must not be published as evidence");
         };
