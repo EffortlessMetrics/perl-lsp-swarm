@@ -17,6 +17,11 @@ pub mod ux_bdd;
 /// Resolve the canonical public product binary, building it on demand for
 /// implementation-crate process tests that Cargo does not associate with the
 /// `perllsp` package's binary target.
+///
+/// The rebuild runs unconditionally: the binary lives outside this package, so
+/// a pre-existing `target/debug/perllsp(.exe)` may predate the workspace sources
+/// under test and silently test stale behavior. `cargo build` no-ops when
+/// current, keeping every invocation deterministic (#5808, #11688).
 // Shared support is compiled separately by tests that do not all spawn a process.
 #[allow(dead_code)]
 pub fn product_binary_path() -> Result<String, Box<dyn std::error::Error>> {
@@ -32,15 +37,13 @@ pub fn product_binary_path() -> Result<String, Box<dyn std::error::Error>> {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| workspace.join("target"));
     let binary = target.join("debug").join(if cfg!(windows) { "perllsp.exe" } else { "perllsp" });
-    if !binary.is_file() {
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let status = std::process::Command::new(cargo)
-            .current_dir(workspace)
-            .args(["build", "-p", "perllsp", "--bin", "perllsp", "--locked"])
-            .status()?;
-        if !status.success() {
-            return Err("building canonical perllsp test binary failed".into());
-        }
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let status = std::process::Command::new(cargo)
+        .current_dir(workspace)
+        .args(["build", "-p", "perllsp", "--bin", "perllsp", "--locked"])
+        .status()?;
+    if !status.success() {
+        return Err("building canonical perllsp test binary failed".into());
     }
     if !binary.is_file() {
         return Err(format!("canonical perllsp test binary missing: {}", binary.display()).into());
