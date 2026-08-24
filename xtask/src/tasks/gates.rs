@@ -2198,13 +2198,30 @@ pub(crate) fn run_shell_command_with_timeout(
     log_path: &Path,
     timeout_secs: u64,
 ) -> Result<ShellExecutionResult> {
+    run_shell_command_with_timeout_in(command, log_path, timeout_secs, None)
+}
+
+/// [`run_shell_command_with_timeout`] with an optional working directory for
+/// the spawned shell (#8063): behavior children execute the prebuilt test
+/// binary from the package directory cargo would have used, so direct
+/// execution stays environment-equivalent to `cargo test`.
+pub(crate) fn run_shell_command_with_timeout_in(
+    command: &str,
+    log_path: &Path,
+    timeout_secs: u64,
+    current_dir: Option<&Path>,
+) -> Result<ShellExecutionResult> {
     let log_file = fs::File::create(log_path)
         .with_context(|| format!("Failed to create log file: {}", log_path.display()))?;
     let log_file_err = log_file
         .try_clone()
         .with_context(|| format!("Failed to clone log file handle: {}", log_path.display()))?;
 
-    let mut child = shell_command_process(command, timeout_secs)
+    let mut process = shell_command_process(command, timeout_secs);
+    if let Some(dir) = current_dir {
+        process.current_dir(dir);
+    }
+    let mut child = process
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_file_err))
         .spawn()

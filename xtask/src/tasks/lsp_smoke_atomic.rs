@@ -42,7 +42,7 @@ use chrono::Utc;
 use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::tasks::gates::run_shell_command_with_timeout;
+use crate::tasks::gates::run_shell_command_with_timeout_in;
 use crate::tasks::git_context::git_stdout_with_worktree_fallback;
 use crate::utils::project_root;
 
@@ -77,6 +77,15 @@ const SETUP_COMPILE_RETRIES: u32 = 1;
 
 /// Cap the retained per-child failure summary.
 const MAX_FAILURE_SUMMARY_CHARS: usize = 1600;
+
+/// Working directory (and `CARGO_MANIFEST_DIR`) cargo would have given the
+/// test process: the owning package's directory, not the workspace root.
+/// Direct binary execution must stay environment-equivalent to
+/// `cargo test -p perl-lsp-rs` — running from the workspace root instead let
+/// the semantic analyzer resolve `Foo::bar()` into an unrelated workspace
+/// fixture (observed live, PR #12091 run 32684241909), turning an
+/// environment delta into a product-looking failure.
+const BEHAVIOR_WORKING_DIR: &str = "crates/perl-lsp-rs";
 
 // =============================================================================
 // Child specifications
@@ -473,6 +482,10 @@ pub struct ChildEntry {
     pub failure_summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub log_path: Option<String>,
+    /// Working directory for direct-binary behavior children (cargo
+    /// equivalence; `None` for children spawned from the workspace root).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
     /// `exited` | `terminated after timeout` | `never spawned`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cleanup: Option<String>,
@@ -538,6 +551,7 @@ pub trait ChildExecutor {
         &mut self,
         spec: &ChildSpec,
         executable: Option<&Path>,
+        working_dir: Option<&Path>,
         log_path: &Path,
     ) -> Result<RawOutcome>;
 }
@@ -553,6 +567,7 @@ impl ChildExecutor for CargoChildExecutor {
         &mut self,
         spec: &ChildSpec,
         executable: Option<&Path>,
+        working_dir: Option<&Path>,
         log_path: &Path,
     ) -> Result<RawOutcome> {
         apply_child_environment(spec.kind);
@@ -566,8 +581,12 @@ impl ChildExecutor for CargoChildExecutor {
         let mut attempt = 1_u32;
         let mut history = Vec::new();
         loop {
-            let execution =
-                run_shell_command_with_timeout(&command, log_path, spec.timeout_seconds);
+            let execution = run_shell_command_with_timeout_in(
+                &command,
+                log_path,
+                spec.timeout_seconds,
+                working_dir,
+            );
             let mut execution = match execution {
                 Ok(execution) => execution,
                 // Spawn/instrument failure is harness evidence, not a product
@@ -631,6 +650,10 @@ fn apply_child_environment(kind: ChildKind) {
         },
         ChildKind::Behavior => unsafe {
             std::env::set_var("RUST_TEST_THREADS", "1");
+            // cargo sets this for test processes; the harness's binary
+            // resolution reads it at runtime to locate the workspace for its
+            // perllsp freshness pre-build.
+            std::env::set_var("CARGO_MANIFEST_DIR", BEHAVIOR_WORKING_DIR);
         },
     }
 }
@@ -640,6 +663,7 @@ fn child_env_record(kind: ChildKind) -> (BTreeMap<String, String>, Vec<String>) 
     let mut unset = vec!["RUSTC_WRAPPER".to_string(), "CARGO_BUILD_JOBS".to_string()];
     if kind == ChildKind::Behavior {
         set.insert("RUST_TEST_THREADS".to_string(), "1".to_string());
+        set.insert("CARGO_MANIFEST_DIR".to_string(), BEHAVIOR_WORKING_DIR.to_string());
     }
     (set, unset)
 }
@@ -668,6 +692,7 @@ fn placeholder(spec: &ChildSpec, mark: &str, sha: &str) -> ChildEntry {
         timed_out: false,
         failure_summary: None,
         log_path: Some(format!("logs/{}", log_file_name(spec))),
+        working_dir: None,
         cleanup: None,
         attempt_history: Vec::new(),
         subject_sha: sha.to_string(),
@@ -763,11 +788,18 @@ pub fn run_suite(receipt_path: &Path, executor: &mut dyn ChildExecutor) -> Resul
         let log_path = log_dir.join(log_file_name(spec));
         let started_at = Utc::now();
         let start = Instant::now();
-        let executable = match spec.kind {
-            ChildKind::Behavior => executable_by_target.get(spec.target).and_then(Option::as_deref),
-            ChildKind::Setup | ChildKind::Compile => None,
+        let behavior = spec.kind == ChildKind::Behavior;
+        let executable = if behavior {
+            executable_by_target.get(spec.target).and_then(Option::as_deref)
+        } else {
+            None
         };
-        let outcome = executor.execute(spec, executable, &log_path)?;
+        // Behavior children run from the package directory cargo would have
+        // used, so direct-binary execution stays environment-equivalent to
+        // `cargo test` (see BEHAVIOR_WORKING_DIR).
+        let behavior_working_dir = behavior.then(|| root.join(BEHAVIOR_WORKING_DIR));
+        let working_dir = behavior_working_dir.as_deref();
+        let outcome = executor.execute(spec, executable, working_dir, &log_path)?;
         let duration_ms = start.elapsed().as_millis() as u64;
         let status = classify(spec.kind, &outcome);
 
@@ -799,6 +831,7 @@ pub fn run_suite(receipt_path: &Path, executor: &mut dyn ChildExecutor) -> Resul
                 summarize_failure(&outcome)
             },
             log_path: Some(format!("logs/{}", log_file_name(spec))),
+            working_dir: working_dir.map(|dir| dir.display().to_string()),
             cleanup: Some(if outcome.timed_out {
                 "terminated after timeout".to_string()
             } else if outcome.spawn_failed {
@@ -952,6 +985,7 @@ mod tests {
             &mut self,
             spec: &ChildSpec,
             _executable: Option<&Path>,
+            _working_dir: Option<&Path>,
             _log_path: &Path,
         ) -> Result<RawOutcome> {
             self.executed.push(spec.id);
@@ -1244,6 +1278,22 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
         assert_eq!(doc.suite_state, "complete");
         assert!(doc.aggregate.as_ref().is_some_and(|agg| agg.status == "pass"));
         assert!(doc.children.iter().all(|child| child.status == ChildStatus::Pass));
+        // Behavior children record the cargo-equivalent working directory.
+        for child in &doc.children {
+            match child.kind {
+                ChildKind::Behavior => assert!(
+                    child
+                        .working_dir
+                        .as_deref()
+                        .is_some_and(|dir| dir.ends_with(BEHAVIOR_WORKING_DIR)),
+                    "behavior children must run from the package directory cargo uses: {:?}",
+                    child.working_dir
+                ),
+                ChildKind::Setup | ChildKind::Compile => {
+                    assert!(child.working_dir.is_none())
+                }
+            }
+        }
         // Retained fields the issue requires for every child.
         for child in &doc.children {
             assert!(!child.subject_sha.is_empty(), "child carries subject SHA");
