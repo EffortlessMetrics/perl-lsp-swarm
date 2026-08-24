@@ -36,7 +36,7 @@ inputs:
 
 outputs:
   artifact-url:
-    description: 'URL to the uploaded artifact'
+    description: 'URL for the uploaded artifact'
     value: ${{ steps.upload.outputs.artifact-url }}
   receipt-exists:
     description: 'Whether the receipt file exists'
@@ -45,18 +45,35 @@ outputs:
 runs:
   using: 'composite'
   steps:
+    - name: Validate receipt path inputs
+      shell: bash
+      env:
+        RECEIPT_PATH: ${{ inputs.receipt-path }}
+        LOGS_PATH: ${{ inputs.logs-path }}
+        ARTIFACTS_PATH: ${{ inputs.artifacts-path }}
+      run: |
+        set -euo pipefail
+        python3 "$GITHUB_ACTION_PATH/validate_paths.py"
+
     - name: Check receipt exists
       id: check
       shell: bash
       env:
         RECEIPT_PATH: ${{ inputs.receipt-path }}
       run: |
+        set -euo pipefail
         if [ -f "$RECEIPT_PATH" ]; then
-          echo "exists=true" >> $GITHUB_OUTPUT
-          echo "Receipt found at $RECEIPT_PATH"
+          echo "exists=true" >> "$GITHUB_OUTPUT"
+          printf 'Receipt found at %s\n' "$RECEIPT_PATH"
         else
-          echo "exists=false" >> $GITHUB_OUTPUT
-          echo "::warning::Receipt not found at $RECEIPT_PATH"
+          echo "exists=false" >> "$GITHUB_OUTPUT"
+          # `::warning::` is GitHub's workflow-command protocol, not plain text.
+          # Percent-encode the caller-supplied value so it cannot alter the
+          # annotation payload or terminate the command and start another one.
+          encoded=${RECEIPT_PATH//%/%25}
+          encoded=${encoded//$'\r'/%0D}
+          encoded=${encoded//$'\n'/%0A}
+          printf '::warning::Receipt not found at %s\n' "$encoded"
         fi
 
     - name: Upload gate receipt
@@ -78,38 +95,49 @@ runs:
         RECEIPT_PATH: ${{ inputs.receipt-path }}
       run: |
         python3 - <<'PY'
+        import html
         import json
         import os
         from pathlib import Path
 
-        receipt_path = Path(os.environ["RECEIPT_PATH"])
+        receipt_path_raw = os.environ["RECEIPT_PATH"]
+        receipt_path = Path(receipt_path_raw)
         summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+
+        def summary_text(value: object) -> str:
+            sanitized = str(value).replace("\r", " ").replace("\n", " ")
+            return html.escape(sanitized, quote=True).replace("|", "&#124;")
+
+        def summary_code(value: object) -> str:
+            return f"<code>{summary_text(value)}</code>"
 
         if not summary_path:
             raise SystemExit(0)
 
         lines = ["### Gate Receipt", ""]
 
-        if not receipt_path.exists():
-            lines.append(f"> Receipt not found at `{receipt_path}`")
+        if not receipt_path.is_file():
+            lines.append(f"> Receipt not found at {summary_code(receipt_path_raw)}")
             Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
             raise SystemExit(0)
 
         try:
             data = json.loads(receipt_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:
-            lines.append(f"> Failed to parse receipt: {e}")
+        except (json.JSONDecodeError, OSError) as error:
+            lines.append(f"> Failed to read receipt: {summary_code(error)}")
             Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
             raise SystemExit(0)
 
         # Header info
-        lines.append(f"**Generated**: {data.get('generated_at', 'unknown')}")
-        lines.append(f"**Commit**: `{data.get('commit', 'unknown')[:12]}`")
+        lines.append(f"**Generated**: {summary_text(data.get('generated_at', 'unknown'))}")
+        commit = str(data.get("commit", "unknown"))[:12]
+        lines.append(f"**Commit**: {summary_code(commit)}")
 
         # Overall status
-        gates = data.get("gates", [])
-        passed = sum(1 for g in gates if g.get("status") == "passed")
-        failed = sum(1 for g in gates if g.get("status") == "failed")
+        raw_gates = data.get("gates", [])
+        gates = [gate for gate in raw_gates if isinstance(gate, dict)] if isinstance(raw_gates, list) else []
+        passed = sum(1 for gate in gates if gate.get("status") == "passed")
+        failed = sum(1 for gate in gates if gate.get("status") == "failed")
         total = len(gates)
 
         if failed == 0:
@@ -124,25 +152,24 @@ runs:
         lines.append("|------|--------|------|----------|")
 
         for gate in gates:
-            name = gate.get("name", "unknown")
+            name = summary_text(gate.get("name", "unknown"))
             status = gate.get("status", "unknown")
-            exit_code = gate.get("exit_code", "?")
-            duration = gate.get("duration_seconds", "?")
+            exit_code = summary_text(gate.get("exit_code", "?"))
+            duration = summary_text(gate.get("duration_seconds", "?"))
 
-            # Status emoji
             if status == "passed":
-                status_icon = "passed"
+                status_text = "passed"
             elif status == "failed":
-                status_icon = "**FAILED**"
+                status_text = "**FAILED**"
             else:
-                status_icon = status
+                status_text = summary_text(status)
 
-            lines.append(f"| {name} | {status_icon} | {exit_code} | {duration}s |")
+            lines.append(f"| {name} | {status_text} | {exit_code} | {duration}s |")
 
-        # Total duration if available
         if "total_duration_seconds" in data:
+            total_duration = summary_text(data["total_duration_seconds"])
             lines.append("")
-            lines.append(f"**Total duration**: {data['total_duration_seconds']}s")
+            lines.append(f"**Total duration**: {total_duration}s")
 
         Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
         PY
