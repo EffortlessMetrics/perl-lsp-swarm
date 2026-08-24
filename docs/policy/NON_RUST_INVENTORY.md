@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11439 |
-| Rust-family files | 3485 |
-| Non-Rust files | 7954 |
-| Allowlisted | 5681 |
+| Total tracked files | 11456 |
+| Rust-family files | 3497 |
+| Non-Rust files | 7959 |
+| Allowlisted | 5686 |
 | Unclassified | 2273 |
 
 ## Non-Rust files by category
@@ -17,9 +17,9 @@
 | Category | Count |
 |---|---|
 | config | 403 |
-| documentation | 2649 |
+| documentation | 2652 |
 | generated | 2 |
-| production | 312 |
+| production | 314 |
 | test | 1843 |
 | tooling | 472 |
 | unclassified | 2273 |
@@ -3013,6 +3013,9 @@
 | `.spec/11625-module-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11626-module-train-frontier/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11626-module-train-frontier/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11626-module-train-frontier/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -7785,6 +7788,7 @@
 | `vscode-extension/src/languageClientStartupMetrics.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/languageServerHealth.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedCacheProtocol.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/managedCandidateRuntime.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedCandidateSelection.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedHostTarget.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedReleaseAdapter.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -7868,6 +7872,7 @@
 | `vscode-extension/src/test/languageClientStartupMetrics.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/languageServerHealth.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedCacheProtocol.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/managedCandidateRuntime.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedCandidateSelection.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedHostTarget.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedNamespaceIsolation.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
