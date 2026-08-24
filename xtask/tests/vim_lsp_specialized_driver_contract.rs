@@ -298,18 +298,63 @@ fn one_iteration_substituting_repeated_sessions_fails_closed() -> Result<()> {
 #[test]
 fn host_handoff_without_the_host_runner_fails_closed_honestly() -> Result<()> {
     // The replacement-host action exists in the vocabulary but, with no
-    // #10944 runner landed, its honest observation is not_proven with a
-    // limitation — an `applied` claim from a bare handoff cannot validate.
+    // #10944 runner landed, an `applied` claim from any backend that exists
+    // today cannot validate: `applied` is not admitted vocabulary for the
+    // handoff until the runner lands as a reviewed vocabulary edit.
     let spec = action("vim.vim_lsp.specialized.host_reopen.launch_replacement_host")?;
     let mut world = fake::FakeWorld::settling(spec);
     world.outcome = ActionResult::Applied;
     world.limitation = None;
     let observation = fake::observation_for(spec, &world);
-    let validated = driver::validate_observation(&observation).map_err(|error| {
-        anyhow::anyhow!("an applied handoff with satisfied host barriers is admissible: {error}")
-    })?;
-    ensure!(validated.outcome == ActionResult::Applied);
-    Ok(())
+    assert_rejects(&observation, "outside the admitted vocabulary")
+}
+
+#[test]
+fn native_surface_route_must_be_declared_by_the_action() -> Result<()> {
+    let mut observation = valid_for("vim.vim_lsp.specialized.freshness.workspace_setting_change")?;
+    observation.route = ObservedRoute::NativeVimSurface { surface: ":w".to_string() };
+    assert_rejects(&observation, "does not declare native surface")
+}
+
+#[test]
+fn satisfied_barrier_beyond_its_budget_fails_closed() -> Result<()> {
+    let mut observation =
+        valid_for("vim.vim_lsp.specialized.freshness.source_mutate_closed_in_place")?;
+    for evidence in observation.barriers.iter_mut() {
+        if matches!(evidence, BarrierEvidence::Satisfied { .. }) {
+            *evidence = BarrierEvidence::Satisfied {
+                kind: evidence.kind(),
+                settled_generations: observation.generations,
+                waited_ms: 60_000,
+            };
+        }
+    }
+    assert_rejects(&observation, "beyond the")
+}
+
+#[test]
+fn barrier_settling_newer_than_the_observation_snapshot_fails_closed() -> Result<()> {
+    let mut observation =
+        valid_for("vim.vim_lsp.specialized.freshness.source_mutate_closed_in_place")?;
+    for evidence in observation.barriers.iter_mut() {
+        if matches!(evidence, BarrierEvidence::Satisfied { .. }) {
+            let mut newer = observation.generations;
+            newer.source_generation += 1;
+            *evidence = BarrierEvidence::Satisfied {
+                kind: evidence.kind(),
+                settled_generations: newer,
+                waited_ms: 5,
+            };
+        }
+    }
+    assert_rejects(&observation, "newer")
+}
+
+#[test]
+fn replay_events_out_of_order_fail_closed() -> Result<()> {
+    let mut observation = valid_for("vim.vim_lsp.specialized.recovery.observe_generation_replay")?;
+    observation.protocol_events.reverse();
+    assert_rejects(&observation, "out of order")
 }
 
 // ---------------------------------------------------------------------------

@@ -234,7 +234,21 @@ endfunction
 function! s:HoverProbe(probe_class) abort
   " Small semantic discriminator through the public request channel; the
   " result is only ever digested, never carried as raw text.
-  call cursor(4, match(getline(4), 'Widget::answer') + 1)
+  " Locate the discriminator symbol dynamically so a fixture line shift
+  " cannot silently move the probe onto an unrelated token.
+  let s:probe_line = 0
+  let s:line_index = 1
+  for s:candidate in getline(1, '$')
+    if s:candidate =~# 'Widget::answer'
+      let s:probe_line = s:line_index
+      break
+    endif
+    let s:line_index += 1
+  endfor
+  if s:probe_line == 0
+    return v:null
+  endif
+  call cursor(s:probe_line, match(getline(s:probe_line), 'Widget::answer') + 1)
   let s:hover_response = v:null
   call lsp#send_request('perllsp-under-test', {
         \ 'method': 'textDocument/hover',
@@ -274,7 +288,7 @@ if s:mode ==# 'activation'
 
   let s:open = s:BaseObservation(
         \ 'vim.vim_lsp.specialized.activation.open_without_preset_filetype',
-        \ {'route': 'native_vim_surface', 'behavior': 'open_fixture'})
+        \ {'route': 'native_vim_surface', 'surface': ':e'})
   let s:open.detection_route = s:native_detected ? 'native' : 'pre_forced'
   let s:open.barriers = [s:native_detected
         \ ? s:BarrierBase('native_filetype_detected')
@@ -291,7 +305,7 @@ if s:mode ==# 'activation'
 
   let s:filetype = s:BaseObservation(
         \ 'vim.vim_lsp.specialized.activation.observe_native_filetype',
-        \ {'route': 'native_vim_surface', 'behavior': 'filetype_read'})
+        \ {'route': 'native_vim_surface', 'surface': '&filetype'})
   let s:filetype.detection_route = s:native_detected ? 'native' : 'pre_forced'
   let s:filetype.cardinalities = {'native_detection_rows': 1}
   let s:filetype.barriers = [s:native_detected
@@ -339,7 +353,7 @@ if s:mode ==# 'activation'
 
   let s:close = s:BaseObservation(
         \ 'vim.vim_lsp.specialized.activation.close_reset_between_rows',
-        \ {'route': 'native_vim_surface', 'behavior': 'close_reset'})
+        \ {'route': 'native_vim_surface', 'surface': ':bwipeout'})
   silent bwipeout
   call s:Emit(s:close)
 
@@ -358,6 +372,11 @@ elseif s:mode ==# 'save_format'
 
   function! s:OwnerFormatDone(data) abort
     let s:owner_done = 1
+    if type(a:data) != type({})
+      " An error or timeout path delivered no response envelope: no edits.
+      let s:owner_edits = []
+      return
+    endif
     let l:payload = get(a:data, 'response', {})
     let s:owner_edits = type(get(l:payload, 'result', v:null)) == type([])
           \ ? get(l:payload, 'result', []) : []
@@ -397,7 +416,7 @@ elseif s:mode ==# 'save_format'
 
   let s:configure = s:BaseObservation(
         \ 'vim.vim_lsp.specialized.save_format.configure_single_owner',
-        \ {'route': 'native_vim_surface', 'behavior': 'configure_owner'})
+        \ {'route': 'native_vim_surface', 'surface': 'autocmd bufwritepre'})
   let s:configure.configured_owner_count = 1
   let s:configure.owner = {'owner_class': 'save_format_owner', 'owner_token': 'bufwritepre_owner'}
   call s:Emit(s:configure)
@@ -405,14 +424,16 @@ elseif s:mode ==# 'save_format'
   let s:before = join(getline(1, '$'), "\n")
   let s:before_digest = s:Digest(s:before)
   silent write
-  let s:write_ok = s:WaitForSafe('s:save_events > 0', 5000)
+  " The save barrier is the save event AND the single owner's settlement;
+  " a write whose formatting request never answered does not satisfy it.
+  let s:write_ok = s:WaitForSafe('s:save_events > 0 && s:owner_done', 8000)
 
   " The ordinary write itself: an ordinary Vim save action whose formatting,
   " if any, came from the single configured save-event owner — never from a
   " raw format request relabeled as save-triggered.
   let s:write = s:BaseObservation(
         \ 'vim.vim_lsp.specialized.save_format.ordinary_write',
-        \ {'route': 'native_vim_surface', 'behavior': 'ordinary_write'})
+        \ {'route': 'native_vim_surface', 'surface': ':w'})
   let s:write.trigger = 'save_event'
   let s:write.configured_owner_count = 1
   let s:write.owner = {'owner_class': 'save_format_owner', 'owner_token': 'bufwritepre_owner'}
@@ -476,11 +497,15 @@ elseif s:mode ==# 'freshness'
 
 
   " Change one governed workspace setting through the public config surface.
+  " The change is real (the workspace root joins the registration include
+  " path) and acceptance requires a diagnostics event from AFTER the change,
+  " so the registration-time baseline cannot satisfy the barrier.
+  let s:diag_baseline = g:perllsp_diagnostics_updated
   call lsp#update_workspace_config('perllsp-under-test', {
-        \ 'perl': {'workspace': {'includePaths': [s:workspace . '/lib']}},
+        \ 'perl': {'workspace': {'includePaths': [s:workspace . '/lib', s:workspace]}},
         \ })
   let s:config_generation += 1
-  let s:accepted = s:WaitFor('g:perllsp_diagnostics_updated > 0', 10000)
+  let s:accepted = s:WaitForSafe('g:perllsp_diagnostics_updated > s:diag_baseline', 15000)
 
   let s:change = s:BaseObservation(
         \ 'vim.vim_lsp.specialized.freshness.workspace_setting_change',
@@ -622,7 +647,7 @@ else
 endif
 let s:exit = s:BaseObservation(
       \ 'vim.vim_lsp.specialized.host_reopen.exit_host',
-      \ {'route': 'native_vim_surface', 'behavior': 'quit_all'})
+      \ {'route': 'native_vim_surface', 'surface': ':qa!'})
 if s:exit_settled
   let s:exit.process = {'exited_clean': {'generation': g:perllsp_server_init}}
   let s:exit.barriers = [s:BarrierBase('process_exited_cleanup_settled')]

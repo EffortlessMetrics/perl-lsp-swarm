@@ -71,14 +71,18 @@ impl FakeWorld {
     }
 }
 
-/// The lawful default route for an action class.
+/// The lawful default route for an action class: a declared public surface
+/// when one exists, else a declared native surface, else the class's own
+/// stimulus/handoff channel.
 fn default_route(action: &super::ActionSpec) -> ObservedRoute {
     match action.class {
         super::ActionClass::UserAction | super::ActionClass::Observation => {
-            if action.public_surfaces.is_empty() {
-                ObservedRoute::NativeVimSurface { behavior: "native_surface_behavior".to_string() }
+            if let Some(api) = action.public_surfaces.first() {
+                ObservedRoute::PublicClientApi { api: api.to_string() }
+            } else if let Some(surface) = action.native_vim_surfaces.first() {
+                ObservedRoute::NativeVimSurface { surface: surface.to_string() }
             } else {
-                ObservedRoute::PublicClientApi { api: action.public_surfaces[0].to_string() }
+                ObservedRoute::NativeVimSurface { surface: ":e".to_string() }
             }
         }
         super::ActionClass::TestStimulus => {

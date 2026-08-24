@@ -33,8 +33,9 @@ pub enum BackendIdentity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "route", rename_all = "snake_case")]
 pub enum ObservedRoute {
-    /// A native Vim surface (command, option, autocmd event) executed.
-    NativeVimSurface { behavior: String },
+    /// A native Vim surface (command, option, autocmd event) executed; the
+    /// spelling must be one of the action's declared native surfaces.
+    NativeVimSurface { surface: String },
     /// A vim-lsp public API call from the #11369 classified inventory.
     PublicClientApi { api: String },
     /// A deliberate test stimulus (process kill, malformed config) that must
@@ -267,9 +268,9 @@ pub fn validate_bounded(observation: &TypedObservation) -> Result<(), String> {
         }
     }
     match &observation.route {
-        ObservedRoute::NativeVimSurface { behavior } => {
-            if !is_reason_token(behavior) {
-                return Err(format!("route token is not stable: {behavior}"));
+        ObservedRoute::NativeVimSurface { surface } => {
+            if !super::is_native_vim_surface(surface) {
+                return Err(format!("native surface spelling is outside the grammar: {surface}"));
             }
         }
         ObservedRoute::TestStimulus { stimulus } => {

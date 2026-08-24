@@ -617,7 +617,11 @@ pub const ACTIONS: &[ActionSpec] = &[
             barrier(BarrierKind::ServerGenerationInitialized, INIT_SEQ_BUDGET_MS),
         ],
         shape: DEFAULT_SHAPE,
-        allowed_results: RESULTS_WITH_CLIENT_NOT_EXPOSED,
+        // Fail-closed until the #10894/#10944 host runner lands: no backend
+        // that exists today can honestly produce an applied replacement-host
+        // observation, so `applied` is not admitted vocabulary. Admitting it
+        // is a reviewed vocabulary edit that lands with the runner.
+        allowed_results: &[ActionResult::NotProven, ActionResult::Unsupported],
     },
     ActionSpec {
         action_id: "vim.vim_lsp.specialized.host_reopen.replace_workspace_session",
@@ -824,9 +828,19 @@ pub fn validate_observation(
     {
         return Err(format!("action {} does not declare public surface {api}", action.action_id));
     }
+    if let ObservedRoute::NativeVimSurface { surface } = &observation.route
+        && !action.native_vim_surfaces.contains(&surface.as_str())
+    {
+        return Err(format!(
+            "action {} does not declare native surface {surface}",
+            action.action_id
+        ));
+    }
 
-    // Barrier law: every required barrier must be Satisfied; a TimedOut
-    // barrier forces not_proven; a Substituted barrier is dishonest.
+    // Barrier law: every required barrier must be Satisfied within its
+    // budget over generations no newer than the observation's own snapshot;
+    // a TimedOut barrier forces not_proven; a Substituted barrier is
+    // dishonest.
     for requirement in action.required_barriers {
         let Some(evidence) = observation.barrier(requirement.kind) else {
             return Err(format!(
@@ -835,7 +849,24 @@ pub fn validate_observation(
             ));
         };
         match evidence {
-            barrier::BarrierEvidence::Satisfied { .. } => {}
+            barrier::BarrierEvidence::Satisfied { settled_generations, waited_ms, .. } => {
+                if *waited_ms > requirement.max_wait_ms {
+                    return Err(format!(
+                        "barrier {:?} claims satisfaction after {waited_ms}ms, beyond the {}ms budget",
+                        requirement.kind, requirement.max_wait_ms
+                    ));
+                }
+                for dimension in barrier::GENERATION_DIMENSIONS {
+                    let settled = settled_generations.dimension(*dimension);
+                    let observed = observation.generations.dimension(*dimension);
+                    if settled > observed {
+                        return Err(format!(
+                            "barrier {:?} settled at a newer {dimension:?} generation ({settled}) than the observation snapshot ({observed}); settlement cannot be newer than the observation",
+                            requirement.kind
+                        ));
+                    }
+                }
+            }
             barrier::BarrierEvidence::TimedOut { waited_ms, .. } => {
                 if observation.outcome != ActionResult::NotProven {
                     return Err(format!(
@@ -949,18 +980,28 @@ pub fn validate_observation(
         ));
     }
     if shape.requires_generation_replay_sequence {
-        let classes: BTreeSet<&str> =
-            observation.protocol_events.iter().map(|event| event.event_class.as_str()).collect();
-        // The initialize-sequence events the pinned client exposes publicly
-        // (its `lsp_server_init`/`lsp_buffer_enabled` User autocmds). A bare
-        // new PID carries neither, so the negative control stays
-        // discriminating without requiring an instrument-only wire capture.
-        for required in ["lsp_server_init", "lsp_buffer_enabled"] {
-            if !classes.contains(required) {
-                return Err(format!(
-                    "generation replay must bind the {required} protocol event; a bare new PID is not an initialized/replayed generation"
-                ));
-            }
+        // The initialize sequence must appear in protocol-event ORDER: the
+        // server generation initializes before the buffer is enabled. The
+        // events are the ones the pinned client exposes publicly (its
+        // `lsp_server_init`/`lsp_buffer_enabled` User autocmds); a bare new
+        // PID carries neither, so the negative control stays discriminating
+        // without requiring an instrument-only wire capture.
+        let position = |class: &str| {
+            observation.protocol_events.iter().position(|event| event.event_class == class)
+        };
+        let (Some(init_at), Some(enabled_at)) =
+            (position("lsp_server_init"), position("lsp_buffer_enabled"))
+        else {
+            return Err(
+                "generation replay must bind the lsp_server_init and lsp_buffer_enabled protocol events in order; a bare new PID is not an initialized/replayed generation"
+                    .to_string(),
+            );
+        };
+        if enabled_at < init_at {
+            return Err(
+                "generation replay events are out of order: lsp_buffer_enabled precedes lsp_server_init"
+                    .to_string(),
+            );
         }
         let replay_cardinality =
             observation.cardinalities.get("replayed_buffers").copied().unwrap_or(0);

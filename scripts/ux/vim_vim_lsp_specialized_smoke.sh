@@ -75,8 +75,20 @@ if [[ ! ${adapter_sha} =~ ^sha256:[0-9a-f]{64}$ ]]; then
   exit 1
 fi
 
+# Canonicalize caller-supplied subject paths before any directory change:
+# a relative PERLLSP would otherwise be resolved against the fixture
+# workspace when vim-lsp launches the server.
+canonicalize() {
+  local value=$1
+  if [[ ${value} != /* ]]; then
+    value="${repo_root}/${value}"
+  fi
+  printf '%s' "${value}"
+}
+VIM_LSP_DIR=$(canonicalize "${VIM_LSP_DIR}")
+PERLLSP=$(canonicalize "${PERLLSP}")
 tmpdir=$(mktemp -d)
-trap 'rm -rf "${tmpdir}"' EXIT
+trap '[[ -n ${tmpdir:-} && -d ${tmpdir} ]] && rm -rf "${tmpdir}"' EXIT
 workspace="${tmpdir}/workspace"
 mkdir -p "${workspace}/lib"
 : >"${workspace}/.perl-lsp.toml"
