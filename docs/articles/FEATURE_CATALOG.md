@@ -112,7 +112,7 @@ These features maintain the server's view of open files in sync with the editor.
 
 **Will Save** (`lsp.will_save`) — notifies the server just before a file is saved. Allows the server to intercept and add pre-save behavior.
 
-**Will Save Wait Until** (`lsp.will_save_wait_until`) — a synchronous variant: the editor waits for the server to respond before completing the save. Used for format-on-save (the server returns the formatted edits, which the editor applies before writing).
+**Will Save Wait Until** (`lsp.will_save_wait_until`) — WITHDRAWN (#11955): the server refuses this edit-producing route until #8092 proves one save owner. Editors can still format on save through the whole-document provider.
 
 ---
 

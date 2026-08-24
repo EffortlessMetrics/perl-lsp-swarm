@@ -275,7 +275,7 @@ The server can ask the client to discard its cache for:
 | Open/change/close | `lsp.text_document_sync` |
 | Save | `lsp.did_save` |
 | willSave | `lsp.will_save` |
-| willSaveWaitUntil (format on save) | `lsp.will_save_wait_until` |
+| willSaveWaitUntil (format on save) | `lsp.will_save_wait_until` | WITHDRAWN (#11955): no formatter edits until #8092 proves one save owner |
 
 ---
 

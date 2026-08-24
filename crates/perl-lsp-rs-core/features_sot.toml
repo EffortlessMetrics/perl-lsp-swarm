@@ -862,10 +862,10 @@ id = "lsp.will_save_wait_until"
 spec = "LSP 3.0"
 area = "text_document"
 maturity = "ga"
-advertised = true
+advertised = false
 counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_text_sync_tests.rs"]
-description = "willSaveWaitUntil request with format-on-save"
+description = "willSaveWaitUntil request; withdrawn from live routes (#11955) until #8092 proves one save owner"
 
 # Additional Language Features
 

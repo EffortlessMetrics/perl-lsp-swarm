@@ -288,7 +288,10 @@ fn test_save_events_sequence() {
         })),
     };
     let edits_response = server.handle_request(will_save_wait_until);
-    assert!(edits_response.is_some());
+    let edits_response = edits_response.expect("willSaveWaitUntil must return a response envelope");
+    let error = edits_response.error.expect("withdrawn willSaveWaitUntil must return an error");
+    assert_eq!(error.code, -32601);
+    assert!(edits_response.result.is_none(), "withdrawn willSaveWaitUntil must not return edits");
 
     // 3. didSave notification
     let did_save = JsonRpcRequest {

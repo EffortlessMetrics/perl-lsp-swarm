@@ -1651,7 +1651,7 @@
       "competing_paths": [
         {
           "path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
-          "delta": "runtime replaces the whole textDocumentSync value after initialize parsing: adds willSave=true, willSaveWaitUntil=true and turns save from boolean true into {includeText:true} (see mut.handle_initialize.textDocumentSyncOverride)"
+          "delta": "runtime replaces the whole textDocumentSync value after initialize parsing: adds willSave=true, keeps willSaveWaitUntil=false, and turns save from boolean true into {includeText:true} (see mut.handle_initialize.textDocumentSyncOverride)"
         }
       ],
       "target_issue": "#9665",
@@ -3668,7 +3668,7 @@
       "competitors": [
         {
           "path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
-          "delta": "runtime replaces the whole textDocumentSync value after initialize parsing: adds willSave=true, willSaveWaitUntil=true and turns save from boolean true into {includeText:true} (see mut.handle_initialize.textDocumentSyncOverride)"
+          "delta": "runtime replaces the whole textDocumentSync value after initialize parsing: adds willSave=true, keeps willSaveWaitUntil=false, and turns save from boolean true into {includeText:true} (see mut.handle_initialize.textDocumentSyncOverride)"
         }
       ],
       "target_issue": "#9665"
