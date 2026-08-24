@@ -255,8 +255,11 @@ fn core_train_is_topologically_ordered_and_unique() -> Result<(), Box<dyn Error>
 }
 
 /// Stage states that assert a landed increment on `main`.
-const LANDED_STATES: [&str; 2] =
-    ["complete_static_substrate_execution_not_proven", "authority_merged_execution_not_proven"];
+const LANDED_STATES: [&str; 3] = [
+    "complete_static_substrate_execution_not_proven",
+    "authority_merged_execution_not_proven",
+    "evidence_merged_matching_host_only",
+];
 
 #[test]
 fn live_frontier_matches_merged_and_open_pr_state() -> Result<(), Box<dyn Error>> {
@@ -266,7 +269,9 @@ fn live_frontier_matches_merged_and_open_pr_state() -> Result<(), Box<dyn Error>
         string_set(rules, "current_core_frontier")?,
         BTreeSet::from(["C01", "P03", "P06", "P07", "P09"])
     );
-    assert_eq!(string_set(rules, "current_dap_frontier")?, BTreeSet::from(["D01"]));
+    // D01 landed via #12271 and DA01 landed via #12333; the next DAP stage
+    // (D02) still waits on core P03, so the derived DAP frontier is empty.
+    assert_eq!(string_set(rules, "current_dap_frontier")?, BTreeSet::new());
 
     let core = core_index(&train)?;
     assert_eq!(string(core["P00"], "state")?, "complete_static_substrate_execution_not_proven");
@@ -292,7 +297,10 @@ fn live_frontier_matches_merged_and_open_pr_state() -> Result<(), Box<dyn Error>
     }
 
     let dap = dap_index(&train)?;
-    assert_eq!(string(dap["D01"], "state")?, "ready");
+    assert_eq!(string(dap["D01"], "state")?, "authority_merged_execution_not_proven");
+    assert_eq!(dap["D01"].get("pull_request").and_then(Value::as_u64), Some(12271));
+    assert_eq!(string(dap["DA01"], "state")?, "evidence_merged_matching_host_only");
+    assert_eq!(dap["DA01"].get("pull_request").and_then(Value::as_u64), Some(12333));
     Ok(())
 }
 
