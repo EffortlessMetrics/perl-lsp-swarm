@@ -6,6 +6,16 @@ All notable changes to the Perl Language Server extension will be documented in 
 
 ### Changed
 
+- **Production activation failures are now deterministically injectable at
+  every resource boundary.** The activation owner exposes a test-only
+  phase-boundary failure injector, so a test can fail the real `activate()`
+  composition immediately after a named production resource registers —
+  through the same rollback path any mid-activation exception takes — without
+  monkey-patching module globals. The injected matrix proves reverse-order
+  rollback of every crossed boundary, retained support surfaces, clean retry
+  from baseline without duplicate resources, stale-callback barriers, bounded
+  cleanup-failure receipts, mid-rollback event tolerance, and fallback-path
+  deactivation on the partial state. (#7855)
 - **Extension activation now runs inside one transactional owner with a
   deterministic rollback stack.** Every activation-created resource (status
   and health surfaces, command groups, workspace/configuration listeners,
