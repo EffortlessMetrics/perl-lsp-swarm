@@ -11,7 +11,6 @@
 // Test-only observation helper uses `.expect()` on internal invariants.
 #![allow(clippy::expect_used)]
 
-
 #[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use perl_lsp_rs_core::providers::diagnostics::detect_dead_code;
