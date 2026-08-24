@@ -99,7 +99,8 @@ fn token_span(position: usize, source: &str) -> Option<TokenSpan> {
     };
 
     if name_start >= end
-        || (!bytes[name_start].is_ascii_alphanumeric() && bytes[name_start] != b'_')
+        || (!bytes[name_start].is_ascii_alphanumeric()
+            && bytes[name_start] != b'_')
     {
         return None;
     }
@@ -175,8 +176,8 @@ pub fn is_word_boundary(text: &[u8], pos: usize, word_len: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        byte_offset_utf16, extract_symbol_from_source, get_symbol_range_at_position, is_modchar,
-        is_word_boundary, token_under_cursor, CursorSymbolKind,
+        byte_offset_utf16, extract_symbol_from_source, get_symbol_range_at_position,
+        is_modchar, is_word_boundary, token_under_cursor, CursorSymbolKind,
     };
 
     #[test]
@@ -187,7 +188,10 @@ mod tests {
                 extract_symbol_from_source(position, source),
                 Some(("my_func".to_string(), CursorSymbolKind::Scalar))
             );
-            assert_eq!(get_symbol_range_at_position(position, source), Some((3, 11)));
+            assert_eq!(
+                get_symbol_range_at_position(position, source),
+                Some((3, 11))
+            );
         }
         assert_eq!(
             token_under_cursor(source, 0, 7),
@@ -230,7 +234,10 @@ mod tests {
 
     #[test]
     fn whitespace_boundary_is_supported_but_punctuation_is_not() {
-        assert_eq!(get_symbol_range_at_position(3, "foo bar"), Some((0, 3)));
+        assert_eq!(
+            get_symbol_range_at_position(3, "foo bar"),
+            Some((0, 3))
+        );
         assert_eq!(get_symbol_range_at_position(3, "foo;"), None);
         assert_eq!(get_symbol_range_at_position(3, "foo.bar"), None);
         assert_eq!(get_symbol_range_at_position(0, " "), None);
@@ -248,9 +255,13 @@ mod tests {
 
     #[test]
     fn unsupported_braced_and_nested_sigil_forms_are_explicitly_rejected() {
-        assert!(extract_symbol_from_source(1, concat!("$", "{foo}")).is_none());
+        assert!(
+            extract_symbol_from_source(1, concat!("$", "{foo}")).is_none()
+        );
         assert!(extract_symbol_from_source(1, "$$foo").is_none());
-        assert!(extract_symbol_from_source(1, concat!("$", "{^MATCH}")).is_none());
+        assert!(
+            extract_symbol_from_source(1, concat!("$", "{^MATCH}")).is_none()
+        );
     }
 
     #[test]
