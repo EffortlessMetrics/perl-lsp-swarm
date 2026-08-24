@@ -1213,7 +1213,8 @@ mod tests {
             "the registry behavior must follow its own target compile"
         );
         assert!(
-            position("semantic_definition/client_support_registry") < position("setup/build_perllsp"),
+            position("semantic_definition/client_support_registry")
+                < position("setup/build_perllsp"),
             "setup-independent registry evidence must precede retryable product-server setup"
         );
         for spec in specs.iter().filter(|spec| spec.requires_setup) {
@@ -1637,9 +1638,7 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
             "the in-process API child must execute despite product-server setup failure"
         );
         assert!(
-            executor
-                .executed
-                .contains(&"semantic_definition/client_support_registry"),
+            executor.executed.contains(&"semantic_definition/client_support_registry"),
             "the setup-independent registry child must execute before product-server setup"
         );
         cleanup(&path);
