@@ -2662,22 +2662,6 @@ created = "2026-08-23"
 review_after = "2026-09-23"
 
 [[allow]]
-id = "non-rust-litexl-diagnostic-position-tests"
-path = "clients/lite-xl/tests/diagnostic_position_test.lua"
-kind = "editor_extension_test"
-language = "lua"
-surface = "editor"
-classification = "test"
-owner = "editor/lite-xl"
-reason = "Deterministic framework-free diagnostic-position suite proving exact byte-column rendering through live documents and negotiated encodings across ASCII/non-BMP/BMP/CRLF/multiline/closed fixtures plus delayed-render revalidation; runs against the staged modules or pristine blobs for red-first checks."
-covered_by = [
-  "lua clients/lite-xl/tests/diagnostic_position_test.lua",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-23"
-review_after = "2026-09-23"
-
-[[allow]]
 id = "non-rust-litexl-init-plugin"
 path = "clients/lite-xl/upstream/init.lua"
 kind = "editor_extension"
@@ -2769,6 +2753,22 @@ owner = "editor/lite-xl"
 reason = "Deterministic framework-free push-diagnostics currentness suite proving stale/future/old-generation rejections, complementary provider composition, unversioned not-proven dispositions, generation-bound delayed rendering, and lifecycle cleanup; runs against the staged modules or the pristine blobs for red-first checks."
 covered_by = [
   "lua clients/lite-xl/tests/diagnostics_currentness_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-diagnostic-position-tests"
+path = "clients/lite-xl/tests/diagnostic_position_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free diagnostic-position suite proving exact byte-column rendering through live documents and negotiated encodings across ASCII/non-BMP/BMP/CRLF/multiline/closed fixtures plus delayed-render revalidation; runs against the staged modules or pristine blobs for red-first checks."
+covered_by = [
+  "lua clients/lite-xl/tests/diagnostic_position_test.lua",
   "cargo xtask check-file-policy",
 ]
 created = "2026-08-23"

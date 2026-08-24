@@ -183,8 +183,9 @@ checked base registration.
 
 Full-document formatting (`lsp.formatting`) is backed by the native formatter by
 default. The range and on-type formatting routes are withdrawn from live
-capabilities pending their respective contracts, and requests to those routes
-return the standard `MethodNotFound` refusal. The server no longer removes
+capabilities pending their respective contracts. Well-formed requests to those
+withdrawn methods return the standard `MethodNotFound` refusal; malformed
+requests may be rejected earlier as `InvalidParams`. The server no longer removes
 full-document formatting just because Perltidy is not available on `PATH`;
 Perltidy only matters when explicit external compatibility mode is selected.
 
