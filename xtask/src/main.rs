@@ -3903,7 +3903,8 @@ enum EmacsIntegrationCommand {
     /// hermetic Emacs runner (#7778). Every exact input is digest-verified
     /// before launch; an unavailable host is a typed error, never a skip.
     HostRun {
-        /// Exact client subject id (see `xtask::emacs_host_run::known_subjects`).
+        /// Exact client subject id (see
+        /// `xtask::emacs_host_run::EmacsClientSubject::known_ids`).
         #[arg(long)]
         subject: String,
 
@@ -3915,11 +3916,18 @@ enum EmacsIntegrationCommand {
         #[arg(long)]
         candidate: PathBuf,
 
-        /// Absolute path of the bundled eglot.el inside the exact Emacs
-        /// installation. When omitted it is resolved inside the installation
-        /// root and ambiguity fails closed.
+        /// Absolute path of the exact client library file. For bundled
+        /// subjects it may be omitted and is resolved inside the Emacs
+        /// installation (ambiguity fails closed); released subjects require
+        /// it and never search the installation.
         #[arg(long)]
         client_source: Option<PathBuf>,
+
+        /// Absolute path of the exact released client package file. Required
+        /// for released subjects (package identity is part of the subject);
+        /// rejected for bundled subjects.
+        #[arg(long)]
+        client_package: Option<PathBuf>,
 
         /// Output directory for the hermetic layout, artifacts, and receipt.
         #[arg(long)]
@@ -4853,6 +4861,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                     emacs,
                     candidate,
                     client_source,
+                    client_package,
                     out,
                     timeout_ms,
                 } => {
@@ -4864,6 +4873,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                         emacs,
                         candidate,
                         client_source,
+                        client_package,
                         out,
                         timeout_ms,
                     )
