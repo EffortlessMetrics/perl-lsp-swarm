@@ -105,7 +105,7 @@ fn assert_terminates_with_valid_spans(input: &str) {
 }
 
 #[test]
-fn malformed_decimal_and_escape_inputs_recover_without_corrupting_spans() {
+fn malformed_inputs_preserve_spans() {
     for input in [
         "1.2.3.4.5",
         r#"my $x = "\z""#,
