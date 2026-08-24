@@ -1,0 +1,47 @@
+{
+  "schema_version": "compiler_performance_receipt.v1",
+  "receipt_id": "fixture-compiler-performance-001",
+  "subject": {
+    "repository": "EffortlessMetrics/perl-lsp-swarm",
+    "candidate": "fixture-candidate",
+    "tree": "0000000000000000000000000000000000000000",
+    "dirty_tree": false,
+    "toolchain": "stable",
+    "runner": "linux-x86_64",
+    "identities": {
+      "source": {"schema": "source.v1", "profile": "default"},
+      "parser": {"schema": "parser.v1", "profile": "default"},
+      "hir": {"schema": "hir.v1", "profile": "default"},
+      "pir": {"schema": "pir.v1", "profile": "default"},
+      "effects": {"schema": "effects.v1", "profile": "default"},
+      "world": {"schema": "world.v1", "profile": "default"},
+      "interfaces": {"schema": "interfaces.v1", "profile": "default"}
+    }
+  },
+  "workload": {
+    "id": "fixture-workload",
+    "class": "focused_fixture",
+    "profile": "default",
+    "fixture": "compiler-performance",
+    "series": "fixture-series",
+    "cache_mode": "cold"
+  },
+  "stages": [{
+    "name": "lex_parse",
+    "applicability": "applicable",
+    "result": "pass",
+    "work": {"status": "measured", "units": 1, "objects": 1, "bytes": 1, "reused": 0, "recomputed": 1},
+    "timing": {"status": "measured", "wall_ns": 1, "cpu_ns": 1},
+    "instrumentation": "complete"
+  }],
+  "provider": {
+    "requests": 1,
+    "exact": 1,
+    "partial": 0,
+    "fallback": 0,
+    "refusal": 0,
+    "correctness": {"false_exact": 0, "stale_exact": 0, "unsafe_edit": 0, "unexplained_empty": 0},
+    "timing": {"status": "measured", "wall_ns": 1, "cpu_ns": 1}
+  },
+  "limitations": []
+}
