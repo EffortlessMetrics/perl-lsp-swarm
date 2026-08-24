@@ -151,6 +151,18 @@ assert "binary" not in path_settings["lsp"]["perllsp"]
 }
 
 #[test]
+fn shared_rust_validator_checks_schema_then_semantics() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let validator = read(&root, "xtask/src/bin/validate-zed-host-receipt.rs")?;
+    assert!(validator.contains("support/zed_host_compat.rs"));
+    assert!(validator.contains("validate_schema(&receipt)"));
+    assert!(validator.contains("validate_pass(&receipt, None)"));
+    assert!(validator.contains("--schema-only"));
+    assert!(!validator.contains("public_subject"));
+    Ok(())
+}
+
+#[test]
 fn single_purpose_entry_points_parse_without_running_a_host() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
     for script in [
