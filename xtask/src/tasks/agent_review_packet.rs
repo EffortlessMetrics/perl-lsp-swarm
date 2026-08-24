@@ -2811,6 +2811,19 @@ fn validate_schema_enums(root: &Path) -> Result<Vec<String>> {
             violations.push(format!("{path}: $id must be {id}"));
         }
     }
+    // The packet schema must structurally enforce the one obligation the
+    // validator derives: at least one test/mutation entry. A description
+    // alone is not enforcement (PR #12220 review finding).
+    let packet_schema = load_schema(root, PACKET_SCHEMA_PATH)?;
+    if packet_schema
+        .pointer("/$defs/obligations/properties/tests_mutations/minItems")
+        .and_then(Value::as_i64)
+        != Some(1)
+    {
+        violations.push(format!(
+            "{PACKET_SCHEMA_PATH}: obligations.tests_mutations must carry minItems 1"
+        ));
+    }
     Ok(violations)
 }
 

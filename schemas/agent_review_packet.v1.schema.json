@@ -389,6 +389,7 @@
         "fixture_expectation_manifests": { "$ref": "#/$defs/obligation_entries" },
         "tests_mutations": {
           "$ref": "#/$defs/obligation_entries",
+          "minItems": 1,
           "description": "At least one test/mutation obligation is required."
         },
         "generated_artifacts": { "$ref": "#/$defs/obligation_entries" },
