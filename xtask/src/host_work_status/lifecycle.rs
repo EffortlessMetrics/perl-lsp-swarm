@@ -535,7 +535,7 @@ pub fn classify_compute(observation: &ComputeWorkObservation) -> HostWorkClassif
         (HostWorkLifecycle::Stopping, stop)
     } else if live_exact {
         (HostWorkLifecycle::Active, Vec::new())
-    } else if matches!(observation.reservation, ReservationFact::Queued { .. }) && !live_exact {
+    } else if matches!(observation.reservation, ReservationFact::Queued { .. }) {
         (HostWorkLifecycle::Queued, vec![HostWorkReason::ReservationQueued])
     } else if matches!(observation.reservation, ReservationFact::Active { .. }) {
         // A proven-active capacity reservation is itself current work

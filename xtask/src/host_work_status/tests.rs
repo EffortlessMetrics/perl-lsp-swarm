@@ -1058,3 +1058,52 @@ fn host_work_status_f18_module_is_pure_no_io_or_process_surface() {
         }
     }
 }
+
+// ---- Review response: readiness dedup is rank-independent -------------------
+
+#[test]
+fn host_work_status_readiness_dedup_collapses_nonadjacent_owned_by_duplicates() {
+    let subject = repository_subject(Some("wt"));
+    let key = subject.subject_key();
+    let mut set = HostWorkObservationSet::new(key.clone());
+    set.push_mutation(mutation(&key, MutationOwnership::Unowned)).expect("own subject");
+    set.push_logical(logical(&key, DurableState::NoLocalResidue)).expect("own subject");
+    set.push_compute(compute(
+        &key,
+        ProcessTreeFact::ExitedConfirmed { process_group_id: String::from("pg") },
+        ReservationFact::Absent,
+        Settlement::Settled,
+        Settlement::Settled,
+        InitiatorReturn::Returned,
+    ))
+    .expect("own subject");
+    set.push_storage(storage(
+        &key,
+        RootClass::CandidatePrivate,
+        StorageDisposition::Unique,
+        CapacityFact::Measured { free_bytes: 900 },
+        None,
+        false,
+        ReclaimClass::NoneApproved,
+    ))
+    .expect("own subject");
+
+    // Two "B" rows separated by an equal-ranked "A" row: dedup must still
+    // collapse them (all WorktreeCleanupOwnedBy variants share one rank).
+    let supplied = vec![
+        CleanupReadiness::WorktreeCleanupOwnedBy { owner: String::from("B") },
+        CleanupReadiness::WorktreeCleanupOwnedBy { owner: String::from("A") },
+        CleanupReadiness::WorktreeCleanupOwnedBy { owner: String::from("B") },
+    ];
+    let status = HostWorkStatus::build(&subject, &set, &supplied).expect("builds");
+
+    let owned: Vec<&str> = status
+        .cleanup_readiness
+        .iter()
+        .filter_map(|readiness| match readiness {
+            CleanupReadiness::WorktreeCleanupOwnedBy { owner } => Some(owner.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(owned, vec!["A", "B"], "duplicate owners collapse; ties order deterministically");
+}

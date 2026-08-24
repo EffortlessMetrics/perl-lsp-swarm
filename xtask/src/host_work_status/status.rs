@@ -114,15 +114,8 @@ impl HostWorkStatus {
         missing_providers.dedup();
 
         let mut unknown_provider_variants = set.unknown_variants().to_vec();
-        unknown_provider_variants.sort_by(|a, b| {
-            (&a.family, &a.schema_version, &a.source, &a.variant).cmp(&(
-                &b.family,
-                &b.schema_version,
-                &b.source,
-                &b.variant,
-            ))
-        });
-        unknown_provider_variants.dedup_by(|a, b| a == b);
+        unknown_provider_variants.sort();
+        unknown_provider_variants.dedup();
 
         Ok(HostWorkStatus {
             schema_version: HOST_WORK_STATUS_SCHEMA_VERSION.to_string(),
@@ -219,8 +212,9 @@ impl HostWorkStatus {
             readiness.push(CleanupReadiness::NotProven);
         }
 
-        readiness.sort_by_key(readiness_rank);
+        readiness.sort();
         readiness.dedup();
+        readiness.sort_by_key(readiness_rank);
         if readiness.is_empty() && !evidence_incomplete {
             readiness.push(CleanupReadiness::ReadOnlyObservationComplete);
         }

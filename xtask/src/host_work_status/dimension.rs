@@ -297,7 +297,7 @@ pub struct SubjectMismatch {
 }
 
 /// An unknown provider variant surfaced through the set's visibility rows.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct UnknownVariantRecord {
     pub family: crate::host_work_status::subject::ProviderFamily,
     pub schema_version: String,
