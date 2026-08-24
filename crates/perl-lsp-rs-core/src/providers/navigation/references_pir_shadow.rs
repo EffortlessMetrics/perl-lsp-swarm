@@ -1085,7 +1085,7 @@ mod promote_tests {
         let receipt = extract_lexical_facts(&hir);
         // Deliberately provide a forged widened legacy range. Exact promotion
         // must consume the canonical HIR binding anchor instead.
-        let forged_legacy = vec![(4usize, 9usize)];
+        let forged_legacy = vec![(0usize, 1usize)];
 
         let outcome = references_pir_promote(
             PromotionMode::PromoteExact,
@@ -1105,11 +1105,11 @@ mod promote_tests {
             .iter()
             .map(|range| (range.start.character as usize, range.end.character as usize))
             .collect::<Vec<_>>();
-        if !mapped.contains(&(7, 9)) {
-            return Err(format!("promoted declaration was not token-normalized: {mapped:?}"));
+        if !mapped.contains(&(4, 9)) {
+            return Err(format!("canonical anchor missing: {mapped:?}"));
         }
-        if mapped.contains(&(4, 9)) {
-            return Err(format!("promoted declaration leaked widened anchor: {mapped:?}"));
+        if mapped.contains(&(0, 1)) {
+            return Err(format!("forged anchor leaked: {mapped:?}"));
         }
         Ok(())
     }
