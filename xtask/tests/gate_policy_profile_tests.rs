@@ -595,9 +595,9 @@ fn lsp_unit_lanes_share_ceiling_and_budget() -> Result<(), Box<dyn std::error::E
 
     // Keep the budget:ceiling ratio in line with the sibling test lanes.
     // unit_analysis_full and unit_dap_support_full sit at 0.80, as do both
-    // LSP lanes (336000/420s). lsp_smoke's declared timeout is reduced below
-    // its effective Linux watchdog window to account for the helper's 75s
-    // kill-after grace (516000/645s declared, 576000/720s effective).
+    // LSP lanes (336000/420s). lsp_smoke keeps its 0.80 declared budget
+    // (576000/720s); the shared Linux watchdog's 75s Rust backstop grace is
+    // cleanup allowance, not a reason to shorten the execution window.
     // The enforced band below is deliberately wider than that single observed
     // value so a considered retune does not trip the guard, but narrow enough
     // to catch a budget set without reference to its ceiling. One band, stated
@@ -655,24 +655,22 @@ fn lsp_smoke_is_atomic_bounded_and_independently_terminal() -> Result<(), Box<dy
          timeout is exactly the twice-retried-600s fleet symptom #8063 fixes"
     );
 
-    // Outer runaway guard: the Linux helper turns a declared timeout into an
-    // effective timeout 75s longer because its TERM/KILL grace is included in
-    // the Rust backstop. Declare 645s so the effective 720s window fits the
-    // hosted lsp shard budget. This is deliberately NOT the worst-case sum of
-    // child budgets (3 x 2 x 300s retrying compiles + 6 x 120s behavior =
+    // Outer runaway guard: 720s is the declared execution window. The Linux
+    // helper's 75s Rust backstop grace is cleanup allowance after that window,
+    // not a reason to shorten it. This is deliberately NOT the worst-case sum
+    // of child budgets (3 x 2 x 300s retrying compiles + 6 x 120s behavior =
     // 2520s): the guard bounds the suite and leaves CANCELLED marks in the
     // child receipt, it does not promise unreachable headroom.
     assert_eq!(
         gate.timeout_seconds,
-        Some(645),
-        "declared outer guard must reserve the Linux watchdog's 75s cleanup \
-         grace so its effective 720s window fits the hosted lsp shard"
+        Some(720),
+        "declared outer guard must preserve the full hosted lsp execution window"
     );
     let budget = gate
         .budgets
         .and_then(|budgets| budgets.max_duration_ms)
         .ok_or("lsp_smoke must declare a duration budget")?;
-    assert_eq!(budget, 516_000, "budget must stay at the 0.80 ratio (516000/645s)");
+    assert_eq!(budget, 576_000, "budget must stay at the 0.80 ratio (576000/720s)");
 
     Ok(())
 }

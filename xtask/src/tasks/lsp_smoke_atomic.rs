@@ -137,8 +137,9 @@ const REGISTRY_FILTER: &str = "client_support_registry";
 /// because they share one failure surface (registry/evidence drift) and the
 /// group cannot suppress or conflate any sibling child's independent verdict.
 ///
-/// The in-process API lane runs before the retryable product-server setup so
-/// an expensive setup timeout cannot erase its independent evidence.
+/// The in-process API lane, semantic compile, and registry lane run before the
+/// retryable product-server setup so an expensive setup timeout cannot erase
+/// their independent evidence.
 pub fn child_specs() -> Vec<ChildSpec> {
     let semantic = |id: &'static str, test: &'static str| ChildSpec {
         id,
@@ -169,19 +170,28 @@ pub fn child_specs() -> Vec<ChildSpec> {
             timeout_seconds: BEHAVIOR_TIMEOUT_SECONDS,
         },
         ChildSpec {
-            id: "setup/build_perllsp",
-            kind: ChildKind::Setup,
+            id: "compile/semantic_definition",
+            kind: ChildKind::Compile,
             requires_setup: false,
-            target: "perllsp",
+            target: SEMANTIC_TARGET,
             test_filter: None,
             exact: false,
             timeout_seconds: SETUP_COMPILE_TIMEOUT_SECONDS,
         },
         ChildSpec {
-            id: "compile/semantic_definition",
-            kind: ChildKind::Compile,
+            id: "semantic_definition/client_support_registry",
+            kind: ChildKind::Behavior,
             requires_setup: false,
             target: SEMANTIC_TARGET,
+            test_filter: Some(REGISTRY_FILTER),
+            exact: false,
+            timeout_seconds: BEHAVIOR_TIMEOUT_SECONDS,
+        },
+        ChildSpec {
+            id: "setup/build_perllsp",
+            kind: ChildKind::Setup,
+            requires_setup: false,
+            target: "perllsp",
             test_filter: None,
             exact: false,
             timeout_seconds: SETUP_COMPILE_TIMEOUT_SECONDS,
@@ -202,15 +212,6 @@ pub fn child_specs() -> Vec<ChildSpec> {
             "semantic_definition/package_qualified_call",
             "semantic_definition_tests::definition_handles_package_qualified_calls",
         ),
-        ChildSpec {
-            id: "semantic_definition/client_support_registry",
-            kind: ChildKind::Behavior,
-            requires_setup: false,
-            target: SEMANTIC_TARGET,
-            test_filter: Some(REGISTRY_FILTER),
-            exact: false,
-            timeout_seconds: BEHAVIOR_TIMEOUT_SECONDS,
-        },
     ]
 }
 
@@ -1187,13 +1188,13 @@ mod tests {
             vec![
                 "compile/lsp_api_contracts",
                 "lsp_api_contracts/textdocument_sync_camel_case",
-                "setup/build_perllsp",
                 "compile/semantic_definition",
+                "semantic_definition/client_support_registry",
+                "setup/build_perllsp",
                 "semantic_definition/scalar_variable",
                 "semantic_definition/subroutine",
                 "semantic_definition/scoped_variable",
                 "semantic_definition/package_qualified_call",
-                "semantic_definition/client_support_registry",
             ],
             "the required child set is the #8063 minimum plus the registry group; \
              drift must be deliberate"
@@ -1207,8 +1208,13 @@ mod tests {
             "the API behavior must follow its own compile"
         );
         assert!(
-            position("setup/build_perllsp") < position("compile/semantic_definition"),
-            "semantic compile must follow product-server setup"
+            position("compile/semantic_definition")
+                < position("semantic_definition/client_support_registry"),
+            "the registry behavior must follow its own target compile"
+        );
+        assert!(
+            position("semantic_definition/client_support_registry") < position("setup/build_perllsp"),
+            "setup-independent registry evidence must precede retryable product-server setup"
         );
         for spec in specs.iter().filter(|spec| spec.requires_setup) {
             assert!(
@@ -1615,6 +1621,12 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
         assert!(
             executor.executed.contains(&"lsp_api_contracts/textdocument_sync_camel_case"),
             "the in-process API child must execute despite product-server setup failure"
+        );
+        assert!(
+            executor
+                .executed
+                .contains(&"semantic_definition/client_support_registry"),
+            "the setup-independent registry child must execute before product-server setup"
         );
         cleanup(&path);
     }

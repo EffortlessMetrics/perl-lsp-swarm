@@ -3328,17 +3328,17 @@ mod tests {
     #[test]
     fn watchdog_timeout_includes_process_cleanup_grace() {
         assert_eq!(
-            shell_command_watchdog_timeout(645),
-            std::time::Duration::from_secs(720),
+            shell_command_watchdog_timeout(720),
+            std::time::Duration::from_secs(795),
             "the Linux watchdog's 75-second TERM/KILL grace must be included in \
-             the effective lsp_smoke window"
+             the Rust backstop after the declared execution window"
         );
     }
 
     #[cfg(windows)]
     #[test]
     fn watchdog_timeout_has_no_unix_cleanup_grace() {
-        assert_eq!(shell_command_watchdog_timeout(645), std::time::Duration::from_secs(645));
+        assert_eq!(shell_command_watchdog_timeout(720), std::time::Duration::from_secs(720));
     }
 
     #[test]

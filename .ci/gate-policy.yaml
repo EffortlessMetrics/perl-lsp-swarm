@@ -1245,9 +1245,10 @@ gates:
     # finish in 173-243s including compiles; default build parallelism — not
     # the old CARGO_BUILD_JOBS=1 — cuts the cold-compile wall), 120s behavior.
     #
-    # The 645s declared gate timeout is the suite runaway bound sized to the
+    # The 720s declared gate timeout is the suite runaway bound sized to the
     # hosted envelope. On Linux the shared gate watchdog adds a 75s TERM/KILL
-    # grace, making the effective bound 720s. This is NOT the arithmetic sum
+    # grace to its Rust backstop after the declared execution window. This is
+    # NOT the arithmetic sum
     # of child budgets (3 x 2 x 300s retrying
     # compiles + 6 x 120s behavior = 2520s worst case): this gate runs third
     # in the `lsp` CI Gate shard behind unit_lsp_core_full and unit_lsp_full
@@ -1268,9 +1269,9 @@ gates:
       cargo run --locked -p xtask
       -- lsp-smoke-atomic
       --receipt target/receipts/artifacts/lsp_smoke_children.json
-    timeout_seconds: 645
+    timeout_seconds: 720
     budgets:
-      max_duration_ms: 516000
+      max_duration_ms: 576000
     quarantine: false
     tags:
       - test
