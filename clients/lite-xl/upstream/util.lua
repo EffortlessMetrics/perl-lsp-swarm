@@ -35,6 +35,17 @@
 -- platform path, display shaping (home_expand/normalize_to_project_dir) and
 -- containment policy (#8997/#9001) remain distinct layers above it.
 
+-- Local patch (#11143): util.deep_merge is a typed configuration merge.
+-- Objects merge recursively by string key; arrays are indivisible values
+-- replaced atomically by the later side (a later empty array clears an
+-- inherited list); scalars and explicit JSON null replace exactly; type
+-- changes replace rather than numerically merge. Untagged plain Lua settings
+-- values are classified through the #11136 codec's own constructors so
+-- sparse/mixed containers fail with codec errors, and an untagged empty
+-- table keeps the encoder's object default. Inputs are never mutated or
+-- aliased. Configuration-source precedence in init.lua get_workspace_settings
+-- is unchanged and documented there.
+
 local core = require "core"
 local common = require "core.common"
 local config = require "core.config"
@@ -699,33 +710,120 @@ function util.table_get_field(t, fieldset)
   return value
 end
 
+-- Local patch (#11143): typed settings-value helpers for deep_merge. Every
+-- merged value resolves through ONE classification authority: the #11136
+-- codec container identities first, then the codec's own constructors for
+-- untagged plain Lua settings values, so sparse/mixed containers fail with
+-- codec errors instead of receiving ad-hoc merge behavior. Arrays are
+-- indivisible configuration values; objects are the only recursive shape;
+-- every stored table is freshly built so inputs stay immutable and results
+-- deterministic.
+local function settings_container_kind(value)
+  if type(value) ~= "table" then return nil end
+  -- Scalar-like typed identities: explicit JSON null and exact-lexeme
+  -- numbers are replace-exactly values, never containers to recurse into.
+  if json.is_null(value) or json.is_number(value) then return nil end
+  if json.is_array(value) then return "array" end
+  if json.is_object(value) then return "object" end
+  -- Untagged plain Lua table: mirror exactly the encoder's upstream
+  -- compatibility heuristic. An untagged empty table stays an object ({}
+  -- encodes as {}); a dense numeric-key sequence is an array; anything else
+  -- must be accepted by one of the codec constructors or merging fails.
+  if next(value) == nil then return "object" end
+  if rawget(value, 1) ~= nil then
+    if pcall(json.array, value) then return "array" end
+  end
+  local ok_object, object_error = pcall(json.object, value)
+  if ok_object then return "object" end
+  error(object_error, 0)
+end
+
+local function copy_settings_value(value)
+  if type(value) ~= "table" then return value end
+  local kind = settings_container_kind(value)
+  if kind == nil then return value end
+  local out = {}
+  if kind == "array" then
+    for i = 1, #value do
+      out[i] = copy_settings_value(value[i])
+    end
+  else
+    for k, v in pairs(value) do
+      out[k] = copy_settings_value(v)
+    end
+  end
+  return setmetatable(out, getmetatable(value))
+end
+
+local merge_settings_value
+
+local function merge_settings_objects(base, later)
+  local out = {}
+  for k, base_value in pairs(base) do
+    if later[k] == nil then
+      out[k] = copy_settings_value(base_value)
+    end
+  end
+  for k, later_value in pairs(later) do
+    out[k] = merge_settings_value(base[k], later_value)
+  end
+  -- Typed object identity survives merging: the later side takes precedence,
+  -- mirroring copy_settings_value so every produced settings table carries
+  -- the same explicit #11136 container identity it would have been copied
+  -- with (#12215 review).
+  return setmetatable(out, getmetatable(later) or getmetatable(base))
+end
+
+---Merge one settings value slot (#11143): scalars and scalar-like typed
+---identities replace exactly; any array on either side makes the later side
+---an atomic replacement; two objects recurse by string key.
+merge_settings_value = function(base, later)
+  if type(later) ~= "table" then return later end
+  local later_kind = settings_container_kind(later)
+  if later_kind == nil then return later end
+  if type(base) ~= "table" then return copy_settings_value(later) end
+  local base_kind = settings_container_kind(base)
+  if base_kind == nil then return copy_settings_value(later) end
+  if base_kind == "array" or later_kind == "array" then
+    return copy_settings_value(later)
+  end
+  return merge_settings_objects(base, later)
+end
+
 ---Merge the content of the tables into a new one.
 ---Arguments from the later tables take precedence.
 ---Doesn't touch the original tables.
 ---`nil` arguments are ignored.
+---
+---Local patch (#11143): merging folds the arguments as whole typed VALUES,
+---left-associatively, so the shape rules apply at every depth including the
+---settings root: objects merge recursively by string key; arrays are
+---indivisible configuration values replaced atomically by the later side
+---(a later empty array clears an inherited list); scalars, booleans,
+---strings, numbers and explicit JSON null replace exactly; a type change
+---replaces with the later typed value instead of numerically merging
+---incompatible shapes. Inputs are never mutated or aliased. Untagged plain
+---Lua settings values (`.lite_lsp.lua`, `server.settings`) are classified
+---through the codec's own constructors so sparse/mixed containers fail with
+---codec errors rather than receiving ad-hoc merge behavior; an untagged
+---empty table keeps the encoder's upstream-compatibility object default.
 ---@param ... table?
 ---@return table
 function util.deep_merge(...)
-  local t = {}
+  local t = nil
   local args = table.pack(...)
   for i=1,args.n do
     local other = args[i]
     if other then
       assert(type(other) == "table", string.format("Argument %d must be a table", i))
-      for k, v in pairs(other) do
-        if type(v) == "table" then
-          if type(t[k]) == "table" then
-            t[k] = util.deep_merge(t[k], v)
-          else
-            t[k] = util.deep_merge({}, v)
-          end
-        else
-          t[k] = v
-        end
+      if t == nil then
+        t = copy_settings_value(other)
+      else
+        t = merge_settings_value(t, other)
       end
     end
   end
-  return t
+  return t or {}
 end
 
 ---Check if a table is really empty.

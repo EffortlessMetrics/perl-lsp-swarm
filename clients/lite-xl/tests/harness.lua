@@ -538,6 +538,9 @@ function harness.new_world(options)
         diagnostics_log[#diagnostics_log + 1] = { op = "publish" }
         return true, nil
       end,
+      -- #12047 render-resolver seam: init.lua registers it unconditionally
+      -- at load; journeys observe publications, not column resolution.
+      set_render_resolver = function() end,
       lintplus_init_doc = function() end,
       lintplus_found = false,
       lintplus_populate_delayed = function() end,
