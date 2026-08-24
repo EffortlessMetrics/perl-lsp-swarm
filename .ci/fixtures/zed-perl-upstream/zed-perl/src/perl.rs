@@ -177,6 +177,15 @@ fn content_sha256(bytes: &[u8]) -> String {
     hex
 }
 
+/// Parse the durable selection manifest if one is present and well-formed.
+///
+/// `None` covers both an absent manifest and an unreadable one; callers that
+/// need the rejection cause use [`load_accepted_current_in`].
+fn load_selection_manifest_in(work_dir: &Path) -> Option<SelectionManifest> {
+    let text = fs::read_to_string(work_dir.join(SELECTION_MANIFEST_PATH)).ok()?;
+    parse_selection_manifest(&text).ok()
+}
+
 /// Reconstruct the accepted current managed subject from durable identity.
 ///
 /// This is the offline-first startup path: no release metadata request, no
@@ -211,6 +220,28 @@ fn load_accepted_current_in(
     }
 
     Ok(manifest.installed_path)
+}
+
+/// What the cold install route may do with an already-present binary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColdDisposition {
+    /// No binary at the expected path: download it.
+    DownloadFresh,
+    /// A binary exists but the durable selection manifest names exactly this
+    /// path while offline verification rejected it. Presence alone is not
+    /// trust: replace the rejected subject instead of re-accepting its bytes.
+    ReplaceRejected,
+    /// A binary exists with no manifest binding against it (pre-upgrade
+    /// state); adopt it by binding a fresh digest.
+    ReuseExisting,
+}
+
+fn cold_disposition(binary_exists: bool, manifest_names_binary_path: bool) -> ColdDisposition {
+    match (binary_exists, manifest_names_binary_path) {
+        (false, _) => ColdDisposition::DownloadFresh,
+        (true, true) => ColdDisposition::ReplaceRejected,
+        (true, false) => ColdDisposition::ReuseExisting,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -521,28 +552,42 @@ impl PerlExtension {
         let version_dir = format!("perllsp-{version}-{target}");
         let binary_path = perllsp_binary_path(&version_dir, version, target, os);
 
-        if !fs::metadata(&binary_path).is_ok_and(|metadata| metadata.is_file()) {
-            if fs::metadata(&version_dir).is_ok() {
-                fs::remove_dir_all(&version_dir).map_err(|error| {
-                    format!("failed to remove incomplete perllsp download `{version_dir}`: {error}")
-                })?;
-            }
+        // A durable manifest that names exactly this binary path while offline
+        // verification rejected it marks corrupted or tampered bytes: replace
+        // the subject wholesale instead of re-accepting what is on disk.
+        let rejected_subject = load_selection_manifest_in(Path::new("."))
+            .is_some_and(|manifest| manifest.installed_path == binary_path);
+        let binary_exists = fs::metadata(&binary_path).is_ok_and(|metadata| metadata.is_file());
+        let disposition = cold_disposition(binary_exists, rejected_subject);
 
-            zed::set_language_server_installation_status(
-                language_server_id,
-                &zed::LanguageServerInstallationStatus::Downloading,
-            );
-            if let Err(error) = zed::download_file(&asset.download_url, &version_dir, file_type) {
-                self.update_state = UpdateState::TransportFailed;
-                return Err(format!("failed to download EffortlessMetrics perllsp: {error}"));
-            }
+        match disposition {
+            ColdDisposition::DownloadFresh | ColdDisposition::ReplaceRejected => {
+                if fs::metadata(&version_dir).is_ok() {
+                    fs::remove_dir_all(&version_dir).map_err(|error| {
+                        format!(
+                            "failed to remove incomplete perllsp download `{version_dir}`: {error}"
+                        )
+                    })?;
+                }
 
-            if !fs::metadata(&binary_path).is_ok_and(|metadata| metadata.is_file()) {
-                self.update_state = UpdateState::CandidateRejected;
-                return Err(format!(
-                    "downloaded `{asset_name}` but did not find expected binary `{binary_path}`"
-                ));
+                zed::set_language_server_installation_status(
+                    language_server_id,
+                    &zed::LanguageServerInstallationStatus::Downloading,
+                );
+                if let Err(error) = zed::download_file(&asset.download_url, &version_dir, file_type)
+                {
+                    self.update_state = UpdateState::TransportFailed;
+                    return Err(format!("failed to download EffortlessMetrics perllsp: {error}"));
+                }
+
+                if !fs::metadata(&binary_path).is_ok_and(|metadata| metadata.is_file()) {
+                    self.update_state = UpdateState::CandidateRejected;
+                    return Err(format!(
+                        "downloaded `{asset_name}` but did not find expected binary `{binary_path}`"
+                    ));
+                }
             }
+            ColdDisposition::ReuseExisting => {}
         }
 
         // Bind the exact installed identity only after the candidate is fully
@@ -966,6 +1011,19 @@ mod tests {
             .is_err());
 
         Ok(())
+    }
+
+    #[test]
+    fn cold_disposition_never_reaccepts_a_rejected_subject() {
+        // Nothing on disk: download.
+        assert_eq!(cold_disposition(false, false), ColdDisposition::DownloadFresh);
+        assert_eq!(cold_disposition(false, true), ColdDisposition::DownloadFresh);
+        // A manifest binding this exact path means offline verification already
+        // rejected these bytes: replace, never re-accept.
+        assert_eq!(cold_disposition(true, true), ColdDisposition::ReplaceRejected);
+        // Pre-upgrade state with no binding against the path: adopt and bind a
+        // fresh digest going forward.
+        assert_eq!(cold_disposition(true, false), ColdDisposition::ReuseExisting);
     }
 
     #[test]
