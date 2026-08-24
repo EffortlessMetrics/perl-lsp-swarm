@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11387 |
-| Rust-family files | 3470 |
-| Non-Rust files | 7917 |
-| Allowlisted | 5644 |
+| Total tracked files | 11392 |
+| Rust-family files | 3471 |
+| Non-Rust files | 7921 |
+| Allowlisted | 5648 |
 | Unclassified | 2273 |
 
 ## Non-Rust files by category
@@ -17,10 +17,10 @@
 | Category | Count |
 |---|---|
 | config | 401 |
-| documentation | 2635 |
+| documentation | 2638 |
 | generated | 2 |
 | production | 309 |
-| test | 1827 |
+| test | 1828 |
 | tooling | 470 |
 | unclassified | 2273 |
 
@@ -3000,6 +3000,9 @@
 | `.spec/11369-vim-lsp-subject-contract/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11369-vim-lsp-subject-contract/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11369-vim-lsp-subject-contract/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11371-vim-bdd-journeys/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11371-vim-bdd-journeys/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11371-vim-bdd-journeys/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3334,6 +3337,7 @@
 | `book/src/user-guides/troubleshooting.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `book/src/user-guides/workspace-navigation.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `clients/lite-xl/tests/diagnostics_currentness_test.lua` | test | `non-rust-litexl-diagnostics-currentness-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/init_configuration_items_test.lua` | test | `non-rust-litexl-init-configuration-items-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_document_session_test.lua` | test | `non-rust-litexl-init-session-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_request_currentness_test.lua` | test | `non-rust-litexl-init-request-currentness-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/json_decode_test.lua` | test | `non-rust-litexl-json-decode-tests` | editor/lite-xl |
