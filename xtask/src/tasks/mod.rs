@@ -96,6 +96,7 @@ pub mod issue_plan;
 pub mod layer_check;
 pub mod lsp_318_claims;
 pub mod lsp_318_matrix;
+pub mod lsp_smoke_atomic;
 pub mod lsp_ux_smoke;
 pub mod memory_trends;
 pub mod merge_integration;

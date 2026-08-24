@@ -2092,10 +2092,10 @@ fn run_single_gate(
     }
 }
 
-struct ShellExecutionResult {
-    stdout: String,
-    exit_code: i32,
-    timed_out: bool,
+pub(crate) struct ShellExecutionResult {
+    pub(crate) stdout: String,
+    pub(crate) exit_code: i32,
+    pub(crate) timed_out: bool,
 }
 
 /// Run a gate command, retrying only when an attempt is killed by the
@@ -2187,7 +2187,13 @@ fn append_retry_trailer(
 
 const MAX_GATE_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
 
-fn run_shell_command_with_timeout(
+/// Run one shell command under the watchdog, truncating-and-reading the log.
+///
+/// `pub(crate)` so the `lsp_smoke` atomic child harness (#8063) reuses the
+/// exact per-child timeout semantics the gate runner enforces (GNU `timeout`
+/// wrapping plus the Rust watchdog backstop) instead of a second, drifting
+/// implementation.
+pub(crate) fn run_shell_command_with_timeout(
     command: &str,
     log_path: &Path,
     timeout_secs: u64,

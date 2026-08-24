@@ -26,6 +26,8 @@ struct PolicyGate {
     #[serde(default)]
     quarantine: bool,
     timeout_seconds: Option<u64>,
+    #[serde(default)]
+    retry_count: Option<u32>,
     budgets: Option<GateBudgets>,
     planning: Option<GatePlanning>,
 }
@@ -593,8 +595,9 @@ fn lsp_unit_lanes_share_ceiling_and_budget() -> Result<(), Box<dyn std::error::E
 
     // Keep the budget:ceiling ratio in line with the sibling test lanes.
     // unit_analysis_full, unit_dap_support_full, and lsp_smoke all sit at
-    // exactly 0.80 (240000/300s), as do both LSP lanes (336000/420s). The
-    // enforced band below is deliberately wider than that single observed
+    // exactly 0.80 (analysis/dap 240000/300s, lsp_smoke 1200000/1500s after
+    // the #8063 atomic decomposition), as do both LSP lanes (336000/420s).
+    // The enforced band below is deliberately wider than that single observed
     // value so a considered retune does not trip the guard, but narrow enough
     // to catch a budget set without reference to its ceiling. One band, stated
     // once: the assertion, this comment, and the failure message must agree.
@@ -608,6 +611,62 @@ fn lsp_unit_lanes_share_ceiling_and_budget() -> Result<(), Box<dyn std::error::E
          {MIN_BUDGET_RATIO:.2}-{MAX_BUDGET_RATIO:.2} band; the sibling test lanes \
          all sit at 0.80"
     );
+
+    Ok(())
+}
+
+/// #8063: `lsp_smoke` must stay one atomic-child harness invocation — never a
+/// `&&` composite — with an outer runaway guard that comfortably exceeds the
+/// sum of the per-child budgets the harness enforces, and with no gate-level
+/// `retry_count` (retry policy is executable only inside the typed child
+/// harness, where setup/compile watchdog timeouts retry once and behavior
+/// children never retry). The child set itself is pinned by the xtask bin
+/// tests (`lsp_smoke_atomic::tests::child_set_is_pinned_and_ordered`).
+#[test]
+fn lsp_smoke_is_atomic_bounded_and_independently_terminal() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = project_root();
+    let policy_path = root.join(".ci/gate-policy.yaml");
+    let content = fs::read_to_string(policy_path)?;
+    let parsed: GatePolicyDoc = serde_yaml_ng::from_str(&content)?;
+
+    let gate = parsed
+        .gates
+        .into_iter()
+        .find(|gate| gate.name == "lsp_smoke")
+        .ok_or("missing lsp_smoke gate")?;
+
+    assert_eq!(gate.tier, "merge_gate");
+    assert!(gate.required, "lsp_smoke must stay PR-blocking");
+    let command = gate.command.trim().to_string();
+    assert_eq!(
+        command,
+        "cargo run --locked -p xtask -- lsp-smoke-atomic \
+         --receipt target/receipts/artifacts/lsp_smoke_children.json",
+        "lsp_smoke must invoke the atomic child harness, not a composite"
+    );
+    assert!(!command.contains("&&"), "the #8063 decomposition forbids composites");
+
+    assert!(
+        gate.retry_count.is_none(),
+        "gate-level retry_count must stay absent: a whole-suite rerun on outer \
+         timeout is exactly the twice-retried-600s fleet symptom #8063 fixes"
+    );
+
+    // Outer runaway guard: 1500s > sum of child budgets' realistic ceiling and
+    // inside the 30-minute CI Gate shard job (setup + suite).
+    assert_eq!(
+        gate.timeout_seconds,
+        Some(1500),
+        "outer guard must exceed the 1440s sum of per-child budgets \
+         (3 x 420s setup/compile + 6 x 120s behavior) without reaching the \
+         30-minute shard job ceiling"
+    );
+    let budget = gate
+        .budgets
+        .and_then(|budgets| budgets.max_duration_ms)
+        .ok_or("lsp_smoke must declare a duration budget")?;
+    assert_eq!(budget, 1_200_000, "budget must stay at the 0.80 ratio (1200000/1500s)");
 
     Ok(())
 }
