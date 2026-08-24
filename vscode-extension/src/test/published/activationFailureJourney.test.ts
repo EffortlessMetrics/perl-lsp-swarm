@@ -222,15 +222,18 @@ suite('Packaged activation-failure cleanup and retry (#7856)', function () {
       // commands survive; every mandatory command registration was rolled back.
       const commands = new Set(await vscode.commands.getCommands(true));
       const retained = new Set<string>(RETAINED_SUPPORT_COMMAND_IDS);
-      // The diff proves the COMPLETE claim: anything the failed attempt left
-      // registered beyond the pre-activation baseline and the retained set is
-      // a leak, whether or not this file predicted its id. Host-reserved
-      // `workbench.*` ids are excluded: the workbench registers them lazily on
-      // its own UI state (for example the output view of the retained output
-      // channel), and they are not extension-owned registrations.
-      const isHostReserved = (id: string) => id.startsWith('workbench.');
+      // The diff proves the COMPLETE claim over the extension's own
+      // registrations: any `perl-lsp.*` command the failed attempt left
+      // registered beyond the retained set is a leak, whether or not this
+      // file predicted its id (production registers nothing outside that
+      // namespace). Host-internal ids are deliberately out of scope — the
+      // workbench lazily registers its own commands during the session (for
+      // example `workbench.action.output.show...` for the retained output
+      // channel's view, or `keywordActivation.status.command`), and none of
+      // them is extension rollback debt.
+      const extensionOwned = (id: string) => id.startsWith('perl-lsp.');
       const leakedCommands = [...commands].filter(
-        (id) => !commandsBefore.has(id) && !retained.has(id) && !isHostReserved(id),
+        (id) => extensionOwned(id) && !commandsBefore.has(id) && !retained.has(id),
       );
       const mandatoryPresent = mandatoryExpected.filter((id) => commands.has(id));
       const retainedPresent = RETAINED_SUPPORT_COMMAND_IDS.filter((id) => commands.has(id));
@@ -280,7 +283,7 @@ suite('Packaged activation-failure cleanup and retry (#7856)', function () {
       observations.bundled_server_processes_after_demand_window = processesAfterDemand;
       const commandsAfterDemand = new Set(await vscode.commands.getCommands(true));
       const leakedAfterDemand = [...commandsAfterDemand].filter(
-        (id) => !commandsBefore.has(id) && !retained.has(id) && !isHostReserved(id),
+        (id) => extensionOwned(id) && !commandsBefore.has(id) && !retained.has(id),
       );
       observations.commands_leaked_after_demand_window = leakedAfterDemand;
       if (processesAfterDemand.length > 0 || leakedAfterDemand.length > 0) {

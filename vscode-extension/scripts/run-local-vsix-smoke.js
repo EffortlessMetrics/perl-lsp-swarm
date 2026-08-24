@@ -1020,7 +1020,6 @@ function runActivationFailureJourneyAttempt(baseEnv, context, paths) {
     fixturePath,
   } = paths;
   const revision = context.revision;
-  const vsixPath = context.vsixPath;
   const vsixSha256 = context.vsixSha256;
   const extensionsDir = context.extensionsDir;
   /** @type {{ failure: number | null, retry: number | null }} */
