@@ -40,14 +40,14 @@ use tasks::{
     ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route,
     ci_scope, clean, command_evidence, compare, corpus_audit, count_ratchet, cpan_corpus,
     dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc,
-    doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features,
-    finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates,
-    generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
-    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
-    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
-    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
-    merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
-    native_format, native_product_surface, native_tooling, oracle_fixture_manifest,
+    doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_packet,
+    emacs_train_specs, features, finalize_check, fix_forward, fmt, forbid_fatal_constructs,
+    forensics, gate_receipts, gates, generated_files, github, github_preflight, github_review,
+    goals, hardening, hook_checks, ignored_tests, incremental_proof, inject_sha_assets,
+    inline_completion_quality, inline_completion_smoke, install_surface_check, integration_proof,
+    intent_diff_gate, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
+    memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
+    native_critic, native_format, native_product_surface, native_tooling, oracle_fixture_manifest,
     oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
     parser_ratchet, perl_core_harness, perl_kwalitee, populate_book, pre_push_plan,
     prep_crates_io_launch, protocol_type_substrate_matrix, provider_confidence_matrix,
@@ -3992,6 +3992,10 @@ enum EmacsTrainSubcommand {
         #[command(subcommand)]
         command: EmacsTrainSpecsCommand,
     },
+    /// E06 actor-packet adapter (#11719): project the joined train state
+    /// into the shared #10872/#10881 packets. Fail-closed and offline.
+    #[command(flatten)]
+    Packet(emacs_train_packet::EmacsTrainPacketCommand),
 }
 
 #[derive(Subcommand)]
@@ -4879,6 +4883,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             IntegrationCommand::Emacs { command } => match command {
                 EmacsIntegrationCommand::Train { command } => match command {
                     EmacsTrainSubcommand::Context(inner) => emacs_train_context::run(inner),
+                    EmacsTrainSubcommand::Packet(inner) => emacs_train_packet::run(inner),
                     EmacsTrainSubcommand::Specs { command } => match command {
                         EmacsTrainSpecsCommand::Plan { manifest, ledger, format } => {
                             emacs_train_specs::plan(manifest, ledger, format)
