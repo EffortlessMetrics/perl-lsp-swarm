@@ -1,0 +1,52 @@
+# CI scope risk taxonomy (schema v2)
+#
+# The Rust classifier in xtask/src/tasks/ci_scope.rs is the executable
+# authority. This file is the reviewable policy surface: it records the
+# vocabulary, detection intent, and the existing proof lanes promoted by each
+# risk. Lane names must remain names understood by the gate policy.
+
+schema_version: 1
+authority: xtask/src/tasks/ci_scope.rs
+
+detection:
+  mode: path_prefix_and_crate
+  content_scan: not_yet_implemented
+  note: >-
+    Path and crate evidence is deterministic and fail-closed. Content keyword
+    scanning remains a follow-up when a reviewed diff-content contract exists.
+
+risk_tags:
+  concurrency:
+    examples: [async, concurrent, thread, mutex, rwlock, arc]
+    promotes: [thread_sanitizer, mutation_diff]
+  parser_recovery:
+    examples: ["/recovery/", "/expressions/", "parser recovery"]
+    promotes: [bounded_parser_fuzz, mutation_diff]
+  offset_math:
+    examples: [position, offset, utf, column]
+    promotes: []
+  path_normalization:
+    examples: [uri, workspace-folder, file_uri]
+    promotes: []
+  perf_hot_path:
+    examples: [benchmarks/, benches/, criterion/]
+    promotes: [perf_regression]
+  public_api:
+    examples: [perl-parser, perl-lexer, perl-parser-core, perl-lsp-rs, perl-dap]
+    promotes: [mutation_diff]
+    note: >-
+      The existing public API/semver workflow remains the authority for
+      compatibility checks; mutation_diff is the PR-time lane this classifier
+      can promote without inventing a second gate implementation.
+  dep_change:
+    examples: [Cargo.toml, Cargo.lock]
+    promotes: [security_audit, publish]
+  security_surface:
+    examples: [auth, eval, exec, deserializ, shell]
+    promotes: [security_audit]
+
+invariants:
+  - risk_tags are sorted and deduplicated in ci-scope JSON
+  - promoted lanes are deduplicated even when multiple tags select them
+  - every promoted lane has a machine-readable reason
+  - no risk tag widens a docs-only diff into a code lane
