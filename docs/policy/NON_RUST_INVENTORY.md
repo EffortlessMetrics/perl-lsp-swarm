@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11382 |
-| Rust-family files | 3469 |
-| Non-Rust files | 7913 |
-| Allowlisted | 5640 |
-| Unclassified | 2273 |
+| Total tracked files | 11392 |
+| Rust-family files | 3471 |
+| Non-Rust files | 7921 |
+| Allowlisted | 5647 |
+| Unclassified | 2274 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
 | config | 401 |
-| documentation | 2631 |
+| documentation | 2638 |
 | generated | 2 |
-| production | 309 |
+| production | 308 |
 | test | 1828 |
-| tooling | 469 |
-| unclassified | 2273 |
+| tooling | 470 |
+| unclassified | 2274 |
 
 ## Unclassified files
 
@@ -124,6 +124,7 @@
 | `ci/unwrap_prod_baseline.txt` | `txt` |
 | `ci/unwrap_server_impl_baseline.txt` | `txt` |
 | `ci/xtask_wrapper.sh` | `sh` |
+| `clients/lite-xl/upstream/json.lua` | `lua` |
 | `contracts/actual_host_receipt.v1.schema.json` | `json` |
 | `crates/perl-corpus/concepts/incremental.toml` | `toml` |
 | `crates/perl-corpus/concepts/lexer.toml` | `toml` |
@@ -3000,6 +3001,9 @@
 | `.spec/11369-vim-lsp-subject-contract/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11369-vim-lsp-subject-contract/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11369-vim-lsp-subject-contract/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11371-vim-bdd-journeys/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11371-vim-bdd-journeys/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11371-vim-bdd-journeys/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3028,6 +3032,10 @@
 | `.spec/11764-controller-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11764-controller-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11764-controller-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11770-emacs-train-revisions/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11770-emacs-train-revisions/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11770-emacs-train-revisions/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11770-emacs-train-revisions/revisions.ledger.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3339,9 +3347,8 @@
 | `clients/lite-xl/tests/util_show_document_test.lua` | test | `non-rust-litexl-show-document-tests` | editor/lite-xl |
 | `clients/lite-xl/upstream/diagnostics.lua` | production | `non-rust-litexl-diagnostics-store` | editor/lite-xl |
 | `clients/lite-xl/upstream/init.lua` | production | `non-rust-litexl-init-plugin` | editor/lite-xl |
-| `clients/lite-xl/upstream/json.lua` | production | `non-rust-litexl-json-codec` | editor/lite-xl |
 | `clients/lite-xl/upstream/server.lua` | production | `non-rust-litexl-server-transport` | editor/lite-xl |
-| `clients/lite-xl/upstream/util.lua` | production | `non-rust-litexl-util-support` | editor/lite-xl |
+| `clients/lite-xl/upstream/util.lua` | production | `non-rust-litexl-util` | editor/lite-xl |
 | `clients/sublime/LSP-perllsp/.python-version` | documentation | `non-rust-sublime-python-version` | editor/sublime |
 | `clients/sublime/LSP-perllsp/Default.sublime-commands` | documentation | `non-rust-Default-commands` | editor/sublime |
 | `clients/sublime/LSP-perllsp/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
@@ -4056,6 +4063,7 @@
 | `docs/adr/0042-no-assertion-test-triage-specs.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/0043-module-provenance-detection.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/0044-octopus-cluster-orchestration.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/adr/0045-noncurrent-frame-mutation-disposition.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_001_AGENT_ARCHITECTURE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_002_API_DOCUMENTATION_INFRASTRUCTURE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_003_MISSING_DOCUMENTATION_INFRASTRUCTURE.md` | documentation | `non-rust-docs-tree` | docs |

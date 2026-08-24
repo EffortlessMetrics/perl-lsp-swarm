@@ -360,7 +360,11 @@ function rebuild_projection()
       table.sort(generations)
       for _, generation in ipairs(generations) do
         local publication = sessions[generation]
-        local filename = get_absolute_path(util.tofilename(publication.uri))
+        -- Local patch (#11165): publication URIs convert through the one
+        -- authority; non-file or malformed URIs project nothing, matching
+        -- the existing unresolvable-path disposition.
+        local publication_path = util.uri_to_path(publication.uri)
+        local filename = publication_path and get_absolute_path(publication_path) or nil
         if filename then
           local entry = merged[filename]
           if not entry then

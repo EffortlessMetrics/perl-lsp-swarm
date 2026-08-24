@@ -355,9 +355,9 @@ local function drain(server, method)
   return played
 end
 
----Canonical URI exactly as production computes it (staged util.touri).
+---Canonical URI exactly as production computes it (#11165 authority).
 local function expected_uri(path)
-  return dofile(here .. "/../upstream/util.lua").touri(path)
+  return dofile(here .. "/../upstream/util.lua").path_to_uri(path)
 end
 
 local INCREMENTAL = { textDocumentSync = { openClose = true, change = 2, save = { includeText = false } }, positionEncoding = "utf-16" }
