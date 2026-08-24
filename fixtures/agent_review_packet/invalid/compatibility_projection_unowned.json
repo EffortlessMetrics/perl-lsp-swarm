@@ -1,0 +1,282 @@
+{
+  "schema": "agent_review_packet.v1",
+  "schema_version": 1,
+  "packet_id": "issue-controllers/R_controller_leaf/N_controller_bounded/2026-08-24T00:00:00Z",
+  "subject": {
+    "repository": {
+      "name": "perl-lsp-swarm",
+      "base": "06a6af4f0",
+      "head": "c44e0d1b7",
+      "tree": "c44e0d1b7^{tree}",
+      "diff": "sha256:3ac90f12"
+    },
+    "programme": {
+      "name": "issue-controllers",
+      "stage": "R_controller_leaf",
+      "proposition": "P_controller_bounded",
+      "profile": "read_only_reviewer"
+    },
+    "owning_issue": "#11775",
+    "builder_packet": {
+      "contract": "agent_implementation_packet.v1",
+      "digest": "sha256:8d22"
+    },
+    "live_observation": {
+      "candidate_state": "not_observed",
+      "digest": "sha256:offline-frontier"
+    },
+    "changed": {
+      "authorities": [
+        {
+          "ref": "xtask/src/tasks/issue_controller_leaf.rs",
+          "subject": "bounded controller-leaf adapter"
+        },
+        {
+          "ref": ".spec/11775-controller-spec/acceptance.md",
+          "subject": "checked spec disposition"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "spec_disposition_receipt",
+          "identity": "#11774 checked spec disposition@06a6af4f0"
+        },
+        {
+          "kind": "focused_test_receipt",
+          "identity": "cargo test -p xtask --bin xtask issue_controller_leaf --locked@c44e0d1b7"
+        }
+      ],
+      "migrated_seams": [
+        "old_title_body_heuristic"
+      ]
+    }
+  },
+  "challenge": {
+    "primary_proposition": "The controller adapter composes #10872 builder packets for one bounded controller leaf without acquiring any independent readiness, GitHub-write, or merge authority.",
+    "falsifiers": [
+      {
+        "id": "F_no_independent_readiness",
+        "stage": "unit",
+        "statement": "The adapter must fail closed when a required node-graph, spec, or frontier input is missing instead of deciding readiness itself."
+      },
+      {
+        "id": "F_dry_run_not_live",
+        "stage": "unit",
+        "statement": "An R03 dry-run route must never mutate live issue metadata; only the R05 route may, and only with an exact expected-old-state guard."
+      }
+    ],
+    "stage_questions": [
+      {
+        "id": "Q_controller_as_leaf",
+        "question": "Could a domain controller be misclassified as a bounded leaf, letting controller scope hide inside leaf delivery?"
+      },
+      {
+        "id": "Q_readonly_write_escape",
+        "question": "Does any read-only observer route (R03/R06) acquire a write path under refactor, retry, or error recovery?"
+      },
+      {
+        "id": "Q_expected_old_state",
+        "question": "Does the live mutation route preserve unrelated labels/body text by comparing expected old state before writing?"
+      }
+    ]
+  },
+  "lenses": [
+    {
+      "lens": "semantic_correctness",
+      "applicability": "required",
+      "refinements": [
+        {
+          "id": "R_packet_fidelity",
+          "statement": "Composed packets preserve every builder-packet semantic anchor; wrapper syntax changes nothing."
+        }
+      ]
+    },
+    {
+      "lens": "architecture_authority_duplication",
+      "applicability": "required",
+      "refinements": [
+        {
+          "id": "R_no_second_packet_schema",
+          "statement": "The adapter adds fields only; it never creates another packet schema beside #10872/#10881."
+        },
+        {
+          "id": "R_registry_authority",
+          "statement": "Registry/directory/label authority substitution is challenged as duplicate authority."
+        }
+      ]
+    },
+    {
+      "lens": "subject_evidence_identity",
+      "applicability": "required",
+      "refinements": [
+        {
+          "id": "R_exact_tree_binding",
+          "statement": "Packets bind the exact current tree/head; a packet for another head cannot satisfy composition."
+        }
+      ]
+    },
+    {
+      "lens": "lifecycle_currentness_concurrency",
+      "applicability": "required",
+      "refinements": [
+        {
+          "id": "R_api_pagination",
+          "statement": "API pagination, permission, and instrument failure must surface as blocked, never as no-drift/no-candidate."
+        }
+      ]
+    },
+    {
+      "lens": "security_trust_boundary",
+      "applicability": "required"
+    },
+    {
+      "lens": "resource_retention_cleanup",
+      "applicability": "not_applicable",
+      "reason": "The adapter holds no persistent resources; packet instances are runtime-local outputs."
+    },
+    {
+      "lens": "platform_runtime_portability",
+      "applicability": "not_applicable",
+      "reason": "The adapter runs inside the repository-owned xtask binary; no platform surface is claimed."
+    },
+    {
+      "lens": "spec_test_docs_consistency",
+      "applicability": "required",
+      "refinements": [
+        {
+          "id": "R_bdd_receipts",
+          "statement": "BDD/spec-ledger identities and receipts stay complete for the composed programme."
+        }
+      ]
+    },
+    {
+      "lens": "release_external_boundary",
+      "applicability": "not_applicable",
+      "reason": "No release or external stage is claimed; the adapter is read-only tooling."
+    }
+  ],
+  "negative_controls": [
+    {
+      "falsifier_id": "F_no_independent_readiness",
+      "checks": {
+        "exists": {
+          "status": "established",
+          "evidence": "Focused test removes the node-graph input and asserts the adapter fails closed."
+        },
+        "red_before_or_mutation_evidence": {
+          "status": "established",
+          "evidence": "Removing the missing-input guard makes the focused test red against plausible-prose output."
+        },
+        "passes_only_intended_implementation": {
+          "status": "established",
+          "evidence": "The test asserts the typed missing-input error, not a non-zero exit alone."
+        },
+        "correct_subject_and_generation": {
+          "status": "established",
+          "evidence": "The missing-input fixture is hand-authored; it is not generated from the adapter."
+        },
+        "independent_expectation_source": {
+          "status": "established",
+          "evidence": "Expected failure text is pinned in the fixture before implementation."
+        },
+        "alternate_subject_exclusion": {
+          "status": "established",
+          "evidence": "The test binds the exact node identity, so an unrelated node's packet cannot satisfy it."
+        }
+      }
+    },
+    {
+      "falsifier_id": "F_dry_run_not_live",
+      "checks": {
+        "exists": {
+          "status": "established",
+          "evidence": "Focused test drives the R03 dry-run route against a recorded API fixture and asserts no mutation call is issued."
+        },
+        "red_before_or_mutation_evidence": {
+          "status": "established",
+          "evidence": "Routing the dry-run path through the live mutation client turns the test red."
+        },
+        "passes_only_intended_implementation": {
+          "status": "established",
+          "evidence": "The test asserts the exact zero-mutation call log, not a summary count."
+        },
+        "correct_subject_and_generation": {
+          "status": "established",
+          "evidence": "The recorded API fixture is authored from the documented response shape, not captured from the code under test."
+        },
+        "independent_expectation_source": {
+          "status": "established",
+          "evidence": "Expected zero-mutation outcome is derived from the R03/R05 ruling in #11775, independent of the implementation."
+        },
+        "alternate_subject_exclusion": {
+          "status": "established",
+          "evidence": "The fixture binds the exact controller and route; another route's recording cannot satisfy the test."
+        }
+      }
+    }
+  ],
+  "old_paths": [
+    {
+      "seam": "old_title_body_heuristic",
+      "disposition": "compatibility_projection"
+    }
+  ],
+  "obligations": {
+    "spec_ledger_ids": [
+      {
+        "ref": ".spec/11775-controller-spec/acceptance.md",
+        "identity": "#11774 checked disposition@06a6af4f0"
+      }
+    ],
+    "fixture_expectation_manifests": [
+      {
+        "ref": "fixtures/issue_controller_leaf/api_recordings.v1.json",
+        "identity": "sha256:5f2a"
+      }
+    ],
+    "tests_mutations": [
+      {
+        "ref": "xtask issue_controller_leaf focused tests",
+        "identity": "cargo test -p xtask --bin xtask issue_controller_leaf --locked@c44e0d1b7"
+      }
+    ],
+    "generated_artifacts": [
+      {
+        "ref": "docs/policy/NON_RUST_INVENTORY.md",
+        "identity": "second-run no-diff@c44e0d1b7"
+      }
+    ],
+    "docs_projections": [
+      {
+        "ref": "docs/agents/ISSUE_CONTROLLERS.md",
+        "identity": "docs check@c44e0d1b7"
+      }
+    ],
+    "change_fragments": []
+  },
+  "roles": [
+    {
+      "role": "builder_self_review",
+      "required": true,
+      "obligation": "The builder states the composed proposition and falsifiers before independent review."
+    },
+    {
+      "role": "adversarial_challenger",
+      "required": true,
+      "obligation": "An independent challenger attempts the false-positive-controller, registry-substitution, and dry-run-becomes-live escapes."
+    },
+    {
+      "role": "specialist",
+      "required": true,
+      "obligation": "A GitHub-surface specialist challenges API pagination/permission failure handling and expected-old-state preservation."
+    },
+    {
+      "role": "evidence_worker",
+      "required": false,
+      "obligation": "Bounded evidence workers may fetch recorded API fixtures; they never review or mutate."
+    }
+  ],
+  "lifecycle": {
+    "graceful_cleanup_claimed": false
+  }
+}
