@@ -333,6 +333,18 @@ with_platform("Windows", function()
   rejects(util.path_to_uri, "\\\\server", "invalid_unc", "host-only UNC path")
   rejects(util.path_to_uri, "\\\\server\\", "invalid_unc",
     "host-only UNC path with separator")
+
+  -- Bare separators after the authority name no share (#11165 review).
+  rejects(util.uri_to_path, "file://server//", "invalid_unc",
+    "authority plus bare separators")
+
+  -- localhost is the local machine in file URI space; a \\localhost\...
+  -- UNC would produce an identity this authority reads back as a drive-less
+  -- local path, so the producer refuses it symmetrically (#11165 review).
+  rejects(util.path_to_uri, "\\\\localhost\\share\\x.pl", "invalid_unc",
+    "localhost UNC alias")
+  rejects(util.path_to_uri, "//LOCALHOST/share/x", "invalid_unc",
+    "localhost UNC alias, forward slashes")
 end)
 
 -- ---------------------------------------------------------------------------

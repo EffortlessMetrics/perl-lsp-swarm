@@ -297,11 +297,14 @@ function util.uri_to_path(uri)
 
   if PLATFORM == "Windows" then
     if is_unc_source then
-      if path:sub(1, 1) ~= "/" or #path < 2 then
-        -- A UNC target needs at least one share segment.
+      -- Mirror the producer grammar (#11165 review): a UNC target needs a
+      -- non-empty share segment; authority plus bare separators
+      -- ("file://server//") is not one.
+      local share_path = path:gsub("^/+", "")
+      if share_path == "" or not share_path:match("[^/]") then
         return nil, "invalid_unc"
       end
-      return "\\\\" .. authority .. path:gsub("/", "\\"), nil
+      return "\\\\" .. authority .. "\\" .. share_path:gsub("/", "\\"), nil
     end
     local drive = path:match("^/([%a]):")
     if not drive then
@@ -362,6 +365,13 @@ function util.path_to_uri(path)
       if not unc:match("^[^/]+/[^/]") then
         -- \\server alone (with or without a dangling separator) names no
         -- share; a UNC target needs host plus share components.
+        return nil, "invalid_unc"
+      end
+      -- Symmetric with uri_to_path (#11165 review): `localhost` authority is
+      -- the local machine in file URI space, so a \\localhost\... UNC would
+      -- produce an identity this same authority reads back as a drive-less
+      -- local path. Refuse instead of emitting an unreadable form.
+      if unc:lower():match("^localhost/") then
         return nil, "invalid_unc"
       end
       uri = "file://" .. encode_path_bytes(unc)

@@ -1332,13 +1332,16 @@ function lsp.start_server(filename, project_directory)
 
         -- Start the server initialization process
         -- Local patch (#11165): initialize reports an unconvertible
-        -- workspace instead of sending a fabricated rootUri.
+        -- workspace instead of sending a fabricated rootUri. A refused
+        -- initialization unregisters the freshly started client so a later
+        -- attempt can start it again instead of skipping a dead entry.
         local initialized, init_reason = client:initialize(
           project_directory, "Lite XL", VERSION)
         if not initialized then
+          lsp.servers_running[name] = nil
           core.error(
             "[LSP] could not start %s (%s)",
-            sname,
+            name,
             tostring(init_reason or "unconvertible workspace")
           )
         end
