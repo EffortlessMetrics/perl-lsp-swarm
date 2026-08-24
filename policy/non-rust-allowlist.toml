@@ -2887,3 +2887,34 @@ covered_by = [
 created = "2026-08-24"
 review_after = "2026-09-24"
 
+[[allow]]
+id = "non-rust-train-edge-contract-schema"
+path = "schemas/train_edge_contract.v1.schema.json"
+kind = "train_contract"
+language = "json"
+surface = "tooling"
+classification = "config"
+owner = "tooling/train-graph"
+reason = "JSON Schema pinning the closed train_edge_contract.v1 shared edge and claim-profile contract (#10858); the closed vocabularies are cross-checked against pinned constants by the validator."
+covered_by = [
+  "cargo xtask check-train-edge-contract",
+  "cargo test -p xtask --bin xtask train_edge_contract --locked",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-train-edge-contract-fixtures"
+glob = "fixtures/train_edge_contract/**/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "tooling/train-graph"
+reason = "Programme-neutral fixture documents for the shared train edge contract: the ten required #10858 fixtures, the shuffled canonical-semantics control, and invalid documents each naming its expected fail-closed reason code."
+covered_by = [
+  "cargo xtask check-train-edge-contract",
+  "cargo test -p xtask --bin xtask train_edge_contract --locked",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"

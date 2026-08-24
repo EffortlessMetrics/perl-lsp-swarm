@@ -164,6 +164,7 @@ pub mod sync_release_docs;
 pub mod targeted_checks;
 pub mod test;
 pub mod test_lsp;
+pub mod train_edge_contract;
 pub mod unwired_scan;
 pub mod update_homebrew;
 pub mod update_status;
