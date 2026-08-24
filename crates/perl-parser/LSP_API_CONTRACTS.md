@@ -28,8 +28,8 @@ These contracts are enforced by tests in `tests/lsp_api_contracts.rs`.
       "willSaveWaitUntil": false
     },
     "completionProvider": {
-      "triggerCharacters": ["$", "@", "%", "->"]  // EXACT set required
-      // MUST NOT include "-" or ">" as separate triggers
+      "triggerCharacters": ["$", "@", "%", "-", ">", ":", ".", "/", "\\", "\"", "'"]
+      // Multi-character Perl operators use their single-character components.
     },
     "hoverProvider": true,
     "definitionProvider": true,
