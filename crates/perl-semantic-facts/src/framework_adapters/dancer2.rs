@@ -399,6 +399,26 @@ fn normalize_import_tokens(args: &[String]) -> Vec<String> {
         if token.is_empty() || token == "," || token == "=>" || token == "(" || token == ")" {
             continue;
         }
+        // `qw(a b c)` arrives as one parser token; expand it in place.
+        if let Some(stripped) = token.strip_prefix("qw").map(str::trim) {
+            let inner = stripped
+                .strip_prefix('(')
+                .and_then(|value| value.strip_suffix(')'))
+                .or_else(|| stripped.strip_prefix('{').and_then(|value| value.strip_suffix('}')));
+            if let Some(words) = inner {
+                tokens.extend(
+                    words
+                        .split_whitespace()
+                        .filter(|word| !word.is_empty())
+                        .map(ToString::to_string),
+                );
+                continue;
+            }
+            if stripped.is_empty() {
+                // Bare `qw` marker: following tokens are the word list.
+                continue;
+            }
+        }
         // Unwrap one level of quoting around `!keyword` pieces.
         let unquoted = token
             .strip_prefix('\'')
@@ -693,6 +713,15 @@ mod tests {
             ["dsl", "=>", "'My::DSL'"].iter().map(ToString::to_string).collect();
         let evidence = parse_dancer2_import_args(&args);
         assert_eq!(evidence.dsl, Some(DslSelection::CustomLiteral("My::DSL".to_string())));
+    }
+
+    #[test]
+    fn qw_exclusion_list_is_expanded() {
+        // The parser stores `qw(!get !post)` as one argument token.
+        let args: Vec<String> = vec!["qw(!get !post)".to_string()];
+        let evidence = parse_dancer2_import_args(&args);
+        assert_eq!(evidence.excluded_keywords, vec!["get", "post"]);
+        assert!(evidence.unmodeled_options.is_empty());
     }
 
     #[test]

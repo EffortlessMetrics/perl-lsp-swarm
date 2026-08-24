@@ -55,7 +55,9 @@ fn is_exact_dancer2_import(module: &str) -> bool {
 #[must_use]
 pub fn extract_dancer2_activation_sites(ast: &Node, file_id: FileId) -> Vec<Dancer2ActivationSite> {
     let mut sites = Vec::new();
-    let mut current_package: Option<String> = None;
+    // An unqualified file's caller package is `main` in Perl; it is the
+    // default application identity scope for script-style Dancer2 apps.
+    let mut current_package: Option<String> = Some("main".to_string());
     walk_activation_sites(ast, file_id, &mut current_package, &mut sites);
     sites
 }
@@ -84,9 +86,20 @@ fn walk_activation_sites(
             // Bare `package X;` switches the package for following statements.
             *current_package = Some(name.clone());
         }
-        NodeKind::Program { statements } | NodeKind::Block { statements } => {
+        NodeKind::Program { statements } => {
+            // File scope: a bare `package X;` persists for the rest of the file.
             for statement in statements {
                 walk_activation_sites(statement, file_id, current_package, sites);
+            }
+            return;
+        }
+        NodeKind::Block { statements } => {
+            // A lexical block scopes statement-form `package X;` declarations:
+            // walk it with a block-local copy so the enclosing package state
+            // is restored afterwards.
+            let mut block_package = current_package.clone();
+            for statement in statements {
+                walk_activation_sites(statement, file_id, &mut block_package, sites);
             }
             return;
         }
@@ -140,6 +153,32 @@ mod tests {
     #[test]
     fn dancer_v1_does_not_activate() {
         assert!(sites("use Dancer;\n").is_empty());
+    }
+
+    #[test]
+    fn unqualified_file_defaults_to_main_package() {
+        let found = sites(
+            "use Dancer2;
+get '/x' => sub { 1 };
+",
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].package.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn lexical_block_package_state_is_restored() {
+        let found = sites(
+            "package Outer; { package Inner; use Dancer2; } use Dancer2;
+",
+        );
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].package.as_deref(), Some("Inner"));
+        assert_eq!(
+            found[1].package.as_deref(),
+            Some("Outer"),
+            "inner block-scoped package must not leak past the closing brace"
+        );
     }
 
     #[test]
