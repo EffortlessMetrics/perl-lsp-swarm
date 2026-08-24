@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
@@ -171,6 +172,7 @@ function writeJsonAtomic(destination, value) {
  *     package_creation: SmokeStage,
  *     package_inventory: SmokeStage,
  *     behavioral_smoke: SmokeStage,
+ *     activation_failure_journey: SmokeStage,
  *   },
  *   instrument_failure: string | null,
  *   cleanup_failure: Record<string, string> | null,
@@ -212,6 +214,7 @@ function initialReceipt(revision) {
         reason: 'not_started',
       },
       behavioral_smoke: { status: 'not_run', reason: 'not_started' },
+      activation_failure_journey: { status: 'not_run', reason: 'not_started' },
     },
     instrument_failure: null,
     cleanup_failure: null,
@@ -220,6 +223,21 @@ function initialReceipt(revision) {
 }
 
 function shouldRunBehavioralSmoke(stages) {
+  return (
+    stages.package_creation.status === 'pass' &&
+    stages.package_inventory.behavior_safe === true &&
+    stages.package_inventory.status !== 'not_proven'
+  );
+}
+
+/**
+ * The packaged activation-failure journey (#7856) needs only a behavior-safe
+ * package: it installs the exact VSIX into its own isolated profile and drives
+ * both legs itself. It runs independently of the first-hour behavioral stage's
+ * outcome so a first-hour regression does not hide activation-recovery
+ * evidence (and vice versa).
+ */
+function shouldRunActivationFailureJourney(stages) {
   return (
     stages.package_creation.status === 'pass' &&
     stages.package_inventory.behavior_safe === true &&
@@ -238,6 +256,14 @@ function computeOverallStatus(stages, instrumentFailure = null, cleanupFailure =
     stages.package_creation.status !== 'pass' ||
     stages.package_inventory.status !== 'pass' ||
     stages.behavioral_smoke.status !== 'pass'
+  ) {
+    return 'not_proven';
+  }
+  const activationFailure = stages.activation_failure_journey;
+  if (
+    activationFailure &&
+    activationFailure.status !== 'pass' &&
+    activationFailure.status !== 'not_run'
   ) {
     return 'not_proven';
   }
@@ -560,6 +586,548 @@ function exitCodeFor(overall) {
   return overall === 'failed' ? 1 : 2;
 }
 
+const ACTIVATION_FAILURE_LEG_SCHEMA = 'vscode_activation_recovery_leg.v1';
+const ACTIVATION_FAILURE_RECEIPTS = {
+  failure: 'activation_failure_journey_failure_receipt.json',
+  retry: 'activation_failure_journey_retry_receipt.json',
+  joined: 'vscode_activation_recovery_receipt.json',
+};
+
+/**
+ * Validate both activation-failure journey child receipts against this run's
+ * exact candidate identity. A zero leg exit code is not proof by itself: the
+ * children must have written fresh, candidate-bound receipts with passing
+ * verdicts, exactly like the first-hour behavioral child.
+ *
+ * @param {{
+ *   failureReceiptFile: string,
+ *   retryReceiptFile: string,
+ *   expectedVsixSha256: string,
+ *   expectedBundledServerSha256: string,
+ *   expectedExtensionVersion: string,
+ *   readFile?: (file: string) => string,
+ *   exists?: (file: string) => boolean,
+ * }} input
+ * @returns {{ ok: boolean, violations: string[], failure: any | null, retry: any | null }}
+ */
+function validateActivationRecoveryChildReceipts({
+  failureReceiptFile,
+  retryReceiptFile,
+  expectedVsixSha256,
+  expectedBundledServerSha256,
+  expectedExtensionVersion,
+  readFile = (file) => fs.readFileSync(file, 'utf8'),
+  exists = (file) => fs.existsSync(file),
+}) {
+  const violations = [];
+  const readChild = (file, leg) => {
+    if (!exists(file)) {
+      violations.push(`the ${leg} leg did not write its journey receipt`);
+      return null;
+    }
+    try {
+      return JSON.parse(readFile(file));
+    } catch (error) {
+      violations.push(
+        `the ${leg} leg receipt was not valid JSON: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return null;
+    }
+  };
+  const failure = readChild(failureReceiptFile, 'failure');
+  const retry = readChild(retryReceiptFile, 'retry');
+  const bindChild = (receipt, leg) => {
+    if (!receipt) {
+      return;
+    }
+    if (receipt.schema_version !== ACTIVATION_FAILURE_LEG_SCHEMA) {
+      violations.push(`the ${leg} leg receipt schema is ${JSON.stringify(receipt.schema_version)}`);
+    }
+    if (receipt.leg !== leg) {
+      violations.push(`the ${leg} leg receipt records leg ${JSON.stringify(receipt.leg)}`);
+    }
+    if (receipt.verdict !== 'pass') {
+      violations.push(`the ${leg} leg verdict is ${JSON.stringify(receipt.verdict)}`);
+    }
+    const candidate = receipt.candidate || {};
+    if (candidate.vsix_sha256 !== expectedVsixSha256) {
+      violations.push(
+        `the ${leg} leg receipt VSIX digest ${JSON.stringify(candidate.vsix_sha256)} is not this run's package`,
+      );
+    }
+    if (
+      !candidate.bundled_server ||
+      candidate.bundled_server.sha256 !== expectedBundledServerSha256
+    ) {
+      violations.push(
+        `the ${leg} leg receipt bundled-server digest is not this run's staged server`,
+      );
+    }
+    if (candidate.extension_version !== expectedExtensionVersion) {
+      violations.push(
+        `the ${leg} leg receipt extension version ${JSON.stringify(candidate.extension_version)} is not the packaged version`,
+      );
+    }
+  };
+  bindChild(failure, 'failure');
+  bindChild(retry, 'retry');
+  return { ok: violations.length === 0, violations, failure, retry };
+}
+
+/**
+ * Compose the joined `vscode_activation_recovery.v1` receipt (#7856) from the
+ * two child legs and the orchestrator's own post-host-exit process scan. The
+ * verdict is fail-closed: any missing or contradictory child evidence leaves
+ * the affected row `not_proven`, and a surviving bundled-server process after
+ * the retry host exited fails the deactivation row outright.
+ *
+ * @param {{
+ *   vsixSha256: string,
+ *   extensionVersion: string,
+ *   bundledServerSha256: string,
+ *   serverSourceRevision: string | null,
+ *   repositorySha: string,
+ *   vscodeVersion: string,
+ *   workspaceFixtureSha256: string,
+ *   failure: any | null,
+ *   retry: any | null,
+ *   violations: string[],
+ *   legExitCodes: { failure: number | null, retry: number | null },
+ *   postHostExitProcesses: string[],
+ * }} input
+ */
+function composeActivationRecoveryReceipt({
+  vsixSha256,
+  extensionVersion,
+  bundledServerSha256,
+  serverSourceRevision,
+  repositorySha,
+  vscodeVersion,
+  workspaceFixtureSha256,
+  failure,
+  retry,
+  violations,
+  legExitCodes,
+  postHostExitProcesses,
+}) {
+  const failureObservations = (failure && failure.observations) || {};
+  const retryObservations = (retry && retry.observations) || {};
+  // Both legs must have exited cleanly AND written passing, bound receipts; a
+  // nonzero leg exit (runner or host teardown failure) cannot stand behind a
+  // passing verdict even when the child observations passed.
+  const legsExitedCleanly = legExitCodes.failure === 0 && legExitCodes.retry === 0;
+  const childrenBound =
+    violations.length === 0 &&
+    legsExitedCleanly &&
+    failure &&
+    retry &&
+    failure.verdict === 'pass' &&
+    retry.verdict === 'pass';
+  // An OBSERVED product failure (a child verdict of failed, or a leg that
+  // exited nonzero after writing evidence) is a failed receipt, not an
+  // unproven one; not_proven is reserved for missing or unbound evidence.
+  const observedFailure =
+    (failure && failure.verdict === 'failed') || (retry && retry.verdict === 'failed');
+
+  const countObservation = (value) => (Array.isArray(value) ? value.length : null);
+  const failureProcessesAfterDemand = countObservation(
+    failureObservations.bundled_server_processes_after_demand_window,
+  );
+  const retryRunningProcesses = countObservation(
+    retryObservations.bundled_server_processes_running,
+  );
+  const retryProcessesAfterSecondDemand = countObservation(
+    retryObservations.bundled_server_processes_after_second_demand,
+  );
+  const retryProcessesAfterStop = countObservation(
+    retryObservations.bundled_server_processes_after_stop,
+  );
+
+  // The two process observations describe the SAME resource set at two
+  // moments, not two independent sets: one surplus server process that
+  // persists across both windows is ONE duplicate, counted once (max, not
+  // sum). Unobserved counts leave the row not_proven.
+  const observedCounts = [retryRunningProcesses, retryProcessesAfterSecondDemand].map((count) =>
+    count !== null && count >= 1 ? count : null,
+  );
+  const duplicateObserved = observedCounts.every((count) => count !== null);
+  const duplicateResources = duplicateObserved ? Math.max(...observedCounts) - 1 : 0;
+
+  // A missing stop observation is missing evidence, not an observed dirty
+  // stop: it must yield not_proven, never failed.
+  const stopObserved = retryProcessesAfterStop !== null;
+  const stopClean = stopObserved && retryProcessesAfterStop === 0;
+  const hostExitClean = postHostExitProcesses.length === 0;
+  const crashBudgetEvidence =
+    Array.isArray(failureObservations.crash_budget_evidence) &&
+    failureObservations.crash_budget_evidence.length > 0;
+
+  const legRow = (child, exitCode) => {
+    if (!child) {
+      return 'not_proven';
+    }
+    if (child.verdict !== 'pass') {
+      return 'failed';
+    }
+    // The child observed passing behavior, but its leg run did not exit
+    // cleanly: an execution-integrity gap is not a product failure, so the
+    // row cannot claim a completed pass either.
+    return exitCode === 0 ? 'pass' : 'not_proven';
+  };
+  const cleanupRow = legRow(failure, legExitCodes.failure);
+  const retryRow = legRow(retry, legExitCodes.retry);
+  const deactivationRow =
+    !childrenBound || !stopObserved ? 'not_proven' : stopClean && hostExitClean ? 'pass' : 'failed';
+
+  // Derived rows: the receipt states what the children observed, not what the
+  // composer assumes. Missing evidence degrades to not_proven.
+  const evidenceComplete = childrenBound && stopObserved && crashBudgetEvidence;
+  let verdict;
+  if (observedFailure) {
+    verdict = 'failed';
+  } else if (!evidenceComplete) {
+    verdict = 'not_proven';
+  } else if (!stopClean || !hostExitClean) {
+    verdict = 'failed';
+  } else {
+    verdict = 'pass';
+  }
+
+  return {
+    schema_version: 'vscode_activation_recovery.v1',
+    receipt_kind: 'vscode_activation_recovery',
+    repository_sha: repositorySha,
+    candidate: {
+      extension_id: 'EffortlessMetrics.perl-lsp-rs',
+      extension_version: extensionVersion,
+      vsix_sha256: vsixSha256,
+      bundled_server_sha256: bundledServerSha256,
+      server_source_sha: serverSourceRevision || null,
+      vscode_version: vscodeVersion,
+      platform: process.platform,
+      architecture: process.arch,
+      workspace_fixture_sha256: workspaceFixtureSha256,
+      profile: 'one isolated shared profile across the failure and retry legs',
+      activation_schema: 'ExtensionActivationOwner/ActivationTransaction (#7854 wiring)',
+    },
+    failure: {
+      phase:
+        failure && failure.fault && failure.fault.boundary
+          ? `${failure.fault.boundary} (harness-injected pre-commit boundary)`
+          : 'not_proven',
+      terminal_state: childrenBound ? 'activation_failed' : 'not_proven',
+      process_remaining:
+        failureProcessesAfterDemand === null ? null : failureProcessesAfterDemand > 0,
+      crash_budget_consumed: childrenBound
+        ? crashBudgetEvidence
+          ? false
+          : 'not_proven'
+        : 'not_proven',
+      crash_budget_evidence: failureObservations.crash_budget_evidence || [],
+      cleanup: cleanupRow,
+    },
+    retry: {
+      activation: retryRow,
+      duplicate_resources: duplicateObserved ? duplicateResources : 'not_proven',
+      provider_smoke: retryRow,
+      server_identity:
+        retry && retry.observations && retry.observations.startup
+          ? String(retry.observations.startup.binary_resolution_source ?? 'not_proven')
+          : 'not_proven',
+    },
+    deactivation: deactivationRow,
+    legs: {
+      failure_exit_code: legExitCodes.failure,
+      retry_exit_code: legExitCodes.retry,
+      failure_receipt: failure,
+      retry_receipt: retry,
+    },
+    orchestrator_observations: {
+      post_host_exit_bundled_server_processes: postHostExitProcesses,
+    },
+    instrument_violations: violations,
+    verdict,
+  };
+}
+
+/**
+ * Orchestrator-side bundled-server process scan. Mirrors the in-host scan from
+ * journeySupport.ts but runs in plain Node after the extension host exited,
+ * proving the terminal deactivate path left no candidate server behind.
+ * Fail-closed: a nonzero scanner exit is an instrument failure, never an
+ * observation of zero processes.
+ */
+function scanBundledServerProcesses(directory) {
+  const resolved = path.resolve(directory);
+  let command;
+  let args;
+  if (process.platform === 'win32') {
+    command = 'powershell.exe';
+    args = [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      '(Get-Process -Name perllsp,perl-lsp -ErrorAction SilentlyContinue).Path',
+    ];
+  } else {
+    command = 'ps';
+    args = ['-eo', 'args='];
+  }
+  const result = spawnSync(command, args, {
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 30_000,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (result.error) {
+    throw new Error(`bundled-server process scan failed to spawn: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `bundled-server process scan exited ${result.status}: ${(result.stderr || '').slice(0, 200)}`,
+    );
+  }
+  const caseInsensitive = process.platform === 'win32' || process.platform === 'darwin';
+  const needle = caseInsensitive ? resolved.toLowerCase() : resolved;
+  return (result.stdout || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => {
+      if (line.length === 0) {
+        return false;
+      }
+      const haystack = caseInsensitive ? line.toLowerCase() : line;
+      return haystack.startsWith(needle);
+    });
+}
+
+/**
+ * Environment for one activation-failure journey leg. Both legs install the
+ * exact packaged VSIX into the SAME isolated profile; only the failure leg
+ * carries the harness fault, so the retry leg is the explicit reload path a
+ * user takes with the fault removed.
+ */
+function activationFailureLegEnv(baseEnv, leg, fault, context) {
+  const env = {
+    ...baseEnv,
+    PERL_LSP_ACTIVATION_FAILURE_SMOKE: '1',
+    PERL_LSP_ACTIVATION_FAILURE_LEG: leg,
+    PERL_LSP_PUBLISHED_EXTENSION_SOURCE: 'vsix',
+    PERL_LSP_PUBLISHED_VSIX_PATH: context.vsixPath,
+    PERL_LSP_SMOKE_WORKSPACE: context.workspacePath,
+    PERL_LSP_SMOKE_USER_DATA_DIR: context.userDataDir,
+    PERL_LSP_SMOKE_EXTENSIONS_DIR: context.extensionsDir,
+    PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot(),
+    PERL_LSP_SMOKE_SOURCE_LABEL: smokeSourceLabel(),
+    PERL_LSP_VSIX_SHA256: context.vsixSha256,
+    // PERL_LSP_CURRENT_SOURCE_SHA deliberately NOT set: it switches the
+    // published smoke into candidate-bound mode, which is Linux-only; the
+    // repository SHA rides on this orchestration receipt instead.
+    PERL_LSP_SERVER_SOURCE_SHA: context.serverSourceRevision,
+  };
+  if (fault) {
+    env.PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE = 'debugger';
+  } else {
+    delete env.PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE;
+  }
+  // This journey selects its own suite and resolves the bundled candidate;
+  // the first-hour selectors and the current-source server override must not
+  // leak into it.
+  delete env.PERL_LSP_CURRENT_SOURCE_SMOKE;
+  delete env.PERL_LSP_PACKAGED_BUNDLE_SMOKE;
+  delete env.PERL_LSP_FIRST_HOUR_SERVER_PATH;
+  delete env.PERL_LSP_CURRENT_SOURCE_SHA;
+  return env;
+}
+
+/**
+ * Run the two-leg packaged activation-failure journey (#7856) against the
+ * exact VSIX this run packaged: failure leg (fault armed), retry leg (fault
+ * removed, same installed profile — the explicit reload path), then the
+ * orchestrator's post-host-exit scan and the joined receipt.
+ */
+function runActivationFailureJourneyStage(baseEnv, revision, vsixPath, vsixSha256) {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const extensionVersion = packageJson.version;
+  const bundledServerSha256 = sha256File(serverPath);
+  const workspacePath = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'perl-lsp-activation-failure-workspace-'),
+  );
+  const profilePath = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'perl-lsp-activation-failure-profile-'),
+  );
+  const userDataDir = path.join(profilePath, 'user-data');
+  const extensionsDir = path.join(profilePath, 'extensions');
+  fs.mkdirSync(userDataDir, { recursive: true });
+  fs.mkdirSync(extensionsDir, { recursive: true });
+  const fixturePath = path.join(workspacePath, 'activation_recovery.pl');
+  fs.writeFileSync(fixturePath, 'use strict;\nuse warnings;\n\nmy $value = 42;\nprint $value;\n');
+  const platformReceiptsDir = path.join(receiptsRoot(), smokeSourceLabel(), smokePlatformLabel());
+  const failureReceiptFile = path.join(platformReceiptsDir, ACTIVATION_FAILURE_RECEIPTS.failure);
+  const retryReceiptFile = path.join(platformReceiptsDir, ACTIVATION_FAILURE_RECEIPTS.retry);
+  const joinedReceiptFile = path.join(platformReceiptsDir, ACTIVATION_FAILURE_RECEIPTS.joined);
+  // Stale receipts from an earlier run can never stand in for this run's
+  // evidence, exactly like the first-hour child receipt guard.
+  for (const stale of [failureReceiptFile, retryReceiptFile, joinedReceiptFile]) {
+    fs.rmSync(stale, { force: true });
+  }
+  const context = {
+    vsixPath,
+    vsixSha256,
+    revision,
+    serverSourceRevision,
+    workspacePath,
+    userDataDir,
+    extensionsDir,
+  };
+  const paths = {
+    failureReceiptFile,
+    retryReceiptFile,
+    joinedReceiptFile,
+    extensionVersion,
+    bundledServerSha256,
+    fixturePath,
+  };
+
+  /** @type {string | null} */
+  let cleanupFailure = null;
+  let stage;
+  try {
+    stage = runActivationFailureJourneyAttempt(baseEnv, context, paths);
+  } finally {
+    for (const directory of [workspacePath, profilePath]) {
+      try {
+        fs.rmSync(directory, { recursive: true, force: true });
+      } catch (error) {
+        cleanupFailure = error instanceof Error ? error.message : String(error);
+        process.stderr.write(
+          `[activation-failure-journey] cleanup failed for ${directory}: ${cleanupFailure}\n`,
+        );
+      }
+    }
+  }
+  // A journey whose isolated profile/workspace could not be removed is not a
+  // clean pass — the same cleanup contract the outer VSIX/server staging
+  // follows. An observed product failure stays failed; anything else that was
+  // passing becomes not_proven.
+  if (cleanupFailure && stage.status !== 'failed') {
+    return {
+      ...stage,
+      status: 'not_proven',
+      reason: `journey directories could not be cleaned: ${cleanupFailure}`,
+    };
+  }
+  return stage;
+}
+
+/**
+ * The two legs and the joined receipt, isolated from directory lifecycle so
+ * the owning stage can apply its cleanup contract to the result.
+ */
+function runActivationFailureJourneyAttempt(baseEnv, context, paths) {
+  const {
+    failureReceiptFile,
+    retryReceiptFile,
+    joinedReceiptFile,
+    extensionVersion,
+    bundledServerSha256,
+    fixturePath,
+  } = paths;
+  const revision = context.revision;
+  const vsixSha256 = context.vsixSha256;
+  const extensionsDir = context.extensionsDir;
+  /** @type {{ failure: number | null, retry: number | null }} */
+  const legExitCodes = { failure: null, retry: null };
+  const failureResult = runNpm(
+    ['run', 'test:published'],
+    activationFailureLegEnv(baseEnv, 'failure', true, context),
+  );
+  legExitCodes.failure = failureResult.error ? null : (failureResult.status ?? null);
+  if (failureResult.error) {
+    return {
+      status: 'not_proven',
+      exit_codes: legExitCodes,
+      reason: `failure leg could not run: ${failureResult.error.message}`,
+    };
+  }
+  const retryResult = runNpm(
+    ['run', 'test:published'],
+    activationFailureLegEnv(baseEnv, 'retry', false, context),
+  );
+  legExitCodes.retry = retryResult.error ? null : (retryResult.status ?? null);
+  if (retryResult.error) {
+    return {
+      status: 'not_proven',
+      reason: `retry leg could not run: ${retryResult.error.message}`,
+      exit_codes: legExitCodes,
+    };
+  }
+
+  let postHostExitProcesses;
+  try {
+    postHostExitProcesses = scanBundledServerProcesses(extensionsDir);
+  } catch (error) {
+    return {
+      status: 'not_proven',
+      exit_codes: legExitCodes,
+      reason: `post-host-exit process scan failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+
+  const validation = validateActivationRecoveryChildReceipts({
+    failureReceiptFile,
+    retryReceiptFile,
+    expectedVsixSha256: vsixSha256,
+    expectedBundledServerSha256: bundledServerSha256,
+    expectedExtensionVersion: extensionVersion,
+  });
+  const joined = composeActivationRecoveryReceipt({
+    vsixSha256,
+    extensionVersion,
+    bundledServerSha256,
+    serverSourceRevision,
+    repositorySha: revision,
+    vscodeVersion: (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'stable',
+    workspaceFixtureSha256: sha256File(fixturePath),
+    failure: validation.failure,
+    retry: validation.retry,
+    violations: validation.violations,
+    legExitCodes,
+    postHostExitProcesses,
+  });
+  writeJsonAtomic(joinedReceiptFile, joined);
+
+  if (legExitCodes.failure !== 0 || legExitCodes.retry !== 0) {
+    // Aligned with the composer: a leg that did not exit cleanly is an
+    // execution-integrity gap (not_proven), not an observed product failure.
+    return {
+      status: 'not_proven',
+      exit_codes: legExitCodes,
+      reason: 'activation_failure_journey_leg_did_not_exit_cleanly',
+      recovery_verdict: joined.verdict,
+    };
+  }
+  if (!validation.ok) {
+    return {
+      status: 'not_proven',
+      exit_codes: legExitCodes,
+      reason: 'journey child receipts did not bind this run',
+      violations: validation.violations,
+      recovery_verdict: joined.verdict,
+    };
+  }
+  return {
+    status: joined.verdict === 'pass' ? 'pass' : 'not_proven',
+    exit_codes: legExitCodes,
+    recovery_verdict: joined.verdict,
+    receipt: path.relative(repoRoot, joinedReceiptFile).replaceAll('\\', '/'),
+  };
+}
+
 function finalizeSmokeRun(
   destination,
   receipt,
@@ -823,6 +1391,30 @@ function main() {
                 }`,
         };
       }
+
+      // The packaged activation-failure journey (#7856): two legs against the
+      // exact VSIX this run packaged, joined into one candidate-bound
+      // vscode_activation_recovery.v1 receipt.
+      if (shouldRunActivationFailureJourney(receipt.stages)) {
+        receipt.stages.activation_failure_journey = runActivationFailureJourneyStage(
+          packageEnv,
+          revision,
+          vsixPath,
+          receipt.vsix.sha256,
+        );
+      } else {
+        receipt.stages.activation_failure_journey = {
+          status: 'not_run',
+          reason:
+            receipt.stages.package_creation.status !== 'pass'
+              ? 'package_creation_not_passed'
+              : `inventory_${
+                  receipt.stages.package_inventory.transition_state ||
+                  receipt.stages.package_inventory.classification ||
+                  'not_proven'
+                }`,
+        };
+      }
       persistReceipt(destination, receipt);
     } catch (error) {
       failInstrument(error);
@@ -838,14 +1430,20 @@ if (require.main === module) {
 }
 
 module.exports = {
+  ACTIVATION_FAILURE_RECEIPTS,
+  activationFailureLegEnv,
   bundleTargetForPlatform,
   childReceiptPath,
+  composeActivationRecoveryReceipt,
   computeOverallStatus,
   finalizeSmokeRun,
   initialReceipt,
   interpretTransitionResult,
   receiptPath,
+  scanBundledServerProcesses,
+  shouldRunActivationFailureJourney,
   shouldRunBehavioralSmoke,
+  validateActivationRecoveryChildReceipts,
   validateChildSmokeReceipt,
   stageServerForPackage,
   writeJsonAtomic,

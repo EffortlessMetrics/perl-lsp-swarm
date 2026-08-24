@@ -41,9 +41,12 @@ VERSION is the string `version_unavailable' when the resolved library is a
 byte-compiled or compressed form: installed builds commonly load
 `eglot.elc' while shipping the source only as `eglot.el.gz', and a bytecode
 file carries no reliable header to read.  The digest stays mandatory in
-every form: it is the exact-file identity the run plan cross-checks."
+every form: it is the exact-file identity the run plan cross-checks, so the
+file is read literally — the decoded `insert-file-contents' performs
+character decoding and line-ending translation, which would silently change
+the digest relative to the raw bytes the plan verifies."
   (with-temp-buffer
-    (insert-file-contents library)
+    (insert-file-contents-literally library)
     (let ((digest (secure-hash 'sha256 (buffer-string))))
       (let ((version (condition-case nil
                          (let ((header (lm-version)))

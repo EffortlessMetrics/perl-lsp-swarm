@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11525 |
+| Total tracked files | 11526 |
 | Rust-family files | 3507 |
-| Non-Rust files | 8018 |
-| Allowlisted | 5745 |
+| Non-Rust files | 8019 |
+| Allowlisted | 5746 |
 | Unclassified | 2273 |
 
 ## Non-Rust files by category
@@ -20,8 +20,8 @@
 | documentation | 2663 |
 | generated | 2 |
 | production | 315 |
-| test | 1884 |
-| tooling | 477 |
+| test | 1883 |
+| tooling | 479 |
 | unclassified | 2273 |
 
 ## Unclassified files
@@ -3372,7 +3372,6 @@
 | `clients/lite-xl/tests/json_decode_test.lua` | test | `non-rust-litexl-json-decode-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_frame_test.lua` | test | `non-rust-litexl-server-frame-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_logging_test.lua` | test | `non-rust-litexl-server-logging-tests` | editor/lite-xl |
-| `clients/lite-xl/tests/util_file_uri_test.lua` | test | `non-rust-litexl-file-uri-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_show_document_test.lua` | test | `non-rust-litexl-show-document-tests` | editor/lite-xl |
 | `clients/lite-xl/upstream/diagnostics.lua` | production | `non-rust-litexl-diagnostics-store` | editor/lite-xl |
 | `clients/lite-xl/upstream/init.lua` | production | `non-rust-litexl-init-plugin` | editor/lite-xl |
@@ -6250,6 +6249,8 @@
 | `scripts/test-lsp-cancellation.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-clients/eglot-bundled-config.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-clients/eglot-bundled.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/emacs-clients/eglot-released-config.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/emacs-clients/eglot-released.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-host-driver.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |

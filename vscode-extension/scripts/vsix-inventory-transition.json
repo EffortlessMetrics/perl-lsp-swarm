@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 11983,
-  "reason": "#11983 removes three withdrawn secondary formatting feature IDs from package.json; on the current main baseline this changes package.json 58529->58406 and total bytes 1692126->1692003. The archive file set is unchanged, policy violations remain empty, and installed behavior is covered independently by the current-source smoke.",
-  "base_baseline_file_sha256": "18a4172fb4a69c99af4fded614d8fc8d080affd0ce80288430473bcbf379907f",
-  "candidate_baseline_file_sha256": "a4f9360c51a5d263c45628c1b4ec2da9e6861a7a4d8912aa55e7e66e57dbc6b5",
-  "base_inventory_sha256": "ca68d145838a0012fdc7e08c39018bd91c40cceb2081c243d5814f8d9f64558b",
-  "candidate_inventory_sha256": "d70d8236a4363008fab2965595c2add0b79a5161c705017283141a44d9fe1521"
+  "owner_issue": 7856,
+  "reason": "#7856 adds the harness-gated packaged activation-failure seam to activate() (out/extension.js 1516689->1519372 archive-measured on top of the #11983 package.json withdrawal) and the packaged cleanup/retry journey plus its changelog entry (changelog.md 22224->23221 after the vsce markdown processor). No file added, removed, or loosened; total recomputed ->1695683.",
+  "base_baseline_file_sha256": "a4f9360c51a5d263c45628c1b4ec2da9e6861a7a4d8912aa55e7e66e57dbc6b5",
+  "candidate_baseline_file_sha256": "4a662d41a6f80249245b526e89b6b706d1b847195c16231fe0d303cbd44a5011",
+  "base_inventory_sha256": "d70d8236a4363008fab2965595c2add0b79a5161c705017283141a44d9fe1521",
+  "candidate_inventory_sha256": "3087c97c983e74fbc5d814d8739e985dbacc26a54e7ad32c43f1e3f9dae7c19e"
 }
