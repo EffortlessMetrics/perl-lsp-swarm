@@ -2668,3 +2668,28 @@ created = "2026-08-23"
 review_after = "2026-09-23"
 expires = "2026-11-23"
 removal_criteria = "EffortlessMetrics/ripr#1429 is fixed so diff-scoped analysis connects sibling cfg(test) modules and tests/ harnesses to production owners, or targeted mutation replaces this advisory path for target contracts; then delete this entry and rerun the enforce-new-ripr gate. Remove or narrow it immediately if a future receipt reports any class outside no_static_path / reachable_unrevealed / weakly_gripped in this file, or an actionable seam the listed oracles demonstrably do not observe; that condition is automatic do-not-merge unless a separate evidence-backed review justifies the disposition."
+
+# -----------------------------------------------------------------------------
+# Reachability operation contract (#11553, PR #12049): declaration-line
+# probes on private-field contract types. Campaign-root ruling of
+# 2026-08-24 accepted the reviewed-suppression option after the lane's
+# decisive falsification: the external seam proof constructs
+# ReachabilityOperationOutcome::ProductFailure { stage, cause, work_receipt }
+# literally and asserts on it, yet the probe on that exact work_receipt
+# field remains no_static_path (run 32670894487) — direct literal
+# construction does not resolve the probe class. Precedent: same-class
+# entries above (const_data_no_static_path, target-matrix, #1962), all
+# tracking EffortlessMetrics/ripr#1429.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-reachability-contract-declarations"
+kind = "declaration_line_no_static_path"
+paths = ["crates/perl-semantic-facts/src/reachability_operation/**"]
+classification = ["no_static_path"]
+owner = "reachability-contract-lane"
+issue = "#11553"
+reason = "PR #12049 (#11553) adds the reachability operation contract as private-field types with canonical constructors (unforgeable receipts/outcomes are the issue's own evidence law), and ripr 0.9.x reports 52 no_static_path probes on their declaration lines — field_construction on private struct fields (ReachabilityWorkReceipt, ReachabilityOperationOutcome payloads, ReachabilityCompleteResultRef, ReachabilityExecutionProfile, tracker state), call_deletion on enum payload declarations, and return_value on the tracker-only from_parts parameter list — all reach:no 'No static test path'. The falsification is decisive: the external seam proof constructs ReachabilityOperationOutcome::ProductFailure { stage, cause, work_receipt } literally and asserts on it, yet the probe on that exact work_receipt field stays no_static_path (run 32670894487), and the passing precedent (#6772) resolved only pub-primitive-typed fields constructed by struct literal in tests. Every executable seam of the contract is asserted by 27 inline falsifiers plus 6 external-consumer seam-proof tests (subject-to-publication walk, all terminal classes, fail-closed budget/profile/work-honesty validation, partial-vs-empty separation, serialization determinism). Remove when EffortlessMetrics/ripr#1429 resolves declaration-line probes for private non-primitive-typed fields via constructor-call paths, or when a reviewed alternative lands."
+created = "2026-08-24"
+review_after = "2026-09-24"
+expires = "2026-10-24"
+removal_criteria = "EffortlessMetrics/ripr#1429 fixed upstream so declaration-line probes resolve through constructor-call paths, OR a reviewed design decision lands an alternative (pub-field DTO redesign was explicitly rejected by the 2026-08-24 campaign ruling because forgeable receipts defeat #11553's evidence law), then delete this entry and rerun the enforce-new-ripr gate. HONEST SCOPE NOTE: like every sibling entry, the matcher (read_ripr_suppression_rules) is PATH-scoped — the classification field records intent but is not enforced, so this covers all diff-scoped ripr findings in the reachability_operation module, not only the no_static_path set. Any future reachable_unrevealed or other blocking class introduced in this module would be masked for this window; tighten by narrowing the path or by the ripr#1429 fix."
