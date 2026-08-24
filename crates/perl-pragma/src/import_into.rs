@@ -85,5 +85,7 @@ fn is_package_name(value: &str) -> bool {
     !value.is_empty()
         && value
             .split("::")
-            .all(|part| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_'))
+            .all(|part| {
+                !part.is_empty() && part.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            })
 }
