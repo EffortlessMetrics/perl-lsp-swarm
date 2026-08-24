@@ -226,7 +226,7 @@
           "minItems": 1,
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1 },
-          "description": "Required proposition IDs. A nonblocking_sidecar target entering this set is invalid."
+          "description": "Required proposition IDs. A nonblocking_sidecar source (the sidecar proposition) entering this set is invalid; the core target it points at stays a legitimate requirement."
         },
         "allowed_terminal_limitation_states": {
           "type": "array",
@@ -270,7 +270,29 @@
         "evidence": { "$ref": "#/$defs/track_state" },
         "proposition": { "$ref": "#/$defs/track_state" },
         "external": { "$ref": "#/$defs/track_state" }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "proposition": {
+                "properties": { "terminal": { "const": true } },
+                "required": ["terminal"]
+              }
+            },
+            "required": ["proposition"]
+          },
+          "then": {
+            "properties": {
+              "proposition": {
+                "required": ["derives_from"],
+                "properties": { "derives_from": { "const": "verified_proposition" } }
+              }
+            }
+          }
+        }
+      ],
+      "description": "Terminal proposition success must declare independently verified provenance; undeclared provenance is not proven. The implementation/evidence/external currentness tracks stay independent and do not declare fan-in provenance."
     },
     "external_stage_state": {
       "type": "object",

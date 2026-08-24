@@ -100,6 +100,20 @@ const EDGE_KEYS: &[&str] = &[
 
 const TRACK_KEYS: &[&str] = &["terminal", "reason_class", "derives_from"];
 
+/// Closed root field set of a contract document.
+const ROOT_KEYS: &[&str] = &[
+    "schema",
+    "schema_version",
+    "contract_id",
+    "programme",
+    "authorities",
+    "external_subjects",
+    "propositions",
+    "edges",
+    "claim_profiles",
+    "projection",
+];
+
 /// One deterministic validation violation with a stable reason code.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Violation {
@@ -183,6 +197,10 @@ fn validate_document(doc: &Value) -> Vec<Violation> {
             "contract_id must be a non-empty string".to_string(),
         ));
     }
+    // Root-level unknown fields fail closed too: the durable contract never
+    // embeds mutable GitHub/check/receipt state at any depth (#10858 P2
+    // review finding).
+    check_unknown_keys(root, ROOT_KEYS, "document", &mut violations);
     let Some(programme) = as_str_map(root.get("programme").unwrap_or(&Value::Null)) else {
         violations
             .push(Violation::new("missing_programme", "programme object is required".to_string()));
@@ -451,7 +469,11 @@ fn validate_document(doc: &Value) -> Vec<Violation> {
                 }
             }
             "nonblocking_sidecar" => {
-                sidecar_targets.insert(target.to_string());
+                // The sidecar proposition is the edge source (the adjacent
+                // work); the target is the core it cannot block or satisfy.
+                // Core requirement sets must exclude the sidecar source, not
+                // the core target.
+                sidecar_targets.insert(source.to_string());
             }
             _ => {}
         }
@@ -623,6 +645,10 @@ fn validate_document(doc: &Value) -> Vec<Violation> {
             .and_then(Value::as_array)
             .map(|values| values.iter().filter_map(as_str_map).collect())
             .unwrap_or_default();
+        // Duplicate projection identities would make first-match lookups
+        // order-significant and could flip eligibility on a reorder; they
+        // fail validation instead (#10858 P2 review finding).
+        let mut seen_state_ids: BTreeSet<String> = BTreeSet::new();
         for state in &states {
             check_unknown_keys(
                 state,
@@ -631,6 +657,14 @@ fn validate_document(doc: &Value) -> Vec<Violation> {
                 &mut violations,
             );
             let id = string_field(state, "id").unwrap_or("?");
+            if let Some(id) = string_field(state, "id")
+                && !seen_state_ids.insert(id.to_string())
+            {
+                violations.push(Violation::new(
+                    "duplicate_projection_state",
+                    format!("projection: duplicate proposition state id {id}"),
+                ));
+            }
             if let Some(id) = string_field(state, "id")
                 && !proposition_ids.contains(id)
             {
@@ -666,19 +700,39 @@ fn validate_document(doc: &Value) -> Vec<Violation> {
                         format!("projection {id}.{track_name}: unknown reason class {reason}"),
                     ));
                 }
-                if let Some(derives) = string_field(track, "derives_from") {
-                    if !DERIVES_FROM.contains(&derives) {
-                        violations.push(Violation::new(
-                            "unknown_derives_from",
-                            format!("projection {id}.{track_name}: unknown derives_from {derives}"),
-                        ));
-                    } else if terminal && derives != "verified_proposition" {
-                        violations.push(Violation::new(
-                            "manufactured_child_success",
-                            format!(
-                                "projection {id}.{track_name}: terminal state derived from {derives} instead of an independently verified proposition"
-                            ),
-                        ));
+                match string_field(track, "derives_from") {
+                    Some(derives) => {
+                        if !DERIVES_FROM.contains(&derives) {
+                            violations.push(Violation::new(
+                                "unknown_derives_from",
+                                format!(
+                                    "projection {id}.{track_name}: unknown derives_from {derives}"
+                                ),
+                            ));
+                        } else if terminal && derives != "verified_proposition" {
+                            violations.push(Violation::new(
+                                "manufactured_child_success",
+                                format!(
+                                    "projection {id}.{track_name}: terminal state derived from {derives} instead of an independently verified proposition"
+                                ),
+                            ));
+                        }
+                    }
+                    None => {
+                        // Terminal proposition success without declared
+                        // provenance evades the manufactured-success control:
+                        // unverifiable success is not proven (#10858 P1
+                        // review finding). Currentness tracks (implementation,
+                        // evidence, external) stay independent and do not
+                        // declare fan-in provenance.
+                        if track_name == "proposition" && terminal {
+                            violations.push(Violation::new(
+                                "missing_derives_from",
+                                format!(
+                                    "projection {id}.{track_name}: terminal proposition success requires derives_from provenance"
+                                ),
+                            ));
+                        }
                     }
                 }
             }
@@ -688,6 +742,7 @@ fn validate_document(doc: &Value) -> Vec<Violation> {
             .and_then(Value::as_array)
             .map(|values| values.iter().filter_map(as_str_map).collect())
             .unwrap_or_default();
+        let mut seen_stage_subjects: BTreeSet<String> = BTreeSet::new();
         for stage_state in &stage_states {
             check_unknown_keys(
                 stage_state,
@@ -696,6 +751,14 @@ fn validate_document(doc: &Value) -> Vec<Violation> {
                 &mut violations,
             );
             let subject = string_field(stage_state, "subject").unwrap_or("?");
+            if string_field(stage_state, "subject").is_some()
+                && !seen_stage_subjects.insert(subject.to_string())
+            {
+                violations.push(Violation::new(
+                    "duplicate_external_stage_state",
+                    format!("projection: duplicate external stage subject {subject}"),
+                ));
+            }
             if string_field(stage_state, "subject").is_some()
                 && !external_subject_ids.contains(subject)
             {
@@ -984,9 +1047,10 @@ fn profile_eligibility(doc: &Value, profile_id: &str) -> Option<Eligibility> {
                 let verified = string_field(track, "derives_from")
                     .map(|derives| derives == "verified_proposition");
                 // A requirement passes only when its proposition track is
-                // terminally satisfied and, when provenance is declared,
-                // independently verified.
-                let passes = terminal == Some(true) && verified != Some(false);
+                // terminally satisfied by an independently verified
+                // proposition; undeclared provenance cannot pass (#10858 P1
+                // review finding: missing evidence stays not_proven).
+                let passes = terminal == Some(true) && verified == Some(true);
                 if !passes {
                     let reason = string_field(track, "reason_class").unwrap_or("not_proven");
                     reasons.insert(requirement.clone(), reason.to_string());
@@ -1805,6 +1869,127 @@ mod tests {
         let violations = validate_document(&invalid);
         let codes = violation_codes(&violations);
         assert!(codes.contains(&"sidecar_in_core_requirement_set"), "{codes:?}");
+        Ok(())
+    }
+
+    // The sidecar control binds the sidecar SOURCE (the adjacent-work
+    // proposition), never the core target it points at: a profile requiring
+    // only the core validates cleanly.
+    #[test]
+    fn sidecar_control_binds_the_source_not_the_core_target() -> TestResult {
+        let doc = load_json(
+            &project_root()?.join(FIXTURE_DIR).join("invalid").join("sidecar_in_core_spine.json"),
+        )?;
+        let mut core_only = doc.clone();
+        let profile = core_only
+            .get_mut("claim_profiles")
+            .and_then(Value::as_array_mut)
+            .unwrap()
+            .first_mut()
+            .unwrap()
+            .as_object_mut()
+            .unwrap();
+        profile.insert(
+            "required".to_string(),
+            Value::Array(vec![Value::String("P_lsp_core".to_string())]),
+        );
+        assert!(
+            validate_document(&core_only).is_empty(),
+            "a core-only profile must not be rejected for pointing at a sidecar's core target: {:?}",
+            violation_codes(&validate_document(&core_only))
+        );
+        // And the sidecar source alone is still rejected.
+        let mut sidecar_only = doc.clone();
+        let profile = sidecar_only
+            .get_mut("claim_profiles")
+            .and_then(Value::as_array_mut)
+            .unwrap()
+            .first_mut()
+            .unwrap()
+            .as_object_mut()
+            .unwrap();
+        profile.insert(
+            "required".to_string(),
+            Value::Array(vec![Value::String("P_dap_sidecar".to_string())]),
+        );
+        let violations = validate_document(&sidecar_only);
+        let codes = violation_codes(&violations);
+        assert!(codes.contains(&"sidecar_in_core_requirement_set"), "{codes:?}");
+        Ok(())
+    }
+
+    // Terminal proposition success without declared provenance is not
+    // proven: validation fails and eligibility never passes.
+    #[test]
+    fn terminal_proposition_without_provenance_is_not_proven() -> TestResult {
+        let doc = fixture("neovim_examples.v1.json")?;
+        let mut mutated = doc.clone();
+        let states = mutated
+            .get_mut("projection")
+            .and_then(Value::as_object_mut)
+            .and_then(|projection| projection.get_mut("proposition_states"))
+            .and_then(Value::as_array_mut)
+            .unwrap();
+        let full_document = states
+            .iter_mut()
+            .find(|state| state.get("id").and_then(Value::as_str) == Some("P_full_document_v0_18"))
+            .unwrap()
+            .as_object_mut()
+            .unwrap();
+        full_document
+            .get_mut("proposition")
+            .and_then(Value::as_object_mut)
+            .unwrap()
+            .remove("derives_from");
+        let violations = validate_document(&mutated);
+        let codes = violation_codes(&violations);
+        assert!(codes.contains(&"missing_derives_from"), "{codes:?}");
+        // The bounded core profile loses eligibility: missing evidence stays
+        // not_proven instead of passing on undeclared provenance.
+        let eligibility = eligibility(&mutated, "neovim_bounded_core");
+        assert!(!eligibility.eligible);
+        assert_eq!(
+            eligibility.reasons.get("P_full_document_v0_18"),
+            Some(&"not_proven".to_string())
+        );
+        Ok(())
+    }
+
+    // Duplicate projection identities fail validation instead of making
+    // first-match lookups order-significant.
+    #[test]
+    fn duplicate_projection_states_fail() -> TestResult {
+        let doc = fixture("neovim_examples.v1.json")?;
+        let mut duplicated = doc.clone();
+        let states = duplicated
+            .get_mut("projection")
+            .and_then(Value::as_object_mut)
+            .and_then(|projection| projection.get_mut("proposition_states"))
+            .and_then(Value::as_array_mut)
+            .unwrap();
+        let first = states.first().cloned().unwrap();
+        states.push(first);
+        let violations = validate_document(&duplicated);
+        let codes = violation_codes(&violations);
+        assert!(codes.contains(&"duplicate_projection_state"), "{codes:?}");
+        // Eligibility is unaffected by the duplicate row's position.
+        let eligibility_before = eligibility(&doc, "neovim_bounded_core");
+        let eligibility_after = eligibility(&duplicated, "neovim_bounded_core");
+        assert_eq!(eligibility_before.eligible, eligibility_after.eligible);
+        assert_eq!(eligibility_before.reasons, eligibility_after.reasons);
+        Ok(())
+    }
+
+    // Root-level mutable state is rejected just like nested embedding.
+    #[test]
+    fn root_level_mutable_state_is_rejected() -> TestResult {
+        let doc = fixture("neovim_examples.v1.json")?;
+        let mut mutated = doc.clone();
+        let root = mutated.as_object_mut().unwrap();
+        root.insert("ci_status".to_string(), Value::String("success".to_string()));
+        let violations = validate_document(&mutated);
+        let codes = violation_codes(&violations);
+        assert!(codes.contains(&"mutable_state_embedded"), "{codes:?}");
         Ok(())
     }
 
