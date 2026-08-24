@@ -1081,7 +1081,17 @@ function lsp.start_server(filename, project_directory)
             if valid_items then
               for i = 1, #items do
                 local item = items[i]
-                if type(item) ~= "table" or json.is_null(item) then
+                -- One ConfigurationItem per slot: object only, optional
+                -- string section/scopeUri. Non-object elements and
+                -- non-string scopeUri values are malformed here rather than
+                -- crashing later in section lookup or URI conversion.
+                if
+                  not json.is_object(item)
+                  or (
+                    item.scopeUri ~= nil
+                    and type(item.scopeUri) ~= "string"
+                  )
+                then
                   valid_items = false
                   break
                 end

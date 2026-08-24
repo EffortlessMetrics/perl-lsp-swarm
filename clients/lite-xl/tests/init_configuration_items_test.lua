@@ -408,6 +408,21 @@ do
   ok(#r == 1 and r[1].result == nil and type(r[1].error) == "table"
     and r[1].error.code == -32602,
     "malformed items answer error only, never a partial result")
+
+  -- nested_array_item_invalid_params: items are ConfigurationItems (objects);
+  -- an embedded array is malformed, not a silent null slot.
+  r = deliver(client, "workspace/configuration", 11, items_of('[["x"]]'))
+  ok(#r == 1 and r[1].result == nil and type(r[1].error) == "table"
+    and r[1].error.code == -32602,
+    "array-shaped item answers InvalidParams instead of becoming a null slot")
+
+  -- scopeUri_non_string_invalid_params: numeric scopeUri must fail honestly
+  -- at the validation boundary instead of crashing URI conversion later.
+  r = deliver(client, "workspace/configuration", 12,
+    items_of('[{"section":"perl.alpha","scopeUri":5}]'))
+  ok(#r == 1 and r[1].result == nil and type(r[1].error) == "table"
+    and r[1].error.code == -32602,
+    "non-string scopeUri answers InvalidParams without reaching URI conversion")
 end
 
 print(string.format("%d passed, %d failed", passed, failed))
