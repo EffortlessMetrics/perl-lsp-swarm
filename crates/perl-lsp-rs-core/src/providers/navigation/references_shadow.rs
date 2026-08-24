@@ -413,7 +413,7 @@ fn references_live_source_backed_quality_note(
     let ambiguous_fallbacks = usize::from(!occurrences.is_empty() && live_occurrences == 0);
 
     format!(
-        "references live source-backed proof: live_occurrences={live_occurrences}; live_exact_occurrences={live_exact_occurrences}; live_import_export_occurrences={live_import_export_occurrences}; legacy_fallbacks={legacy_fallbacks}; compiler_fact_candidates={}; ambiguous_fallbacks={ambiguous_fallbacks}; import_export_candidates={import_export_candidates}; import_export_fallbacks={import_export_fallbacks}; stale_fact_blockers=0; generated_no_source_fallbacks={generated_no_source_fallbacks}; dynamic_boundary_blockers={dynamic_boundary_blockers}; low_confidence_fallbacks={low_confidence_fallbacks}; partial live exact/imported references cutover",
+        "references live source-backed proof: live_occurrences={live_occurrences}; live_exact_occurrences={live_exact_occurrences}; live_import_export_occurrences={live_import_export_occurrences}; legacy_fallbacks={legacy_fallbacks}; source_backed_candidates={}; ambiguous_fallbacks={ambiguous_fallbacks}; import_export_candidates={import_export_candidates}; import_export_fallbacks={import_export_fallbacks}; stale_fact_blockers=0; generated_no_source_fallbacks={generated_no_source_fallbacks}; dynamic_boundary_blockers={dynamic_boundary_blockers}; low_confidence_fallbacks={low_confidence_fallbacks}; partial live exact/imported references cutover",
         occurrences.len()
     )
 }
@@ -444,7 +444,7 @@ fn references_shadow_quality_note(
         .count();
 
     format!(
-        "references shadow proof: legacy_candidates={}; compiler_fact_candidates={}; answer_candidates={answer_count}; rank_delta={}; noise_delta={noise_delta}; generated_labels={generated_label_count}; dynamic_boundary_blockers={dynamic_boundary_blockers}; stale_fact_blockers=0; blocked_candidates={dynamic_boundary_blockers}; no live navigation behavior change",
+        "references shadow proof: legacy_candidates={}; source_backed_candidates={}; answer_candidates={answer_count}; rank_delta={}; noise_delta={noise_delta}; generated_labels={generated_label_count}; dynamic_boundary_blockers={dynamic_boundary_blockers}; stale_fact_blockers=0; blocked_candidates={dynamic_boundary_blockers}; no live navigation behavior change",
         legacy_locations.len(),
         occurrences.len(),
         signed_count_delta(legacy_locations.len(), answer_count)
@@ -1180,7 +1180,7 @@ mod tests {
         assert!(!result.legacy_result.is_empty(), "legacy workspace references should resolve");
         assert_eq!(result.receipt.new_result.match_count, 4);
         let note = result.receipt.notes.join(" ");
-        assert!(note.contains("compiler_fact_candidates=4"));
+        assert!(note.contains("source_backed_candidates=4"));
         assert!(note.contains("answer_candidates=2"));
         assert!(note.contains("noise_delta=1"));
         assert!(note.contains("generated_labels=1"));

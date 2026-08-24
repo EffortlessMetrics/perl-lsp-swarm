@@ -1880,7 +1880,7 @@ use warnings;
     ///   categorically outside the promoted lexical slice —
     ///   `references.rs::may_use_source_backed_references` only allows
     ///   variable symbols through when `include_declaration == false`
-    ///   (`!symbol_is_variable || (ENABLE_PIR_A_LEXICAL_REFERENCES_LIVE && !include_declaration)`).
+    ///   (`!symbol_is_variable || (ENABLE_SEMANTIC_SOURCE_BACKED_REFERENCES_LIVE && !include_declaration)`).
     ///   Non-activation for this request shape is a policy exclusion, not a
     ///   gap — it says nothing about entity-linking or declaration-shape
     ///   correctness. (Bareword/sub symbols are unaffected: `symbol_is_variable`
@@ -3347,5 +3347,73 @@ use warnings;
                  regardless of lexical_positive_control_evidence={lexical_positive_control_evidence}"
             );
         }
+    }
+}
+
+/// #12102 recurrence guard: a references route may not report a compiler or
+/// PIR producer identity unless an actual generation-owned compiler
+/// contribution participates in the result lineage (#9284/#8669).
+///
+/// The current live route answers through the `WorkspaceIndex` /
+/// `SemanticQueries` source-backed semantic path. Producer labels stronger
+/// than that (`compiler`, `PIR`) create a false before-state for the #12075
+/// cutover, so this guard fails while only nominal attribution exists.
+///
+/// The single sanctioned unlock is the presence of the real contribution
+/// envelope type in the route's lineage; a fixture proving that unlock stays
+/// representable lives right below.
+mod producer_truth_guard {
+    /// Source of the production references route under guard.
+    const LIVE_ROUTE_SOURCE: &str = include_str!("references.rs");
+
+    /// Type marker for the actual compiler lexical contribution envelope.
+    /// When #9284/#8669 land, joining this type through the route is what
+    /// legitimately re-enables compiler/PIR producer labels.
+    const COMPILER_LINEAGE_MARKER: &str = "FilePirLexicalContribution";
+
+    /// Nominal producer labels forbidden without real contribution lineage:
+    /// structured receipt keys, feature/route identifiers, and debug/user
+    /// strings used as evidence.
+    const NOMINAL_PRODUCER_LABELS: &[&str] = &[
+        "\"compiler_receipt\"",
+        "ENABLE_PIR",
+        "PIR_A_LEXICAL_REFERENCES",
+        "live compiler source-backed",
+        "source-backed compiler facts",
+    ];
+
+    fn nominal_labels_without_lineage(source: &str) -> Vec<&'static str> {
+        if source.contains(COMPILER_LINEAGE_MARKER) {
+            return Vec::new();
+        }
+        NOMINAL_PRODUCER_LABELS.iter().copied().filter(|label| source.contains(label)).collect()
+    }
+
+    #[test]
+    fn live_references_route_reports_no_stronger_producer_than_its_semantic_source() {
+        let violations = nominal_labels_without_lineage(LIVE_ROUTE_SOURCE);
+        assert!(
+            violations.is_empty(),
+            "references route carries nominal compiler/PIR producer labels \
+             {violations:?} without an actual {COMPILER_LINEAGE_MARKER} contribution \
+             lineage (#12102); restore truthful semantic naming or join a real \
+             compiler contribution"
+        );
+    }
+
+    #[test]
+    fn guard_unlocks_when_an_actual_compiler_envelope_joins_the_route() {
+        // Required-falsifier companion (#12102 proof 6): a fixture with a REAL
+        // contribution envelope must remain representable — the guard bans
+        // nominal attribution, not compiler participation itself.
+        let with_real_lineage = "fn join(c: FilePirLexicalContribution) {\n\
+             tracing::debug!(\"References: returned live compiler facts\");\n\
+             let _receipt = json!({\"compiler_receipt\": c});\n}";
+        let violations = nominal_labels_without_lineage(with_real_lineage);
+        assert!(
+            violations.is_empty(),
+            "the guard must permit genuine compiler contribution lineage; \
+             unexpectedly flagged {violations:?}"
+        );
     }
 }

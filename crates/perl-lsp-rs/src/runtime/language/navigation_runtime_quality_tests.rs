@@ -121,10 +121,17 @@ fn location_count(value: Option<&Value>) -> usize {
     }
 }
 
-fn compiler_receipt(receipt: &Value) -> Result<&Value, Box<dyn std::error::Error>> {
-    let value = receipt.get("compiler_receipt").ok_or("missing compiler_receipt")?;
+fn runtime_proof_receipt<'a>(
+    receipt: &'a Value,
+    receipt_key: &str,
+    expected_producer: &str,
+) -> Result<&'a Value, Box<dyn std::error::Error>> {
+    let value = receipt.get(receipt_key).ok_or_else(|| format!("missing {receipt_key}"))?;
     if value.is_null() {
-        return Err(format!("expected compiler receipt, got runtime receipt: {receipt}").into());
+        return Err(format!(
+            "expected {expected_producer} receipt, got runtime receipt: {receipt}"
+        )
+        .into());
     }
     Ok(value)
 }
@@ -351,7 +358,7 @@ fn navigation_runtime_quality_definition_receipt_compares_live_and_compiler_path
     let runtime_receipt = server
         .test_definition_runtime_quality_receipt(Some(params))?
         .ok_or("missing definition runtime receipt")?;
-    let compiler = compiler_receipt(&runtime_receipt)?;
+    let compiler = runtime_proof_receipt(&runtime_receipt, "compiler_receipt", "compiler")?;
     let notes = receipt_notes(compiler)?;
 
     assert_eq!(runtime_receipt.get("provider").and_then(Value::as_str), Some("definition"));
@@ -420,7 +427,7 @@ fn navigation_runtime_quality_definition_receipt_compares_live_and_compiler_path
 }
 
 #[test]
-fn navigation_runtime_quality_references_receipt_compares_live_and_compiler_paths()
+fn navigation_runtime_quality_references_receipt_compares_live_and_source_backed_paths()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = create_server();
     open_live_references_workspace(&server)?;
@@ -440,8 +447,9 @@ fn navigation_runtime_quality_references_receipt_compares_live_and_compiler_path
     let runtime_receipt = server
         .test_references_runtime_quality_receipt(Some(params))?
         .ok_or("missing references runtime receipt")?;
-    let compiler = compiler_receipt(&runtime_receipt)?;
-    let notes = receipt_notes(compiler)?;
+    let source_backed =
+        runtime_proof_receipt(&runtime_receipt, "source_backed_receipt", "semantic source-backed")?;
+    let notes = receipt_notes(source_backed)?;
 
     assert_eq!(runtime_receipt.get("provider").and_then(Value::as_str), Some("references"));
     assert_eq!(
@@ -473,16 +481,16 @@ fn navigation_runtime_quality_references_receipt_compares_live_and_compiler_path
         request_receipt.get("claim_boundary").and_then(Value::as_str),
         Some("records existing references response only; no broader live references cutover")
     );
-    assert_eq!(compiler.get("query").and_then(Value::as_str), Some("find_references"));
+    assert_eq!(source_backed.get("query").and_then(Value::as_str), Some("find_references"));
     assert!(
-        compiler
+        source_backed
             .get("new_result")
             .and_then(|r| r.get("match_count"))
             .and_then(Value::as_u64)
             .unwrap_or(0)
             > 0
     );
-    assert!(trace_count(compiler)? > 0, "references receipt must carry fact-source traces");
+    assert!(trace_count(source_backed)? > 0, "references receipt must carry fact-source traces");
     assert!(
         notes.iter().any(|note| note.contains("references runtime proof"))
             && notes
@@ -520,8 +528,9 @@ fn references_source_backed_tier_used_when_include_declaration_true()
     let runtime_receipt = server
         .test_references_runtime_quality_receipt(Some(params))?
         .ok_or("missing references runtime receipt")?;
-    let compiler = compiler_receipt(&runtime_receipt)?;
-    let notes = receipt_notes(compiler)?;
+    let source_backed =
+        runtime_proof_receipt(&runtime_receipt, "source_backed_receipt", "semantic source-backed")?;
+    let notes = receipt_notes(source_backed)?;
 
     // The live source-backed tier must have served this request.
     assert_eq!(
@@ -540,7 +549,10 @@ fn references_source_backed_tier_used_when_include_declaration_true()
         location_count(live_result.as_ref()) >= 1,
         "expected at least one location from source-backed tier with includeDeclaration=true"
     );
-    assert!(trace_count(compiler)? > 0, "compiler receipt must carry fact-source traces");
+    assert!(
+        trace_count(source_backed)? > 0,
+        "semantic source-backed receipt must carry fact-source traces"
+    );
     assert!(
         notes.iter().any(|note| note.contains("references runtime proof"))
             && notes.iter().any(|note| note.contains("includeDeclaration=true")),
