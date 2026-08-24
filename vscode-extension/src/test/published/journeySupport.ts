@@ -233,25 +233,40 @@ export function assertProviderSucceeded(label: string, result: ReceiptValue): vo
 
 /**
  * Observable command-registry truth for the activation-failure journey
- * (#7856): the mandatory command registrations a committed activation owns,
- * and the retained support surfaces that must survive a rolled-back attempt
- * (#7854 wiring contract).
+ * (#7856): the retained support surfaces that must survive a rolled-back
+ * attempt (#7854 wiring contract), plus the internal commands activation
+ * registers without a manifest contribution.
  */
-export const MANDATORY_COMMAND_IDS = [
-  'perl-lsp.showOutput',
-  'perl-lsp.reinstall',
-  'perl-lsp.restart',
-  'perl-lsp.showBinaryIdentity',
-  'perl-lsp.runHealthCheck',
-  'perl-lsp.runAllTests',
-] as const;
-
 export const RETAINED_SUPPORT_COMMAND_IDS = [
   'perl-lsp.showWhatsNew',
   'perl-lsp.openConfigurationGuide',
   'perl-lsp.checkForUpdate',
   'perl-lsp.reportIssue',
 ] as const;
+
+/** Activation-registered commands that carry no `contributes.commands` entry. */
+export const INTERNAL_ACTIVATION_COMMAND_IDS = ['perl-lsp.showBinaryIdentity'] as const;
+
+/**
+ * Every command id a committed activation is expected to register, derived
+ * from the installed manifest so a newly contributed command joins the check
+ * automatically: all contributed commands plus the known internal ones, minus
+ * the retained support surfaces. The failure leg additionally proves the
+ * COMPLETE claim — nothing beyond the retained set survives rollback — through
+ * a before/after registry diff, so an unlisted or future registration cannot
+ * slip past the sampled rows.
+ */
+export function mandatoryActivationCommandIds(packageJSON: {
+  contributes?: { commands?: Array<{ command?: unknown }> };
+}): string[] {
+  const contributed = (packageJSON.contributes?.commands ?? [])
+    .map((entry) => entry.command)
+    .filter((command): command is string => typeof command === 'string' && command.length > 0);
+  const retained = new Set<string>(RETAINED_SUPPORT_COMMAND_IDS);
+  return [...new Set([...contributed, ...INTERNAL_ACTIVATION_COMMAND_IDS])].filter(
+    (command) => !retained.has(command),
+  );
+}
 
 const PROCESS_SCAN_TIMEOUT_MS = 20_000;
 const PROCESS_SCAN_OUTPUT_MAX_BYTES = 4 * 1024 * 1024;

@@ -714,12 +714,22 @@ function composeActivationRecoveryReceipt({
 }) {
   const failureObservations = (failure && failure.observations) || {};
   const retryObservations = (retry && retry.observations) || {};
+  // Both legs must have exited cleanly AND written passing, bound receipts; a
+  // nonzero leg exit (runner or host teardown failure) cannot stand behind a
+  // passing verdict even when the child observations passed.
+  const legsExitedCleanly = legExitCodes.failure === 0 && legExitCodes.retry === 0;
   const childrenBound =
     violations.length === 0 &&
+    legsExitedCleanly &&
     failure &&
     retry &&
     failure.verdict === 'pass' &&
     retry.verdict === 'pass';
+  // An OBSERVED product failure (a child verdict of failed, or a leg that
+  // exited nonzero after writing evidence) is a failed receipt, not an
+  // unproven one; not_proven is reserved for missing or unbound evidence.
+  const observedFailure =
+    (failure && failure.verdict === 'failed') || (retry && retry.verdict === 'failed');
 
   const countObservation = (value) => (Array.isArray(value) ? value.length : null);
   const failureProcessesAfterDemand = countObservation(
@@ -748,8 +758,20 @@ function composeActivationRecoveryReceipt({
   const stopClean = retryProcessesAfterStop === 0;
   const hostExitClean = postHostExitProcesses.length === 0;
 
-  const cleanupRow = !failure ? 'not_proven' : failure.verdict === 'pass' ? 'pass' : 'failed';
-  const retryRow = !retry ? 'not_proven' : retry.verdict === 'pass' ? 'pass' : 'failed';
+  const legRow = (child, exitCode) => {
+    if (!child) {
+      return 'not_proven';
+    }
+    if (child.verdict !== 'pass') {
+      return 'failed';
+    }
+    // The child observed passing behavior, but its leg run did not exit
+    // cleanly: an execution-integrity gap is not a product failure, so the
+    // row cannot claim a completed pass either.
+    return exitCode === 0 ? 'pass' : 'not_proven';
+  };
+  const cleanupRow = legRow(failure, legExitCodes.failure);
+  const retryRow = legRow(retry, legExitCodes.retry);
   const deactivationRow = !childrenBound
     ? 'not_proven'
     : stopClean && hostExitClean
@@ -757,7 +779,9 @@ function composeActivationRecoveryReceipt({
       : 'failed';
 
   let verdict;
-  if (!childrenBound) {
+  if (observedFailure) {
+    verdict = 'failed';
+  } else if (!childrenBound) {
     verdict = 'not_proven';
   } else if (!stopClean || !hostExitClean) {
     verdict = 'failed';
@@ -942,95 +966,20 @@ function runActivationFailureJourneyStage(baseEnv, revision, vsixPath, vsixSha25
     userDataDir,
     extensionsDir,
   };
-  /** @type {{ failure: number | null, retry: number | null }} */
-  const legExitCodes = { failure: null, retry: null };
+  const paths = {
+    failureReceiptFile,
+    retryReceiptFile,
+    joinedReceiptFile,
+    extensionVersion,
+    bundledServerSha256,
+    fixturePath,
+  };
+
   /** @type {string | null} */
   let cleanupFailure = null;
-
+  let stage;
   try {
-    const failureResult = runNpm(
-      ['run', 'test:published'],
-      activationFailureLegEnv(baseEnv, 'failure', true, context),
-    );
-    legExitCodes.failure = failureResult.error ? null : (failureResult.status ?? null);
-    if (failureResult.error) {
-      return {
-        status: 'not_proven',
-        reason: `failure leg could not run: ${failureResult.error.message}`,
-      };
-    }
-    const retryResult = runNpm(
-      ['run', 'test:published'],
-      activationFailureLegEnv(baseEnv, 'retry', false, context),
-    );
-    legExitCodes.retry = retryResult.error ? null : (retryResult.status ?? null);
-    if (retryResult.error) {
-      return {
-        status: 'not_proven',
-        reason: `retry leg could not run: ${retryResult.error.message}`,
-        exit_codes: legExitCodes,
-      };
-    }
-
-    let postHostExitProcesses;
-    try {
-      postHostExitProcesses = scanBundledServerProcesses(extensionsDir);
-    } catch (error) {
-      return {
-        status: 'not_proven',
-        exit_codes: legExitCodes,
-        reason: `post-host-exit process scan failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      };
-    }
-
-    const validation = validateActivationRecoveryChildReceipts({
-      failureReceiptFile,
-      retryReceiptFile,
-      expectedVsixSha256: vsixSha256,
-      expectedBundledServerSha256: bundledServerSha256,
-      expectedExtensionVersion: extensionVersion,
-    });
-    const joined = composeActivationRecoveryReceipt({
-      vsixSha256,
-      extensionVersion,
-      bundledServerSha256,
-      serverSourceRevision,
-      repositorySha: revision,
-      vscodeVersion: (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'stable',
-      workspaceFixtureSha256: sha256File(fixturePath),
-      failure: validation.failure,
-      retry: validation.retry,
-      violations: validation.violations,
-      legExitCodes,
-      postHostExitProcesses,
-    });
-    writeJsonAtomic(joinedReceiptFile, joined);
-
-    if (legExitCodes.failure !== 0 || legExitCodes.retry !== 0) {
-      return {
-        status: 'failed',
-        exit_codes: legExitCodes,
-        reason: 'activation_failure_journey_leg_failed',
-        recovery_verdict: joined.verdict,
-      };
-    }
-    if (!validation.ok) {
-      return {
-        status: 'not_proven',
-        exit_codes: legExitCodes,
-        reason: 'journey child receipts did not bind this run',
-        violations: validation.violations,
-        recovery_verdict: joined.verdict,
-      };
-    }
-    return {
-      status: joined.verdict === 'pass' ? 'pass' : 'not_proven',
-      exit_codes: legExitCodes,
-      recovery_verdict: joined.verdict,
-      receipt: path.relative(repoRoot, joinedReceiptFile).replaceAll('\\', '/'),
-    };
+    stage = runActivationFailureJourneyAttempt(baseEnv, context, paths);
   } finally {
     for (const directory of [workspacePath, profilePath]) {
       try {
@@ -1042,12 +991,123 @@ function runActivationFailureJourneyStage(baseEnv, revision, vsixPath, vsixSha25
         );
       }
     }
-    if (cleanupFailure) {
-      process.stderr.write(
-        '[activation-failure-journey] stage directories could not be fully removed; inspect the temp profile\n',
-      );
-    }
   }
+  // A journey whose isolated profile/workspace could not be removed is not a
+  // clean pass — the same cleanup contract the outer VSIX/server staging
+  // follows. An observed product failure stays failed; anything else that was
+  // passing becomes not_proven.
+  if (cleanupFailure && stage.status !== 'failed') {
+    return {
+      ...stage,
+      status: 'not_proven',
+      reason: `journey directories could not be cleaned: ${cleanupFailure}`,
+    };
+  }
+  return stage;
+}
+
+/**
+ * The two legs and the joined receipt, isolated from directory lifecycle so
+ * the owning stage can apply its cleanup contract to the result.
+ */
+function runActivationFailureJourneyAttempt(baseEnv, context, paths) {
+  const {
+    failureReceiptFile,
+    retryReceiptFile,
+    joinedReceiptFile,
+    extensionVersion,
+    bundledServerSha256,
+    fixturePath,
+  } = paths;
+  const revision = context.revision;
+  const vsixPath = context.vsixPath;
+  const vsixSha256 = context.vsixSha256;
+  const extensionsDir = context.extensionsDir;
+  /** @type {{ failure: number | null, retry: number | null }} */
+  const legExitCodes = { failure: null, retry: null };
+  const failureResult = runNpm(
+    ['run', 'test:published'],
+    activationFailureLegEnv(baseEnv, 'failure', true, context),
+  );
+  legExitCodes.failure = failureResult.error ? null : (failureResult.status ?? null);
+  if (failureResult.error) {
+    return {
+      status: 'not_proven',
+      reason: `failure leg could not run: ${failureResult.error.message}`,
+    };
+  }
+  const retryResult = runNpm(
+    ['run', 'test:published'],
+    activationFailureLegEnv(baseEnv, 'retry', false, context),
+  );
+  legExitCodes.retry = retryResult.error ? null : (retryResult.status ?? null);
+  if (retryResult.error) {
+    return {
+      status: 'not_proven',
+      reason: `retry leg could not run: ${retryResult.error.message}`,
+      exit_codes: legExitCodes,
+    };
+  }
+
+  let postHostExitProcesses;
+  try {
+    postHostExitProcesses = scanBundledServerProcesses(extensionsDir);
+  } catch (error) {
+    return {
+      status: 'not_proven',
+      exit_codes: legExitCodes,
+      reason: `post-host-exit process scan failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+
+  const validation = validateActivationRecoveryChildReceipts({
+    failureReceiptFile,
+    retryReceiptFile,
+    expectedVsixSha256: vsixSha256,
+    expectedBundledServerSha256: bundledServerSha256,
+    expectedExtensionVersion: extensionVersion,
+  });
+  const joined = composeActivationRecoveryReceipt({
+    vsixSha256,
+    extensionVersion,
+    bundledServerSha256,
+    serverSourceRevision,
+    repositorySha: revision,
+    vscodeVersion: (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'stable',
+    workspaceFixtureSha256: sha256File(fixturePath),
+    failure: validation.failure,
+    retry: validation.retry,
+    violations: validation.violations,
+    legExitCodes,
+    postHostExitProcesses,
+  });
+  writeJsonAtomic(joinedReceiptFile, joined);
+
+  if (legExitCodes.failure !== 0 || legExitCodes.retry !== 0) {
+    return {
+      status: 'failed',
+      exit_codes: legExitCodes,
+      reason: 'activation_failure_journey_leg_failed',
+      recovery_verdict: joined.verdict,
+    };
+  }
+  if (!validation.ok) {
+    return {
+      status: 'not_proven',
+      exit_codes: legExitCodes,
+      reason: 'journey child receipts did not bind this run',
+      violations: validation.violations,
+      recovery_verdict: joined.verdict,
+    };
+  }
+  return {
+    status: joined.verdict === 'pass' ? 'pass' : 'not_proven',
+    exit_codes: legExitCodes,
+    recovery_verdict: joined.verdict,
+    receipt: path.relative(repoRoot, joinedReceiptFile).replaceAll('\\', '/'),
+  };
 }
 
 function finalizeSmokeRun(

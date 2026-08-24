@@ -727,3 +727,50 @@ void test('the joined activation recovery receipt is fail-closed', () => {
   });
   assert.equal(unobservedDuplicates.retry.duplicate_resources, 'not_proven');
 });
+
+void test('a nonzero leg exit code cannot stand behind a passing joined verdict', () => {
+  const baseInput = {
+    vsixSha256: 'v'.repeat(64),
+    extensionVersion: '0.17.0',
+    bundledServerSha256: 's'.repeat(64),
+    serverSourceRevision: 'r'.repeat(40),
+    repositorySha: 'r'.repeat(40),
+    vscodeVersion: 'stable',
+    workspaceFixtureSha256: 'f'.repeat(64),
+    violations: [],
+  };
+  const failureChild = recoveryChild('failure', {
+    observations: {
+      bundled_server_processes_after_failure: [],
+      bundled_server_processes_after_demand_window: [],
+    },
+  });
+  const retryChild = recoveryChild('retry', {
+    observations: {
+      bundled_server_processes_running: ['<installed>/bin/perllsp.exe'],
+      bundled_server_processes_after_second_demand: ['<installed>/bin/perllsp.exe'],
+      bundled_server_processes_after_stop: [],
+    },
+  });
+
+  const teardownFailure = composeActivationRecoveryReceipt({
+    ...baseInput,
+    failure: failureChild,
+    retry: retryChild,
+    legExitCodes: { failure: 0, retry: 1 },
+    postHostExitProcesses: [],
+  });
+  assert.equal(teardownFailure.verdict, 'not_proven');
+  assert.equal(teardownFailure.failure.cleanup, 'pass');
+  assert.equal(teardownFailure.retry.activation, 'not_proven');
+
+  const observedProductFailure = composeActivationRecoveryReceipt({
+    ...baseInput,
+    failure: recoveryChild('failure', { verdict: 'failed' }),
+    retry: retryChild,
+    legExitCodes: { failure: 0, retry: 0 },
+    postHostExitProcesses: [],
+  });
+  assert.equal(observedProductFailure.verdict, 'failed');
+  assert.equal(observedProductFailure.failure.cleanup, 'failed');
+});

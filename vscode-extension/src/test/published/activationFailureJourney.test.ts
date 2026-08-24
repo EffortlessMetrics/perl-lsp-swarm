@@ -3,11 +3,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
-  MANDATORY_COMMAND_IDS,
   RETAINED_SUPPORT_COMMAND_IDS,
   assertProviderSucceeded,
   bundledBinaryPath,
   bundledServerVersion,
+  mandatoryActivationCommandIds,
   pathsEquivalent,
   providerPosition,
   providerResult,
@@ -187,6 +187,12 @@ suite('Packaged activation-failure cleanup and retry (#7856)', function () {
       // assertions: activation is language-demand driven and no Perl document
       // has been opened in this fresh host.
       assert.equal(extension.isActive, false, 'extension must not be active before the journey');
+      // Baseline command registry BEFORE the attempt: the complete rollback
+      // check is a before/after diff, so no registration — contributed,
+      // internal, or added in the future — can slip past a sampled list.
+      const commandsBefore = new Set(await vscode.commands.getCommands(true));
+      const mandatoryExpected = mandatoryActivationCommandIds(extension.packageJSON);
+      observations.mandatory_commands_expected = mandatoryExpected.length;
 
       // The mandatory pre-commit failure: activation rejects through the exact
       // path a real mid-activation exception takes.
@@ -215,13 +221,31 @@ suite('Packaged activation-failure cleanup and retry (#7856)', function () {
       // Truthful failed state in the real host: exactly the retained support
       // commands survive; every mandatory command registration was rolled back.
       const commands = new Set(await vscode.commands.getCommands(true));
-      const mandatoryPresent = MANDATORY_COMMAND_IDS.filter((id) => commands.has(id));
+      const retained = new Set<string>(RETAINED_SUPPORT_COMMAND_IDS);
+      // The diff proves the COMPLETE claim: anything the failed attempt left
+      // registered beyond the pre-activation baseline and the retained set is
+      // a leak, whether or not this file predicted its id. Host-reserved
+      // `workbench.*` ids are excluded: the workbench registers them lazily on
+      // its own UI state (for example the output view of the retained output
+      // channel), and they are not extension-owned registrations.
+      const isHostReserved = (id: string) => id.startsWith('workbench.');
+      const leakedCommands = [...commands].filter(
+        (id) => !commandsBefore.has(id) && !retained.has(id) && !isHostReserved(id),
+      );
+      const mandatoryPresent = mandatoryExpected.filter((id) => commands.has(id));
       const retainedPresent = RETAINED_SUPPORT_COMMAND_IDS.filter((id) => commands.has(id));
+      observations.commands_leaked_beyond_retained = leakedCommands;
       observations.mandatory_commands_remaining = mandatoryPresent;
       observations.retained_support_commands_present = retainedPresent;
-      if (mandatoryPresent.length > 0) {
+      if (leakedCommands.length > 0) {
         blockers.push({
           label: 'mandatory_commands_rolled_back',
+          result: { leaked: leakedCommands },
+        });
+      }
+      if (mandatoryPresent.length > 0) {
+        blockers.push({
+          label: 'expected_mandatory_commands_absent',
           result: { remaining: mandatoryPresent },
         });
       }
@@ -255,14 +279,14 @@ suite('Packaged activation-failure cleanup and retry (#7856)', function () {
       observations.demand_watch_window_ms = DEMAND_WATCH_WINDOW_MS;
       observations.bundled_server_processes_after_demand_window = processesAfterDemand;
       const commandsAfterDemand = new Set(await vscode.commands.getCommands(true));
-      const mandatoryAfterDemand = MANDATORY_COMMAND_IDS.filter((id) =>
-        commandsAfterDemand.has(id),
+      const leakedAfterDemand = [...commandsAfterDemand].filter(
+        (id) => !commandsBefore.has(id) && !retained.has(id) && !isHostReserved(id),
       );
-      observations.mandatory_commands_after_demand_window = mandatoryAfterDemand;
-      if (processesAfterDemand.length > 0 || mandatoryAfterDemand.length > 0) {
+      observations.commands_leaked_after_demand_window = leakedAfterDemand;
+      if (processesAfterDemand.length > 0 || leakedAfterDemand.length > 0) {
         blockers.push({
           label: 'failed_attempt_cannot_start_a_server',
-          result: { processes: processesAfterDemand, mandatory_commands: mandatoryAfterDemand },
+          result: { processes: processesAfterDemand, leaked_commands: leakedAfterDemand },
         });
       }
 
@@ -439,7 +463,9 @@ suite('Packaged activation-failure cleanup and retry (#7856)', function () {
         });
       }
       const commands = new Set(await vscode.commands.getCommands(true));
-      const mandatoryMissing = MANDATORY_COMMAND_IDS.filter((id) => !commands.has(id));
+      const mandatoryExpected = mandatoryActivationCommandIds(extension.packageJSON);
+      const mandatoryMissing = mandatoryExpected.filter((id) => !commands.has(id));
+      observations.mandatory_commands_expected = mandatoryExpected.length;
       observations.mandatory_commands_missing = mandatoryMissing;
       if (mandatoryMissing.length > 0) {
         blockers.push({ label: 'mandatory_commands_registered', result: mandatoryMissing });
@@ -469,6 +495,15 @@ suite('Packaged activation-failure cleanup and retry (#7856)', function () {
       await new Promise((resolve) => setTimeout(resolve, DEMAND_WATCH_WINDOW_MS));
       const processesAfterStopWindow = await scanProcessesUnderDirectory(binDirectory);
       observations.bundled_server_processes_after_stop_window = processesAfterStopWindow;
+      // No watchdog, timer, or stale callback may resurrect the server after
+      // the recoverable stop without new demand — the same authority the
+      // issue's retry/watchdog row forbids, observed on the committed runtime.
+      if (processesAfterStopWindow.length > 0) {
+        blockers.push({
+          label: 'stop_window_resurrection',
+          result: processesAfterStopWindow,
+        });
+      }
 
       const receipt: ReceiptValue = {
         schema_version: 'vscode_activation_recovery_leg.v1',
