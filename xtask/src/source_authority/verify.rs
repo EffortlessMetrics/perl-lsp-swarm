@@ -1,6 +1,6 @@
 use super::model::{
-    EXTERNAL_WRITE_POLICY, PacketInput, SOURCE_AUTHORITY_SCHEMA_VERSION, Sensitivity,
-    SourceAuthorityClass, SourceAuthorityManifest, normalized_digest,
+    EXTERNAL_WRITE_POLICY, PacketInput, RulingBinding, SOURCE_AUTHORITY_SCHEMA_VERSION,
+    Sensitivity, SourceAuthorityClass, SourceAuthorityManifest, normalized_digest,
 };
 use color_eyre::eyre::{WrapErr, eyre};
 use serde::Serialize;
@@ -65,7 +65,7 @@ pub fn verify_manifest(
         });
     }
 
-    verify_input_table(manifest, &packet_root, &mut violations);
+    verify_input_table(manifest, &packet_root, repo_root, &mut violations);
     verify_generator_surface(manifest, repo_root, &mut violations)?;
 
     let verdict = if violations.is_empty() { "clean" } else { "blocked" };
@@ -81,10 +81,12 @@ pub fn verify_manifest(
 fn verify_input_table(
     manifest: &SourceAuthorityManifest,
     packet_root: &Path,
+    repo_root: &Path,
     violations: &mut Vec<Violation>,
 ) {
     let mut by_id = BTreeMap::new();
     let mut by_subject = BTreeMap::new();
+    let mut invalid_subjects = BTreeSet::new();
     for input in &manifest.inputs {
         if by_id.insert(input.id.clone(), input).is_some() {
             violations.push(Violation {
@@ -95,27 +97,36 @@ fn verify_input_table(
         }
         match normalized_subject_path(&input.subject) {
             Ok(subject) => {
-                if by_subject.insert(subject.clone(), input.id.clone()).is_some() {
+                let previous = by_subject.insert(subject.clone(), input.id.clone());
+                if let Some(existing_id) = previous {
                     violations.push(Violation {
                         code: "duplicate_subject".into(),
                         subject,
                         detail: format!(
-                            "input {} binds a subject another input already classifies",
-                            input.id
+                            "input {} binds a subject that input {} already classifies",
+                            input.id, existing_id
                         ),
                     });
                 }
             }
-            Err(detail) => violations.push(Violation {
-                code: "invalid_subject".into(),
-                subject: input.subject.clone(),
-                detail,
-            }),
+            Err(detail) => {
+                invalid_subjects.insert(input.subject.clone());
+                violations.push(Violation {
+                    code: "invalid_subject".into(),
+                    subject: input.subject.clone(),
+                    detail,
+                });
+            }
         }
     }
 
-    // Every declared subject must exist and be current.
+    // Every declared subject must exist and be current. A subject whose path
+    // failed normalization is never read at all: traversal or absolute paths
+    // stay rejected as declarations instead of being dereferenced.
     for input in &manifest.inputs {
+        if invalid_subjects.contains(&input.subject) {
+            continue;
+        }
         let subject_path = packet_root.join(normalize_separators(&input.subject));
         match fs::read(&subject_path) {
             Ok(raw) => match normalized_digest(&raw) {
@@ -142,7 +153,7 @@ fn verify_input_table(
             }),
         }
 
-        verify_semantics(input, violations);
+        verify_semantics(input, violations, repo_root);
         if let Some(superseded_by) = &input.superseded_by {
             if !manifest.inputs.iter().any(|other| &other.id == superseded_by) {
                 violations.push(Violation {
@@ -214,7 +225,7 @@ fn verify_input_table(
     }
 }
 
-fn verify_semantics(input: &PacketInput, violations: &mut Vec<Violation>) {
+fn verify_semantics(input: &PacketInput, violations: &mut Vec<Violation>, repo_root: &Path) {
     if input.instruction_allowed != input.authority.may_direct_work() {
         violations.push(Violation {
             code: "instruction_flag_mismatch".into(),
@@ -249,13 +260,11 @@ fn verify_semantics(input: &PacketInput, violations: &mut Vec<Violation>) {
     if input.authority.may_direct_work() {
         match &input.ruling_binding {
             Some(binding) => {
-                if binding.ruling_id.trim().is_empty() || binding.subject_path.trim().is_empty() {
+                if let Some(detail) = ruling_binding_failure(binding, repo_root) {
                     violations.push(Violation {
                         code: "directive_without_binding".into(),
                         subject: input.subject.clone(),
-                        detail: "directive-classified input needs a non-empty ruling identity and \
-                                 governed repository subject"
-                            .into(),
+                        detail,
                     });
                 }
             }
@@ -293,6 +302,54 @@ fn verify_semantics(input: &PacketInput, violations: &mut Vec<Violation>) {
     }
 }
 
+/// Validate that a directive input's provenance is checkable against the
+/// repository: a shaped ruling identity plus an existing governed subject.
+/// Returns the rejection detail, or `None` when provenance holds.
+fn ruling_binding_failure(binding: &RulingBinding, repo_root: &Path) -> Option<String> {
+    let ruling_id = binding.ruling_id.trim();
+    if ruling_id.is_empty() {
+        return Some("directive input records no ruling identity".into());
+    }
+    let reference_shape = "issue#<n>, pr#<n>, or <repo-relative path>#<anchor>";
+    let identity_ok = if let Some(number) =
+        ruling_id.strip_prefix("issue#").or_else(|| ruling_id.strip_prefix("pr#"))
+    {
+        !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+    } else {
+        match ruling_id.split_once('#') {
+            Some((path_part, anchor)) => {
+                !anchor.trim().is_empty()
+                    && normalized_subject_path(path_part).ok().is_some_and(|relative| {
+                        repo_root.join(normalize_separators(&relative)).is_file()
+                    })
+            }
+            None => false,
+        }
+    };
+    if !identity_ok {
+        return Some(format!(
+            "ruling identity {ruling_id:?} is not checkable; use {reference_shape} with an \
+             existing repository file for path references"
+        ));
+    }
+
+    let governed = normalized_subject_path(&binding.subject_path)
+        .map_err(|detail| format!("governed subject is not a usable relative path: {detail}"));
+    match governed {
+        Err(detail) => Some(detail),
+        Ok(relative) => {
+            if repo_root.join(normalize_separators(&relative)).exists() {
+                None
+            } else {
+                Some(format!(
+                    "governed subject {relative:?} does not exist in the repository; directive \
+                     authority must bind a real subject"
+                ))
+            }
+        }
+    }
+}
+
 fn verify_generator_surface(
     manifest: &SourceAuthorityManifest,
     repo_root: &Path,
@@ -303,8 +360,19 @@ fn verify_generator_surface(
 
     let mut declared = BTreeSet::new();
     for generator in &manifest.generators {
-        let path = repo_root.join(normalize_separators(&generator.path));
         declared.insert(generator.path.replace('\\', "/"));
+        // A generator declaration is itself a path the manifest author
+        // controls, so it gets the same normalization rejection as subjects:
+        // traversal or absolute paths are refused instead of dereferenced.
+        if let Err(detail) = normalized_subject_path(&generator.path) {
+            violations.push(Violation {
+                code: "invalid_generator_path".into(),
+                subject: generator.path.clone(),
+                detail,
+            });
+            continue;
+        }
+        let path = repo_root.join(normalize_separators(&generator.path));
         match fs::read(&path) {
             Ok(raw) => {
                 let text = String::from_utf8_lossy(&raw);
@@ -326,8 +394,13 @@ fn verify_generator_surface(
         }
     }
 
-    // Both directions of the loop: any script addressing the packet tree must
-    // itself be declared, so new consumers cannot bypass classification.
+    // Both directions of the loop, within the scanned surface: every
+    // `.sh`/`.py` file under `scripts/**` (excluding test-harness directories)
+    // whose text references the packet tree by any joined or slash-split
+    // spelling must itself be declared. The scan is textual over those two
+    // languages; a consumer placed outside `scripts/`, written in another
+    // language, or referencing the tree only through assembled path fragments
+    // can evade it — that residual is the manifest reviewer's responsibility.
     let scan_root = repo_root.join(GENERATOR_SCAN_ROOT);
     for path in generator_scan_files(&scan_root)? {
         let is_script =
@@ -441,4 +514,196 @@ fn normalized_subject_path(subject: &str) -> Result<String, String> {
 
 fn normalize_separators(path: &str) -> String {
     path.replace('\\', "/")
+}
+
+#[cfg(test)]
+mod verify_tests {
+    //! In-crate coverage of the fail-closed verifier seams. These complement
+    //! the cross-crate integration suites (`zed_source_authority`,
+    //! `zed_packet_prompt_injection`) by exercising `verify_manifest` from the
+    //! same crate, so static tracers can connect each violation family to its
+    //! covering test without a cross-crate hop.
+
+    use super::*;
+    use crate::source_authority::model::{GeneratorPath, RulingBinding};
+    use std::fs;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn input(id: &str, subject: &str) -> PacketInput {
+        PacketInput {
+            id: id.into(),
+            subject: subject.into(),
+            authority: SourceAuthorityClass::ReceiptEvidence,
+            digest: "0".repeat(64),
+            instruction_allowed: false,
+            sensitivity: Sensitivity::Public,
+            digest_only: false,
+            active: true,
+            superseded_by: None,
+            conflict_key: None,
+            verified_against_current_code: false,
+            converted_to_action: false,
+            ruling_binding: None,
+        }
+    }
+
+    fn tree(subjects: &[(&str, &[u8])]) -> std::io::Result<(tempfile::TempDir, PathBuf)> {
+        let dir = tempfile::TempDir::new()?;
+        let packets = dir.path().join("packets");
+        fs::create_dir_all(&packets)?;
+        for (name, content) in subjects {
+            let path = packets.join(name);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(path, content)?;
+        }
+        let root = dir.path().to_path_buf();
+        Ok((dir, root))
+    }
+
+    fn manifest(inputs: Vec<PacketInput>) -> SourceAuthorityManifest {
+        SourceAuthorityManifest {
+            schema_version: SOURCE_AUTHORITY_SCHEMA_VERSION.into(),
+            packet_root: "packets".into(),
+            external_write_policy: EXTERNAL_WRITE_POLICY.into(),
+            manifest_file: "source-authority.v1.json".into(),
+            generators: Vec::new(),
+            inputs,
+        }
+    }
+
+    fn has(receipt: &Receipt, code: &str) -> bool {
+        receipt.violations.iter().any(|violation| violation.code == code)
+    }
+
+    #[test]
+    fn schema_and_policy_drift_are_reported() -> TestResult {
+        let (_dir, root) = tree(&[])?;
+        let mut drifted = manifest(Vec::new());
+        drifted.schema_version = "zed-source-authority.v0".into();
+        drifted.external_write_policy = "agent_auto_submit".into();
+        let receipt = verify_manifest(&drifted, &root).map_err(|error| error.to_string())?;
+        assert!(has(&receipt, "schema_mismatch"));
+        assert!(has(&receipt, "external_write_policy_drift"));
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_subjects_name_the_existing_owner() -> TestResult {
+        let (_dir, root) = tree(&[("a.txt", b"one\n")])?;
+        let inputs = vec![input("first", "a.txt"), input("second", "a.txt")];
+        let receipt =
+            verify_manifest(&manifest(inputs), &root).map_err(|error| error.to_string())?;
+        assert!(has(&receipt, "duplicate_subject"));
+        let detail = receipt
+            .violations
+            .iter()
+            .find(|violation| violation.code == "duplicate_subject")
+            .map(|violation| violation.detail.clone())
+            .unwrap_or_default();
+        assert!(detail.contains("first"), "detail names the existing owner: {detail}");
+        Ok(())
+    }
+
+    #[test]
+    fn traversal_subjects_are_rejected_without_being_read() -> TestResult {
+        let (_dir, root) = tree(&[])?;
+        let outside = vec![input("escape", "../outside.txt")];
+        let receipt =
+            verify_manifest(&manifest(outside), &root).map_err(|error| error.to_string())?;
+        assert!(has(&receipt, "invalid_subject"));
+        assert!(!has(&receipt, "stale_digest"), "invalid paths are never dereferenced");
+        Ok(())
+    }
+
+    #[test]
+    fn stale_digests_and_missing_subjects_fail_closed() -> TestResult {
+        let (_dir, root) = tree(&[("present.txt", b"content\n")])?;
+        let mut stale = input("stale", "present.txt");
+        stale.digest = "f".repeat(64);
+        let absent = input("absent", "missing.txt");
+        let receipt = verify_manifest(&manifest(vec![stale, absent]), &root)
+            .map_err(|error| error.to_string())?;
+        assert!(has(&receipt, "stale_digest"));
+        assert!(has(&receipt, "missing_subject"));
+        Ok(())
+    }
+
+    #[test]
+    fn unclassified_files_in_the_tree_are_named() -> TestResult {
+        let (_dir, root) = tree(&[("known.txt", b"x\n")])?;
+        fs::write(root.join("packets").join("smuggled.txt"), b"unclassified\n")?;
+        let receipt = verify_manifest(&manifest(vec![input("known", "known.txt")]), &root)
+            .map_err(|error| error.to_string())?;
+        assert!(has(&receipt, "unclassified_content"));
+        Ok(())
+    }
+
+    #[test]
+    fn same_key_divergence_blocks_instead_of_resolving() -> TestResult {
+        let (_dir, root) = tree(&[("left.txt", b"one\n"), ("right.txt", b"two\n")])?;
+        let mut left = input("claim-a", "left.txt");
+        left.conflict_key = Some("subject".into());
+        let mut right = input("claim-b", "right.txt");
+        right.conflict_key = Some("subject".into());
+        right.digest = "f".repeat(64);
+        let receipt = verify_manifest(&manifest(vec![left, right]), &root)
+            .map_err(|error| error.to_string())?;
+        assert!(has(&receipt, "blocked_authority_conflict"));
+        Ok(())
+    }
+
+    #[test]
+    fn directive_inputs_need_checkable_repository_provenance() -> TestResult {
+        let (dir, root) = tree(&[("ruling.txt", b"ruling body\n")])?;
+        fs::create_dir_all(dir.path().join("docs/policy"))?;
+        fs::write(dir.path().join("docs/policy/stage-authority.md"), "# policy\n")?;
+
+        let mut claimed = input("claimed", "ruling.txt");
+        claimed.authority = SourceAuthorityClass::MaintainerRuling;
+        claimed.instruction_allowed = true;
+
+        let unbound =
+            verify_manifest(&manifest(vec![claimed.clone()]), &root).map_err(|e| e.to_string())?;
+        assert!(has(&unbound, "directive_without_binding"));
+
+        // Fabricated provenance: the governed subject does not exist.
+        claimed.ruling_binding = Some(RulingBinding {
+            ruling_id: "issue#11726".into(),
+            subject_path: "docs/policy/does-not-exist.md".into(),
+        });
+        let fabricated =
+            verify_manifest(&manifest(vec![claimed.clone()]), &root).map_err(|e| e.to_string())?;
+        assert!(has(&fabricated, "directive_without_binding"));
+
+        // Malformed identity shape is equally rejected.
+        claimed.ruling_binding = Some(RulingBinding {
+            ruling_id: "trust me".into(),
+            subject_path: "docs/policy/stage-authority.md".into(),
+        });
+        let malformed =
+            verify_manifest(&manifest(vec![claimed.clone()]), &root).map_err(|e| e.to_string())?;
+        assert!(has(&malformed, "directive_without_binding"));
+
+        // A real issue reference bound to a real repository subject passes.
+        claimed.ruling_binding = Some(RulingBinding {
+            ruling_id: "issue#11726".into(),
+            subject_path: "docs/policy/stage-authority.md".into(),
+        });
+        let bound = verify_manifest(&manifest(vec![claimed]), &root).map_err(|e| e.to_string())?;
+        assert!(!has(&bound, "directive_without_binding"), "{:?}", bound.violations);
+        Ok(())
+    }
+
+    #[test]
+    fn generator_declarations_reject_traversal_paths() -> TestResult {
+        let (_dir, root) = tree(&[])?;
+        let mut escaped = manifest(Vec::new());
+        escaped.generators.push(GeneratorPath { path: "../outside/tool.sh".into() });
+        let receipt = verify_manifest(&escaped, &root).map_err(|error| error.to_string())?;
+        assert!(has(&receipt, "invalid_generator_path"));
+        Ok(())
+    }
 }

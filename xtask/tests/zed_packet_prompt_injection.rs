@@ -219,6 +219,21 @@ fn undeclared_generator_referencing_the_packets_is_rejected() -> anyhow::Result<
     Ok(())
 }
 
+/// Documented detection boundary: the reverse scan is textual over `.sh` and
+/// `.py` under `scripts/**`. A consumer in another language or outside that
+/// surface evades it, so classification of the tree itself (which fails on
+/// any unclassified file) plus reviewer diligence carry those cases. This
+/// negative control pins that boundary instead of implying full coverage.
+#[test]
+fn non_shell_consumer_documents_the_scan_boundary() -> anyhow::Result<()> {
+    let copy = PacketCopy::of_live_tree()?;
+    let consumer = copy.root.join("scripts").join("read-packets.ps1");
+    fs::write(&consumer, "packet = '.ci/fixtures/zed-perl-upstream/submission/pr-body.md'\n")?;
+
+    let receipt = copy.verify()?;
+    refuse_code(&receipt, "undeclared_generator")
+}
+
 #[test]
 fn machine_local_material_is_refused_even_when_classified() -> anyhow::Result<()> {
     let copy = PacketCopy::of_live_tree()?;

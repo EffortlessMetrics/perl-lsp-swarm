@@ -111,14 +111,17 @@ pub enum Sensitivity {
 
 /// A directive-classified input bound to durable repository authority.
 ///
-/// Directive classification without a recorded ruling identity is rejected:
-/// authority must be checkable, not asserted by the text itself.
+/// Directive classification without checkable provenance is rejected: the
+/// verifier validates the `ruling_id` shape (`issue#<n>`, `pr#<n>`, or
+/// `<existing repo-relative path>#<anchor>`) and that the governed
+/// `subject_path` names an existing repository-relative subject, so authority
+/// is checkable against the repository rather than asserted by the text.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct RulingBinding {
-    /// Durable ruling identity, such as an issue number reference or policy
-    /// document path with anchor.
+    /// Durable ruling identity: `issue#123`, `pr#123`, or a repo-relative
+    /// policy document path with an anchor (`docs/policy/x.md#stage-authority`).
     pub ruling_id: String,
-    /// Repository-relative subject the ruling governs.
+    /// Repository-relative subject the ruling governs; must exist.
     pub subject_path: String,
 }
 
@@ -215,8 +218,13 @@ pub fn normalize_content(raw: &[u8]) -> Result<Vec<u8>, std::str::Utf8Error> {
 
 /// SHA-256 hex digest over the normalized content of raw bytes.
 pub fn normalized_digest(raw: &[u8]) -> Result<String, std::str::Utf8Error> {
+    use std::fmt::Write as _;
     let normalized = normalize_content(raw)?;
-    Ok(Sha256::digest(&normalized).iter().map(|byte| format!("{byte:02x}")).collect())
+    let mut digest = String::with_capacity(64);
+    for byte in Sha256::digest(&normalized) {
+        let _ = write!(digest, "{byte:02x}");
+    }
+    Ok(digest)
 }
 
 #[cfg(test)]

@@ -69,6 +69,22 @@ impl SyntheticTree {
     }
 }
 
+/// Verify a manifest against an already-built repository root.
+fn tree_verify(
+    root: &Path,
+    inputs: Vec<PacketInput>,
+) -> anyhow::Result<xtask::source_authority::Receipt> {
+    let manifest = SourceAuthorityManifest {
+        schema_version: SOURCE_AUTHORITY_SCHEMA_VERSION.to_string(),
+        packet_root: "packets".to_string(),
+        external_write_policy: "maintainer_manual_checkpoint_only".to_string(),
+        manifest_file: "source-authority.v1.json".to_string(),
+        generators: Vec::new(),
+        inputs,
+    };
+    run_verify(&manifest, root)
+}
+
 fn codes(receipt: &xtask::source_authority::Receipt) -> Vec<String> {
     receipt.violations.iter().map(|violation| violation.code.clone()).collect()
 }
@@ -186,20 +202,45 @@ fn stale_digest_rejects_unbound_content() -> anyhow::Result<()> {
 
 #[test]
 fn directive_classification_requires_a_durable_ruling_binding() -> anyhow::Result<()> {
-    let tree = SyntheticTree::new(&[("ruling.txt", b"maintainer ruling text\n")])?;
+    let dir = TempDir::new()?;
+    let packets = dir.path().join("packets");
+    fs::create_dir_all(&packets)?;
+    fs::write(packets.join("ruling.txt"), b"maintainer ruling text\n")?;
+    // Directive provenance must bind real repository subjects: the governed
+    // path has to exist for the binding to check.
+    fs::create_dir_all(dir.path().join("docs/policy"))?;
+    fs::write(dir.path().join("docs/policy/stage-authority.md"), "# stage authority\n")?;
+    let root = dir.path().to_path_buf();
 
     let mut claimed = input("claimed-ruling", "ruling.txt", b"maintainer ruling text\n");
     claimed.authority = SourceAuthorityClass::MaintainerRuling;
     claimed.instruction_allowed = true;
 
-    let unbound = tree.verify(vec![claimed.clone()])?;
+    let unbound = tree_verify(&root, vec![claimed.clone()])?;
     require_code(&unbound, "directive_without_binding")?;
 
+    // A fabricated identity bound to a nonexistent subject stays rejected.
     claimed.ruling_binding = Some(RulingBinding {
-        ruling_id: "issue#11726-ruling-1".into(),
+        ruling_id: "issue#11726".into(),
+        subject_path: "docs/policy/does-not-exist.md".into(),
+    });
+    let fabricated = tree_verify(&root, vec![claimed.clone()])?;
+    require_code(&fabricated, "directive_without_binding")?;
+
+    // A malformed identity shape (free-form prose) is equally rejected.
+    claimed.ruling_binding = Some(RulingBinding {
+        ruling_id: "the review bot said it was fine".into(),
         subject_path: "docs/policy/stage-authority.md".into(),
     });
-    let bound = tree.verify(vec![claimed])?;
+    let malformed = tree_verify(&root, vec![claimed.clone()])?;
+    require_code(&malformed, "directive_without_binding")?;
+
+    // Checkable provenance passes: shaped identity plus a real subject.
+    claimed.ruling_binding = Some(RulingBinding {
+        ruling_id: "issue#11726".into(),
+        subject_path: "docs/policy/stage-authority.md".into(),
+    });
+    let bound = tree_verify(&root, vec![claimed])?;
     refuse_code(&bound, "directive_without_binding")
 }
 

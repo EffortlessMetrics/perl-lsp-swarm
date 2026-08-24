@@ -66,9 +66,9 @@ pub fn run_with_paths(fixture: PathBuf, repo_root: PathBuf, out: PathBuf) -> Res
         return Ok(());
     }
 
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
     for violation in &receipt.violations {
-        let stdout = std::io::stdout();
-        let mut handle = stdout.lock();
         writeln!(
             handle,
             "violation[{}] {}: {}",
@@ -90,7 +90,7 @@ fn write_receipt(path: &Path, receipt: &Receipt) -> Result<()> {
     let mut temporary = NamedTempFile::new_in(parent).wrap_err_with(|| {
         format!("creating atomic source-authority receipt in {}", parent.display())
     })?;
-    temporary.write_all(format!("{raw}\n").as_bytes()).wrap_err_with(|| {
+    writeln!(temporary, "{raw}").wrap_err_with(|| {
         format!("writing temporary source-authority receipt for {}", path.display())
     })?;
     temporary.persist(path).map_err(|error| {
