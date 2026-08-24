@@ -969,12 +969,11 @@ fn main() -> Result<()> {
             .manifest
             .as_ref()
             .ok_or_else(|| color_eyre::eyre::eyre!("--plan requires --manifest to bind against"))?;
-        let (_, digest) = load_and_validate_manifest(manifest_path)?;
+        let (manifest, digest) = load_and_validate_manifest(manifest_path)?;
         let plan_bytes =
             fs::read(plan_path).with_context(|| format!("reading {}", plan_path.display()))?;
         let plan: RemovalPlan = serde_json::from_slice(&plan_bytes)
             .with_context(|| format!("parsing {}", plan_path.display()))?;
-        let (manifest, _) = load_and_validate_manifest(manifest_path)?;
         validate_plan_against_current_manifest(&plan, &manifest, &digest)
             .with_context(|| "validating removal plan against current manifest")?;
         println!("standalone-owned-state: plan valid ({})", plan.plan_id);

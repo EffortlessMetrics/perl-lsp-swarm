@@ -78,8 +78,8 @@
     "relative_path": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^(?!/)[^\\\\:*?\"<>|]+(/[^\\\\:*?\"<>|]+)*$",
-      "description": "Exact path relative to the install root with forward slashes; absolute paths, drive letters, backslashes, parent segments, and glob metacharacters are structurally invalid because a removal target must be one exact entry."
+      "pattern": "^(?!/)(?!\\.{1,2}(/|$))[^\\\\/:*?\"<>|]+(/(?!\\.{1,2}(/|$))[^\\\\/:*?\"<>|]+)*$",
+      "description": "Exact path relative to the install root with forward slashes; absolute paths, drive letters, backslashes, empty segments, dot and parent segments, and glob metacharacters are structurally invalid because a removal target must be one exact entry."
     },
     "absolute_path": {
       "allOf": [
