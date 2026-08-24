@@ -360,7 +360,7 @@ impl ReachabilityWorkTracker {
                 ReachabilityWorkHonestyError::FullConstructionAfterValidatedReuse { stage },
             ));
         }
-        self.work_paths.push(ReachabilityWorkReceipt::work_path_record(stage, target, None, true));
+        self.work_paths.push(ReachabilityWorkReceipt::work_path_record(stage, target, None));
         Ok(())
     }
 
@@ -393,7 +393,6 @@ impl ReachabilityWorkTracker {
             stage,
             target,
             Some(reused_identity),
-            false,
         ));
         Ok(())
     }

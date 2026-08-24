@@ -171,13 +171,15 @@ impl ReachabilityWorkReceipt {
         }
     }
 
-    /// Construct one work-path record. Tracker-only.
+    /// Construct one work-path record. Tracker-only. A record is a full
+    /// construction exactly when it reused no current subject identity, so
+    /// the two facts cannot disagree.
     pub(super) fn work_path_record(
         stage: ReachabilityStageId,
         target: ReachabilityWorkPathTarget,
         reused_identity: Option<ReachabilitySubjectIdentity>,
-        fully_constructed: bool,
     ) -> ReachabilityWorkPath {
+        let fully_constructed = reused_identity.is_none();
         ReachabilityWorkPath { stage, target, reused_identity, fully_constructed }
     }
 

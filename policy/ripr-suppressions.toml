@@ -2764,4 +2764,26 @@ reason = "PR #12049 (#11553) adds the reachability operation contract as private
 created = "2026-08-24"
 review_after = "2026-09-24"
 expires = "2026-10-24"
-removal_criteria = "EffortlessMetrics/ripr#1429 fixed upstream so declaration-line probes resolve through constructor-call paths, OR a reviewed design decision lands an alternative (pub-field DTO redesign was explicitly rejected by the 2026-08-24 campaign ruling because forgeable receipts defeat #11553's evidence law), then delete this entry and rerun the enforce-new-ripr gate. HONEST SCOPE NOTE: like every sibling entry, the matcher (read_ripr_suppression_rules) is PATH-scoped — the classification field records intent but is not enforced, so this covers all diff-scoped ripr findings in the reachability_operation module, not only the no_static_path set. Any future reachable_unrevealed or other blocking class introduced in this module would be masked for this window; tighten by narrowing the path or by the ripr#1429 fix."
+removal_criteria = "EffortlessMetrics/ripr#1429 fixed upstream so declaration-line probes resolve through constructor-call paths, OR a reviewed design decision lands an alternative (pub-field DTO redesign was explicitly rejected by the 2026-08-24 campaign ruling because forgeable receipts defeat #11553's evidence law), then delete this entry and rerun the enforce-new-ripr gate. HONEST SCOPE NOTE: the matcher is path-scoped and classification-qualified as enforced by ripr 0.9.x on this head (the 52 no_static_path findings were suppressed while the module's reachable_unrevealed side_effect findings were not); a future blocking class in this module is NOT masked by this entry and must be dispositioned separately."
+
+# -----------------------------------------------------------------------------
+# Workspace reachability composition harness (#11553, PR #12049): the
+# ripr-suppress-seam-proof-tests entry names probe families
+# (call_deletion/return_value/error_path) rather than the classification
+# ripr 0.9.x actually reports for `?`-operator plumbing in these harnesses
+# (reachable_unrevealed), so this lane's harness `)?` seams fall through.
+# Lane-scoped to this one file; remove together with the parent
+# reachability-contract entry when ripr#1428/#1429 land.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-reachability-workspace-harness-error-paths"
+kind = "test_receipt_surface"
+paths = ["crates/perl-workspace/tests/ripr_seam_proof_reachability_operation_contract.rs"]
+classification = ["reachable_unrevealed"]
+owner = "reachability-contract-lane"
+issue = "#11553"
+reason = "The four reachable_unrevealed findings in this file are error_path probes on `)?` plumbing lines of the ripr_seam_proof_* harness itself, the exact class ripr-suppress-seam-proof-tests describes; that entry lists probe-family names where ripr 0.9.x reports the reachable_unrevealed classification, so this file-scoped companion closes the gap for this lane only. Remove when EffortlessMetrics/ripr#1428 is fixed or the parent reachability-contract entry is removed."
+created = "2026-08-24"
+review_after = "2026-09-24"
+expires = "2026-10-24"
+removal_criteria = "ripr#1428 fixed upstream, OR ripr-suppress-seam-proof-tests corrected to match the classification ripr reports, then delete this companion entry."
