@@ -69,12 +69,7 @@ fn unterminated_heredoc_reports_recovery_at_body_start() {
         assert_eq!(token.text.as_ref(), &input[body_start..]);
     }
 
-    for input in [
-        "1.2.3.4.5",
-        r#"my $x = "\z""#,
-        r#"my $x = "\u{invalid}""#,
-        "my $h = <<EOF;\n",
-    ] {
+    for input in ["1.2.3.4.5", r#"my $x = "\z""#, r#"my $x = "\u{invalid}""#, "my $h = <<EOF;\n"] {
         assert_terminates_with_valid_spans(input);
     }
 }
