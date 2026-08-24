@@ -1,0 +1,463 @@
+{
+  "schema": "emacs_train_context_mappings.v1",
+  "schema_version": 1,
+  "consumed_manifest": {
+    "bundle": ".spec/10918-emacs-train-graph",
+    "schema": "emacs_train.v1"
+  },
+  "consumed_ledger": {
+    "bundle": ".spec/11770-emacs-train-revisions",
+    "schema": "emacs_train_revision.v1"
+  },
+  "population_ownership": {
+    "engine": 11756,
+    "substrate_population": 11757,
+    "projection_population": 11758
+  },
+  "bounds": {
+    "max_components_per_node": 24,
+    "max_tests_per_node": 16,
+    "max_read_set": 32,
+    "max_write_set": 32,
+    "max_not_authority": 16
+  },
+  "nodes": [
+    {
+      "node_id": "CTXENG",
+      "status": "mapped",
+      "components": [
+        {
+          "component_id": "emacs.context.engine.cli",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/src/tasks/emacs_train_context/mod.rs",
+          "symbol": "EmacsTrainCommand",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "command surface `integration emacs train context|contexts`"
+        },
+        {
+          "component_id": "emacs.context.engine.model",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/src/tasks/emacs_train_context/model.rs",
+          "symbol": "NodeContextPacket",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "typed manifest, mapping and packet models"
+        },
+        {
+          "component_id": "emacs.context.engine.resolver",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/src/tasks/emacs_train_context/resolve.rs",
+          "symbol": "resolve_node",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "fail-closed resolver laws L01-L19"
+        },
+        {
+          "component_id": "emacs.context.engine.renderer",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/src/tasks/emacs_train_context/render.rs",
+          "symbol": "render_markdown",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "deterministic json/markdown rendering"
+        },
+        {
+          "component_id": "emacs.context.engine.digests",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/src/tasks/emacs_train_context/digest.rs",
+          "symbol": "title_fingerprint",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "sha256 binding and title fingerprint recompute"
+        },
+        {
+          "component_id": "emacs.context.engine.cli_wiring",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/src/main.rs",
+          "symbol": "Commands",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "`integration` command group nesting this engine"
+        },
+        {
+          "component_id": "emacs.context.engine.module_wiring",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/src/tasks/mod.rs",
+          "symbol": "emacs_train_context",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "task module registration"
+        },
+        {
+          "component_id": "emacs.context.engine.population_data",
+          "role": "population_data",
+          "kind": "json_data",
+          "path": ".spec/11756-emacs-context-engine/context.mappings.v1.json",
+          "symbol": null,
+          "symbol_kind": null,
+          "client_family": null,
+          "notes": "this document; extended by the population leaves #11757/#11758"
+        }
+      ],
+      "tests": [
+        {
+          "path": "xtask/src/tasks/emacs_train_context/tests.rs",
+          "selector": "emacs_train_context::tests",
+          "kind": "falsifier"
+        }
+      ],
+      "generated": [],
+      "read_set": [
+        "AGENTS.md",
+        ".spec/10918-emacs-train-graph/train.manifest.json",
+        ".spec/11770-emacs-train-revisions/revisions.ledger.json",
+        ".spec/11756-emacs-context-engine/context.mappings.v1.json",
+        "xtask/src/tasks/emacs_train_context/mod.rs"
+      ],
+      "write_set": [
+        ".spec/11756-emacs-context-engine/context.mappings.v1.json",
+        "xtask/src/main.rs",
+        "xtask/src/tasks/mod.rs",
+        "xtask/src/tasks/emacs_train_context/digest.rs",
+        "xtask/src/tasks/emacs_train_context/mod.rs",
+        "xtask/src/tasks/emacs_train_context/model.rs",
+        "xtask/src/tasks/emacs_train_context/render.rs",
+        "xtask/src/tasks/emacs_train_context/resolve.rs",
+        "xtask/src/tasks/emacs_train_context/tests.rs"
+      ],
+      "not_authority": [
+        {
+          "path_or_symbol": "xtask/src/tasks/issue_controllers/",
+          "reason": "controller-train checked projection (T02) is a sibling surface; compose its patterns, never duplicate or re-own them",
+          "owner": "#11765"
+        }
+      ],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": null
+    },
+    {
+      "node_id": "E00",
+      "status": "mapped",
+      "components": [
+        {
+          "component_id": "emacs.architecture.bundle.context",
+          "role": "spec",
+          "kind": "spec_bundle",
+          "path": ".spec/11716-emacs-support-architecture/context.md",
+          "symbol": null,
+          "symbol_kind": null,
+          "client_family": null,
+          "notes": "durable architecture decisions and evidence boundaries"
+        },
+        {
+          "component_id": "emacs.architecture.bundle.acceptance",
+          "role": "spec",
+          "kind": "spec_bundle",
+          "path": ".spec/11716-emacs-support-architecture/acceptance.md",
+          "symbol": null,
+          "symbol_kind": null,
+          "client_family": null,
+          "notes": "checked acceptance of the E00 bundle"
+        }
+      ],
+      "tests": [],
+      "generated": [],
+      "read_set": [
+        "AGENTS.md",
+        ".spec/11716-emacs-support-architecture/acceptance.md",
+        ".spec/11716-emacs-support-architecture/context.md"
+      ],
+      "write_set": [
+        ".spec/11716-emacs-support-architecture/acceptance.md",
+        ".spec/11716-emacs-support-architecture/checklist.md",
+        ".spec/11716-emacs-support-architecture/context.md"
+      ],
+      "not_authority": [
+        {
+          "path_or_symbol": ".spec/10918-emacs-train-graph/train.manifest.json",
+          "reason": "train topology preserves the bundle but never amends a durable architecture decision",
+          "owner": "#10918"
+        }
+      ],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": "specification node: the owned surface is the durable architecture bundle; no production code implements this node",
+      "blocker": null
+    },
+    {
+      "node_id": "E01",
+      "status": "mapped",
+      "components": [
+        {
+          "component_id": "emacs.train.manifest",
+          "role": "spec",
+          "kind": "spec_bundle",
+          "path": ".spec/10918-emacs-train-graph/train.manifest.json",
+          "symbol": "emacs_train.v1",
+          "symbol_kind": "text_contains",
+          "client_family": null,
+          "notes": "the stable checked topology consumed as data by this engine"
+        }
+      ],
+      "tests": [],
+      "generated": [],
+      "read_set": [
+        "AGENTS.md",
+        ".spec/10918-emacs-train-graph/checklist.md",
+        ".spec/10918-emacs-train-graph/train.manifest.json"
+      ],
+      "write_set": [
+        ".spec/10918-emacs-train-graph/acceptance.md",
+        ".spec/10918-emacs-train-graph/checklist.md",
+        ".spec/10918-emacs-train-graph/context.md",
+        ".spec/10918-emacs-train-graph/train.manifest.json"
+      ],
+      "not_authority": [
+        {
+          "path_or_symbol": ".spec/11716-emacs-support-architecture/",
+          "reason": "durable architecture authority; the manifest preserves, never replaces it",
+          "owner": "#11716"
+        }
+      ],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": "stable_contract node: the owned surface is the checked manifest itself; the E01-named xtask validation commands remain unbuilt tooling recorded as not_proven in the manifest limitations",
+      "blocker": null
+    },
+    {
+      "node_id": "E01R",
+      "status": "mapped",
+      "components": [
+        {
+          "component_id": "emacs.train.revision.ledger",
+          "role": "spec",
+          "kind": "spec_bundle",
+          "path": ".spec/11770-emacs-train-revisions/revisions.ledger.json",
+          "symbol": "emacs_train_revision.v1",
+          "symbol_kind": "text_contains",
+          "client_family": null,
+          "notes": "append-only revision ledger consumed as data; never re-derived or cloned"
+        }
+      ],
+      "tests": [],
+      "generated": [],
+      "read_set": [
+        "AGENTS.md",
+        ".spec/11770-emacs-train-revisions/revisions.ledger.json"
+      ],
+      "write_set": [
+        ".spec/11770-emacs-train-revisions/acceptance.md",
+        ".spec/11770-emacs-train-revisions/checklist.md",
+        ".spec/11770-emacs-train-revisions/context.md",
+        ".spec/11770-emacs-train-revisions/revisions.ledger.json"
+      ],
+      "not_authority": [
+        {
+          "path_or_symbol": ".spec/10918-emacs-train-graph/train.manifest.json",
+          "reason": "the ledger cross-validates against the manifest as data and never rewrites its bytes",
+          "owner": "#10918"
+        }
+      ],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": "semantic_revision node: the owned surface is the revision ledger; revision classification mechanics live in the bundle's embedded checker",
+      "blocker": null
+    },
+    {
+      "node_id": "H7777",
+      "status": "mapped",
+      "components": [
+        {
+          "component_id": "editor_clients.receipt_contract",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/src/editor_client_compat.rs",
+          "symbol": "SCHEMA_VERSION",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "landed editor_client_compat.v1 typed contract"
+        },
+        {
+          "component_id": "editor_clients.receipt_module_wiring",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/src/lib.rs",
+          "symbol": "editor_client_compat",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "module registration of the landed contract"
+        },
+        {
+          "component_id": "editor_clients.receipt_validation",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/src/actual_host_receipt.rs",
+          "symbol": "validate_receipt",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "actual_host_receipt.v1 validation over the shared contract"
+        },
+        {
+          "component_id": "editor_clients.receipt_schema",
+          "role": "schema",
+          "kind": "schema_json",
+          "path": ".ci/schemas/editor-client-compat.v1.schema.json",
+          "symbol": "editor_client_compat.v1",
+          "symbol_kind": "text_contains",
+          "client_family": null,
+          "notes": "schema is a contract artifact, never production implementation"
+        }
+      ],
+      "tests": [
+        {
+          "path": "xtask/tests/editor_client_compat_contract.rs",
+          "selector": "editor_client_compat_contract",
+          "kind": "falsifier"
+        },
+        {
+          "path": "xtask/tests/actual_host_receipt.rs",
+          "selector": "actual_host_receipt",
+          "kind": "falsifier"
+        }
+      ],
+      "generated": [],
+      "read_set": [
+        "AGENTS.md",
+        ".ci/schemas/editor-client-compat.v1.schema.json",
+        "xtask/src/editor_client_compat.rs"
+      ],
+      "write_set": [],
+      "not_authority": [
+        {
+          "path_or_symbol": "xtask/tests/support/emacs_host_runner.rs",
+          "reason": "hermetic runner core belongs to H7778; it is not the receipt contract",
+          "owner": "#7778"
+        }
+      ],
+      "specs": [],
+      "write_set_note": "landed historical substrate; no expected writes (residual issue openness is live state owned by #10930, not navigation)",
+      "no_production_component_reason": null,
+      "blocker": null
+    },
+    {
+      "node_id": "H7778",
+      "status": "mapped",
+      "components": [
+        {
+          "component_id": "emacs.runner_core.rust",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/tests/support/emacs_host_runner.rs",
+          "symbol": "run_owned_process",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "landed hermetic runner core: run plans, owned processes, receipts"
+        },
+        {
+          "component_id": "emacs.runner_core.elisp_driver",
+          "role": "production",
+          "kind": "elisp_source",
+          "path": "scripts/test/emacs-host-driver.el",
+          "symbol": "perl-lsp-test-run",
+          "symbol_kind": "elisp_defun",
+          "client_family": null,
+          "notes": "hermetic driver emitting emacs_host_driver.v1 events"
+        }
+      ],
+      "tests": [
+        {
+          "path": "xtask/tests/emacs_host_runner_contract.rs",
+          "selector": "emacs_host_runner_contract",
+          "kind": "falsifier"
+        }
+      ],
+      "generated": [],
+      "read_set": [
+        "AGENTS.md",
+        "scripts/test/emacs-host-driver.el",
+        "xtask/tests/support/emacs_host_runner.rs"
+      ],
+      "write_set": [],
+      "not_authority": [
+        {
+          "path_or_symbol": "xtask/src/editor_client_compat.rs",
+          "reason": "the generic receipt contract belongs to H7777; the runner consumes it without owning it",
+          "owner": "#7777"
+        },
+        {
+          "path_or_symbol": ".ci/schemas/editor-client-compat.v1.schema.json",
+          "reason": "generic receipt schema, not runner-core implementation",
+          "owner": "#7777"
+        }
+      ],
+      "specs": [],
+      "write_set_note": "landed historical substrate; no expected writes; conformance falsifiers stay with RUNCONF (#8734)",
+      "no_production_component_reason": null,
+      "blocker": null
+    },
+    {
+      "node_id": "ADP_E",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "representative adapter node: no checked Eglot host adapter exists on this tree yet; population lands with the substrate population leaf",
+        "owner_issue": 11757,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "RUNCONF",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "representative proof node: Emacs host-run conformance falsifiers are not implemented on this tree yet; population lands with the substrate population leaf",
+        "owner_issue": 11757,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "REG",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "representative projection node: the #7122 support-registry projection surface is not populated yet; population lands with the projection population leaf",
+        "owner_issue": 11758,
+        "action": "return_to_issue"
+      }
+    }
+  ]
+}

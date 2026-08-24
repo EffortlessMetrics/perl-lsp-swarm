@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11392 |
-| Rust-family files | 3471 |
-| Non-Rust files | 7921 |
-| Allowlisted | 5648 |
+| Total tracked files | 11407 |
+| Rust-family files | 3478 |
+| Non-Rust files | 7929 |
+| Allowlisted | 5656 |
 | Unclassified | 2273 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 401 |
-| documentation | 2638 |
+| config | 402 |
+| documentation | 2644 |
 | generated | 2 |
 | production | 309 |
 | test | 1828 |
-| tooling | 470 |
+| tooling | 471 |
 | unclassified | 2273 |
 
 ## Unclassified files
@@ -2848,6 +2848,7 @@
 | `.github/workflows/droid-security-scan.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/droid.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/em-ci-routed-rust.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/emacs-train-context-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/flake-detection.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/gate-enforcement-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/generated-status-contract.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -3007,6 +3008,9 @@
 | `.spec/11625-module-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11661-cargo-executor-command/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11661-cargo-executor-command/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11661-cargo-executor-command/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11673-accepted-ticket-diagnostics-sink/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11673-accepted-ticket-diagnostics-sink/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11673-accepted-ticket-diagnostics-sink/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3023,6 +3027,10 @@
 | `.spec/11716-emacs-support-architecture/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11716-emacs-support-architecture/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11716-emacs-support-architecture/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11756-emacs-context-engine/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11756-emacs-context-engine/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11756-emacs-context-engine/context.mappings.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11756-emacs-context-engine/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11763-issue-controller-architecture/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11763-issue-controller-architecture/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11763-issue-controller-architecture/context.md` | documentation | `non-rust-root-governance-docs` | docs |
