@@ -1000,13 +1000,13 @@ fn build_doc(
             children.push(entry.clone());
             continue;
         }
-        if let PersistState::Running(Some(running)) = state
-            && running.id == spec.id
-        {
-            children.push((*running).clone());
-        } else {
-            children.push(placeholder(spec, "pending", sha));
+        if let PersistState::Running(Some(running)) = state {
+            if running.id == spec.id {
+                children.push((*running).clone());
+                continue;
+            }
         }
+        children.push(placeholder(spec, "pending", sha));
     }
     let (suite_state, aggregate) = match state {
         PersistState::Running(_) => ("running", None),
