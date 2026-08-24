@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 10200,
-  "reason": "#10200 baseline truth repair: tighten package.json 58690->58529 to the true current size; record changelog.md at the archive-measured 19955 (vsce markdown processor rewrites the two now-absolute release-note links); record out/extension.js at the true current build 1465078 (both win32 and CI linux builds agree; the prior 1465391 recorded a larger bundle that no longer builds — undeclared -313 drift since the #7276-era packaging). Archive-normalized asset names retained; no file added, removed, or loosened; total recomputed 1638716->1638246.",
-  "base_baseline_file_sha256": "86d37aec8d47610d247c297a2b9c1592419fb8e6ea301de42318006a93c8d690",
-  "candidate_baseline_file_sha256": "0c0505194ee87ddadae4154dc7d77dd005b2791447d7f0278f1f9078f1eabaeb",
-  "base_inventory_sha256": "9ffef8327470dc624893f58b6ca0ac5b04262acebc7ea9d6eaed77fed657373e",
-  "candidate_inventory_sha256": "5b56dd0d313e33cad431fc52e9e16521d10c4e5cbaa0dda80365bd7f0d2f628e"
+  "owner_issue": 11983,
+  "reason": "#11983 removes three withdrawn secondary formatting feature IDs from package.json; refresh the exact VSIX baseline for package.json 58529->58406 and total bytes 1638246->1638123. The archive file set is unchanged, policy violations remain empty, and installed behavior is covered independently by the current-source smoke.",
+  "base_baseline_file_sha256": "0c0505194ee87ddadae4154dc7d77dd005b2791447d7f0278f1f9078f1eabaeb",
+  "candidate_baseline_file_sha256": "f30a96e3dee4e43590068902d075cb51289cbfddc839871dc98947a3b333324e",
+  "base_inventory_sha256": "5b56dd0d313e33cad431fc52e9e16521d10c4e5cbaa0dda80365bd7f0d2f628e",
+  "candidate_inventory_sha256": "c75e4b068e906f5d8afec5dd9de0104ccc06c42f2fc8b3c979e0bc0c23ace129"
 }
