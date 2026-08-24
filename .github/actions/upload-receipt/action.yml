@@ -135,7 +135,12 @@ runs:
 
         # Overall status
         raw_gates = data.get("gates", [])
-        gates = [gate for gate in raw_gates if isinstance(gate, dict)] if isinstance(raw_gates, list) else []
+        if not isinstance(raw_gates, list) or not all(isinstance(gate, dict) for gate in raw_gates):
+            lines.append("> Failed to read receipt: `gates` must be an array of objects")
+            Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+            raise SystemExit(0)
+
+        gates = raw_gates
         passed = sum(1 for gate in gates if gate.get("status") == "passed")
         failed = sum(1 for gate in gates if gate.get("status") == "failed")
         total = len(gates)
