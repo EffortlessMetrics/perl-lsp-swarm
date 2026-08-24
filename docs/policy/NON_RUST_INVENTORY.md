@@ -9,20 +9,20 @@
 | Total tracked files | 11645 |
 | Rust-family files | 3515 |
 | Non-Rust files | 8130 |
-| Allowlisted | 5805 |
-| Unclassified | 2325 |
+| Allowlisted | 5824 |
+| Unclassified | 2306 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
 | config | 407 |
-| documentation | 2664 |
+| documentation | 2683 |
 | generated | 2 |
 | production | 317 |
 | test | 1936 |
 | tooling | 479 |
-| unclassified | 2325 |
+| unclassified | 2306 |
 
 ## Unclassified files
 
@@ -3307,26 +3307,45 @@
 | `archive/crates/tree-sitter-perl-rs/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `archive/crates/tree-sitter-perl-rs/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `archive/crates/tree-sitter-perl-rs/benchmark_results/comparison_results.json` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/benchmark_results/comparison_results.json` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/edge_case_test_output.txt` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/edge_case_test_output.txt` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/proptest-regressions/fuzz_tests.txt` | test | `non-rust-proptest-default-layout-regressions` | parser/property-tests |
 | `archive/crates/tree-sitter-perl-rs/proptest-regressions/tests.txt` | test | `non-rust-proptest-default-layout-regressions` | parser/property-tests |
 | `archive/crates/tree-sitter-perl-rs/src/bin/benchmark_parsers.rs.disabled` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/bin/benchmark_parsers.rs.disabled` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/bsearch.h` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/src/bsearch.h` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/src/grammar.js` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/grammar.js` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/grammar.json` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/src/grammar.json` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/src/grammar.pest` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/grammar.pest` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/grammar_heredoc_fix.pest` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/src/grammar_heredoc_fix.pest` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/src/grammar_optimized.pest` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/grammar_optimized.pest` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/lib/primitives.js` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/src/lib/primitives.js` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/src/lib/unicode_ranges.js` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/lib/unicode_ranges.js` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/node-types.json` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/src/node-types.json` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/src/parser.c` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/parser.c` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/scanner.c` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/src/scanner.c` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/src/tree_sitter/alloc.h` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/tree_sitter/alloc.h` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/tree_sitter/array.h` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/src/tree_sitter/array.h` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/src/tree_sitter/parser.h` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/tree_sitter/parser.h` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/tsp_unicode.h` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/src/tsp_unicode.h` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/test.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `archive/crates/tree-sitter-perl-rs/test_output.sexp` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/test_output.sexp` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/tests/fixtures/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `archive/crates/tree-sitter-perl-rs/tests/fixtures/anti_patterns/begin_heredoc.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
