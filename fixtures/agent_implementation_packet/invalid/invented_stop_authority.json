@@ -72,12 +72,6 @@
         "subject": "historical marker-spike branch",
         "proof_kind": "historical_branch",
         "proof_tree": "6f04e1ab2"
-      },
-      {
-        "ref": "#10858",
-        "subject": "shared train edge and claim-profile contract",
-        "proof_kind": "current_tree_probe",
-        "proof_tree": "a277266c5"
       }
     ],
     "must_not_be_reimplemented": [
@@ -215,7 +209,10 @@
       "do not merge, release, or perform any external action",
       "do not mutate the programme manifest or frontier"
     ],
-    "permitted_terminal_actions": []
+    "permitted_terminal_actions": [
+      "release_publication"
+    ],
+    "authority": "invented"
   },
   "metadata": {
     "observed_at": "2026-08-24T00:00:00Z"

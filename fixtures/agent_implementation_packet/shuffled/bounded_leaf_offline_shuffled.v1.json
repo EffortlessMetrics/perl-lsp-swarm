@@ -121,21 +121,34 @@
         "subject": "shared train edge and claim-profile contract"
       },
       {
-        "subject": "checked acceptance criteria for the shared edge contract",
         "ref": ".spec/10858-train-edge-contract/acceptance.md",
-        "proof_kind": "spec_disposition"
+        "proof_kind": "spec_disposition",
+        "proof_digest": "spec:10858:acceptance:a277266c5:current",
+        "subject": "checked acceptance criteria for the shared edge contract"
       }
     ],
     "must_not_be_reimplemented": [
       {
-        "proof_kind": "current_tree_probe",
-        "ref": "xtask/src/tasks/train_edge_contract.rs",
         "subject": "shared edge-contract validator",
-        "proof_tree": "a277266c5"
+        "proof_tree": "a277266c5",
+        "proof_kind": "current_tree_probe",
+        "ref": "xtask/src/tasks/train_edge_contract.rs"
       }
     ]
   },
   "proof": {
+    "falsifiers": [
+      {
+        "id": "F_fresh_marker_passes",
+        "stage": "unit",
+        "statement": "A fresh marker must not emit a finding; the positive control feeds a current marker and asserts no mismatch."
+      },
+      {
+        "statement": "A stale service marker that the probe accepts is a defect: the focused test feeds one stale marker and asserts the typed mismatch is emitted.",
+        "id": "F_marker_missing_fails",
+        "stage": "unit"
+      }
+    ],
     "terminal_outcomes": [
       "NOT_PROVEN",
       "BLOCKED_MISSING_INPUT",
@@ -146,23 +159,21 @@
       "Deleting the emission path must fail the stale-marker falsifier.",
       "Inverting the tree comparison in the probe must flip both focused tests red."
     ],
-    "falsifiers": [
-      {
-        "id": "F_fresh_marker_passes",
-        "statement": "A fresh marker must not emit a finding; the positive control feeds a current marker and asserts no mismatch.",
-        "stage": "unit"
-      },
-      {
-        "id": "F_marker_missing_fails",
-        "stage": "unit",
-        "statement": "A stale service marker that the probe accepts is a defect: the focused test feeds one stale marker and asserts the typed mismatch is emitted."
-      }
-    ],
     "cleanup_retention": "No temporary files are retained; fixtures live under fixtures/service_marker_probe/ and are covered by the allowlist."
   },
   "surfaces": {
+    "tests_fixtures": [
+      "fixtures/service_marker_probe/stale_marker.v1.json"
+    ],
+    "forbidden_adjacent": [
+      "schemas/train_edge_contract.v1.schema.json",
+      "xtask/src/tasks/train_edge_contract.rs"
+    ],
     "implementation_paths": [
       "xtask/src/tasks/service_marker_probe.rs"
+    ],
+    "generated_artifacts": [
+      "docs/policy/NON_RUST_INVENTORY.md"
     ],
     "writer_slots": [
       {
@@ -172,45 +183,35 @@
         "key": "service-marker-probe-module"
       },
       {
+        "key": "service-marker-fixture",
         "paths": [
           "fixtures/service_marker_probe/stale_marker.v1.json"
-        ],
-        "key": "service-marker-fixture"
+        ]
       }
-    ],
-    "generated_artifacts": [
-      "docs/policy/NON_RUST_INVENTORY.md"
-    ],
-    "forbidden_adjacent": [
-      "schemas/train_edge_contract.v1.schema.json",
-      "xtask/src/tasks/train_edge_contract.rs"
-    ],
-    "tests_fixtures": [
-      "fixtures/service_marker_probe/stale_marker.v1.json"
     ],
     "docs_fragments": []
   },
   "schema_version": 1,
   "packet_id": "example-train/P_service_marker_probe/2026-08-24T00:00:00Z",
   "delivery": {
-    "branch_suggestion": "tooling/example-service-marker-probe",
-    "limitations": [
-      "probe covers one programme's marker namespace"
-    ],
-    "pr_title_suggestion": "tooling(train): add the service-marker probe focused falsifier",
     "pr_body_fields": [
       "change",
       "proof",
       "rollback",
       "boundaries"
     ],
-    "remaining_blocker_or_next": "after merge, P_service_marker_rollout may compose over this probe",
+    "branch_suggestion": "tooling/example-service-marker-probe",
+    "limitations": [
+      "probe covers one programme's marker namespace"
+    ],
+    "pr_title_suggestion": "tooling(train): add the service-marker probe focused falsifier",
     "definition": "reviewable_draft_pr_and_handoff",
-    "old_path_disposition": "none"
+    "old_path_disposition": "none",
+    "remaining_blocker_or_next": "after merge, P_service_marker_rollout may compose over this probe"
   },
   "programme": {
-    "manifest_version": "3",
     "name": "example-train",
-    "manifest": "example_train.v1"
+    "manifest": "example_train.v1",
+    "manifest_version": "3"
   }
 }

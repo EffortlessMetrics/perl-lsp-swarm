@@ -56,7 +56,8 @@
       {
         "ref": "#11716",
         "subject": "E00 architecture row fixing the adapter boundary",
-        "proof_kind": "spec_disposition"
+        "proof_kind": "spec_disposition",
+        "proof_digest": "spec:11716:e00-adapter-row:accepted"
       },
       {
         "ref": "#10918",
@@ -67,7 +68,8 @@
       {
         "ref": "#11770",
         "subject": "E01R emacs_train_revision.v1 ledger",
-        "proof_kind": "frontier_digest"
+        "proof_kind": "frontier_digest",
+        "proof_digest": "ledger:emacs_train_revision.v1:fe2e8bb0d:current"
       }
     ],
     "may_be_mined": [],

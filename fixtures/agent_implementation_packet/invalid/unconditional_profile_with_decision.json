@@ -66,7 +66,8 @@
       {
         "ref": ".spec/10858-train-edge-contract/acceptance.md",
         "subject": "checked acceptance criteria for the shared edge contract",
-        "proof_kind": "spec_disposition"
+        "proof_kind": "spec_disposition",
+        "proof_digest": "spec:10858:acceptance:a277266c5:current"
       }
     ],
     "may_be_mined": [

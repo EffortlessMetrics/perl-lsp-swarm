@@ -175,7 +175,8 @@ const WORK_KEYS: &[&str] = &[
     "successors",
 ];
 
-const AUTHORITY_ENTRY_KEYS: &[&str] = &["ref", "subject", "proof_kind", "proof_tree"];
+const AUTHORITY_ENTRY_KEYS: &[&str] =
+    &["ref", "subject", "proof_kind", "proof_tree", "proof_digest"];
 const LIVE_OBSERVATION_KEYS: &[&str] =
     &["candidate_state", "digest", "candidate_identity", "collision_state"];
 const SURFACE_KEYS: &[&str] = &[
@@ -351,11 +352,23 @@ fn validate_document(doc: &Value) -> Vec<Violation> {
     scan_mutable_state(doc, "document", &mut violations);
 
     for section in REQUIRED_SECTIONS {
-        if !root.contains_key(*section) {
-            violations.push(Violation::new(
+        match root.get(*section) {
+            None => violations.push(Violation::new(
                 "missing_required_input",
                 format!("document: required input {section} was not supplied"),
-            ));
+            )),
+            Some(value)
+                // packet_id is the one scalar required input; every other
+                // required section is object-typed and a non-object value
+                // must fail closed instead of silently skipping validation.
+                if *section != "packet_id" && as_str_map(value).is_none() =>
+            {
+                violations.push(Violation::new(
+                    "malformed_section",
+                    format!("document: required input {section} must be an object"),
+                ))
+            }
+            Some(_) => {}
         }
     }
 
@@ -672,6 +685,34 @@ fn validate_authorities(root: &Map<String, Value>, violations: &mut Vec<Violatio
                             format!("{where_}: proof kind {kind} cannot anchor a landed authority"),
                         ));
                     }
+                    // Digest-anchored landed authorities carry the supplied
+                    // digest; a live-observation anchor additionally requires
+                    // the packet's live observation to exist and be observed.
+                    if *group == "must_be_current"
+                        && matches!(
+                            kind,
+                            "spec_disposition" | "frontier_digest" | "live_observation"
+                        )
+                        && string_field(entry, "proof_digest").is_none()
+                    {
+                        violations.push(Violation::new(
+                            "authority_currentness_missing",
+                            format!("{where_}: {kind} landed authority must carry its supplied proof_digest"),
+                        ));
+                    }
+                    if *group == "must_be_current"
+                        && kind == "live_observation"
+                        && root
+                            .get("live_observation")
+                            .and_then(as_str_map)
+                            .and_then(|live| string_field(live, "candidate_state"))
+                            != Some("observed")
+                    {
+                        violations.push(Violation::new(
+                            "authority_currentness_missing",
+                            format!("{where_}: live_observation landed authority requires an observed live_observation section"),
+                        ));
+                    }
                     if kind == "current_tree_probe" || *group == "may_be_mined" {
                         match string_field(entry, "proof_tree") {
                             Some(tree) => {
@@ -739,13 +780,13 @@ fn validate_surfaces(root: &Map<String, Value>, violations: &mut Vec<Violation>)
             "surfaces.writer_slots",
             violations,
         );
-        if let Some(key_value) = key.as_deref() {
-            if !keys.insert(key_value.to_string()) {
-                violations.push(Violation::new(
-                    "overlapping_writer_keys",
-                    format!("surfaces.writer_slots: duplicate writer key {key_value}"),
-                ));
-            }
+        if let Some(key_value) = key.as_deref()
+            && !keys.insert(key_value.to_string())
+        {
+            violations.push(Violation::new(
+                "overlapping_writer_keys",
+                format!("surfaces.writer_slots: duplicate writer key {key_value}"),
+            ));
         }
         let mut slot_paths: BTreeSet<String> = BTreeSet::new();
         for path in string_array(slot, "paths") {
@@ -816,13 +857,13 @@ fn validate_proof(root: &Map<String, Value>, violations: &mut Vec<Violation>) {
             "proof.falsifiers",
             violations,
         );
-        if let Some(id) = id {
-            if !ids.insert(id.clone()) {
-                violations.push(Violation::new(
-                    "duplicate_falsifier_id",
-                    format!("proof.falsifiers: duplicate id {id}"),
-                ));
-            }
+        if let Some(id) = id
+            && !ids.insert(id.clone())
+        {
+            violations.push(Violation::new(
+                "duplicate_falsifier_id",
+                format!("proof.falsifiers: duplicate id {id}"),
+            ));
         }
         require_non_empty(
             falsifier,
@@ -908,13 +949,13 @@ fn validate_verification(root: &Map<String, Value>, violations: &mut Vec<Violati
             )),
         }
     }
-    if let Some(first) = steps.first() {
-        if string_field(first, "scope") != Some("focused_proof") {
-            violations.push(Violation::new(
-                "verification_not_focused_first",
-                "verification: focused proof must come first".to_string(),
-            ));
-        }
+    if let Some(first) = steps.first()
+        && string_field(first, "scope") != Some("focused_proof")
+    {
+        violations.push(Violation::new(
+            "verification_not_focused_first",
+            "verification: focused proof must come first".to_string(),
+        ));
     }
     if !steps.iter().any(|step| string_field(step, "scope") == Some("diff_check")) {
         violations.push(Violation::new(
@@ -1030,11 +1071,30 @@ fn validate_stop(root: &Map<String, Value>, violations: &mut Vec<Violation>) {
         }
     }
     if !actions.is_empty() {
-        if string_field(stop, "authority").is_none() {
+        let authority = string_field(stop, "authority");
+        if authority.is_none() {
             violations.push(Violation::new(
                 "unauthorized_stop_boundary",
                 "stop: terminal actions require an explicit authority reference".to_string(),
             ));
+        } else if let Some(reference) = authority {
+            let resolves = root
+                .get("authorities")
+                .and_then(as_str_map)
+                .map(|authorities| {
+                    ["must_be_current", "external_manual_owner"].iter().any(|group| {
+                        object_array(authorities, group)
+                            .iter()
+                            .any(|entry| string_field(entry, "ref") == Some(reference))
+                    })
+                })
+                .unwrap_or(false);
+            if !resolves {
+                violations.push(Violation::new(
+                    "unresolved_stop_authority",
+                    format!("stop: terminal-action authority {reference:?} does not resolve in the authority map"),
+                ));
+            }
         }
         let write_boundary = root
             .get("actor")
@@ -1266,6 +1326,7 @@ fn semantic_anchors(doc: &Value) -> Vec<String> {
     if let Some(verification) = root.get("verification").and_then(as_str_map) {
         for step in object_array(verification, "steps") {
             push(string_field(step, "command_id"));
+            push(string_field(step, "command"));
         }
     }
     if let Some(delivery) = root.get("delivery").and_then(as_str_map) {
@@ -1463,7 +1524,7 @@ fn render_markdown(doc: &Value) -> String {
                 ""
             };
             out.push_str(&format!(
-                "{}. [{}] {} — `{}{}`\n",
+                "{}. [{}] {} — `{}`{}\n",
                 index + 1,
                 string_field(step, "scope").unwrap_or(""),
                 string_field(step, "command_id").unwrap_or(""),
@@ -1608,7 +1669,18 @@ fn render_compact(doc: &Value) -> String {
     if let Some(verification) = root.get("verification").and_then(as_str_map) {
         out.push_str("VERIFY (in order):\n");
         for step in object_array(verification, "steps") {
-            out.push_str(&format!("  {}\n", string_field(step, "command_id").unwrap_or("")));
+            let no_diff = if step.get("second_run_no_diff").and_then(Value::as_bool) == Some(true) {
+                "; second run must produce no diff"
+            } else {
+                ""
+            };
+            out.push_str(&format!(
+                "  {}: {} [{}]{}\n",
+                string_field(step, "command_id").unwrap_or(""),
+                string_field(step, "command").unwrap_or(""),
+                string_field(step, "scope").unwrap_or(""),
+                no_diff
+            ));
         }
     }
     if let Some(stop) = root.get("stop").and_then(as_str_map) {
@@ -1774,7 +1846,7 @@ pub fn run(update_golden: bool) -> Result<()> {
         if update_golden {
             for (projection, text) in &rendered {
                 let golden_file = root.join(golden_path(stem, *projection));
-                if let Some(parent) = golden_file.parent() {
+                if let Some(parent) = golden_file.parent().filter(|p| !p.as_os_str().is_empty()) {
                     fs::create_dir_all(parent)
                         .with_context(|| format!("failed to create {}", parent.display()))?;
                 }
@@ -2057,6 +2129,10 @@ mod tests {
         let compact = render_compact(&doc);
         assert!(compact.contains("CANDIDATE: not_observed"));
         assert!(compact.contains("#10872"));
+        // The compact prompt stays executable: the literal command, its
+        // scope, and the second-run obligation survive the projection.
+        assert!(compact.contains("make -C emacs test PACKET_ADAPTER=1"));
+        assert!(compact.contains("[focused_proof]"));
         Ok(())
     }
 

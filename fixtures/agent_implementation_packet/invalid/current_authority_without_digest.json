@@ -56,8 +56,7 @@
       {
         "ref": "#10858",
         "subject": "shared train edge and claim-profile contract",
-        "proof_kind": "current_tree_probe",
-        "proof_tree": "a277266c5"
+        "proof_kind": "spec_disposition"
       },
       {
         "ref": ".spec/10858-train-edge-contract/acceptance.md",
@@ -72,12 +71,6 @@
         "subject": "historical marker-spike branch",
         "proof_kind": "historical_branch",
         "proof_tree": "6f04e1ab2"
-      },
-      {
-        "ref": "#10858",
-        "subject": "shared train edge and claim-profile contract",
-        "proof_kind": "current_tree_probe",
-        "proof_tree": "a277266c5"
       }
     ],
     "must_not_be_reimplemented": [

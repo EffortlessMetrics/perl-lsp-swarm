@@ -320,6 +320,11 @@
           "type": "string",
           "minLength": 1,
           "description": "Tree the proof was observed against. Required for current_tree_probe anchors in must_be_current and must equal repository.observed_tree; historical branches anchor to their own tree and are barred from must_be_current."
+        },
+        "proof_digest": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Digest of the supplied currentness proof. Required for digest-anchored landed authorities (spec_disposition, frontier_digest, live_observation) in must_be_current."
         }
       }
     },

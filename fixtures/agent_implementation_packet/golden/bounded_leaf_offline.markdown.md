@@ -57,7 +57,7 @@ Claim ceiling: Establishes only the service-marker probe and its focused test; n
 ## Verification route
 
 1. [focused_proof] xtask.test.service_marker_probe — `cargo test -p xtask --bin xtask service_marker_probe --locked`
-2. [generation] xtask.non_rust_inventory_write — `cargo xtask non-rust inventory --write (second run: no diff)`
+2. [generation] xtask.non_rust_inventory_write — `cargo xtask non-rust inventory --write` (second run: no diff)
 3. [file_policy] xtask.check_file_policy — `cargo xtask check-file-policy`
 4. [format] cargo.fmt_check — `cargo fmt -p xtask -- --check`
 5. [clippy] cargo.clippy_xtask — `cargo clippy -p xtask --all-targets --locked -- -D warnings`

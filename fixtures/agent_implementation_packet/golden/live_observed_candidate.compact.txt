@@ -15,8 +15,8 @@ FALSIFIER F_candidate_resume_repairs_probe: Resuming PR #12150 must repair the p
 FALSIFIER F_marker_missing_fails: A stale service marker that the probe accepts is a defect: the focused test feeds one stale marker and asserts the typed mismatch is emitted.
 POSITIVE: The probe distinguishes a stale marker from a fresh one by comparing the marker's recorded tree against the observed tree, not by marker presence alone.
 VERIFY (in order):
-  xtask.test.service_marker_probe
-  git.diff_check
+  xtask.test.service_marker_probe: cargo test -p xtask --bin xtask service_marker_probe --locked [focused_proof]
+  git.diff_check: git diff --check [diff_check]
 STOP: stop at the reviewable draft PR and handoff comment
 STOP: do not merge or release
 STOP: re-observe the candidate if resumption is delayed

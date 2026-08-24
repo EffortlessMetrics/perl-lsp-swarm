@@ -15,12 +15,12 @@ FALSIFIER F_marker_missing_fails: A stale service marker that the probe accepts 
 FALSIFIER F_fresh_marker_passes: A fresh marker must not emit a finding; the positive control feeds a current marker and asserts no mismatch.
 POSITIVE: The probe distinguishes a stale marker from a fresh one by comparing the marker's recorded tree against the observed tree, not by marker presence alone.
 VERIFY (in order):
-  xtask.test.service_marker_probe
-  xtask.non_rust_inventory_write
-  xtask.check_file_policy
-  cargo.fmt_check
-  cargo.clippy_xtask
-  git.diff_check
+  xtask.test.service_marker_probe: cargo test -p xtask --bin xtask service_marker_probe --locked [focused_proof]
+  xtask.non_rust_inventory_write: cargo xtask non-rust inventory --write [generation]; second run must produce no diff
+  xtask.check_file_policy: cargo xtask check-file-policy [file_policy]
+  cargo.fmt_check: cargo fmt -p xtask -- --check [format]
+  cargo.clippy_xtask: cargo clippy -p xtask --all-targets --locked -- -D warnings [clippy]
+  git.diff_check: git diff --check [diff_check]
 STOP: stop at the reviewable draft PR and handoff comment
 STOP: do not merge, release, or perform any external action
 STOP: do not mutate the programme manifest or frontier
