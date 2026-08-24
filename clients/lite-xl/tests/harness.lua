@@ -34,10 +34,10 @@ local Doc = { __index = Doc }
 function Doc.raw_insert(self, line, col, text)
   local l = self.lines[line]
   if not l then return end
-  -- Valid columns span 1..#l: every line keeps its trailing newline, and
-  -- inserting at #l places text before it, preserving one-array-element-
-  -- per-line structure under any insertion.
+  -- Lines ending in "\n" accept columns up to #l (before the newline);
+  -- a terminal line without "\n" also accepts #l + 1 (append at end).
   local limit = #l
+  if l:sub(-1) ~= "\n" then limit = #l + 1 end
   if limit < 1 then limit = 1 end
   if col > limit then col = limit end
   local head = l:sub(1, col - 1)
@@ -165,19 +165,71 @@ function harness.fake_server(world, name, options)
     self.exits = self.exits + 1
   end
 
-  local function record(kind, method, entry)
-    entry.method = method
-    entry.kind = kind
-    entry.server_name = name
-    entry.generation_at_send = server.generation
-    world.wire[#world.wire + 1] = entry
-    server.outbound[#server.outbound + 1] = entry
-    return entry
+  ---Deep-copy plain nested payloads so a recorded frame stays immutable
+  ---evidence even when production later mutates or clears the tables it
+  ---passed (session pending queues are cleared by their own callbacks).
+  local function copy_value(value)
+    if type(value) ~= "table" then return value end
+    local copy = {}
+    for key, item in pairs(value) do copy[key] = copy_value(item) end
+    return copy
   end
 
-  function server:push_notification(method, entry) record("notification", method, entry) end
+  local function record(kind, method, entry)
+    local frame = {
+      method = method,
+      kind = kind,
+      server_name = name,
+      generation_at_send = server.generation,
+      params = copy_value(entry.params),
+      raw_data = entry.raw_data,
+      callback = entry.callback,
+      overwrite = entry.overwrite,
+      sent = false,
+    }
+    world.wire[#world.wire + 1] = frame
+    server.outbound[#server.outbound + 1] = frame
+    return frame
+  end
+
+  ---Find the earliest queued-but-unsent same-method entry, mirroring the
+  ---staged Server's overwrite scan over its notification/raw lists.
+  local function find_unsent(method)
+    for _, entry in ipairs(server.outbound) do
+      if entry.method == method and not entry.sent then return entry end
+    end
+    return nil
+  end
+
+  function server:push_notification(method, entry)
+    assert(entry.params, "please provide the parameters for the notification")
+    if entry.overwrite then
+      -- Production mutates the queued frame in place; the superseded
+      -- payload never reaches the wire and keeps its queue position.
+      local prior = find_unsent(method)
+      if prior then
+        prior.params = copy_value(entry.params)
+        prior.callback = entry.callback
+        return prior
+      end
+    end
+    return record("notification", method, entry)
+  end
+
   function server:push_request(method, entry) record("request", method, entry) end
-  function server:push_raw(method, entry) record("raw", method, entry) end
+
+  function server:push_raw(method, entry)
+    assert(entry.raw_data, "please provide the raw_data for request")
+    if entry.overwrite then
+      local prior = find_unsent(method)
+      if prior then
+        prior.raw_data = entry.raw_data
+        prior.callback = entry.callback
+        return prior
+      end
+    end
+    return record("raw", method, entry)
+  end
   function server:push_response(method, id, result)
     record("response", method, { id = id, result = result })
   end
@@ -202,6 +254,7 @@ function harness.fake_server(world, name, options)
       if method == nil or entry.method == method then
         table.remove(self.outbound, i)
         played[#played + 1] = entry
+        entry.sent = true
         if entry.callback then entry.callback(self) end
       else
         i = i + 1
@@ -232,11 +285,17 @@ local FAKE_MODULE_KEYS = {
   "plugins.lsp.helpdoc",
 }
 
+---Marker distinguishing "module was absent" from a stored nil, which Lua
+---table semantics would silently drop from the saved maps.
+local ABSENT = {}
+
 local function capture_originals()
   if originals_captured then return end
   originals_captured = true
   for _, key in ipairs(FAKE_MODULE_KEYS) do
-    original_preload_keys[key] = package.preload[key]
+    -- ABSENT marks originally-absent entries: storing raw nil would drop
+    -- the key from this map and teardown could never restore the absence.
+    original_preload_keys[key] = package.preload[key] or ABSENT
   end
   original_globals.utf8extra = utf8extra
   original_globals.PLATFORM = PLATFORM
@@ -281,7 +340,9 @@ function harness.new_world(options)
   -- preload factories, never a prior world's cached closures.
   local saved_loaded = {}
   for _, key in ipairs(FAKE_MODULE_KEYS) do
-    saved_loaded[key] = package.loaded[key]
+    -- ABSENT marks originally-absent entries: storing raw nil would drop
+    -- the key from this map and teardown could never restore the absence.
+    saved_loaded[key] = package.loaded[key] or ABSENT
     package.loaded[key] = nil
   end
   world.saved_loaded = saved_loaded
@@ -622,12 +683,14 @@ function harness.new_world(options)
   function world.teardown()
     os.time = original_os_time
     for key, value in pairs(original_preload_keys) do
-      package.preload[key] = value
-      if value == nil then package.preload[key] = nil end
+      if value == ABSENT then
+        package.preload[key] = nil
+      else
+        package.preload[key] = value
+      end
     end
     for key, value in pairs(world.saved_loaded) do
-      package.loaded[key] = value
-      if value == nil then package.loaded[key] = nil end
+      package.loaded[key] = (value == ABSENT) and nil or value
     end
     utf8extra = original_globals.utf8extra
     PLATFORM = original_globals.PLATFORM

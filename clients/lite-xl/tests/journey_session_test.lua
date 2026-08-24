@@ -396,5 +396,66 @@ do
   world.teardown()
 end
 
+-- ===========================================================================
+-- Journey five: transport-overwrite fidelity and terminal-line buffer
+-- semantics. Two emitted batches without an intervening drain coalesce into
+-- ONE queued frame at the latest version - the superseded payload never
+-- reaches the wire - and a document without a terminal newline accepts an
+-- appending insertion at #lines+1 of its last element.
+-- ===========================================================================
+do
+  local world = harness.new_world({ init_module = init_module_path })
+  local server = world.define_server("perllsp", { capabilities = INCREMENTAL })
+  local doc = world.new_doc("C:/proj/coalesce.pl", "a\n")
+
+  world.lsp.open_document(doc)
+  server:drain("textDocument/didOpen")
+  doc.lsp_open = true
+
+  doc:raw_insert(1, 2, "b")
+  ok(#server.outbound == 1, "journey5: first batch occupies one queue slot")
+  doc:raw_insert(1, 3, "c")
+  ok(#server.outbound == 1,
+    "journey5: second emission overwrites the unsent frame in place")
+
+  local played = server:drain("textDocument/didChange")
+  ok(#played == 1 and played[1].params.textDocument.version == 2,
+    "journey5: drained frame carries the latest allocated version")
+  ok(#played[1].params.contentChanges == 2
+    and played[1].params.contentChanges[1].text == "b"
+    and played[1].params.contentChanges[2].text == "c",
+    "journey5: overwritten frame carries every once-pending change in order")
+
+  local frames = 0
+  local versions = {}
+  for _, entry in ipairs(world.wire) do
+    if entry.method == "textDocument/didChange" then
+      frames = frames + 1
+      versions[#versions + 1] = entry.params.textDocument.version
+    end
+  end
+  ok(frames == 1 and versions[1] == 2,
+    "journey5: wire history holds exactly the frames production could send")
+
+  world.teardown()
+end
+
+do
+  -- Terminal-line buffer semantics: a document without a trailing newline
+  -- accepts appending insertions past its last byte.
+  local world = harness.new_world({ init_module = init_module_path })
+  local doc = world.new_doc("C:/proj/noeol.pl", "abc")
+  ok(#doc.lines == 1 and doc.lines[1] == "abc",
+    "journey5: newline-less content loads as one terminal line")
+  doc:raw_insert(1, 4, "d")
+  ok(table.concat(doc.lines) == "abcd",
+    "journey5: insertion after a newline-less final char appends exactly")
+  doc:raw_insert(1, 2, "X")
+  ok(table.concat(doc.lines) == "aXbcd",
+    "journey5: mid-line insertion stays byte-exact")
+  ok(#world.wire == 0, "journey5: buffer-only journey emits no wire traffic")
+  world.teardown()
+end
+
 print(string.format("%d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)

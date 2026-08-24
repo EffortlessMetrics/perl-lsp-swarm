@@ -35,7 +35,9 @@ Documented falsifiers live in each suite's header comment.
 ## Journey harness (`harness.lua` + `journey_session_test.lua`)
 
 `harness.lua` (#11103) generalizes the scaffolding the focused suites share -
-package.preload runtime fakes, FIFO wire-recording fake servers, a real
+package.preload runtime fakes, FIFO wire-recording fake servers (production-
+faithful `overwrite` semantics: an overwritten unsent frame mutates in place
+and never reaches the wire; recorded frames are immutable snapshots), a real
 minimal line-buffer Doc - into one reusable layer for MULTI-STEP stateful
 client journeys that no single focused suite can express: interleaved
 documents, backpressure windows, close/reopen, full server restarts,
