@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11502 |
-| Rust-family files | 3499 |
-| Non-Rust files | 8003 |
-| Allowlisted | 5730 |
+| Total tracked files | 11510 |
+| Rust-family files | 3504 |
+| Non-Rust files | 8006 |
+| Allowlisted | 5733 |
 | Unclassified | 2273 |
 
 ## Non-Rust files by category
@@ -19,9 +19,9 @@
 | config | 404 |
 | documentation | 2656 |
 | generated | 2 |
-| production | 314 |
+| production | 315 |
 | test | 1882 |
-| tooling | 472 |
+| tooling | 474 |
 | unclassified | 2273 |
 
 ## Unclassified files
@@ -6347,6 +6347,8 @@
 | `scripts/ux/vim_coc_smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ux/vim_vim_lsp_driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ux/vim_vim_lsp_smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ux/vim_vim_lsp_specialized.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ux/vim_vim_lsp_specialized_smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ux/vim_vimspector_dap_driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ux/vim_vimspector_dap_smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate-release-scope.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -7859,6 +7861,7 @@
 | `vscode-extension/src/supportPacket.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/__mocks__/vscode.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/accessibilityInventory.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/activationFailureInjection.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/activationOwner.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/activationOwnership.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/activationStartup.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |

@@ -172,6 +172,19 @@ enum Commands {
         input: std::path::PathBuf,
     },
 
+    /// Validate specialized Vim/vim-lsp driver observations
+    /// (vim_lsp_specialized_driver.v1, #11380) against the compiled action
+    /// vocabulary: barrier/timeout/generation/result semantics, boundedness,
+    /// and the pinned Vim + vim-lsp + perllsp subject. The file carries one
+    /// JSON observation per line and fails closed on any violation.
+    #[command(name = "check-vim-lsp-specialized-observations")]
+    CheckVimLspSpecializedObservations {
+        /// Path to the JSONL observations file emitted by the specialized
+        /// adapter or the fake backend.
+        #[arg(long)]
+        file: PathBuf,
+    },
+
     /// Run differential oracle comparison (PackageSubTable vertical slice).
     ///
     /// Loads fixtures from the manifest, runs the PackageSubTable extractor
@@ -4315,6 +4328,12 @@ fn run_cli(cli: Cli) -> Result<()> {
             })?;
             let rendered = agent_implementation_packet::render_to_string(&doc, format)?;
             println!("{rendered}");
+            Ok(())
+        }
+        Commands::CheckVimLspSpecializedObservations { file } => {
+            let validated = xtask::vim_lsp_specialized_driver::validate_observation_file(&file)
+                .map_err(|error| eyre!("{error:#}"))?;
+            println!("validated {validated} specialized vim/vim-lsp observations");
             Ok(())
         }
         Commands::CheckOracleCompare => oracle_runner::run(),
