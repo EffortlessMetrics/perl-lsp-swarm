@@ -8,7 +8,7 @@
 - [x] Add shift-left falsifier checks: unique IDs, single owner/disposition, no duplicate mutation authority, ticket fields where currentness applies, total terminal policies, adapters-with-exit present in source, external owners not reimplemented, outcome vocabulary closed partition.
 - [x] Add call-site ledger ratchet over production sources so an unregistered effect site fails deterministically.
 - [x] Generate deterministic human projection and commit it as `inventory.md`; second-run cleanliness enforced against the committed file.
-- [x] Focused proof green: `cargo test -p perl-lsp-rs --lib parse_effect_sink` (11 checks), fmt, clippy on owning packages only.
+- [x] Focused proof green: `cargo test -p perl-lsp-rs --lib parse_effect_sink` (12 checks), fmt, clippy on owning packages only.
 - [ ] Focused children cut each sink over to sink-local compare-and-mutate returning the common outcomes (#11675 readiness, #11674 document symbols, #11673 diagnostics).
 - [ ] Accepted-ticket train lands (#11665/#11668/#11670); reclassify the two `not proven` admission/snapshot rows.
 - [ ] Legacy helper retires through #7379 fan-in once no ledgered consumer remains.

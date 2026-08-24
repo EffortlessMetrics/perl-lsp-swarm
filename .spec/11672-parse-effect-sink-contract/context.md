@@ -24,8 +24,10 @@ This claim defines, without changing any sink behavior:
    (`crates/perl-lsp-rs/src/runtime/parse_effect_contract.rs`), covering
    committed-current, typed rejections, typed non-application
    (`SupersededBeforeMutation`, `NoEffectRequired`), safe-clear commits,
-   sink/product/instrument failures, and `NotProven` for missing or
-   instrument-failed evidence.
+   sink/product failures, and a two-way evidence split: absent evidence
+   (currentness unobservable) maps to `NotProven`, while unreliable evidence
+   (an instrument/schema failing mid-commit) stays the distinct typed
+   `InstrumentOrSchemaFailure`; neither is ever a commit or non-application.
 2. One checked static inventory, `parse_effect_sinks_v1`, with one row per
    governed parse-derived effect naming its exact owner issue, accepted-ticket
    inputs, sink-local subject, store, irreversible mutation boundary,

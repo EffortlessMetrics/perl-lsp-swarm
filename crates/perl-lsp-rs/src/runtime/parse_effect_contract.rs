@@ -319,9 +319,10 @@ impl ClearReplacePolicyV1 {
 // Inventory schema
 // ---------------------------------------------------------------------------
 
-/// Canonical logical sink stores. Two rows share a store only when their
-/// registered production mutation sites are disjoint (enforced by the
-/// call-site ledger partition check).
+/// Canonical logical sink stores. The call-site ledger enforces needle-level
+/// uniqueness -- one registered (file, needle) ratchet maps to exactly one
+/// row -- but cross-row site disjointness within a shared store is a review
+/// obligation for this contract, not a mechanically enforced partition.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SinkStoreV1(&'static str);
@@ -923,13 +924,13 @@ const CALL_SITE_LEDGER: &[CallSiteLedgerEntry] = &[
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/diagnostics.rs",
         needle: "textDocument/publishDiagnostics",
-        expected_count: 7,
+        expected_count: 3,
         effect_id: "diagnostics.parser-outbound-publication",
     },
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/diagnostics_sink.rs",
         needle: "textDocument/publishDiagnostics",
-        expected_count: 3,
+        expected_count: 1,
         effect_id: "diagnostics.parser-outbound-publication",
     },
     // didOpen guard admissions. Their direct publishDiagnostics sites moved
@@ -1060,19 +1061,18 @@ const CALL_SITE_LEDGER: &[CallSiteLedgerEntry] = &[
         expected_count: 1,
         effect_id: "diagnostics.parser-outbound-publication",
     },
-    // Coordinator module-level lifecycle routes. Counts include the two
-    // doc-comment examples per needle, which are byte-identical to the
-    // production statements and therefore load-bearing for this ratchet.
+    // Coordinator module-level lifecycle routes. Comment-stripped counting:
+    // only production statements are load-bearing here.
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/mod.rs",
         needle: ".notify_parse_complete(",
-        expected_count: 3,
+        expected_count: 1,
         effect_id: "readiness.active-document-parse-lifecycle",
     },
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/mod.rs",
         needle: ".notify_change(",
-        expected_count: 3,
+        expected_count: 1,
         effect_id: "readiness.active-document-parse-lifecycle",
     },
     // didClose diagnostics-clear publication route.
@@ -1102,11 +1102,22 @@ fn repo_source_path(file: &str) -> std::path::PathBuf {
 }
 
 #[cfg(test)]
-fn count_occurrences(file: &str, needle: &str) -> usize {
-    match std::fs::read_to_string(repo_source_path(file)) {
-        Ok(content) => content.matches(needle).count(),
-        Err(_) => usize::MAX,
+fn count_occurrences(file: &str, needle: &str) -> Option<usize> {
+    let content = std::fs::read_to_string(repo_source_path(file)).ok()?;
+    // Line comments are documentation, not mutation sites; counting them
+    // would make prose edits trip ratchets and let doc-only mentions pose as
+    // coverage. Block comments are not stripped: no ledger needle appears
+    // inside one today.
+    let mut code = String::with_capacity(content.len());
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with("///") || trimmed.starts_with("//!") {
+            continue;
+        }
+        code.push_str(line);
+        code.push('\n');
     }
+    Some(code.matches(needle).count())
 }
 
 // ---------------------------------------------------------------------------
@@ -1456,7 +1467,7 @@ mod parse_effect_sink_contract_tests {
                 let occurrences =
                     count_occurrences("crates/perl-lsp-rs/src/runtime/text_sync.rs", exit.adapter);
                 assert!(
-                    occurrences > 0 && occurrences != usize::MAX,
+                    occurrences.is_some_and(|count| count > 0),
                     "adapter `{}` of row `{}` not found in source",
                     exit.adapter,
                     row.effect_id
@@ -1513,9 +1524,14 @@ mod parse_effect_sink_contract_tests {
                 entry.effect_id
             );
             let actual = count_occurrences(entry.file, entry.needle);
-            assert_ne!(actual, usize::MAX, "ledger could not read {}", entry.file);
+            assert!(
+                actual.is_some(),
+                "ledger could not read {}",
+                entry.file
+            );
             assert_eq!(
-                actual, entry.expected_count,
+                actual,
+                Some(entry.expected_count),
                 "call-site ratchet drifted for {}:{:?} -- re-register the site against its \
                  parse_effect_sinks_v1 row or fix the regression",
                 entry.file, entry.needle
@@ -1530,38 +1546,49 @@ mod parse_effect_sink_contract_tests {
         }
     }
 
-    /// Files whose only occurrences of a registered needle are not governed
+    /// Files whose occurrences of a registered needle are not governed
     /// mutation sites. Each pair was individually verified against source when
-    /// this ledger was completed; a new occurrence in any of these files still
-    /// fails the per-file count ratchets above, and removing the exemption
-    /// without registering the route fails this sweep.
+    /// this ledger was completed, and each carries the exact expected
+    /// occurrence count (post comment-stripping) so an exempted file cannot
+    /// silently gain a new production call site: any count drift fails the
+    /// sweep and forces reclassification (#12085 review round).
     #[cfg(test)]
-    const NEEDLE_SWEEP_EXEMPTIONS: &[(&str, &str)] = &[
+    const NEEDLE_SWEEP_EXEMPTIONS: &[(&str, &str, usize)] = &[
         // Doc-comment mentions of the method name (module documentation).
-        ("crates/perl-lsp-rs/src/runtime/lifecycle/mod.rs", "textDocument/publishDiagnostics"),
+        ("crates/perl-lsp-rs/src/runtime/lifecycle/mod.rs", "textDocument/publishDiagnostics", 0),
         // Doc-comment mention describing non-gated per-file publication.
-        ("crates/perl-lsp-rs/src/runtime/mod.rs", "textDocument/publishDiagnostics"),
+        ("crates/perl-lsp-rs/src/runtime/mod.rs", "textDocument/publishDiagnostics", 0),
         // Occurrences inside the #[cfg(test)] module (RecordingSink assertions).
-        ("crates/perl-lsp-rs/src/runtime/outbound.rs", "textDocument/publishDiagnostics"),
+        ("crates/perl-lsp-rs/src/runtime/outbound.rs", "textDocument/publishDiagnostics", 2),
         // String literal asserted on by file_preflight's own self-scan test.
         (
             "crates/perl-lsp-rs/src/runtime/dispatch/workspace/file_preflight.rs",
             ".notify_parse_complete(",
+            2,
         ),
         // pub(super) definition site; invocation sites are registered instead.
-        ("crates/perl-lsp-rs/src/runtime/text_sync/document_state.rs", "minimal_state_from_rope("),
+        (
+            "crates/perl-lsp-rs/src/runtime/text_sync/document_state.rs",
+            "minimal_state_from_rope(",
+            1,
+        ),
         // Test-module helper invocations of the readiness transition.
-        ("crates/perl-lsp-rs/src/runtime/routing.rs", ".transition_to_ready("),
-        ("crates/perl-lsp-rs/src/runtime/readiness.rs", ".transition_to_ready("),
-        ("crates/perl-lsp-rs/src/runtime/language/completion.rs", ".transition_to_ready("),
-        ("crates/perl-lsp-rs/src/runtime/language/rename.rs", ".transition_to_ready("),
-        ("crates/perl-lsp-rs/src/runtime/language/misc.rs", ".transition_to_ready("),
+        ("crates/perl-lsp-rs/src/runtime/routing.rs", ".transition_to_ready(", 2),
+        ("crates/perl-lsp-rs/src/runtime/readiness.rs", ".transition_to_ready(", 3),
+        (
+            "crates/perl-lsp-rs/src/runtime/language/completion.rs",
+            ".transition_to_ready(",
+            5,
+        ),
+        ("crates/perl-lsp-rs/src/runtime/language/rename.rs", ".transition_to_ready(", 4),
+        ("crates/perl-lsp-rs/src/runtime/language/misc.rs", ".transition_to_ready(", 1),
         (
             "crates/perl-lsp-rs/src/runtime/language/hover/signature_help.rs",
             ".transition_to_ready(",
+            3,
         ),
         // Test-module Coordinator notification helper.
-        ("crates/perl-lsp-rs/src/runtime/routing.rs", ".notify_change("),
+        ("crates/perl-lsp-rs/src/runtime/routing.rs", ".notify_change(", 1),
     ];
 
     #[cfg(test)]
@@ -1620,27 +1647,51 @@ mod parse_effect_sink_contract_tests {
             }
             let content = std::fs::read_to_string(file)
                 .expect("ledger sweep must be able to read every walked runtime source file");
+            // Same comment-stripping contract as count_occurrences: prose
+            // mentions are not call sites.
+            let mut code = String::with_capacity(content.len());
+            for line in content.lines() {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("//") {
+                    continue;
+                }
+                code.push_str(line);
+                code.push('\n');
+            }
             for needle in &needles {
-                if !content.contains(needle) {
+                let occurrences = code.matches(needle).count();
+                if occurrences == 0 {
                     continue;
                 }
                 let registered = CALL_SITE_LEDGER
                     .iter()
                     .any(|entry| entry.file == repo_rel && entry.needle == *needle);
-                let exempt = NEEDLE_SWEEP_EXEMPTIONS.iter().any(|(exempt_file, exempt_needle)| {
-                    exempt_file == &repo_rel && exempt_needle == needle
-                });
+                let exempt_entry =
+                    NEEDLE_SWEEP_EXEMPTIONS.iter().find(|(exempt_file, exempt_needle, _)| {
+                        exempt_file == &repo_rel && exempt_needle == needle
+                    });
+                if let Some((_, _, expected)) = exempt_entry {
+                    // Counted exemption: the file may keep its documented
+                    // non-mutation occurrences, but gaining or losing one
+                    // must fail here so the pair is reclassified.
+                    assert_eq!(
+                        occurrences, *expected,
+                        "exempted occurrence count drifted for {needle:?} in {repo_rel} -- \
+                         reclassify the file (register production sites or update the \
+                         reasoned exemption)"
+                    );
+                    continue;
+                }
                 assert!(
-                    registered || exempt,
+                    registered,
                     "unregistered production occurrence of needle {:?} in {} -- \
                      register it against its parse_effect_sinks_v1 row or add a \
                      reasoned exemption",
-                    needle,
-                    repo_rel
+                    needle, repo_rel
                 );
             }
         }
-        for (exempt_file, exempt_needle) in NEEDLE_SWEEP_EXEMPTIONS {
+        for (exempt_file, exempt_needle, _) in NEEDLE_SWEEP_EXEMPTIONS {
             assert!(
                 needles.contains(exempt_needle),
                 "stale exemption for {exempt_file}:{exempt_needle} -- needle no longer registered"
