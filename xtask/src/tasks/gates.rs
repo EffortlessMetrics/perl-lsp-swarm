@@ -2092,10 +2092,10 @@ fn run_single_gate(
     }
 }
 
-struct ShellExecutionResult {
-    stdout: String,
-    exit_code: i32,
-    timed_out: bool,
+pub(crate) struct ShellExecutionResult {
+    pub(crate) stdout: String,
+    pub(crate) exit_code: i32,
+    pub(crate) timed_out: bool,
 }
 
 /// Run a gate command, retrying only when an attempt is killed by the
@@ -2187,10 +2187,29 @@ fn append_retry_trailer(
 
 const MAX_GATE_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
 
-fn run_shell_command_with_timeout(
+/// Run one shell command under the watchdog, truncating-and-reading the log.
+///
+/// `pub(crate)` so the `lsp_smoke` atomic child harness (#8063) reuses the
+/// exact per-child timeout semantics the gate runner enforces (GNU `timeout`
+/// wrapping plus the Rust watchdog backstop) instead of a second, drifting
+/// implementation.
+pub(crate) fn run_shell_command_with_timeout(
     command: &str,
     log_path: &Path,
     timeout_secs: u64,
+) -> Result<ShellExecutionResult> {
+    run_shell_command_with_timeout_in(command, log_path, timeout_secs, None)
+}
+
+/// [`run_shell_command_with_timeout`] with an optional working directory for
+/// the spawned shell (#8063): behavior children execute the prebuilt test
+/// binary from the package directory cargo would have used, so direct
+/// execution stays environment-equivalent to `cargo test`.
+pub(crate) fn run_shell_command_with_timeout_in(
+    command: &str,
+    log_path: &Path,
+    timeout_secs: u64,
+    current_dir: Option<&Path>,
 ) -> Result<ShellExecutionResult> {
     let log_file = fs::File::create(log_path)
         .with_context(|| format!("Failed to create log file: {}", log_path.display()))?;
@@ -2198,7 +2217,11 @@ fn run_shell_command_with_timeout(
         .try_clone()
         .with_context(|| format!("Failed to clone log file handle: {}", log_path.display()))?;
 
-    let mut child = shell_command_process(command, timeout_secs)
+    let mut process = shell_command_process(command, timeout_secs);
+    if let Some(dir) = current_dir {
+        process.current_dir(dir);
+    }
+    let mut child = process
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_file_err))
         .spawn()

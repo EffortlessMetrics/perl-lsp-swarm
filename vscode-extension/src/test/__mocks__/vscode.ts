@@ -313,6 +313,12 @@ export class DebugAdapterExecutable {
 export const env = {
   clipboard: { writeText: jest.fn() },
   openExternal: jest.fn(),
+  /**
+   * Extension-host session identity for the managed host-reference wiring
+   * (#10083). Tests that simulate a second window can overwrite it before
+   * exercising reference persistence.
+   */
+  sessionId: 'mock-extension-host-session',
 };
 
 export const extensions = {

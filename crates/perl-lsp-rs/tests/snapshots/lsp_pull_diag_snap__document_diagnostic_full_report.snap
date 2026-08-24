@@ -1,13 +1,16 @@
 ---
-source: crates/perl-lsp-rs/tests/lsp_pull_diagnostics_snapshot_test.rs
+source: crates/perl-lsp-rs/tests/lsp_pull_diag_snap.rs
+assertion_line: 55
 expression: report
 ---
 items:
   - code: PL102
+    codeDescription:
+      href: "https://docs.perl-lsp.org/errors/PL102"
     data:
       category: StrictWarnings
       code: PL102
-      fixable: true
+      fixable: false
       tags:
         - Unnecessary
     message: "Variable '$x' is declared but never used -- prefix with '_' or remove it\nSuggestion: Prefix as '_x'"
@@ -34,10 +37,12 @@ items:
     tags:
       - 1
   - code: PL103
+    codeDescription:
+      href: "https://docs.perl-lsp.org/errors/PL103"
     data:
       category: StrictWarnings
       code: PL103
-      fixable: true
+      fixable: false
       tags: []
     message: "Variable '$y' is used but not declared -- add 'my $y' to declare it in this scope\nSuggestion: Add 'my $y;' before this line"
     range:

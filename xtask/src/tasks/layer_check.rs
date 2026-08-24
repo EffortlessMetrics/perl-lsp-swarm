@@ -31,13 +31,34 @@ struct LayerRule {
 }
 
 /// The complete set of layer constraints enforced by this check.
-const LAYER_RULES: &[LayerRule] = &[LayerRule {
-    crate_name: "perl-diagnostics",
-    forbidden_prefix: "perl-lsp-",
-    rationale: "perl-diagnostics is a stable leaf crate (diagnostic codes/types/catalog). \
+const LAYER_RULES: &[LayerRule] = &[
+    LayerRule {
+        crate_name: "perl-diagnostics",
+        forbidden_prefix: "perl-lsp-",
+        rationale: "perl-diagnostics is a stable leaf crate (diagnostic codes/types/catalog). \
                     It must not depend on LSP wire types or provider crates. \
                     LSP-specific logic belongs in the perl-lsp-* layer above it.",
-}];
+    },
+    LayerRule {
+        crate_name: "perl-symbol",
+        forbidden_prefix: "lsp-types",
+        rationale: "the source taxonomy crate carries no transport/wire policy \
+                    (#8794/#10794); LSP symbol-kind projection belongs to provider adapters.",
+    },
+    LayerRule {
+        crate_name: "perl-symbol",
+        forbidden_prefix: "perl-workspace",
+        rationale: "workspace-symbol query policy lives above the taxonomy crate \
+                    (#8794/#10794); this blocks query thresholds/matchers from \
+                    re-entering perl-symbol.",
+    },
+    LayerRule {
+        crate_name: "perl-workspace",
+        forbidden_prefix: "perl-lsp-",
+        rationale: "workspace_symbol_query is the provider-neutral owner of query \
+                    profiles/match evidence (#10794) and stays below provider crates.",
+    },
+];
 
 /// Entry point used by `cargo xtask layer-check`.
 pub fn run() -> Result<()> {
@@ -203,6 +224,53 @@ mod tests {
         assert!(
             result.is_err(),
             "normal deps crossing layer boundaries must be rejected; got: {result:?}"
+        );
+    }
+
+    /// #10794 recurrence rule: `perl-symbol` must not gain LSP wire types.
+    #[test]
+    fn perl_symbol_cannot_import_lsp_wire_types() {
+        let metadata = json!({
+            "packages": [
+                { "name": "perl-symbol", "dependencies": [{ "name": "lsp-types", "kind": null }] }
+            ]
+        });
+
+        let result = run_with_metadata(Some(metadata));
+        assert!(result.is_err(), "lsp-types in perl-symbol must be rejected; got: {result:?}");
+    }
+
+    /// #10794 recurrence rule: query policy cannot move back into
+    /// `perl-symbol` via a dependency on the workspace layer.
+    #[test]
+    fn perl_symbol_cannot_depend_on_workspace_query_owner() {
+        let metadata = json!({
+            "packages": [
+                { "name": "perl-symbol", "dependencies": [{ "name": "perl-workspace", "kind": null }] }
+            ]
+        });
+
+        let result = run_with_metadata(Some(metadata));
+        assert!(
+            result.is_err(),
+            "perl-workspace dep in perl-symbol must be rejected; got: {result:?}"
+        );
+    }
+
+    /// #10794 recurrence rule: the provider-neutral query-profile owner stays
+    /// below provider crates.
+    #[test]
+    fn perl_workspace_query_profile_owner_stays_below_providers() {
+        let metadata = json!({
+            "packages": [
+                { "name": "perl-workspace", "dependencies": [{ "name": "perl-lsp-rs-core", "kind": null }] }
+            ]
+        });
+
+        let result = run_with_metadata(Some(metadata));
+        assert!(
+            result.is_err(),
+            "perl-lsp-* dep in perl-workspace must be rejected; got: {result:?}"
         );
     }
 }
