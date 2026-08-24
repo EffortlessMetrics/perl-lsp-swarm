@@ -156,33 +156,34 @@ pub struct PirShadowCompareReceipt {
 /// near-match (range disagreement) rather than independent missing/extra sites.
 const RANGE_NEAR_MATCH_BYTES: usize = 2;
 
-/// Return the source range for a lexical fact, narrowing declaration anchors
-/// that include the declarator keyword (for example `my $i` in a `for` loop)
-/// to the actual variable token.  The legacy reference provider reports token
-/// ranges, so carrying the wider declaration anchor into the comparison would
-/// look like a compiler-only reference even though it is the same binding.
-fn lexical_fact_range(
+/// Return the canonical source range for a lexical fact.
+///
+/// For declaration (`Write`) role, `token_anchor` carries the exact sigil+name
+/// byte span computed from parser/HIR source geometry at extraction time — zero
+/// legacy-reference input.  When `token_anchor` is present it is always
+/// preferred; it may equal `range` when the source anchor was already exact.
+///
+/// For occurrence (`Read`) role, `range` is already the exact token and is
+/// returned unchanged.
+///
+/// Legacy provider ranges, LSP Locations, and provider-time document text must
+/// never be passed to or consulted by this function.  Shadow comparison of the
+/// returned value against the legacy set happens at the call site.
+fn canonical_fact_range(
     role: LexicalRole,
-    sigil: &str,
-    name: &str,
     range: Option<(usize, usize)>,
-    legacy_ranges: &BTreeSet<(usize, usize)>,
+    token_anchor: Option<(usize, usize)>,
 ) -> Option<(usize, usize)> {
-    let (range_start, range_end) = range?;
-    if role != LexicalRole::Write {
-        return Some((range_start, range_end));
+    let base = range?;
+    match role {
+        // For declarations prefer the compiler-derived token anchor; fall back
+        // to the source anchor only when token_anchor is absent (recovered or
+        // partial state — not authoritative as an exact anchor).
+        LexicalRole::Write => token_anchor.or(Some(base)),
+        // Reads (and any future roles) are anchored at the exact token by the
+        // PIR lowerer; return the source range unchanged.
+        _ => Some(base),
     }
-
-    let token_len = sigil.len().checked_add(name.len())?;
-    // Declaration anchors can include a declarator keyword, but the legacy
-    // provider supplies the authoritative token range for this comparison.
-    // Narrow only when that range has the same end and exact byte length as
-    // the named binding.  This avoids numeric-prefix guesses and leaves
-    // non-terminal or otherwise ambiguous anchors unchanged.
-    let token_range = legacy_ranges.iter().copied().find(|&(start, end)| {
-        end == range_end && start >= range_start && end.checked_sub(start) == Some(token_len)
-    });
-    token_range.or(Some((range_start, range_end)))
 }
 
 impl PirShadowCompareReceipt {
@@ -326,17 +327,18 @@ pub fn shadow_references_with_pir(
     let legacy_set: BTreeSet<(usize, usize)> = legacy_result.iter().copied().collect();
 
     // Build the compiler set: anchored facts for `target_name` (bare name) in the target body.
+    // The anchor for each fact is resolved using the compiler-derived `token_anchor` field —
+    // zero legacy-reference input on the compiler side.  The resulting set is then compared
+    // against `legacy_set` at the call site (shadow comparison, not anchor construction).
     let compiler_ranges: BTreeSet<(usize, usize)> = receipt.bodies[target_body_idx]
         .facts
         .iter()
         .filter(|f| f.name.name == target_name && f.source_anchor.is_anchored())
         .filter_map(|fact| {
-            lexical_fact_range(
+            canonical_fact_range(
                 fact.role,
-                &fact.name.sigil,
-                &fact.name.name,
                 fact.source_anchor.range.as_ref().map(|r| (r.start, r.end)),
-                &legacy_set,
+                fact.token_anchor,
             )
         })
         .collect();
@@ -501,12 +503,15 @@ fn range_sort_key(r: &lsp_types::Range) -> (u32, u32, u32, u32) {
 ///
 /// `target_sigil` and `target_name` together identify the full variable identity
 /// (e.g. `"$"` and `"x"` for `$x`). The `::` check is performed on `target_name`.
+///
+/// The ranges returned are sourced exclusively from the compiler-derived
+/// `token_anchor` and `source_anchor` fields of each fact — zero legacy-reference
+/// input.  Legacy ranges are not consulted for anchor construction or narrowing.
 fn evaluate_pir_reference_candidate(
     pir_receipt: &LexicalExtractorReceipt,
     target_sigil: &str,
     target_name: &str,
     target_body_idx: usize,
-    legacy_ranges: &BTreeSet<(usize, usize)>,
     uri_mapper: &dyn Fn(usize, usize) -> lsp_types::Range,
     include_declaration: bool,
 ) -> Result<Vec<lsp_types::Range>, PirShadowRefusalReason> {
@@ -542,12 +547,11 @@ fn evaluate_pir_reference_candidate(
             declaration_skipped = true;
             continue;
         }
-        if let Some((start, end)) = lexical_fact_range(
+        // Use the compiler-derived canonical anchor — no legacy ranges consulted.
+        if let Some((start, end)) = canonical_fact_range(
             fact.role,
-            &fact.name.sigil,
-            &fact.name.name,
             fact.source_anchor.range.as_ref().map(|r| (r.start, r.end)),
-            legacy_ranges,
+            fact.token_anchor,
         ) {
             ranges.push(uri_mapper(start, end));
         }
@@ -664,13 +668,11 @@ pub fn references_pir_promote(
         }
 
         PromotionMode::PromoteExact => {
-            let legacy_ranges: BTreeSet<(usize, usize)> = legacy_result.iter().copied().collect();
             match evaluate_pir_reference_candidate(
                 pir_receipt,
                 target_sigil,
                 target_name,
                 target_body_idx,
-                &legacy_ranges,
                 uri_mapper,
                 opts.include_declaration,
             ) {
@@ -1150,57 +1152,70 @@ mod promote_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        PirShadowRefusalReason, evaluate_refusal,
-        lexical_fact_range as production_lexical_fact_range,
-    };
+    use super::{PirShadowRefusalReason, canonical_fact_range, evaluate_refusal};
     use perl_parser_core::pir::LexicalRole;
-    use std::collections::BTreeSet;
 
-    fn narrowed(
-        role: LexicalRole,
-        sigil: &str,
-        name: &str,
-        range: Option<(usize, usize)>,
-        legacy: &[(usize, usize)],
-    ) -> Option<(usize, usize)> {
-        let legacy_ranges = legacy.iter().copied().collect::<BTreeSet<_>>();
-        production_lexical_fact_range(role, sigil, name, range, &legacy_ranges)
-    }
+    // ── canonical_fact_range: Write role uses token_anchor ─────────────────
 
-    // Compatibility adapter for the Unicode assertions below: it supplies
-    // the authoritative token range that a parser/provider oracle would emit.
-    fn lexical_fact_range(
-        role: LexicalRole,
-        sigil: &str,
-        name: &str,
-        range: Option<(usize, usize)>,
-    ) -> Option<(usize, usize)> {
-        let legacy = range.and_then(|(_, end)| {
-            end.checked_sub(sigil.len().checked_add(name.len())?).map(|start| (start, end))
-        });
-        narrowed(role, sigil, name, range, legacy.as_slice())
+    #[test]
+    fn write_with_token_anchor_uses_token_anchor() {
+        // `for my $i (1..3)`: source anchor = `my $i` (4,9), token_anchor = `$i` (7,9).
+        assert_eq!(
+            canonical_fact_range(LexicalRole::Write, Some((4, 9)), Some((7, 9))),
+            Some((7, 9)),
+        );
+        // `my $x = 1`: anchor = `$x` (3,5), token_anchor = `$x` (3,5) — already exact.
+        assert_eq!(
+            canonical_fact_range(LexicalRole::Write, Some((3, 5)), Some((3, 5))),
+            Some((3, 5)),
+        );
+        // `state $s`: anchor = `$s` (6,8), token_anchor same.
+        assert_eq!(
+            canonical_fact_range(LexicalRole::Write, Some((6, 8)), Some((6, 8))),
+            Some((6, 8)),
+        );
     }
 
     #[test]
-    fn declaration_anchor_narrows_for_my_state_and_bare_prefixes() {
-        assert_eq!(narrowed(LexicalRole::Write, "$", "i", Some((4, 9)), &[(7, 9)]), Some((7, 9)));
-        assert_eq!(narrowed(LexicalRole::Write, "$", "x", Some((0, 5)), &[(3, 5)]), Some((3, 5)));
-        assert_eq!(narrowed(LexicalRole::Write, "$", "s", Some((0, 8)), &[(6, 8)]), Some((6, 8)));
-        assert_eq!(narrowed(LexicalRole::Write, "$", "v", Some((0, 6)), &[(4, 6)]), Some((4, 6)));
+    fn write_without_token_anchor_falls_back_to_source_range() {
+        // When token_anchor is absent (missing or recovered state), fall back to range.
+        assert_eq!(canonical_fact_range(LexicalRole::Write, Some((3, 5)), None), Some((3, 5)),);
+        // No source range and no token_anchor → None.
+        assert_eq!(canonical_fact_range(LexicalRole::Write, None, None), None);
     }
 
     #[test]
-    fn declaration_anchor_handles_sigils_and_unicode_byte_lengths() {
-        assert_eq!(narrowed(LexicalRole::Write, "@", "xs", Some((0, 6)), &[(3, 6)]), Some((3, 6)));
-        assert_eq!(lexical_fact_range(LexicalRole::Write, "$", "é", Some((0, 6))), Some((3, 6)));
-        assert_eq!(lexical_fact_range(LexicalRole::Write, "%", "é", Some((0, 6))), Some((3, 6)));
+    fn write_no_source_range_with_token_anchor_is_none() {
+        // token_anchor cannot substitute for a missing source range (None base).
+        // canonical_fact_range guards on `base = range?` first.
+        assert_eq!(canonical_fact_range(LexicalRole::Write, None, Some((7, 9))), None,);
     }
 
     #[test]
-    fn non_terminal_anchor_end_is_not_truncated() {
-        assert_eq!(narrowed(LexicalRole::Write, "$", "x", Some((0, 20)), &[(3, 5)]), Some((0, 20)));
-        assert_eq!(narrowed(LexicalRole::Read, "$", "x", Some((0, 20)), &[(0, 20)]), Some((0, 20)));
+    fn read_always_uses_source_range() {
+        // Read facts are always anchored at the exact token by the PIR lowerer;
+        // canonical_fact_range returns the source range regardless of token_anchor.
+        assert_eq!(
+            canonical_fact_range(LexicalRole::Read, Some((7, 9)), Some((7, 9))),
+            Some((7, 9)),
+        );
+        assert_eq!(canonical_fact_range(LexicalRole::Read, Some((0, 20)), None), Some((0, 20)),);
+    }
+
+    #[test]
+    fn write_unicode_token_anchor() {
+        // `my $é`: `my ` = 3 bytes, `$` = 1, `é` = 2 → token = 3 bytes, ends at 6.
+        // token_anchor = (3, 6).
+        assert_eq!(
+            canonical_fact_range(LexicalRole::Write, Some((3, 6)), Some((3, 6))),
+            Some((3, 6)),
+        );
+        // `my $café`: `my ` = 3 bytes, `$café` = 6 bytes → ends at 9.
+        // token_anchor = (3, 9).
+        assert_eq!(
+            canonical_fact_range(LexicalRole::Write, Some((3, 9)), Some((3, 9))),
+            Some((3, 9)),
+        );
     }
 
     // The five refusal guards, exercised with literal arguments so the two

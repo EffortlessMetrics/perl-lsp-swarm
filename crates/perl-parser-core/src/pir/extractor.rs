@@ -26,6 +26,22 @@ pub struct LexicalBindingFact {
     pub role: LexicalRole,
     /// Source anchor for this reference (always anchored in PR1).
     pub source_anchor: PirSourceAnchor,
+    /// Canonical exact token anchor derived purely from parser/HIR source
+    /// geometry — zero legacy-reference input.
+    ///
+    /// Computed as `(range.end − token_len, range.end)` from `source_anchor`,
+    /// where `token_len = sigil.len() + name.len()` (UTF-8 bytes).  The sigil
+    /// and name are always the rightmost portion of any declaration anchor, so
+    /// this formula produces the correct `$i` byte span from a wider `my $i`
+    /// anchor as well as from a correctly-narrow `$i` anchor.
+    ///
+    /// `None` when `source_anchor.range` is absent or the token length exceeds
+    /// the anchor span (missing, recovered, or generated-no-source states).
+    ///
+    /// This field is the compiler-owned replacement for legacy-range narrowing.
+    /// No caller may supply or repair this field from a legacy provider result,
+    /// LSP Location/Range, or provider-time document text.
+    pub token_anchor: Option<(usize, usize)>,
     /// Body index where this binding occurs (0-based).
     pub body_idx: usize,
     /// Body owner kind (what construct owns this body).
@@ -82,6 +98,36 @@ pub struct LexicalExtractorReceipt {
     pub provider_behavior_changed: bool,
 }
 
+/// Compute the canonical lexical token anchor from a PIR source anchor.
+///
+/// Returns `(start, end)` byte offsets of the exact sigil+name token, derived
+/// purely from the anchor range and the known UTF-8 byte lengths of `sigil` and
+/// `name`.  No legacy reference ranges, LSP Locations, or provider results are
+/// consulted.
+///
+/// The sigil and variable name always occupy the rightmost bytes of any
+/// well-formed declaration anchor (e.g. `my $i` ends at `$i`), so computing
+/// `end − token_len` is both correct and deterministic across `my`, `state`,
+/// `our`, and foreach-iterator declaration forms.
+///
+/// Returns `None` when:
+/// - `source_anchor.range` is absent (missing, recovered, generated-no-source), or
+/// - the token length exceeds the anchor span (anchor is narrower than the name,
+///   which indicates a corrupted or partial anchor — not authoritative).
+fn compiler_token_anchor(
+    source_anchor: &PirSourceAnchor,
+    sigil: &str,
+    name: &str,
+) -> Option<(usize, usize)> {
+    let range = source_anchor.range.as_ref()?;
+    let token_len = sigil.len().checked_add(name.len())?;
+    let start = range.end.checked_sub(token_len)?;
+    // Guard: the computed start must be within the anchor span.  A token that
+    // would start before the anchor is a sign of an incorrect anchor — refuse
+    // rather than produce a range outside the source-backed region.
+    (start >= range.start).then_some((start, range.end))
+}
+
 /// Extract lexical binding facts from a HirFile.
 ///
 /// Lowers each body independently and collects all `LexicalRead` and `LexicalWrite`
@@ -128,10 +174,13 @@ pub fn extract_lexical_facts(file: &HirFile) -> LexicalExtractorReceipt {
                 PirOperation::LexicalRead { name } => {
                     if pir_node.source_anchor.is_anchored() {
                         anchored_node_count += 1;
+                        let token_anchor =
+                            compiler_token_anchor(&pir_node.source_anchor, &name.sigil, &name.name);
                         facts.push(LexicalBindingFact {
                             name: name.clone(),
                             role: LexicalRole::Read,
                             source_anchor: pir_node.source_anchor.clone(),
+                            token_anchor,
                             body_idx,
                             body_owner: owner.clone(),
                         });
@@ -141,10 +190,13 @@ pub fn extract_lexical_facts(file: &HirFile) -> LexicalExtractorReceipt {
                 PirOperation::LexicalWrite { name } => {
                     if pir_node.source_anchor.is_anchored() {
                         anchored_node_count += 1;
+                        let token_anchor =
+                            compiler_token_anchor(&pir_node.source_anchor, &name.sigil, &name.name);
                         facts.push(LexicalBindingFact {
                             name: name.clone(),
                             role: LexicalRole::Write,
                             source_anchor: pir_node.source_anchor.clone(),
+                            token_anchor,
                             body_idx,
                             body_owner: owner.clone(),
                         });

@@ -3967,6 +3967,15 @@ impl<'a> BodyBuilder2<'a> {
                     "our" => VariableKind::Package,
                     _ => VariableKind::Lexical,
                 };
+                // Use `variable.location` (the inner variable token, e.g. `$i`)
+                // rather than `node.location` (the whole `VariableDeclaration`,
+                // e.g. `my $i`).  The PIR `LexicalWrite` fact must anchor at the
+                // exact binding token so the compiler anchor is independent of
+                // legacy-reference narrowing.  Previously `node.location` was
+                // used, producing a wider anchor (`my $i` = bytes 4–9 for
+                // `for my $i (...)`) that required legacy ranges to narrow back
+                // to `$i` (bytes 7–9) — an illegitimate production dependency.
+                // See: #12191 (PIR-ANCHOR-01).
                 self.alloc_expr(
                     HirExpr::Variable(HirVariable {
                         sigil: sigil_from_str(sigil),
@@ -3974,7 +3983,7 @@ impl<'a> BodyBuilder2<'a> {
                         kind,
                         access: AccessMode::Write,
                     }),
-                    node.location,
+                    variable.location,
                 )
             }
             _ => self.lower_expr(node),
