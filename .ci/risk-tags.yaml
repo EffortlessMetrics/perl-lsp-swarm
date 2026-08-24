@@ -18,10 +18,10 @@ detection:
 risk_tags:
   concurrency:
     examples: [async, concurrent, thread, mutex, rwlock, arc]
-    promotes: [thread_sanitizer, mutation_diff]
+    promotes: [thread_sanitizer]
   parser_recovery:
     examples: ["/recovery/", "/expressions/", "parser recovery"]
-    promotes: [bounded_parser_fuzz, mutation_diff]
+    promotes: [bounded_parser_fuzz]
   offset_math:
     examples: [position, offset, utf, column]
     promotes: []
@@ -33,14 +33,17 @@ risk_tags:
     promotes: [perf_regression]
   public_api:
     examples: [perl-parser, perl-lexer, perl-parser-core, perl-lsp-rs, perl-dap]
-    promotes: [mutation_diff]
+    promotes: []
     note: >-
       The existing public API/semver workflow remains the authority for
-      compatibility checks; mutation_diff is the PR-time lane this classifier
-      can promote without inventing a second gate implementation.
+      compatibility checks. This classifier records the risk but does not
+      claim a PR-fast lane until that workflow is wired into the scope planner.
   dep_change:
     examples: [Cargo.toml, Cargo.lock]
-    promotes: [security_audit, publish]
+    promotes: []
+    note: >-
+      Dependency changes already select the standard publish/security lanes
+      through the workspace-root rule; they are not duplicated as heavy lanes.
   security_surface:
     examples: [auth, eval, exec, deserializ, shell]
     promotes: [security_audit]
