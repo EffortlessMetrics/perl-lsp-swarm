@@ -113,7 +113,9 @@ fn test_text_document_sync_option_keys_use_lsp_camel_case() -> TestResult {
     assert_eq!(sync.get("openClose"), Some(&Value::Bool(true)));
     assert_eq!(sync.get("change").and_then(Value::as_u64), Some(1));
     assert_eq!(sync.get("willSave"), Some(&Value::Bool(true)));
-    assert_eq!(sync.get("willSaveWaitUntil"), Some(&Value::Bool(true)));
+    // Formatter-owned willSaveWaitUntil is withdrawn (#11955) until #8092
+    // proves one save owner; the capability must stop promising it.
+    assert_eq!(sync.get("willSaveWaitUntil"), Some(&Value::Bool(false)));
 
     let save = sync
         .get("save")

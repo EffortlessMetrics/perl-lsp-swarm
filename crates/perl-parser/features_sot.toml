@@ -322,7 +322,7 @@ spec = "LSP 3.0"
 area = "text_document"
 policy_class = "request_response"
 maturity = "not_proven"
-advertised = true
+advertised = false
 direction = "client_to_server"
 capability_gate = "documentRangeFormattingProvider"
 registration = "static_capabilities"
@@ -339,7 +339,7 @@ limitations = [
   "Qualifying integration-test citations exist, but complete implementation/state ownership is not yet recorded; promotion awaits metadata (#7029).",
   "Formatting/edit route claim under #11955 withdrawal-or-promotion ruling; classified against current main only.",
 ]
-description = "Range formatting (single range)"
+description = "Range formatting (single range); withdrawn from live routes (#11955) until #9317 lands the exact geometry contract"
 
 [[feature]]
 id = "lsp.ranges_formatting"
@@ -347,7 +347,7 @@ spec = "LSP 3.18"
 area = "text_document"
 policy_class = "request_response"
 maturity = "not_proven"
-advertised = true
+advertised = false
 direction = "client_to_server"
 capability_gate = "none"
 registration = "static_capabilities"
@@ -362,7 +362,7 @@ limitations = [
   "Formatting/edit route claim under #11955 withdrawal-or-promotion ruling; classified against current main only.",
   "Multi-range formatting is a non-spec proposed route with no LSP capability field; the gate is recorded as none rather than inventing a spec name (#7029).",
 ]
-description = "Multi-range formatting (textDocument/rangesFormatting) (@proposed)"
+description = "Multi-range formatting (textDocument/rangesFormatting) (@proposed); withdrawn from live routes (#11955) until #7089 lands the atomic composition contract"
 
 [[feature]]
 id = "lsp.on_type_formatting"
@@ -370,7 +370,7 @@ spec = "LSP 3.0"
 area = "text_document"
 policy_class = "request_response"
 maturity = "not_proven"
-advertised = true
+advertised = false
 direction = "client_to_server"
 capability_gate = "documentOnTypeFormattingProvider"
 registration = "static_capabilities"
@@ -384,7 +384,7 @@ limitations = [
   "Qualifying integration-test citations exist, but complete implementation/state ownership is not yet recorded; promotion awaits metadata (#7029).",
   "Formatting/edit route claim under #11955 withdrawal-or-promotion ruling; classified against current main only.",
 ]
-description = "On-type formatting with auto-indent"
+description = "On-type formatting with auto-indent; withdrawn from live routes (#11955) until #9320 lands the proven cutover"
 
 [[feature]]
 id = "lsp.rename"
@@ -1989,7 +1989,7 @@ spec = "LSP 3.0"
 area = "text_document"
 policy_class = "document_sync"
 maturity = "not_proven"
-advertised = true
+advertised = false
 counts_in_coverage = false
 direction = "client_to_server"
 capability_gate = "workspace.fileOperations"
@@ -2002,7 +2002,7 @@ limitations = [
   "No qualifying behavior-evidence citation identified at reclassification; advertisement and implementation unchanged (#7029).",
   "Formatting/edit route claim under #11955 withdrawal-or-promotion ruling; classified against current main only.",
 ]
-description = "willSaveWaitUntil request with format-on-save"
+description = "willSaveWaitUntil request; withdrawn from live routes (#11955) until #8092 proves one save owner"
 
 [[feature]]
 id = "lsp.document_highlight"

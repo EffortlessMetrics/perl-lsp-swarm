@@ -407,6 +407,81 @@ pub struct LoadedManifest {
     canonical_digest: String,
 }
 
+/// Bounded static facts of one train node, exposed for the C03 live join
+/// (#11627). This is an additive read-only accessor over already-validated
+/// manifest data: it changes no C02 semantics and introduces no second
+/// topology authority.
+#[derive(Debug, Clone)]
+pub struct NodeStaticFact {
+    pub node_id: String,
+    pub issue: u64,
+    pub role: String,
+    pub lane: String,
+    pub chain_home: String,
+    pub chain_controller: String,
+    pub one_pr_outcome: String,
+    pub claim_ceiling: String,
+    pub first_falsifier: String,
+    pub rollback_stop: String,
+    pub buildable: bool,
+    pub conflict_key: String,
+    pub parallel_group: String,
+    pub stack_relation: String,
+    pub aliases: Vec<String>,
+    /// Typed dependencies as `(target, class)` pairs (node ids or `#authority`
+    /// references), in manifest order.
+    pub dependencies: Vec<(String, String)>,
+}
+
+impl LoadedManifest {
+    /// Project every node into its typed current-tree state (the same
+    /// deterministic projection the `status`/`next` commands render).
+    /// Additive seam for the #11627 live join; no semantic change to C02.
+    pub fn node_statuses(&self) -> Result<Vec<NodeStatus>> {
+        project_states(&self.manifest)
+    }
+
+    /// Bounded static facts for the #11627 live explain addendum.
+    pub fn node_static_facts(&self) -> Vec<NodeStaticFact> {
+        self.manifest
+            .nodes
+            .iter()
+            .map(|node| NodeStaticFact {
+                node_id: node.node_id.clone(),
+                issue: node.issue,
+                role: node.train_role.clone(),
+                lane: node.lane.clone(),
+                chain_home: node.chain.home.clone(),
+                chain_controller: node.chain.controller.clone(),
+                one_pr_outcome: node.one_pr_outcome.clone(),
+                claim_ceiling: node.claim_ceiling.clone(),
+                first_falsifier: node.first_falsifier.clone(),
+                rollback_stop: node.rollback.stop.clone(),
+                buildable: node.buildable,
+                conflict_key: node.writer.conflict_key.clone(),
+                parallel_group: node.writer.parallel_group.clone(),
+                stack_relation: node.writer.stack_relation.clone(),
+                aliases: node.aliases.clone(),
+                dependencies: node
+                    .dependencies
+                    .iter()
+                    .map(|dep| (dep.target.clone(), dep.class.clone()))
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// The manifest's controller nodes, used to validate the identity block's
+    /// `Parent/controller` trailer against the declared chain.
+    pub fn controller_issue(&self, controller_node_id: &str) -> Option<u64> {
+        self.manifest
+            .nodes
+            .iter()
+            .find(|node| node.node_id == controller_node_id)
+            .map(|node| node.issue)
+    }
+}
+
 /// Load the workspace manifest, verifying the pinned digest binding.
 pub fn load_manifest() -> Result<LoadedManifest> {
     let root = crate::utils::project_root()?;
@@ -912,7 +987,8 @@ pub enum CurrentTreeState {
 }
 
 impl CurrentTreeState {
-    fn as_str(self) -> &'static str {
+    /// Public label (stable vocabulary; consumed by the #11627 live join).
+    pub fn as_str(self) -> &'static str {
         match self {
             CurrentTreeState::LandedCurrentTree => "landed_current_tree",
             CurrentTreeState::Ready => "ready",

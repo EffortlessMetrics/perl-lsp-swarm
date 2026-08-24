@@ -47,9 +47,6 @@
       "documentFormattingProvider",
       "documentHighlightProvider",
       "documentLinkProvider.resolveProvider",
-      "documentOnTypeFormattingProvider.firstTriggerCharacter",
-      "documentOnTypeFormattingProvider.moreTriggerCharacter[]",
-      "documentRangeFormattingProvider.rangesSupport",
       "documentSymbolProvider",
       "executeCommandProvider.commands[]",
       "experimental.typeHierarchyProvider",
@@ -100,9 +97,6 @@
       "documentFormattingProvider",
       "documentHighlightProvider",
       "documentLinkProvider.resolveProvider",
-      "documentOnTypeFormattingProvider.firstTriggerCharacter",
-      "documentOnTypeFormattingProvider.moreTriggerCharacter[]",
-      "documentRangeFormattingProvider.rangesSupport",
       "documentSymbolProvider",
       "executeCommandProvider.commands[]",
       "experimental.typeHierarchyProvider",
@@ -147,9 +141,6 @@
       "documentFormattingProvider",
       "documentHighlightProvider",
       "documentLinkProvider.resolveProvider",
-      "documentOnTypeFormattingProvider.firstTriggerCharacter",
-      "documentOnTypeFormattingProvider.moreTriggerCharacter[]",
-      "documentRangeFormattingProvider.rangesSupport",
       "documentSymbolProvider",
       "executeCommandProvider.commands[]",
       "experimental.typeHierarchyProvider",
@@ -230,16 +221,6 @@
       "documentHighlightProvider": true,
       "documentLinkProvider": {
         "resolveProvider": true
-      },
-      "documentOnTypeFormattingProvider": {
-        "firstTriggerCharacter": "}",
-        "moreTriggerCharacter": [
-          ";",
-          "\n"
-        ]
-      },
-      "documentRangeFormattingProvider": {
-        "rangesSupport": true
       },
       "documentSymbolProvider": true,
       "executeCommandProvider": {
@@ -425,16 +406,6 @@
       "documentLinkProvider": {
         "resolveProvider": true
       },
-      "documentOnTypeFormattingProvider": {
-        "firstTriggerCharacter": "}",
-        "moreTriggerCharacter": [
-          ";",
-          "\n"
-        ]
-      },
-      "documentRangeFormattingProvider": {
-        "rangesSupport": true
-      },
       "documentSymbolProvider": true,
       "executeCommandProvider": {
         "commands": [
@@ -604,16 +575,6 @@
       "documentHighlightProvider": true,
       "documentLinkProvider": {
         "resolveProvider": true
-      },
-      "documentOnTypeFormattingProvider": {
-        "firstTriggerCharacter": "}",
-        "moreTriggerCharacter": [
-          ";",
-          "\n"
-        ]
-      },
-      "documentRangeFormattingProvider": {
-        "rangesSupport": true
       },
       "documentSymbolProvider": true,
       "executeCommandProvider": {
@@ -1074,68 +1035,6 @@
       "runtime_route_owner": "documentLink/resolve",
       "evidence_owner": "features.toml#lsp.document_link_resolve",
       "competing_paths": [],
-      "target_issue": "#9665",
-      "compatibility": null,
-      "additional_owned_pointers": [],
-      "rewrites_surface_pointer": null,
-      "build_flag_effect": null
-    },
-    {
-      "surface_id": "cap.documentOnTypeFormattingProvider.firstTriggerCharacter",
-      "kind": "capability-field",
-      "protocol_field": "documentOnTypeFormattingProvider.firstTriggerCharacter",
-      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
-      "client_capability_inputs": [],
-      "build_profile_config_tool_inputs": [
-        "BuildFlags (ga-lock | production | all census profiles)"
-      ],
-      "disposition": "static",
-      "runtime_route_owner": "textDocument/onTypeFormatting",
-      "evidence_owner": "features.toml#lsp.on_type_formatting",
-      "competing_paths": [],
-      "target_issue": "#9665",
-      "compatibility": null,
-      "additional_owned_pointers": [],
-      "rewrites_surface_pointer": null,
-      "build_flag_effect": null
-    },
-    {
-      "surface_id": "cap.documentOnTypeFormattingProvider.moreTriggerCharacter[]",
-      "kind": "capability-field",
-      "protocol_field": "documentOnTypeFormattingProvider.moreTriggerCharacter[]",
-      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
-      "client_capability_inputs": [],
-      "build_profile_config_tool_inputs": [
-        "BuildFlags (ga-lock | production | all census profiles)"
-      ],
-      "disposition": "static",
-      "runtime_route_owner": "textDocument/onTypeFormatting",
-      "evidence_owner": "features.toml#lsp.on_type_formatting",
-      "competing_paths": [],
-      "target_issue": "#9665",
-      "compatibility": null,
-      "additional_owned_pointers": [],
-      "rewrites_surface_pointer": null,
-      "build_flag_effect": null
-    },
-    {
-      "surface_id": "cap.documentRangeFormattingProvider.rangesSupport",
-      "kind": "capability-field",
-      "protocol_field": "documentRangeFormattingProvider.rangesSupport",
-      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
-      "client_capability_inputs": [],
-      "build_profile_config_tool_inputs": [
-        "BuildFlags (ga-lock | production | all census profiles)"
-      ],
-      "disposition": "static",
-      "runtime_route_owner": "textDocument/rangeFormatting multi-range variant",
-      "evidence_owner": "features.toml#lsp.ranges_formatting; lifecycle tests ranges_formatting_*",
-      "competing_paths": [
-        {
-          "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
-          "delta": "capabilities_for() emits boolean true (OneOf::Left) but capabilities_json() replaces the whole value with {rangesSupport:true} when range_formatting is enabled (LSP 3.18 rangesSupport absent from lsp-types 0.97)"
-        }
-      ],
       "target_issue": "#9665",
       "compatibility": null,
       "additional_owned_pointers": [],
@@ -1651,7 +1550,7 @@
       "competing_paths": [
         {
           "path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
-          "delta": "runtime replaces the whole textDocumentSync value after initialize parsing: adds willSave=true, willSaveWaitUntil=true and turns save from boolean true into {includeText:true} (see mut.handle_initialize.textDocumentSyncOverride)"
+          "delta": "runtime replaces the whole textDocumentSync value after initialize parsing: adds willSave=true, willSaveWaitUntil=false and turns save from boolean true into {includeText:true} (see mut.handle_initialize.textDocumentSyncOverride)"
         }
       ],
       "target_issue": "#9665",
@@ -3626,18 +3525,6 @@
       "target_issue": "#9665"
     },
     {
-      "surface_id": "cap.documentRangeFormattingProvider.rangesSupport",
-      "protocol_field": "documentRangeFormattingProvider.rangesSupport",
-      "primary_builder": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
-      "competitors": [
-        {
-          "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
-          "delta": "capabilities_for() emits boolean true (OneOf::Left) but capabilities_json() replaces the whole value with {rangesSupport:true} when range_formatting is enabled (LSP 3.18 rangesSupport absent from lsp-types 0.97)"
-        }
-      ],
-      "target_issue": "#9665"
-    },
-    {
       "surface_id": "cap.experimental.typeHierarchyProvider",
       "protocol_field": "experimental.typeHierarchyProvider",
       "primary_builder": "crates/perl-lsp-rs-core/src/protocol/capabilities/experimental.rs apply_experimental_features",
@@ -3668,7 +3555,7 @@
       "competitors": [
         {
           "path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
-          "delta": "runtime replaces the whole textDocumentSync value after initialize parsing: adds willSave=true, willSaveWaitUntil=true and turns save from boolean true into {includeText:true} (see mut.handle_initialize.textDocumentSyncOverride)"
+          "delta": "runtime replaces the whole textDocumentSync value after initialize parsing: adds willSave=true, willSaveWaitUntil=false and turns save from boolean true into {includeText:true} (see mut.handle_initialize.textDocumentSyncOverride)"
         }
       ],
       "target_issue": "#9665"
