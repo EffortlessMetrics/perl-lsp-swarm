@@ -122,3 +122,444 @@ fn schema_drift_is_rejected() {
     drifted[0].schema_version = "emacs_host_driver.v2".to_string();
     assert!(validate_driver_events(&drifted, true).is_err());
 }
+
+// ---------------------------------------------------------------------------
+// Bundled-Eglot client subject (#7778 slice 1): the adapter, the subject
+// registry, and the run-plan builder are checked-in surfaces, so CI can
+// discriminate their structure without an Emacs host. Real-host execution
+// runs through `cargo xtask integration emacs host-run` on provisioned
+// hosts only; a host that is not provided is never reported green.
+// ---------------------------------------------------------------------------
+
+use anyhow::Context as _;
+use std::ffi::OsStr;
+use std::fs;
+use std::path::{Path, PathBuf};
+use xtask::editor_client_compat::fixture_digest;
+use xtask::emacs_host_run as host_run_task;
+
+fn workspace_root() -> Result<PathBuf> {
+    Ok(Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .context("xtask must live directly under the workspace root")?
+        .to_path_buf())
+}
+
+fn read_checked(relative: &str) -> Result<String> {
+    let path = workspace_root()?.join(relative);
+    fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))
+}
+
+const ADAPTER: &str = "scripts/test/emacs-clients/eglot-bundled.el";
+const CONFIGURATION: &str = "scripts/test/emacs-clients/eglot-bundled-config.el";
+
+#[test]
+fn bundled_adapter_defines_the_driver_entrypoint_and_bundled_resolution() -> Result<()> {
+    let adapter = read_checked(ADAPTER)?;
+    assert!(
+        adapter.contains("(defun perl-lsp-test-client-run"),
+        "the adapter must define the entrypoint the common driver calls"
+    );
+    assert!(adapter.contains("(require 'eglot)"), "the adapter must load Eglot itself");
+    // Bundled proof: resolution inside the running build, not an ambient
+    // archive or cache that merely carries a matching version header.
+    assert!(adapter.contains("(locate-library \"eglot\")"));
+    assert!(adapter.contains("invocation-directory"));
+    assert!(
+        adapter.contains("(string-prefix-p emacs-root library)"),
+        "the resolved library must be proven to live inside the running Emacs build"
+    );
+    assert!(
+        adapter.contains("(secure-hash 'sha256"),
+        "the loaded file digest must be emitted as runtime identity evidence"
+    );
+    assert!(
+        adapter.contains("(lm-version"),
+        "the loaded file's own version header must be observed"
+    );
+    Ok(())
+}
+
+#[test]
+fn bundled_adapter_registers_exactly_one_manual_candidate_row() -> Result<()> {
+    let adapter = read_checked(ADAPTER)?;
+    assert!(
+        adapter.contains("(setq eglot-server-programs"),
+        "the adapter must own the registration table"
+    );
+    assert!(
+        adapter.contains("(perl-mode . ,contact)") && adapter.contains("(cperl-mode . ,contact)"),
+        "the manual candidate contact must be the whole table for both Perl modes"
+    );
+    assert!(
+        adapter.contains("(list candidate \"--stdio\")"),
+        "the single manual contact must launch the exact candidate over stdio"
+    );
+    for forbidden in [
+        "package-initialize",
+        "package-archives",
+        "package-install",
+        "package-refresh-contents",
+        "use-package",
+        "add-to-list 'eglot-server-programs",
+        "add-to-list #'eglot-server-programs",
+    ] {
+        assert!(
+            !adapter.contains(forbidden),
+            "the hermetic adapter must never touch ambient package state: {forbidden}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn bundled_adapter_binds_the_observed_server_process_to_the_candidate() -> Result<()> {
+    let adapter = read_checked(ADAPTER)?;
+    assert!(
+        adapter.contains("(process-command"),
+        "the adapter must observe the program the live server process was started as"
+    );
+    assert!(
+        adapter.contains("PERL_LSP_EMACS_CANDIDATE"),
+        "the candidate identity comes from the run plan environment"
+    );
+    assert!(
+        adapter.contains("non-candidate server program"),
+        "an observed program that differs from the candidate must fail the run"
+    );
+    Ok(())
+}
+
+#[test]
+fn bundled_adapter_keeps_client_log_and_server_stderr_separate() -> Result<()> {
+    let adapter = read_checked(ADAPTER)?;
+    assert!(adapter.contains("jsonrpc-events-buffer"));
+    assert!(adapter.contains("jsonrpc-stderr-buffer"));
+    assert!(adapter.contains("PERL_LSP_EMACS_CLIENT_LOG"));
+    assert!(adapter.contains("PERL_LSP_EMACS_SERVER_STDERR"));
+    // The two exports must be distinct writes: a single combined sink would
+    // conflate client events with server output, which the runner's negative
+    // controls forbid.
+    let client_index = adapter.find("PERL_LSP_EMACS_CLIENT_LOG");
+    let stderr_index = adapter.find("PERL_LSP_EMACS_SERVER_STDERR");
+    assert!(client_index.is_some() && stderr_index.is_some());
+    assert_ne!(client_index, stderr_index);
+    Ok(())
+}
+
+#[test]
+fn bundled_adapter_emits_the_full_lifecycle_barrier_ladder() -> Result<()> {
+    let adapter = read_checked(ADAPTER)?;
+    for barrier in [
+        "client_loaded",
+        "registration_selected",
+        "initialize_observed",
+        "workspace_ready",
+        "buffer_opened",
+        "shutdown_started",
+        "shutdown_completed",
+    ] {
+        assert!(
+            adapter.contains(&format!("\"{barrier}\"")),
+            "the adapter must emit the {barrier} driver barrier"
+        );
+    }
+    assert!(
+        adapter.contains("PERL_LSP_EMACS_CAPABILITY_SNAPSHOT"),
+        "the initialize capability snapshot must be written through the run plan path"
+    );
+    Ok(())
+}
+
+/// `eglot--connect` performs no class defaulting of its own: a nil class
+/// reaches `make-instance` and breaks the run. The bundled adapter must pin
+/// the stock class explicitly.
+#[test]
+fn bundled_adapter_pins_the_connect_class_explicitly() -> Result<()> {
+    let adapter = read_checked(ADAPTER)?;
+    assert!(
+        adapter.contains("'eglot-lsp-server contact"),
+        "the adapter must pass the stock eglot-lsp-server class to eglot--connect"
+    );
+    assert!(
+        !adapter.contains("nil contact"),
+        "a nil class argument breaks make-instance in eglot--connect"
+    );
+    Ok(())
+}
+
+/// `eglot-shutdown`'s optionals are (SERVER _INTERACTIVE TIMEOUT
+/// PRESERVE-BUFFERS): passing the timeout first would silently leave the
+/// buffers to be killed before the exports run. The adapter must pass the
+/// ignored interactive slot explicitly and preserve the evidence buffers.
+#[test]
+fn bundled_adapter_shuts_down_with_preserved_evidence_buffers() -> Result<()> {
+    let adapter = read_checked(ADAPTER)?;
+    assert!(
+        adapter.contains("(eglot-shutdown server nil"),
+        "the adapter must skip the ignored interactive slot of eglot-shutdown"
+    );
+    assert!(
+        !adapter.contains("(eglot-shutdown server perl-lsp-test-bundled-shutdown-deadline t)"),
+        "the timeout must not land in the ignored interactive slot"
+    );
+    Ok(())
+}
+
+#[test]
+fn bundled_configuration_carries_only_client_behavior_settings() -> Result<()> {
+    let configuration = read_checked(CONFIGURATION)?;
+    for setting in ["eglot-sync-connect", "eglot-autoreconnect", "eglot-autoshutdown"] {
+        assert!(configuration.contains(setting), "the checked configuration must pin {setting}");
+    }
+    for forbidden in ["package-", "eglot-server-programs", "load-file"] {
+        assert!(
+            !configuration.contains(forbidden),
+            "the checked configuration must not touch {forbidden} state"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn subject_registry_pins_exactly_one_bundled_eglot_subject() {
+    assert_eq!(
+        host_run_task::known_subjects(),
+        &["bundled_eglot_emacs_30_1"],
+        "slice one wires exactly the bundled Eglot in Emacs 30.1 subject; later subjects are \
+         new rows, never silent replacements"
+    );
+    let subject = host_run_task::bundled_eglot_client_subject(format!("sha256:{}", "0".repeat(64)));
+    assert_eq!(subject.client_id, "bundled_eglot_emacs_30_1");
+    assert_eq!(subject.kind, host_run_task::emacs_host_runner::EmacsClientKind::BundledEglot);
+    assert_eq!(subject.version, "1.17.30");
+    assert_eq!(subject.source_ref, "emacs-30.1");
+    assert_eq!(subject.source_state, xtask::editor_client_compat::ClientSourceState::Bundled);
+    assert!(
+        subject.package_sha256.is_none(),
+        "a bundled subject cannot carry a separate package identity"
+    );
+}
+
+#[test]
+fn fixture_materialization_is_deterministic_and_bounded() -> Result<()> {
+    let first = tempfile::tempdir()?;
+    let second = tempfile::tempdir()?;
+    let first_root = host_run_task::materialize_bundled_eglot_fixture(&first.path().join("f"))?;
+    let second_root = host_run_task::materialize_bundled_eglot_fixture(&second.path().join("f"))?;
+    let first_digest = fixture_digest(&first_root)?;
+    let second_digest = fixture_digest(&second_root)?;
+    ensure!(first_digest == second_digest, "fixture materialization must be deterministic");
+    ensure!(first_root.join("script/probe.pl").is_file());
+    ensure!(first_root.join("lib/My/Thing.pm").is_file());
+    Ok(())
+}
+
+fn fake_exact_inputs(root: &Path) -> Result<(PathBuf, PathBuf, PathBuf)> {
+    let candidate_name = if cfg!(windows) { "perllsp.exe" } else { "perllsp" };
+    let emacs = root.join("emacs-exe");
+    let candidate = root.join(candidate_name);
+    let client_source = root.join("eglot.el");
+    fs::write(&emacs, b"fake exact emacs executable bytes")?;
+    fs::write(&candidate, b"fake exact perllsp candidate bytes")?;
+    fs::write(&client_source, b";; fake bundled eglot.el\n")?;
+    Ok((emacs, candidate, client_source))
+}
+
+#[test]
+fn run_plan_builder_fails_closed_when_the_exact_host_is_absent() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (_emacs, candidate, client_source) = fake_exact_inputs(root.path())?;
+    let missing_emacs = root.path().join("absent-emacs");
+    let run = host_run_task::BundledEglotHostRun {
+        emacs_executable: missing_emacs.clone(),
+        candidate_executable: candidate,
+        client_source,
+        out_root: root.path().join("out-missing"),
+        timeout_ms: 0,
+    };
+    let error = host_run_task::build_bundled_eglot_run_plan(
+        &workspace_root()?,
+        &run,
+        &"0".repeat(40),
+        "perllsp fake",
+        "GNU Emacs 30.1 (fake)",
+    )
+    .err()
+    .context("a missing exact host must not produce a runnable plan")?;
+    assert!(
+        error.to_string().contains("absent-emacs"),
+        "the failure must name the missing exact input: {error}"
+    );
+    assert!(!missing_emacs.exists(), "the missing host must not have been created");
+    Ok(())
+}
+
+#[test]
+fn run_plan_builder_validates_over_the_checked_tree_with_exact_fake_inputs() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (emacs, candidate, client_source) = fake_exact_inputs(root.path())?;
+    let run = host_run_task::BundledEglotHostRun {
+        emacs_executable: emacs,
+        candidate_executable: candidate.clone(),
+        client_source,
+        out_root: root.path().join("out"),
+        timeout_ms: 0,
+    };
+    let (plan, layout) = host_run_task::build_bundled_eglot_run_plan(
+        &workspace_root()?,
+        &run,
+        "0123456789abcdef0123456789abcdef01234567",
+        "perllsp fake",
+        "GNU Emacs 30.1 (fake)",
+    )?;
+    ensure!(
+        plan.identity.timeout_ms == 180_000,
+        "timeout_ms=0 must fall back to the bounded default"
+    );
+    ensure!(plan.identity.journey_selector == "bundled_eglot_lifecycle.v1");
+
+    let command = host_run_task::emacs_host_runner::build_emacs_command(&plan, &layout)?;
+    let argv: Vec<String> =
+        command.get_args().map(|argument| argument.to_string_lossy().into_owned()).collect();
+    let driver_index = argv
+        .iter()
+        .position(|argument| argument.ends_with("emacs-host-driver.el"))
+        .context("driver must be on the command line")?;
+    let adapter_index = argv
+        .iter()
+        .position(|argument| argument.ends_with("eglot-bundled.el"))
+        .context("adapter must be on the command line")?;
+    let funcall_index = argv
+        .iter()
+        .position(|argument| argument == "perl-lsp-test-run")
+        .context("the driver entrypoint must be funcalled")?;
+    ensure!(driver_index < adapter_index, "the driver must load before the adapter");
+    ensure!(adapter_index < funcall_index, "the entrypoint runs after both loads");
+    ensure!(argv.contains(&"-Q".to_string()));
+    ensure!(argv.contains(&"--no-site-file".to_string()));
+    ensure!(argv.contains(&"--batch".to_string()));
+
+    let environment: std::collections::BTreeMap<&OsStr, &OsStr> =
+        command.get_envs().filter_map(|(name, value)| value.map(|value| (name, value))).collect();
+    let candidate_binding = environment
+        .get(OsStr::new("PERL_LSP_EMACS_CANDIDATE"))
+        .copied()
+        .context("candidate binding must be present")?;
+    ensure!(candidate_binding == candidate.as_os_str());
+    let home = environment.get(OsStr::new("HOME")).copied().context("hermetic HOME must be set")?;
+    ensure!(home == layout.home.as_os_str());
+    Ok(())
+}
+
+#[test]
+fn subject_helpers_are_exported_for_the_cli_surface() -> Result<()> {
+    // The CLI resolves the bundled library inside the exact installation;
+    // ambiguity and absence are typed errors, never silent choices.
+    let root = tempfile::tempdir()?;
+    let bin = root.path().join("bin");
+    fs::create_dir_all(&bin)?;
+    let emacs = bin.join("emacs");
+    fs::write(&emacs, b"fake")?;
+    let error = host_run_task::resolve_bundled_client_source(&emacs)
+        .err()
+        .context("an empty installation must not resolve a client source")?;
+    assert!(
+        error.to_string().contains("no bundled Eglot library"),
+        "absence must be a typed identity error, got: {error}"
+    );
+    Ok(())
+}
+
+/// Installed Emacs builds commonly load `eglot.elc` while shipping the
+/// source as `eglot.el` and/or `eglot.el.gz`. Resolution must accept the
+/// compiled form when the source is absent, prefer the source when present,
+/// and fail closed on a same-form identity ambiguity.
+#[test]
+fn bundled_library_resolution_handles_real_installation_forms() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let progmodes = root.path().join("lisp/progmodes");
+    fs::create_dir_all(&progmodes)?;
+    let emacs = root.path().join("bin/emacs");
+    fs::create_dir_all(emacs.parent().context("emacs path must have a parent")?)?;
+    fs::write(&emacs, b"fake")?;
+
+    let compiled = progmodes.join("eglot.elc");
+    fs::write(&compiled, b"bytecode")?;
+    let resolved = host_run_task::resolve_bundled_client_source(&emacs)?;
+    ensure!(
+        fs::canonicalize(&resolved)? == fs::canonicalize(&compiled)?,
+        "compiled-only installation must resolve the .elc"
+    );
+
+    let source = progmodes.join("eglot.el");
+    fs::write(&source, b";; source")?;
+    let resolved = host_run_task::resolve_bundled_client_source(&emacs)?;
+    ensure!(
+        fs::canonicalize(&resolved)? == fs::canonicalize(&source)?,
+        "source form must win over the compiled form"
+    );
+
+    let second_tree = root.path().join("share/emacs/30.1/lisp/progmodes");
+    fs::create_dir_all(&second_tree)?;
+    fs::write(second_tree.join("eglot.el"), b";; duplicate")?;
+    let error = host_run_task::resolve_bundled_client_source(&emacs)
+        .err()
+        .context("two same-form libraries must be an identity defect")?;
+    assert!(
+        error.to_string().contains("ambiguous bundled eglot.el identity"),
+        "same-form duplication must fail closed: {error}"
+    );
+    Ok(())
+}
+
+/// The subject pins the exact host build; a different Emacs is a different
+/// subject and must be refused before anything is launched.
+#[test]
+fn pinned_host_version_is_enforced_before_launch() -> Result<()> {
+    host_run_task::ensure_pinned_host_version("GNU Emacs 30.1 (build 1, x86_64)")?;
+    let wrong = host_run_task::ensure_pinned_host_version("GNU Emacs 29.4")
+        .err()
+        .context("an unpinned host must be refused")?;
+    assert!(
+        wrong.to_string().contains("does not match the pinned subject"),
+        "the refusal must name the subject pin: {wrong}"
+    );
+    Ok(())
+}
+
+/// A reused output directory concatenates driver event streams and
+/// misattributes stale artifacts; the run must refuse it.
+#[test]
+fn host_run_refuses_a_reused_output_directory() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let out = root.path().join("out");
+    fs::create_dir_all(&out)?;
+    let error = host_run_task::ensure_fresh_output_root(&out)
+        .err()
+        .context("a reused output root must be refused")?;
+    assert!(
+        error.to_string().contains("use a fresh directory"),
+        "the refusal must demand a fresh directory: {error}"
+    );
+    host_run_task::ensure_fresh_output_root(&root.path().join("fresh-out"))?;
+    Ok(())
+}
+
+/// A build revision is a standalone 40-hex run only; longer or shorter hex
+/// runs are not commit identities.
+#[test]
+fn commit_like_tokens_are_standalone_forty_hex_runs() {
+    let token = "0123456789abcdef0123456789abcdef01234567";
+    assert_eq!(
+        host_run_task::extract_commit_like_token(&format!("perllsp 1.2.3 ({token})")),
+        Some(token.to_string())
+    );
+    assert_eq!(host_run_task::extract_commit_like_token("perllsp 1.2.3"), None);
+    let forty_one = format!("{:0>41}", "0123456789abcdef0123456789abcdef012345678");
+    assert_eq!(
+        host_run_task::extract_commit_like_token(&format!("hash {forty_one}")),
+        None,
+        "a 41-hex run is not a commit identity"
+    );
+}
