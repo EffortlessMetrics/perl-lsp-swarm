@@ -1,4 +1,4 @@
-use perl_module::path::{
+use perl_module::{
     file_path_to_module_name, module_name_to_path, module_path_to_name, normalize_package_separator,
 };
 use proptest::prelude::*;

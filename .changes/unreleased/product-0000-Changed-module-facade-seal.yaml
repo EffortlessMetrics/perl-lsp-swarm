@@ -1,0 +1,9 @@
+project: product
+component: Semantic tooling
+kind: Changed
+body: "perl-module implementation modules (`resolution`, `reference`, `rename`, `import`, `name`, `path`, `token`, `token_core`, `token_parser`, `import_match`, `boundary`) are now private (#8810 M10 seal). Every supported public item is reachable only through the crate-root facade (`perl_module::*`), including the newly published `use lib` include-path family, `build_effective_inc_roots`, and `parse_qw_arg_list`. All workspace consumers migrated to facade imports; compile-fail doctests prove internal paths no longer compile."
+time: 2026-08-24T00:00:00Z
+custom:
+  PR: "0000"
+  Slug: module-facade-sealing-8810
+  Breaking: "yes"

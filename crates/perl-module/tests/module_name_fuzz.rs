@@ -1,6 +1,4 @@
-use perl_module::name::{
-    legacy_package_separator, module_variant_pairs, normalize_package_separator,
-};
+use perl_module::{legacy_package_separator, module_variant_pairs, normalize_package_separator};
 
 fn next_u64(state: &mut u64) -> u64 {
     *state ^= *state >> 12;
