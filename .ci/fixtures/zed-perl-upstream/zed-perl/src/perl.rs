@@ -242,7 +242,6 @@ struct PerlExtension {
     perllsp_path: Option<String>,
     update_state: UpdateState,
     cold_install_attempts: u32,
-    last_cold_failure: Option<String>,
 }
 
 impl PerlExtension {
@@ -465,8 +464,9 @@ impl PerlExtension {
                 self.perllsp_path = Some(path.clone());
                 return Ok(path);
             }
-            Err(reason) => {
-                self.last_cold_failure = Some(reason);
+            Err(_) => {
+                // The typed update state and the propagated error carry the
+                // cause; reconstruction is re-derived on every activation.
             }
         }
 
@@ -546,8 +546,9 @@ impl PerlExtension {
         }
 
         // Bind the exact installed identity only after the candidate is fully
-        // staged and verified on disk; the manifest promotion is atomic and
-        // last, so a partial install can never become accepted current.
+        // staged, verified, and executable on disk; the manifest promotion is
+        // atomic and last, so a partial install can never become accepted
+        // current (cache_contract.replace_only_after ends at executable_ready).
         let binary_bytes = fs::read(&binary_path).map_err(|error| {
             self.update_state = UpdateState::CandidateRejected;
             format!("downloaded perllsp binary `{binary_path}` could not be read: {error}")
@@ -561,13 +562,17 @@ impl PerlExtension {
             installed_path: binary_path.clone(),
             binary_sha256: format!("sha256:{}", content_sha256(&binary_bytes)),
         };
+
+        if !matches!(os, zed::Os::Windows) {
+            if let Err(error) = zed::make_file_executable(&binary_path) {
+                self.update_state = UpdateState::CandidateRejected;
+                return Err(format!("failed to make downloaded perllsp executable: {error}"));
+            }
+        }
+
         if let Err(error) = store_selection_manifest(&manifest) {
             self.update_state = UpdateState::CandidateRejected;
             return Err(error);
-        }
-
-        if !matches!(os, zed::Os::Windows) {
-            zed::make_file_executable(&binary_path)?;
         }
 
         self.perllsp_path = Some(binary_path.clone());
@@ -710,7 +715,6 @@ impl zed::Extension for PerlExtension {
             perllsp_path: None,
             update_state: UpdateState::NotRequested,
             cold_install_attempts: 0,
-            last_cold_failure: None,
         }
     }
 
