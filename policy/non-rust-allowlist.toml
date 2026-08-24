@@ -2711,6 +2711,22 @@ created = "2026-08-23"
 review_after = "2026-09-23"
 
 [[allow]]
+id = "non-rust-litexl-init-configuration-items-tests"
+path = "clients/lite-xl/tests/init_configuration_items_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free workspace/configuration suite proving positional response slots, duplicate retention, explicit-null unresolved slots, typed empty arrays, string-id preservation, and fail-honest InvalidParams for malformed items; runs against the staged module or the pristine upstream blob for red-first checks and against single-behavior mutations for falsifier checks."
+covered_by = [
+  "lua clients/lite-xl/tests/init_configuration_items_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-23"
+review_after = "2026-09-23"
+
+[[allow]]
 id = "non-rust-litexl-diagnostics-store"
 path = "clients/lite-xl/upstream/diagnostics.lua"
 kind = "editor_extension"
@@ -2806,3 +2822,4 @@ covered_by = [
 ]
 created = "2026-08-23"
 review_after = "2026-09-23"
+
