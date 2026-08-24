@@ -155,7 +155,7 @@ assert "binary" not in path_settings["lsp"]["perllsp"]
 #[test]
 fn validator_cli_checks_schema_then_semantics() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let template = root.join(OBSERVATIONS);
+    let template = root.join(".ci/fixtures/zed-perl-upstream/receipts/exact-source-template.json");
     let validator = env!("CARGO_BIN_EXE_validate-zed-host-receipt");
 
     let schema_only =
