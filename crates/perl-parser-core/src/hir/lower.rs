@@ -2188,16 +2188,22 @@ impl Lowerer {
             return;
         }
 
-        let (package, symbol) = match &target.kind {
+        let (package, symbol, qualified) = match &target.kind {
             NodeKind::Variable { sigil, name } if sigil == "@" => {
-                package_and_symbol(name, self.package_context.as_deref())
+                let (package, symbol) = package_and_symbol(name, self.package_context.as_deref());
+                (package, symbol, name.contains("::"))
             }
             _ => return,
         };
         if symbol != "ISA" {
             return;
         }
-        if let Some(binding_id) = self.resolve_visible_binding(self.current_scope(), "@", &symbol)
+        // A lexical `my @ISA` only shadows the bare `@ISA` form. A
+        // package-qualified `@Child::ISA` always targets the stash slot, so
+        // the lexical-suppression check must not apply to it.
+        if !qualified
+            && let Some(binding_id) =
+                self.resolve_visible_binding(self.current_scope(), "@", &symbol)
         {
             if self
                 .scope_graph
@@ -2859,7 +2865,11 @@ fn contains_dynamic_package_name(node: &Node) -> bool {
 }
 
 fn is_isa_target(node: &Node) -> bool {
-    matches!(&node.kind, NodeKind::Variable { sigil, name } if sigil == "@" && name == "ISA")
+    // Both `@ISA` and package-qualified `@Child::ISA` are push targets that
+    // mutate a stash inheritance slot; split via `package_and_symbol` so the
+    // accepted shape stays in one place.
+    matches!(&node.kind, NodeKind::Variable { sigil, name }
+        if sigil == "@" && package_and_symbol(name, None).1 == "ISA")
 }
 
 fn variable_decl_bindings(node: &Node) -> (Vec<VariableBinding>, bool) {
@@ -4063,6 +4073,15 @@ impl<'a> BodyBuilder2<'a> {
                     "our" => VariableKind::Package,
                     _ => VariableKind::Lexical,
                 };
+                // Anchor at the variable token, not the whole `my $i` declaration
+                // span — mirrors the statement-level VariableDeclaration path,
+                // which anchors at `variable.location` (body.rs). Anchoring at
+                // `node.location` widens PIR lexical-write anchors to include
+                // the declarator keyword (#12191/#12274).
+                let binding_node = match &variable.kind {
+                    NodeKind::VariableWithAttributes { variable, .. } => variable.as_ref(),
+                    _ => variable.as_ref(),
+                };
                 self.alloc_expr(
                     HirExpr::Variable(HirVariable {
                         sigil: sigil_from_str(sigil),
@@ -4070,7 +4089,7 @@ impl<'a> BodyBuilder2<'a> {
                         kind,
                         access: AccessMode::Write,
                     }),
-                    node.location,
+                    binding_node.location,
                 )
             }
             _ => self.lower_expr(node),
@@ -4296,9 +4315,12 @@ mod isa_lowering_tests {
     fn interpolated_push_isa_is_dynamic() {
         let file = lower("package Child; push @ISA, \"Base::$suffix\"; 1;");
         assert!(file.stash_graph.inheritance_edges.is_empty());
-        assert!(file.stash_graph.dynamic_boundaries.iter().any(|boundary| {
-            boundary.kind == StashDynamicBoundaryKind::DynamicInheritance
-        }));
+        assert!(
+            file.stash_graph
+                .dynamic_boundaries
+                .iter()
+                .any(|boundary| { boundary.kind == StashDynamicBoundaryKind::DynamicInheritance })
+        );
     }
 
     #[test]
@@ -4307,6 +4329,26 @@ mod isa_lowering_tests {
         let edge = file.stash_graph.inheritance_edges.first().expect("expected inheritance edge");
         assert_eq!(edge.from_package, "Child");
         assert_eq!(edge.to_package, "Base");
+    }
+
+    #[test]
+    fn qualified_push_isa_ignores_lexical_isa() {
+        // A lexical `my @ISA` shadows only the bare `@ISA` form; the
+        // package-qualified push still targets the Child stash slot.
+        let file = lower("package Other; my @ISA; push @Child::ISA, 'Base'; 1;");
+        let edge = file.stash_graph.inheritance_edges.first().expect("expected inheritance edge");
+        assert_eq!(edge.from_package, "Child");
+        assert_eq!(edge.to_package, "Base");
+    }
+
+    #[test]
+    fn qualified_interpolated_push_isa_records_owning_package() {
+        let file = lower("package Other; push @Child::ISA, \"Base::$suffix\"; 1;");
+        assert!(file.stash_graph.inheritance_edges.is_empty());
+        assert!(file.stash_graph.dynamic_boundaries.iter().any(|boundary| {
+            boundary.kind == StashDynamicBoundaryKind::DynamicInheritance
+                && boundary.package.as_deref() == Some("Child")
+        }));
     }
 
     #[test]

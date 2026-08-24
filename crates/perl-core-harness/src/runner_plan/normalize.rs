@@ -150,13 +150,10 @@ mod tests {
 
     #[test]
     fn normalizes_local_and_root_external_paths() -> Result<(), String> {
-        let local =
-            normalize_source_item("base/if.t", DiscoveryFrame::RunnerTDirectoryRelative)?;
+        let local = normalize_source_item("base/if.t", DiscoveryFrame::RunnerTDirectoryRelative)?;
         assert_eq!(local.canonical_path, "t/base/if.t");
-        let external = normalize_source_item(
-            "../ext/re/t/basic.t",
-            DiscoveryFrame::RunnerTDirectoryRelative,
-        )?;
+        let external =
+            normalize_source_item("../ext/re/t/basic.t", DiscoveryFrame::RunnerTDirectoryRelative)?;
         assert_eq!(external.canonical_path, "ext/re/t/basic.t");
         let root_lib =
             normalize_source_item("lib/Foo/test.pl", DiscoveryFrame::RepositoryRootRelative)?;
@@ -166,33 +163,25 @@ mod tests {
 
     #[test]
     fn frame_is_load_bearing_and_traversal_is_lexical() {
-        let from_t = normalize_source_item(
-            "lib/Foo/test.pl",
-            DiscoveryFrame::RunnerTDirectoryRelative,
-        )
-        .unwrap();
-        let from_root = normalize_source_item(
-            "lib/Foo/test.pl",
-            DiscoveryFrame::RepositoryRootRelative,
-        )
-        .unwrap();
+        let from_t =
+            normalize_source_item("lib/Foo/test.pl", DiscoveryFrame::RunnerTDirectoryRelative)
+                .unwrap();
+        let from_root =
+            normalize_source_item("lib/Foo/test.pl", DiscoveryFrame::RepositoryRootRelative)
+                .unwrap();
         assert_eq!(from_t.canonical_path, "t/lib/Foo/test.pl");
         assert_eq!(from_root.canonical_path, "lib/Foo/test.pl");
         assert_ne!(from_t, from_root);
         assert_eq!(
-            normalize_source_item(
-                "../lib/Foo/test.pl",
-                DiscoveryFrame::RunnerTDirectoryRelative
-            )
-            .unwrap()
-            .canonical_path,
+            normalize_source_item("../lib/Foo/test.pl", DiscoveryFrame::RunnerTDirectoryRelative)
+                .unwrap()
+                .canonical_path,
             "lib/Foo/test.pl"
         );
-        assert!(normalize_source_item(
-            "../../escape.t",
-            DiscoveryFrame::RunnerTDirectoryRelative
-        )
-        .is_err());
+        assert!(
+            normalize_source_item("../../escape.t", DiscoveryFrame::RunnerTDirectoryRelative)
+                .is_err()
+        );
     }
 
     #[test]
@@ -212,10 +201,9 @@ mod tests {
 
     #[test]
     fn unsupported_discovery_source_form_is_named_with_expected_forms() {
-        let Err(error) = normalize_source_item(
-            "t/base/readme.txt",
-            DiscoveryFrame::CanonicalRepositoryPath,
-        ) else {
+        let Err(error) =
+            normalize_source_item("t/base/readme.txt", DiscoveryFrame::CanonicalRepositoryPath)
+        else {
             panic!("non-.t and non-test.pl discovery must be rejected");
         };
         assert_eq!(
@@ -223,10 +211,9 @@ mod tests {
             "unsupported discovery source form for t/base/readme.txt; expected .t or test.pl"
         );
 
-        let Err(error) = normalize_source_item(
-            "lib/x/notes.md",
-            DiscoveryFrame::CanonicalRepositoryPath,
-        ) else {
+        let Err(error) =
+            normalize_source_item("lib/x/notes.md", DiscoveryFrame::CanonicalRepositoryPath)
+        else {
             panic!("root-lib markdown discovery must be rejected");
         };
         assert_eq!(

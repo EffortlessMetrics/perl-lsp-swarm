@@ -3574,8 +3574,7 @@ impl WorkspaceIndex {
         reindex_metrics::record_eval_sub(eval_sub_start.elapsed());
         let dynamic_boundaries: Vec<perl_semantic_facts::OccurrenceFact> =
             eval_sub_triples.iter().map(|(_, _, occ)| occ.clone()).collect();
-        let (hir_boundary_anchors, hir_boundary_occurrences) =
-            dynamic_isa_facts(uri, ast, file_id);
+        let (hir_boundary_anchors, hir_boundary_occurrences) = dynamic_isa_facts(uri, ast, file_id);
         let mut dynamic_boundaries = dynamic_boundaries;
         dynamic_boundaries.extend(hir_boundary_occurrences);
         #[cfg(test)]
@@ -3668,10 +3667,14 @@ impl WorkspaceIndex {
             crate::semantic::eval_sub_extractor::extract_eval_sub_boundaries(ast, file_id);
         #[cfg(test)]
         reindex_metrics::record_eval_sub(eval_sub_start.elapsed());
-        let (hir_boundary_anchors, hir_boundary_occurrences) =
-            dynamic_isa_facts(uri, ast, file_id);
-        let dynamic_boundaries: Vec<perl_semantic_facts::OccurrenceFact> =
+        let (hir_boundary_anchors, hir_boundary_occurrences) = dynamic_isa_facts(uri, ast, file_id);
+        // The refs path's contract (see the doc comment above) keeps every
+        // non-reference extractor identical to `build_canonical_fact_shard_for_ast`;
+        // the isa boundary occurrences must reach the shard here exactly as
+        // they do there, or the paired anchors dangle without occurrences.
+        let mut dynamic_boundaries: Vec<perl_semantic_facts::OccurrenceFact> =
             eval_sub_triples.iter().map(|(_, _, occ)| occ.clone()).collect();
+        dynamic_boundaries.extend(hir_boundary_occurrences);
         #[cfg(test)]
         let generated_member_start = Instant::now();
         let generated_member_facts =
@@ -13956,6 +13959,19 @@ mod extraction_bundle_shadow_compare {
     }
 
     // ── Targeted edge cases ──────────────────────────────────────────────
+
+    #[test]
+    fn parity_dynamic_isa_boundary() {
+        // An interpolated `push @ISA` creates a DynamicInheritance boundary
+        // whose occurrence facts must reach the canonical shard identically
+        // through both extraction paths -- the refs path dropped them while
+        // keeping the paired anchors (dangling-anchor asymmetry).
+        let text = "package Child;\npush @ISA, \"Base::$suffix\";\nsub m { 1; }\n";
+        let uri = "file:///edge/dynamic_isa.pl";
+        assert_parity("dynamic_isa", uri, text);
+        assert_unified_canonical_parity("dynamic_isa", uri, text);
+        assert_unified_legacy_is_superset("dynamic_isa", uri, text);
+    }
 
     #[test]
     fn parity_comment_only() {
