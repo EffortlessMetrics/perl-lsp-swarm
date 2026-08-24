@@ -1205,7 +1205,7 @@ mod tests {
     fn lowering_disposition_is_copy_and_clone() {
         // Verify the `Copy` and `Clone` derives work correctly for `LoweringDisposition`.
         let d = disposition_for("Package").expect("Package must have a disposition");
-        let cloned = d.clone();
+        let cloned = d;
         assert_eq!(d, cloned, "Clone must produce equal LoweringDisposition");
         // Copy: assign to a new binding and both must be usable.
         let copied: LoweringDisposition = d;

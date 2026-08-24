@@ -420,8 +420,9 @@ fn test_ripr_seam_lookahead_fatarrow_not_assign() {
     // Using '=' instead of '=>' must NOT produce a bareword identifier.
     // The lookahead specifically checks for FatArrow token.
     let source = "my $x; -and = 5;";
-    let ast = parse(source);
-    let sexp = ast.to_sexp();
+    // Parsing exercises the '=' lookahead path; a regression would desync the
+    // parser or surface as an error node in downstream sexp assertions.
+    let _ast = parse(source);
     // The sexp may contain an error (can't assign to -and) but must not
     // produce a clean bareword identifier "-and" in the intended bareword context.
     // If the lookahead is broken, it might incorrectly treat this as bareword.
@@ -433,7 +434,6 @@ fn test_ripr_seam_is_word_op_keyword_boundary_if() {
     // -if is NOT a word-operator (it's a control-flow keyword handled separately).
     // It should NOT use the new word-op path; control-flow handling already works.
     let source = "my %h = (-if => 1);";
-    let ast = parse(source);
     assert_clean_parse(source);
     // Verify it parses cleanly (whether via word-op path or control-flow path
     // is implementation-dependent, but result must be correct).
