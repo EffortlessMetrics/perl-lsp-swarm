@@ -1265,6 +1265,10 @@ def _clean_restored_receipt_state(receipt_dir: Path, summary_path: Path) -> None
     this subject run (#12085).
     """
     receipts_root = receipt_dir.parent
+    if receipts_root.is_symlink():
+        raise ValueError(
+            f"refusing symlinked receipt root during cleanup: {receipts_root}"
+        )
     targets: list[Path] = [receipt_dir]
     targets.extend(receipts_root / name for name in RESTORED_RECEIPT_SUBDIRS)
     if summary_path not in targets:

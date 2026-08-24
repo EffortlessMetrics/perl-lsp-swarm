@@ -1726,6 +1726,7 @@ class RestoredReceiptCleanupTests(unittest.TestCase):
             root = Path(tmp)
             outside = root / "outside"
             outside.mkdir()
+            (outside / "keep.txt").write_text("survivor", encoding="utf-8")
             (root / "receipts").symlink_to(outside, target_is_directory=True)
             policy = write_policy(root, {"alpha": []})
             receipt_schema = write_receipt_schema(root)
@@ -1734,7 +1735,7 @@ class RestoredReceiptCleanupTests(unittest.TestCase):
             runner = shard.ShardRunner(
                 xtask=Path("target/debug/xtask"),
                 gate_policy=policy,
-                receipt_dir=root / "receipts",
+                receipt_dir=root / "receipts" / "shards",
                 summary_path=root / "receipts" / "shard-summaries" / "meta.json",
                 subject_sha=SUBJECT,
                 gates=["alpha"],
@@ -1744,6 +1745,8 @@ class RestoredReceiptCleanupTests(unittest.TestCase):
             )
             with self.assertRaises(ValueError):
                 runner.run()
+            # Fail-closed means fail-closed: nothing behind the link was touched.
+            self.assertTrue((outside / "keep.txt").exists())
 
 
 if __name__ == "__main__":
