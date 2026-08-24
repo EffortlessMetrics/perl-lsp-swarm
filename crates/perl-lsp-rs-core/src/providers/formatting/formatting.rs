@@ -788,7 +788,7 @@ fn line_ending_kind(source: &str) -> (bool, bool, bool) {
 }
 
 fn utf16_len(s: &str) -> usize {
-    s.chars().map(|ch| if ch as u32 >= 0x10000 { 2 } else { 1 }).sum()
+    s.chars().map(char::len_utf16).sum()
 }
 
 const fn formatter_mode_name(mode: FormatterMode) -> &'static str {
