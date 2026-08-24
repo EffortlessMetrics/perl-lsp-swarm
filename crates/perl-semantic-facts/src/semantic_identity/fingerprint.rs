@@ -33,8 +33,9 @@ impl SemanticIdentityFingerprint {
     }
 
     fn mix_str(&mut self, value: &str) {
-        // A length prefix keeps concatenations unambiguous.
-        for byte in 0u64.to_be_bytes() {
+        // An actual-length prefix keeps concatenations unambiguous: content
+        // cannot shift across a field boundary.
+        for byte in u64::try_from(value.len()).unwrap_or(u64::MAX).to_be_bytes() {
             self.mix_byte(byte);
         }
         for byte in value.as_bytes().iter() {
@@ -54,14 +55,6 @@ impl SemanticIdentityFingerprint {
     #[must_use]
     pub fn discriminant(self, label: &str, tag: &str) -> Self {
         self.field(label, tag)
-    }
-
-    /// Mix an ordered sequence of pre-canonicalized items. Callers that hold
-    /// unordered collections must sort their canonical item text first.
-    #[must_use]
-    pub fn ordered_field(self, label: &str, ordered_values: &[String]) -> Self {
-        let joined = ordered_values.join("\u{1f}");
-        self.field(label, &joined)
     }
 
     /// Render the accumulated fingerprint as lowercase hex.

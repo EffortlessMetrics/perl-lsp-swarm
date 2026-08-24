@@ -309,6 +309,130 @@ fn identity_round_trips_json() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Separator-like component content cannot shift a field boundary: two
+/// structurally different subjects whose flat concatenations would coincide
+/// keep distinct fingerprints because every component is framed by its own
+/// length and label.
+#[test]
+fn separator_content_cannot_shift_field_boundaries() -> FixtureResult {
+    let a = file_scope(subject("doc\u{1e}split", "gen")?)?;
+    let b = file_scope(subject("doc", "split\u{1e}gen")?)?;
+    assert_ne!(a.fingerprint(), b.fingerprint());
+
+    let dep_x = SemanticDependencyIdentity::new(SemanticDependencyKind::PackageState, "x\u{1e}y")?;
+    let dep_y = SemanticDependencyIdentity::new(SemanticDependencyKind::PackageState, "x")?;
+    let owner_x = SemanticContributionOwner::new(
+        subject("doc-1", "gen-1")?,
+        SemanticOwnershipDisposition::FileGlobalOwned,
+        SemanticFactFamily::PackageFact,
+        "primary",
+        Vec::new(),
+        SemanticSubjectStatus::Complete,
+        vec![dep_x.clone()],
+        Vec::new(),
+    )?;
+    let owner_y = SemanticContributionOwner::new(
+        subject("doc-1", "gen-1")?,
+        SemanticOwnershipDisposition::FileGlobalOwned,
+        SemanticFactFamily::PackageFact,
+        "primary",
+        Vec::new(),
+        SemanticSubjectStatus::Complete,
+        vec![dep_y, dep_x.clone()],
+        Vec::new(),
+    )?;
+    assert_ne!(owner_x.owner_fingerprint(), owner_y.owner_fingerprint());
+    Ok(())
+}
+
+/// A blank `Some("")` owning-declaration key is rejected instead of
+/// fingerprinting identically to `None`.
+#[test]
+fn blank_declaration_key_rejected() -> FixtureResult {
+    let subject_gen = subject("doc-1", "gen-1")?;
+    let file = file_scope(subject_gen.clone())?;
+    let anchor = SemanticSourceAnchor::new(SemanticAnchorRole::Header, "h", 0)?;
+    assert!(
+        SemanticScopeIdentity::new(
+            subject_gen,
+            SemanticScopeKind::NamedSubroutine,
+            Some("   ".to_string()),
+            Some(file.fingerprint()),
+            anchor,
+            None,
+            SemanticScopeRecovery::Exact,
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+/// Duplicate related anchors and duplicate dependencies are rejected.
+#[test]
+fn duplicate_owner_relations_rejected() -> FixtureResult {
+    let dup_dep = SemanticDependencyIdentity::new(SemanticDependencyKind::PackageState, "pkg")?;
+    let distinct_dep = SemanticDependencyIdentity::new(SemanticDependencyKind::NamedFact, "pkg")?;
+    assert!(
+        SemanticContributionOwner::new(
+            subject("doc-1", "gen-1")?,
+            SemanticOwnershipDisposition::FileGlobalOwned,
+            SemanticFactFamily::PackageFact,
+            "primary",
+            vec!["x".to_string(), "x".to_string()],
+            SemanticSubjectStatus::Complete,
+            Vec::new(),
+            Vec::new(),
+        )
+        .is_err()
+    );
+    assert!(
+        SemanticContributionOwner::new(
+            subject("doc-1", "gen-1")?,
+            SemanticOwnershipDisposition::FileGlobalOwned,
+            SemanticFactFamily::PackageFact,
+            "primary",
+            Vec::new(),
+            SemanticSubjectStatus::Complete,
+            vec![dup_dep.clone(), dup_dep.clone()],
+            Vec::new(),
+        )
+        .is_err()
+    );
+    assert!(
+        SemanticContributionOwner::new(
+            subject("doc-1", "gen-1")?,
+            SemanticOwnershipDisposition::FileGlobalOwned,
+            SemanticFactFamily::PackageFact,
+            "primary",
+            Vec::new(),
+            SemanticSubjectStatus::Complete,
+            vec![dup_dep.clone(), distinct_dep],
+            Vec::new(),
+        )
+        .is_ok()
+    );
+    Ok(())
+}
+
+/// An unsupported/not-proven owner yields no reusable contribution identity.
+#[test]
+fn unsupported_owner_has_no_contribution_identity() -> FixtureResult {
+    let owner = SemanticContributionOwner::new(
+        subject("doc-1", "gen-1")?,
+        SemanticOwnershipDisposition::UnsupportedNotProven {
+            reason: "dynamic construct".to_string(),
+        },
+        SemanticFactFamily::DynamicLimitation,
+        "primary",
+        Vec::new(),
+        SemanticSubjectStatus::NotProven,
+        Vec::new(),
+        Vec::new(),
+    )?;
+    assert!(owner.contribution_id(0).is_err());
+    Ok(())
+}
+
 /// Architecture fence: the lower identity model carries no LSP, parser, or
 /// provider types, and never uses a traversal-order `ScopeId(` constructor.
 #[test]

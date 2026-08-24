@@ -139,19 +139,27 @@ impl SemanticOwnershipDisposition {
         }
     }
 
-    /// Canonical fingerprint contribution.
-    fn fingerprint_field(&self) -> String {
+    /// Mix the disposition payload as independently framed, labeled fields.
+    ///
+    /// Payload components are never flattened with separators, so a component
+    /// containing any separator-like content cannot shift across a field
+    /// boundary.
+    fn mix_into(&self, fp: SemanticIdentityFingerprint) -> SemanticIdentityFingerprint {
         match self {
-            Self::ScopeOwned { scope_fingerprint } => scope_fingerprint.clone(),
-            Self::FileGlobalOwned => String::new(),
-            Self::SourceOrderContextOwned { context } => {
-                format!("{}\u{1e}{}", context.context_ordinal(), context.context_digest())
+            Self::ScopeOwned { scope_fingerprint } => {
+                fp.field("owner-scope-fingerprint", scope_fingerprint)
             }
-            Self::ExternalCanonicalProducer { producer_id, subject_digest } => {
-                format!("{producer_id}\u{1e}{subject_digest}")
+            Self::FileGlobalOwned => fp,
+            Self::SourceOrderContextOwned { context } => fp
+                .field("context-ordinal", &context.context_ordinal().to_string())
+                .field("context-digest", context.context_digest()),
+            Self::ExternalCanonicalProducer { producer_id, subject_digest } => fp
+                .field("producer-id", producer_id)
+                .field("producer-subject-digest", subject_digest),
+            Self::CompatibilityProjection { exit_reference } => {
+                fp.field("exit-reference", exit_reference)
             }
-            Self::CompatibilityProjection { exit_reference } => exit_reference.clone(),
-            Self::UnsupportedNotProven { reason } => reason.clone(),
+            Self::UnsupportedNotProven { reason } => fp.field("reason", reason),
         }
     }
 }
@@ -472,12 +480,25 @@ impl SemanticContributionOwner {
                 "SemanticContributionOwner.related_anchor_digests",
             ));
         }
+        if sorted_related.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(SemanticIdentityContractError::ContradictoryStatus(
+                "related anchor digests must be distinct",
+            ));
+        }
         // Deterministic dependency order: dependency identity is compared as a
         // whole, never by insertion order.
         let mut sorted_dependencies = dependencies;
         sorted_dependencies.sort_by(|a, b| {
             (a.kind.tag(), &a.target_fingerprint).cmp(&(b.kind.tag(), &b.target_fingerprint))
         });
+        let dep_duplicates = sorted_dependencies.windows(2).any(|pair| {
+            pair[0].kind == pair[1].kind && pair[0].target_fingerprint == pair[1].target_fingerprint
+        });
+        if dep_duplicates {
+            return Err(SemanticIdentityContractError::ContradictoryStatus(
+                "owner dependencies must be distinct",
+            ));
+        }
         if fact_family.is_scope_local()
             && !matches!(disposition, SemanticOwnershipDisposition::ScopeOwned { .. })
         {
@@ -534,16 +555,24 @@ impl SemanticContributionOwner {
         &self.dependencies
     }
 
-    /// Bind this owner to a scope, deriving scope-owned contributions.
+    /// Derive the deterministic contribution identity of this owner.
     ///
     /// # Errors
-    /// Propagates contract errors from [`SemanticContributionId::new`].
+    /// Returns [`SemanticIdentityContractError::ContradictoryStatus`] for an
+    /// unsupported/not-proven owner: that disposition carries no reusable
+    /// incremental identity by definition. Otherwise propagates contract
+    /// errors from [`SemanticContributionId::new`].
     pub fn contribution_id(
         &self,
         family_ordinal: u32,
     ) -> Result<SemanticContributionId, SemanticIdentityContractError> {
+        if matches!(self.disposition, SemanticOwnershipDisposition::UnsupportedNotProven { .. }) {
+            return Err(SemanticIdentityContractError::ContradictoryStatus(
+                "an unsupported/not-proven owner carries no reusable contribution identity",
+            ));
+        }
         SemanticContributionId::new(
-            self.owner_fingerprint_text(),
+            self.owner_fingerprint(),
             self.fact_family,
             &self.primary_anchor_digest,
             family_ordinal,
@@ -551,40 +580,27 @@ impl SemanticContributionOwner {
     }
 
     /// Deterministic owner fingerprint (schema-tagged).
+    ///
+    /// Every multi-component contributor (subject, disposition payload,
+    /// dependency edges) is mixed as independently framed labeled fields, so
+    /// separator-like content in any component cannot shift a field boundary.
     #[must_use]
     pub fn owner_fingerprint(&self) -> String {
-        SemanticIdentityFingerprint::new(self.schema.tag())
-            .field("subject", &self.subject_fingerprint_text())
-            .discriminant("disposition", self.disposition.tag())
-            .field("disposition-subject", &self.disposition.fingerprint_field())
+        let fp =
+            self.subject.mix_subject_fields(SemanticIdentityFingerprint::new(self.schema.tag()));
+        let fp = self.disposition.mix_into(fp.discriminant("disposition", self.disposition.tag()));
+        let fp = fp
             .discriminant("family", self.fact_family.tag())
-            .field("primary-anchor", &self.primary_anchor_digest)
-            .ordered_field("related-anchors", &self.related_anchor_digests)
-            .ordered_field(
-                "dependencies",
-                &self
-                    .dependencies
-                    .iter()
-                    .map(|dep| format!("{}\u{1e}{}", dep.kind.tag(), dep.target_fingerprint))
-                    .collect::<Vec<_>>(),
-            )
-            .finish()
-    }
-
-    fn owner_fingerprint_text(&self) -> String {
-        self.owner_fingerprint()
-    }
-
-    fn subject_fingerprint_text(&self) -> String {
-        format!(
-            "{}\u{1e}{}\u{1e}{}\u{1e}{}\u{1e}{}\u{1e}{}",
-            self.subject.logical_source_id(),
-            self.subject.source_generation(),
-            self.subject.parser_snapshot_id(),
-            self.subject.parser_configuration_id(),
-            self.subject.profile().profile_id(),
-            self.subject.profile().profile_digest(),
-        )
+            .field("primary-anchor", &self.primary_anchor_digest);
+        let fp = self
+            .related_anchor_digests
+            .iter()
+            .fold(fp, |acc, digest| acc.field("related-anchor", digest));
+        let fp = self.dependencies.iter().fold(fp, |acc, dep| {
+            acc.discriminant("dep-kind", dep.kind.tag())
+                .field("dep-target", &dep.target_fingerprint)
+        });
+        fp.finish()
     }
 
     /// Validate the owner contract.

@@ -367,17 +367,21 @@ impl SemanticSubjectGeneration {
         &self.profile
     }
 
-    /// Canonical fingerprint contribution (schema-tagged by the caller).
-    fn fingerprint_text(&self) -> String {
-        format!(
-            "{}\u{1e}{}\u{1e}{}\u{1e}{}\u{1e}{}\u{1e}{}",
-            self.logical_source_id,
-            self.source_generation,
-            self.parser_snapshot_id,
-            self.parser_configuration_id,
-            self.profile.profile_id,
-            self.profile.profile_digest,
-        )
+    /// Mix each subject component as an independently framed, labeled field.
+    ///
+    /// Component values are never flattened with separators, so a component
+    /// containing any separator-like content cannot shift across a field
+    /// boundary.
+    pub(super) fn mix_subject_fields(
+        &self,
+        fp: SemanticIdentityFingerprint,
+    ) -> SemanticIdentityFingerprint {
+        fp.field("logical-source", &self.logical_source_id)
+            .field("source-generation", &self.source_generation)
+            .field("parser-snapshot", &self.parser_snapshot_id)
+            .field("parser-config", &self.parser_configuration_id)
+            .field("profile-id", &self.profile.profile_id)
+            .field("profile-digest", &self.profile.profile_digest)
     }
 }
 
@@ -417,6 +421,11 @@ impl SemanticScopeIdentity {
         if parent_fingerprint.as_deref().is_some_and(|parent| parent.trim().is_empty()) {
             return Err(SemanticIdentityContractError::EmptyIdentityField(
                 "SemanticScopeIdentity.parent_fingerprint",
+            ));
+        }
+        if owning_declaration_key.as_deref().is_some_and(|key| key.trim().is_empty()) {
+            return Err(SemanticIdentityContractError::EmptyIdentityField(
+                "SemanticScopeIdentity.owning_declaration_key",
             ));
         }
         if matches!(kind, SemanticScopeKind::File) && parent_fingerprint.is_some() {
@@ -497,22 +506,23 @@ impl SemanticScopeIdentity {
     /// offset.
     #[must_use]
     pub fn fingerprint(&self) -> String {
-        SemanticIdentityFingerprint::new(self.schema.tag())
-            .field("subject", &self.subject.fingerprint_text())
+        let fp =
+            self.subject.mix_subject_fields(SemanticIdentityFingerprint::new(self.schema.tag()));
+        let fp = fp
             .discriminant("kind", self.kind.tag())
-            .field("decl", self.owning_declaration_key.as_deref().unwrap_or(""))
-            .field("parent", self.parent_fingerprint.as_deref().unwrap_or(""))
-            .discriminant("anchor-role", self.anchor.anchor_role.tag())
+            .field("decl-present", &self.owning_declaration_key.is_some().to_string())
+            .field("decl", self.owning_declaration_key.as_deref().unwrap_or(""));
+        let mut fp = fp;
+        if let Some(ctx) = self.package_context.as_ref() {
+            fp = fp
+                .field("package-context-ordinal", &ctx.context_ordinal.to_string())
+                .field("package-context-digest", &ctx.context_digest);
+        }
+        fp.discriminant("anchor-role", self.anchor.anchor_role.tag())
             .field("anchor-digest", &self.anchor.anchor_digest)
             .field("anchor-ordinal", &self.anchor.sibling_ordinal.to_string())
-            .field(
-                "package-context",
-                &self
-                    .package_context
-                    .as_ref()
-                    .map(|ctx| format!("{}\u{1e}{}", ctx.context_ordinal, ctx.context_digest))
-                    .unwrap_or_default(),
-            )
+            .field("parent-present", &self.parent_fingerprint.is_some().to_string())
+            .field("parent", self.parent_fingerprint.as_deref().unwrap_or(""))
             .discriminant("recovery", self.recovery.tag())
             .finish()
     }
