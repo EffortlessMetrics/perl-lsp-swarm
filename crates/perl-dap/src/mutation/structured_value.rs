@@ -20,6 +20,11 @@ pub const MUTATION_STRUCTURED_VALUE_SCHEMA_VERSION: u32 = 1;
 /// never interpreted as structure.
 pub const STRUCTURED_PREFIX: &str = "json:";
 
+/// Structural bytes charged per container node: its opening and closing
+/// delimiters count against the aggregate budget like any other decoded
+/// data byte.
+const CONTAINER_DELIMITER_BYTES: usize = 2;
+
 /// Pinned profile limits (#11327). Adjustable only through a reviewed
 /// profile version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,7 +168,8 @@ pub struct MutationStructuredValueV1 {
     pub schema_version: u32,
     /// The admitted structured value.
     pub value: StructuredValue,
-    /// Deterministic fingerprint over canonical serialization.
+    /// Deterministic fingerprint over the canonical serialization of
+    /// [`Self::value`] (fixed variant/field order, documented entry order).
     pub fingerprint: ContentDigest,
 }
 
@@ -187,9 +193,11 @@ pub fn parse_structured_mutation(
     if parser.pos != parser.input.len() {
         return Err(StructuredRefusal::InvalidSyntax { offset: parser.pos });
     }
+    let canonical = serde_json::to_string(&value)
+        .map_err(|_| StructuredRefusal::InvalidSyntax { offset: 0 })?;
     let envelope = MutationStructuredValueV1 {
         schema_version: MUTATION_STRUCTURED_VALUE_SCHEMA_VERSION,
-        fingerprint: ContentDigest::of_bytes(b""),
+        fingerprint: ContentDigest::of_bytes(canonical.as_bytes()),
         value,
     };
     Ok(envelope)
@@ -265,14 +273,13 @@ impl<'a> Parser<'a> {
 
     fn parse_string(&mut self) -> Result<StructuredValue, StructuredRefusal> {
         self.pos += 1; // opening quote
-        let start = self.pos;
         let mut decoded = String::new();
         while let Some(&b) = self.input.get(self.pos) {
             match b {
                 b'"' => {
                     let text = decoded;
-                    let _ = start;
                     self.pos += 1;
+                    self.charge_bytes(text.len())?;
                     return Ok(StructuredValue::String(text));
                 }
                 b'\\' => {
@@ -300,8 +307,19 @@ impl<'a> Parser<'a> {
                     self.pos += 2;
                 }
                 _ => {
-                    decoded.push(b as char);
-                    self.pos += 1;
+                    if b.is_ascii() {
+                        decoded.push(b as char);
+                        self.pos += 1;
+                    } else {
+                        let rest = std::str::from_utf8(&self.input[self.pos..])
+                            .map_err(|_| StructuredRefusal::InvalidSyntax { offset: self.pos })?;
+                        let c = rest
+                            .chars()
+                            .next()
+                            .ok_or(StructuredRefusal::InvalidSyntax { offset: self.pos })?;
+                        decoded.push(c);
+                        self.pos += c.len_utf8();
+                    }
                 }
             }
             if decoded.len() > self.limits.max_scalar_bytes {
@@ -331,7 +349,7 @@ impl<'a> Parser<'a> {
                 Some(b',') => self.pos += 1,
                 Some(b']') => {
                     self.pos += 1;
-                    self.charge_bytes(items.len())?;
+                    self.charge_bytes(CONTAINER_DELIMITER_BYTES)?;
                     return Ok(StructuredValue::Array(items));
                 }
                 _ => return Err(StructuredRefusal::InvalidSyntax { offset: self.pos }),
@@ -371,6 +389,7 @@ impl<'a> Parser<'a> {
                 Some(b',') => self.pos += 1,
                 Some(b'}') => {
                     self.pos += 1;
+                    self.charge_bytes(CONTAINER_DELIMITER_BYTES)?;
                     return Ok(StructuredValue::Object(entries));
                 }
                 _ => return Err(StructuredRefusal::InvalidSyntax { offset: self.pos }),
@@ -394,7 +413,7 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
         }
-        let mut exponent;
+        let exponent;
         if matches!(self.input.get(self.pos), Some(b'e' | b'E')) {
             is_decimal = true;
             self.pos += 1;
@@ -415,10 +434,18 @@ impl<'a> Parser<'a> {
             if digits.is_empty() {
                 return Err(StructuredRefusal::InvalidSyntax { offset: exp_start });
             }
-            exponent = digits.iter().fold(0i64, |acc, d| acc * 10 + i64::from(d - b'0'));
-            if negative {
-                exponent = -exponent;
+            // Checked accumulation: an oversized exponent must refuse as
+            // ExponentTooLarge, never overflow-panic or wrap past the limit.
+            let mut magnitude = Some(0i64);
+            for &d in digits {
+                magnitude = magnitude
+                    .and_then(|acc| acc.checked_mul(10))
+                    .and_then(|acc| acc.checked_add(i64::from(d - b'0')));
             }
+            let magnitude = magnitude.ok_or(StructuredRefusal::ExponentTooLarge {
+                limit: self.limits.max_absolute_exponent,
+            })?;
+            exponent = if negative { -magnitude } else { magnitude };
             if exponent.unsigned_abs() > u64::from(self.limits.max_absolute_exponent) {
                 return Err(StructuredRefusal::ExponentTooLarge {
                     limit: self.limits.max_absolute_exponent,
@@ -429,6 +456,7 @@ impl<'a> Parser<'a> {
             .map_err(|_| StructuredRefusal::InvalidSyntax { offset: start })?;
         if !is_decimal {
             if let Ok(integer) = text.parse::<i64>() {
+                self.charge_bytes(text.len())?;
                 return Ok(StructuredValue::Integer(integer));
             }
             return Err(StructuredRefusal::IntegerOutOfRange);

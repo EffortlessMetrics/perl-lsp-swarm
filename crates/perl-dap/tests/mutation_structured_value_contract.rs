@@ -3,16 +3,19 @@
 //! Negative controls: bare Perl-looking text without the `json:` prefix stays
 //! unsupported; duplicate object keys are rejected (never last-wins); depth,
 //! node, entry, scalar-byte, aggregate-byte, digit, and exponent budgets are
-//! enforced; integers outside the exact bounded range are refused. Positive
-//! controls: nested finite trees parse; scalars admit no fresh referent while
-//! arrays/objects map to fresh ARRAY/HASH referents; serialization is
-//! deterministic and fingerprint-stable under key order.
+//! enforced (aggregate over decoded data bytes, exponents via checked
+//! accumulation); integers outside the exact bounded range are refused.
+//! Positive controls: nested finite trees parse; multi-byte UTF-8 string data
+//! and object keys round-trip exactly; scalars admit no fresh referent while
+//! arrays/objects map to fresh ARRAY/HASH referents; fingerprints derive from
+//! canonical value serialization and discriminate changed content.
 
 use perl_dap::mutation::{
     FreshReferentKind, MUTATION_STRUCTURED_VALUE_SCHEMA_VERSION, StructuredMutationLimits,
     StructuredRefusal, StructuredValue, fresh_referent_kind, parse_structured_mutation,
     structured_payload,
 };
+use perl_source_identity::ContentDigest;
 use std::fmt::Write as _;
 
 type TestResult<T = ()> = Result<T, String>;
@@ -170,6 +173,7 @@ fn ordering_is_deterministic_and_fingerprints_stable() -> TestResult {
     let first = parse_envelope(r#"json:{"z": 1, "a": [true, null]}"#)?;
     let second = parse_envelope(r#"json:{"z": 1, "a": [true, null]}"#)?;
     assert_eq!(first.fingerprint, second.fingerprint);
+    assert_ne!(first.fingerprint, ContentDigest::of_bytes(b""));
     // Object entry order is preserved as written (deterministic receipt-safe
     // ordering), not silently re-sorted.
     let StructuredValue::Object(entries) = &first.value else {
@@ -177,5 +181,97 @@ fn ordering_is_deterministic_and_fingerprints_stable() -> TestResult {
     };
     assert_eq!(entries[0].0, "z");
     assert_eq!(entries[1].0, "a");
+    Ok(())
+}
+
+#[test]
+fn fingerprint_derives_from_canonical_value_serialization() -> TestResult {
+    // Distinct admitted content must never share a digest; the constant
+    // empty-content sentinel made this pass vacuously before.
+    let one = parse_envelope("json:1")?;
+    let two = parse_envelope("json:2")?;
+    assert_ne!(one.fingerprint, two.fingerprint);
+    assert_eq!(
+        one.fingerprint,
+        ContentDigest::of_bytes(
+            serde_json::to_string(&one.value).map_err(|error| error.to_string())?.as_bytes()
+        )
+    );
+
+    // Identical content reproduces the digest deterministically.
+    let again = parse_envelope("json:2")?;
+    assert_eq!(two.fingerprint, again.fingerprint);
+
+    // Documented entry order participates: same members, different order.
+    let z_then_a = parse_envelope(r#"json:{"z": 1, "a": 2}"#)?;
+    let a_then_z = parse_envelope(r#"json:{"a": 2, "z": 1}"#)?;
+    assert_ne!(z_then_a.fingerprint, a_then_z.fingerprint);
+    Ok(())
+}
+
+#[test]
+fn multibyte_utf8_strings_and_keys_round_trip_exactly() -> TestResult {
+    let value = parse(r#"json:"café 🦀""#)?;
+    assert_eq!(value, StructuredValue::String("café 🦀".to_string()));
+
+    let object = parse(r#"json:{"é": "ü"}"#)?;
+    let StructuredValue::Object(entries) = &object else {
+        return Err("expected object root".to_string());
+    };
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].0, "é");
+    assert_eq!(entries[0].1, StructuredValue::String("ü".to_string()));
+    Ok(())
+}
+
+#[test]
+fn oversized_exponent_refuses_without_overflowing() -> TestResult {
+    for literal in ["json:1e18446744073709551616", "json:1e99999999999999999999"] {
+        let error = parse_structured_mutation(literal, &StructuredMutationLimits::default())
+            .err()
+            .ok_or_else(|| format!("{literal} must refuse"))?;
+        assert_eq!(
+            error,
+            StructuredRefusal::ExponentTooLarge { limit: 4_096 },
+            "{literal} must map checked overflow to the exponent refusal"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn aggregate_budget_counts_decoded_data_bytes_not_entry_counts() -> TestResult {
+    // The canonical falsifier from review: with a one-byte aggregate budget,
+    // entry-count accounting charges zero and lets this payload through.
+    let tight =
+        StructuredMutationLimits { max_aggregate_bytes: 1, ..StructuredMutationLimits::default() };
+
+    let object_payload = parse_structured_mutation(r#"json:{"key":"arbitrarily long"}"#, &tight)
+        .err()
+        .ok_or("string payload and key bytes must be charged against the aggregate")?;
+    assert_eq!(object_payload, StructuredRefusal::AggregateTooLarge { limit: 1 });
+
+    let array_payload = parse_structured_mutation(r#"json:["arbitrarily long"]"#, &tight)
+        .err()
+        .ok_or("array string bytes must be charged against the aggregate")?;
+    assert_eq!(array_payload, StructuredRefusal::AggregateTooLarge { limit: 1 });
+
+    // Numeric text is charged too: one digit fits a two-byte budget only
+    // because container delimiters are part of decoded data as well.
+    let two_bytes =
+        StructuredMutationLimits { max_aggregate_bytes: 2, ..StructuredMutationLimits::default() };
+    let single_digit = parse_structured_mutation("json:[7]", &two_bytes)
+        .err()
+        .ok_or("delimiters plus numeric text must reach the two-byte budget")?;
+    assert_eq!(single_digit, StructuredRefusal::AggregateTooLarge { limit: 2 });
+
+    // A realistic small payload still admits under a generous budget.
+    let generous = StructuredMutationLimits {
+        max_aggregate_bytes: 65_536,
+        ..StructuredMutationLimits::default()
+    };
+    let admitted = parse_structured_mutation(r#"json:{"key":"value"}"#, &generous)
+        .map_err(|error| error.to_string())?;
+    assert!(matches!(admitted.value, StructuredValue::Object(_)));
     Ok(())
 }
