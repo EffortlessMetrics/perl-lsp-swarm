@@ -101,10 +101,7 @@ import { reportIssueCommand } from './supportCommands';
 export { formatIssueDiagnosticInfo } from './supportCommands';
 import { ExtensionLanguageClientLifecycle } from './extensionComposition';
 import type { LifecycleState } from './languageClientLifecycle';
-import {
-  CrashRecoveryArbiter,
-  type CrashObservationSource,
-} from './crashRecoveryArbiter';
+import { CrashRecoveryArbiter, type CrashObservationSource } from './crashRecoveryArbiter';
 import {
   ServerDemandCoordinator,
   isServerDependentDocument,
