@@ -3898,6 +3898,36 @@ enum EmacsIntegrationCommand {
         #[command(subcommand)]
         command: EmacsTrainSubcommand,
     },
+    /// Execute one exact-client-subject actual-host run through the shared
+    /// hermetic Emacs runner (#7778). Every exact input is digest-verified
+    /// before launch; an unavailable host is a typed error, never a skip.
+    HostRun {
+        /// Exact client subject id (see `xtask::emacs_host_run::known_subjects`).
+        #[arg(long)]
+        subject: String,
+
+        /// Absolute path of the exact Emacs executable to run.
+        #[arg(long)]
+        emacs: PathBuf,
+
+        /// Absolute path of the exact perllsp candidate executable.
+        #[arg(long)]
+        candidate: PathBuf,
+
+        /// Absolute path of the bundled eglot.el inside the exact Emacs
+        /// installation. When omitted it is resolved inside the installation
+        /// root and ambiguity fails closed.
+        #[arg(long)]
+        client_source: Option<PathBuf>,
+
+        /// Output directory for the hermetic layout, artifacts, and receipt.
+        #[arg(long)]
+        out: PathBuf,
+
+        /// Host run timeout in milliseconds (default 180000).
+        #[arg(long, default_value_t = 180_000)]
+        timeout_ms: u64,
+    },
 }
 
 /// Union of the Emacs train command families over the stable
@@ -4750,6 +4780,39 @@ fn run_cli(cli: Cli) -> Result<()> {
                         }
                     },
                 },
+                EmacsIntegrationCommand::HostRun {
+                    subject,
+                    emacs,
+                    candidate,
+                    client_source,
+                    out,
+                    timeout_ms,
+                } => {
+                    let root =
+                        crate::utils::project_root().map_err(|error| eyre!(error.to_string()))?;
+                    let outcome = xtask::emacs_host_run::host_run_from_cli(
+                        &root,
+                        &subject,
+                        emacs,
+                        candidate,
+                        client_source,
+                        out,
+                        timeout_ms,
+                    )
+                    .map_err(|error| eyre!(error.to_string()))?;
+                    println!(
+                        "host run result {:?} (process_cleanup {:?}, driver_complete {}); receipt: {}",
+                        outcome.result,
+                        outcome.process_cleanup,
+                        outcome.driver_complete,
+                        outcome.receipt_path.display()
+                    );
+                    if outcome.result == xtask::editor_client_compat::ObservationResult::Pass {
+                        Ok(())
+                    } else {
+                        Err(eyre!("host run did not pass: {:?}", outcome.result))
+                    }
+                }
             },
         },
         Commands::RepoHygiene { base, head, receipt, summary } => {
