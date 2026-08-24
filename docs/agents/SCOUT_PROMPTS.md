@@ -21,9 +21,9 @@ Task: Classify PR #{PR_NUMBER} in {REPO} into exactly one category:
 
 Evidence rules:
 - DO NOT classify as close-superseded without running and pasting landing-proof evidence
-  (`cargo xtask landing-proof --format json`). Landing proof alone never authorizes the
-  close — semantic completion evidence is separate (CLOSE_PROOF_POLICY.md, Three Distinct
-  Proof Layers).
+  (`cargo xtask landing-proof --commit <sha> --canonical-main origin/main --format json`).
+  Landing proof alone never authorizes the close — semantic completion evidence is
+  separate (CLOSE_PROOF_POLICY.md, Three Distinct Proof Layers).
 - DO NOT classify as duplicate without citing the canonical PR/issue number.
 - DO NOT use label state alone as evidence — labels can be stale.
 - Read the diff, CI status URL, and any linked issues before deciding.
