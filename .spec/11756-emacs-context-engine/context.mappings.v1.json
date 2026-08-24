@@ -955,7 +955,7 @@
       "write_set_note": null,
       "no_production_component_reason": null,
       "blocker": {
-        "reason": "no Linux public-artifact install or fresh-process harness exists on this tree (tree search finds no install or fresh-process surface; the hermetic H7778 runner is local-source test infrastructure and workspace target/ binaries are never public-artifact authority); the harness also waits on the runner conformance contract (RUNCONF #8734) and immutable subject manifests (SUBJ_FAN #8755); substrate success never promotes a public semantic row and never waits for semantic journeys",
+        "reason": "no Linux public-artifact install or fresh-process harness exists on this tree: the landed policy/install-surface-registry.toml classifies installer products (install.sh and kin, owner #9104) but no harness installs the public artifact and launches fresh processes from it \u2014 the hermetic H7778 runner is local-source test infrastructure and workspace target/ binaries are never public-artifact authority; the harness also waits on the runner conformance contract (RUNCONF #8734) and immutable subject manifests (SUBJ_FAN #8755); substrate success never promotes a public semantic row and never waits for semantic journeys",
         "owner_issue": 8842,
         "action": "return_to_issue"
       }
