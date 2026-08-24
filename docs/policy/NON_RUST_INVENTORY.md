@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11513 |
-| Rust-family files | 3505 |
-| Non-Rust files | 8008 |
-| Allowlisted | 5735 |
+| Total tracked files | 11520 |
+| Rust-family files | 3507 |
+| Non-Rust files | 8013 |
+| Allowlisted | 5740 |
 | Unclassified | 2273 |
 
 ## Non-Rust files by category
@@ -17,10 +17,10 @@
 | Category | Count |
 |---|---|
 | config | 404 |
-| documentation | 2656 |
+| documentation | 2659 |
 | generated | 2 |
 | production | 315 |
-| test | 1881 |
+| test | 1883 |
 | tooling | 477 |
 | unclassified | 2273 |
 
@@ -3017,6 +3017,9 @@
 | `.spec/11626-module-train-frontier/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11626-module-train-frontier/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11626-module-train-frontier/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11627-module-train-live/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11627-module-train-live/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11627-module-train-live/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -8030,6 +8033,8 @@
 | `xtask/tests/fixtures/dependency-hygiene/machete-malformed.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
 | `xtask/tests/fixtures/dependency-hygiene/machete-missing-ignored-used.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
 | `xtask/tests/fixtures/dependency-hygiene/machete-missing-unused.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
+| `xtask/tests/fixtures/module-train-live/raw-clean-surface.json` | test | `non-rust-module-train-live-observation-fixtures` | devex/module-train |
+| `xtask/tests/fixtures/module-train-live/raw-corpus.json` | test | `non-rust-module-train-live-observation-fixtures` | devex/module-train |
 | `xtask/tests/fixtures/native-critic/false-positive/checked_io.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `xtask/tests/fixtures/native-critic/false-positive/clean_module.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `xtask/tests/fixtures/native-critic/false-positive/closure_and_eval.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
