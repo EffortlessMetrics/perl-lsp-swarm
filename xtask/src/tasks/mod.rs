@@ -106,6 +106,7 @@ pub mod native_critic;
 pub mod native_format;
 pub mod native_product_surface;
 pub mod native_tooling;
+pub mod compiler_performance_receipt;
 pub mod oracle_fixture_manifest;
 pub mod oracle_receipt_schema;
 pub mod oracle_runner;
