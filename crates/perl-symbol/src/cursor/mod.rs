@@ -145,7 +145,7 @@ pub fn byte_offset_utf16(line_text: &str, col_utf16: usize) -> usize {
         if units >= col_utf16 {
             return index;
         }
-        units += usize::from(ch as u32 >= 0x10000) + 1;
+        units += if ch as u32 >= 0x10000 { 2 } else { 1 };
         if units > col_utf16 {
             return index;
         }
