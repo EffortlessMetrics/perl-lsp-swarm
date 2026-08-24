@@ -413,7 +413,7 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "active_document_readiness",
         RuntimeServices,
         "Mutex",
-        "server instance drop",
+        "open-document close eviction / server instance drop",
         "open-document readiness states",
         false,
         "#11675"
