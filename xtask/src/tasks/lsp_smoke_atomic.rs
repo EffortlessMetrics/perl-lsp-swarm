@@ -35,7 +35,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use chrono::Utc;
@@ -191,7 +191,20 @@ pub fn child_specs() -> Vec<ChildSpec> {
 }
 
 /// The exact command one child executes (also recorded in the receipt).
-pub fn command_line(spec: &ChildSpec) -> String {
+///
+/// Behavior children run the prebuilt test binary **directly** — the path
+/// `cargo test --no-run` printed for their target — never through cargo
+/// again. The first hosted run of the cargo-per-child shape (PR #12091, run
+/// 32681631693) showed why: each `cargo test` re-entry rebuilt units the
+/// previous child had already built, the first rebuild invalidated `perllsp`
+/// (a dependency of the test's in-process pre-build), the pre-build overran
+/// the child budget, and every watchdog kill left cargo fingerprints
+/// half-written so each later child rebuilt more (1 → 7 → 2 → 4 units) —
+/// four consecutive REQUEST_TIMEOUTs with zero test output. A bare test
+/// binary spawn has no cargo to rebuild, lock, or corrupt; the executable
+/// filename embeds the binary's content hash, so the receipt records the
+/// exact artifact identity each child ran.
+pub fn command_line(spec: &ChildSpec, executable: Option<&str>) -> String {
     match spec.kind {
         ChildKind::Setup => format!("cargo build -p {} --locked", spec.target),
         ChildKind::Compile => {
@@ -199,19 +212,67 @@ pub fn command_line(spec: &ChildSpec) -> String {
         }
         ChildKind::Behavior => {
             let filter = spec.test_filter.unwrap_or_default();
-            if spec.exact {
-                format!(
-                    "cargo test -p perl-lsp-rs --test {} --locked {filter} -- --exact --test-threads=1",
-                    spec.target
-                )
-            } else {
-                format!(
-                    "cargo test -p perl-lsp-rs --test {} --locked {filter} -- --test-threads=1",
-                    spec.target
-                )
-            }
+            let executable = executable.unwrap_or("<unresolved-prebuilt-test-binary>");
+            let exact = if spec.exact { " --exact" } else { "" };
+            format!("\"{executable}\" {filter}{exact} -- --test-threads=1")
         }
     }
+}
+
+/// Parse the prebuilt test-binary path a compile child's `--no-run` output
+/// names: `Executable tests/<target>.rs (target/debug/deps/<target>-<hash>)`.
+///
+/// Handles ANSI-colored output (`CARGO_TERM_COLOR=always` is set gate-wide)
+/// by stripping escape sequences before matching. Returns the path relative
+/// to the workspace root.
+pub fn parse_executable_path(compile_stdout: &str, target: &str) -> Option<std::path::PathBuf> {
+    let expected = format!("tests/{target}.rs");
+    for line in compile_stdout.lines() {
+        let plain = strip_ansi(line);
+        if !plain.contains("Executable") || !plain.contains(&expected) {
+            continue;
+        }
+        let start = plain.find('(')?;
+        let end = plain[start + 1..].find(')')? + start + 1;
+        let path = plain[start + 1..end].trim();
+        if path.is_empty() {
+            return None;
+        }
+        return Some(std::path::PathBuf::from(path));
+    }
+    None
+}
+
+/// Strip ANSI escape sequences (color codes) from one line.
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            out.push(ch);
+            continue;
+        }
+        // ESC [ ... final-byte (simplified CSI/OSC handling is enough for
+        // cargo's SGR color codes).
+        match chars.next() {
+            Some('[') => {
+                for inner in chars.by_ref() {
+                    if inner.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                for inner in chars.by_ref() {
+                    if inner == '\u{7}' {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Per-child log file name under `target/receipts/logs/`.
@@ -468,19 +529,35 @@ pub fn aggregate(entries: &[ChildEntry], expected_total: usize) -> AggregateDoc 
 
 /// Executor seam: real runs shell out through the gate watchdog machinery;
 /// tests inject outcomes.
+///
+/// `executable` carries the prebuilt test-binary path (resolved from the
+/// target's compile child) for behavior children; setup/compile children
+/// ignore it.
 pub trait ChildExecutor {
-    fn execute(&mut self, spec: &ChildSpec, log_path: &Path) -> Result<RawOutcome>;
+    fn execute(
+        &mut self,
+        spec: &ChildSpec,
+        executable: Option<&Path>,
+        log_path: &Path,
+    ) -> Result<RawOutcome>;
 }
 
 /// Real executor: one shell command per child through
 /// [`run_shell_command_with_timeout`], with the #10023 timeout-only retry
-/// policy applied to setup/compile children only.
+/// policy applied to setup/compile children only. Behavior children run the
+/// prebuilt test binary directly — no cargo in the behavior path.
 pub struct CargoChildExecutor;
 
 impl ChildExecutor for CargoChildExecutor {
-    fn execute(&mut self, spec: &ChildSpec, log_path: &Path) -> Result<RawOutcome> {
+    fn execute(
+        &mut self,
+        spec: &ChildSpec,
+        executable: Option<&Path>,
+        log_path: &Path,
+    ) -> Result<RawOutcome> {
         apply_child_environment(spec.kind);
-        let command = command_line(spec);
+        let executable = executable.map(|path| path.display().to_string());
+        let command = command_line(spec, executable.as_deref());
         let retries = match spec.kind {
             ChildKind::Setup | ChildKind::Compile => SETUP_COMPILE_RETRIES,
             ChildKind::Behavior => 0,
@@ -536,37 +613,33 @@ impl ChildExecutor for CargoChildExecutor {
 
 /// Child environment: drop the compile cache wrapper everywhere (parity with
 /// the old composite), force single-threaded test execution for determinism,
-/// and let setup/compile use default build parallelism — the old composite's
-/// `CARGO_BUILD_JOBS=1` is a determinism lever for test execution and only
-/// slowed compilation.
+/// and let every cargo invocation use default build parallelism — the old
+/// composite's `CARGO_BUILD_JOBS=1` is a determinism lever for test
+/// execution, not compilation, and only slowed builds (including the test
+/// harness's own once-per-process `perllsp` pre-build freshness check).
 ///
 /// SAFETY: the xtask runner is single-threaded when a gate executes, the same
 /// pattern `gates::run_single_gate` uses for policy environment variables.
 fn apply_child_environment(kind: ChildKind) {
     unsafe {
         std::env::remove_var("RUSTC_WRAPPER");
+        std::env::remove_var("CARGO_BUILD_JOBS");
     }
     match kind {
         ChildKind::Setup | ChildKind::Compile => unsafe {
             std::env::remove_var("RUST_TEST_THREADS");
-            std::env::remove_var("CARGO_BUILD_JOBS");
         },
         ChildKind::Behavior => unsafe {
             std::env::set_var("RUST_TEST_THREADS", "1");
-            std::env::set_var("CARGO_BUILD_JOBS", "1");
         },
     }
 }
 
 fn child_env_record(kind: ChildKind) -> (BTreeMap<String, String>, Vec<String>) {
     let mut set = BTreeMap::new();
-    let mut unset = vec!["RUSTC_WRAPPER".to_string()];
-    match kind {
-        ChildKind::Setup | ChildKind::Compile => unset.push("CARGO_BUILD_JOBS".to_string()),
-        ChildKind::Behavior => {
-            set.insert("RUST_TEST_THREADS".to_string(), "1".to_string());
-            set.insert("CARGO_BUILD_JOBS".to_string(), "1".to_string());
-        }
+    let mut unset = vec!["RUSTC_WRAPPER".to_string(), "CARGO_BUILD_JOBS".to_string()];
+    if kind == ChildKind::Behavior {
+        set.insert("RUST_TEST_THREADS".to_string(), "1".to_string());
     }
     (set, unset)
 }
@@ -585,7 +658,7 @@ fn placeholder(spec: &ChildSpec, mark: &str, sha: &str) -> ChildEntry {
         attempt: 0,
         attempts: 0,
         timeout_seconds: spec.timeout_seconds,
-        command: Some(command_line(spec)),
+        command: Some(command_line(spec, None)),
         env_set,
         env_unset,
         started_at: None,
@@ -638,6 +711,9 @@ pub fn run_suite(receipt_path: &Path, executor: &mut dyn ChildExecutor) -> Resul
     // Per-target compile verdicts: a semantic child is blocked only by the
     // semantic compile, not by an API-target compile failure.
     let mut compile_ok_by_target: HashMap<&'static str, bool> = HashMap::new();
+    // Prebuilt test-binary path per target, parsed from each compile child's
+    // `--no-run` output. Behavior children execute these directly.
+    let mut executable_by_target: HashMap<&'static str, Option<PathBuf>> = HashMap::new();
 
     for spec in &specs {
         let blocked = match spec.kind {
@@ -656,6 +732,28 @@ pub fn run_suite(receipt_path: &Path, executor: &mut dyn ChildExecutor) -> Resul
             persist(&receipt_path, &sha, &entries, &specs, PersistState::Running(None))?;
             continue;
         }
+        // Fail-closed: a behavior child whose compile passed but whose
+        // prebuilt binary path could not be resolved never executes — and an
+        // unresolvable path can never produce a pass.
+        let unresolved_binary = spec.kind == ChildKind::Behavior
+            && executable_by_target.get(spec.target) == Some(&None);
+        if unresolved_binary {
+            let mut entry = placeholder(spec, "final", &sha);
+            entry.status = ChildStatus::InstrumentFailure;
+            entry.failure_summary = Some(
+                "compile child passed but its --no-run output named no prebuilt \
+                 test binary for this target; refusing to re-enter cargo from the \
+                 behavior path"
+                    .to_string(),
+            );
+            println!(
+                "lsp_smoke child {} status=INSTRUMENT_FAILURE (no prebuilt binary resolved)",
+                spec.id
+            );
+            entries.push(entry);
+            persist(&receipt_path, &sha, &entries, &specs, PersistState::Running(None))?;
+            continue;
+        }
 
         // Persist a snapshot marking this child as running before spawn, so
         // an outer-watchdog kill leaves it explicitly marked rather than
@@ -665,7 +763,11 @@ pub fn run_suite(receipt_path: &Path, executor: &mut dyn ChildExecutor) -> Resul
         let log_path = log_dir.join(log_file_name(spec));
         let started_at = Utc::now();
         let start = Instant::now();
-        let outcome = executor.execute(spec, &log_path)?;
+        let executable = match spec.kind {
+            ChildKind::Behavior => executable_by_target.get(spec.target).and_then(Option::as_deref),
+            ChildKind::Setup | ChildKind::Compile => None,
+        };
+        let outcome = executor.execute(spec, executable, &log_path)?;
         let duration_ms = start.elapsed().as_millis() as u64;
         let status = classify(spec.kind, &outcome);
 
@@ -680,7 +782,10 @@ pub fn run_suite(receipt_path: &Path, executor: &mut dyn ChildExecutor) -> Resul
             attempt: outcome.attempts,
             attempts: outcome.attempts,
             timeout_seconds: spec.timeout_seconds,
-            command: Some(command_line(spec)),
+            command: Some(command_line(
+                spec,
+                executable.map(|path| path.display().to_string()).as_deref(),
+            )),
             env_set,
             env_unset,
             started_at: Some(started_at.to_rfc3339()),
@@ -719,6 +824,16 @@ pub fn run_suite(receipt_path: &Path, executor: &mut dyn ChildExecutor) -> Resul
             ChildKind::Setup => setup_ok = status == ChildStatus::Pass,
             ChildKind::Compile => {
                 compile_ok_by_target.insert(spec.target, status == ChildStatus::Pass);
+                // Resolve the prebuilt test binary this compile child named —
+                // behavior children execute it directly instead of re-entering
+                // cargo (see `command_line`).
+                let resolved = if status == ChildStatus::Pass {
+                    parse_executable_path(&outcome.stdout, spec.target)
+                        .map(|relative| root.join(relative))
+                } else {
+                    None
+                };
+                executable_by_target.insert(spec.target, resolved);
             }
             ChildKind::Behavior => {}
         }
@@ -833,7 +948,12 @@ mod tests {
     }
 
     impl ChildExecutor for ScriptedExecutor {
-        fn execute(&mut self, spec: &ChildSpec, _log_path: &Path) -> Result<RawOutcome> {
+        fn execute(
+            &mut self,
+            spec: &ChildSpec,
+            _executable: Option<&Path>,
+            _log_path: &Path,
+        ) -> Result<RawOutcome> {
             self.executed.push(spec.id);
             Ok(self.outcomes.get(spec.id).cloned().unwrap_or_else(passing_outcome))
         }
@@ -855,7 +975,23 @@ mod tests {
     fn all_pass_executor() -> ScriptedExecutor {
         let mut executor = ScriptedExecutor::new();
         for spec in child_specs() {
-            executor.pass_child(spec.id);
+            match spec.kind {
+                // Compile children must name their prebuilt test binary so
+                // behavior children have a resolvable executable to run.
+                ChildKind::Compile => executor.set(
+                    spec.id,
+                    behavior_outcome(
+                        0,
+                        false,
+                        &format!(
+                            "   Finished `test` profile in 0.1s
+   Executable tests/{}.rs                              (target/debug/deps/{}-e6b16757b69b565f)",
+                            spec.target, spec.target
+                        ),
+                    ),
+                ),
+                ChildKind::Setup | ChildKind::Behavior => executor.pass_child(spec.id),
+            }
         }
         executor
     }
@@ -903,14 +1039,95 @@ mod tests {
     #[test]
     fn commands_are_atomic_no_composite_operators() {
         for spec in child_specs() {
-            let command = command_line(&spec);
+            let command = command_line(&spec, None);
             assert!(!command.contains("&&"), "child commands must be atomic: {command}");
             match spec.kind {
                 ChildKind::Setup => assert!(command.starts_with("cargo build -p perllsp")),
                 ChildKind::Compile => assert!(command.contains("--no-run")),
-                ChildKind::Behavior => assert!(command.contains("--test-threads=1")),
+                // Behavior children must execute a prebuilt binary directly:
+                // re-entering cargo from the behavior path is the hosted
+                // rebuild-cascade mechanism observed in run 32681631693.
+                ChildKind::Behavior => {
+                    assert!(
+                        !command.starts_with("cargo"),
+                        "behavior children must not invoke cargo: {command}"
+                    );
+                    assert!(command.contains("--test-threads=1"));
+                    assert!(
+                        command.contains("<unresolved-prebuilt-test-binary>"),
+                        "an unresolvable path must be visible in the recorded command, not hidden"
+                    );
+                }
+            }
+            let resolved =
+                command_line(&spec, Some("target/debug/deps/semantic_definition-deadbeef"));
+            if spec.kind == ChildKind::Behavior {
+                assert!(resolved.contains("semantic_definition-deadbeef"));
             }
         }
+    }
+
+    #[test]
+    fn parse_executable_path_extracts_target_binary_from_colored_output() {
+        // Exact shape captured from the hosted lsp shard run 32681631693,
+        // including the ANSI SGR codes CARGO_TERM_COLOR=always emits.
+        let colored = "\u{1b}[1m\u{1b}[92m  Executable\u{1b}[0m \
+tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b565f)";
+        let parsed = parse_executable_path(colored, "semantic_definition");
+        assert_eq!(
+            parsed.as_deref(),
+            Some(std::path::Path::new("target/debug/deps/semantic_definition-e6b16757b69b565f"))
+        );
+
+        let plain = "   Executable tests/lsp_api_contracts.rs (target/debug/deps/lsp_api_contracts-0123abcd)";
+        assert_eq!(
+            parse_executable_path(plain, "lsp_api_contracts").as_deref(),
+            Some(std::path::Path::new("target/debug/deps/lsp_api_contracts-0123abcd"))
+        );
+
+        // Wrong target's Executable line must not satisfy another target.
+        assert_eq!(parse_executable_path(colored, "lsp_api_contracts"), None);
+        // A compile failure output names no executable at all.
+        assert_eq!(parse_executable_path("error: could not compile", "semantic_definition"), None);
+    }
+
+    // Fail-closed: a compile child that passed without naming a prebuilt
+    // binary must never let behavior children execute (or pass).
+    #[test]
+    fn suite_fails_closed_when_compiled_binary_path_is_unresolvable() {
+        let path = temp_receipt_path("unresolved");
+        let mut executor = all_pass_executor();
+        // Compile "passes" but its output names no Executable — spec/target
+        // drift in cargo's output format, or an unexpected locale.
+        executor.set(
+            "compile/semantic_definition",
+            behavior_outcome(0, false, "   Finished `test` profile in 0.1s"),
+        );
+        let outcome = run_suite(&path, &mut executor).expect("suite should run");
+        assert_eq!(outcome.aggregate.status, "fail");
+        assert!(
+            outcome
+                .aggregate
+                .non_success
+                .contains(&"semantic_definition/scalar_variable".to_string()),
+            "children depending on an unresolvable binary are non-success: {:?}",
+            outcome.aggregate.non_success
+        );
+        assert!(
+            !executor.executed.contains(&"semantic_definition/scalar_variable"),
+            "the behavior child must not execute without a resolved binary"
+        );
+        let doc = read_receipt(&path);
+        let child = doc
+            .children
+            .iter()
+            .find(|child| child.id == "semantic_definition/scalar_variable")
+            .expect("child retained");
+        assert_eq!(child.status, ChildStatus::InstrumentFailure);
+        assert!(child.failure_summary.as_deref().is_some_and(|s| s.contains("no prebuilt")));
+        // The API lane still executes: its compile resolved normally.
+        assert!(executor.executed.contains(&"lsp_api_contracts/textdocument_sync_camel_case"));
+        cleanup(&path);
     }
 
     // ---------------------------------------------------------------------

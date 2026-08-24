@@ -1220,7 +1220,12 @@ gates:
     # classification pain.
     #
     # The xtask harness (`xtask/src/tasks/lsp_smoke_atomic.rs`) executes nine
-    # children, each with its own bounded timeout and typed terminal status
+    # children, each with its own bounded timeout and typed terminal status.
+    # Behavior children run the PREBUILT test binary directly (the path the
+    # compile child's `--no-run` output names) — never cargo again: the first
+    # hosted run of a cargo-per-child shape rebuilt units every re-entry and
+    # each watchdog kill corrupted cargo fingerprints, cascading into four
+    # consecutive child timeouts (PR #12091 run 32681631693)
     # (PASS / ASSERTION_FAILURE / REQUEST_TIMEOUT / TEARDOWN_TIMEOUT /
     # PROCESS_EXIT / COMPILE_FAILURE / INSTRUMENT_FAILURE / CANCELLED /
     # NOT_PROVEN): the perllsp prebuild (#9677 keeps this mandatory), the two
