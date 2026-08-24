@@ -100,6 +100,25 @@ fn did_change_validates_whole_document_and_incremental_variants() {
 }
 
 #[test]
+fn did_change_rejects_null_version_required_by_lsp_3_17() {
+    let null_version = json!({
+        "jsonrpc": "2.0",
+        "method": DID_CHANGE_METHOD,
+        "params": {
+            "textDocument": { "uri": "untitled:Untitled-1", "version": null },
+            "contentChanges": []
+        }
+    });
+    let error = validate(&null_version, Direction::ClientToServer, None).expect_err(
+        "VersionedTextDocumentIdentifier.version is integer in 3.17; only OptionalVersionedTextDocumentIdentifier allows null",
+    );
+    assert_eq!(error.method.as_deref(), Some(DID_CHANGE_METHOD));
+    assert_eq!(error.path, "$.params.textDocument.version");
+    assert_eq!(error.expected, "integer");
+    assert_eq!(error.observed, "null");
+}
+
+#[test]
 fn did_close_validates_with_text_document_identifier() {
     let close = json!({
         "jsonrpc": "2.0",
