@@ -30,7 +30,7 @@ use build::{build_runner_plan, validate_runner_plan, validate_runner_plan_agains
 use color_eyre::eyre::{Context, ContextCompat, Result, bail};
 use compare::{compare_runner_plans_against, validate_runner_parity_against};
 use io::read_matrix;
-use runner_model::{RunnerKind, RunnerParityReport, RunnerPlan, RunnerScheduling};
+use runner_model::{DiscoveryFrame, RunnerKind, RunnerParityReport, RunnerPlan, RunnerScheduling};
 use serde::Serialize;
 use std::env;
 use std::ffi::OsString;
@@ -62,11 +62,12 @@ fn build_command(args: Vec<OsString>) -> Result<()> {
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
     let discovery_path = PathBuf::from(&args[3]);
     let output_path = PathBuf::from(&args[4]);
-    let scheduling = parse_scheduling(&args[5..])?;
+    let options = parse_build_options(&args[5..])?;
     let matrix = read_matrix(&matrix_path)?;
     let raw = read_bytes(&discovery_path)?;
-    let plan = build_runner_plan(&matrix, &target_id, runner, &raw, scheduling)
-        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let plan =
+        build_runner_plan(&matrix, &target_id, runner, options.frame, &raw, options.scheduling)
+            .map_err(|error| color_eyre::eyre::eyre!(error))?;
     write_json(&output_path, &plan)?;
     println!(
         "runner plan valid: target={} runner={:?} files={}",
@@ -130,12 +131,31 @@ fn check_parity_command(args: Vec<OsString>) -> Result<()> {
     Ok(())
 }
 
-fn parse_scheduling(args: &[OsString]) -> Result<RunnerScheduling> {
+struct BuildOptions {
+    frame: DiscoveryFrame,
+    scheduling: RunnerScheduling,
+}
+
+fn parse_build_options(args: &[OsString]) -> Result<BuildOptions> {
+    const FRAME_HELP: &str = "--frame is required; expected runner-t-directory-relative, \
+         repository-root-relative, or canonical-repository-path";
+    let mut frame = None;
     let mut scheduling = RunnerScheduling::default();
     let mut index = 0;
     while index < args.len() {
         let arg = args[index].to_string_lossy();
         match arg.as_ref() {
+            "--frame" => {
+                if frame.is_some() {
+                    bail!("duplicate --frame");
+                }
+                index += 1;
+                let value = args.get(index).context(FRAME_HELP)?;
+                frame = Some(
+                    DiscoveryFrame::parse(&value.to_string_lossy())
+                        .map_err(|error| color_eyre::eyre::eyre!(error))?,
+                );
+            }
             "--asap" => scheduling.asap = true,
             "--state-ordering" => scheduling.state_ordering = true,
             "--jobs" => {
@@ -163,11 +183,14 @@ fn parse_scheduling(args: &[OsString]) -> Result<RunnerScheduling> {
                     bail!("duplicate scheduling property {key}");
                 }
             }
-            other => bail!("unsupported scheduling option {other}"),
+            other => bail!("unsupported build option {other}"),
         }
         index += 1;
     }
-    Ok(scheduling)
+    Ok(BuildOptions {
+        frame: frame.ok_or_else(|| color_eyre::eyre::eyre!(FRAME_HELP))?,
+        scheduling,
+    })
 }
 
 fn read_bytes(path: &Path) -> Result<Vec<u8>> {
@@ -198,7 +221,7 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 }
 
 fn usage() -> &'static str {
-    "usage: perl-core-harness-runner-plan build <matrix> <target-id> <test|harness|direct_fallback> <raw-discovery> <output> [--jobs N] [--asap] [--state-ordering] [--property key=value] | compare <matrix> <left-plan> <left-raw-discovery> <right-plan> <right-raw-discovery> <output> | check-plan <matrix> <raw-discovery> <plan> | check-parity <matrix> <left-plan> <left-raw-discovery> <right-plan> <right-raw-discovery> <parity-report>"
+    "usage: perl-core-harness-runner-plan build <matrix> <target-id> <test|harness|direct_fallback> <raw-discovery> <output> --frame <runner-t-directory-relative|repository-root-relative|canonical-repository-path> [--jobs N] [--asap] [--state-ordering] [--property key=value] | compare <matrix> <left-plan> <left-raw-discovery> <right-plan> <right-raw-discovery> <output> | check-plan <matrix> <raw-discovery> <plan> | check-parity <matrix> <left-plan> <left-raw-discovery> <right-plan> <right-raw-discovery> <parity-report>"
 }
 
 #[cfg(test)]

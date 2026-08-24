@@ -6,7 +6,8 @@ use crate::model::{
 };
 use crate::normalize::{matches_any_selector, normalize_source_item, source_form_allowed};
 use crate::runner_model::{
-    InvocationCaptureStatus, RUNNER_PLAN_SCHEMA_VERSION, RunnerKind, RunnerPlan, RunnerScheduling,
+    DiscoveryFrame, InvocationCaptureStatus, RUNNER_PLAN_SCHEMA_VERSION, RunnerKind, RunnerPlan,
+    RunnerScheduling, SOURCE_NORMALIZATION_SCHEMA_VERSION,
 };
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -15,6 +16,8 @@ const INVOCATION_LIMITATION: &str = "per_file_upstream_scan_and_effective_invoca
 const SCHEDULING_DECLARATION_LIMITATION: &str = "scheduling_inputs_are_declared_not_observed";
 const DISCOVERY_DECLARATION_LIMITATION: &str =
     "raw_discovery_stream_is_declared_input_not_observed_runner_output";
+const DISCOVERY_FRAME_DECLARATION_LIMITATION: &str =
+    "discovery_frames_are_declared_inputs_not_observed_upstream_runner_state";
 const DIRECT_FALLBACK_LIMITATION: &str = "direct_fallback_missing_upstream_selection_context";
 const ALTERNATE_RUNNER_LIMITATION: &str = "alternate_runner_requires_membership_parity_evidence";
 
@@ -22,6 +25,7 @@ pub(crate) fn build_runner_plan(
     matrix: &UpstreamTargetMatrix,
     target_id: &str,
     runner: RunnerKind,
+    frame: DiscoveryFrame,
     raw_discovery: &[u8],
     scheduling: RunnerScheduling,
 ) -> Result<RunnerPlan, String> {
@@ -38,21 +42,24 @@ pub(crate) fn build_runner_plan(
     let mut source_items = Vec::new();
     let mut seen = BTreeSet::new();
     for line in text.lines().filter(|line| !line.trim().is_empty()) {
-        let item = normalize_source_item(line)?;
+        let item = normalize_source_item(line, frame).map_err(|error| error.to_string())?;
         if !source_form_allowed(item.source_form, &script_forms) {
             return Err(format!(
                 "target {target_id} does not allow source form {:?} for {}",
-                item.source_form, item.canonical_path
+                item.source_form, item.canonical_repo_path
             ));
         }
-        if !matches_any_selector(&item.canonical_path, &selectors) {
+        if !matches_any_selector(&item.canonical_repo_path, &selectors) {
             return Err(format!(
                 "discovered path {} is outside target {target_id}",
-                item.canonical_path
+                item.canonical_repo_path
             ));
         }
-        if !seen.insert(item.canonical_path.clone()) {
-            return Err(format!("raw discovery contains duplicate path {}", item.canonical_path));
+        if !seen.insert(item.canonical_repo_path.clone()) {
+            return Err(format!(
+                "raw discovery contains duplicate path {}",
+                item.canonical_repo_path
+            ));
         }
         source_items.push(item);
     }
@@ -61,7 +68,7 @@ pub(crate) fn build_runner_plan(
     }
 
     let normalized_order =
-        source_items.iter().map(|item| item.canonical_path.clone()).collect::<Vec<_>>();
+        source_items.iter().map(|item| item.canonical_repo_path.clone()).collect::<Vec<_>>();
     let mut normalized_membership = normalized_order.clone();
     normalized_membership.sort();
     let target_contract_digest = sha256_json(&entry.contract)?;
@@ -70,6 +77,7 @@ pub(crate) fn build_runner_plan(
         INVOCATION_LIMITATION.to_string(),
         SCHEDULING_DECLARATION_LIMITATION.to_string(),
         DISCOVERY_DECLARATION_LIMITATION.to_string(),
+        DISCOVERY_FRAME_DECLARATION_LIMITATION.to_string(),
     ];
     if runner == RunnerKind::DirectFallback {
         limitations.push(DIRECT_FALLBACK_LIMITATION.to_string());
@@ -93,7 +101,7 @@ pub(crate) fn build_runner_plan(
         scheduling,
         invocation_capture: InvocationCaptureStatus::NotProven,
         limitations,
-        claim_boundary: "normalized target membership derived from one caller-declared discovery stream and declared runner scheduling inputs only; which upstream runner produced the discovery bytes, observed scheduling state, per-file upstream _scan_test invocation, and compiler/runtime results are not proved".to_string(),
+        claim_boundary: "normalized target membership derived from one caller-declared discovery stream with explicitly declared per-row discovery frames and declared runner scheduling inputs only; which upstream runner produced the discovery bytes, whether the declared frames describe the true emission state, observed scheduling state, per-file upstream _scan_test invocation, and compiler/runtime results are not proved".to_string(),
     };
     validate_runner_plan(&plan)?;
     Ok(plan)
@@ -134,22 +142,29 @@ pub(crate) fn validate_runner_plan(plan: &RunnerPlan) -> Result<(), String> {
 
     let mut seen = BTreeSet::new();
     for item in &plan.source_items {
-        let normalized = normalize_source_item(&item.raw_path)?;
-        if normalized != *item {
+        if item.normalization_version != SOURCE_NORMALIZATION_SCHEMA_VERSION {
             return Err(format!(
-                "runner source item {} disagrees with normalized raw path",
-                item.canonical_path
+                "runner source item {} carries unsupported normalization schema {}",
+                item.canonical_repo_path, item.normalization_version
             ));
         }
-        if !seen.insert(item.canonical_path.clone()) {
+        let normalized = normalize_source_item(&item.raw_path, item.discovery_frame)
+            .map_err(|error| error.to_string())?;
+        if normalized != *item {
+            return Err(format!(
+                "runner source item {} disagrees with its declared discovery-frame normalization",
+                item.canonical_repo_path
+            ));
+        }
+        if !seen.insert(item.canonical_repo_path.clone()) {
             return Err(format!(
                 "runner plan contains duplicate source item {}",
-                item.canonical_path
+                item.canonical_repo_path
             ));
         }
     }
     let expected_order =
-        plan.source_items.iter().map(|item| item.canonical_path.clone()).collect::<Vec<_>>();
+        plan.source_items.iter().map(|item| item.canonical_repo_path.clone()).collect::<Vec<_>>();
     if expected_order != plan.normalized_order {
         return Err("runner plan normalized order disagrees with source items".to_string());
     }
@@ -182,6 +197,13 @@ pub(crate) fn validate_runner_plan(plan: &RunnerPlan) -> Result<(), String> {
                 .to_string(),
         );
     }
+    if !has_limitation(&plan.limitations, DISCOVERY_FRAME_DECLARATION_LIMITATION) {
+        return Err(
+            "runner plan must classify its discovery frames as declared inputs rather than \
+             observed upstream runner state"
+                .to_string(),
+        );
+    }
     match plan.runner {
         RunnerKind::DirectFallback => {
             if !has_limitation(&plan.limitations, DIRECT_FALLBACK_LIMITATION) {
@@ -207,10 +229,12 @@ pub(crate) fn validate_runner_plan_against(
     plan: &RunnerPlan,
 ) -> Result<(), String> {
     validate_runner_plan(plan)?;
+    let frame = uniform_discovery_frame(plan)?;
     let rebuilt = build_runner_plan(
         matrix,
         &plan.target_id,
         plan.runner,
+        frame,
         raw_discovery,
         plan.scheduling.clone(),
     )?;
@@ -221,6 +245,22 @@ pub(crate) fn validate_runner_plan_against(
         );
     }
     Ok(())
+}
+
+/// A single-stream rebuild requires one shared frame across all rows; mixed
+/// frames cannot be reproduced from one declared stream and fail closed.
+pub(crate) fn uniform_discovery_frame(plan: &RunnerPlan) -> Result<DiscoveryFrame, String> {
+    let mut frames = plan.source_items.iter().map(|item| item.discovery_frame);
+    let Some(first) = frames.next() else {
+        return Err("runner plan contains no source items".to_string());
+    };
+    if frames.all(|frame| frame == first) {
+        Ok(first)
+    } else {
+        Err("runner plan mixes discovery frames; mixed-frame streams cannot be rebuilt from one \
+             declared discovery stream"
+            .to_string())
+    }
 }
 
 pub(crate) fn runner_plan_digest(plan: &RunnerPlan) -> Result<String, String> {

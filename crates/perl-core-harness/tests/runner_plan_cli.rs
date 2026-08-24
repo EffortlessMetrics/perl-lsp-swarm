@@ -77,7 +77,7 @@ fn check_parity_argument_count_prints_usage() {
 }
 
 #[test]
-fn unsupported_scheduling_option_is_named() {
+fn unsupported_build_option_is_named() {
     let dir = tempfile::tempdir().expect("tempdir");
     let output = run(&[
         "build",
@@ -88,7 +88,38 @@ fn unsupported_scheduling_option_is_named() {
         dir.path().join("plan.json").to_string_lossy().as_ref(),
         "--bogus",
     ]);
-    expect_failure(&output, "unsupported scheduling option --bogus");
+    expect_failure(&output, "unsupported build option --bogus");
+}
+
+#[test]
+fn build_requires_an_explicit_discovery_frame() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let matrix = bundle().to_string_lossy().into_owned();
+    let raw = discovery_paths(dir.path());
+    let out = dir.path().join("plan.json").to_string_lossy().into_owned();
+    let missing = run(&["build", &matrix, "component_base", "test", &raw, &out]);
+    expect_failure(
+        &missing,
+        "--frame is required; expected runner-t-directory-relative, repository-root-relative, or canonical-repository-path",
+    );
+
+    let unsupported =
+        run(&["build", &matrix, "component_base", "test", &raw, &out, "--frame", "teleport"]);
+    expect_failure(&unsupported, "unsupported discovery frame teleport");
+
+    let duplicated = run(&[
+        "build",
+        &matrix,
+        "component_base",
+        "test",
+        &raw,
+        &out,
+        "--frame",
+        "canonical-repository-path",
+        "--frame",
+        "repository-root-relative",
+    ]);
+    expect_failure(&duplicated, "duplicate --frame");
 }
 
 #[test]
@@ -97,11 +128,32 @@ fn jobs_requires_a_positive_integer() {
     let matrix = bundle().to_string_lossy().into_owned();
     let raw = discovery_paths(dir.path());
     let out = dir.path().join("plan.json").to_string_lossy().into_owned();
-    let zero = run(&["build", &matrix, "component_base", "test", &raw, &out, "--jobs", "0"]);
+    let zero = run(&[
+        "build",
+        &matrix,
+        "component_base",
+        "test",
+        &raw,
+        &out,
+        "--frame",
+        "canonical-repository-path",
+        "--jobs",
+        "0",
+    ]);
     expect_failure(&zero, "--jobs requires a positive integer");
 
-    let nonnumeric =
-        run(&["build", &matrix, "component_base", "test", &raw, &out, "--jobs", "seven"]);
+    let nonnumeric = run(&[
+        "build",
+        &matrix,
+        "component_base",
+        "test",
+        &raw,
+        &out,
+        "--frame",
+        "canonical-repository-path",
+        "--jobs",
+        "seven",
+    ]);
     expect_failure(&nonnumeric, "--jobs requires a positive integer");
 }
 
@@ -151,6 +203,8 @@ fn build_writes_plan_and_prints_exact_summary() {
         "test",
         raw.to_string_lossy().as_ref(),
         plan_path.to_string_lossy().as_ref(),
+        "--frame",
+        "canonical-repository-path",
         "--asap",
         "--jobs",
         "3",
@@ -168,9 +222,14 @@ fn build_writes_plan_and_prints_exact_summary() {
     let plan: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&plan_path).expect("plan receipt must exist"))
             .expect("plan receipt must be valid JSON");
-    assert_eq!(plan["schema_version"], "perl_core_harness.runner_plan.v1");
+    assert_eq!(plan["schema_version"], "perl_core_harness.runner_plan.v2");
     assert_eq!(plan["target_id"], "component_base");
     assert_eq!(plan["runner"], "test");
+    assert_eq!(plan["source_items"][0]["discovery_frame"], "canonical_repository_path");
+    assert_eq!(
+        plan["source_items"][0]["normalization_version"],
+        "perl_core_harness.runner_source_normalization.v2"
+    );
     assert_eq!(plan["normalized_membership"], serde_json::json!(["t/base/cond.t", "t/base/if.t"]));
     assert_eq!(plan["scheduling"]["jobs"], 3);
     assert_eq!(plan["scheduling"]["asap"], true);
@@ -192,9 +251,27 @@ fn compare_prints_exact_parity_status() {
     let raw = discovery_paths(dir.path());
     let left = dir.path().join("left.json").to_string_lossy().into_owned();
     let right = dir.path().join("right.json").to_string_lossy().into_owned();
-    let built_test = run(&["build", &matrix, "component_base", "test", &raw, &left]);
+    let built_test = run(&[
+        "build",
+        &matrix,
+        "component_base",
+        "test",
+        &raw,
+        &left,
+        "--frame",
+        "canonical-repository-path",
+    ]);
     assert!(built_test.status.success(), "left build failed");
-    let built_harness = run(&["build", &matrix, "component_base", "harness", &raw, &right]);
+    let built_harness = run(&[
+        "build",
+        &matrix,
+        "component_base",
+        "harness",
+        &raw,
+        &right,
+        "--frame",
+        "canonical-repository-path",
+    ]);
     assert!(built_harness.status.success(), "right build failed");
 
     let report = dir.path().join("parity.json");
@@ -217,7 +294,16 @@ fn check_plan_revalidates_built_receipt_and_rejects_tampering() {
     let matrix = bundle().to_string_lossy().into_owned();
     let raw = discovery_paths(dir.path());
     let plan_path = dir.path().join("plan.json").to_string_lossy().into_owned();
-    let built = run(&["build", &matrix, "component_base", "test", &raw, &plan_path]);
+    let built = run(&[
+        "build",
+        &matrix,
+        "component_base",
+        "test",
+        &raw,
+        &plan_path,
+        "--frame",
+        "canonical-repository-path",
+    ]);
     assert!(built.status.success(), "build failed");
 
     let checked = run(&["check-plan", &matrix, &raw, &plan_path]);
@@ -241,6 +327,20 @@ fn check_plan_revalidates_built_receipt_and_rejects_tampering() {
     std::fs::write(&forged_path, serde_json::to_vec(&forged).unwrap()).expect("write forged");
     let rejected = run(&["check-plan", &matrix, &raw, forged_path.to_string_lossy().as_ref()]);
     expect_failure(&rejected, "runner plan entrypoint t/wrong disagrees with");
+
+    // Forging one row's declared discovery frame must also fail closed: the
+    // stored canonical identity no longer matches its frame re-derivation.
+    let mut forged_frame = serde_json::from_slice::<serde_json::Value>(
+        &std::fs::read(dir.path().join("plan.json")).expect("plan receipt"),
+    )
+    .expect("valid JSON");
+    forged_frame["source_items"][0]["discovery_frame"] = "runner_t_directory_relative".into();
+    let forged_frame_path = dir.path().join("forged-frame.json");
+    std::fs::write(&forged_frame_path, serde_json::to_vec(&forged_frame).unwrap())
+        .expect("write forged frame");
+    let rejected_frame =
+        run(&["check-plan", &matrix, &raw, forged_frame_path.to_string_lossy().as_ref()]);
+    expect_failure(&rejected_frame, "discovery-frame normalization");
 }
 
 #[test]
@@ -252,8 +352,16 @@ fn check_parity_revalidates_report_and_rejects_tampering() {
     let right = dir.path().join("right.json");
     let report = dir.path().join("parity.json");
 
-    let built_left =
-        run(&["build", &matrix, "component_base", "test", &raw, left.to_string_lossy().as_ref()]);
+    let built_left = run(&[
+        "build",
+        &matrix,
+        "component_base",
+        "test",
+        &raw,
+        left.to_string_lossy().as_ref(),
+        "--frame",
+        "canonical-repository-path",
+    ]);
     let built_right = run(&[
         "build",
         &matrix,
@@ -261,6 +369,8 @@ fn check_parity_revalidates_report_and_rejects_tampering() {
         "harness",
         &raw,
         right.to_string_lossy().as_ref(),
+        "--frame",
+        "canonical-repository-path",
     ]);
     assert!(built_left.status.success() && built_right.status.success(), "builds failed");
 

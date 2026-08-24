@@ -1,7 +1,8 @@
 //! Runner-plan and parity falsifiers over the pinned target matrix.
 
 use crate::build::{
-    build_runner_plan, runner_plan_digest, validate_runner_plan, validate_runner_plan_against,
+    build_runner_plan, runner_plan_digest, uniform_discovery_frame, validate_runner_plan,
+    validate_runner_plan_against,
 };
 use crate::compare::{
     compare_runner_plans, compare_runner_plans_against, validate_runner_parity,
@@ -9,7 +10,8 @@ use crate::compare::{
 };
 use crate::io::read_matrix;
 use crate::runner_model::{
-    MembershipParityStatus, RunnerKind, RunnerPlan, RunnerScheduling, SourceForm,
+    DiscoveryFrame, MembershipParityStatus, RUNNER_PLAN_V1_SCHEMA_VERSION, RunnerKind, RunnerPlan,
+    RunnerPlanV1, RunnerScheduling, SourceForm,
 };
 use color_eyre::eyre::{Result, bail};
 use std::collections::BTreeMap;
@@ -28,8 +30,17 @@ fn base_plan(
     runner: RunnerKind,
     raw: &[u8],
 ) -> Result<RunnerPlan> {
-    build_runner_plan(matrix, "component_base", runner, raw, RunnerScheduling::default())
-        .map_err(|error| color_eyre::eyre::eyre!(error))
+    // These fixtures spell members as canonical repository paths (`t/...`).
+    // Declaring that frame explicitly is part of the reviewed contract.
+    build_runner_plan(
+        matrix,
+        "component_base",
+        runner,
+        DiscoveryFrame::CanonicalRepositoryPath,
+        raw,
+        RunnerScheduling::default(),
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))
 }
 
 #[test]
@@ -42,6 +53,7 @@ fn test_and_harness_membership_can_match_with_different_order() -> Result<()> {
         &matrix,
         "component_base",
         RunnerKind::Harness,
+        DiscoveryFrame::CanonicalRepositoryPath,
         harness_raw,
         RunnerScheduling {
             jobs: Some(2),
@@ -85,6 +97,7 @@ fn nested_op_hook_is_not_absorbed_by_direct_op() -> Result<()> {
         &matrix,
         "component_op_hook",
         RunnerKind::Harness,
+        DiscoveryFrame::CanonicalRepositoryPath,
         b"t/op/hook/hook.t\n",
         RunnerScheduling::default(),
     );
@@ -93,6 +106,7 @@ fn nested_op_hook_is_not_absorbed_by_direct_op() -> Result<()> {
         &matrix,
         "component_op",
         RunnerKind::Harness,
+        DiscoveryFrame::CanonicalRepositoryPath,
         b"t/op/hook/hook.t\n",
         RunnerScheduling::default(),
     );
@@ -107,6 +121,7 @@ fn reonly_keeps_local_and_root_external_members() -> Result<()> {
         &matrix,
         "make_test_reonly",
         RunnerKind::Harness,
+        DiscoveryFrame::CanonicalRepositoryPath,
         b"t/re/basic.t\next/re/t/qr.t\n",
         RunnerScheduling {
             jobs: None,
@@ -124,18 +139,24 @@ fn reonly_keeps_local_and_root_external_members() -> Result<()> {
 }
 
 #[test]
-fn manifest_population_accepts_dot_t_and_test_pl() -> Result<()> {
+fn manifest_population_accepts_dot_t_and_test_pl_with_typed_provenance() -> Result<()> {
     let matrix = matrix()?;
     let plan = build_runner_plan(
         &matrix,
         "manifest_cpan",
         RunnerKind::Test,
+        DiscoveryFrame::RepositoryRootRelative,
         b"cpan/Foo/t/basic.t\ncpan/Foo/test.pl\n",
         RunnerScheduling::default(),
     )
     .map_err(|error| color_eyre::eyre::eyre!(error))?;
     let forms = plan.source_items.iter().map(|item| item.source_form).collect::<Vec<_>>();
     assert_eq!(forms, vec![SourceForm::DotT, SourceForm::TestPl]);
+    for item in &plan.source_items {
+        assert_eq!(item.discovery_frame, DiscoveryFrame::RepositoryRootRelative);
+        assert_eq!(item.normalization_version, "perl_core_harness.runner_source_normalization.v2");
+        assert_eq!(plan.schema_version, "perl_core_harness.runner_plan.v2");
+    }
     Ok(())
 }
 
@@ -146,6 +167,7 @@ fn serialized_source_form_is_recomputed_from_the_raw_path() -> Result<()> {
         &matrix,
         "manifest_cpan",
         RunnerKind::Test,
+        DiscoveryFrame::RepositoryRootRelative,
         b"cpan/Foo/test.pl\n",
         RunnerScheduling::default(),
     )
@@ -168,43 +190,156 @@ fn real_membership_difference_is_not_hidden_by_order_normalization() -> Result<(
 }
 
 #[test]
-fn direct_fallback_cannot_claim_upstream_runner_parity() -> Result<()> {
+fn cross_frame_t_relative_aliases_cannot_collapse_into_false_parity() -> Result<()> {
+    // Strongest reviewed mutation: under the pre-frame v1 normalizer both raw
+    // spellings collapsed to `lib/diagnostics.t` and parity was falsely
+    // proven. With explicit frames the canonical identities differ.
     let matrix = matrix()?;
-    let upstream = base_plan(&matrix, RunnerKind::Test, b"t/base/if.t\n")?;
-    let fallback = base_plan(&matrix, RunnerKind::DirectFallback, b"t/base/if.t\n")?;
-    let parity = compare_runner_plans(&upstream, &fallback)
-        .map_err(|error| color_eyre::eyre::eyre!(error))?;
-    assert_eq!(parity.membership_status, MembershipParityStatus::NotProven);
-    assert!(
-        parity
-            .limitations
-            .iter()
-            .any(|value| { value == "direct_fallback_cannot_establish_upstream_runner_parity" })
-    );
+    let left = build_runner_plan(
+        &matrix,
+        "make_test_choose",
+        RunnerKind::Test,
+        DiscoveryFrame::RunnerTDirectoryRelative,
+        b"lib/diagnostics.t\n",
+        RunnerScheduling::default(),
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let right = build_runner_plan(
+        &matrix,
+        "make_test_choose",
+        RunnerKind::Harness,
+        DiscoveryFrame::RunnerTDirectoryRelative,
+        b"../lib/diagnostics.t\n",
+        RunnerScheduling::default(),
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
 
-    let mut forged = parity;
-    forged.membership_status = MembershipParityStatus::Parity;
-    assert!(validate_runner_parity(&forged).is_err());
+    assert_eq!(left.normalized_membership, vec!["t/lib/diagnostics.t".to_string()]);
+    assert_eq!(right.normalized_membership, vec!["lib/diagnostics.t".to_string()]);
+    assert_eq!(left.source_items[0].path_class, crate::runner_model::SourcePathClass::LocalT);
+    assert_eq!(right.source_items[0].path_class, crate::runner_model::SourcePathClass::RootLib);
+
+    let parity = compare_runner_plans_against(
+        &matrix,
+        &left,
+        b"lib/diagnostics.t\n",
+        &right,
+        b"../lib/diagnostics.t\n",
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    assert_eq!(parity.membership_status, MembershipParityStatus::Mismatch);
+    assert_eq!(parity.missing_from_right, vec!["t/lib/diagnostics.t".to_string()]);
+    assert_eq!(parity.extra_in_right, vec!["lib/diagnostics.t".to_string()]);
     Ok(())
 }
 
 #[test]
-fn same_runner_comparison_is_not_cross_runner_parity() -> Result<()> {
+fn same_raw_spelling_under_different_frames_is_never_one_source() -> Result<()> {
+    // Repository-root `lib/**` cannot satisfy parity through a `t/lib/**`
+    // spelling or vice versa; each frame names a different repository member.
     let matrix = matrix()?;
-    let left = base_plan(&matrix, RunnerKind::Test, b"t/base/if.t\n")?;
-    let right = base_plan(&matrix, RunnerKind::Test, b"t/base/if.t\n")?;
-    let parity =
-        compare_runner_plans(&left, &right).map_err(|error| color_eyre::eyre::eyre!(error))?;
-    assert_eq!(parity.membership_status, MembershipParityStatus::NotProven);
-    assert!(
-        parity.limitations.iter().any(|value| {
-            value == "same_runner_comparison_cannot_establish_cross_runner_parity"
-        })
-    );
+    let t_relative = build_runner_plan(
+        &matrix,
+        "component_t_lib",
+        RunnerKind::Test,
+        DiscoveryFrame::RunnerTDirectoryRelative,
+        b"lib/attributes.t\n",
+        RunnerScheduling::default(),
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    assert_eq!(t_relative.normalized_membership, vec!["t/lib/attributes.t".to_string()]);
 
-    let mut forged = parity;
-    forged.membership_status = MembershipParityStatus::Parity;
-    assert!(validate_runner_parity(&forged).is_err());
+    // The same raw spelling against the same target under the repo-root frame
+    // resolves outside the recursive `lib` root of component_t_lib...
+    let outside = match build_runner_plan(
+        &matrix,
+        "component_t_lib",
+        RunnerKind::Test,
+        DiscoveryFrame::RepositoryRootRelative,
+        b"lib/attributes.t\n",
+        RunnerScheduling::default(),
+    ) {
+        Ok(plan) => {
+            bail!("repo-root frame must fall outside component_t_lib: {plan:?}")
+        }
+        Err(error) => error,
+    };
+    assert_eq!(outside, "discovered path lib/attributes.t is outside target component_t_lib");
+
+    // ...while manifest_root_lib admits exactly the root spelling.
+    let root_member = build_runner_plan(
+        &matrix,
+        "manifest_root_lib",
+        RunnerKind::Harness,
+        DiscoveryFrame::RepositoryRootRelative,
+        b"lib/attributes.t\n",
+        RunnerScheduling::default(),
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    assert_eq!(root_member.normalized_membership, vec!["lib/attributes.t".to_string()]);
+    Ok(())
+}
+
+#[test]
+fn frame_identity_changes_the_plan_digest_even_when_canonical_paths_match() -> Result<()> {
+    // Reviewed falsifier 3: the frame changes but the plan/source digest must
+    // not remain unchanged. Canonical paths agree here; only provenance moves.
+    let matrix = matrix()?;
+    let raw = b"lib/attributes.t\n";
+    let repo_root = build_runner_plan(
+        &matrix,
+        "manifest_root_lib",
+        RunnerKind::Test,
+        DiscoveryFrame::RepositoryRootRelative,
+        raw,
+        RunnerScheduling::default(),
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let canonical = build_runner_plan(
+        &matrix,
+        "manifest_root_lib",
+        RunnerKind::Test,
+        DiscoveryFrame::CanonicalRepositoryPath,
+        raw,
+        RunnerScheduling::default(),
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+
+    assert_eq!(
+        repo_root.normalized_membership, canonical.normalized_membership,
+        "precondition: identical canonical members"
+    );
+    assert_ne!(
+        runner_plan_digest(&repo_root).map_err(|error| color_eyre::eyre::eyre!(error))?,
+        runner_plan_digest(&canonical).map_err(|error| color_eyre::eyre::eyre!(error))?,
+        "frame identity must be load-bearing in canonical plan bytes"
+    );
+    Ok(())
+}
+
+#[test]
+fn mixed_frame_receipts_cannot_be_rebuilt_from_one_stream() -> Result<()> {
+    let matrix = matrix()?;
+    let raw = b"lib/a.t\nlib/b.t\n";
+    let mut plan = build_runner_plan(
+        &matrix,
+        "manifest_root_lib",
+        RunnerKind::Test,
+        DiscoveryFrame::RepositoryRootRelative,
+        raw,
+        RunnerScheduling::default(),
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    validate_runner_plan_against(&matrix, raw, &plan)
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+
+    // Re-point one row at an equivalent frame spelling: per-row provenance
+    // stays internally coherent, so standalone validation still holds...
+    plan.source_items[1].discovery_frame = DiscoveryFrame::CanonicalRepositoryPath;
+    assert!(validate_runner_plan(&plan).is_ok());
+    assert!(uniform_discovery_frame(&plan).is_err());
+    // ...but a single declared stream can no longer reproduce the receipt.
+    assert!(validate_runner_plan_against(&matrix, raw, &plan).is_err());
     Ok(())
 }
 
@@ -248,6 +383,21 @@ fn scheduling_limitations_are_mandatory() -> Result<()> {
 }
 
 #[test]
+fn discovery_frame_declaration_limitation_is_mandatory() -> Result<()> {
+    let matrix = matrix()?;
+    let mut stripped = base_plan(&matrix, RunnerKind::Test, b"t/base/if.t\n")?;
+    assert!(
+        stripped.limitations.iter().any(|value| value
+            == "discovery_frames_are_declared_inputs_not_observed_upstream_runner_state")
+    );
+    stripped.limitations.retain(|value| {
+        value != "discovery_frames_are_declared_inputs_not_observed_upstream_runner_state"
+    });
+    assert!(validate_runner_plan(&stripped).is_err());
+    Ok(())
+}
+
+#[test]
 fn copied_discovery_stream_cannot_claim_runner_observation() -> Result<()> {
     let matrix = matrix()?;
     // One hand-written byte stream is built once as `test` and once as the
@@ -260,25 +410,20 @@ fn copied_discovery_stream_cannot_claim_runner_observation() -> Result<()> {
         &matrix,
         "component_base",
         RunnerKind::Harness,
+        DiscoveryFrame::CanonicalRepositoryPath,
         copied_raw,
         RunnerScheduling::default(),
     )
     .map_err(|error| color_eyre::eyre::eyre!(error))?;
     assert_eq!(test_plan.raw_discovery_digest, harness_plan.raw_discovery_digest);
-    assert!(
-        test_plan
-            .limitations
-            .iter()
-            .any(|value| value
+    for plan in [&test_plan, &harness_plan] {
+        assert!(
+            plan.limitations.iter().any(|value| value
                 == "raw_discovery_stream_is_declared_input_not_observed_runner_output")
-    );
-    assert!(
-        harness_plan
-            .limitations
-            .iter()
-            .any(|value| value
-                == "raw_discovery_stream_is_declared_input_not_observed_runner_output")
-    );
+        );
+        assert!(plan.limitations.iter().any(|value| value
+            == "discovery_frames_are_declared_inputs_not_observed_upstream_runner_state"));
+    }
 
     let parity = compare_runner_plans(&test_plan, &harness_plan)
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
@@ -319,6 +464,85 @@ fn plan_digest_binds_canonical_typed_content_not_json_spelling() -> Result<()> {
 }
 
 #[test]
+fn v1_receipts_stay_readable_but_cannot_back_current_authority() -> Result<()> {
+    let matrix = matrix()?;
+    let current = base_plan(&matrix, RunnerKind::Test, b"t/base/if.t\n")?;
+    assert_eq!(current.schema_version, "perl_core_harness.runner_plan.v2");
+
+    // A merged #6772-era v1 receipt: no discovery frame, v1 field names.
+    let v1_json = br#"{
+        "schema_version": "perl_core_harness.runner_plan.v1",
+        "matrix_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "target_id": "component_base",
+        "target_contract_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "runner": "test",
+        "runner_entrypoint": "t/TEST",
+        "canonical_selection_entrypoint": "t/TEST",
+        "raw_discovery_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "source_items": [
+            {
+                "raw_path": "../lib/Foo/test.pl",
+                "canonical_path": "lib/Foo/test.pl",
+                "source_form": "test_pl",
+                "path_class": "root_lib",
+                "invocation_context": "root_lib_u1"
+            }
+        ],
+        "normalized_order": ["lib/Foo/test.pl"],
+        "normalized_membership": ["lib/Foo/test.pl"],
+        "scheduling": {"jobs": null, "asap": false, "state_ordering": false, "properties": {}},
+        "invocation_capture": "not_proven",
+        "limitations": [
+            "per_file_upstream_scan_and_effective_invocation_not_captured",
+            "scheduling_inputs_are_declared_not_observed",
+            "raw_discovery_stream_is_declared_input_not_observed_runner_output"
+        ],
+        "claim_boundary": "historical declared membership only"
+    }"#;
+
+    let historical =
+        RunnerPlanV1::decode(v1_json).map_err(|error| color_eyre::eyre::eyre!(error))?;
+    assert_eq!(historical.schema_version, RUNNER_PLAN_V1_SCHEMA_VERSION);
+    assert_eq!(historical.source_items[0].canonical_path, "lib/Foo/test.pl");
+    // Round-trip preserves the evidence verbatim.
+    let roundtripped: RunnerPlanV1 = serde_json::from_slice(&serde_json::to_vec(&historical)?)?;
+    assert_eq!(roundtripped, historical);
+
+    // The v1 payload is not decodable as current authority: rows lack frames.
+    let as_current: Result<RunnerPlan, _> = serde_json::from_slice(v1_json);
+    let error = as_current.err().map(|error| error.to_string()).unwrap_or_default();
+    assert!(
+        error.contains("discovery_frame"),
+        "v1 payload must fail closed on the missing typed frame: {error}"
+    );
+    assert_ne!(RUNNER_PLAN_V1_SCHEMA_VERSION, current.schema_version);
+    Ok(())
+}
+
+#[test]
+fn normalization_output_is_independent_of_stream_iteration_order() -> Result<()> {
+    let matrix = matrix()?;
+    let forward = b"t/base/cond.t\nt/base/if.t\nt/base/pat.t\n";
+    let backward = b"t/base/pat.t\nt/base/if.t\nt/base/cond.t\n";
+    let forward_plan = base_plan(&matrix, RunnerKind::Test, forward)?;
+    let backward_plan = base_plan(&matrix, RunnerKind::Test, backward)?;
+
+    assert_eq!(forward_plan.normalized_membership, backward_plan.normalized_membership);
+    // The whole-plan digest intentionally binds the original stream order and
+    // per-row raw spellings; only the membership projection is order-free.
+    assert_ne!(forward_plan.raw_discovery_digest, backward_plan.raw_discovery_digest);
+    assert_eq!(
+        forward_plan.normalized_order,
+        vec!["t/base/cond.t".to_string(), "t/base/if.t".to_string(), "t/base/pat.t".to_string()]
+    );
+    assert_eq!(
+        backward_plan.normalized_order,
+        vec!["t/base/pat.t".to_string(), "t/base/if.t".to_string(), "t/base/cond.t".to_string()]
+    );
+    Ok(())
+}
+
+#[test]
 fn parity_check_is_bound_to_canonical_plan_content() -> Result<()> {
     let matrix = matrix()?;
     let left = base_plan(&matrix, RunnerKind::Test, b"t/base/if.t\n")?;
@@ -342,10 +566,30 @@ fn duplicate_raw_discovery_is_structurally_invalid() -> Result<()> {
         &matrix,
         "component_base",
         RunnerKind::Test,
+        DiscoveryFrame::CanonicalRepositoryPath,
         b"t/base/if.t\nt/base/if.t\n",
         RunnerScheduling::default(),
     );
     assert!(result.is_err());
+    Ok(())
+}
+
+#[test]
+fn equivalent_aliases_produce_an_explicit_duplicate_conflict() -> Result<()> {
+    let matrix = matrix()?;
+    let result = build_runner_plan(
+        &matrix,
+        "manifest_root_lib",
+        RunnerKind::Test,
+        DiscoveryFrame::RepositoryRootRelative,
+        b"lib/x/basic.t\n./lib/x/basic.t\n",
+        RunnerScheduling::default(),
+    );
+    let duplicate = match result {
+        Ok(plan) => bail!("alias collision must be rejected: {plan:?}"),
+        Err(error) => error,
+    };
+    assert_eq!(duplicate, "raw discovery contains duplicate path lib/x/basic.t");
     Ok(())
 }
 
@@ -356,6 +600,7 @@ fn absent_target_is_named_by_plan_builder() -> Result<()> {
         &matrix,
         "no_such_target",
         RunnerKind::Test,
+        DiscoveryFrame::CanonicalRepositoryPath,
         b"t/base/if.t\n",
         RunnerScheduling::default(),
     ) else {
@@ -373,6 +618,7 @@ fn non_physical_targets_cannot_build_runner_plans() -> Result<()> {
             &matrix,
             target_id,
             RunnerKind::Test,
+            DiscoveryFrame::CanonicalRepositoryPath,
             b"t/base/if.t\n",
             RunnerScheduling::default(),
         ) else {
@@ -392,6 +638,7 @@ fn environment_variants_inherit_base_selection_and_authority_chain() -> Result<(
         &matrix,
         "make_test_harness_choose",
         RunnerKind::Harness,
+        DiscoveryFrame::CanonicalRepositoryPath,
         raw,
         RunnerScheduling::default(),
     )
@@ -408,6 +655,7 @@ fn environment_variants_inherit_base_selection_and_authority_chain() -> Result<(
         &matrix,
         "make_test_harness_notty",
         RunnerKind::Test,
+        DiscoveryFrame::CanonicalRepositoryPath,
         raw,
         RunnerScheduling::default(),
     )
@@ -424,6 +672,7 @@ fn environment_variants_inherit_base_selection_and_authority_chain() -> Result<(
         &matrix,
         "make_test_harness_notty",
         RunnerKind::Harness,
+        DiscoveryFrame::CanonicalRepositoryPath,
         raw,
         RunnerScheduling::default(),
     )
@@ -445,6 +694,7 @@ fn script_form_allowance_rejects_test_pl_and_variant_inherits_base_forms() -> Re
         &matrix,
         "component_base",
         RunnerKind::Test,
+        DiscoveryFrame::CanonicalRepositoryPath,
         b"cpan/Foo/test.pl\n",
         RunnerScheduling::default(),
     ) else {
@@ -459,6 +709,7 @@ fn script_form_allowance_rejects_test_pl_and_variant_inherits_base_forms() -> Re
         &matrix,
         "variant_utf8",
         RunnerKind::Test,
+        DiscoveryFrame::CanonicalRepositoryPath,
         b"cpan/Foo/test.pl\n",
         RunnerScheduling::default(),
     )
