@@ -204,6 +204,8 @@ package.preload["plugins.lsp.diagnostics"] = function()
     close_session = function() end,
     retire_provider = function() end,
     publish = function() return true, nil end,
+    -- #12047 render-resolver seam: init.lua registers it unconditionally at load.
+    set_render_resolver = function() end,
   }
 end
 

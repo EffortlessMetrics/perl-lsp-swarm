@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11526 |
-| Rust-family files | 3507 |
-| Non-Rust files | 8019 |
-| Allowlisted | 5746 |
+| Total tracked files | 11532 |
+| Rust-family files | 3509 |
+| Non-Rust files | 8023 |
+| Allowlisted | 5750 |
 | Unclassified | 2273 |
 
 ## Non-Rust files by category
@@ -19,8 +19,8 @@
 | config | 404 |
 | documentation | 2663 |
 | generated | 2 |
-| production | 315 |
-| test | 1883 |
+| production | 317 |
+| test | 1885 |
 | tooling | 479 |
 | unclassified | 2273 |
 
@@ -3372,6 +3372,7 @@
 | `clients/lite-xl/tests/json_decode_test.lua` | test | `non-rust-litexl-json-decode-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_frame_test.lua` | test | `non-rust-litexl-server-frame-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_logging_test.lua` | test | `non-rust-litexl-server-logging-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/util_config_merge_test.lua` | test | `non-rust-litexl-config-merge-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_show_document_test.lua` | test | `non-rust-litexl-show-document-tests` | editor/lite-xl |
 | `clients/lite-xl/upstream/diagnostics.lua` | production | `non-rust-litexl-diagnostics-store` | editor/lite-xl |
 | `clients/lite-xl/upstream/init.lua` | production | `non-rust-litexl-init-plugin` | editor/lite-xl |
@@ -3536,6 +3537,7 @@
 | `crates/perl-dap/tests/fixtures/performance/large_file.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-dap/tests/fixtures/performance/medium_file.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-dap/tests/fixtures/performance/small_file.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-dap/tests/fixtures/value_format_stdio_matrix.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-diagnostics/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-diagnostics/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-incremental-parsing/BENCHMARK_REPORT.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -7950,8 +7952,10 @@
 | `vscode-extension/src/test/packagedSemanticTokensSmoke.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/packagedServerVersion.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/podPreview.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/published/activationFailureJourney.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/harness/extension.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/harness/package.json` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/published/journeySupport.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/managedBinaryPublishedSmoke.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/packagedBundleJourney.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/runPublishedSmoke.ts` | production | `non-rust-vscode-extension` | editor/vscode |
