@@ -393,11 +393,11 @@ function resolveMatrixTarget(name: (typeof MATRIX_NAMES)[number]): ActivationPha
       return lastOfPhase('support');
     case 'final pre-commit demand listeners':
       return lastBoundaryOverall();
-    default: {
-      const exhaustive: never = name;
-      throw new Error(`unknown matrix target: ${String(exhaustive)}`);
-    }
   }
+  // Exhaustiveness guard without a default case: adding a matrix name
+  // without a resolver is a compile-time error, not a runtime one.
+  const exhaustive: never = name;
+  throw new Error(`unknown matrix target: ${String(exhaustive)}`);
 }
 
 interface FailedAttempt {
