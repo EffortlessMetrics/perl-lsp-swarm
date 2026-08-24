@@ -140,7 +140,7 @@ fn admit_wire_range(
         FormatPosition::new(wire.end.line, wire.end.character),
     );
     let admitted =
-        admit_format_range(&geometry, source, &requested).map_err(|error| match error {
+        admit_format_range(geometry, source, &requested).map_err(|error| match error {
             perl_lsp_rs_core::providers::formatting::RangeAdmissionError::Reversed => {
                 PlanError::reversed_range(label)
             }
