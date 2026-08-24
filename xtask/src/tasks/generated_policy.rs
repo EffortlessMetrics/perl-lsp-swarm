@@ -213,11 +213,18 @@ mod tests {
     #[test]
     fn matching_is_exact_or_glob_based() {
         let exact = Entry {
-            id: "exact".into(), path: Some("Cargo.lock".into()), glob: None,
-            kind: "lockfile".into(), generated_by: "cargo".into(),
-            regenerate: Some("cargo update".into()), owner: "deps".into(),
-            reason: "pins deps".into(), covered_by: vec![], created: "2026-01-01".into(),
-            review_after: "2026-02-01".into(), broad_glob_reason: None,
+            id: "exact".into(),
+            path: Some("Cargo.lock".into()),
+            glob: None,
+            kind: "lockfile".into(),
+            generated_by: "cargo".into(),
+            regenerate: Some("cargo update".into()),
+            owner: "deps".into(),
+            reason: "pins deps".into(),
+            covered_by: vec![],
+            created: "2026-01-01".into(),
+            review_after: "2026-02-01".into(),
+            broad_glob_reason: None,
         };
         assert!(entry_matches(&exact, "Cargo.lock"));
         assert!(!entry_matches(&exact, "flake.lock"));
@@ -230,10 +237,17 @@ mod tests {
     #[test]
     fn strict_validation_requires_regeneration_for_generated_kinds() {
         let mut entry = Entry {
-            id: "status".into(), path: Some("status.md".into()), glob: None,
-            kind: "status_page".into(), generated_by: "xtask".into(), regenerate: None,
-            owner: "docs".into(), reason: "generated".into(), covered_by: vec![],
-            created: "2026-01-01".into(), review_after: "2026-02-01".into(),
+            id: "status".into(),
+            path: Some("status.md".into()),
+            glob: None,
+            kind: "status_page".into(),
+            generated_by: "xtask".into(),
+            regenerate: None,
+            owner: "docs".into(),
+            reason: "generated".into(),
+            covered_by: vec![],
+            created: "2026-01-01".into(),
+            review_after: "2026-02-01".into(),
             broad_glob_reason: None,
         };
         assert!(validate_entries(&[entry.clone()]).iter().any(|error| error.contains("requires regenerate")));
