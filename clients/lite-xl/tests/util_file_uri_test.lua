@@ -338,6 +338,13 @@ with_platform("Windows", function()
   rejects(util.uri_to_path, "file://server//", "invalid_unc",
     "authority plus bare separators")
 
+  -- Encoded separator bytes in the authority decode into UNC structure;
+  -- host names never contain them (#11165 review).
+  rejects(util.uri_to_path, "file://server%5Cshare/x", "invalid_unc",
+    "encoded backslash in authority")
+  rejects(util.uri_to_path, "file://serv%2Fer/x.pl", "invalid_unc",
+    "encoded slash in authority")
+
   -- localhost is the local machine in file URI space; a \\localhost\...
   -- UNC would produce an identity this authority reads back as a drive-less
   -- local path, so the producer refuses it symmetrically (#11165 review).

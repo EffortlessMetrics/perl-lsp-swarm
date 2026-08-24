@@ -296,6 +296,11 @@ function util.uri_to_path(uri)
     -- Userinfo or port bytes never name a local volume or SMB host.
     return nil, "remote_authority"
   end
+  if authority:find("/", 1, true) or authority:find("\\", 1, true) then
+    -- Encoded separators decode into UNC structure (#11165 review); host
+    -- names never contain them, so this is malformed rather than data.
+    return nil, "invalid_unc"
+  end
 
   local is_local_authority = authority == ""
     or authority:lower() == "localhost"
