@@ -78,6 +78,8 @@ pub struct LaneDecisions {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PlatformOverrides {
     pub windows_runner: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub windows_test_crates: Vec<String>,
 }
 
 /// The full scope classifier output (schema_version 2).
@@ -185,7 +187,7 @@ pub fn requires_windows_runner(files: &[String]) -> bool {
         normalized == "hooks/pre-push"
             || normalized.starts_with("hooks/")
             || (normalized.starts_with("scripts/") && normalized.ends_with(".sh"))
-            || normalized.ends_with("/uri.rs")
+            || normalized.starts_with("crates/perl-uri/")
             || normalized.contains("workspace-index")
             || normalized.contains("workspace_index")
             || normalized.contains("/windows/")
@@ -761,7 +763,18 @@ pub fn classify_files(
             "changed path exercises a Windows-sensitive portability seam".to_string(),
         );
     }
-    let platform_overrides = PlatformOverrides { windows_runner };
+    let windows_test_crates = if windows_runner {
+        let mut crates: Vec<String> = direct_crates.iter().map(|c| c.name.clone()).collect();
+        if crates.is_empty() {
+            crates.extend(["perl-uri".to_string(), "perl-workspace".to_string()]);
+        }
+        crates.sort();
+        crates.dedup();
+        crates
+    } else {
+        vec![]
+    };
+    let platform_overrides = PlatformOverrides { windows_runner, windows_test_crates };
     let parser_ratchet = parser_ratchet_decision(files, &risk_tags);
 
     Ok(ScopeOutput {
@@ -1046,7 +1059,7 @@ mod tests {
         for file in [
             "hooks/pre-push",
             "scripts/check-shell.sh",
-            "crates/perl-uri/src/uri.rs",
+            "crates/perl-uri/src/fs.rs",
             "crates/perl-workspace/src/workspace-index.rs",
             "crates/perl-workspace/src/platform/windows.rs",
         ] {
@@ -1388,6 +1401,7 @@ mod tests {
         let files = vec!["crates/perl-uri/src/uri.rs".to_string()];
         let output = classify_files(&files, &metadata, "/workspace")?;
         assert!(output.platform_overrides.windows_runner);
+        assert_eq!(output.platform_overrides.windows_test_crates, vec!["perl-uri"]);
         assert!(output.explanations.contains_key("windows_runner"));
         Ok(())
     }
@@ -1398,6 +1412,7 @@ mod tests {
         let files = vec!["crates/perl-parser/src/lib.rs".to_string()];
         let output = classify_files(&files, &metadata, "/workspace")?;
         assert!(!output.platform_overrides.windows_runner);
+        assert!(output.platform_overrides.windows_test_crates.is_empty());
         assert!(!output.explanations.contains_key("windows_runner"));
         Ok(())
     }

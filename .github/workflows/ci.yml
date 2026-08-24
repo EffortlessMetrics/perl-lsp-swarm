@@ -165,15 +165,19 @@ jobs:
       - name: Classify platform overrides
         id: scope
         shell: bash
+        env:
+          SCOPE_BASE: ${{ github.event_name == 'pull_request' && 'origin/main' || github.event.before || 'origin/main' }}
         run: |
           set -euo pipefail
-          cargo run -p xtask --locked -- ci-scope --base origin/main --format json > "$RUNNER_TEMP/ci-scope.json"
-          windows_runner=$(jq -r '.platform_overrides.windows_runner // true' "$RUNNER_TEMP/ci-scope.json")
+          cargo run -p xtask --locked -- ci-scope --base "$SCOPE_BASE" --format json > "$RUNNER_TEMP/ci-scope.json"
+          windows_runner=$(jq -r 'if .platform_overrides.windows_runner == null then true else .platform_overrides.windows_runner end' "$RUNNER_TEMP/ci-scope.json")
+          windows_test_crates=$(jq -r '.platform_overrides.windows_test_crates[]? | "-p \(.)"' "$RUNNER_TEMP/ci-scope.json" | paste -sd' ' -)
           case "$windows_runner" in
             true|false) ;;
             *) echo "::error::ci-scope returned invalid windows_runner=$windows_runner"; exit 1 ;;
           esac
           echo "windows_runner=$windows_runner" >> "$GITHUB_OUTPUT"
+          echo "windows_test_crates=$windows_test_crates" >> "$GITHUB_OUTPUT"
 
   windows-platform-smoke:
     name: Windows platform smoke
@@ -197,7 +201,7 @@ jobs:
           shared-key: ci-windows-platform-${{ hashFiles('Cargo.lock') }}
       - name: Run Windows portability smoke
         shell: bash
-        run: cargo test -p perl-uri -p perl-workspace --locked --lib
+        run: cargo test ${{ needs.platform-overrides.outputs.windows_test_crates }} --locked --lib
 
   # ── Conflict-marker guard: <1s, no toolchain needed ─────────────────
   # Prevents committed conflict markers reaching master (see #7183).
