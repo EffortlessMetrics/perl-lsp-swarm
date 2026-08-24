@@ -5,10 +5,11 @@ mod scope_variables;
 #[cfg(test)]
 use super::stack_frame_re;
 use super::{
-    DebugAdapter, HashMap, PerlStackParser, PerlVariableRenderer, RenderedVariable, Source,
-    StackFrame, Variable, VariableParser, VariableRenderer, ansi_escape_re,
+    CachedVariable, DebugAdapter, HashMap, PerlStackParser, PerlVariableRenderer, RenderedVariable,
+    Source, StackFrame, Variable, VariableParser, VariableRenderer, ansi_escape_re,
     is_internal_frame_name_and_path, prompt_re,
 };
+use crate::value::PerlValue;
 
 impl DebugAdapter {
     /// Normalize debugger output lines for deterministic parsing by:
@@ -130,12 +131,16 @@ impl DebugAdapter {
     }
 
     /// Parse variables from debugger output lines using microcrate parser/renderer.
+    ///
+    /// Rows retain the typed value captured at parse time (see
+    /// [`CachedVariable`]); a request's DAP `ValueFormat` is projected from
+    /// those typed facts at response time (#9588).
     pub(super) fn parse_scope_variables_from_lines(
         lines: &[String],
         variables_ref: i32,
         start: usize,
         count: usize,
-    ) -> (Vec<Variable>, HashMap<i32, Vec<Variable>>) {
+    ) -> (Vec<CachedVariable>, HashMap<i32, Vec<CachedVariable>>) {
         use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
         // Decode the scope kind from the variablesReference using the codec.
         // scope_variables::parse_assignments still expects i32 discriminant (1/2/3).
@@ -171,7 +176,7 @@ impl DebugAdapter {
         variables_ref: i32,
         start: usize,
         count: usize,
-    ) -> (Vec<Variable>, HashMap<i32, Vec<Variable>>) {
+    ) -> (Vec<CachedVariable>, HashMap<i32, Vec<CachedVariable>>) {
         let lines = self.snapshot_recent_output_lines();
         Self::parse_scope_variables_from_lines(&lines, variables_ref, start, count)
     }
@@ -182,11 +187,17 @@ impl DebugAdapter {
     /// begin/end markers for this exact evaluate request. The request frame is
     /// also what makes a matching assignment current rather than merely similar
     /// to an older debugger response.
+    ///
+    /// Returns the default (decimal) display string, the type name, and the
+    /// typed value retained for response-time `ValueFormat` projection — the
+    /// typed value is `None` for the correlated-literal branch, which has no
+    /// typed authority and therefore never receives heuristic formatting
+    /// (#9588).
     pub(super) fn parse_evaluate_result_from_lines(
         lines: &[String],
         expression: &str,
         allow_correlated_literal: bool,
-    ) -> Option<(String, String)> {
+    ) -> Option<(String, String, Option<PerlValue>)> {
         if lines.is_empty() {
             return None;
         }
@@ -205,13 +216,13 @@ impl DebugAdapter {
                 let rendered = renderer.render(&name, &value);
                 let type_name = rendered.type_name.unwrap_or_else(|| "string".to_string());
                 if name == expression {
-                    return Some((rendered.value, type_name));
+                    return Some((rendered.value, type_name, Some(value)));
                 }
                 continue;
             }
 
             if allow_correlated_literal {
-                return Some((text.to_string(), Self::infer_debugger_value_type(text)));
+                return Some((text.to_string(), Self::infer_debugger_value_type(text), None));
             }
         }
 
@@ -246,7 +257,7 @@ impl DebugAdapter {
     pub(super) fn parse_evaluate_result_from_output(
         &self,
         _expression: &str,
-    ) -> Option<(String, String)> {
+    ) -> Option<(String, String, Option<PerlValue>)> {
         None
     }
 
@@ -339,7 +350,7 @@ mod tests {
         adapter.push_recent_output_line_for_test("%hash = {a => 1}");
 
         let (vars, child_cache) = adapter.parse_scope_variables_from_output(11, 0, 20);
-        let names: Vec<&str> = vars.iter().map(|v| v.name.as_str()).collect();
+        let names: Vec<&str> = vars.iter().map(|v| v.row.name.as_str()).collect();
         assert!(names.contains(&"$foo"));
         assert!(names.contains(&"@arr"));
         assert!(names.contains(&"%hash"));
@@ -354,7 +365,7 @@ mod tests {
 
         let (vars, _child_cache) =
             DebugAdapter::parse_scope_variables_from_lines(&lines, 11, 0, 20);
-        let names = vars.iter().map(|v| v.name.as_str()).collect::<Vec<_>>();
+        let names = vars.iter().map(|v| v.row.name.as_str()).collect::<Vec<_>>();
         assert_eq!(names, vec!["$alpha", "$mid", "$zeta"]);
         Ok(())
     }
@@ -375,11 +386,11 @@ mod tests {
 
         let first_ref = page_one
             .first()
-            .map(|variable| variable.variables_reference)
+            .map(|variable| variable.row.variables_reference)
             .ok_or("expected first page variable")?;
         let second_ref = page_two
             .first()
-            .map(|variable| variable.variables_reference)
+            .map(|variable| variable.row.variables_reference)
             .ok_or("expected second page variable")?;
 
         assert_ne!(first_ref, second_ref, "paged variables must not reuse child references");
@@ -561,10 +572,14 @@ mod tests {
     pub(super) fn framed_evaluate_accepts_correlated_literal_output()
     -> Result<(), Box<dyn std::error::Error>> {
         let lines = vec!["42".to_string()];
-        let (value, ty) = DebugAdapter::parse_evaluate_result_from_lines(&lines, "$result", true)
-            .ok_or("framed literal should be accepted")?;
+        let (value, ty, typed) =
+            DebugAdapter::parse_evaluate_result_from_lines(&lines, "$result", true)
+                .ok_or("framed literal should be accepted")?;
         assert_eq!(value, "42");
         assert_eq!(ty, "integer");
+        // A correlated literal carries no typed authority: hex formatting must
+        // never heuristically parse it (#9588).
+        assert!(typed.is_none(), "literal branch must not retain typed authority");
         Ok(())
     }
 
@@ -583,9 +598,14 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let lines = vec!["$x = 5".to_string()];
 
-        let (value, _) = DebugAdapter::parse_evaluate_result_from_lines(&lines, "$x", true)
+        let (value, _, typed) = DebugAdapter::parse_evaluate_result_from_lines(&lines, "$x", true)
             .ok_or("read-back for the named subject should be accepted")?;
         assert_eq!(value, "5");
+        // The assignment branch retains typed authority for formatting (#9588).
+        assert!(
+            matches!(typed, Some(crate::value::PerlValue::Integer(5))),
+            "assignment read-back must retain typed integer authority, got {typed:?}"
+        );
 
         // The regression this guards: an empty subject yields nothing for the same output.
         assert!(

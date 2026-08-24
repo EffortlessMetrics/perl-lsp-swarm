@@ -3229,6 +3229,10 @@ enum FeaturesCommand {
 
     /// Generate compliance report
     Report,
+
+    /// Regenerate crate-local features_sot.toml projections from the root
+    /// authority (#7029)
+    RegenVendored,
 }
 
 #[derive(Subcommand)]
@@ -4961,6 +4965,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             FeaturesCommand::Verify => features::verify(),
             FeaturesCommand::Invariants => features::invariants(),
             FeaturesCommand::Report => features::report(),
+            FeaturesCommand::RegenVendored => features::regen_vendored(),
         },
         Commands::Agent { command } => match command {
             AgentCommand::Lease { command } => match command {

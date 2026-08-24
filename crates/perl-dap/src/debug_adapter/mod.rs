@@ -68,6 +68,7 @@ use std::time::{Duration, Instant};
 use crate::breakpoints::{BreakpointHitOutcome, BreakpointStore};
 use crate::debug_adapter::data_breakpoints::DataBreakpointRecord;
 use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
+use crate::debug_adapter::variable_cache::CachedVariable;
 #[cfg(any(test, feature = "test-helpers"))]
 use crate::debug_adapter::variable_cache::VariableCache;
 use crate::debug_adapter::variable_cache::{VariableCacheKind, slice_variables};
@@ -94,6 +95,25 @@ fn is_escape_sequence(s: &str, match_start: usize) -> bool {
         return false;
     }
     s.as_bytes()[match_start - 1] == b'\\'
+}
+
+/// Deserialize a DAP request's arguments into a typed struct with an honest
+/// error message (#9588).
+///
+/// `Ok(args)` requires well-formed arguments; `None` arguments report
+/// `Missing arguments`, and malformed JSON (including an unsupported option
+/// inside a `ValueFormat` object, which `deny_unknown_fields` rejects) reports
+/// `Invalid arguments: <serde error>` instead of masquerading as missing
+/// arguments. All `ValueFormat` request families share this single behavior.
+pub(super) fn parse_dap_arguments<T: serde::de::DeserializeOwned>(
+    arguments: Option<Value>,
+) -> Result<T, String> {
+    match arguments {
+        None => Err("Missing arguments".to_string()),
+        Some(value) => {
+            serde_json::from_value(value).map_err(|error| format!("Invalid arguments: {error}"))
+        }
+    }
 }
 
 /// DAP server that handles debug sessions
@@ -658,6 +678,9 @@ impl DebugAdapter {
     /// via the cache-hit path, NOT be swallowed by the early-return short-circuit added
     /// for stale (cache-miss) EvalResult refs.
     ///
+    /// Rows are seeded without typed facts, so any DAP `ValueFormat` on a
+    /// request served from them projects to the cached display unchanged (#9588).
+    ///
     /// Only for use in tests; not part of the public API contract.
     #[cfg(test)]
     pub fn seed_eval_result_cache_for_test(
@@ -667,7 +690,11 @@ impl DebugAdapter {
     ) {
         let mut session = lock_or_recover(&self.session, "debug_adapter.seed_eval_result_cache");
         if let Some(ref mut sess) = *session {
-            sess.variable_cache.upsert(eval_ref_wire, VariableCacheKind::EvaluateResult, variables);
+            sess.variable_cache.upsert(
+                eval_ref_wire,
+                VariableCacheKind::EvaluateResult,
+                variables.into_iter().map(CachedVariable::untyped).collect(),
+            );
         }
     }
 

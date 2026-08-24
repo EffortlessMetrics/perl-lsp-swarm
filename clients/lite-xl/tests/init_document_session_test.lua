@@ -197,7 +197,14 @@ package.preload["plugins.lsp.listbox"] = function()
 end
 
 package.preload["plugins.lsp.diagnostics"] = function()
-  return {}
+  -- Lifecycle seams consumed by init.lua (#11124); inert in this suite,
+  -- whose subject is document-session/version behavior, not publications.
+  return {
+    note_provider = function() end,
+    close_session = function() end,
+    retire_provider = function() end,
+    publish = function() return true, nil end,
+  }
 end
 
 package.preload["plugins.lsp.server"] = function()
