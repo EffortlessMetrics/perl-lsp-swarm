@@ -137,6 +137,66 @@ jobs:
             echo "::notice::Superseded by $LATEST — skipping remaining jobs to save cost"
           fi
 
+  # Resolve platform widening once on Linux so the Windows job is allocated
+  # only when ci-scope identifies a known portability seam.
+  platform-overrides:
+    name: CI scope platform overrides
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    needs: [draft-pr-check, preflight-latest-check]
+    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    outputs:
+      windows_runner: ${{ steps.scope.outputs.windows_runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: 1.95.0
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+          shared-key: ci-platform-scope-${{ hashFiles('Cargo.lock') }}
+      - name: Classify platform overrides
+        id: scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run -p xtask --locked -- ci-scope --base origin/main --format json > "$RUNNER_TEMP/ci-scope.json"
+          windows_runner=$(jq -r '.platform_overrides.windows_runner // true' "$RUNNER_TEMP/ci-scope.json")
+          case "$windows_runner" in
+            true|false) ;;
+            *) echo "::error::ci-scope returned invalid windows_runner=$windows_runner"; exit 1 ;;
+          esac
+          echo "windows_runner=$windows_runner" >> "$GITHUB_OUTPUT"
+
+  windows-platform-smoke:
+    name: Windows platform smoke
+    runs-on: windows-2025
+    timeout-minutes: 20
+    needs: [platform-overrides]
+    if: needs.platform-overrides.outputs.windows_runner == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: 1.95.0
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+          shared-key: ci-windows-platform-${{ hashFiles('Cargo.lock') }}
+      - name: Run Windows portability smoke
+        shell: bash
+        run: cargo test -p perl-uri -p perl-workspace --locked --lib
+
   # ── Conflict-marker guard: <1s, no toolchain needed ─────────────────
   # Prevents committed conflict markers reaching master (see #7183).
   # Two incidents on 2026-04-28 each cost 1-3h of orchestrator + builder time.

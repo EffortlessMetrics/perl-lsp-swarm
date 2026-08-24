@@ -172,6 +172,28 @@ fn is_ci_config_file(file: &str) -> bool {
         || file.starts_with("hooks/")
 }
 
+/// Returns whether a changed path exercises a Windows-sensitive code path.
+///
+/// This is intentionally path-based. `ci-scope` must remain a cheap, stable
+/// planner and does not read arbitrary file contents while classifying a diff.
+/// The selected paths are the repository's known portability seams: shell
+/// hooks/scripts, URI and workspace-index code, and explicitly named Windows
+/// implementations.
+pub fn requires_windows_runner(files: &[String]) -> bool {
+    files.iter().any(|file| {
+        let normalized = file.replace('\\', "/").to_ascii_lowercase();
+        normalized == "hooks/pre-push"
+            || normalized.starts_with("hooks/")
+            || (normalized.starts_with("scripts/") && normalized.ends_with(".sh"))
+            || normalized.ends_with("/uri.rs")
+            || normalized.contains("workspace-index")
+            || normalized.contains("workspace_index")
+            || normalized.contains("/windows/")
+            || normalized.ends_with("_windows.rs")
+            || normalized.ends_with("windows.rs")
+    })
+}
+
 fn is_docs_as_code_file(file: &str) -> bool {
     DOCS_AS_CODE_EXTENSIONS.iter().any(|ext| file.ends_with(ext))
         && !is_prose_file(file)
@@ -732,8 +754,14 @@ pub fn classify_files(
     // mutation_diff default lane for code changes
     let heavy_lanes = heavy_lanes_from_risk_tags(&risk_tags, &direct_crates);
 
-    // Platform overrides (currently static — can be extended)
-    let platform_overrides = PlatformOverrides { windows_runner: false };
+    let windows_runner = requires_windows_runner(files);
+    if windows_runner {
+        explanations.insert(
+            "windows_runner".to_string(),
+            "changed path exercises a Windows-sensitive portability seam".to_string(),
+        );
+    }
+    let platform_overrides = PlatformOverrides { windows_runner };
     let parser_ratchet = parser_ratchet_decision(files, &risk_tags);
 
     Ok(ScopeOutput {
@@ -1011,6 +1039,32 @@ mod tests {
             "docs/reference/STABILITY.md".to_string(),
         ];
         assert_eq!(classify_diff(&files), "mixed");
+    }
+
+    #[test]
+    fn windows_runner_matches_known_portability_seams() {
+        for file in [
+            "hooks/pre-push",
+            "scripts/check-shell.sh",
+            "crates/perl-uri/src/uri.rs",
+            "crates/perl-workspace/src/workspace-index.rs",
+            "crates/perl-workspace/src/platform/windows.rs",
+        ] {
+            assert!(
+                requires_windows_runner(&[file.to_string()]),
+                "{file} should select the Windows runner"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_runner_ignores_unrelated_paths_and_non_shell_scripts() {
+        let files = [
+            "docs/windows.md".to_string(),
+            "scripts/check-shell.py".to_string(),
+            "crates/perl-parser/src/lib.rs".to_string(),
+        ];
+        assert!(!requires_windows_runner(&files));
     }
 
     // --- risk tag tests ---
@@ -1325,6 +1379,26 @@ mod tests {
             output.selected_heavy_lanes.iter().any(|l| l.lane == "mutation_diff"),
             "code diff should include mutation_diff heavy lane"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn classify_files_emits_windows_platform_override_and_explanation() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-uri", "crates/perl-uri")]);
+        let files = vec!["crates/perl-uri/src/uri.rs".to_string()];
+        let output = classify_files(&files, &metadata, "/workspace")?;
+        assert!(output.platform_overrides.windows_runner);
+        assert!(output.explanations.contains_key("windows_runner"));
+        Ok(())
+    }
+
+    #[test]
+    fn classify_files_does_not_widen_unrelated_code_to_windows() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-parser", "crates/perl-parser")]);
+        let files = vec!["crates/perl-parser/src/lib.rs".to_string()];
+        let output = classify_files(&files, &metadata, "/workspace")?;
+        assert!(!output.platform_overrides.windows_runner);
+        assert!(!output.explanations.contains_key("windows_runner"));
         Ok(())
     }
 
