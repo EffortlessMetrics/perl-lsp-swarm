@@ -65,6 +65,10 @@ mod dancer_navigation_tests {
             !sites.contains(&1),
             "Dancer2 string handler line must not be reported as a reference of `show_status`; got lines {sites:?}"
         );
+        assert!(
+            sites.contains(&2),
+            "positive control: the `show_status` definition itself must be reported; got lines {sites:?}"
+        );
         Ok(())
     }
 
