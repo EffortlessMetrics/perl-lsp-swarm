@@ -161,11 +161,8 @@ fn validator_cli_checks_schema_then_semantics() -> Result<(), Box<dyn Error>> {
     let template = root.join(OBSERVATIONS);
     let validator = env!("CARGO_BIN_EXE_validate-zed-host-receipt");
 
-    let schema_only = Command::new(validator)
-        .arg("--schema-only")
-        .arg(&template)
-        .current_dir(&root)
-        .output()?;
+    let schema_only =
+        Command::new(validator).arg("--schema-only").arg(&template).current_dir(&root).output()?;
     assert!(
         schema_only.status.success(),
         "schema-only validation failed\nstdout:\n{}\nstderr:\n{}",
@@ -173,14 +170,8 @@ fn validator_cli_checks_schema_then_semantics() -> Result<(), Box<dyn Error>> {
         String::from_utf8_lossy(&schema_only.stderr)
     );
 
-    let full = Command::new(validator)
-        .arg(&template)
-        .current_dir(&root)
-        .output()?;
-    assert!(
-        !full.status.success(),
-        "not-run template must fail full semantic validation"
-    );
+    let full = Command::new(validator).arg(&template).current_dir(&root).output()?;
+    assert!(!full.status.success(), "not-run template must fail full semantic validation");
     Ok(())
 }
 
