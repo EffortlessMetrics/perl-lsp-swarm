@@ -191,7 +191,7 @@ fn extract_position_beyond_length_returns_none() {
 fn extract_position_at_exact_length_returns_last_token() {
     let source = "abc";
     let result = extract_symbol_from_source(source.len(), source);
-    assert_eq!(result, None);
+    assert_eq!(result, Some(("abc".to_string(), CursorSymbolKind::Subroutine)));
 }
 
 #[test]
@@ -364,13 +364,22 @@ fn range_position_at_exact_length_returns_last_token() {
 #[test]
 fn range_on_whitespace_returns_none() {
     let source = "a b";
-    // position 1 is space, no sigil at position 0 (it's 'a' not a sigil)
     let result = get_symbol_range_at_position(1, source);
-    // start stays at 1, end stays at 1 (space is not alnum/_)
-    assert!(result.is_some());
-    if let Some((start, end)) = result {
-        assert_eq!(start, end);
-    }
+    assert_eq!(result, None);
+}
+
+#[test]
+fn range_rejects_punctuation_at_eof() {
+    assert_eq!(get_symbol_range_at_position(4, "foo;"), None);
+    assert_eq!(get_symbol_range_at_position(4, "foo "), None);
+}
+
+#[test]
+fn range_on_adjacent_sigil_does_not_absorb_prefix() -> Result<(), String> {
+    let source = "my$foo";
+    let (start, end) = must_some(get_symbol_range_at_position(2, source));
+    assert_eq!(&source[start..end], "$foo");
+    Ok(())
 }
 
 #[test]
