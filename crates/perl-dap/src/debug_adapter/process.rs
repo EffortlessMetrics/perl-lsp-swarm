@@ -1938,6 +1938,7 @@ impl DebugAdapter {
             emit_terminated_event(sender, &self.seq, &self.termination_state, None, None);
         }
         self.clear_active_session_state();
+        self.close_terminal_session_generation();
 
         DapMessage::Response {
             seq,
@@ -1972,6 +1973,7 @@ impl DebugAdapter {
             );
         }
         self.clear_active_session_state();
+        self.close_terminal_session_generation();
 
         DapMessage::Response {
             seq,
