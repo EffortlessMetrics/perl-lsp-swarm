@@ -354,7 +354,10 @@ mod tests {
     fn all_features_have_valid_maturity() -> Result<(), String> {
         // Keep this vocabulary aligned with `feature_catalog::Maturity` rather
         // than accepting arbitrary labels that weaken catalog validation.
-        let valid_maturities = ["experimental", "preview", "ga", "planned", "production"];
+        // #7029 earned-claim vocabulary: proven requires qualifying evidence
+        // and complete ownership metadata; everything else records an explicit
+        // weaker state.
+        let valid_maturities = ["proven", "preview", "planned", "unsupported", "not_proven"];
         for feature in all_features() {
             if !valid_maturities.contains(&feature.maturity) {
                 return Err(format!(

@@ -38,27 +38,27 @@ use tasks::{
     check_version_sync, ci, ci_audit_workflows, ci_contract, ci_doctor, ci_explain, ci_hygiene,
     ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route, ci_scope, clean, command_evidence,
     compare, corpus_audit, count_ratchet, cpan_corpus, dead_code, debt_report, dependency_hygiene,
-    dev, devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases, features,
-    finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates,
-    generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
-    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
-    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
-    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
-    merge_ready, methodology_gate, metrics, native_critic, native_format, native_product_surface,
-    native_tooling, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner, parse_rust,
-    parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness, perl_kwalitee,
-    populate_book, pre_push_plan, prep_crates_io_launch, protocol_type_substrate_matrix,
-    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
-    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, receipts, release, release_artifact_check, release_evidence,
-    release_notes, release_turnkey, repo_hygiene, ripr_evidence, seam_diff,
-    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
-    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
-    srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
-    sync_release_docs, targeted_checks, test, test_lsp, unwired_scan, update_homebrew,
-    update_status, ux_regression_receipt, ux_scorecard, validate_workspace_exclusions,
-    workflow_policy_lint, workflow_trigger_lint, workspace_symbol_classes, worktree_allocator,
-    worktrees, writer_admission,
+    dev, devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases,
+    emacs_train_context, features, finalize_check, fix_forward, fmt, forbid_fatal_constructs,
+    forensics, gate_receipts, gates, generated_files, github, github_preflight, github_review,
+    goals, hardening, hook_checks, ignored_tests, incremental_proof, inject_sha_assets,
+    inline_completion_quality, inline_completion_smoke, install_surface_check, integration_proof,
+    intent_diff_gate, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
+    memory_trends, merge_ready, methodology_gate, metrics, native_critic, native_format,
+    native_product_surface, native_tooling, oracle_fixture_manifest, oracle_receipt_schema,
+    oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet,
+    perl_core_harness, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
+    protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
+    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
+    quality_baseline, quality_gate, queue_health, queue_snapshot, receipts, release,
+    release_artifact_check, release_evidence, release_notes, release_turnkey, repo_hygiene,
+    ripr_evidence, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
+    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
+    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
+    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, unwired_scan,
+    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
+    workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
 use tasks::{bindings, compare_parsers, highlight};
@@ -271,6 +271,14 @@ enum Commands {
     IssuePlan {
         #[command(subcommand)]
         command: IssuePlanSubcommand,
+    },
+
+    /// Editor-integration train tooling (#7979/#8706). Deterministic,
+    /// offline, fail-closed projections over checked train contracts.
+    #[command(name = "integration")]
+    Integration {
+        #[command(subcommand)]
+        command: IntegrationCommand,
     },
 
     /// Writer admission — read-only pre-admission diagnostic (#3957 W1).
@@ -3229,6 +3237,10 @@ enum FeaturesCommand {
 
     /// Generate compliance report
     Report,
+
+    /// Regenerate crate-local features_sot.toml projections from the root
+    /// authority (#7029)
+    RegenVendored,
 }
 
 #[derive(Subcommand)]
@@ -3800,6 +3812,26 @@ enum SyncDivergenceCommand {
         /// Output source-sync receipt JSON.
         #[arg(long)]
         receipt: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum IntegrationCommand {
+    /// Emacs support train tooling: the exact-tree context engine (CTXENG
+    /// #11756) over the stable emacs_train.v1 graph, the E01R revision
+    /// ledger and the checked population mappings. Offline only.
+    Emacs {
+        #[command(subcommand)]
+        command: EmacsIntegrationCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum EmacsIntegrationCommand {
+    /// Operate on the Emacs support train's checked contracts.
+    Train {
+        #[command(subcommand)]
+        command: emacs_train_context::EmacsTrainCommand,
     },
 }
 
@@ -4961,6 +4993,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             FeaturesCommand::Verify => features::verify(),
             FeaturesCommand::Invariants => features::invariants(),
             FeaturesCommand::Report => features::report(),
+            FeaturesCommand::RegenVendored => features::regen_vendored(),
         },
         Commands::Agent { command } => match command {
             AgentCommand::Lease { command } => match command {
@@ -5247,6 +5280,11 @@ fn run_cli(cli: Cli) -> Result<()> {
                 })
             }
         },
+        Commands::Integration { command } => emacs_train_context::run(match command {
+            IntegrationCommand::Emacs { command } => match command {
+                EmacsIntegrationCommand::Train { command } => command,
+            },
+        }),
         Commands::WriterAdmission {
             branch,
             base,
