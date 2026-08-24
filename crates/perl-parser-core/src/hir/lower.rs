@@ -2197,8 +2197,7 @@ impl Lowerer {
         if symbol != "ISA" {
             return;
         }
-        if let Some(binding_id) = self.resolve_visible_binding(self.current_scope(), "@", &symbol)
-        {
+        if let Some(binding_id) = self.resolve_visible_binding(self.current_scope(), "@", &symbol) {
             if self
                 .scope_graph
                 .bindings
@@ -4296,9 +4295,12 @@ mod isa_lowering_tests {
     fn interpolated_push_isa_is_dynamic() {
         let file = lower("package Child; push @ISA, \"Base::$suffix\"; 1;");
         assert!(file.stash_graph.inheritance_edges.is_empty());
-        assert!(file.stash_graph.dynamic_boundaries.iter().any(|boundary| {
-            boundary.kind == StashDynamicBoundaryKind::DynamicInheritance
-        }));
+        assert!(
+            file.stash_graph
+                .dynamic_boundaries
+                .iter()
+                .any(|boundary| { boundary.kind == StashDynamicBoundaryKind::DynamicInheritance })
+        );
     }
 
     #[test]

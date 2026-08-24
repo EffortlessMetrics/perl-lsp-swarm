@@ -6,8 +6,8 @@ use crate::model::{
 };
 use crate::normalize::{matches_any_selector, normalize_source_item, source_form_allowed};
 use crate::runner_model::{
-    DiscoveryFrame, InvocationCaptureStatus, RUNNER_PLAN_SCHEMA_VERSION,
-    SOURCE_NORMALIZATION_SCHEMA_VERSION, RunnerKind, RunnerPlan, RunnerScheduling,
+    DiscoveryFrame, InvocationCaptureStatus, RUNNER_PLAN_SCHEMA_VERSION, RunnerKind, RunnerPlan,
+    RunnerScheduling, SOURCE_NORMALIZATION_SCHEMA_VERSION,
 };
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
