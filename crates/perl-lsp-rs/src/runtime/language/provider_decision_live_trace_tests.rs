@@ -12,8 +12,12 @@ const TRACE_DOC: &str = r#"package Trace::Live;
 use strict;
 use warnings;
 
+use feature 'state';
+
 sub target {
     my $value = 1;
+    state $count = 0;
+    $count++;
     return $value;
 }
 
@@ -1868,6 +1872,24 @@ fn live_semantic_tokens_request_persists_compiler_token_live_slice_trace()
     assert_eq!(
         receipt.get("compiler_token_class").and_then(Value::as_str),
         Some("subroutine_declaration")
+    );
+    assert_eq!(
+        receipt.get("acted_class_trace_count").and_then(Value::as_u64),
+        Some(2),
+        "the live trace must retain every matching reviewed class: {receipt}"
+    );
+    let acted_classes = receipt
+        .get("acted_class_traces")
+        .and_then(Value::as_array)
+        .ok_or("missing acted class traces")?;
+    assert_eq!(acted_classes.len(), 2);
+    assert_eq!(
+        acted_classes[0].get("compiler_token_class").and_then(Value::as_str),
+        Some("subroutine_declaration")
+    );
+    assert_eq!(
+        acted_classes[1].get("compiler_token_class").and_then(Value::as_str),
+        Some("state_variable_declaration")
     );
     assert_eq!(receipt.get("live_token_type").and_then(Value::as_str), Some("function"));
     assert_eq!(receipt.get("live_token_match_count").and_then(Value::as_u64), Some(1));
