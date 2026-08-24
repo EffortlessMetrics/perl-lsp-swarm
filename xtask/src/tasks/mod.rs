@@ -3,6 +3,7 @@
 pub mod active_goal_manifest;
 pub mod agent_capability_policy;
 pub mod agent_flow;
+pub mod agent_implementation_packet;
 pub mod agent_lease;
 pub mod agent_ledgers;
 pub mod agent_receipt;

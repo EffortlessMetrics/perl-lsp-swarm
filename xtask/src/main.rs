@@ -32,22 +32,22 @@ use tasks::ux_scorecard::UxScorecardFormat;
 use tasks::workflow_trigger_lint::WorkflowTriggerLintFormat;
 use tasks::worktree_allocator::AgentWorktreeCommand;
 use tasks::{
-    active_goal_manifest, agent_capability_policy, agent_flow, agent_lease, agent_receipt,
-    aggregate_receipts, badges, bench, benchmarks, build, build_timing, bump_version, change_set,
-    check, check_agent_context, check_lint_policy, check_test_wiring, check_toolchain,
-    check_version_sync, ci, ci_audit_workflows, ci_contract, ci_doctor, ci_explain, ci_hygiene,
-    ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route, ci_scope, clean, command_evidence,
-    compare, corpus_audit, count_ratchet, cpan_corpus, dead_code, debt_report, dependency_hygiene,
-    dev, devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases,
-    emacs_train_context, features, finalize_check, fix_forward, fmt, forbid_fatal_constructs,
-    forensics, gate_receipts, gates, generated_files, github, github_preflight, github_review,
-    goals, hardening, hook_checks, ignored_tests, incremental_proof, inject_sha_assets,
-    inline_completion_quality, inline_completion_smoke, install_surface_check, integration_proof,
-    intent_diff_gate, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
-    memory_trends, merge_ready, methodology_gate, metrics, module_train, native_critic,
-    native_format, native_product_surface, native_tooling, oracle_fixture_manifest,
-    oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
-    parser_ratchet, perl_core_harness, perl_kwalitee, populate_book, pre_push_plan,
+    active_goal_manifest, agent_capability_policy, agent_flow, agent_implementation_packet,
+    agent_lease, agent_receipt, aggregate_receipts, badges, bench, benchmarks, build, build_timing,
+    bump_version, change_set, check, check_agent_context, check_lint_policy, check_test_wiring,
+    check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_contract, ci_doctor,
+    ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route, ci_scope,
+    clean, command_evidence, compare, corpus_audit, count_ratchet, cpan_corpus, dead_code,
+    debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc, doc_claims,
+    e2e_validate, edge_cases, emacs_train_context, features, finalize_check, fix_forward, fmt,
+    forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files, github,
+    github_preflight, github_review, goals, hardening, hook_checks, ignored_tests,
+    incremental_proof, inject_sha_assets, inline_completion_quality, inline_completion_smoke,
+    install_surface_check, integration_proof, intent_diff_gate, issue_plan, layer_check,
+    lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate,
+    metrics, module_train, native_critic, native_format, native_product_surface, native_tooling,
+    oracle_fixture_manifest, oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep,
+    parser_matrix, parser_ratchet, perl_core_harness, perl_kwalitee, populate_book, pre_push_plan,
     prep_crates_io_launch, protocol_type_substrate_matrix, provider_confidence_matrix,
     provider_promotion_ledger, publication_facts, publish, publish_closure, publish_manifest_check,
     publish_receipts, quality_baseline, quality_gate, queue_health, queue_snapshot, receipts,
@@ -143,6 +143,33 @@ enum Commands {
     /// (train_edge_contract.v1), its programme-neutral fixtures, and the
     /// declared adaptations of the landed programme train manifests.
     CheckTrainEdgeContract,
+
+    /// Validate the shared bounded builder-packet contract
+    /// (agent_implementation_packet.v1, #10872): the closed schema, the
+    /// programme-neutral fixtures, the fail-closed negative controls, the
+    /// canonical-semantics control, and the deterministic golden
+    /// projections. `--update-golden` rewrites the golden vectors.
+    #[command(name = "check-agent-implementation-packet")]
+    CheckAgentImplementationPacket {
+        /// Rewrite the golden projection vectors (explicit writer action;
+        /// never live packet state).
+        #[arg(long)]
+        update_golden: bool,
+    },
+
+    /// Render one projection of a caller-supplied packet document to stdout
+    /// (agent_implementation_packet.v1, #10872). Fails closed when the
+    /// document violates the contract. Packet instances are runtime-local
+    /// outputs: this command never writes repository files.
+    #[command(name = "render-agent-packet")]
+    RenderAgentImplementationPacket {
+        /// Projection to render.
+        #[arg(long, value_enum, default_value = "markdown")]
+        format: agent_implementation_packet::PacketProjection,
+
+        /// Path to the caller-supplied packet document.
+        input: std::path::PathBuf,
+    },
 
     /// Run differential oracle comparison (PackageSubTable vertical slice).
     ///
@@ -4174,6 +4201,20 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
+        Commands::CheckAgentImplementationPacket { update_golden } => {
+            agent_implementation_packet::run(update_golden)
+        }
+        Commands::RenderAgentImplementationPacket { format, input } => {
+            let text = std::fs::read_to_string(&input).map_err(|error| {
+                eyre!("failed to read packet document {}: {error}", input.display())
+            })?;
+            let doc: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+                eyre!("failed to parse packet document {}: {error}", input.display())
+            })?;
+            let rendered = agent_implementation_packet::render_to_string(&doc, format)?;
+            println!("{rendered}");
+            Ok(())
+        }
         Commands::CheckOracleCompare => oracle_runner::run(),
         Commands::CheckSemanticTokenClasses => semantic_token_classes::run(),
         Commands::CheckLsp318Claims => lsp_318_claims::run(),
