@@ -5840,7 +5840,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             let root = utils::project_root()?;
             tasks::generated_policy::run(&root, mode, json)
         }
-                Commands::FreshnessCheck {
+        Commands::FreshnessCheck {
             base,
             mode,
             json,
