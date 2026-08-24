@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11452 |
-| Rust-family files | 3495 |
-| Non-Rust files | 7957 |
-| Allowlisted | 5684 |
+| Total tracked files | 11456 |
+| Rust-family files | 3497 |
+| Non-Rust files | 7959 |
+| Allowlisted | 5686 |
 | Unclassified | 2273 |
 
 ## Non-Rust files by category
@@ -17,10 +17,10 @@
 | Category | Count |
 |---|---|
 | config | 403 |
-| documentation | 2649 |
+| documentation | 2652 |
 | generated | 2 |
 | production | 314 |
-| test | 1844 |
+| test | 1843 |
 | tooling | 472 |
 | unclassified | 2273 |
 
@@ -3013,6 +3013,9 @@
 | `.spec/11625-module-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11626-module-train-frontier/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11626-module-train-frontier/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11626-module-train-frontier/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3359,7 +3362,6 @@
 | `clients/lite-xl/tests/json_decode_test.lua` | test | `non-rust-litexl-json-decode-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_frame_test.lua` | test | `non-rust-litexl-server-frame-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_logging_test.lua` | test | `non-rust-litexl-server-logging-tests` | editor/lite-xl |
-| `clients/lite-xl/tests/util_file_uri_test.lua` | test | `non-rust-litexl-file-uri-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_show_document_test.lua` | test | `non-rust-litexl-show-document-tests` | editor/lite-xl |
 | `clients/lite-xl/upstream/diagnostics.lua` | production | `non-rust-litexl-diagnostics-store` | editor/lite-xl |
 | `clients/lite-xl/upstream/init.lua` | production | `non-rust-litexl-init-plugin` | editor/lite-xl |
