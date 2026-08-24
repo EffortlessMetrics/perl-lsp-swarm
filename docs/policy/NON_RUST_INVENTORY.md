@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11393 |
-| Rust-family files | 3472 |
-| Non-Rust files | 7921 |
-| Allowlisted | 5648 |
+| Total tracked files | 11409 |
+| Rust-family files | 3479 |
+| Non-Rust files | 7930 |
+| Allowlisted | 5657 |
 | Unclassified | 2273 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 401 |
-| documentation | 2639 |
+| config | 402 |
+| documentation | 2645 |
 | generated | 2 |
 | production | 309 |
-| test | 1827 |
-| tooling | 470 |
+| test | 1828 |
+| tooling | 471 |
 | unclassified | 2273 |
 
 ## Unclassified files
@@ -2849,6 +2849,7 @@
 | `.github/workflows/droid-security-scan.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/droid.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/em-ci-routed-rust.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/emacs-train-context-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/flake-detection.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/gate-enforcement-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/generated-status-contract.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -3008,6 +3009,9 @@
 | `.spec/11625-module-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11661-cargo-executor-command/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11661-cargo-executor-command/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11661-cargo-executor-command/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11673-accepted-ticket-diagnostics-sink/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11673-accepted-ticket-diagnostics-sink/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11673-accepted-ticket-diagnostics-sink/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3024,6 +3028,10 @@
 | `.spec/11716-emacs-support-architecture/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11716-emacs-support-architecture/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11716-emacs-support-architecture/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11756-emacs-context-engine/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11756-emacs-context-engine/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11756-emacs-context-engine/context.mappings.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11756-emacs-context-engine/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11763-issue-controller-architecture/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11763-issue-controller-architecture/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11763-issue-controller-architecture/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3338,6 +3346,7 @@
 | `book/src/user-guides/troubleshooting.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `book/src/user-guides/workspace-navigation.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `clients/lite-xl/tests/diagnostics_currentness_test.lua` | test | `non-rust-litexl-diagnostics-currentness-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/init_configuration_items_test.lua` | test | `non-rust-litexl-init-configuration-items-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_document_session_test.lua` | test | `non-rust-litexl-init-session-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_request_currentness_test.lua` | test | `non-rust-litexl-init-request-currentness-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/json_decode_test.lua` | test | `non-rust-litexl-json-decode-tests` | editor/lite-xl |
