@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 
 mod envelope;
 pub mod framework;
+/// Transport-neutral reachability operation, work-budget, and
+/// terminal-outcome contract (#11553).
+pub mod reachability_operation;
 
 pub use envelope::*;
 

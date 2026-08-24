@@ -406,6 +406,72 @@
       "blocker": null
     },
     {
+      "node_id": "FIXT",
+      "status": "mapped",
+      "components": [
+        {
+          "component_id": "emacs.fixture_matrix.substrate",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "crates/perl-lsp-rs/tests/support/emacs_projects.rs",
+          "symbol": "EmacsProjectFixtureMatrix",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "landed canonical discriminating twelve-case project-fixture substrate (#7763, pull #8026); REQUIRED_CASES pins the case set both root matrices consume"
+        },
+        {
+          "component_id": "emacs.stock_project_probe.driver",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "crates/perl-lsp-rs/tests/support/emacs_projects.rs",
+          "symbol": "stock_project_probe_driver",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "behavior-bearing probe driver: the embedded Elisp performs project-current, extracts the root and serializes the receipt with native JSON sentinels; bind_stock_project_probe only binds the probe environment"
+        },
+        {
+          "component_id": "emacs.stock_project_probe.substrate",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "crates/perl-lsp-rs/tests/support/emacs_projects.rs",
+          "symbol": "bind_stock_project_probe",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "stock-project probe binding: the probe observes the stock selection with no prebound or expected root; probe faults are never rendered as pass"
+        }
+      ],
+      "tests": [
+        {
+          "path": "crates/perl-lsp-rs/tests/emacs_project_root_fixture_tests.rs",
+          "selector": "emacs_project_root_fixture_tests",
+          "kind": "falsifier"
+        }
+      ],
+      "generated": [],
+      "read_set": [
+        "AGENTS.md",
+        "crates/perl-lsp-rs/tests/emacs_project_root_fixture_tests.rs",
+        "crates/perl-lsp-rs/tests/support/emacs_projects.rs"
+      ],
+      "write_set": [],
+      "not_authority": [
+        {
+          "path_or_symbol": "xtask/tests/support/emacs_host_runner.rs",
+          "reason": "the hermetic Emacs runner core is H7778 production material and an execution input for later observations; it is never fixture-substrate implementation",
+          "owner": "#7778"
+        },
+        {
+          "path_or_symbol": "crates/perl-lsp-rs/tests/emacs_project_root_fixture_tests.rs",
+          "reason": "fixture roots never become stock discovery or semantic root authority: stock observation belongs to ROOT_E_OBS (#11747) and ROOT_L_OBS (#11748), and current-tree truth to #10923",
+          "owner": "#11747"
+        }
+      ],
+      "specs": [],
+      "write_set_note": "landed historical substrate; no expected writes; a manually bound fixture root is never stock project discovery, and stock-discovery observation stays with the root matrices (#11747/#11748)",
+      "no_production_component_reason": null,
+      "blocker": null
+    },
+    {
       "node_id": "RELY",
       "status": "mapped",
       "components": [
@@ -769,6 +835,186 @@
       }
     },
     {
+      "node_id": "ROOT_E_OBS",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "no stock Eglot project-root observation matrix exists on this tree: the landed FIXT fixture/probe substrate is an input, but recording the twelve-case matrix requires exact Eglot subject materialization (SUBJ_FAN #8755), the checked Eglot host adapter (ADP_E #8776) and typed host observations (OBS #11360), none of which exist; an expected root is never injected into the observed stock selection and lsp-mode or project.el material never fills an Eglot case",
+        "owner_issue": 11747,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "ROOT_L_OBS",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "no stock lsp-mode project-root observation matrix exists on this tree: the landed FIXT fixture/probe substrate is an input, but recording the twelve-case matrix requires exact lsp-mode subject materialization (SUBJ_FAN #8755), the checked lsp-mode host adapter (ADP_L #8795) and typed host observations (OBS #11360), none of which exist; an expected root is never injected into the observed stock selection and Eglot or project.el material never fills an lsp-mode case",
+        "owner_issue": 11748,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "ROOT_E_SEM",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "no behavior-bearing Eglot root-semantics or override-classification surface exists on this tree: root-sensitive query verdicts and standard overrides require the stock Eglot observation matrix (ROOT_E_OBS #11747), the observation-to-receipt producer (PROD #11361) and the governed host-journeys contract (JOURNEYS #11768), none of which exist; a correct rootUri alone is never root-sensitive semantics, an override is never stock discovery, and no lsp-mode verdict substitutes",
+        "owner_issue": 11749,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "ROOT_L_SEM",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "no behavior-bearing lsp-mode root-semantics or override-classification surface exists on this tree: root-sensitive query verdicts and standard overrides require the stock lsp-mode observation matrix (ROOT_L_OBS #11748), the observation-to-receipt producer (PROD #11361) and the governed host-journeys contract (JOURNEYS #11768), none of which exist; a correct rootUri alone is never root-sensitive semantics, an override is never stock discovery, and no Eglot verdict substitutes",
+        "owner_issue": 11750,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "ROOT_OBS_FAN",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "fan-in node with no validation surface on this tree: both implementation leaves it composes \u2014 the stock Eglot matrix (ROOT_E_OBS #11747) and the stock lsp-mode matrix (ROOT_L_OBS #11748) \u2014 are unimplemented, so there is no matrix denominator to validate; this node is never one implementation writer, never executes a matrix, and never gains a dependency on completed semantic verdicts (those fan in separately at ROOT_SEM_FAN #8838)",
+        "owner_issue": 8834,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "ROOT_SEM_FAN",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "fan-in node with no validation surface on this tree: both implementation leaves it composes \u2014 Eglot root semantics (ROOT_E_SEM #11749) and lsp-mode root semantics (ROOT_L_SEM #11750) \u2014 are unimplemented, so there is no verdict denominator to validate; it never widens a child verdict beyond its ceiling, never executes a verdict leaf, and the required root cells for public replay flow from here only once both families land",
+        "owner_issue": 8838,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "LINUX",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "no Linux public-artifact install or fresh-process harness exists on this tree: the landed policy/install-surface-registry.toml classifies installer products (install.sh and kin, owner #9104) but no harness installs the public artifact and launches fresh processes from it \u2014 the hermetic H7778 runner is local-source test infrastructure and workspace target/ binaries are never public-artifact authority; the harness also waits on the runner conformance contract (RUNCONF #8734) and immutable subject manifests (SUBJ_FAN #8755); substrate success never promotes a public semantic row and never waits for semantic journeys",
+        "owner_issue": 8842,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "PUB_E_B",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "no bundled-Eglot public replay harness or exact-evidence promotion surface exists on this tree: replay requires both bundled Eglot actual-host journeys (HOST_E29 #8822, HOST_E30 #8823), the root semantics fan-in (ROOT_SEM_FAN #8838), the Linux install substrate (LINUX #8842) and the receipt producer (PROD #11361), none of which exist; a replay row is never promoted from partial or non-exact evidence, the other families' replays never substitute, and replay earns no registry completion by itself",
+        "owner_issue": 8846,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "PUB_E_R",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "no released-standalone-Eglot public replay harness or exact-evidence promotion surface exists on this tree: replay requires the released GNU ELPA Eglot actual-host journey (HOST_E_REL #8824), the root semantics fan-in (ROOT_SEM_FAN #8838), the Linux install substrate (LINUX #8842) and the receipt producer (PROD #11361), none of which exist; a replay row is never promoted from partial or non-exact evidence, the other families' replays never substitute, and replay earns no registry completion by itself",
+        "owner_issue": 8849,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "PUB_L_R",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "no released-lsp-mode public replay harness or exact-evidence promotion surface exists on this tree: replay requires the released lsp-mode actual-host journey (HOST_L_REL #8828), the root semantics fan-in (ROOT_SEM_FAN #8838), the Linux install substrate (LINUX #8842) and the receipt producer (PROD #11361), none of which exist; a replay row is never promoted from partial or non-exact evidence, the other families' replays never substitute, and replay earns no registry completion by itself",
+        "owner_issue": 8853,
+        "action": "return_to_issue"
+      }
+    },
+    {
       "node_id": "REG",
       "status": "unmapped",
       "components": [],
@@ -781,8 +1027,44 @@
       "write_set_note": null,
       "no_production_component_reason": null,
       "blocker": {
-        "reason": "representative projection node: the #7122 support-registry projection surface is not populated yet; population lands with the projection population leaf",
-        "owner_issue": 11758,
+        "reason": "the machine-readable client support registry already exists at policy/lsp-client-support.toml (lsp-client-support.v1, owner #6739) and its Emacs row sits at configuration_documented with requires_actual_client_receipt = true and no actual_client evidence \u2014 the missing surface is the exact Emacs receipt import over the complete public replay denominator (PUB_E_B #8846, PUB_E_R #8849, PUB_L_R #8853, all unimplemented): a partial denominator never enables a complete-cut registry claim; xtask/src/editor_client_compat.rs is the generic receipt contract the import consumes, not a registry; the Vim/vim-lsp cell-catalog (xtask/src/vim_lsp_cell_catalog, #11374) is family-scoped baseline material and never Emacs registry input; generated docs (docs/project/status/lsp_clients.md) are registry output, never registry authority",
+        "owner_issue": 8858,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "DOCS",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "a generated registry projection already exists \u2014 docs/project/status/lsp_clients.md is rendered from policy/lsp-client-support.toml with freshness enforced by crates/perl-lsp-rs/tests/lsp_client_support_registry.rs \u2014 but the Emacs setup and support claim projection owned here does not: docs/EDITORS/EMACS_SETUP.md is a hand-written guide cited as documentation evidence in the registry row, not output generated from registry truth, and projecting earned Emacs support claims requires the imported receipts (REG #8858), which wait on the replay denominator; a generated doc row never becomes registry authority and never drifts from it",
+        "owner_issue": 8862,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "CERT",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "no Linux support-cut certification surface exists on this tree: certification composes the complete registry-projected denominator \u2014 docs projection (DOCS #8862) over the registry import (REG #8858) over the full replay chain \u2014 none of which exists; certification validates the composed denominator and repairs nothing, never owns provider semantics, and never implies optional or platform breadth (#9310 stays optional and never hard)",
+        "owner_issue": 8865,
         "action": "return_to_issue"
       }
     }
