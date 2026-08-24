@@ -198,6 +198,8 @@ package.preload["plugins.lsp.diagnostics"] = function()
     close_session = function() end,
     retire_provider = function() end,
     publish = function() return true, nil end,
+    -- #12047 render-resolver seam: init.lua registers it unconditionally at load.
+    set_render_resolver = function() end,
   }
 end
 
@@ -527,3 +529,4 @@ end
 
 print(string.format("%d passed, %d failed", passed, failed))
 if failed > 0 then os.exit(1) end
+
