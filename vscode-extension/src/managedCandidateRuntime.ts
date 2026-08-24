@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import type { ManagedCandidateManifest, ManagedCandidateSubject } from './managedCacheProtocol';
 import {
   buildManagedCandidateManifest,
@@ -82,12 +83,35 @@ export interface ManagedGarbageCollectResult {
   blockedReason: string | null;
 }
 
-const HOST_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+/**
+ * Session ids become filenames under `host-refs/`, so this layer accepts only
+ * ids that are safe as Windows AND POSIX filenames. It is intentionally
+ * narrower than the landed policy's in-memory session grammar
+ * (`managedCandidateSelection.ts` allows `:` for record identity): on NTFS a
+ * `:` in a filename addresses an alternate data stream, which `readdirSync`
+ * never lists — a reference could then hide outside a "complete" enumeration,
+ * the unsafe direction. A session id this layer cannot persist degrades to
+ * the documented unprotected-launch path, never to unsafe deletion.
+ */
+const HOST_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 function atomicWriteFileSync(filePath: string, content: string): void {
-  const tmpPath = `${filePath}.tmp`;
-  fs.writeFileSync(tmpPath, content, { encoding: 'utf8' });
-  fs.renameSync(tmpPath, filePath);
+  // A unique temporary name per write keeps concurrent extension hosts from
+  // interleaving writes onto one predictable path (last rename would clobber
+  // the other's partial bytes into the final record); a failed write removes
+  // its own leftover so enumeration never mistakes it for evidence.
+  const tmpPath = `${filePath}.${process.pid}-${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, content, { encoding: 'utf8' });
+    fs.renameSync(tmpPath, filePath);
+  } catch (error: unknown) {
+    try {
+      fs.rmSync(tmpPath, { force: true });
+    } catch {
+      /* the failed write's leftover, if any, is skipped by enumeration */
+    }
+    throw error;
+  }
 }
 
 type JsonRead = { value: unknown } | { error: 'absent' | 'read' };
@@ -189,19 +213,55 @@ export function readInstalledManagedCandidateManifest(
   return record as ManagedCandidateManifest;
 }
 
+type PriorSelectionRead =
+  | { kind: 'absent' }
+  | { kind: 'unreadable' }
+  | { kind: 'present'; selection: ManagedCurrentSelection };
+
+/**
+ * Distinguishes "no selection record exists" from "evidence exists but this
+ * version cannot interpret it". Only the first may be treated as a fresh
+ * namespace: overwriting unreadable bytes would silently reset the
+ * generation counter and destroy the record.
+ */
+function readPriorManagedCurrentSelection(baseDir: string): PriorSelectionRead {
+  const read = readJsonFileSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE));
+  if (!('value' in read)) {
+    return read.error === 'absent' ? { kind: 'absent' } : { kind: 'unreadable' };
+  }
+  const record = read.value as Partial<ManagedCurrentSelection>;
+  if (
+    typeof record !== 'object' ||
+    record === null ||
+    record.schema_version !== 'managed_current_selection.v1'
+  ) {
+    return { kind: 'unreadable' };
+  }
+  return { kind: 'present', selection: record as ManagedCurrentSelection };
+}
+
 /**
  * Commits the policy-governed selection record for a freshly installed
  * candidate: reads the prior record, mints the next generation through the
  * landed `publishManagedCurrentSelection`, and writes it atomically. Returns
- * the new record, or `null` when the commit was refused (an invalid prior
- * generation is never overwritten with a fabricated one).
+ * the new record, or `null` when the commit was refused — an invalid prior
+ * generation is never overwritten with a fabricated one, and an existing
+ * record this version cannot read is left untouched rather than replaced by
+ * a generation-1 reset.
  */
 export function commitManagedCandidateSelection(
   baseDir: string,
   manifest: ManagedCandidateManifest,
   log: RuntimeLog,
 ): ManagedCurrentSelection | null {
-  const prior = readManagedCurrentSelection(baseDir);
+  const priorRead = readPriorManagedCurrentSelection(baseDir);
+  if (priorRead.kind === 'unreadable') {
+    log(
+      'refusing managed selection commit: an existing selection record exists but cannot be interpreted',
+    );
+    return null;
+  }
+  const prior = priorRead.kind === 'absent' ? null : priorRead.selection;
   let selection: ManagedCurrentSelection;
   try {
     selection = publishManagedCurrentSelection(manifest, prior);
@@ -316,6 +376,13 @@ export function enumerateManagedHostReferences(baseDir: string): ManagedHostRefe
   const references: ManagedHostCandidateReference[] = [];
   for (const file of files) {
     if (!file.isFile()) {
+      continue;
+    }
+    // In-flight or leftover atomic-write temporaries (`.tmp` suffix) are
+    // partial writes by construction, never published reference records;
+    // the atomic rename publishes only complete `.json` files. Skipping
+    // them keeps one crashed write from blocking the namespace's GC forever.
+    if (!file.name.endsWith('.json')) {
       continue;
     }
     const read = readJsonFileSync(path.join(referencesDir, file.name));

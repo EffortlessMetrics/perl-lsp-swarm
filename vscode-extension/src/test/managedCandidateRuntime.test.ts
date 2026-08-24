@@ -36,14 +36,27 @@ import {
   writeInstalledManagedCandidateManifest,
 } from '../managedCandidateRuntime';
 
+/**
+ * Each seed derives its own hex digit per digest field so every fixture
+ * subject differs in every field: a wrong identity implementation that
+ * narrows the candidate hash to any subset of the subject is falsified,
+ * not silently re-scenarioed.
+ */
+const SEED_INDEX: Record<string, number> = { a: 1, b: 2, c: 3, d: 4, e: 5 };
+
+function seedHexDigit(seed: string, offset: number): string {
+  const index = SEED_INDEX[seed] ?? 6;
+  return ((index + offset) % 16).toString(16);
+}
+
 function subject(seed: string): ManagedCandidateSubject {
   return {
     release: '0.18.0',
     version: `0.18.${seed}`,
     target: 'x86_64-unknown-linux-gnu',
-    topology_digest: seed.repeat(64).slice(0, 64),
-    perllsp_digest: (seed === 'a' ? 'b' : 'c').repeat(64),
-    perl_dap_digest: seed === 'a' ? null : 'e'.repeat(64),
+    topology_digest: seedHexDigit(seed, 0).repeat(64),
+    perllsp_digest: seedHexDigit(seed, 5).repeat(64),
+    perl_dap_digest: seed === 'a' ? null : seedHexDigit(seed, 10).repeat(64),
   };
 }
 
@@ -142,6 +155,24 @@ describe('managed candidate persistence', () => {
       JSON.parse(fs.readFileSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE), 'utf8')),
     ).toEqual(invalidPrior);
   });
+
+  test('selection commit refuses to replace an unreadable prior record', () => {
+    // Evidence that exists but cannot be interpreted must not be replaced
+    // by a generation-1 reset that destroys it.
+    const garbage = '{garbage';
+    fs.writeFileSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE), garbage);
+
+    const committed = commitManagedCandidateSelection(
+      baseDir,
+      buildManagedCandidateManifest(subject('b')),
+      quietLog,
+    );
+
+    expect(committed).toBeNull();
+    expect(fs.readFileSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE), 'utf8')).toBe(
+      garbage,
+    );
+  });
 });
 
 describe('managed host reference lifecycle', () => {
@@ -169,6 +200,37 @@ describe('managed host reference lifecycle', () => {
 
     expect(reference).toBeNull();
     expect(fs.existsSync(path.join(baseDir, 'host-refs'))).toBe(false);
+  });
+
+  test('acquire rejects session ids containing a Windows-drive/ADS colon', () => {
+    // On NTFS a ':' in a filename addresses an alternate data stream, which
+    // readdir never lists — a reference could hide outside a "complete"
+    // enumeration, the unsafe direction. The runtime layer is deliberately
+    // narrower than the landed policy's in-memory session grammar.
+    const reference = acquireSessionManagedHostReference(
+      baseDir,
+      'window:x',
+      buildManagedCandidateManifest(subject('a')).candidate_id,
+      quietLog,
+    );
+
+    expect(reference).toBeNull();
+    expect(fs.existsSync(path.join(baseDir, 'host-refs'))).toBe(false);
+  });
+
+  test('reselection overwrites the session own earlier reference', () => {
+    // The documented reselection transition: one file per session, naming
+    // the candidate the session will launch next. An implementation that
+    // appended a second file, or refused the second acquire, fails here.
+    const candidateA = buildManagedCandidateManifest(subject('a')).candidate_id;
+    const candidateB = buildManagedCandidateManifest(subject('b')).candidate_id;
+    acquireSessionManagedHostReference(baseDir, 'window-a', candidateA, quietLog);
+
+    const rebound = acquireSessionManagedHostReference(baseDir, 'window-a', candidateB, quietLog);
+
+    expect(rebound?.candidate_id).toBe(candidateB);
+    expect(readSessionManagedHostReference(baseDir, 'window-a')?.candidate_id).toBe(candidateB);
+    expect(fs.readdirSync(path.join(baseDir, 'host-refs'))).toEqual(['window-a.json']);
   });
 
   test("release marks only this session's references across namespaces", () => {
@@ -444,6 +506,24 @@ describe('collectStaleManagedCandidates — landed policy table', () => {
     expect(result.removed).toEqual([]);
     expect(fs.existsSync(stale.dir)).toBe(true);
     expect(result.retained.partial_or_invalid).toBeDefined();
+  });
+
+  test('a catalog manifest that exists but cannot be parsed blocks GC outright', () => {
+    // Distinct from the structurally invalid entry above: an unparseable
+    // manifest makes enumeration itself incomplete, and the collector must
+    // refuse before classifying anything.
+    const current = installCandidate(baseDir, 'current', subject('a'), 0);
+    const stale = installCandidate(baseDir, 'stale', subject('b'), 60);
+    commitManagedCandidateSelection(baseDir, current.manifest, quietLog);
+    const broken = path.join(baseDir, 'broken');
+    fs.mkdirSync(broken);
+    fs.writeFileSync(path.join(broken, MANAGED_CANDIDATE_MANIFEST_FILE), '{not json');
+
+    const result = collectStaleManagedCandidates(baseDir, quietLog);
+
+    expect(result.blockedReason).toContain('candidate catalog');
+    expect(result.removed).toEqual([]);
+    expect(fs.existsSync(stale.dir)).toBe(true);
   });
 
   test('duplicate candidate ids across dirs share one classification', () => {

@@ -2855,11 +2855,15 @@ async function disposeLanguageClient(): Promise<void> {
   // references stay `live` and conservative for a later recovery path
   // (#11539) rather than authorizing deletion.
   const managedStorageRoot = extensionContext?.globalStorageUri?.fsPath;
-  if (shutdownProvedTerminal && typeof managedStorageRoot === 'string') {
+  if (typeof managedStorageRoot !== 'string') {
+    outputChannel.info(
+      '[managed-candidate] no managed storage root available; host reference release skipped.',
+    );
+  } else if (shutdownProvedTerminal) {
     releaseManagedCandidateSessionReferences(managedStorageRoot, vscode.env.sessionId, (message) =>
       outputChannel.info(`[managed-candidate] ${message}`),
     );
-  } else if (typeof managedStorageRoot === 'string') {
+  } else {
     outputChannel.info(
       '[managed-candidate] shutdown did not prove process termination; host references retained.',
     );

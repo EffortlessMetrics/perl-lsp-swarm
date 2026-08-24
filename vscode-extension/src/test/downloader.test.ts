@@ -1057,9 +1057,10 @@ describe('Versioned managed install layout', () => {
     downloader.commitVersionedInstall(oldName, undefined, oldManifest);
     expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
 
-    // Block the selection record's atomic write the way a transient lock or
-    // full disk would: the temp path cannot be written.
-    fs.mkdirSync(path.join(baseDir, `${MANAGED_CURRENT_SELECTION_FILE}.tmp`));
+    // Corrupt the selection record into bytes this version cannot interpret
+    // the way a torn write would: the commit must refuse rather than reset
+    // the generation counter, and the pointer must not move past it.
+    fs.writeFileSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE), '{torn write');
     const newName = 'v0.13.4-new';
     fs.mkdirSync(path.join(baseDir, newName));
     const newManifest = buildManagedCandidateManifest({
@@ -1077,16 +1078,47 @@ describe('Versioned managed install layout', () => {
 
     downloader.commitVersionedInstall(newName, undefined, newManifest);
 
-    // Both records still name the old selection: the pointer must not claim
-    // an activation the policy record refutes.
+    // The pointer must not claim an activation the policy record refutes,
+    // and the unreadable evidence is left exactly as it was found.
     expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
-    expect(readManagedCurrentSelection(baseDir)?.candidate_id).toBe(oldManifest.candidate_id);
+    expect(fs.readFileSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE), 'utf8')).toBe(
+      '{torn write',
+    );
 
-    // Once the transient failure clears, the commit lands coherently.
-    fs.rmdirSync(path.join(baseDir, `${MANAGED_CURRENT_SELECTION_FILE}.tmp`));
+    // Recovery from unreadable selection evidence is an explicit repair
+    // (remove the torn record), never another commit over it; afterwards the
+    // commit lands coherently from a fresh generation.
+    fs.rmSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE));
     downloader.commitVersionedInstall(newName, undefined, newManifest);
     expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(newName);
     expect(readManagedCurrentSelection(baseDir)?.candidate_id).toBe(newManifest.candidate_id);
+  });
+
+  test('a null manifest refuses activation instead of moving the pointer past the policy', () => {
+    const oldName = 'v0.13.3-old';
+    const oldDir = path.join(baseDir, oldName);
+    fs.mkdirSync(oldDir);
+    const oldManifest = buildManagedCandidateManifest({
+      release: 'v0.13.3',
+      version: 'v0.13.3',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: 'b'.repeat(64),
+      perllsp_digest: 'c'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(
+      path.join(oldDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify(oldManifest),
+    );
+    downloader.commitVersionedInstall(oldName, undefined, oldManifest);
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
+
+    // A failed manifest mint is a null manifest: activating the install
+    // anyway would leave the pointer naming a dir the policy cannot see.
+    downloader.commitVersionedInstall('v0.13.4-orphan', undefined, null);
+
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
+    expect(readManagedCurrentSelection(baseDir)?.candidate_id).toBe(oldManifest.candidate_id);
   });
 
   test('install lands side-by-side with a flat layout and the pointer activates it', () => {

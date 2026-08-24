@@ -1038,7 +1038,6 @@ export class BinaryDownloader {
           // host selection the policy-governed view. Stale generations are
           // then pruned only through the landed retention policy.
           this.commitVersionedInstall(installDirName, compatibilityKey, manifest);
-          this.outputChannel.appendLine(`Active managed install: ${installDirName}`);
           this.collectStaleManagedCandidates(baseDir);
 
           progress.report({ increment: 5, message: 'Complete!' });
@@ -1760,7 +1759,18 @@ export class BinaryDownloader {
         ? this.getManagedBaseDir()
         : this.getManagedBaseDirForKey(compatibilityKey);
     const pointerPath = path.join(baseDir, 'current');
-    if (manifest !== undefined && manifest !== null) {
+    if (manifest === null) {
+      // The install attempted to mint a candidate manifest and failed: a
+      // pointer move would activate an install the policy cannot see, which
+      // is the exact divergence the ordering contract exists to prevent.
+      // The landed dir stays on disk as an unreferenced fallback.
+      this.outputChannel.appendLine(
+        `Note: managed candidate manifest is absent for ${installDirName}; ` +
+          'activation refused, the previous selection stays authoritative.',
+      );
+      return;
+    }
+    if (manifest !== undefined) {
       const selection = commitManagedCandidateSelection(baseDir, manifest, (message) =>
         this.outputChannel.appendLine(`Note: ${message}`),
       );
@@ -1780,6 +1790,7 @@ export class BinaryDownloader {
     const tmpPath = `${pointerPath}.tmp`;
     fs.writeFileSync(tmpPath, `${installDirName}\n`, { encoding: 'utf8' });
     fs.renameSync(tmpPath, pointerPath);
+    this.outputChannel.appendLine(`Active managed install: ${installDirName}`);
   }
 
   /**
@@ -1793,11 +1804,19 @@ export class BinaryDownloader {
    * logged but never propagates, so it cannot mask install success.
    */
   private collectStaleManagedCandidates(baseDir: string): void {
-    const result = collectStaleManagedCandidates(baseDir, (message) =>
-      this.outputChannel.appendLine(message),
-    );
-    if (result.blockedReason !== null) {
-      this.outputChannel.appendLine(`Managed candidate GC skipped: ${result.blockedReason}.`);
+    // The documented contract is "blocked or failed collection is logged but
+    // never propagates, so it cannot mask install success": enforce it here
+    // rather than trusting every layer below to stay non-throwing forever.
+    try {
+      const result = collectStaleManagedCandidates(baseDir, (message) =>
+        this.outputChannel.appendLine(message),
+      );
+      if (result.blockedReason !== null) {
+        this.outputChannel.appendLine(`Managed candidate GC skipped: ${result.blockedReason}.`);
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.outputChannel.appendLine(`Managed candidate GC failed: ${message}.`);
     }
   }
 
