@@ -26,7 +26,8 @@ use std::path::{Path, PathBuf};
 use xtask::editor_client_compat::EvidenceStage;
 use xtask::vim_lsp_cell_catalog::{
     self as catalog, CellCatalog, CellRegistration, CoverageRule, InstrumentEvidence,
-    RegistrySummary, Scenario, ScenarioClass, ScenarioLedger, baseline, freshness, scenario_ledger,
+    RegistrySummary, Scenario, ScenarioClass, ScenarioLedger, baseline, freshness, save_format,
+    scenario_ledger,
 };
 
 fn repository_root() -> Result<PathBuf> {
@@ -73,6 +74,20 @@ const PUBLISHED_FRESHNESS_CELL_IDS: &[&str] = &[
 
 const FRESHNESS_ACTION_COUNT: usize = 10;
 
+/// The seven save cell IDs #11384 publishes, pinned so a rename or an ad hoc
+/// addition cannot slip in as an edit.
+const PUBLISHED_SAVE_CELL_IDS: &[&str] = &[
+    "vim.vim_lsp.save.route",
+    "vim.vim_lsp.save.invocation_cardinality",
+    "vim.vim_lsp.save.format_applied",
+    "vim.vim_lsp.save.format_no_change",
+    "vim.vim_lsp.save.disabled_or_refused",
+    "vim.vim_lsp.save.failure",
+    "vim.vim_lsp.save.stale_result_rejected",
+];
+
+const SAVE_ACTION_COUNT: usize = 5;
+
 fn validate_baseline_with(
     mutation: impl FnOnce(&mut CellCatalog) -> Result<()>,
 ) -> Result<RegistrySummary> {
@@ -117,11 +132,13 @@ fn compiled_registry_validates_covers_baseline_and_is_deterministic() -> Result<
     let first = catalog::validate_compiled_registry()?;
     let second = catalog::validate_compiled_registry()?;
     ensure!(first == second, "registry validation is not deterministic across runs");
+    let expected_cells = PUBLISHED_BASELINE_CELL_IDS.len()
+        + PUBLISHED_FRESHNESS_CELL_IDS.len()
+        + PUBLISHED_SAVE_CELL_IDS.len();
     ensure!(
-        first.cell_count == PUBLISHED_BASELINE_CELL_IDS.len() + PUBLISHED_FRESHNESS_CELL_IDS.len(),
-        "compiled registry registers {} cells, expected {}",
-        first.cell_count,
-        PUBLISHED_BASELINE_CELL_IDS.len() + PUBLISHED_FRESHNESS_CELL_IDS.len()
+        first.cell_count == expected_cells,
+        "compiled registry registers {} cells, expected {expected_cells}",
+        first.cell_count
     );
 
     let baseline_summary = first
@@ -189,6 +206,37 @@ fn compiled_registry_validates_covers_baseline_and_is_deterministic() -> Result<
     ensure!(
         freshness_ids.len() == PUBLISHED_FRESHNESS_CELL_IDS.len(),
         "freshness catalog registers cells beyond the published table"
+    );
+
+    let save_summary = first
+        .catalogs
+        .iter()
+        .find(|summary| summary.catalog_id == save_format::SAVE_CATALOG_ID)
+        .context("compiled registry omitted the save family catalog")?;
+    ensure!(
+        save_summary.cell_count == PUBLISHED_SAVE_CELL_IDS.len(),
+        "save catalog carries {} cells, expected {}",
+        save_summary.cell_count,
+        PUBLISHED_SAVE_CELL_IDS.len()
+    );
+    ensure!(
+        save_summary.scenario_ids.len() == SAVE_ACTION_COUNT - 1,
+        "save catalog cites {} scenarios, expected the {} owned landed #11380 save actions",
+        save_summary.scenario_ids.len(),
+        SAVE_ACTION_COUNT - 1
+    );
+    let compiled_save = save_format::save_catalog();
+    let save_ids: BTreeSet<&str> =
+        compiled_save.cells.iter().map(|cell| cell.cell_id.as_str()).collect();
+    for published in PUBLISHED_SAVE_CELL_IDS {
+        ensure!(
+            save_ids.contains(published),
+            "published save cell id {published} is missing from the compiled catalog"
+        );
+    }
+    ensure!(
+        save_ids.len() == PUBLISHED_SAVE_CELL_IDS.len(),
+        "save catalog registers cells beyond the published table"
     );
     Ok(())
 }
@@ -635,6 +683,336 @@ fn freshness_cell_digests_discriminate_binding_edits() -> Result<()> {
         registry_before.starts_with("sha256:"),
         "registry digest is not a sha256 identity: {registry_before}"
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// #11384 save family: landed-authority bindings and family laws
+// ---------------------------------------------------------------------------
+
+#[test]
+fn save_ledger_mirrors_the_landed_11380_action_vocabulary() -> Result<()> {
+    let ledger = save_format::save_action_ledger();
+    let mirrored: BTreeSet<String> =
+        ledger.scenarios.iter().map(|scenario| scenario.id.clone()).collect();
+    let landed: BTreeSet<String> = xtask::vim_lsp_specialized_driver::ACTIONS
+        .iter()
+        .filter(|action| {
+            action.family == xtask::vim_lsp_specialized_driver::ActionFamily::SaveFormat
+        })
+        .map(|action| action.action_id.to_string())
+        .collect();
+    ensure!(
+        mirrored == landed && mirrored.len() == SAVE_ACTION_COUNT,
+        "save ledger drifted from the landed #11380 save_format action vocabulary"
+    );
+    Ok(())
+}
+
+#[test]
+fn save_fixture_substrate_is_landed_on_disk() -> Result<()> {
+    let root = repository_root()?;
+    for fixture in save_format::SAVE_FIXTURE_SUBSTRATE {
+        let path = root.join(".ci/editor-clients").join(format!("{fixture}.json"));
+        ensure!(
+            path.is_file(),
+            "save fixture substrate id {fixture} has no landed authority artifact at {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn save_family_registration_leaves_earlier_catalogs_byte_identical() -> Result<()> {
+    let before = catalog::validate_compiled_registry()?;
+    let baseline_before = before
+        .catalogs
+        .iter()
+        .find(|summary| summary.catalog_id == baseline::BASELINE_CATALOG_ID)
+        .context("baseline summary missing")?
+        .digest
+        .clone();
+    let freshness_before = before
+        .catalogs
+        .iter()
+        .find(|summary| summary.catalog_id == freshness::FRESHNESS_CATALOG_ID)
+        .context("freshness summary missing")?
+        .digest
+        .clone();
+
+    // Registering the save family over the pre-save registry (baseline +
+    // freshness) leaves both prior catalog digests byte-identical.
+    let prior_catalogs = vec![baseline::baseline_catalog(), freshness::freshness_catalog()];
+    let prior_ledgers =
+        vec![scenario_ledger::vim_bdd_ledger_11371(), freshness::freshness_action_ledger()];
+    let prior = catalog::validate_registry(&prior_catalogs, &prior_ledgers)?;
+    let prior_baseline = prior
+        .catalogs
+        .iter()
+        .find(|summary| summary.catalog_id == baseline::BASELINE_CATALOG_ID)
+        .context("baseline summary missing")?
+        .digest
+        .clone();
+    let prior_freshness = prior
+        .catalogs
+        .iter()
+        .find(|summary| summary.catalog_id == freshness::FRESHNESS_CATALOG_ID)
+        .context("freshness summary missing")?
+        .digest
+        .clone();
+    ensure!(prior_baseline == baseline_before, "the save family changed the baseline digest");
+    ensure!(
+        prior_freshness == freshness_before,
+        "the save family changed the freshness catalog digest"
+    );
+    ensure!(before.cell_count == prior.cell_count + PUBLISHED_SAVE_CELL_IDS.len());
+    Ok(())
+}
+
+/// Validate a mutated save family catalog against the family laws and then
+/// the shared laws over the compiled sibling catalogs plus the mutated
+/// family; both must pass for the mutation to count as accepted.
+fn validate_save_with(
+    mutation: impl FnOnce(&mut CellCatalog) -> Result<()>,
+) -> Result<RegistrySummary> {
+    let mut mutated = save_format::save_catalog();
+    mutation(&mut mutated)?;
+    save_format::validate_save_catalog(&mutated, &save_format::save_action_ledger())?;
+    let mut catalogs = catalog::registry();
+    let slot = catalogs
+        .iter_mut()
+        .find(|candidate| candidate.catalog_id == save_format::SAVE_CATALOG_ID)
+        .context("compiled registry omitted the save catalog")?;
+    *slot = mutated;
+    catalog::validate_registry(&catalogs, &catalog::scenario_ledgers())
+}
+
+fn save_cell_mut<'a>(
+    catalog: &'a mut CellCatalog,
+    cell_id: &str,
+) -> Result<&'a mut CellRegistration> {
+    catalog
+        .cells
+        .iter_mut()
+        .find(|cell| cell.cell_id == cell_id)
+        .with_context(|| format!("save catalog omitted cell {cell_id}"))
+}
+
+/// Assert that a mutated save registry is rejected — by the family laws or
+/// the shared laws — for a reason containing `needle`.
+fn assert_save_rejects(
+    mutation: impl FnOnce(&mut CellCatalog) -> Result<()>,
+    needle: &str,
+) -> Result<()> {
+    let error = match validate_save_with(mutation) {
+        Ok(_) => {
+            bail!("mutated save registry was accepted; expected rejection containing {needle}")
+        }
+        Err(error) => error.to_string(),
+    };
+    ensure!(
+        error.contains(needle),
+        "wrong rejection reason: {error} (wanted something containing {needle})"
+    );
+    Ok(())
+}
+
+#[test]
+fn save_manual_comparator_cannot_own_or_classify_save_evidence() -> Result<()> {
+    let comparator = "vim.vim_lsp.specialized.save_format.manual_comparator";
+    // Citing the comparator as a scenario owner of a save cell fails closed:
+    // manual explicit formatting cannot satisfy this family.
+    assert_save_rejects(
+        |catalog| {
+            let cell = save_cell_mut(catalog, "vim.vim_lsp.save.format_applied")?;
+            cell.scenario_owners.push(comparator.to_string());
+            Ok(())
+        },
+        "manual comparator run can never be save evidence",
+    )?;
+    // Classifying via the comparator action fails closed: it is a landed
+    // save action, so the owner-binding law is the one that rejects it — a
+    // comparator run is nobody's save evidence.
+    assert_save_rejects(
+        |catalog| {
+            let cell = save_cell_mut(catalog, "vim.vim_lsp.save.route")?;
+            cell.observation_class = comparator.to_string();
+            Ok(())
+        },
+        "must be one of its own scenario owners",
+    )
+}
+
+#[test]
+fn save_cannot_be_filled_by_another_family_row() -> Result<()> {
+    // A freshness action cannot classify or own a save cell.
+    assert_save_rejects(
+        |catalog| {
+            let cell = save_cell_mut(catalog, "vim.vim_lsp.save.route")?;
+            cell.observation_class =
+                "vim.vim_lsp.specialized.freshness.observe_route_and_generation".to_string();
+            Ok(())
+        },
+        "is not a landed save_format action",
+    )?;
+    assert_save_rejects(
+        |catalog| {
+            let cell = save_cell_mut(catalog, "vim.vim_lsp.save.format_applied")?;
+            cell.scenario_owners.push(
+                "vim.vim_lsp.specialized.freshness.source_mutate_closed_in_place".to_string(),
+            );
+            Ok(())
+        },
+        "absent from ledger",
+    )
+}
+
+#[test]
+fn save_stale_result_cell_laws_fail_closed() -> Result<()> {
+    // The stale-result cell must bind the save-event trigger identity, so a
+    // held manual-format result cannot pose as save evidence.
+    assert_save_rejects(
+        |catalog| {
+            let cell = save_cell_mut(catalog, "vim.vim_lsp.save.stale_result_rejected")?;
+            cell.subject_dimensions.retain(|token| token != "save.trigger");
+            Ok(())
+        },
+        "save.trigger and save.owner identities",
+    )?;
+    // Cleanup evidence is independently load-bearing for stale rejection.
+    assert_save_rejects(
+        |catalog| {
+            let cell = save_cell_mut(catalog, "vim.vim_lsp.save.stale_result_rejected")?;
+            cell.instrument_evidence
+                .retain(|token| !matches!(token, InstrumentEvidence::CleanupObservation));
+            Ok(())
+        },
+        "must require cleanup evidence",
+    )
+}
+
+#[test]
+fn save_failure_cell_cannot_admit_pass() -> Result<()> {
+    // The no-pass law is enforced by the validator, not only by the factory:
+    // a save-shaped catalog whose failure cell admits pass fails closed.
+    assert_save_rejects(
+        |catalog| {
+            let cell = save_cell_mut(catalog, "vim.vim_lsp.save.failure")?;
+            cell.allowed_results.push("pass".to_string());
+            Ok(())
+        },
+        "the failure cell must never admit pass",
+    )
+}
+
+#[test]
+fn save_family_vocabulary_stage_and_result_laws_fail_closed() -> Result<()> {
+    assert_save_rejects(
+        |catalog| {
+            let cell = save_cell_mut(catalog, "vim.vim_lsp.save.route")?;
+            cell.allowed_results.push("manual_format_pass".to_string());
+            Ok(())
+        },
+        "outside catalog",
+    )?;
+    assert_save_rejects(
+        |catalog| {
+            catalog.allowed_result_vocabulary.push("manual_format_pass".to_string());
+            Ok(())
+        },
+        "vocabulary drifted",
+    )?;
+    // The failure cell never admits pass.
+    let compiled = save_format::save_catalog();
+    let failure = compiled
+        .cells
+        .iter()
+        .find(|cell| cell.cell_id == "vim.vim_lsp.save.failure")
+        .context("failure cell missing")?;
+    ensure!(
+        !failure.allowed_results.iter().any(|result| result == "pass"),
+        "the failure cell must never admit pass"
+    );
+    // Every cell must be able to fail and to stay honestly unproven.
+    assert_save_rejects(
+        |catalog| {
+            let cell = save_cell_mut(catalog, "vim.vim_lsp.save.format_no_change")?;
+            cell.allowed_results.retain(|token| token != "not_proven");
+            Ok(())
+        },
+        "must admit fail and not_proven",
+    )?;
+    assert_save_rejects(
+        |catalog| {
+            let cell = save_cell_mut(catalog, "vim.vim_lsp.save.format_applied")?;
+            cell.allowed_stages = vec![EvidenceStage::ReleaseCandidate];
+            Ok(())
+        },
+        "outside catalog",
+    )?;
+    assert_save_rejects(
+        |catalog| {
+            catalog.allowed_stages = vec![EvidenceStage::PublicArtifact];
+            Ok(())
+        },
+        "stage bound is exact_source_local only",
+    )
+}
+
+#[test]
+fn save_dimension_profile_and_coverage_laws_fail_closed() -> Result<()> {
+    assert_save_rejects(
+        |catalog| {
+            let cell = save_cell_mut(catalog, "vim.vim_lsp.save.invocation_cardinality")?;
+            cell.subject_dimensions.retain(|token| !token.starts_with("generation."));
+            Ok(())
+        },
+        "generation dimension",
+    )?;
+    assert_save_rejects(
+        |catalog| {
+            let cell = save_cell_mut(catalog, "vim.vim_lsp.save.disabled_or_refused")?;
+            cell.allowed_profiles = vec!["vim_programme_closeout".to_string()];
+            Ok(())
+        },
+        "may feed only vim_first_class_exact_source",
+    )?;
+    // Dropping the last owner of a settled action must fail coverage.
+    assert_save_rejects(
+        |catalog| {
+            let cell = save_cell_mut(catalog, "vim.vim_lsp.save.stale_result_rejected")?;
+            cell.scenario_owners =
+                vec!["vim.vim_lsp.specialized.save_format.observe_save_settlement".to_string()];
+            cell.observation_class =
+                "vim.vim_lsp.specialized.save_format.observe_save_settlement".to_string();
+            Ok(())
+        },
+        "without a pre-registered cell",
+    )?;
+    assert_save_rejects(
+        |catalog| {
+            let clone = catalog.cells[0].clone();
+            catalog.cells.push(clone);
+            Ok(())
+        },
+        "duplicate cell id",
+    )
+}
+
+#[test]
+fn save_cross_client_subjects_fail_closed() -> Result<()> {
+    for impostor in ["coc", "yegappan/lsp", "neovim"] {
+        assert_save_rejects(
+            |catalog| {
+                let cell = save_cell_mut(catalog, "vim.vim_lsp.save.format_applied")?;
+                cell.subject.client_id = impostor.to_string();
+                Ok(())
+            },
+            "not the pinned Vim + vim-lsp + perllsp --stdio subject",
+        )
+        .with_context(|| format!("cross-client subject {impostor} was accepted"))?;
+    }
     Ok(())
 }
 

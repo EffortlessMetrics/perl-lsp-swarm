@@ -111,6 +111,78 @@
       "disposition_provenance": "manifest",
       "authority_after": "The checked lsp-mode adapter captures selected client and server-choice facts through the shared observation vocabulary.",
       "spec_owner": "ADP_L"
+    },
+    {
+      "node_id": "PROF_E",
+      "issue": 8819,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "Checked authentic synthetic Eglot profiles prove negotiation and result shapes.",
+      "spec_owner": "PROF_E"
+    },
+    {
+      "node_id": "PROF_L",
+      "issue": 8821,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "Checked authentic synthetic lsp-mode profiles prove negotiation and result shapes.",
+      "spec_owner": "PROF_L"
+    },
+    {
+      "node_id": "HOST_E29",
+      "issue": 8822,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The Emacs 29.4 bundled Eglot full push journey semantic verdict exists as typed actual-host evidence.",
+      "spec_owner": "HOST_E29"
+    },
+    {
+      "node_id": "HOST_E30",
+      "issue": 8823,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The Emacs 30.1 bundled Eglot bounded push journey semantic verdict exists as typed actual-host evidence.",
+      "spec_owner": "HOST_E30"
+    },
+    {
+      "node_id": "HOST_E_REL",
+      "issue": 8824,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The released GNU ELPA Eglot pull-diagnostic journey semantic verdict exists as typed actual-host evidence.",
+      "spec_owner": "HOST_E_REL"
+    },
+    {
+      "node_id": "HOST_E_SRC",
+      "issue": 8825,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The pinned current-source Eglot bounded pull journey semantic verdict exists as typed actual-host evidence.",
+      "spec_owner": "HOST_E_SRC"
+    },
+    {
+      "node_id": "HOST_L_REL",
+      "issue": 8828,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The released lsp-mode journey and competing-client selection semantic verdict exists as typed actual-host evidence.",
+      "spec_owner": "HOST_L_REL"
+    },
+    {
+      "node_id": "HOST_L_SRC",
+      "issue": 8830,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The pinned current-source lsp-mode bounded journey semantic verdict exists as typed actual-host evidence.",
+      "spec_owner": "HOST_L_SRC"
     }
   ]
 }
