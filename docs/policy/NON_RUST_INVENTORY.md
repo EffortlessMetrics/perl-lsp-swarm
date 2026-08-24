@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11392 |
-| Rust-family files | 3471 |
-| Non-Rust files | 7921 |
-| Allowlisted | 5647 |
-| Unclassified | 2274 |
+| Total tracked files | 11404 |
+| Rust-family files | 3478 |
+| Non-Rust files | 7926 |
+| Allowlisted | 5653 |
+| Unclassified | 2273 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 401 |
-| documentation | 2638 |
+| config | 402 |
+| documentation | 2641 |
 | generated | 2 |
-| production | 308 |
+| production | 309 |
 | test | 1828 |
-| tooling | 470 |
-| unclassified | 2274 |
+| tooling | 471 |
+| unclassified | 2273 |
 
 ## Unclassified files
 
@@ -124,7 +124,6 @@
 | `ci/unwrap_prod_baseline.txt` | `txt` |
 | `ci/unwrap_server_impl_baseline.txt` | `txt` |
 | `ci/xtask_wrapper.sh` | `sh` |
-| `clients/lite-xl/upstream/json.lua` | `lua` |
 | `contracts/actual_host_receipt.v1.schema.json` | `json` |
 | `crates/perl-corpus/concepts/incremental.toml` | `toml` |
 | `crates/perl-corpus/concepts/lexer.toml` | `toml` |
@@ -2849,6 +2848,7 @@
 | `.github/workflows/droid-security-scan.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/droid.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/em-ci-routed-rust.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/emacs-train-context-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/flake-detection.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/gate-enforcement-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/generated-status-contract.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -3024,6 +3024,10 @@
 | `.spec/11716-emacs-support-architecture/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11716-emacs-support-architecture/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11716-emacs-support-architecture/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11756-emacs-context-engine/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11756-emacs-context-engine/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11756-emacs-context-engine/context.mappings.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11756-emacs-context-engine/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11763-issue-controller-architecture/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11763-issue-controller-architecture/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11763-issue-controller-architecture/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3347,8 +3351,9 @@
 | `clients/lite-xl/tests/util_show_document_test.lua` | test | `non-rust-litexl-show-document-tests` | editor/lite-xl |
 | `clients/lite-xl/upstream/diagnostics.lua` | production | `non-rust-litexl-diagnostics-store` | editor/lite-xl |
 | `clients/lite-xl/upstream/init.lua` | production | `non-rust-litexl-init-plugin` | editor/lite-xl |
+| `clients/lite-xl/upstream/json.lua` | production | `non-rust-litexl-json-codec` | editor/lite-xl |
 | `clients/lite-xl/upstream/server.lua` | production | `non-rust-litexl-server-transport` | editor/lite-xl |
-| `clients/lite-xl/upstream/util.lua` | production | `non-rust-litexl-util` | editor/lite-xl |
+| `clients/lite-xl/upstream/util.lua` | production | `non-rust-litexl-util-support` | editor/lite-xl |
 | `clients/sublime/LSP-perllsp/.python-version` | documentation | `non-rust-sublime-python-version` | editor/sublime |
 | `clients/sublime/LSP-perllsp/Default.sublime-commands` | documentation | `non-rust-Default-commands` | editor/sublime |
 | `clients/sublime/LSP-perllsp/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
