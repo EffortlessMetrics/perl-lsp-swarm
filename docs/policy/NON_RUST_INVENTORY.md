@@ -3357,7 +3357,7 @@
 | `clients/lite-xl/upstream/diagnostics.lua` | production | `non-rust-litexl-diagnostics-store` | editor/lite-xl |
 | `clients/lite-xl/upstream/init.lua` | production | `non-rust-litexl-init-plugin` | editor/lite-xl |
 | `clients/lite-xl/upstream/server.lua` | production | `non-rust-litexl-server-transport` | editor/lite-xl |
-| `clients/lite-xl/upstream/util.lua` | production | `non-rust-litexl-util` | editor/lite-xl |
+| `clients/lite-xl/upstream/util.lua` | production | `non-rust-litexl-util-support` | editor/lite-xl |
 | `clients/sublime/LSP-perllsp/.python-version` | documentation | `non-rust-sublime-python-version` | editor/sublime |
 | `clients/sublime/LSP-perllsp/Default.sublime-commands` | documentation | `non-rust-Default-commands` | editor/sublime |
 | `clients/sublime/LSP-perllsp/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |

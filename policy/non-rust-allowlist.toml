@@ -2579,24 +2579,6 @@ review_after = "2026-09-16"
 # =============================================================================
 
 [[allow]]
-id = "non-rust-litexl-util"
-path = "clients/lite-xl/upstream/util.lua"
-kind = "editor_extension"
-language = "lua"
-surface = "editor"
-classification = "production"
-owner = "editor/lite-xl"
-reason = "Exact upstream lite-xl-lsp util.lua (base d1432ae, blob 588c101a) staged for the Lite XL integration train, carrying the #11155 guarded sensitive-trace patch (log_file append failures warn once without recursion, documented source-bearing surface, no automatic retention), the #11162 shell-free external-launch patch (URI classification policy, argv-only platform launchers, testable show_document sequence), and the #11165 single local file-URI/path conversion authority patch (typed uri_to_path/path_to_uri with Windows drive/UNC/percent/separator semantics; legacy touri/tofilename removed)."
-covered_by = [
-  "lua clients/lite-xl/tests/server_logging_test.lua",
-  "lua clients/lite-xl/tests/util_show_document_test.lua",
-  "lua clients/lite-xl/tests/util_file_uri_test.lua",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-22"
-review_after = "2026-09-22"
-
-[[allow]]
 id = "non-rust-litexl-json-decode-tests"
 path = "clients/lite-xl/tests/json_decode_test.lua"
 kind = "editor_extension_test"
