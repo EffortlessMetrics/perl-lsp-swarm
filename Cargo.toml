@@ -8,6 +8,9 @@ members = [
     # Tier 1 leaf — no parser/workspace/LSP/DAP deps. Dependency contract
     # asserted in tests/dependency_contract.rs.
     "crates/perl-source-identity",
+    # perl-sync-convergence: convergence_transaction.v1 state/lease/invalidation
+    # persistence (#11282). Tier 1 leaf — serde + sha2 only.
+    "crates/perl-sync-convergence",
     "crates/perl-pragma",
     "crates/perl-regex",
     "crates/perl-lexer",
@@ -111,6 +114,8 @@ allow = [
     "perl-test-facts",
     # Canonical source_identity.v1 owner (PLSP-ADR-0006 "Scope boundary").
     "perl-source-identity",
+    # Canonical convergence_transaction.v1 persistence owner (#11282).
+    "perl-sync-convergence",
     # (perl-content-length-framing absorbed into perl-lsp-rs-core::transport::framing — Wave Final PR B)
     # (perl-percentile absorbed into perl-parser — Wave D)
     "perl-subprocess-runtime",
@@ -237,6 +242,8 @@ perl-ast-v2 = { path = "crates/perl-ast-v2", version = "0.17.0" }
 perl-token = { path = "crates/perl-token", version = "0.17.0" }
 # perl-source-identity: source_identity.v1 core types (#7652). No internal deps.
 perl-source-identity = { path = "crates/perl-source-identity", version = "0.17.0" }
+# perl-sync-convergence: convergence_transaction.v1 persistence (#11282). No internal deps.
+perl-sync-convergence = { path = "crates/perl-sync-convergence", version = "0.17.0" }
 perl-regex = { path = "crates/perl-regex", version = "0.17.0" }
 perl-pragma = { path = "crates/perl-pragma", version = "0.17.0" }
 perl-lexer = { path = "crates/perl-lexer", version = "0.17.0" }

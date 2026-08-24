@@ -1,0 +1,38 @@
+[package]
+name = "perl-sync-convergence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Canonical convergence_transaction.v1 state, lease, invalidation, and resumability model for continuous source synchronization (#11282)"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/perl-sync-convergence"
+readme = "README.md"
+keywords = ["perl", "sync", "convergence", "lease", "transactions"]
+categories = ["data-structures", "development-tools"]
+publish = true
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE*"]
+
+[lib]
+doctest = false
+
+[dependencies]
+# serde: stable deterministic serialization for all durable records.
+serde = { workspace = true }
+# serde_json: canonical JSON persistence for receipts, journals, and index.
+serde_json = { workspace = true }
+# sha2: domain-separated digests for generation identity. No sha2 types in the
+# public API.
+sha2 = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints]
+workspace = true
