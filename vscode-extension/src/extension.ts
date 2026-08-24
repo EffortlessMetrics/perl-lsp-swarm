@@ -16,6 +16,11 @@ import type {
 import { PerlTestAdapter } from './testAdapter';
 import { activateDebugger, rewriteTestLensCommand } from './debugAdapter';
 import { BinaryDownloader, parseLocalVersion } from './downloader';
+import {
+  acquireLaunchManagedCandidateReference,
+  mayReleaseManagedCandidateReferences,
+  releaseManagedCandidateSessionReferences,
+} from './managedCandidateRuntime';
 import { runLanguageServerHealthCheck } from './languageServerHealth';
 import { OnboardingManager } from './onboarding';
 import {
@@ -135,6 +140,8 @@ import {
   ActiveDocumentReadiness,
   type ActiveDocumentReadinessSnapshot,
 } from './activeDocumentReadiness';
+import type { ActivationAttemptState, ActivationCleanupReceipt } from './activationTransaction';
+import { ExtensionActivationOwner } from './activationOwner';
 
 // Compatibility projections for existing command/provider code. Lifecycle
 // ownership lives in `languageClientLifecycle`; these values are synchronized
@@ -159,6 +166,13 @@ let languageClientLifecycle:
  * activation composes it; nothing else may start the language client directly.
  */
 let serverDemand: ServerDemandCoordinator | undefined;
+/**
+ * The transactional owner of the current activation attempt (#7854). Every
+ * activation-created resource registers with it; a failed attempt rolls back
+ * through it in reverse registration order, and a committed attempt hands its
+ * runtime to `deactivate()` for ordinary shutdown.
+ */
+let extensionActivation: ExtensionActivationOwner | null = null;
 
 export function createBinaryIdentityCommand(
   getClient: () => BinaryIdentityRequestClient | undefined,
@@ -552,10 +566,44 @@ export async function copyProviderDecisionReceiptCommand(
 }
 
 export async function activate(context: vscode.ExtensionContext) {
+  const activation = new ExtensionActivationOwner(context, (message) => {
+    outputChannel?.error(message);
+  });
+  extensionActivation = activation;
+  try {
+    const extensionApi = await runExtensionActivation(context, activation);
+    // Commit before publishing the activation-complete context key: the
+    // commandPalette/walkthrough `perl-lsp.activated` gate must not claim a
+    // committed runtime while the attempt is still rolling forward (#7854).
+    activation.commit();
+    vscode.commands.executeCommand('setContext', 'perl-lsp.activated', true);
+    return extensionApi;
+  } catch (error: unknown) {
+    const reason = error instanceof Error ? error.message : String(error);
+    const receipt = await activation.rollback();
+    vscode.commands.executeCommand('setContext', 'perl-lsp.activated', false);
+    outputChannel?.error(
+      `[activation] Attempt ${receipt.attempt_id} failed and was rolled back: ${reason}`,
+    );
+    throw error;
+  }
+}
+
+async function runExtensionActivation(
+  context: vscode.ExtensionContext,
+  activation: ExtensionActivationOwner,
+) {
   languageClientStartupMetrics.markMilestone('activate_entered');
   featureActivationMetrics.beginActivation();
-  // Set activation context so commands are available even without a Perl file open (#UX4.4)
-  vscode.commands.executeCommand('setContext', 'perl-lsp.activated', true);
+  // Module-level compatibility projections are owned by the attempt from its
+  // first tick (#7854). Registered first so reverse-order cleanup clears them
+  // last, after every owned resource — including the language client — was
+  // torn down. The output channel is deliberately NOT cleared here: it is a
+  // retained support surface, so it stays reachable for failure reporting
+  // after a rolled-back attempt.
+  activation.ownCleanup('module-projections', 'base', 'mandatory_for_activation', () => {
+    clearActivationProjections();
+  });
   // Cache the context so the mid-session crash handler (#4625) can drive an
   // auto-restart without a parameter of its own.
   extensionContext = context;
@@ -563,11 +611,15 @@ export async function activate(context: vscode.ExtensionContext) {
   // traceOutputChannel. Messages are routed through level-aware methods
   // (debug/info/warn/error) so the VS Code Output panel level filter works.
   outputChannel = vscode.window.createOutputChannel('Perl Language Server', { log: true });
+  activation.own('base', 'support_surface_allowed_after_failure', outputChannel);
   // The generic MCP passthrough is runtime-inert (#7119), so this domain is no
   // longer activation-critical: it registers nothing and returns no disposable.
   const mcpDisposable = featureActivationMetrics.measure('mcp', false, () =>
     registerMcpSupport(outputChannel),
   );
+  if (mcpDisposable) {
+    activation.own('support', 'optional_degradable', mcpDisposable);
+  }
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusBarItem.command = 'perl-lsp.showWorkspaceStatus';
   statusBarItem.accessibilityInformation = {
@@ -575,6 +627,7 @@ export async function activate(context: vscode.ExtensionContext) {
     role: 'button',
   };
   statusBarItem.show();
+  activation.own('base', 'mandatory_for_activation', statusBarItem);
   healthWidget = new HealthWidget(statusBarItem);
   // Extension activation is not language-server startup (#8180). Until a
   // server-dependent trigger exists the widget reports the truthful dormant
@@ -591,8 +644,17 @@ export async function activate(context: vscode.ExtensionContext) {
     workspace: vscode.workspace,
   });
   healthWidgetDataSource.start();
-  context.subscriptions.push(healthWidgetDataSource);
+  activation.own('base', 'mandatory_for_activation', healthWidgetDataSource);
   languageClientLifecycle = createLanguageClientLifecycle(context);
+  // The language client lifecycle is attempt-owned until commit: a failed
+  // activation tears down any partially constructed client and timer state
+  // through the same primitive ordinary deactivation uses (#7854).
+  activation.ownCleanup(
+    'language-client-lifecycle',
+    'language_client',
+    'mandatory_for_activation',
+    () => disposeLanguageClient(),
+  );
   syncLifecycleProjection();
   // One owner for every server-dependent path (#8180). Command helpers and
   // document listeners route demand through this object; none of them call
@@ -606,13 +668,12 @@ export async function activate(context: vscode.ExtensionContext) {
       outputChannel.info(message);
     },
   });
-  context.subscriptions.push({
+  activation.own('language_client', 'mandatory_for_activation', {
     dispose: () => {
       serverDemand?.dispose();
       serverDemand = undefined;
     },
   });
-  context.subscriptions.push(statusBarItem);
 
   // Register server-facing commands through an explicit dependency context.
   // Lifecycle transitions remain owned by the authoritative composition.
@@ -675,6 +736,7 @@ export async function activate(context: vscode.ExtensionContext) {
       return onboarding.runSetupHealthCheck(serverPath);
     },
   });
+  activation.ownDisposables('commands', 'mandatory_for_activation', serverCommandDisposables);
 
   const openDemoProject = async () => {
     await openDemoProjectCommand(context);
@@ -684,6 +746,7 @@ export async function activate(context: vscode.ExtensionContext) {
     runPerlCriticOnActiveFile: () => runPerlCriticOnActiveFile(),
     setPerlCriticSeverity: () => setPerlCriticSeverity(),
   });
+  activation.ownDisposables('commands', 'mandatory_for_activation', criticCommandDisposables);
 
   const testCommandDisposables = registerTestCommandGroup({
     runTests: (test) =>
@@ -701,6 +764,7 @@ export async function activate(context: vscode.ExtensionContext) {
       }),
     runAllTests: () => runAllTestsWithProve(),
   });
+  activation.ownDisposables('commands', 'mandatory_for_activation', testCommandDisposables);
 
   const navigationCommandDisposables = registerNavigationCommandGroup({
     openDemoProject,
@@ -763,6 +827,7 @@ export async function activate(context: vscode.ExtensionContext) {
         },
       }),
   });
+  activation.ownDisposables('commands', 'mandatory_for_activation', navigationCommandDisposables);
 
   const documentCommandDisposables = registerDocumentCommandGroup({
     checkSyntax: () =>
@@ -781,6 +846,7 @@ export async function activate(context: vscode.ExtensionContext) {
         serverNotRunningMessage,
       }),
   });
+  activation.ownDisposables('commands', 'mandatory_for_activation', documentCommandDisposables);
 
   const diagnosticCommandDisposables = registerDiagnosticCommandGroup({
     explainProviderDecision: (provider) =>
@@ -801,6 +867,7 @@ export async function activate(context: vscode.ExtensionContext) {
       ),
     explainDiagnostic: (request) => explainDiagnosticCommand(client, request),
   });
+  activation.ownDisposables('commands', 'mandatory_for_activation', diagnosticCommandDisposables);
 
   const whatsNewManager = featureActivationMetrics.measure(
     'whats_new',
@@ -830,6 +897,15 @@ export async function activate(context: vscode.ExtensionContext) {
       await downloader.checkForUpdateSilent();
     },
   });
+  // Onboarding/What's New and support surfaces are intentionally usable after
+  // a failed activation attempt (the user may need to report the failure), so
+  // they register as retained support surfaces rather than mandatory ones
+  // (#7854).
+  activation.ownDisposables(
+    'support',
+    'support_surface_allowed_after_failure',
+    onboardingCommandDisposables,
+  );
 
   const refactoringCommandDisposables = registerRefactoringCommandGroup({
     extractVariable: () =>
@@ -837,6 +913,7 @@ export async function activate(context: vscode.ExtensionContext) {
     extractMethod: () => extractMethodCommand({ activeClient: client, serverNotRunningMessage }),
     showRefactoringOptions: showRefactoringOptionsCommand,
   });
+  activation.ownDisposables('commands', 'mandatory_for_activation', refactoringCommandDisposables);
 
   const supportCommandDisposables = registerSupportCommandGroup({
     reportIssue: () =>
@@ -868,6 +945,11 @@ export async function activate(context: vscode.ExtensionContext) {
         editorName: (vscode.env as unknown as { appName?: string }).appName,
       }),
   });
+  activation.ownDisposables(
+    'support',
+    'support_surface_allowed_after_failure',
+    supportCommandDisposables,
+  );
 
   const formatOnSaveDisposable = vscode.workspace.onWillSaveTextDocument((event) => {
     if (!shouldFormatOnSave(event.document)) {
@@ -876,6 +958,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
     event.waitUntil(formatDocumentOnSave(event.document));
   });
+  activation.own('workspace_listeners', 'mandatory_for_activation', formatOnSaveDisposable);
 
   const configurationWatcher = featureActivationMetrics.measure('configuration', true, () =>
     registerWorkspaceConfigurationEvents({
@@ -917,6 +1000,7 @@ export async function activate(context: vscode.ExtensionContext) {
       },
     }),
   );
+  activation.own('workspace_listeners', 'mandatory_for_activation', configurationWatcher);
 
   const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (event) => {
     try {
@@ -945,41 +1029,34 @@ export async function activate(context: vscode.ExtensionContext) {
       outputChannel.error('File creation handler error', e);
     }
   });
+  activation.own('workspace_listeners', 'mandatory_for_activation', fileCreationWatcher);
 
   const arrowCompletionWatcher = vscode.workspace.onDidChangeTextDocument((event) => {
     maybeNudgeArrowCompletion(event);
   });
+  activation.own('workspace_listeners', 'mandatory_for_activation', arrowCompletionWatcher);
 
+  // The document feature group receives a scoped facade context: registrations
+  // it pushes during activation join the attempt, while lazily created
+  // resources (a POD preview webview panel's onDidDispose hook) fall through
+  // to ordinary host disposal after the attempt closed (#7854).
   const providerDisposables = featureActivationMetrics.measure('providers', true, () => [
     ...registerDocumentFeatureGroup({
-      extensionContext: context,
+      extensionContext: activation.scopedContext('document_providers', 'optional_degradable'),
       registerGherkinProviders,
       registerGherkinStepDefinitionSupport,
       registerPodPreview,
     }),
   ]);
+  activation.ownDisposables('document_providers', 'optional_degradable', providerDisposables);
 
-  context.subscriptions.push(
-    ...serverCommandDisposables,
-    ...criticCommandDisposables,
-    ...testCommandDisposables,
-    ...navigationCommandDisposables,
-    ...documentCommandDisposables,
-    ...diagnosticCommandDisposables,
-    ...onboardingCommandDisposables,
-    ...refactoringCommandDisposables,
-    ...supportCommandDisposables,
-    formatOnSaveDisposable,
-    configurationWatcher,
-    fileCreationWatcher,
-    arrowCompletionWatcher,
-    ...(mcpDisposable ? [mcpDisposable] : []),
-    ...providerDisposables,
-  );
   languageClientStartupMetrics.markMilestone('commands_registered');
 
-  // Initialize debug adapter
-  featureActivationMetrics.measure('debugger', true, () => activateDebugger(context));
+  // Initialize debug adapter. The debugger owns its registrations through the
+  // scoped facade context, which routes them into the attempt (#7854).
+  featureActivationMetrics.measure('debugger', true, () =>
+    activateDebugger(activation.scopedContext('debugger', 'mandatory_for_activation')),
+  );
 
   if (
     context.extensionMode === vscode.ExtensionMode.Test &&
@@ -993,7 +1070,7 @@ export async function activate(context: vscode.ExtensionContext) {
       getActiveDocumentReadiness,
       markLanguageClientStartupMilestone,
       waitForActiveDocumentReady,
-      stop: deactivate,
+      stop: stopLanguageClientForActivationApi,
     };
   }
 
@@ -1022,14 +1099,18 @@ export async function activate(context: vscode.ExtensionContext) {
         outputChannel.error(`[startup] Post-trust startup failed: ${message}`);
       });
     });
-    context.subscriptions.push(trustDisposable);
+    activation.own('workspace_listeners', 'mandatory_for_activation', trustDisposable);
   }
 
   // Extension activation is complete. Language-server startup is a separate
   // transition driven by real demand (#8180): an eligible Perl document that
   // is already open, one that opens later, or an explicit server command.
   const documentDemandDisposables = registerServerDemandListeners();
-  context.subscriptions.push(...documentDemandDisposables);
+  activation.ownDisposables(
+    'workspace_listeners',
+    'mandatory_for_activation',
+    documentDemandDisposables,
+  );
   scheduleServerDemandEvaluation(context, whatsNewManager);
   languageClientStartupMetrics.markMilestone('activate_returned');
   return {
@@ -1038,16 +1119,103 @@ export async function activate(context: vscode.ExtensionContext) {
     getActiveDocumentReadiness,
     markLanguageClientStartupMilestone,
     waitForActiveDocumentReady,
-    stop: deactivate,
+    stop: stopLanguageClientForActivationApi,
   };
 }
 
 export async function deactivate() {
   try {
-    await disposeLanguageClient();
+    // A committed activation owns shutdown through the same cleanup
+    // primitives rollback uses (#7854). Without a committed runtime
+    // (activation never ran to commit, or the attempt was rolled back) the
+    // pre-transaction shutdown path stays authoritative.
+    const receipt = (await extensionActivation?.deactivate()) ?? null;
+    if (receipt === null) {
+      await disposeLanguageClient();
+    }
   } finally {
     languageClientStartupMetrics.markMilestone('shutdown');
   }
+}
+
+/**
+ * The activation API's `stop` seam: a recoverable language-client shutdown,
+ * not the terminal teardown `deactivate()` performs (#7854).
+ *
+ * Historically `stop` was literally `deactivate`, and `deactivate()` only
+ * stopped the language client. The current-source smoke exercises this seam
+ * mid-session ("language client shutdown") and keeps using the extension
+ * afterwards — diagnostics arrive because the demand listeners survive and
+ * restart the server — so it must stay light: the committed activation
+ * runtime, its registrations, and the output channel stay live, and only the
+ * language client plus the shutdown milestone are touched.
+ */
+async function stopLanguageClientForActivationApi(): Promise<void> {
+  await disposeLanguageClient();
+  languageClientStartupMetrics.markMilestone('shutdown');
+}
+
+/**
+ * Clears the module-level compatibility projections from the activation
+ * transaction's authority (#7854). Registered as the attempt's first
+ * resource, so reverse-order cleanup runs it last — after every owned
+ * resource, including the language client lifecycle, was torn down. The
+ * output channel is deliberately retained: it is a support surface that must
+ * stay usable for failure reporting after a rolled-back attempt.
+ */
+function clearActivationProjections(): void {
+  stopWatchdog();
+  client = undefined;
+  currentServerPath = null;
+  configuredServerPathMissing = null;
+  testAdapter = undefined;
+  streamingController = undefined;
+  statusBarItem = undefined;
+  healthWidget = undefined;
+  healthWidgetDataSource = undefined;
+  serverDemand = undefined;
+  languageClientLifecycle = undefined;
+  lastStartupDiagnosis = undefined;
+  extensionContext = undefined;
+}
+
+/**
+ * Test helper — expose the production activation owner's state (#7854).
+ * @internal
+ */
+export function _extensionActivationStateForTest(): {
+  state: ActivationAttemptState;
+  attemptId: string;
+  resourceIds: string[];
+  lastCleanupReceipt: ActivationCleanupReceipt | null;
+} | null {
+  if (extensionActivation === null) {
+    return null;
+  }
+  return {
+    state: extensionActivation.currentState(),
+    attemptId: extensionActivation.attemptId,
+    resourceIds: extensionActivation.resourceIds(),
+    lastCleanupReceipt: extensionActivation.lastCleanupReceipt(),
+  };
+}
+
+/**
+ * Test helper — whether the module-level compatibility projections were
+ * cleared by the activation authority (#7854).
+ * @internal
+ */
+export function _activationProjectionsClearedForTest(): boolean {
+  return (
+    extensionContext === undefined &&
+    languageClientLifecycle === undefined &&
+    serverDemand === undefined &&
+    statusBarItem === undefined &&
+    healthWidget === undefined &&
+    healthWidgetDataSource === undefined &&
+    testAdapter === undefined &&
+    streamingController === undefined
+  );
 }
 
 /**
@@ -1432,6 +1600,19 @@ function createLanguageClientLifecycle(
       }
     },
     createClient: (serverPath) => {
+      // Bind this extension-host session to the exact managed candidate
+      // before the server process can spawn (#10083), so no collector can
+      // delete the candidate between selection and reference establishment.
+      // No-op for user-managed or pre-policy installs, which are never
+      // deletion subjects.
+      const boundCandidateId = acquireLaunchManagedCandidateReference(
+        serverPath,
+        vscode.env.sessionId,
+        (message) => outputChannel.info(`[managed-candidate] ${message}`),
+      );
+      if (boundCandidateId !== null) {
+        outputChannel.info(`[managed-candidate] session bound to ${boundCandidateId}`);
+      }
       languageClientStartupMetrics.beginServerStart();
       languageClientStartupMetrics.beginInitialize();
       return createLanguageClient(serverPath);
@@ -2655,9 +2836,37 @@ async function disposeLanguageClient(): Promise<void> {
   autoRestartAttempts = 0;
   stableRunningSince = undefined;
   disposeClientIntegrations();
+  let shutdownProvedTerminal = false;
   if (languageClientLifecycle) {
     await languageClientLifecycle.stop();
+    // stop() resolves — never rejects — even when stop/dispose timed out and
+    // the lifecycle transitioned to `failed`. Only the clean `stopped` state
+    // proves the server process is terminal (#10083); anything else keeps
+    // the session's host references `live` so a collector cannot delete the
+    // candidate under a possibly-still-running process.
+    shutdownProvedTerminal = mayReleaseManagedCandidateReferences(
+      languageClientLifecycle.snapshot.state,
+    );
     syncLifecycleProjection();
+  }
+  // The server process bound to the managed candidate is proven terminal
+  // now, so this session's exact host references can be released (#10083).
+  // Crashes and unproven shutdowns never reach the release — their
+  // references stay `live` and conservative for a later recovery path
+  // (#11539) rather than authorizing deletion.
+  const managedStorageRoot = extensionContext?.globalStorageUri?.fsPath;
+  if (typeof managedStorageRoot !== 'string') {
+    outputChannel.info(
+      '[managed-candidate] no managed storage root available; host reference release skipped.',
+    );
+  } else if (shutdownProvedTerminal) {
+    releaseManagedCandidateSessionReferences(managedStorageRoot, vscode.env.sessionId, (message) =>
+      outputChannel.info(`[managed-candidate] ${message}`),
+    );
+  } else {
+    outputChannel.info(
+      '[managed-candidate] shutdown did not prove process termination; host references retained.',
+    );
   }
   // No generation is running any more. Reinstall stops the client and then
   // restarts it, so leaving demand on `running` here would make that restart a
