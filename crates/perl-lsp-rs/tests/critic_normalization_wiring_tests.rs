@@ -73,11 +73,16 @@ fn built_in_identity_constructors_admit_exactly_the_reviewed_overlap_cohort() {
         .lines()
         .filter_map(|line| {
             let trimmed = line.trim_start();
-            let body = trimmed
-                .strip_prefix("pub const fn ")
-                .or_else(|| trimmed.strip_prefix("pub fn "))?;
-            let name = body.split('(').next()?;
-            name.strip_prefix("built_in_").map(str::to_string)
+            // Any function visibility/form declaring a built_in_ constructor
+            // counts, so a `pub(crate) fn` or non-const variant cannot sneak
+            // an eighth cohort member past the pin.
+            if !trimmed.starts_with("pub") || !trimmed.contains("fn ") {
+                return None;
+            }
+            let name = trimmed
+                .split(|c: char| c == '(' || c == '<' || c == ':' || c == ' ')
+                .find_map(|token| token.strip_prefix("built_in_"))?;
+            Some(name.to_string())
         })
         .collect();
     declared_constructors.sort();

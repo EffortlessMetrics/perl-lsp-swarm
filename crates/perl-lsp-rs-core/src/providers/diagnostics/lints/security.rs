@@ -628,6 +628,7 @@ fn check_system_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>)
     let message = "system() executes a shell command. Ensure input is sanitized.".to_string();
     let explanation =
         "Use the list form system($cmd, @args) to avoid shell injection when arguments come from user input".to_string();
+    const SYSTEM_LIST_FORM_SUGGESTION: &str = "Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection";
     diagnostics.push(Diagnostic {
         range,
         severity: DiagnosticSeverity::Warning,
@@ -647,16 +648,12 @@ fn check_system_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>)
                 Some(explanation.clone()),
             )
             // #12004: the observation carries the ordinary row's exact
-            // user-visible remediation so retirement cannot drop it.
-            .with_suggestion(
-                "Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection",
-            )
+            // user-visible remediation so retirement cannot drop it. The
+            // binding keeps the two copies from drifting apart.
+            .with_suggestion(SYSTEM_LIST_FORM_SUGGESTION)
             .with_related_information(range, explanation),
         ),
-        suggestion: Some(
-            "Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection"
-                .to_string(),
-        ),
+        suggestion: Some(SYSTEM_LIST_FORM_SUGGESTION.to_string()),
     });
 }
 
@@ -679,6 +676,7 @@ fn check_exec_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             .to_string();
     let explanation =
         "Use the list form exec($cmd, @args) to avoid shell injection when arguments come from user input".to_string();
+    const EXEC_LIST_FORM_SUGGESTION: &str = "Use the list form: exec($cmd, @args) instead of exec(\"$cmd @args\") to avoid shell injection";
     diagnostics.push(Diagnostic {
         range,
         severity: DiagnosticSeverity::Warning,
@@ -697,15 +695,10 @@ fn check_exec_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                 message,
                 Some(explanation.clone()),
             )
-            .with_suggestion(
-                "Use the list form: exec($cmd, @args) instead of exec(\"$cmd @args\") to avoid shell injection",
-            )
+            .with_suggestion(EXEC_LIST_FORM_SUGGESTION)
             .with_related_information(range, explanation),
         ),
-        suggestion: Some(
-            "Use the list form: exec($cmd, @args) instead of exec(\"$cmd @args\") to avoid shell injection"
-                .to_string(),
-        ),
+        suggestion: Some(EXEC_LIST_FORM_SUGGESTION.to_string()),
     });
 }
 
@@ -798,6 +791,12 @@ fn is_pipe_two_arg_string(node: &Node) -> bool {
     }
 }
 
+/// Shared remediation text for the command-execution family (PL601/PL606):
+/// one binding keeps the ordinary diagnostic and the critic observation
+/// from drifting apart (#12004).
+const OPEN_LIST_FORM_SUGGESTION: &str =
+    "Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution";
+
 /// Detect `readpipe()` function calls.
 ///
 /// `readpipe("cmd")` is functionally identical to backticks/qx//,
@@ -836,12 +835,10 @@ fn check_readpipe(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                 message,
                 Some(explanation.clone()),
             )
-            .with_suggestion("Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution")
+            .with_suggestion(OPEN_LIST_FORM_SUGGESTION)
             .with_related_information(range, explanation),
         ),
-        suggestion: Some(
-            "Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution".to_string(),
-        ),
+        suggestion: Some(OPEN_LIST_FORM_SUGGESTION.to_string()),
     });
 }
 
@@ -870,14 +867,10 @@ fn push_command_execution_diagnostic(
         fixable: false,
         critic_observation: Some(
             observe(Severity::Harsh, range, message, Some(explanation.clone()))
-                .with_suggestion(
-                    "Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution",
-                )
+                .with_suggestion(OPEN_LIST_FORM_SUGGESTION)
                 .with_related_information(range, explanation),
         ),
-        suggestion: Some(
-            "Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution".to_string(),
-        ),
+        suggestion: Some(OPEN_LIST_FORM_SUGGESTION.to_string()),
     });
 }
 
@@ -1159,6 +1152,50 @@ mod tests {
                 "producer message travels with the observation"
             );
             assert!(observation.explanation().is_some());
+        }
+    }
+
+    /// #12004: the observation's remediation copy must stay identical to the
+    /// ordinary diagnostic fields it mirrors, or merged rows silently serve
+    /// stale text after the ordinary row retires.
+    #[test]
+    fn observation_remediation_copies_match_the_ordinary_diagnostic_fields() {
+        for (source, code) in [
+            (r#"system("ls");"#, "PL603"),
+            (r#"exec("ls");"#, "PL604"),
+            (r#"my $out = readpipe("ls");"#, "PL606"),
+            ("my $out = `ls`;", "PL601"),
+            ("my $out = qx(ls);", "PL601"),
+        ] {
+            let diags = security_diags(source);
+            let diagnostic = diags
+                .iter()
+                .find(|d| d.code.as_deref() == Some(code))
+                .unwrap_or_else(|| panic!("{code} must be emitted for {source}"));
+            let suggestion = diagnostic
+                .suggestion
+                .as_deref()
+                .unwrap_or_else(|| panic!("{code} must carry an ordinary suggestion"));
+            let observation = observation_of(&diags, code)
+                .unwrap_or_else(|| panic!("{code} must carry a critic observation: {diags:?}"));
+
+            assert_eq!(
+                observation.suggestion(),
+                Some(suggestion),
+                "{code}: observation suggestion drifted from the ordinary diagnostic"
+            );
+
+            let ordinary_related: Vec<_> =
+                diagnostic.related_information.iter().map(|r| r.message.as_str()).collect();
+            let observation_related: Vec<_> = observation
+                .related_information()
+                .iter()
+                .map(|(_, message)| message.as_str())
+                .collect();
+            assert_eq!(
+                observation_related, ordinary_related,
+                "{code}: observation related information drifted from the ordinary diagnostic"
+            );
         }
     }
 
