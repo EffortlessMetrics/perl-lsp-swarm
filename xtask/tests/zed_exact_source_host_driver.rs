@@ -96,6 +96,7 @@ fn observation_template_is_not_run_bound_and_cell_complete() -> Result<(), Box<d
 fn driver_behaves_through_the_owned_python_contract() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
     let script = r#"
+import os
 import sys
 from pathlib import Path
 
@@ -128,7 +129,7 @@ assert settings["languages"]["Perl"]["language_servers"] == [
     "...",
 ]
 assert settings["lsp"]["perllsp"]["binary"] == {
-    "path": "/tmp/perllsp",
+    "path": os.environ["ZED_EXPECTED_PERLLSP_PATH"],
     "arguments": [],
 }
 assert settings["lsp"]["perllsp"]["settings"]["perl"] == {"trace": True}
@@ -136,7 +137,15 @@ assert settings["lsp"]["perllsp"]["settings"]["perl"] == {"trace": True}
 path_settings = _settings({}, Path("/tmp/perllsp"), "worktree_path")
 assert "binary" not in path_settings["lsp"]["perllsp"]
 "#;
-    let output = Command::new(python()).arg("-c").arg(script).current_dir(&root).output()?;
+    let output = Command::new(python())
+        .arg("-c")
+        .arg(script)
+        .env(
+            "ZED_EXPECTED_PERLLSP_PATH",
+            PathBuf::from("/tmp/perllsp").to_string_lossy().as_ref(),
+        )
+        .current_dir(&root)
+        .output()?;
     assert!(
         output.status.success(),
         "Python contract test failed\nstdout:\n{}\nstderr:\n{}",
@@ -147,14 +156,31 @@ assert "binary" not in path_settings["lsp"]["perllsp"]
 }
 
 #[test]
-fn shared_rust_validator_checks_schema_then_semantics() -> Result<(), Box<dyn Error>> {
+fn validator_cli_checks_schema_then_semantics() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let validator = read(&root, "xtask/src/bin/validate-zed-host-receipt.rs")?;
-    assert!(validator.contains("support/zed_host_compat.rs"));
-    assert!(validator.contains("validate_schema(&receipt)"));
-    assert!(validator.contains("validate_pass(&receipt, None)"));
-    assert!(validator.contains("--schema-only"));
-    assert!(!validator.contains("public_subject"));
+    let template = root.join(OBSERVATIONS);
+    let validator = env!("CARGO_BIN_EXE_validate-zed-host-receipt");
+
+    let schema_only = Command::new(validator)
+        .arg("--schema-only")
+        .arg(&template)
+        .current_dir(&root)
+        .output()?;
+    assert!(
+        schema_only.status.success(),
+        "schema-only validation failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&schema_only.stdout),
+        String::from_utf8_lossy(&schema_only.stderr)
+    );
+
+    let full = Command::new(validator)
+        .arg(&template)
+        .current_dir(&root)
+        .output()?;
+    assert!(
+        !full.status.success(),
+        "not-run template must fail full semantic validation"
+    );
     Ok(())
 }
 
