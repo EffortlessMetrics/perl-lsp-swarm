@@ -446,8 +446,8 @@
       "not_authority": [
         {
           "path_or_symbol": "xtask/tests/support/emacs_host_runner.rs",
-          "reason": "the hermetic Emacs runner is a consumer of the shared contract, never its implementation; Emacs-specific conformance falsifiers stay with RUNCONF so #10894 and #8734 never collapse into one writer surface",
-          "owner": "#8734"
+          "reason": "the hermetic Emacs runner core is H7778 production material and a consumer of the shared contract, never its implementation; Emacs-specific conformance falsifiers stay with RUNCONF so #10894 and #8734 never collapse into one writer surface",
+          "owner": "#7778"
         },
         {
           "path_or_symbol": "xtask/src/editor_client_compat.rs",
@@ -547,7 +547,7 @@
       "write_set_note": null,
       "no_production_component_reason": null,
       "blocker": {
-        "reason": "fan-in subject node: immutable cross-client subject manifests and exact client materialization depend on the SUBJ_CORE/SUBJ_E/SUBJ_L leaves, none of which exist on this tree (the node is buildable=false until they land); population follows those leaves",
+        "reason": "fan-in reference node: immutable cross-client subject manifests and exact client materialization fan in from the RUNCONF, SUBJ_CORE, SUBJ_E and SUBJ_L hard dependencies, none of which exist on this tree; the node stays buildable=false fan-in reference that executes no missing subject work, so population records fan-in validation surfaces, not a builder transition",
         "owner_issue": 8755,
         "action": "return_to_issue"
       }
