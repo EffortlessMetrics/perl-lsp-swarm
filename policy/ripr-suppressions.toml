@@ -2823,3 +2823,27 @@ created = "2026-08-23"
 review_after = "2026-09-23"
 expires = "2026-10-31"
 removal_criteria = "ripr#1429-class tracing connects success returns to executing tests, OR the module's proof moves to targeted mutation, OR a new reachable_unrevealed seam appears that a real focused test could cover (then fix by test instead of extending this entry)."
+
+# -----------------------------------------------------------------------------
+# ValueFormat exact public stdio proof harness (#9590, PR #12221): the
+# framed-stdio session driver is a test-only receipt surface. RIPR 0.10.x
+# reports 42 reachable_unrevealed error_path seams on the `)?` plumbing of
+# its helpers (request/expect_success/expect_failure/recv_until/
+# wait_event/close_stdin_and_wait_exit), the same class the #8305
+# receipt-harness, seam-proof-tests, and #11626 test-module precedents
+# describe: per-expression static exposure cannot connect harness plumbing
+# between assertions to the assertions that drive it, and reports the seams
+# inside the newly added test file itself.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-9590-valueformat-stdio-proof-harness"
+kind = "test_receipt_surface"
+paths = ["crates/perl-dap/tests/dap_value_format_stdio_proof.rs"]
+classification = ["reachable_unrevealed"]
+owner = "valueformat-stdio-proof-lane"
+issue = "#9590"
+reason = "PR #12221 (issue #9590) adds the exact public stdio proof harness for the ValueFormat family. RIPR's 42 findings in this file are error_path probes on `)?` plumbing lines of the harness itself (request/response correlation, backlog event waits, bounded recv, teardown after stdin close) plus the fail-closed Err arms of row-by-name/identity/canary assertion helpers. Every one of those helpers is executed to completion by the 29-row matrix the file exists to run (cargo test -p perl-dap --test dap_value_format_stdio_proof): expect_failure's fail-closed control is exercised for real by the four unsupported-option families and the policy-rejected evaluate row, recv_until's correlation drives all 34 framed requests, and the teardown path runs disconnect -> terminated -> stdin close -> adapter exit on every green run. Asserting each intermediate Err arm separately would require fault-injection scaffolding duplicating the harness around code that has no production caller. The falsification for the class is recorded by the seam-proof precedents (ripr#1428 reports reachable_unrevealed for harness `?` plumbing regardless of the assertions that execute it). The production change of this PR (variables.rs) keeps its own seams fully visible to RIPR under no entry."
+created = "2026-08-24"
+review_after = "2026-09-24"
+expires = "2026-10-24"
+removal_criteria = "ripr#1428 lands (test-harness plumbing distinguished from production seams) or RIPR traces the harness helpers to their executing matrix rows, then delete this entry and expect the 29-row suite to clear without it. A new reachable_unrevealed seam that a real focused test could cover must be fixed by test, not by extending this entry."
