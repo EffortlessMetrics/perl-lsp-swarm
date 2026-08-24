@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "D28-numeric-helper-semantics-drift",
+  "family": "boundary_data_semantics_theater",
+  "purpose": "Substituting numeric helpers changes zero/sign/width/overflow/rounding/unit behavior invisibly.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "as u64",
+      "negative results wrap"
+    ],
+    "content": "pub fn offset(base: i64, delta: i64) -> u64 {\n    (base - delta) as u64 // negative results wrap silently\n}\n",
+    "sha256": "3acecef3b34d15179b13b551e1d04f3d5821c74a7c38394dca64adbd43e0dda9"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 9850,
+    "unresolved_reason": "Numeric semantics-cohort (width/sign/overflow) lacks a landed dedicated leaf; assignment owned by programme controller."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "numeric_semantics_change"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "checked_sub",
+      "try_from(v)"
+    ],
+    "note": "Underflow surfaces as None.",
+    "content": "pub fn offset(base: i64, delta: i64) -> Option<u64> {\n    base.checked_sub(delta).and_then(|v| u64::try_from(v).ok())\n}\n",
+    "sha256": "7e9c1c9d9b55e91d32942b1e7703be416d0f890e2c4750184d1d649a87ea44f0"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Review-facing freeze; needless_type_cast warn covers only part of the class."
+}
