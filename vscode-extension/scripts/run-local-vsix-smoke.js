@@ -745,18 +745,24 @@ function composeActivationRecoveryReceipt({
     retryObservations.bundled_server_processes_after_stop,
   );
 
-  let duplicateResources = 0;
-  let duplicateObserved = true;
-  for (const count of [retryRunningProcesses, retryProcessesAfterSecondDemand]) {
-    if (count !== null && count >= 1) {
-      duplicateResources += count - 1;
-    } else {
-      duplicateObserved = false;
-    }
-  }
+  // The two process observations describe the SAME resource set at two
+  // moments, not two independent sets: one surplus server process that
+  // persists across both windows is ONE duplicate, counted once (max, not
+  // sum). Unobserved counts leave the row not_proven.
+  const observedCounts = [retryRunningProcesses, retryProcessesAfterSecondDemand].map((count) =>
+    count !== null && count >= 1 ? count : null,
+  );
+  const duplicateObserved = observedCounts.every((count) => count !== null);
+  const duplicateResources = duplicateObserved ? Math.max(...observedCounts) - 1 : 0;
 
-  const stopClean = retryProcessesAfterStop === 0;
+  // A missing stop observation is missing evidence, not an observed dirty
+  // stop: it must yield not_proven, never failed.
+  const stopObserved = retryProcessesAfterStop !== null;
+  const stopClean = stopObserved && retryProcessesAfterStop === 0;
   const hostExitClean = postHostExitProcesses.length === 0;
+  const crashBudgetEvidence =
+    Array.isArray(failureObservations.crash_budget_evidence) &&
+    failureObservations.crash_budget_evidence.length > 0;
 
   const legRow = (child, exitCode) => {
     if (!child) {
@@ -772,16 +778,16 @@ function composeActivationRecoveryReceipt({
   };
   const cleanupRow = legRow(failure, legExitCodes.failure);
   const retryRow = legRow(retry, legExitCodes.retry);
-  const deactivationRow = !childrenBound
-    ? 'not_proven'
-    : stopClean && hostExitClean
-      ? 'pass'
-      : 'failed';
+  const deactivationRow =
+    !childrenBound || !stopObserved ? 'not_proven' : stopClean && hostExitClean ? 'pass' : 'failed';
 
+  // Derived rows: the receipt states what the children observed, not what the
+  // composer assumes. Missing evidence degrades to not_proven.
+  const evidenceComplete = childrenBound && stopObserved && crashBudgetEvidence;
   let verdict;
   if (observedFailure) {
     verdict = 'failed';
-  } else if (!childrenBound) {
+  } else if (!evidenceComplete) {
     verdict = 'not_proven';
   } else if (!stopClean || !hostExitClean) {
     verdict = 'failed';
@@ -807,11 +813,18 @@ function composeActivationRecoveryReceipt({
       activation_schema: 'ExtensionActivationOwner/ActivationTransaction (#7854 wiring)',
     },
     failure: {
-      phase: 'debugger-1 (harness-injected pre-commit boundary)',
-      terminal_state: 'activation_failed',
+      phase:
+        failure && failure.fault && failure.fault.boundary
+          ? `${failure.fault.boundary} (harness-injected pre-commit boundary)`
+          : 'not_proven',
+      terminal_state: childrenBound ? 'activation_failed' : 'not_proven',
       process_remaining:
         failureProcessesAfterDemand === null ? null : failureProcessesAfterDemand > 0,
-      crash_budget_consumed: false,
+      crash_budget_consumed: childrenBound
+        ? crashBudgetEvidence
+          ? false
+          : 'not_proven'
+        : 'not_proven',
       crash_budget_evidence: failureObservations.crash_budget_evidence || [],
       cleanup: cleanupRow,
     },
@@ -819,7 +832,10 @@ function composeActivationRecoveryReceipt({
       activation: retryRow,
       duplicate_resources: duplicateObserved ? duplicateResources : 'not_proven',
       provider_smoke: retryRow,
-      server_identity: 'bundled',
+      server_identity:
+        retry && retry.observations && retry.observations.startup
+          ? String(retry.observations.startup.binary_resolution_source ?? 'not_proven')
+          : 'not_proven',
     },
     deactivation: deactivationRow,
     legs: {
@@ -1032,6 +1048,7 @@ function runActivationFailureJourneyAttempt(baseEnv, context, paths) {
   if (failureResult.error) {
     return {
       status: 'not_proven',
+      exit_codes: legExitCodes,
       reason: `failure leg could not run: ${failureResult.error.message}`,
     };
   }
@@ -1085,10 +1102,12 @@ function runActivationFailureJourneyAttempt(baseEnv, context, paths) {
   writeJsonAtomic(joinedReceiptFile, joined);
 
   if (legExitCodes.failure !== 0 || legExitCodes.retry !== 0) {
+    // Aligned with the composer: a leg that did not exit cleanly is an
+    // execution-integrity gap (not_proven), not an observed product failure.
     return {
-      status: 'failed',
+      status: 'not_proven',
       exit_codes: legExitCodes,
-      reason: 'activation_failure_journey_leg_failed',
+      reason: 'activation_failure_journey_leg_did_not_exit_cleanly',
       recovery_verdict: joined.verdict,
     };
   }

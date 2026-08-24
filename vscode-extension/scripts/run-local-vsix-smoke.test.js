@@ -579,7 +579,14 @@ void test('activation-failure leg env arms only the failure leg with the fault',
     'candidate-bound mode is Linux-only and must not leak into the journey legs',
   );
 
-  const retryEnv = activationFailureLegEnv({}, 'retry', false, context);
+  // Base env deliberately carries the fault variable: the retry leg must
+  // REMOVE it, so deleting the else-branch cleanup would fail this assertion.
+  const retryEnv = activationFailureLegEnv(
+    { PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE: 'leaked-from-outer-env' },
+    'retry',
+    false,
+    context,
+  );
   assert.equal(retryEnv.PERL_LSP_ACTIVATION_FAILURE_LEG, 'retry');
   assert.equal(retryEnv.PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE, undefined);
 });
@@ -626,6 +633,36 @@ void test('activation recovery child receipts must bind this run exactly', () =>
   });
   assert.equal(wrongVsix.ok, false);
   assert.match(wrongVsix.violations.join('; '), /VSIX digest .* is not this run's package/);
+
+  const rejectionBranches = (overrides, pattern) => {
+    const files = new Map([
+      ['/receipts/failure.json', JSON.stringify(recoveryChild('failure', overrides.failure || {}))],
+      ['/receipts/retry.json', JSON.stringify(recoveryChild('retry', overrides.retry || {}))],
+    ]);
+    const result = validateActivationRecoveryChildReceipts({
+      failureReceiptFile: '/receipts/failure.json',
+      retryReceiptFile: '/receipts/retry.json',
+      expectedVsixSha256: 'v'.repeat(64),
+      expectedBundledServerSha256: 's'.repeat(64),
+      expectedExtensionVersion: '0.17.0',
+      exists: (file) => files.has(file),
+      readFile: (file) => files.get(file) ?? '',
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.violations.join('; '), pattern);
+  };
+  rejectionBranches({ failure: { schema_version: 'other.v1' } }, /schema is/);
+  rejectionBranches({ failure: { leg: 'retry' } }, /records leg/);
+  rejectionBranches({ failure: { verdict: 'failed' } }, /verdict is/);
+  rejectionBranches({ failure: { candidate: { vsix_sha256: 'x'.repeat(64) } } }, /VSIX digest/);
+  rejectionBranches(
+    { failure: { candidate: { bundled_server: { sha256: 'x'.repeat(64) } } } },
+    /bundled-server digest/,
+  );
+  rejectionBranches(
+    { failure: { candidate: { extension_version: '9.9.9' } } },
+    /extension version/,
+  );
 
   const missing = validateActivationRecoveryChildReceipts({
     failureReceiptFile: '/receipts/missing.json',
@@ -715,7 +752,25 @@ void test('the joined activation recovery receipt is fail-closed', () => {
     }),
     postHostExitProcesses: [],
   });
-  assert.equal(duplicates.retry.duplicate_resources, 2);
+  // Two observed processes at both windows is ONE duplicate (max, not sum).
+  assert.equal(duplicates.retry.duplicate_resources, 1);
+
+  const absentStopObservation = composeActivationRecoveryReceipt({
+    ...baseInput,
+    failure: failureChild,
+    // Every observation present except the post-stop scan: missing evidence
+    // must degrade the deactivation row and verdict to not_proven.
+    retry: recoveryChild('retry', {
+      observations: {
+        bundled_server_processes_running: ['<installed>/bin/perllsp.exe'],
+        bundled_server_processes_after_second_demand: ['<installed>/bin/perllsp.exe'],
+      },
+    }),
+    legExitCodes: { failure: 0, retry: 0 },
+    postHostExitProcesses: [],
+  });
+  assert.equal(absentStopObservation.deactivation, 'not_proven');
+  assert.equal(absentStopObservation.verdict, 'not_proven');
 
   const unobservedDuplicates = composeActivationRecoveryReceipt({
     ...baseInput,

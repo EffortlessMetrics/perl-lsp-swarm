@@ -274,9 +274,12 @@ const PROCESS_SCAN_OUTPUT_MAX_BYTES = 4 * 1024 * 1024;
 /**
  * Enumerate running OS processes launched from `directory` (the installed
  * extension's bundled-server directory). The scan is a bounded child process:
- * PowerShell `Get-Process` on Windows, `ps` elsewhere. The scan is fail-closed:
- * a nonzero exit code, scanner diagnostics on stderr, or a bounded-run failure
- * all throw — a broken scanner must never masquerade as "no processes".
+ * PowerShell `Get-Process` on Windows, `ps` elsewhere. The scan is fail-closed
+ * on the scanner's own signals: a bounded-run failure or a nonzero exit code
+ * throws, so a broken scanner never masquerades as "no processes". Stderr
+ * text with a zero exit code is deliberately ignored — advisory output (for
+ * example a shell deprecation notice) is not evidence about the process
+ * table, and failing on it would make the scan spuriously fragile.
  */
 export async function scanProcessesUnderDirectory(directory: string): Promise<string[]> {
   const resolved = path.resolve(directory);

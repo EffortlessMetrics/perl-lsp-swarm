@@ -488,7 +488,16 @@ suite('Packaged activation-failure cleanup and retry (#7856)', function () {
       if (stopOutcome !== 'stopped') {
         blockers.push({ label: 'stop_seam', result: stopOutcome });
       }
-      const processesAfterStop = await scanProcessesUnderDirectory(binDirectory);
+      // Bounded exit poll: the recoverable stop resolves when the client
+      // dispose completes, but the OS may take a moment to reap the child on
+      // a loaded host; poll before treating a lingering pid as a cleanup
+      // failure.
+      const stopPollDeadline = Date.now() + 5_000;
+      let processesAfterStop = await scanProcessesUnderDirectory(binDirectory);
+      while (processesAfterStop.length > 0 && Date.now() < stopPollDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        processesAfterStop = await scanProcessesUnderDirectory(binDirectory);
+      }
       observations.bundled_server_processes_after_stop = processesAfterStop;
       if (processesAfterStop.length > 0) {
         blockers.push({ label: 'stop_seam_process_cleanup', result: processesAfterStop });
