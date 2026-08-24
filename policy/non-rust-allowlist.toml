@@ -2901,3 +2901,66 @@ covered_by = [
 ]
 created = "2026-08-24"
 review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-standalone-candidate-schema"
+path = "schemas/standalone_candidate.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "JSON Schema pinning the closed immutable standalone candidate manifest contract (#11179); the derived candidate identity is recomputed over canonical bytes by the checked validator."
+covered_by = [
+  "cargo test -p xtask --locked --example standalone_candidate_selection",
+  "cargo run -p xtask --locked --example standalone_candidate_selection -- --verify-fixtures fixtures/experience/standalone_candidate_selection",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-standalone-current-selection-schema"
+path = "schemas/standalone_current_selection.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "JSON Schema pinning the closed standalone current-selection record contract (#11179): monotonic generations, previous-known-good governance, and digest-only identities with no private paths."
+covered_by = [
+  "cargo test -p xtask --locked --example standalone_candidate_selection",
+  "cargo run -p xtask --locked --example standalone_candidate_selection -- --verify-fixtures fixtures/experience/standalone_candidate_selection",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-standalone-install-transition-schema"
+path = "schemas/standalone_install_transition.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "JSON Schema pinning the closed install/repair/update/rollback transition record (#11179) with four independent outcome dimensions for product units, cleanup, process startup, and PATH persistence."
+covered_by = [
+  "cargo test -p xtask --locked --example standalone_candidate_selection",
+  "cargo run -p xtask --locked --example standalone_candidate_selection -- --verify-fixtures fixtures/experience/standalone_candidate_selection",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-standalone-candidate-selection-fixtures"
+glob = "fixtures/experience/standalone_candidate_selection/**/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "release/ci"
+reason = "Synthetic vectors for the #11179 standalone candidate/current-selection contract: the required pair/server-only/source scenarios plus fail-closed falsifiers each naming its expected reason code."
+covered_by = [
+  "cargo run -p xtask --locked --example standalone_candidate_selection -- --verify-fixtures fixtures/experience/standalone_candidate_selection",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
