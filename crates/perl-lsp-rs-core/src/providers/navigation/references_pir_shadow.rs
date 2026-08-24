@@ -1085,7 +1085,7 @@ mod promote_tests {
         let receipt = extract_lexical_facts(&hir);
         // Deliberately provide a forged widened legacy range. Exact promotion
         // must consume the canonical HIR binding anchor instead.
-        let forged_legacy = vec![(4usize, 9usize)];
+        let forged_legacy = vec![(0usize, 1usize)];
 
         let outcome = references_pir_promote(
             PromotionMode::PromoteExact,
