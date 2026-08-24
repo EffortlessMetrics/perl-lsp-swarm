@@ -53,4 +53,6 @@ Behavior is unchanged: every rejection remains a typed non-application, and no
 transport/failure variant is reachable because the local store mutation cannot
 fail on its own.
 
-Base: `main@197d45cbb`; retarget based on `main@805a43efb`.
+Base: `main@197d45cbb` (historical baseline for the original claim);
+retarget based on `main@805a43efb` (effective base for the landed #11989
+retarget).
