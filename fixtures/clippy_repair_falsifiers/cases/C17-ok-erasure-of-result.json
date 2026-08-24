@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "case_id": "C17-ok-erasure-of-result",
+  "family": "lost_work_error_obligation_theater",
+  "purpose": ".ok() used purely to erase a Result converts typed failure into silent None flow.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "cache.write(entry).ok();"
+    ],
+    "content": "pub fn persist(cache: &mut Cache, entry: Entry) {\n    cache.write(entry).ok();\n}\n",
+    "sha256": "3e1732d85277215276ee35993174dabebf45c6c81648113aed0bb4dde2314f8a"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11238,
+    "unresolved_reason": "Denial of discarded Result::ok outcomes (#11238) is open; no governed lint rejects the spelling today."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "result_erasure_ok_discard"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "std::io::Result<()>"
+    ],
+    "note": "Errors propagate through the typed boundary.",
+    "content": "pub fn persist(cache: &mut Cache, entry: Entry) -> std::io::Result<()> {\n    cache.write(entry)\n}\n",
+    "sha256": "b7c67581ddd8aeaee22224e744e7698b80861f46763bb2e0b5168739bf8623b2"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Case freezes the class ahead of #11238 activation; expected rejecting authority stays unresolved."
+}
