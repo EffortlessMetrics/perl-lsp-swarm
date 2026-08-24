@@ -83,9 +83,7 @@ fn target_from_args(args: &[Node]) -> ImportIntoTarget {
 
 fn is_package_name(value: &str) -> bool {
     !value.is_empty()
-        && value
-            .split("::")
-            .all(|part| {
-                !part.is_empty() && part.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-            })
+        && value.split("::").all(|part| {
+            !part.is_empty() && part.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        })
 }

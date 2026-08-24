@@ -14,7 +14,10 @@ fn node(kind: NodeKind, start: usize, end: usize) -> Node {
 }
 
 fn identifier(name: &str, start: usize) -> Node {
-    Node::new(NodeKind::Identifier { name: name.into() }, SourceLocation { start, end: start + name.len() })
+    Node::new(
+        NodeKind::Identifier { name: name.into() },
+        SourceLocation { start, end: start + name.len() },
+    )
 }
 
 #[test]
@@ -73,10 +76,7 @@ fn recognizes_literal_destination_package() {
             object: Box::new(identifier("warnings", 0)),
             method: "import::into".into(),
             args: vec![Node::new(
-                NodeKind::String {
-                    value: "My::Package".into(),
-                    interpolated: false,
-                },
+                NodeKind::String { value: "My::Package".into(), interpolated: false },
                 SourceLocation { start: 20, end: 33 },
             )],
         },
