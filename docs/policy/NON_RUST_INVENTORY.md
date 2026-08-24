@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11476 |
-| Rust-family files | 3485 |
-| Non-Rust files | 7991 |
-| Allowlisted | 5718 |
+| Total tracked files | 11493 |
+| Rust-family files | 3496 |
+| Non-Rust files | 7997 |
+| Allowlisted | 5724 |
 | Unclassified | 2273 |
 
 ## Non-Rust files by category
@@ -17,10 +17,10 @@
 | Category | Count |
 |---|---|
 | config | 404 |
-| documentation | 2651 |
+| documentation | 2652 |
 | generated | 2 |
-| production | 312 |
-| test | 1877 |
+| production | 314 |
+| test | 1880 |
 | tooling | 472 |
 | unclassified | 2273 |
 
@@ -2495,6 +2495,7 @@
 | `.changes/unreleased/product-8016-Added-213950.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-8025-Added-221500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-8027-Added-222500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-8063-Changed-214000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-8250-Added-223800.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-8311-Changed-164000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9103-Added-211500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -5739,6 +5740,7 @@
 | `fixtures/agent_implementation_packet/invalid/blocked_node_without_edge.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/invalid/conditional_profile_without_decision.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/invalid/controller_node_as_work.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/current_authority_without_digest.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/invalid/duplicate_authority_ref.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/invalid/expected_errors.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/invalid/fabricated_observation.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
@@ -5747,6 +5749,7 @@
 | `fixtures/agent_implementation_packet/invalid/hidden_writer_slots.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/invalid/historical_branch_as_current_authority.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/invalid/incomplete_observation.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/invented_stop_authority.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/invalid/local_diff_claimed_delivered.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/invalid/missing_claim_ceiling.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/invalid/missing_diff_check.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
@@ -5754,6 +5757,7 @@
 | `fixtures/agent_implementation_packet/invalid/missing_generated_obligation.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/invalid/missing_required_input_frontier.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/invalid/mutable_agent_state.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/null_frontier_section.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/invalid/overlapping_writer_keys.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/invalid/ready_node_with_spurious_edge.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/invalid/stale_authority_tree.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
@@ -7822,6 +7826,7 @@
 | `vscode-extension/src/languageClientStartupMetrics.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/languageServerHealth.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedCacheProtocol.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/managedCandidateRuntime.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedCandidateSelection.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedHostTarget.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedReleaseAdapter.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -7905,6 +7910,7 @@
 | `vscode-extension/src/test/languageClientStartupMetrics.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/languageServerHealth.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedCacheProtocol.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/managedCandidateRuntime.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedCandidateSelection.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedHostTarget.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedNamespaceIsolation.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
