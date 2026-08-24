@@ -395,10 +395,11 @@ export function _setExtensionContextForTest(context: vscode.ExtensionContext): v
 /**
  * Test helper — deliver a watchdog-sourced failure observation through the
  * same production arbiter entry point the watchdog interval calls (#7845).
+ * The optional generation mirrors the probe-binding the interval captures.
  * @internal
  */
-export function _watchdogFailureForTest(): Promise<void> {
-  return recoverFromObservedCrash('watchdog');
+export function _watchdogFailureForTest(generation?: number): Promise<void> {
+  return recoverFromObservedCrash('watchdog', generation);
 }
 
 /**
@@ -2791,8 +2792,21 @@ function recordUnexpectedFailure(): string {
  * slot; a `crash_budget_exhausted` decision stops looping and asks the user
  * to intervene.
  */
-async function recoverFromObservedCrash(source: CrashObservationSource): Promise<void> {
-  const failedGeneration = currentCrashGeneration();
+async function recoverFromObservedCrash(
+  source: CrashObservationSource,
+  observedGeneration: number = currentCrashGeneration(),
+): Promise<void> {
+  // A stale observation (e.g. a watchdog probe that started before the
+  // failed generation was replaced) must never arbitrate against the
+  // replacement generation: if the observed generation has been superseded,
+  // drop the observation instead of restarting the healthy replacement.
+  if (observedGeneration !== currentCrashGeneration()) {
+    outputChannel?.warn(
+      `[lifecycle] Stale ${source} observation for superseded generation ${observedGeneration} ignored (current generation ${currentCrashGeneration()}).`,
+    );
+    return;
+  }
+  const failedGeneration = observedGeneration;
   const decision = crashRecoveryArbiter.observeFailure({
     failed_generation: failedGeneration,
     process_identity: crashProcessIdentity(failedGeneration),
@@ -2837,29 +2851,34 @@ async function recoverFromObservedCrash(source: CrashObservationSource): Promise
     crashRecoveryArbiter.settleActiveEpisode('recovery_failed', null);
     return;
   }
-  try {
-    await restartServer(context);
-    // The replacement run now owns the next failed-generation identity (in
-    // the unit-test harness the lifecycle controller is absent, so the
-    // fallback generation advances here — after arbitration began — so that
-    // a duplicate observation for the failed generation still dedupes).
-    if (languageClientLifecycle === undefined) {
-      fallbackCrashGeneration += 1;
-    }
-    // restartServer resolves only after the replacement generation finished
-    // its startup finalization (initialize + document replay + readiness
-    // rebound), so the episode settles as recovered only on an accepted
-    // replacement — a spawned process alone is not "recovered" (#7845).
+  // restartServer never rejects (it surfaces its own dialogs/logs and
+  // returns), so the terminal startup state is read from the lifecycle
+  // snapshot instead of a catch block.
+  await restartServer(context);
+  // The replacement run now owns the next failed-generation identity (in
+  // the unit-test harness the lifecycle controller is absent, so the
+  // fallback generation advances here — after arbitration began — so that
+  // a duplicate observation for the failed generation still dedupes).
+  if (languageClientLifecycle === undefined) {
+    fallbackCrashGeneration += 1;
     crashRecoveryArbiter.settleActiveEpisode('recovered', currentCrashGeneration());
-  } catch (error: unknown) {
-    if (languageClientLifecycle === undefined) {
-      fallbackCrashGeneration += 1;
-    }
+    return;
+  }
+  // With a live lifecycle, restartServer resolves only after the
+  // replacement generation finished its startup finalization (initialize +
+  // document replay + readiness rebound), so the episode settles as
+  // recovered only on an accepted running replacement — a spawned process
+  // alone is not "recovered" (#7845). A restart that did not reach the
+  // running state settles as failed and the next crash (if any) consumes
+  // another retry slot.
+  const replacementSnapshot = languageClientLifecycle.snapshot;
+  if (replacementSnapshot.state === 'running') {
+    crashRecoveryArbiter.settleActiveEpisode('recovered', replacementSnapshot.generation);
+  } else {
     crashRecoveryArbiter.settleActiveEpisode('recovery_failed', null);
-    // restartServer surfaces its own dialog/log; record the failure and
-    // let the next crash (if any) consume another retry slot.
-    const msg = error instanceof Error ? error.message : String(error);
-    outputChannel?.error(`[lifecycle] Auto-restart attempt ${attempt} failed: ${msg}`);
+    outputChannel?.error(
+      `[lifecycle] Auto-restart attempt ${attempt} did not reach the running state (state: ${replacementSnapshot.state}).`,
+    );
   }
 }
 
@@ -2915,6 +2934,10 @@ function startWatchdog(): void {
     if (languageClientLifecycle?.snapshot.state !== 'running') {
       return;
     }
+    // Bind the probe to the generation it interrogates: if the generation is
+    // replaced while the request is in flight, the late result is stale and
+    // must not arbitrate against the replacement (#7845).
+    const probedGeneration = currentCrashGeneration();
     let watchdogTimeout: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
@@ -2931,9 +2954,10 @@ function startWatchdog(): void {
       // Watchdog observations route through the same arbiter (#7845): a
       // hung generation is a failure episode keyed by generation + process
       // identity, so a watchdog timeout and the process exit that follows
-      // deduplicate into one recovery operation. Unlike the legacy path,
-      // the watchdog no longer resets the crash budget before recovering.
-      await recoverFromObservedCrash('watchdog');
+      // deduplicate into one recovery operation, while a stale probe for a
+      // superseded generation is dropped. Unlike the legacy path, the
+      // watchdog no longer resets the crash budget before recovering.
+      await recoverFromObservedCrash('watchdog', probedGeneration);
     } finally {
       if (watchdogTimeout !== undefined) {
         clearTimeout(watchdogTimeout);
@@ -2977,10 +3001,12 @@ function disposeClientIntegrations(): void {
 async function disposeLanguageClient(): Promise<void> {
   // Extension shutdown is user-initiated; suppress the crash handler and
   // reset crash-recovery state so a re-activation starts with a fresh budget.
-  // Deactivation is an explicit lifecycle action (#7845): it neither consumes
-  // nor leaves armed any crash-recovery episode, timer, or stable-run state.
+  // Deactivation is terminal for the session (#7845): the episode dedupe
+  // history is cleared too, so a re-activated lifecycle's restarted
+  // generation counter cannot collide with a previous session's episode
+  // identities and suppress a genuine new crash.
   userInitiatedStopPending = true;
-  crashRecoveryArbiter.resetForExplicitRecovery();
+  crashRecoveryArbiter.resetAllEpisodeMemory();
   disposeClientIntegrations();
   let shutdownProvedTerminal = false;
   if (languageClientLifecycle) {

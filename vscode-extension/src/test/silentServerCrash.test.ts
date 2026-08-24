@@ -205,6 +205,25 @@ describe('mid-session silent server crash recovery (#4625)', () => {
     expect(restartToasts).toHaveLength(1);
   });
 
+  test('a stale watchdog result for a superseded generation is dropped, not arbitrated', async () => {
+    // Generation 0 crashes and is recovered (the replacement generation 1
+    // is now current). A watchdog probe that started before the crash and
+    // timed out after the replacement started must not open a second
+    // episode or restart the healthy replacement.
+    handleClientStateChange(crashEvent() as never);
+    await flush();
+    expect(_autoRestartAttemptsForTest()).toBe(1);
+
+    void _watchdogFailureForTest(0);
+    await flush();
+
+    expect(_autoRestartAttemptsForTest()).toBe(1);
+    const restartToasts = showErrorMessage.mock.calls.filter((call) =>
+      /restarting automatically/i.test(String(call[0])),
+    );
+    expect(restartToasts).toHaveLength(1);
+  });
+
   test('a manual restart from the exhausted toast never consumes crash budget', async () => {
     for (let i = 0; i < 3; i++) {
       handleClientStateChange(crashEvent() as never);
