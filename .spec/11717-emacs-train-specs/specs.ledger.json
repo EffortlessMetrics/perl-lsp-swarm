@@ -23,6 +23,15 @@
       "spec_owner": "RELY"
     },
     {
+      "node_id": "FIXT",
+      "issue": 11366,
+      "train_role": "historical",
+      "disposition": "EXISTING_CONTRACT_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The canonical fixture and probe substrate exists as landed current-tree substrate.",
+      "spec_owner": "FIXT"
+    },
+    {
       "node_id": "RUNCONF",
       "issue": 8734,
       "train_role": "implementation",
@@ -183,6 +192,123 @@
       "disposition_provenance": "manifest",
       "authority_after": "The pinned current-source lsp-mode bounded journey semantic verdict exists as typed actual-host evidence.",
       "spec_owner": "HOST_L_SRC"
+    },
+    {
+      "node_id": "ROOT_E_OBS",
+      "issue": 11747,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The canonical stock Eglot root matrix exists as observation only.",
+      "spec_owner": "ROOT_E_OBS"
+    },
+    {
+      "node_id": "ROOT_L_OBS",
+      "issue": 11748,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The canonical stock lsp-mode root matrix exists as observation only.",
+      "spec_owner": "ROOT_L_OBS"
+    },
+    {
+      "node_id": "ROOT_E_SEM",
+      "issue": 11749,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "Behavior-bearing Eglot root, isolation, configuration and standard-override verdicts exist.",
+      "spec_owner": "ROOT_E_SEM"
+    },
+    {
+      "node_id": "ROOT_L_SEM",
+      "issue": 11750,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "Behavior-bearing lsp-mode root, isolation, configuration and standard-override verdicts exist.",
+      "spec_owner": "ROOT_L_SEM"
+    },
+    {
+      "node_id": "ROOT_OBS_FAN",
+      "issue": 8834,
+      "train_role": "fan_in",
+      "disposition": "FAN_IN_OR_CERTIFICATION_SPEC",
+      "disposition_provenance": "manifest",
+      "authority_after": "The stock root-observation fan-in exists over both client-family matrices.",
+      "spec_owner": "ROOT_OBS_FAN"
+    },
+    {
+      "node_id": "ROOT_SEM_FAN",
+      "issue": 8838,
+      "train_role": "fan_in",
+      "disposition": "FAN_IN_OR_CERTIFICATION_SPEC",
+      "disposition_provenance": "manifest",
+      "authority_after": "The root-semantics fan-in exists over both client-family semantics leaves.",
+      "spec_owner": "ROOT_SEM_FAN"
+    },
+    {
+      "node_id": "LINUX",
+      "issue": 8842,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "A Linux install and fresh-process substrate exists for public replay.",
+      "spec_owner": "LINUX"
+    },
+    {
+      "node_id": "PUB_E_B",
+      "issue": 8846,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The bundled Eglot public replay exists over exact local and root evidence.",
+      "spec_owner": "PUB_E_B"
+    },
+    {
+      "node_id": "PUB_E_R",
+      "issue": 8849,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The released standalone Eglot public replay exists over exact local and root evidence.",
+      "spec_owner": "PUB_E_R"
+    },
+    {
+      "node_id": "PUB_L_R",
+      "issue": 8853,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The released lsp-mode public replay exists over exact local and root evidence.",
+      "spec_owner": "PUB_L_R"
+    },
+    {
+      "node_id": "REG",
+      "issue": 8858,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The registry imports the exact Emacs receipt rows from complete public replay evidence.",
+      "spec_owner": "REG"
+    },
+    {
+      "node_id": "DOCS",
+      "issue": 8862,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "Generated setup and support docs project exactly from registry rows.",
+      "spec_owner": "DOCS"
+    },
+    {
+      "node_id": "CERT",
+      "issue": 8865,
+      "train_role": "fan_in",
+      "disposition": "FAN_IN_OR_CERTIFICATION_SPEC",
+      "disposition_provenance": "manifest",
+      "authority_after": "The Linux support cut is certified over the complete composed denominator on current main.",
+      "spec_owner": "CERT"
     }
   ]
 }
