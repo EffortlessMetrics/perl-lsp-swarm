@@ -145,6 +145,12 @@ function diagnostics.set_render_resolver(resolve_doc, is_current)
   render_is_current = is_current
 end
 
+---Protocol default position encoding when a server negotiates none
+---(#11128). Declared before first use: resolve_range's nil-encoding path
+---reads this local, and a Lua local is only visible from its declaration
+---point onward.
+local Server_default_position_encoding = "utf-16"
+
 ---Resolve one LSP range to editor line/column coordinates (#11128).
 ---
 ---Returns on success: line1, col1, line2, col2, nil
@@ -204,7 +210,13 @@ function diagnostics.resolve_range(range, doc, position_encoding)
   end
 
   if encoding == "utf-8" then
-    -- Already byte columns per the negotiated contract; validated only.
+    -- Already byte columns per the negotiated contract; validated against
+    -- live line bytes so an out-of-bounds endpoint fails typed instead of
+    -- presenting a proven column past the line's bytes (lite-xl lines
+    -- include the trailing newline byte).
+    if col1 > #doc.lines[line1] or col2 > #doc.lines[line2] then
+      return nil, nil, nil, nil, "range_out_of_bounds"
+    end
     return line1, col1, line2, col2, nil
   end
 
@@ -214,10 +226,6 @@ end
 
 ---Forward declaration: the derived projection rebuilder (#11124).
 local rebuild_projection
-
----Protocol default position encoding when a server negotiates none
----(#11128).
-local Server_default_position_encoding = "utf-16"
 
 -- Try to load lintplus plugin if available for diagnostics rendering
 local lintplus_found, lintplus = nil, nil
@@ -568,7 +576,7 @@ end
 local function populate_item(item, fname)
   local doc = render_resolve_doc and render_resolve_doc(item.uri) or nil
   for _, message in ipairs(item.messages) do
-    local line1, col1, line2, col2, disposition =
+    local line1, col1, _, _, disposition =
       diagnostics.resolve_range(message.range, doc, item.position_encoding)
     if line1 then
       if col1 then

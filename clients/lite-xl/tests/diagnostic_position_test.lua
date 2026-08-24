@@ -453,6 +453,23 @@ do
   ok(disp == nil and l1 == 1 and c1 == 5,
     "A: utf-8 negotiation consumes byte columns directly")
 
+  -- utf-8 endpoints are validated against live line bytes: the newline
+  -- byte itself is addressable, anything past it fails typed (#11128).
+  doc = make_doc({ "hi\n" })
+  l1, c1, _, _, disp = R(diag, rng(0, 2, 0, 2), doc, "utf-8")
+  ok(disp == nil and l1 == 1 and c1 == 3,
+    "A: utf-8 endpoint on the newline byte stays proven")
+  _, _, _, _, disp = R(diag, rng(0, 3, 0, 3), doc, "utf-8")
+  ok(disp == "range_out_of_bounds",
+    "A: utf-8 column past the line bytes fails typed")
+
+  -- Nil encoding takes the protocol default (utf-16) instead of failing:
+  -- the default constant must be in scope inside resolve_range.
+  doc = make_doc({ "hi\n" })
+  l1, c1, _, _, disp = R(diag, rng(0, 0, 0, 1), doc)
+  ok(disp == nil and l1 == 1 and c1 == 1,
+    "A: nil encoding resolves through the protocol default")
+
   -- Closed document: line identity kept, columns explicitly unproven.
   l1, c1, l2, c2, disp = R(diag, rng(3, 7, 3, 9), nil, "utf-16")
   ok(l1 == 4 and c1 == nil and l2 == 4 and c2 == nil

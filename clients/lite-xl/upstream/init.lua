@@ -196,6 +196,41 @@ config.plugins.lsp = common.merge({
 --
 local lsp = {}
 
+-- Local patch (#11128): install the editor-side rendering resolver once at
+-- plugin load so every rendering surface -- including lintplus_populate()
+-- paths that can run before any accepted publication (e.g. re-enabling
+-- diagnostics) -- resolves live documents and revalidates subjects instead
+-- of silently degrading to unproven columns.
+diagnostics.set_render_resolver(
+  function(uri)
+    for _, open_doc in ipairs(core.docs) do
+      if open_doc.filename
+        and util.touri(core.project_absolute_path(open_doc.filename)) == uri
+      then
+        return open_doc
+      end
+    end
+    return nil
+  end,
+  function(uri, provider, session_generation, version)
+    local running = lsp.servers_running[provider]
+    if not running then return false end
+    local live = lsp.find_document_session(uri, running)
+    if not live then return false end
+    if live.session_generation ~= session_generation then
+      return false
+    end
+    -- Unversioned publications are admitted under session identity only
+    -- ("not_proven" evidence, never version-exact), so their currentness is
+    -- exactly session identity; a numeric publication still requires exact
+    -- version equality.
+    if version == "not_proven" then
+      return true
+    end
+    return live.version == version
+  end
+)
+
 ---List of registered servers
 ---@type table<string, lsp.server.options>
 lsp.servers = {}
@@ -1264,34 +1299,9 @@ function lsp.handle_publish_diagnostics(server, params)
     and
     util.doc_is_open(abs_filename)
   then
-    -- Local patch (#11128): install the editor-side rendering resolver once
-    -- so delayed rendering resolves the live document and revalidates its
-    -- subjects at execution time.
-    if not diagnostics.render_resolver_installed then
-      diagnostics.set_render_resolver(
-        function(uri)
-          for _, open_doc in ipairs(core.docs) do
-            if open_doc.filename
-              and util.touri(core.project_absolute_path(open_doc.filename)) == uri
-            then
-              return open_doc
-            end
-          end
-          return nil
-        end,
-        function(uri, provider, session_generation, version)
-          local running = lsp.servers_running[provider]
-          if not running then return false end
-          local live = lsp.find_document_session(uri, running)
-          if not live then return false end
-          return live.session_generation == session_generation
-            and live.version == version
-        end
-      )
-      diagnostics.render_resolver_installed = true
-    end
     -- we delay rendering of diagnostics to prevent the constant reporting
-    -- of errors while typing.
+    -- of errors while typing. The rendering resolver bundle itself is
+    -- installed once at plugin load (#11128).
     diagnostics.lintplus_populate_delayed(filename)
   end
 end
@@ -2436,10 +2446,11 @@ function lsp.view_document_diagnostics(doc)
 
   -- Local patch (#11128): list, suggestion and selection positions resolve
   -- through the same live-document presentation authority as inline
-  -- rendering; closed/unavailable subjects show an explicit unproven
-  -- column instead of raw code units.
+  -- rendering, with the publication's negotiated encoding; closed/unavailable
+  -- subjects show an explicit unproven column instead of raw code units.
   local function resolve_diagnostic_position(diagnostic)
-    return diagnostics.resolve_range(diagnostic.range, doc, nil)
+    return diagnostics.resolve_range(
+      diagnostic.range, doc, diagnostic.position_encoding)
   end
 
   local indexes, captions = {}, {}
@@ -2464,14 +2475,16 @@ function lsp.view_document_diagnostics(doc)
     submit = function(text, item)
       if item then
         local diagnostic = diagnostic_messages[item.index]
-        local line1, col1 = resolve_diagnostic_position(diagnostic)
+        -- Bind the first resolution's disposition; no second resolve.
+        local line1, col1, _, _, disposition =
+          resolve_diagnostic_position(diagnostic)
         if line1 and col1 then
           doc:set_selection(line1, col1, line1, col1)
         else
           core.log_quiet(
             "[LSP] %s navigation dropped (%s)",
             "view-document-diagnostics",
-            (select(5, resolve_diagnostic_position(diagnostic))) or "stale"
+            disposition or "stale"
           )
         end
       end
