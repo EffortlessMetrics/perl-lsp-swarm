@@ -389,11 +389,9 @@ impl ReachabilityWorkTracker {
                 ReachabilityWorkHonestyError::ReuseWithoutDeclaredIdentity { stage },
             ));
         }
-        self.work_paths.push(ReachabilityWorkReceipt::work_path_record(
-            stage,
-            target,
-            Some(reused_identity),
-        ));
+        let record =
+            ReachabilityWorkReceipt::work_path_record(stage, target, Some(reused_identity));
+        self.work_paths.push(record);
         Ok(())
     }
 
