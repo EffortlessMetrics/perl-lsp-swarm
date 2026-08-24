@@ -168,6 +168,34 @@ class ScanLogsTests(unittest.TestCase):
             self.assertIn("signal", by_log[str(unit_log)].signature_text)
             self.assertEqual(by_log[str(clippy_log)].signature_class, "enospc")
 
+    def test_multi_signature_log_yields_single_strongest_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_dir = Path(tmp)
+            # The observed run-32697324730 receipt contains all three failure
+            # families at once; the log must contribute exactly one finding,
+            # the first (strongest) match, so classify emits one annotation.
+            self.write_log(
+                logs_dir,
+                "unit_routed_full.log",
+                "collect2: fatal error: ld terminated with signal 7 [Bus error]\n"
+                "rustc-LLVM ERROR: IO failure on output stream: No space left\n"
+                "error: No space left on device (os error 28)",
+            )
+            findings = guard.scan_logs(logs_dir)
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0].signature_class, "enospc")
+
+    def test_other_kill_signals_do_not_fabricate_link_sigbus(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_dir = Path(tmp)
+            for signal in ("15", "9"):
+                self.write_log(
+                    logs_dir,
+                    f"timeout_{signal}.log",
+                    f"collect2: fatal error: ld terminated with signal {signal}",
+                )
+            self.assertEqual(guard.scan_logs(logs_dir), [])
+
     def test_clean_logs_produce_no_findings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             logs_dir = Path(tmp)
@@ -270,12 +298,19 @@ class PreflightPressureLogCompositionTests(unittest.TestCase):
 
     def test_unwritable_pressure_log_warns_instead_of_raising(self) -> None:
         buffer = io.StringIO()
-        with redirect_stdout(buffer):
-            guard._append_pressure_record(
-                Path("Z:/no-such-drive/x/y.log"),
-                header="h",
-                body_lines=[],
-            )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # A regular file occupying the parent slot makes the helper's
+            # mkdir(parents=True) raise NotADirectoryError on every platform,
+            # without mocks, host-specific drives, or workspace litter.
+            blocker = root / "occupied"
+            blocker.write_text("not a directory", encoding="utf-8")
+            with redirect_stdout(buffer):
+                guard._append_pressure_record(
+                    blocker / "logs" / "pr-fast-disk-pressure.log",
+                    header="h",
+                    body_lines=[],
+                )
         self.assertIn("::warning::could not update", buffer.getvalue())
 
 

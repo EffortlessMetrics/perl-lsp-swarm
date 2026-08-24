@@ -51,11 +51,14 @@ PRESSURE_LOG_NAME = "pr-fast-disk-pressure.log"
 # Signatures taken verbatim from the confirmed exhaustion receipts (runs
 # 32697324730 / 32697144932): collect2 SIGBUS during linking, cargo/rustc
 # ENOSPC errors, and the rustc-LLVM output-stream failure. Ordered most to
-# least specific so the first match names the strongest evidence.
+# least specific so the first match names the strongest evidence, and each
+# log contributes at most that one finding. The linker death is pinned to
+# signal 7 (SIGBUS): a timeout or OOM kill reports signal 15/9, which is not
+# disk-exhaustion evidence and must not earn the definitive verdict.
 EXHAUSTION_SIGNATURES: tuple[tuple[str, str], ...] = (
     ("enospc", "No space left on device"),
     ("enospc", "os error 28"),
-    ("link_sigbus", "ld terminated with signal"),
+    ("link_sigbus", "ld terminated with signal 7"),
     ("llvm_io_failure", "IO failure on output stream"),
 )
 
@@ -201,6 +204,7 @@ def scan_logs(logs_dir: Path) -> list[Finding]:
                         signature_text=signature_text,
                     )
                 )
+                break
     return findings
 
 
