@@ -651,26 +651,22 @@ impl LspServer {
         let identity = session_warning_dedup::SessionWarningIdentity::subjectless(
             session_warning_dedup::SessionWarningCode::AiBackendAuthFailure,
         );
-        match self
-            .session_warning_dedup
-            .note(session_warning_dedup::SessionWarningFamily::AiBackend, identity)
-        {
-            session_warning_dedup::SessionWarningDecision::Suppress => {}
-            session_warning_dedup::SessionWarningDecision::EmitFirst
-            | session_warning_dedup::SessionWarningDecision::EmitWithoutRetaining => {
-                if let Err(error) = self.show_message(
+        // Decide + send + rollback under one family-lock hold (#9769): a
+        // concurrent auth failure must never suppress against an identity
+        // whose send has not succeeded yet.
+        let decision = self.session_warning_dedup.emit_once_with(
+            session_warning_dedup::SessionWarningFamily::AiBackend,
+            identity,
+            || {
+                self.show_message(
                     MessageType::Warning,
                     "AI inline completion authentication failed. Check the configured API key and provider settings.",
-                ) {
-                    // The client never saw this warning; release the retained
-                    // identity so the next occurrence can retry.
-                    self.session_warning_dedup.forget(
-                        session_warning_dedup::SessionWarningFamily::AiBackend,
-                        &identity,
-                    );
-                    tracing::warn!(%error, "failed to notify client about AI authentication failure");
-                }
-            }
+                )
+                .is_ok()
+            },
+        );
+        if !matches!(decision, session_warning_dedup::SessionWarningDecision::Suppress) {
+            tracing::debug!(?decision, "AI auth failure warning emission decided");
         }
     }
 

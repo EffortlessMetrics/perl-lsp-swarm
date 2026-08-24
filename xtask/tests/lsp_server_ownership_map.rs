@@ -842,7 +842,9 @@ fn ownership_map_covers_every_current_lsp_server_field() -> Result<()> {
 /// as a raw string-keyed set. Warning dedup identities must stay typed,
 /// fingerprinted, and hard-capped inside `SessionWarningDedupStore`, so a
 /// warning-named `HashSet`/`HashMap` declaration directly on `LspServer`
-/// fails here (other governed maps keep their own #8383 rows).
+/// fails here (other governed maps keep their own #8383 rows). The pull
+/// diagnostics orchestrator is covered too: it previously kept its own
+/// unbounded `warnings_sent` string set beside the governed critic family.
 #[test]
 fn session_warning_dedup_is_not_a_raw_string_set() -> Result<()> {
     let source = fs::read_to_string(repo_root()?.join("crates/perl-lsp-rs/src/runtime/mod.rs"))?;
@@ -857,6 +859,13 @@ fn session_warning_dedup_is_not_a_raw_string_set() -> Result<()> {
             "LspServer must not retain raw string-keyed warning state (#9769): {declaration}"
         );
     }
+
+    let diagnostics =
+        fs::read_to_string(repo_root()?.join("crates/perl-lsp-rs/src/runtime/diagnostics.rs"))?;
+    ensure!(
+        !diagnostics.contains("warnings_sent"),
+        "the pull diagnostics orchestrator must route warning suppression through the bounded #9769 store, not its own string set"
+    );
 
     ensure!(
         declarations.iter().any(|declaration| declaration.starts_with(

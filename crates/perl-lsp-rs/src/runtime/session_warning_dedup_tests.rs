@@ -209,6 +209,32 @@ fn forget_releases_an_identity_so_a_failed_send_can_retry() {
 }
 
 #[test]
+fn guarded_emission_holds_the_reservation_through_the_send() {
+    let server = LspServer::new();
+    let auth = SessionWarningIdentity::subjectless(SessionWarningCode::AiBackendAuthFailure);
+
+    // A failed send rolls the retention back inside the same lock hold, so a
+    // concurrent caller that suppressed against the reservation is followed
+    // by a retryable identity -- exactly the pre-#9769 atomicity.
+    let failed =
+        server
+            .session_warning_dedup
+            .emit_once_with(SessionWarningFamily::AiBackend, auth, || false);
+    assert_eq!(failed, SessionWarningDecision::EmitFirst);
+    assert_eq!(server.session_warning_dedup_snapshot().ai_backend.entries, 0);
+
+    // A successful send keeps the reservation: later occurrences suppress.
+    let delivered =
+        server.session_warning_dedup.emit_once_with(SessionWarningFamily::AiBackend, auth, || true);
+    assert_eq!(delivered, SessionWarningDecision::EmitFirst);
+    assert_eq!(
+        server.session_warning_dedup.note(SessionWarningFamily::AiBackend, auth),
+        SessionWarningDecision::Suppress
+    );
+    assert_eq!(server.session_warning_dedup_snapshot().ai_backend.entries, 1);
+}
+
+#[test]
 fn client_setting_identity_is_setting_and_value_type_aware() {
     let server = LspServer::new();
 

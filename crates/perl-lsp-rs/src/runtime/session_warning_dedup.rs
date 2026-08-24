@@ -279,6 +279,34 @@ impl SessionWarningDedupStore {
         self.family(family).forget(identity);
     }
 
+    /// Decide and emit under one family-lock hold, rolling the retention back
+    /// when `emit` reports the warning was not delivered.
+    ///
+    /// This preserves the pre-#9769 `notify_ai_auth_failure` atomicity: a
+    /// concurrent caller of the same family either observes the retained
+    /// identity only after this send already succeeded, or is itself the one
+    /// who emits. Without the lock held across send + rollback, caller A
+    /// could retain the identity, caller B could suppress against it, and
+    /// A's failed send could then release it -- leaving both calls with no
+    /// delivered warning until the next occurrence.
+    pub(crate) fn emit_once_with(
+        &self,
+        family: SessionWarningFamily,
+        identity: SessionWarningIdentity,
+        emit: impl FnOnce() -> bool,
+    ) -> SessionWarningDecision {
+        let mut state = self.family(family).state.lock();
+        let decision = state.note(identity);
+        if matches!(
+            decision,
+            SessionWarningDecision::EmitFirst | SessionWarningDecision::EmitWithoutRetaining
+        ) && !emit()
+        {
+            state.forget(&identity);
+        }
+        decision
+    }
+
     /// Drop every retained identity of one family at its lifecycle boundary.
     /// Identities of other families are untouched.
     pub(crate) fn clear_family(&self, family: SessionWarningFamily) {
