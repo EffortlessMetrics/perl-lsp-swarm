@@ -46,8 +46,9 @@
 //!
 //! The baseline catalog compiled into [`baseline`] is the complete #11371
 //! baseline registry consumed by the #10962 fan-in. Additive family catalogs
-//! (#11381 freshness in [`freshness`]; later #11384 format-on-save, #11386
-//! server-generation recovery, #11387 host-reopen, #11388 expanded activation)
+//! (#11381 freshness in [`freshness`], #11384 format-on-save in
+//! [`save_format`]; later #11386 server-generation recovery, #11387
+//! host-reopen, #11388 expanded activation)
 //! register through this same API as sibling modules: they declare their own
 //! scenario ledger, fixture substrate, result vocabulary, and stage bound, and
 //! they can neither steal a baseline scenario nor shift a baseline cell's
@@ -61,6 +62,7 @@
 
 pub mod baseline;
 pub mod freshness;
+pub mod save_format;
 pub mod scenario_ledger;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -260,14 +262,18 @@ pub struct RegistrySummary {
 /// The ledgers current main registers. A family PR appends its landed ledger
 /// constant here and to [`registry`] — rows never leave their own module.
 pub fn scenario_ledgers() -> Vec<ScenarioLedger> {
-    vec![scenario_ledger::vim_bdd_ledger_11371(), freshness::freshness_action_ledger()]
+    vec![
+        scenario_ledger::vim_bdd_ledger_11371(),
+        freshness::freshness_action_ledger(),
+        save_format::save_action_ledger(),
+    ]
 }
 
 /// The catalogs current main registers. The aggregation point is code: each
 /// additive family is one module plus one line here, never a hand-edited
 /// merged row list.
 pub fn registry() -> Vec<CellCatalog> {
-    vec![baseline::baseline_catalog(), freshness::freshness_catalog()]
+    vec![baseline::baseline_catalog(), freshness::freshness_catalog(), save_format::save_catalog()]
 }
 
 /// Validate the compiled registry of current main: the shared cross-catalog
@@ -275,6 +281,7 @@ pub fn registry() -> Vec<CellCatalog> {
 pub fn validate_compiled_registry() -> Result<RegistrySummary> {
     let summary = validate_registry(&registry(), &scenario_ledgers())?;
     freshness::validate_family_laws()?;
+    save_format::validate_family_laws()?;
     Ok(summary)
 }
 
