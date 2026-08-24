@@ -382,24 +382,15 @@ pub fn heavy_lanes_from_risk_tags(
 
     if risk_tags.contains(&RISK_TAG_PARSER_RECOVERY.to_string()) {
         add_lane("bounded_parser_fuzz", format!("risk_tag: {RISK_TAG_PARSER_RECOVERY}"));
-        add_lane("mutation_diff", format!("risk_tag: {RISK_TAG_PARSER_RECOVERY}"));
     }
     if risk_tags.contains(&RISK_TAG_CONCURRENCY.to_string()) {
         add_lane("thread_sanitizer", format!("risk_tag: {RISK_TAG_CONCURRENCY}"));
-        add_lane("mutation_diff", format!("risk_tag: {RISK_TAG_CONCURRENCY}"));
     }
     if risk_tags.contains(&RISK_TAG_PERF_HOT_PATH.to_string()) {
         add_lane("perf_regression", format!("risk_tag: {RISK_TAG_PERF_HOT_PATH}"));
     }
     if risk_tags.contains(&RISK_TAG_SECURITY_SURFACE.to_string()) {
         add_lane("security_audit", format!("risk_tag: {RISK_TAG_SECURITY_SURFACE}"));
-    }
-    if risk_tags.contains(&RISK_TAG_DEP_CHANGE.to_string()) {
-        add_lane("security_audit", format!("risk_tag: {RISK_TAG_DEP_CHANGE}"));
-        add_lane("publish", format!("risk_tag: {RISK_TAG_DEP_CHANGE}"));
-    }
-    if risk_tags.contains(&RISK_TAG_PUBLIC_API.to_string()) {
-        add_lane("mutation_diff", format!("risk_tag: {RISK_TAG_PUBLIC_API}"));
     }
 
     // mutation_diff: default lane for any code diff (direct crate changes)
@@ -1398,8 +1389,8 @@ mod tests {
         let tags = vec![
             RISK_TAG_PARSER_RECOVERY.to_string(),
             RISK_TAG_CONCURRENCY.to_string(),
-            RISK_TAG_DEP_CHANGE.to_string(),
-            RISK_TAG_PUBLIC_API.to_string(),
+            RISK_TAG_PERF_HOT_PATH.to_string(),
+            RISK_TAG_SECURITY_SURFACE.to_string(),
         ];
         let heavy = heavy_lanes_from_risk_tags(
             &tags,
@@ -1411,7 +1402,7 @@ mod tests {
         assert!(lanes.contains("bounded_parser_fuzz"));
         assert!(lanes.contains("thread_sanitizer"));
         assert!(lanes.contains("security_audit"));
-        assert!(lanes.contains("publish"));
+        assert!(lanes.contains("perf_regression"));
         assert!(lanes.contains("mutation_diff"));
         assert!(heavy.iter().all(|entry| !entry.reason.is_empty()));
     }
