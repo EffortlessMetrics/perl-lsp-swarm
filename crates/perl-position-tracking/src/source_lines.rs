@@ -111,17 +111,10 @@ impl LineRecord {
                 separator_end_byte,
             });
         }
+        // Ordering above guarantees `separator_end >= content_end`, so the
+        // subtraction cannot underflow.
+        let actual_len = separator_end_byte - content_end_byte;
         let expected_len = separator_kind.byte_len();
-        let actual_len = match separator_end_byte.checked_sub(content_end_byte) {
-            Some(len) => len,
-            None => {
-                return Err(SourceLineError::InvalidRecord {
-                    start_byte,
-                    content_end_byte,
-                    separator_end_byte,
-                });
-            }
-        };
         if actual_len != expected_len {
             return Err(SourceLineError::SeparatorKindMismatch {
                 start_byte,
@@ -235,6 +228,16 @@ pub enum SourceLineError {
         /// Start offset the record actually had.
         found_start: usize,
     },
+    /// Only an LF or CRLF may end a nonterminal record.
+    #[error("record {index} has no separator but is not the terminal row")]
+    NonTerminalRowWithNoSeparator {
+        /// Zero-based position of the offending record.
+        index: usize,
+    },
+    /// The last record must be a separator-free terminal row; a final LF
+    /// therefore always implies exactly one trailing empty row.
+    #[error("records must end with one terminal SeparatorKind::None row at the source length")]
+    MissingTerminalRow,
 }
 
 /// Immutable byte-only table of logical source rows for one exact source.
@@ -299,7 +302,10 @@ impl LineRecordTable {
     ///
     /// - the first record starts at byte zero;
     /// - each next record starts exactly at the previous separator end;
-    /// - the last record ends exactly at `source_byte_length`.
+    /// - the last record ends exactly at `source_byte_length`;
+    /// - only an LF or CRLF ends a nonterminal record;
+    /// - the last record is a separator-free terminal row, so an empty
+    ///   source carries exactly one `(0, 0, 0, None)` record.
     pub fn try_from_records(
         source_byte_length: usize,
         records: Vec<LineRecord>,
@@ -321,6 +327,21 @@ impl LineRecordTable {
                 expected_start,
                 found_start: source_byte_length,
             });
+        }
+        // Even the empty source carries exactly one terminal row.
+        let Some(_first) = records.first() else {
+            return Err(SourceLineError::MissingTerminalRow);
+        };
+        for (index, record) in records.iter().enumerate() {
+            let is_last = index + 1 == records.len();
+            match (is_last, record.separator_kind) {
+                (true, SeparatorKind::None) => {}
+                (true, _) => return Err(SourceLineError::MissingTerminalRow),
+                (false, SeparatorKind::None) => {
+                    return Err(SourceLineError::NonTerminalRowWithNoSeparator { index });
+                }
+                (false, _) => {}
+            }
         }
         Ok(Self { source_byte_length, records })
     }
@@ -485,14 +506,17 @@ impl Scanner {
 
 /// Incremental UTF-8 validator equivalent to `std::str::from_utf8` semantics.
 ///
-/// Tracks the outstanding continuation count, the accumulated code point, and
-/// the admissible range of the *next* continuation byte so overlong forms,
-/// UTF-16 surrogates, and values above U+10FFFF are rejected exactly like
-/// `std`, while scalars may be split across arbitrary chunk boundaries.
+/// Tracks the outstanding continuation count and the admissible range of the
+/// *next* continuation byte so overlong forms, UTF-16 surrogates, and values
+/// above U+10FFFF are rejected exactly like `std`, while scalars may be split
+/// across arbitrary chunk boundaries.
+///
+/// The validator tracks no accumulated code point: the per-position range
+/// constraints on lead and continuation bytes are exactly equivalent to
+/// checking the decoded scalar, so no numeric value is ever needed.
 #[derive(Default)]
 struct Utf8Validator {
     remaining: u8,
-    accumulator: u32,
     next_min: u8,
     next_max: u8,
 }
@@ -503,17 +527,18 @@ impl Utf8Validator {
         if self.remaining == 0 {
             match byte {
                 0x00..=0x7F => true,
-                0xC2..=0xDF => self.begin(1, u32::from(byte & 0x1F), 0x80, 0xBF),
-                0xE0 => self.begin(2, 0, 0xA0, 0xBF),
-                0xE1..=0xEC | 0xEE..=0xEF => self.begin(2, u32::from(byte & 0x0F), 0x80, 0xBF),
-                0xED => self.begin(2, 0x0D, 0x80, 0x9F),
-                0xF0 => self.begin(3, 0, 0x90, 0xBF),
-                0xF1..=0xF3 => self.begin(3, u32::from(byte & 0x07), 0x80, 0xBF),
-                0xF4 => self.begin(3, 0x04, 0x80, 0x8F),
+                0xC2..=0xDF => self.begin(1, 0x80, 0xBF),
+                0xE0 => self.begin(2, 0xA0, 0xBF),
+                0xE1..=0xEC | 0xEE..=0xEF => self.begin(2, 0x80, 0xBF),
+                0xED => self.begin(2, 0x80, 0x9F),
+                0xF0 => self.begin(3, 0x90, 0xBF),
+                0xF1..=0xF3 => self.begin(3, 0x80, 0xBF),
+                0xF4 => self.begin(3, 0x80, 0x8F),
                 _ => false,
             }
         } else if (0x80..=0xBF).contains(&byte) && (self.next_min..=self.next_max).contains(&byte) {
-            self.accumulator = (self.accumulator << 6) | u32::from(byte & 0x3F);
+            // Later continuations accept the full 0x80..=0xBF range; only the
+            // first one after these leads is constrained.
             self.next_min = 0x80;
             self.next_max = 0xBF;
             self.remaining -= 1;
@@ -528,9 +553,8 @@ impl Utf8Validator {
         self.remaining == 0
     }
 
-    fn begin(&mut self, remaining: u8, prefix: u32, min: u8, max: u8) -> bool {
+    fn begin(&mut self, remaining: u8, min: u8, max: u8) -> bool {
         self.remaining = remaining;
-        self.accumulator = prefix;
         self.next_min = min;
         self.next_max = max;
         true

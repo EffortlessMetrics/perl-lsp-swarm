@@ -340,8 +340,44 @@ fn record_assembly_rejects_non_covering_tables() {
         LineRecordTable::try_from_records(1, Vec::new()),
         Err(SourceLineError::NonCoveringRecords { .. })
     ));
-    // The empty source with its single terminal record does assemble.
-    assert!(LineRecordTable::try_from_records(0, Vec::new()).is_ok());
+    // The empty source carries exactly one (0, 0, 0, None) terminal record.
+    assert!(
+        LineRecordTable::try_from_records(0, vec![record_of((0, 0, 0, SeparatorKind::None))])
+            .is_ok()
+    );
+    // No records at all means no terminal row, even for an empty source.
+    assert!(matches!(
+        LineRecordTable::try_from_records(0, Vec::new()),
+        Err(SourceLineError::MissingTerminalRow)
+    ));
+}
+
+/// Negative control for the terminal-row law: assembly rejects tables whose
+/// final record still carries a separator, and mid-table separator-free rows.
+#[test]
+fn record_assembly_rejects_missing_or_misplaced_terminal_rows() {
+    // A table ending on the Lf itself omits the required terminal empty row.
+    let records = vec![record_of((0, 2, 3, SeparatorKind::Lf))];
+    assert!(matches!(
+        LineRecordTable::try_from_records(3, records),
+        Err(SourceLineError::MissingTerminalRow)
+    ));
+    // Same shape with a CRLF terminator.
+    let records = vec![record_of((0, 1, 3, SeparatorKind::CrLf))];
+    assert!(matches!(
+        LineRecordTable::try_from_records(3, records),
+        Err(SourceLineError::MissingTerminalRow)
+    ));
+    // Only the last row may lack a separator.
+    let records = vec![
+        record_of((0, 0, 0, SeparatorKind::None)),
+        record_of((0, 1, 2, SeparatorKind::Lf)),
+        record_of((2, 3, 3, SeparatorKind::None)),
+    ];
+    assert!(matches!(
+        LineRecordTable::try_from_records(3, records),
+        Err(SourceLineError::NonTerminalRowWithNoSeparator { index: 0 })
+    ));
 }
 
 /// Negative control 8, lookup half: out-of-range requests fail honestly.
