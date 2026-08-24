@@ -944,6 +944,20 @@ local cached_workspace_settings_timestamp = 0
 ---3. Scan server.path also for .lite_lsp.lua/json and merge them
 ---Note: settings are cached for 5 seconds for faster retrieval
 ---      on repetitive calls to this function.
+---
+---Local patch (#11143): documented source precedence, preserved unchanged.
+---Positions are visited in order USERDIR first, then server.path (when no
+---explicit workspace is given) or the workspace directory last. Within each
+---position the discovered file value is one candidate; at position 1,
+---server.settings overrides that candidate through deep_merge(candidate,
+---server.settings) before it joins the accumulator, so user-defined server
+---options outrank only their own position's discovered file. Each later
+---position then overrides everything before it through deep_merge(accumulated,
+---position_value). Values combine under the #11143 typed merge contract:
+---objects recurse, arrays replace atomically (an explicit empty array clears
+---a list), scalars and explicit null replace exactly. The 5-second cache
+---stores exactly this merged result, so cached and uncached consumers see
+---identical effective settings.
 ---@param server lsp.server
 ---@param workspace? string
 ---@return table

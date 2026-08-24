@@ -2782,10 +2782,11 @@ language = "lua"
 surface = "editor"
 classification = "production"
 owner = "editor/lite-xl"
-reason = "Exact upstream lite-xl-lsp util.lua (base d1432ae, blob 588c101a) staged for the Lite XL integration train, carrying the #11155 guarded sensitive-trace patch (log_file append failures warn once without recursion, documented source-bearing surface, no automatic retention) and the #11162 shell-free external-launch patch (URI classification policy, argv-only platform launchers, testable show_document sequence)."
+reason = "Exact upstream lite-xl-lsp util.lua (base d1432ae, blob 588c101a) staged for the Lite XL integration train, carrying the #11155 guarded sensitive-trace patch (log_file append failures warn once without recursion, documented source-bearing surface, no automatic retention), the #11162 shell-free external-launch patch (URI classification policy, argv-only platform launchers, testable show_document sequence), and the #11143 typed configuration merge patch (deep_merge folds whole typed values: object recursion, atomic array replacement, exact scalar/null overrides, codec-authority container classification, immutable inputs)."
 covered_by = [
   "lua clients/lite-xl/tests/server_logging_test.lua",
   "lua clients/lite-xl/tests/util_show_document_test.lua",
+  "lua clients/lite-xl/tests/util_config_merge_test.lua",
   "cargo xtask check-file-policy",
 ]
 created = "2026-08-23"
@@ -2822,6 +2823,22 @@ covered_by = [
 ]
 created = "2026-08-23"
 review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-config-merge-tests"
+path = "clients/lite-xl/tests/util_config_merge_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic typed-merge falsifier suite proving the #11143 deep_merge contract: object recursion, atomic array replacement with no inherited tail, empty-array clearing, typed empty-container identity, exact scalar/null overrides, input immutability, determinism, and sparse/mixed container failures through the codec constructors; runs against the staged module, the pristine upstream blob, or an array-replacement-removed mutation."
+covered_by = [
+  "lua clients/lite-xl/tests/util_config_merge_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-24"
+review_after = "2026-09-24"
 
 [[allow]]
 id = "non-rust-litexl-journey-harness"
