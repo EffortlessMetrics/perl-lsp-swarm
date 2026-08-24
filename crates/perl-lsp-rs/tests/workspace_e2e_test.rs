@@ -7,7 +7,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 #[test]
 #[serial_test::serial]
 fn test_goto_definition_across_files() -> TestResult {
-    use lsp_types::Position;
+    use gen_lsp_types::Position;
     use perl_lsp::LspServer;
     use serde_json::json;
     use std::fs;
@@ -95,7 +95,7 @@ fn test_goto_definition_across_files() -> TestResult {
 #[test]
 #[serial_test::serial]
 fn test_find_references_across_files() -> TestResult {
-    use lsp_types::Position;
+    use gen_lsp_types::Position;
     use perl_lsp::LspServer;
     use serde_json::json;
     use std::fs;
@@ -214,7 +214,7 @@ fn test_find_references_across_files() -> TestResult {
 #[test]
 #[serial_test::serial]
 fn test_workspace_symbol_completion() -> TestResult {
-    use lsp_types::Position;
+    use gen_lsp_types::Position;
     use perl_lsp::LspServer;
     use serde_json::json;
     use std::fs;

@@ -60,15 +60,13 @@ Survival-disposition vocabulary (package-neutral):
 
 ## 4. Resolved Cargo denominator (live `cargo metadata --all-features --locked` evidence)
 
-Direct declared edges: 7 (2 production, 4 compatibility-gated, 1 dev/test, 0 unclassified). Transitive selecting parents: 26 workspace members (normal-chain vs dev-only-chain below). No external (non-workspace) package resolves the incumbent transitively.
+Direct declared edges: 5 (0 production, 4 compatibility-gated, 1 dev/test, 0 unclassified). Transitive selecting parents: 28 workspace members (normal-chain vs dev-only-chain below). No external (non-workspace) package resolves the incumbent transitively.
 
 Doomed lower edges are assigned to their removal owners and are NOT part of the #11803 migration population.
 
 | Package | Dep kind | Profile class | Feature gate | Disposition | Removal owner |
 | --- | --- | --- | --- | --- | --- |
 | perl-incremental-parsing| dev| dev_test| -| test_fixture_only| #1421 sequencing; exit when LT02 lands |
-| perl-lsp-rs| normal| production| -| adapter_protocol_type| #11803 migration; crate-level retirement relation #9645 relocates rows to the final product home first |
-| perl-lsp-rs-core| normal| production| -| adapter_protocol_type| #11803 migration; crate-level retirement relation #9645 relocates rows to the final product home first |
 | perl-parser| normal| compatibility_edge| lsp-compat\|lsp-types| lower_wire_remove_before_switch| #9893 |
 | perl-position-tracking| normal| compatibility_edge| lsp-compat\|lsp-types| lower_wire_remove_before_switch| #9632 |
 | perl-tdd-support| normal| compatibility_edge| lsp-compat\|lsp-types| compatibility_with_exit| #1421 sequencing; wire-free dev-test profile proof under #9632 |
@@ -85,6 +83,8 @@ Doomed lower edges are assigned to their removal owners and are NOT part of the 
 | perl-kwalitee| dev_only_chain| 2 |
 | perl-lexer| normal_chain| 2 |
 | perl-lsp-perltidy| normal_chain| 2 |
+| perl-lsp-rs| normal_chain| 2 |
+| perl-lsp-rs-core| normal_chain| 2 |
 | perl-module| normal_chain| 2 |
 | perl-parser-bench| normal_chain| 2 |
 | perl-parser-comparison| normal_chain| 2 |
@@ -99,7 +99,7 @@ Doomed lower edges are assigned to their removal owners and are NOT part of the 
 | perl-tree-sitter-compat| normal_chain| 3 |
 | perl-uri| dev_only_chain| 2 |
 | perl-workspace-core| normal_chain| 3 |
-| perllsp| normal_chain| 2 |
+| perllsp| normal_chain| 3 |
 | tree-sitter-perl-rs| normal_chain| 2 |
 | xtask| normal_chain| 2 |
 
@@ -133,7 +133,7 @@ Current snapshots are behavior evidence, not target protocol authority. Classifi
 
 Mechanically derived from this matrix; no re-research needed:
 
-- **LT02 / #11803 migration population:** 2 surviving direct Cargo edges (`adapter_protocol_type`: perl-lsp-rs, perl-lsp-rs-core) carrying 6 public nominal re-export anchors (`ServerCapabilities` at perl-lsp-rs-core/src/protocol/capabilities.rs:23, `Location` at perl-lsp-rs-core/src/providers/navigation/mod.rs:58, `Range` field on pub struct InlineCompletionItem at crates/perl-lsp-rs-core/src/providers/inline_completion/mod.rs:303 - adapter_protocol_type: serialized into inline-completion responses when present, `Command` field on pub struct InlineCompletionItem at crates/perl-lsp-rs-core/src/providers/inline_completion/mod.rs:306 - adapter_protocol_type: same DTO; post-insertion command surface, `Vec<lsp_types::Diagnostic>` return of PerlCriticAnalyzer::to_diagnostics at crates/perl-lsp-rs-core/src/tooling/perl_critic/analyzer.rs:196 - adapter_protocol_type: lsp-compat-gated adapter boundary converting critic violations to diagnostics payloads, `DiagnosticSeverity` return of Severity::to_diagnostic_severity at crates/perl-lsp-rs-core/src/tooling/perl_critic/types.rs:68 - adapter_protocol_type: lsp-compat-gated single source of truth for the perlcritic-to-LSP severity mapping), 3 typed-once patch rows, plus SEAM-RUNTIME-DYNAMIC-INLINECOMPLETION as a type-consumer. Doomed edges excluded: 3 (`lower_wire_remove_before_switch`, owners #9632/#9893).
+- **LT02 / #11803 migration population:** 0 surviving direct Cargo edges (`adapter_protocol_type`: none) carrying 6 public nominal re-export anchors (`ServerCapabilities` at perl-lsp-rs-core/src/protocol/capabilities.rs:23, `Location` at perl-lsp-rs-core/src/providers/navigation/mod.rs:58, `Range` field on pub struct InlineCompletionItem at crates/perl-lsp-rs-core/src/providers/inline_completion/mod.rs:303 - adapter_protocol_type: serialized into inline-completion responses when present, `Command` field on pub struct InlineCompletionItem at crates/perl-lsp-rs-core/src/providers/inline_completion/mod.rs:306 - adapter_protocol_type: same DTO; post-insertion command surface, `Vec<lsp_types::Diagnostic>` return of PerlCriticAnalyzer::to_diagnostics at crates/perl-lsp-rs-core/src/tooling/perl_critic/analyzer.rs:196 - adapter_protocol_type: lsp-compat-gated adapter boundary converting critic violations to diagnostics payloads, `DiagnosticSeverity` return of Severity::to_diagnostic_severity at crates/perl-lsp-rs-core/src/tooling/perl_critic/types.rs:68 - adapter_protocol_type: lsp-compat-gated single source of truth for the perlcritic-to-LSP severity mapping), 3 typed-once patch rows, plus SEAM-RUNTIME-DYNAMIC-INLINECOMPLETION as a type-consumer. Doomed edges excluded: 3 (`lower_wire_remove_before_switch`, owners #9632/#9893).
 - **LT03 / #11804 representation convergence:** 7 manual-extension rows total (4 patches + 3 seams), 11 serialization-delta rows to converge, URI submatrix decision (DELTA-URI-DEFAULT/URL/FLUENT) with #8156/#8484 proof obligations.
 - **LT04 / #11805 proof closure:** 15 snapshot/contract falsifier files currently assert patched bytes (mechanically counted under crates/*/tests against needles: typeHierarchyProvider, rangesSupport, inlineCompletionProvider, insertTextModes). Wire-neutrality guards stay authoritative: crates/perl-workspace-core/tests/dependency_contract.rs (forbids lsp-types below the adapter) and the perl-ripr-facts manifest contract comment (deliberately avoids perl-workspace because it transitively pulls lsp-types).
 - Changing any needle, patch row, or seam above must flip the matching falsifier population; a silent zero-count is `not_proven`, never green.

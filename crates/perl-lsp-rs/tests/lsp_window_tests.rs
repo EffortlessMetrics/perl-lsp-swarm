@@ -197,9 +197,9 @@ fn lsp_window_show_document_with_capability() {
     let options = ShowDocumentOptions {
         external: false,
         take_focus: true,
-        selection: Some(lsp_types::Range {
-            start: lsp_types::Position { line: 10, character: 5 },
-            end: lsp_types::Position { line: 10, character: 15 },
+        selection: Some(gen_lsp_types::Range {
+            start: gen_lsp_types::Position { line: 10, character: 5 },
+            end: gen_lsp_types::Position { line: 10, character: 15 },
         }),
     };
 

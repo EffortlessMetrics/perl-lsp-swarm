@@ -27,8 +27,6 @@ const S_CODE_ACTION: &str =
     "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_code_action_features";
 const S_MISC: &str =
     "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_misc_features";
-const S_EXP: &str =
-    "crates/perl-lsp-rs-core/src/protocol/capabilities/experimental.rs apply_experimental_features";
 const S_JSON: &str = "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json";
 const RT_INIT: &str = "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize";
 
@@ -327,16 +325,11 @@ fn capability_rows() -> Vec<SurfaceRow> {
             "features.toml#lsp.formatting",
         ),
         SurfaceRow {
-            competing_paths: vec![CompetingPath {
-                path: S_JSON,
-                delta: "capabilities_for() emits boolean true (OneOf::Left) but capabilities_json() \
-                        replaces the whole value with {rangesSupport:true} when range_formatting is \
-                        enabled (LSP 3.18 rangesSupport absent from lsp-types 0.97)",
-            }],
+            build_profile_config_tool_inputs: &["BuildFlags.range_formatting"],
             ..cap(
                 "cap.documentRangeFormattingProvider.rangesSupport",
                 "documentRangeFormattingProvider.rangesSupport",
-                S_JSON,
+                S_EDIT,
                 "textDocument/rangeFormatting multi-range variant",
                 "features.toml#lsp.ranges_formatting; lifecycle tests ranges_formatting_*",
             )
@@ -571,37 +564,18 @@ fn capability_rows() -> Vec<SurfaceRow> {
             "features.toml#lsp.call_hierarchy",
         ),
         // -- experimental / manual JSON patches
-        SurfaceRow {
-            competing_paths: vec![CompetingPath {
-                path: S_JSON,
-                delta: "capabilities_json() additionally injects top-level typeHierarchyProvider \
-                        {workDoneProgressOptions:{}} for LSP compatibility while \
-                        apply_experimental_features() advertises experimental.typeHierarchyProvider \
-                        boolean for feature_ids_from_caps detection - the same variant advertised \
-                        twice through two paths",
-            }],
-            ..cap(
-                "cap.experimental.typeHierarchyProvider",
-                "experimental.typeHierarchyProvider",
-                S_EXP,
-                "typeHierarchy/subtypes|supertypes",
-                "features.toml#lsp.type_hierarchy; feature_ids_from_caps detection contract",
-            )
-        },
-        SurfaceRow {
-            competing_paths: vec![CompetingPath {
-                path: S_EXP,
-                delta: "experimental.typeHierarchyProvider boolean duplicates this top-level \
-                        advertisement for typed-caps consumers that cannot see the JSON patch",
-            }],
-            ..cap(
-                "cap.typeHierarchyProvider.workDoneProgressOptions",
-                "typeHierarchyProvider.workDoneProgressOptions",
-                S_JSON,
-                "typeHierarchy/subtypes|supertypes work-done progress",
-                "manual patch: lsp-types 0.97 lacks type_hierarchy_provider on ServerCapabilities",
-            )
-        },
+        // PATCH-TYPEHIERARCHY typed once (#11803): the selected substrate carries
+        // `type_hierarchy_provider` on ServerCapabilities, so the top-level
+        // advertisement is built in apply_navigation_features; the former JSON
+        // injection and the experimental.typeHierarchyProvider workaround
+        // (with its feature_ids_from_caps readback) were removed together.
+        cap(
+            "cap.typeHierarchyProvider",
+            "typeHierarchyProvider",
+            S_NAV,
+            "typeHierarchy/subtypes|supertypes",
+            "features.toml#lsp.type_hierarchy; typed field from the selected substrate",
+        ),
         SurfaceRow {
             competing_paths: vec![CompetingPath {
                 path: RT_INIT,
@@ -614,9 +588,10 @@ fn capability_rows() -> Vec<SurfaceRow> {
             ..cap(
                 "cap.inlineCompletionProvider",
                 "inlineCompletionProvider",
-                S_JSON,
+                S_EDIT,
                 "textDocument/inlineCompletion (static mode)",
-                "features.toml#lsp.inline_completion; lifecycle tests inline_completion_*",
+                "features.toml#lsp.inline_completion; PATCH-INLINECOMPLETION typed once (#11803); \
+                 lifecycle tests inline_completion_*",
             )
         },
         // -- shared WorkDoneProgressOptions empties are not serialized by

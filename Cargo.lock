@@ -794,6 +794,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gen-lsp-types"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b64887ac3a8083427ae935a7296db876871582cd57eac077564f8bc18fa49116"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1655,8 +1665,8 @@ dependencies = [
  "assert_cmd",
  "chrono",
  "criterion",
+ "gen-lsp-types",
  "insta",
- "lsp-types",
  "md5",
  "parking_lot",
  "perl-ast",
@@ -1704,8 +1714,8 @@ version = "0.17.0"
 dependencies = [
  "anyhow",
  "clap",
+ "gen-lsp-types",
  "insta",
- "lsp-types",
  "moka",
  "perl-ast",
  "perl-diagnostics",

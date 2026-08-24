@@ -300,10 +300,10 @@ pub struct InlineCompletionItem {
     pub filter_text: Option<String>,
     /// The range to be replaced by the completion.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub range: Option<lsp_types::Range>,
+    pub range: Option<gen_lsp_types::Range>,
     /// An optional command to be executed after the completion is inserted.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub command: Option<lsp_types::Command>,
+    pub command: Option<gen_lsp_types::Command>,
 }
 
 /// Inline completion list (LSP 3.18 preview)
@@ -2995,16 +2995,20 @@ fn is_shebang_completion_item(item: &InlineCompletionItem) -> bool {
     item.insert_text == SHEBANG_PERL_INTERPRETER
 }
 
-fn shebang_replacement_range(prefix: &str, line: u32, character: u32) -> Option<lsp_types::Range> {
+fn shebang_replacement_range(
+    prefix: &str,
+    line: u32,
+    character: u32,
+) -> Option<gen_lsp_types::Range> {
     let fragment = shebang_completion_fragment(prefix)?;
     if fragment.is_empty() {
         return None;
     }
 
     let start_character = "#!".encode_utf16().count() as u32;
-    (start_character <= character).then_some(lsp_types::Range {
-        start: lsp_types::Position::new(line, start_character),
-        end: lsp_types::Position::new(line, character),
+    (start_character <= character).then_some(gen_lsp_types::Range {
+        start: gen_lsp_types::Position::new(line, start_character),
+        end: gen_lsp_types::Position::new(line, character),
     })
 }
 
@@ -4084,7 +4088,7 @@ fn replacement_range(
     fragment: &ReplacementFragment<'_>,
     line: u32,
     character: u32,
-) -> Option<lsp_types::Range> {
+) -> Option<gen_lsp_types::Range> {
     if fragment.text.is_empty() {
         return None;
     }
@@ -4095,9 +4099,9 @@ fn replacement_range(
         return None;
     }
 
-    Some(lsp_types::Range {
-        start: lsp_types::Position::new(line, start_character),
-        end: lsp_types::Position::new(line, character),
+    Some(gen_lsp_types::Range {
+        start: gen_lsp_types::Position::new(line, start_character),
+        end: gen_lsp_types::Position::new(line, character),
     })
 }
 
@@ -4297,9 +4301,9 @@ mod tests {
         let source = "my $value = 1;\nmy $other = 2;";
         let second_line = source.lines().nth(1).ok_or("expected second source line")?;
         let second_line_end = u32::try_from(second_line.encode_utf16().count())?;
-        let range = lsp_types::Range {
-            start: lsp_types::Position::new(0, 0),
-            end: lsp_types::Position::new(1, second_line_end),
+        let range = gen_lsp_types::Range {
+            start: gen_lsp_types::Position::new(0, 0),
+            end: gen_lsp_types::Position::new(1, second_line_end),
         };
         let list = InlineCompletionList {
             items: vec![

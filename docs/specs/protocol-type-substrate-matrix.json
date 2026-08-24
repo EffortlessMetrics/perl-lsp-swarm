@@ -103,22 +103,6 @@
         },
         {
           "dep_kind": "normal",
-          "disposition": "adapter_protocol_type",
-          "feature_gate": "-",
-          "package": "perl-lsp-rs",
-          "profile_class": "production",
-          "removal_owner": "#11803 migration; crate-level retirement relation #9645 relocates rows to the final product home first"
-        },
-        {
-          "dep_kind": "normal",
-          "disposition": "adapter_protocol_type",
-          "feature_gate": "-",
-          "package": "perl-lsp-rs-core",
-          "profile_class": "production",
-          "removal_owner": "#11803 migration; crate-level retirement relation #9645 relocates rows to the final product home first"
-        },
-        {
-          "dep_kind": "normal",
           "disposition": "lower_wire_remove_before_switch",
           "feature_gate": "lsp-compat|lsp-types",
           "package": "perl-parser",
@@ -199,6 +183,16 @@
         },
         {
           "min_hops": 2,
+          "package": "perl-lsp-rs",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "perl-lsp-rs-core",
+          "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
           "package": "perl-module",
           "reachability": "normal_chain"
         },
@@ -268,7 +262,7 @@
           "reachability": "normal_chain"
         },
         {
-          "min_hops": 2,
+          "min_hops": 3,
           "package": "perllsp",
           "reachability": "normal_chain"
         },

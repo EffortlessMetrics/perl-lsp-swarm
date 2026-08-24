@@ -55,7 +55,7 @@ pub use crate::providers::type_hierarchy::{
 pub use crate::providers::workspace_symbols::{WorkspaceSymbol, WorkspaceSymbolsProvider};
 
 // Re-export Location type for convenience
-pub use lsp_types::Location;
+pub use gen_lsp_types::Location;
 
 /// Navigation provider wrapper for LSP navigation features.
 ///

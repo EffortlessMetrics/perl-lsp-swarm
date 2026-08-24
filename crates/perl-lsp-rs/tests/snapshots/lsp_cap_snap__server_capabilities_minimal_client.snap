@@ -75,8 +75,6 @@ executeCommandProvider:
     - perl.safeDeleteSymbol
     - perl.previewPackageRename
     - perl.explainMissingModuleLookup
-experimental:
-  typeHierarchyProvider: true
 foldingRangeProvider: true
 hoverProvider: true
 implementationProvider: true
@@ -152,8 +150,7 @@ textDocumentSync:
   willSave: true
   willSaveWaitUntil: true
 typeDefinitionProvider: true
-typeHierarchyProvider:
-  workDoneProgressOptions: {}
+typeHierarchyProvider: {}
 workspace:
   textDocumentContent:
     schemes:

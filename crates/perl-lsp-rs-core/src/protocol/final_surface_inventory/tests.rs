@@ -572,8 +572,6 @@ fn competing_builder_diff_preserves_known_dual_writers() {
     let rendered = render_final_surface_inventory_json().expect("render must succeed");
     for dual_writer in [
         "cap.workspaceSymbolProvider.resolveProvider",
-        "cap.experimental.typeHierarchyProvider",
-        "cap.typeHierarchyProvider.workDoneProgressOptions",
         "cap.documentRangeFormattingProvider.rangesSupport",
         "cap.textDocumentSync.save",
         "cap.declarationProvider",
@@ -584,6 +582,14 @@ fn competing_builder_diff_preserves_known_dual_writers() {
             "competing builder diff must preserve {dual_writer}"
         );
     }
+    // The former dual writers `cap.experimental.typeHierarchyProvider` and
+    // `cap.typeHierarchyProvider.workDoneProgressOptions` exited with #11803:
+    // the selected substrate carries the typed field, and the JSON patch plus
+    // experimental workaround were removed together (single writer remains).
+    assert!(
+        !rendered.contains("cap.experimental.typeHierarchyProvider"),
+        "experimental typeHierarchyProvider workaround must stay retired"
+    );
 }
 
 #[test]

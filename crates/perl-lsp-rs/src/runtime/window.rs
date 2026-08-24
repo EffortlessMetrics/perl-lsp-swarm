@@ -30,7 +30,7 @@ pub struct ShowDocumentOptions {
     /// Whether to take focus after showing
     pub take_focus: bool,
     /// Optional selection range to reveal
-    pub selection: Option<lsp_types::Range>,
+    pub selection: Option<gen_lsp_types::Range>,
 }
 
 impl LspServer {

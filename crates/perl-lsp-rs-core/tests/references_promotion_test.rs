@@ -51,18 +51,18 @@ use perl_workspace::semantic_shadow_compare::{
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-/// Identity URI mapper: converts byte offsets to a trivial single-line `lsp_types::Range`.
+/// Identity URI mapper: converts byte offsets to a trivial single-line `gen_lsp_types::Range`.
 ///
 /// Used by F1-F4 which test scope/promotion logic, not encoding correctness.
 /// F7-F12 use a `PositionMapper`-backed closure for correct UTF-16 encoding.
-fn byte_mapper(start: usize, end: usize) -> lsp_types::Range {
-    lsp_types::Range {
-        start: lsp_types::Position { line: 0, character: start as u32 },
-        end: lsp_types::Position { line: 0, character: end as u32 },
+fn byte_mapper(start: usize, end: usize) -> gen_lsp_types::Range {
+    gen_lsp_types::Range {
+        start: gen_lsp_types::Position { line: 0, character: start as u32 },
+        end: gen_lsp_types::Position { line: 0, character: end as u32 },
     }
 }
 
-/// Build a `lsp_types::Range` from byte offsets using the production UTF-16 encoder.
+/// Build a `gen_lsp_types::Range` from byte offsets using the production UTF-16 encoder.
 ///
 /// The `PositionMapper` internally uses a rope and counts UTF-16 code units,
 /// matching the LSP protocol requirement.
@@ -70,12 +70,12 @@ fn lsp_range_from_bytes(
     mapper: &PositionMapper,
     start_byte: usize,
     end_byte: usize,
-) -> lsp_types::Range {
+) -> gen_lsp_types::Range {
     let start = mapper.byte_to_lsp_pos(start_byte);
     let end = mapper.byte_to_lsp_pos(end_byte);
-    lsp_types::Range {
-        start: lsp_types::Position { line: start.line, character: start.character },
-        end: lsp_types::Position { line: end.line, character: end.character },
+    gen_lsp_types::Range {
+        start: gen_lsp_types::Position { line: start.line, character: start.character },
+        end: gen_lsp_types::Position { line: end.line, character: end.character },
     }
 }
 
@@ -88,7 +88,7 @@ fn receipt_for(source: &str) -> perl_parser_core::pir::LexicalExtractorReceipt {
 
 /// Sort ranges by (line, character, end_line, end_character) for deterministic
 /// comparison independent of the order the compiler emits them.
-fn sorted_ranges(mut ranges: Vec<lsp_types::Range>) -> Vec<lsp_types::Range> {
+fn sorted_ranges(mut ranges: Vec<gen_lsp_types::Range>) -> Vec<gen_lsp_types::Range> {
     ranges.sort_by_key(|r| (r.start.line, r.start.character, r.end.line, r.end.character));
     ranges
 }
@@ -116,7 +116,7 @@ fn nth_lsp_range(
     mapper: &PositionMapper,
     needle: &str,
     occurrence: usize,
-) -> TestResult<lsp_types::Range> {
+) -> TestResult<gen_lsp_types::Range> {
     let (start, end) = nth_byte_range(source, needle, occurrence)?;
     Ok(lsp_range_from_bytes(mapper, start, end))
 }
@@ -152,7 +152,7 @@ fn exact_ranges_for(
     target_name: &str,
     body_idx: usize,
     include_declaration: bool,
-) -> TestResult<Vec<lsp_types::Range>> {
+) -> TestResult<Vec<gen_lsp_types::Range>> {
     let receipt = receipt_for(source);
     let mapper = PositionMapper::new(source);
     let uri_mapper = |start: usize, end: usize| lsp_range_from_bytes(&mapper, start, end);
@@ -176,8 +176,8 @@ fn exact_ranges_for(
 
 fn assert_curated_ranges(
     label: &str,
-    actual: Vec<lsp_types::Range>,
-    expected: Vec<lsp_types::Range>,
+    actual: Vec<gen_lsp_types::Range>,
+    expected: Vec<gen_lsp_types::Range>,
 ) -> TestResult {
     let actual_ranges = sorted_ranges(actual);
     let expected_ranges = sorted_ranges(expected);
@@ -200,14 +200,14 @@ fn assert_curated_ranges(
     .into())
 }
 
-fn range_identity(range: &lsp_types::Range) -> String {
+fn range_identity(range: &gen_lsp_types::Range) -> String {
     format!(
         "{}:{}-{}:{}",
         range.start.line, range.start.character, range.end.line, range.end.character
     )
 }
 
-fn range_identities(ranges: &[lsp_types::Range]) -> Vec<String> {
+fn range_identities(ranges: &[gen_lsp_types::Range]) -> Vec<String> {
     ranges.iter().map(range_identity).collect()
 }
 
@@ -681,7 +681,7 @@ fn default_promotion_mode_is_off() -> TestResult {
 
 const F1_SOURCE: &str = "my $x = 1;\n{\n    my $x = 2;\n    print $x;\n}\nprint $x;\n";
 
-/// Returns the exact lsp_types::Range values expected for the TWO outer-scope
+/// Returns the exact gen_lsp_types::Range values expected for the TWO outer-scope
 /// $x occurrences in F1_SOURCE, using the identity byte_mapper.
 ///
 /// Both outer $x occurrences must be present; the two inner ones must be absent.
@@ -690,7 +690,7 @@ const F1_SOURCE: &str = "my $x = 1;\n{\n    my $x = 2;\n    print $x;\n}\nprint 
 ///   outer read:  byte 50..52  → identity mapper: char 50..52 (line 0)
 ///
 /// (Inner occurrences: byte 20..22, byte 38..40 — MUST be excluded.)
-fn f1_expected_outer_x_ranges() -> Vec<lsp_types::Range> {
+fn f1_expected_outer_x_ranges() -> Vec<gen_lsp_types::Range> {
     // Compute byte positions from the source to keep this in sync.
     let positions: Vec<usize> = F1_SOURCE.match_indices("$x").map(|(i, _)| i).collect();
     assert_eq!(positions.len(), 4, "F1_SOURCE must have exactly 4 $x occurrences");
@@ -700,13 +700,13 @@ fn f1_expected_outer_x_ranges() -> Vec<lsp_types::Range> {
 
     // With the identity byte_mapper, byte offset == character.
     vec![
-        lsp_types::Range {
-            start: lsp_types::Position { line: 0, character: outer_write_start as u32 },
-            end: lsp_types::Position { line: 0, character: (outer_write_start + 2) as u32 },
+        gen_lsp_types::Range {
+            start: gen_lsp_types::Position { line: 0, character: outer_write_start as u32 },
+            end: gen_lsp_types::Position { line: 0, character: (outer_write_start + 2) as u32 },
         },
-        lsp_types::Range {
-            start: lsp_types::Position { line: 0, character: outer_read_start as u32 },
-            end: lsp_types::Position { line: 0, character: (outer_read_start + 2) as u32 },
+        gen_lsp_types::Range {
+            start: gen_lsp_types::Position { line: 0, character: outer_read_start as u32 },
+            end: gen_lsp_types::Position { line: 0, character: (outer_read_start + 2) as u32 },
         },
     ]
 }
@@ -840,13 +840,13 @@ fn f4_single_scope_exact_range_set() -> TestResult {
     assert_eq!(positions.len(), 2, "F4_SOURCE must have exactly 2 $a occurrences");
 
     let expected = sorted_ranges(vec![
-        lsp_types::Range {
-            start: lsp_types::Position { line: 0, character: positions[0] as u32 },
-            end: lsp_types::Position { line: 0, character: (positions[0] + 2) as u32 },
+        gen_lsp_types::Range {
+            start: gen_lsp_types::Position { line: 0, character: positions[0] as u32 },
+            end: gen_lsp_types::Position { line: 0, character: (positions[0] + 2) as u32 },
         },
-        lsp_types::Range {
-            start: lsp_types::Position { line: 0, character: positions[1] as u32 },
-            end: lsp_types::Position { line: 0, character: (positions[1] + 2) as u32 },
+        gen_lsp_types::Range {
+            start: gen_lsp_types::Position { line: 0, character: positions[1] as u32 },
+            end: gen_lsp_types::Position { line: 0, character: (positions[1] + 2) as u32 },
         },
     ]);
 

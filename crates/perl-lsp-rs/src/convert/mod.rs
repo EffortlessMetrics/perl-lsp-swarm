@@ -29,3 +29,45 @@
 
 // Re-export wire types from perl-position-tracking (canonical implementation)
 pub use perl_position_tracking::{WireLocation, WirePosition, WireRange};
+
+use gen_lsp_types::Uri;
+
+/// Validate a URI string and wrap it in the substrate's String-backed `Uri`,
+/// mirroring the wire-crate's parse-or-fallback semantics.
+fn substrate_uri(s: &str) -> Uri {
+    match url::Url::parse(s) {
+        Ok(parsed) => Uri(parsed.as_str().to_string()),
+        Err(_) => {
+            // Same last-resort fallback contract as the wire crate.
+            for candidate in ["file:///unknown", "file:///", "about:blank"] {
+                if url::Url::parse(candidate).is_ok() {
+                    return Uri(candidate.to_string());
+                }
+            }
+            Uri("http://localhost/0".to_string())
+        }
+    }
+}
+
+/// Convert a wire location into the selected substrate's `Location`.
+///
+/// The equivalent `From<WireLocation>` impl stays behind the doomed
+/// `lsp-compat` edge of perl-position-tracking (#9632 owns its removal), so
+/// the final adapter carries its own conversion onto the selected substrate
+/// (#11802 matrix, LT02 population).
+#[must_use]
+pub fn wire_location_to_location(l: &WireLocation) -> gen_lsp_types::Location {
+    gen_lsp_types::Location {
+        uri: substrate_uri(&l.uri),
+        range: gen_lsp_types::Range {
+            start: gen_lsp_types::Position {
+                line: l.range.start.line,
+                character: l.range.start.character,
+            },
+            end: gen_lsp_types::Position {
+                line: l.range.end.line,
+                character: l.range.end.character,
+            },
+        },
+    }
+}

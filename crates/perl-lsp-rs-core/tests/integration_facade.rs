@@ -55,7 +55,7 @@ fn test_governance_consumer_complete_usage() -> Result<(), Box<dyn std::error::E
     let _flags = BuildFlags::default();
 
     // Governance queries feature IDs from server capabilities
-    let server_caps = lsp_types::ServerCapabilities::default();
+    let server_caps = gen_lsp_types::ServerCapabilities::default();
     let feature_ids = feature_ids_from_caps(&server_caps);
     assert!(feature_ids.is_empty(), "default server capabilities should produce no feature IDs");
 
@@ -75,7 +75,7 @@ fn test_protocol_consumer_complete_usage() -> Result<(), Box<dyn std::error::Err
     assert!(!all.is_empty(), "protocol should see all features");
 
     // Protocol extracts feature IDs from server capabilities
-    let server_caps = lsp_types::ServerCapabilities::default();
+    let server_caps = gen_lsp_types::ServerCapabilities::default();
     let ids = feature_ids_from_caps(&server_caps);
     assert!(ids.is_empty(), "default capabilities should produce empty feature list");
 

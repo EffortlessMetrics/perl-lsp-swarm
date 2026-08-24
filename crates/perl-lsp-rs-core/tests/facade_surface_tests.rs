@@ -218,7 +218,7 @@ fn test_protocol_consumer_shape_integration() -> Result<(), Box<dyn std::error::
     let _ = std::any::type_name::<BuildFlags>();
     let _ = std::any::type_name::<AdvertisedFeatures>();
     // Verify feature_ids_from_caps is callable (it's a function, not a type)
-    let _result = feature_ids_from_caps(&lsp_types::ServerCapabilities::default());
+    let _result = feature_ids_from_caps(&gen_lsp_types::ServerCapabilities::default());
 
     Ok(())
 }

@@ -3,7 +3,7 @@
 //! This module provides automatic indentation when typing trigger characters
 //! like {, }, ;, ), and newline.
 
-use lsp_types::{Position, Range, TextEdit};
+use gen_lsp_types::{Position, Range, TextEdit};
 
 fn byte_offset(text: &str, pos: Position) -> usize {
     let mut off = 0usize;
@@ -99,7 +99,7 @@ fn compute_indent(text: &str, up_to: usize, tab_size: usize) -> usize {
 /// A vector of `TextEdit`s to apply to the document (typically one edit to re-indent the current line)
 pub fn format_on_type(
     text: &str,
-    _uri: lsp_types::Uri,
+    _uri: gen_lsp_types::Uri,
     ch: String,
     position: Position,
     tab_size: usize,

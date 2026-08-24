@@ -471,7 +471,7 @@ pub enum ReferencesPirPromoteOutcome {
     /// Invariants: ranges are sorted (line, character, end) and deduplicated.
     /// The set may be empty when the binding resolved and all facts were
     /// intentionally filtered by [`ReferenceOptions`].
-    Exact(Vec<lsp_types::Range>),
+    Exact(Vec<gen_lsp_types::Range>),
 
     /// Compiler path refused or not taken for the stated reason.
     ///
@@ -485,11 +485,11 @@ pub enum ReferencesPirPromoteOutcome {
     },
 }
 
-/// Sort key for an `lsp_types::Range` for deterministic ordering.
+/// Sort key for an `gen_lsp_types::Range` for deterministic ordering.
 ///
 /// Orders by (start.line, start.character, end.line, end.character).
 #[inline]
-fn range_sort_key(r: &lsp_types::Range) -> (u32, u32, u32, u32) {
+fn range_sort_key(r: &gen_lsp_types::Range) -> (u32, u32, u32, u32) {
     (r.start.line, r.start.character, r.end.line, r.end.character)
 }
 
@@ -507,9 +507,9 @@ fn evaluate_pir_reference_candidate(
     target_name: &str,
     target_body_idx: usize,
     legacy_ranges: &BTreeSet<(usize, usize)>,
-    uri_mapper: &dyn Fn(usize, usize) -> lsp_types::Range,
+    uri_mapper: &dyn Fn(usize, usize) -> gen_lsp_types::Range,
     include_declaration: bool,
-) -> Result<Vec<lsp_types::Range>, PirShadowRefusalReason> {
+) -> Result<Vec<gen_lsp_types::Range>, PirShadowRefusalReason> {
     // Refusal ladder on the bare name part.
     if let Some(reason) = evaluate_refusal(
         target_name,
@@ -530,7 +530,7 @@ fn evaluate_pir_reference_candidate(
     // (treated as the declaration anchor).
     let mut declaration_skipped = false;
     let mut matched_binding = false;
-    let mut ranges: Vec<lsp_types::Range> = Vec::new();
+    let mut ranges: Vec<gen_lsp_types::Range> = Vec::new();
     for fact in &body.facts {
         if fact.name.sigil != target_sigil || fact.name.name != target_name {
             continue;
@@ -598,7 +598,7 @@ fn evaluate_pir_reference_candidate(
 /// * `target_body_idx` — The body index in `pir_receipt.bodies` where the
 ///   target binding was found.
 /// * `uri_mapper` — Converts a `(start_byte, end_byte)` pair to an LSP
-///   `lsp_types::Range` (handles UTF-16 encoding for the LSP client).
+///   `gen_lsp_types::Range` (handles UTF-16 encoding for the LSP client).
 /// * `opts` — [`ReferenceOptions`] controlling what is included (e.g.
 ///   `include_declaration`).
 #[must_use]
@@ -609,7 +609,7 @@ pub fn references_pir_promote(
     pir_receipt: &LexicalExtractorReceipt,
     legacy_result: &[(usize, usize)],
     target_body_idx: usize,
-    uri_mapper: &dyn Fn(usize, usize) -> lsp_types::Range,
+    uri_mapper: &dyn Fn(usize, usize) -> gen_lsp_types::Range,
     opts: ReferenceOptions,
 ) -> ReferencesPirPromoteOutcome {
     let legacy_vec = legacy_result.to_vec();
@@ -699,10 +699,10 @@ mod promote_tests {
     };
     use perl_parser_core::{Parser, hir::lower_ast, pir::extract_lexical_facts};
 
-    fn byte_mapper(start: usize, end: usize) -> lsp_types::Range {
-        lsp_types::Range {
-            start: lsp_types::Position { line: 0, character: start as u32 },
-            end: lsp_types::Position { line: 0, character: end as u32 },
+    fn byte_mapper(start: usize, end: usize) -> gen_lsp_types::Range {
+        gen_lsp_types::Range {
+            start: gen_lsp_types::Position { line: 0, character: start as u32 },
+            end: gen_lsp_types::Position { line: 0, character: end as u32 },
         }
     }
 
@@ -1085,9 +1085,9 @@ mod promote_tests {
     #[test]
     fn uri_mapper_applied_to_all_ranges() -> Result<(), String> {
         let receipt = receipt_for("my $p = 1;");
-        let sentinel_mapper = |start: usize, end: usize| lsp_types::Range {
-            start: lsp_types::Position { line: 1, character: (start + 1000) as u32 },
-            end: lsp_types::Position { line: 1, character: (end + 1000) as u32 },
+        let sentinel_mapper = |start: usize, end: usize| gen_lsp_types::Range {
+            start: gen_lsp_types::Position { line: 1, character: (start + 1000) as u32 },
+            end: gen_lsp_types::Position { line: 1, character: (end + 1000) as u32 },
         };
         let outcome = references_pir_promote(
             PromotionMode::PromoteExact,

@@ -269,7 +269,7 @@ has 'id' => (is => 'ro', isa => UserID);
         "Expected custom Moose type definition to resolve, got: {locations:?}"
     );
 
-    let target_uri = locations[0].target_uri.as_str();
+    let target_uri = locations[0].target_uri.as_ref();
     assert_eq!(target_uri, types_uri, "type definition should resolve into the type library");
 
     let target_line = locations[0].target_range.start.line as u64;

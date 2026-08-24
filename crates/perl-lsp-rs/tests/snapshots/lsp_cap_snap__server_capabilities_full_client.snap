@@ -77,7 +77,6 @@ executeCommandProvider:
     - perl.explainMissingModuleLookup
 experimental:
   perlInlineCompletionStream: true
-  typeHierarchyProvider: true
 foldingRangeProvider: true
 hoverProvider: true
 implementationProvider: true
@@ -153,8 +152,7 @@ textDocumentSync:
   willSave: true
   willSaveWaitUntil: true
 typeDefinitionProvider: true
-typeHierarchyProvider:
-  workDoneProgressOptions: {}
+typeHierarchyProvider: {}
 workspace:
   fileOperations:
     didRename:

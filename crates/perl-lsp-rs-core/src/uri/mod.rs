@@ -3,14 +3,16 @@
 //! Previously the standalone `perl-lsp-uri` crate; absorbed into
 //! `perl-lsp-rs-core::uri` in Wave G3 (#4535).
 
-use lsp_types::Uri;
+use gen_lsp_types::Uri;
 use std::path::Path;
 use url::Url;
 
 fn fallback_uri() -> Uri {
+    // The selected substrate's `Uri` is String-backed (no construction-time
+    // parse); validity is enforced here through `url::Url` before wrapping.
     for candidate in ["file:///unknown", "file:///", "about:blank", "urn:perl-lsp:unknown"] {
-        if let Ok(uri) = candidate.parse::<Uri>() {
-            return uri;
+        if Url::parse(candidate).is_ok() {
+            return Uri(candidate.to_string());
         }
     }
 
@@ -18,8 +20,8 @@ fn fallback_uri() -> Uri {
     let mut suffix = 0usize;
     loop {
         let candidate = format!("http://localhost/{suffix}");
-        if let Ok(uri) = candidate.parse::<Uri>() {
-            return uri;
+        if Url::parse(&candidate).is_ok() {
+            return Uri(candidate);
         }
         suffix = suffix.saturating_add(1);
     }
@@ -31,7 +33,7 @@ fn fallback_uri() -> Uri {
 /// [`Url::from_file_path`].
 fn file_path_uri(s: &str) -> Option<Uri> {
     let url = Url::from_file_path(Path::new(s)).ok()?;
-    url.as_str().parse::<Uri>().ok()
+    Some(Uri(url.as_str().to_string()))
 }
 
 /// Convert a Windows absolute file path (e.g. `C:\foo\bar.pm`) to a `file://` URI.
@@ -51,13 +53,17 @@ fn windows_file_path_uri(s: &str) -> Option<Uri> {
 
     let normalized = s.replace('\\', "/");
     let url = Url::parse(&format!("file:///{normalized}")).ok()?;
-    url.as_str().parse::<Uri>().ok()
+    Some(Uri(url.as_str().to_string()))
 }
 
-/// Parse a URI string into [`lsp_types::Uri`].
+/// Parse a URI string into [`gen_lsp_types::Uri`].
 ///
 /// Accepts valid URI strings and absolute local file paths (both Unix and
 /// Windows styles). Falls back to a guaranteed-valid URI if parsing fails.
+///
+/// The selected substrate's `Uri` is String-backed; parse fallibility moved
+/// from construction-time to this explicit `url::Url` validation gate
+/// (DELTA-URI-DEFAULT, protocol-type-substrate-matrix §5).
 #[must_use]
 pub fn parse_uri(s: &str) -> Uri {
     let sanitized = s.trim_start_matches('\u{feff}').trim();
@@ -70,12 +76,9 @@ pub fn parse_uri(s: &str) -> Uri {
         return uri;
     }
 
-    match sanitized.parse::<Uri>() {
-        Ok(uri) => uri,
-        Err(_) => Url::parse(sanitized)
-            .ok()
-            .and_then(|url| url.as_str().parse::<Uri>().ok())
-            .unwrap_or_else(fallback_uri),
+    match Url::parse(sanitized) {
+        Ok(url) => Uri(url.as_str().to_string()),
+        Err(_) => fallback_uri(),
     }
 }
 
@@ -152,7 +155,7 @@ mod uri_path_helpers_tests {
         let uri = windows_file_path_uri(r"C:\Users\dev\lib\Mod.pm")
             .ok_or("Windows backslash path must produce a URI")?;
         assert_eq!(
-            uri.as_str(),
+            uri.as_ref(),
             "file:///C:/Users/dev/lib/Mod.pm",
             "backslash path must be normalised to forward slashes in the URI"
         );
@@ -167,7 +170,7 @@ mod uri_path_helpers_tests {
         let uri = windows_file_path_uri("C:/Users/dev/lib/Mod.pm")
             .ok_or("Windows forward-slash path must produce a URI")?;
         assert_eq!(
-            uri.as_str(),
+            uri.as_ref(),
             "file:///C:/Users/dev/lib/Mod.pm",
             "forward-slash Windows path must produce the correct file:// URI"
         );
@@ -193,7 +196,7 @@ mod uri_path_helpers_tests {
         let uri = file_path_uri("/tmp/lib/Mod.pm")
             .ok_or("Unix absolute path must produce a file:// URI")?;
         assert_eq!(
-            uri.as_str(),
+            uri.as_ref(),
             "file:///tmp/lib/Mod.pm",
             "Unix absolute path must round-trip to the expected file:// URI"
         );
@@ -208,7 +211,7 @@ mod uri_path_helpers_tests {
     fn parse_uri_routes_windows_path_through_file_path_detection() {
         let uri = parse_uri(r"C:\workspace\lib\Mod.pm");
         assert_eq!(
-            uri.as_str(),
+            uri.as_ref(),
             "file:///C:/workspace/lib/Mod.pm",
             "parse_uri must convert a Windows path to a file:// URI via path-detection"
         );
@@ -221,7 +224,7 @@ mod uri_path_helpers_tests {
     fn parse_uri_routes_unix_path_through_file_path_detection() {
         let uri = parse_uri("/workspace/lib/Mod.pm");
         assert_eq!(
-            uri.as_str(),
+            uri.as_ref(),
             "file:///workspace/lib/Mod.pm",
             "parse_uri must convert a Unix absolute path to a file:// URI via path-detection"
         );

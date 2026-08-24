@@ -11,7 +11,7 @@ pub use command_timeout::run_command_with_timeout;
 use std::io;
 use std::path::Path;
 
-use lsp_types::Position;
+use gen_lsp_types::Position;
 use perl_module::reference::extract_module_reference as extract_module_reference_at_cursor;
 use perl_module::reference::extract_module_reference_extended as extract_module_reference_extended_at_cursor;
 use perl_position_tracking::offset_to_utf16_line_col;
@@ -607,7 +607,7 @@ mod tests {
         get_text_around_offset, get_text_window_around_offset, offset_to_position,
         position_to_offset, slice_in_range, slice_until_stmt_end, smart_arg_anchor,
     };
-    use lsp_types::Position;
+    use gen_lsp_types::Position;
 
     #[test]
     fn extract_module_reference_detects_use_statement_token() {

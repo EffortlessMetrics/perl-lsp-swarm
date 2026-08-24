@@ -3,7 +3,7 @@
 //! Provides support for simultaneous editing of matching brackets, quotes,
 //! and other paired delimiters.
 
-use lsp_types::{LinkedEditingRanges, Position, Range};
+use gen_lsp_types::{LinkedEditingRanges, Position, Range};
 use perl_parser_core::position::{offset_to_utf16_line_col, utf16_line_col_to_offset};
 
 const OPEN: &[char] = &['(', '[', '{', '<', '\'', '"'];

@@ -2114,7 +2114,7 @@ impl LspServer {
             return None;
         };
         let def_location = workspace_index.semantic_anchor_wire_location(candidate.anchor_id)?;
-        let location: lsp_types::Location = def_location.into();
+        let location = crate::convert::wire_location_to_location(&def_location);
         serde_json::to_value(location).ok()
     }
 

@@ -216,7 +216,7 @@ fn test_lsp_compat_submodule_exports_complete() -> Result<(), Box<dyn std::error
 
     // Verify the main submodules are re-exported.
     let _ = std::any::type_name::<lsp_compat::signature_help::SignatureHelpProvider>();
-    // linked_editing exports a function, not a type struct (LinkedEditingRanges is from lsp_types).
+    // linked_editing exports a function, not a type struct (LinkedEditingRanges is from gen_lsp_types).
     let _ = lsp_compat::linked_editing::handle_linked_editing("", 0, 0);
     let _ = std::any::type_name::<lsp_compat::selection_range::SelectionRangeProvider>();
     let _ = std::any::type_name::<lsp_compat::folding::FoldingRangeKind>();

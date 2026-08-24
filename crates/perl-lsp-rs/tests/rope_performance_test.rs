@@ -3,7 +3,9 @@
 // way it does to production code.
 #![allow(clippy::print_stdout)]
 
-use lsp_types::{Position, Range, TextDocumentContentChangeEvent};
+use gen_lsp_types::{
+    Position, Range, TextDocumentContentChangeEvent, TextDocumentContentChangePartial,
+};
 use perl_lsp::textdoc::{Doc, PosEnc, apply_changes, byte_to_lsp_pos, lsp_pos_to_byte};
 use ropey::Rope;
 use std::time::{Duration, Instant};
@@ -64,21 +66,27 @@ fn rope_performance_characteristics() {
     let mut doc = Doc { rope: Rope::from_str(&content), version: 1 };
 
     let edits = vec![
-        TextDocumentContentChangeEvent {
-            range: Some(Range::new(Position::new(100, 0), Position::new(100, 0))),
-            range_length: None,
-            text: "# Inserted line 1\n".to_string(),
-        },
-        TextDocumentContentChangeEvent {
-            range: Some(Range::new(Position::new(500, 5), Position::new(500, 10))),
-            range_length: None,
-            text: "CHANGED".to_string(),
-        },
-        TextDocumentContentChangeEvent {
-            range: Some(Range::new(Position::new(800, 0), Position::new(800, 0))),
-            range_length: None,
-            text: "# Inserted line 2\n".to_string(),
-        },
+        TextDocumentContentChangeEvent::TextDocumentContentChangePartial(
+            TextDocumentContentChangePartial {
+                range: Range::new(Position::new(100, 0), Position::new(100, 0)),
+                text: "# Inserted line 1\n".to_string(),
+                ..Default::default()
+            },
+        ),
+        TextDocumentContentChangeEvent::TextDocumentContentChangePartial(
+            TextDocumentContentChangePartial {
+                range: Range::new(Position::new(500, 5), Position::new(500, 10)),
+                text: "CHANGED".to_string(),
+                ..Default::default()
+            },
+        ),
+        TextDocumentContentChangeEvent::TextDocumentContentChangePartial(
+            TextDocumentContentChangePartial {
+                range: Range::new(Position::new(800, 0), Position::new(800, 0)),
+                text: "# Inserted line 2\n".to_string(),
+                ..Default::default()
+            },
+        ),
     ];
 
     let start = Instant::now();

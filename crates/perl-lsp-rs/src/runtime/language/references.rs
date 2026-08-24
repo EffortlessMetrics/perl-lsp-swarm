@@ -1700,7 +1700,7 @@ impl LspServer {
                     SourceBackedReferenceDecline::OccurrenceLocationUnavailable,
                 );
             };
-            let location: lsp_types::Location = wire_location.into();
+            let location = crate::convert::wire_location_to_location(&wire_location);
             let Ok(location) = serde_json::to_value(location) else {
                 return SourceBackedReferenceAttempt::Declined(
                     SourceBackedReferenceDecline::OccurrenceSerializationFailed,
@@ -1715,7 +1715,7 @@ impl LspServer {
             && let Some(anchor_id) = decl_anchor
             && let Some(wire_location) = workspace_index.semantic_anchor_wire_location(anchor_id)
         {
-            let decl_location: lsp_types::Location = wire_location.into();
+            let decl_location = crate::convert::wire_location_to_location(&wire_location);
             let Ok(decl_value) = serde_json::to_value(&decl_location) else {
                 return SourceBackedReferenceAttempt::Declined(
                     SourceBackedReferenceDecline::DeclarationSerializationFailed,

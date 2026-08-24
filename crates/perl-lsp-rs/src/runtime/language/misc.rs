@@ -66,7 +66,7 @@ fn truncate_inlay_hint_label(hint: &mut Value, max_chars: usize) {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SelectedInlineCompletionInfo {
-    range: lsp_types::Range,
+    range: gen_lsp_types::Range,
     text: String,
 }
 
@@ -215,9 +215,9 @@ fn constrain_inline_completions_to_selected_info(
         return Vec::new();
     }
 
-    let implicit_range = lsp_types::Range {
-        start: lsp_types::Position::new(line, character),
-        end: lsp_types::Position::new(line, character),
+    let implicit_range = gen_lsp_types::Range {
+        start: gen_lsp_types::Position::new(line, character),
+        end: gen_lsp_types::Position::new(line, character),
     };
 
     candidates
@@ -776,14 +776,14 @@ impl LspServer {
             // Use the text-based provider so selection expansion still works for
             // hash access, strings, and function signatures even when the AST
             // hierarchy does not expose those intermediate ranges directly.
-            let requested_positions: Vec<lsp_types::Position> = positions
+            let requested_positions: Vec<gen_lsp_types::Position> = positions
                 .iter()
                 .map(|pos| {
                     let line =
                         pos["line"].as_u64().and_then(|v| u32::try_from(v).ok()).unwrap_or(0);
                     let col =
                         pos["character"].as_u64().and_then(|v| u32::try_from(v).ok()).unwrap_or(0);
-                    lsp_types::Position::new(line, col)
+                    gen_lsp_types::Position::new(line, col)
                 })
                 .collect();
 

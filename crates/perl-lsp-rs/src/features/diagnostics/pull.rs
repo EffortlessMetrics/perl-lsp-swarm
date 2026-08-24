@@ -3,11 +3,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use lsp_types::{
-    CodeDescription, Diagnostic as LspDiagnostic, DiagnosticRelatedInformation,
+use gen_lsp_types::{
+    Code, CodeDescription, Diagnostic as LspDiagnostic, DiagnosticRelatedInformation,
     DiagnosticSeverity as LspDiagnosticSeverity, DiagnosticTag as LspDiagnosticTag,
-    DocumentDiagnosticReport, FullDocumentDiagnosticReport, Location, NumberOrString, Position,
-    Range, RelatedFullDocumentDiagnosticReport, RelatedUnchangedDocumentDiagnosticReport,
+    DocumentDiagnosticReport, FullDocumentDiagnosticReport, Location, Position, Range,
+    RelatedFullDocumentDiagnosticReport, RelatedUnchangedDocumentDiagnosticReport,
     UnchangedDocumentDiagnosticReport, Uri, WorkspaceDiagnosticReport,
     WorkspaceDiagnosticReportPartialResult, WorkspaceDocumentDiagnosticReport,
     WorkspaceFullDocumentDiagnosticReport, WorkspaceUnchangedDocumentDiagnosticReport,
@@ -237,7 +237,7 @@ impl PullDiagnosticsProvider {
         doc_state: Option<&DocumentState>,
     ) -> DocumentDiagnosticReport {
         let result_id = compose_report_identity(
-            &uri.to_string(),
+            uri.as_ref(),
             content,
             doc_state.map(DocumentState::current_generation).map(u64::from),
             context,
@@ -472,7 +472,7 @@ impl PullDiagnosticsProvider {
                     content,
                     context,
                     perl_lsp_rs_core::tooling::perl_critic::critic_source_identity_for_uri(
-                        &uri.to_string(),
+                        uri.as_ref(),
                         critic_generation,
                     ),
                     &mut core_diagnostics,
@@ -649,12 +649,12 @@ impl PullDiagnosticsProvider {
         for violation in violations {
             let lsp_severity = violation.severity.to_diagnostic_severity();
             let internal_severity = match lsp_severity {
-                lsp_types::DiagnosticSeverity::ERROR => InternalDiagnosticSeverity::Error,
-                lsp_types::DiagnosticSeverity::WARNING => InternalDiagnosticSeverity::Warning,
-                lsp_types::DiagnosticSeverity::INFORMATION => {
+                gen_lsp_types::DiagnosticSeverity::Error => InternalDiagnosticSeverity::Error,
+                gen_lsp_types::DiagnosticSeverity::Warning => InternalDiagnosticSeverity::Warning,
+                gen_lsp_types::DiagnosticSeverity::Information => {
                     InternalDiagnosticSeverity::Information
                 }
-                lsp_types::DiagnosticSeverity::HINT => InternalDiagnosticSeverity::Hint,
+                gen_lsp_types::DiagnosticSeverity::Hint => InternalDiagnosticSeverity::Hint,
                 _ => InternalDiagnosticSeverity::Hint,
             };
 
@@ -718,7 +718,7 @@ impl PullDiagnosticsProvider {
         let overlap_observations: Vec<BuiltInCriticObservation> =
             take_critic_overlap_observations(core_diagnostics);
         let candidates = native_finding_candidates_with_accounting(
-            &uri.to_string(),
+            uri.as_ref(),
             registry.check_unfiltered(&critic_context),
             source_identity,
         )
@@ -750,7 +750,7 @@ impl PullDiagnosticsProvider {
         let range =
             lsp_range_from_offsets(text, finding.range().start.byte, finding.range().end.byte);
         let severity = Some(native_critic_severity_to_lsp(finding.severity()));
-        let code = Some(NumberOrString::String(finding.public_code().to_string()));
+        let code = Some(Code::String(finding.public_code().to_string()));
         let data = Some(serde_json::json!({
             "code": finding.public_code(),
             "category": finding.category().map(|category| format!("{category:?}")).unwrap_or_else(|| "Other".to_string()),
@@ -766,7 +766,7 @@ impl PullDiagnosticsProvider {
             code,
             code_description: None,
             source: Some("perl-lsp".to_string()),
-            message: finding.message().to_string(),
+            message: finding.message().to_string().into(),
             related_information: None,
             tags: None,
             data,
@@ -789,7 +789,7 @@ impl PullDiagnosticsProvider {
             let parse_errors = parsed.parse_errors();
             let provider = DiagnosticsProvider::new();
             let source_path =
-                url::Url::parse(&uri.to_string()).ok().and_then(|value| value.to_file_path().ok());
+                url::Url::parse(uri.as_ref()).ok().and_then(|value| value.to_file_path().ok());
             // Build the baseline include paths (configured + PERL5LIB, without lexical
             // `use lib`/`no lib`). The resolver re-evaluates lexical paths per use-site
             // offset so that `no lib` cancellations that precede each `use` statement
@@ -880,7 +880,7 @@ impl PullDiagnosticsProvider {
                 &doc_state.text,
                 context,
                 perl_lsp_rs_core::tooling::perl_critic::critic_source_identity_for_uri(
-                    &uri.to_string(),
+                    uri.as_ref(),
                     doc_state.current_generation(),
                 ),
                 &mut core_diagnostics,
@@ -935,10 +935,14 @@ impl PullDiagnosticsProvider {
     }
 
     fn build_unchanged_report(&self, result_id: String) -> DocumentDiagnosticReport {
-        DocumentDiagnosticReport::Unchanged(RelatedUnchangedDocumentDiagnosticReport {
-            related_documents: None,
-            unchanged_document_diagnostic_report: UnchangedDocumentDiagnosticReport { result_id },
-        })
+        DocumentDiagnosticReport::RelatedUnchangedDocumentDiagnosticReport(
+            RelatedUnchangedDocumentDiagnosticReport {
+                related_documents: None,
+                unchanged_document_diagnostic_report: UnchangedDocumentDiagnosticReport {
+                    result_id,
+                },
+            },
+        )
     }
 
     fn build_full_report(
@@ -946,15 +950,17 @@ impl PullDiagnosticsProvider {
         result_id: Option<PullReportResultId>,
         diagnostics: Vec<LspDiagnostic>,
     ) -> DocumentDiagnosticReport {
-        DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
-            related_documents: None,
-            full_document_diagnostic_report: FullDocumentDiagnosticReport {
-                // `None` is the honest full report for a valid-but-not-reusable
-                // subject (#7480): LSP result IDs are optional.
-                result_id: result_id.map(PullReportResultId::into_string),
-                items: diagnostics,
+        DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(
+            RelatedFullDocumentDiagnosticReport {
+                related_documents: None,
+                full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                    // `None` is the honest full report for a valid-but-not-reusable
+                    // subject (#7480): LSP result IDs are optional.
+                    result_id: result_id.map(PullReportResultId::into_string),
+                    items: diagnostics,
+                },
             },
-        })
+        )
     }
 
     fn to_workspace_report(
@@ -963,24 +969,24 @@ impl PullDiagnosticsProvider {
         version: Option<i32>,
         report: DocumentDiagnosticReport,
     ) -> WorkspaceDocumentDiagnosticReport {
-        let version = version.map(i64::from);
-
         match report {
-            DocumentDiagnosticReport::Full(full) => {
+            DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(full) => {
                 let RelatedFullDocumentDiagnosticReport { full_document_diagnostic_report, .. } =
                     full;
-                WorkspaceDocumentDiagnosticReport::Full(WorkspaceFullDocumentDiagnosticReport {
-                    uri,
-                    version,
-                    full_document_diagnostic_report,
-                })
+                WorkspaceDocumentDiagnosticReport::WorkspaceFullDocumentDiagnosticReport(
+                    WorkspaceFullDocumentDiagnosticReport {
+                        uri,
+                        version,
+                        full_document_diagnostic_report,
+                    },
+                )
             }
-            DocumentDiagnosticReport::Unchanged(unchanged) => {
+            DocumentDiagnosticReport::RelatedUnchangedDocumentDiagnosticReport(unchanged) => {
                 let RelatedUnchangedDocumentDiagnosticReport {
                     unchanged_document_diagnostic_report,
                     ..
                 } = unchanged;
-                WorkspaceDocumentDiagnosticReport::Unchanged(
+                WorkspaceDocumentDiagnosticReport::WorkspaceUnchangedDocumentDiagnosticReport(
                     WorkspaceUnchangedDocumentDiagnosticReport {
                         uri,
                         version,
@@ -999,7 +1005,7 @@ impl PullDiagnosticsProvider {
     ) -> LspDiagnostic {
         let range = lsp_range_from_offsets(text, diagnostic.range.0, diagnostic.range.1);
         let severity = Some(to_lsp_severity(diagnostic.severity));
-        let code = diagnostic.code.map(NumberOrString::String);
+        let code = diagnostic.code.map(Code::String);
         let related_information =
             to_lsp_related_information(uri, text, &diagnostic.related_information);
 
@@ -1023,7 +1029,7 @@ impl PullDiagnosticsProvider {
         // targeted fix instructions for each PL* code.
         let mut message = diagnostic.message.clone();
         if let Some(code_str) = code.as_ref().and_then(|c| match c {
-            NumberOrString::String(s) => Some(s.as_str()),
+            Code::String(s) => Some(s.as_str()),
             _ => None,
         }) && let Some(dc) = DiagnosticCode::parse_code(code_str)
             && let Some(hint) = dc.context_hint()
@@ -1035,7 +1041,7 @@ impl PullDiagnosticsProvider {
         }
 
         let data = code.as_ref().and_then(|c| {
-            if let NumberOrString::String(code_str) = c {
+            if let Code::String(code_str) = c {
                 let category = DiagnosticCode::parse_code(code_str)
                     .map(|dc| format!("{:?}", dc.category()))
                     .unwrap_or_else(|| "Other".to_string());
@@ -1059,7 +1065,7 @@ impl PullDiagnosticsProvider {
             code,
             code_description,
             source: Some("perl-lsp".to_string()),
-            message,
+            message: message.into(),
             related_information,
             tags,
             data,
@@ -1076,7 +1082,7 @@ impl PullDiagnosticsProvider {
     ) -> LspDiagnostic {
         let range = lsp_range_from_offsets(text, diagnostic.range.0, diagnostic.range.1);
         let severity = Some(to_lsp_severity(diagnostic.severity));
-        let code = diagnostic.code.map(NumberOrString::String);
+        let code = diagnostic.code.map(Code::String);
         let code_for_source = code.clone();
         let related_information =
             to_lsp_related_information(uri, text, &diagnostic.related_information);
@@ -1102,7 +1108,7 @@ impl PullDiagnosticsProvider {
         };
 
         let data = code.as_ref().and_then(|c| {
-            if let NumberOrString::String(code_str) = c {
+            if let Code::String(code_str) = c {
                 let category = DiagnosticCode::parse_code(code_str)
                     .map(|dc| format!("{:?}", dc.category()))
                     .unwrap_or_else(|| {
@@ -1146,7 +1152,7 @@ impl PullDiagnosticsProvider {
             code,
             code_description,
             source: diagnostic_source(code_for_source.as_ref()),
-            message,
+            message: message.into(),
             related_information,
             tags,
             data,
@@ -1163,7 +1169,7 @@ impl PullDiagnosticsProvider {
     ) -> LspDiagnostic {
         let range = lsp_range_from_offsets(text, diagnostic.range.0, diagnostic.range.1);
         let severity = Some(to_lsp_severity(diagnostic.severity));
-        let code = diagnostic.code.map(NumberOrString::String);
+        let code = diagnostic.code.map(Code::String);
         let code_for_source = code.clone();
         let tags = to_lsp_tags(&diagnostic.tags);
 
@@ -1189,7 +1195,7 @@ impl PullDiagnosticsProvider {
         };
 
         let data = code.as_ref().and_then(|c| {
-            if let NumberOrString::String(code_str) = c {
+            if let Code::String(code_str) = c {
                 let category = DiagnosticCode::parse_code(code_str)
                     .map(|dc| format!("{:?}", dc.category()))
                     .unwrap_or_else(|| "Other".to_string());
@@ -1227,7 +1233,7 @@ impl PullDiagnosticsProvider {
             code,
             code_description,
             source: diagnostic_source(code_for_source.as_ref()),
-            message,
+            message: message.into(),
             related_information: None,
             tags,
             data,
@@ -1320,10 +1326,10 @@ impl PullDiagnosticsProvider {
         LspDiagnostic {
             range,
             severity: Some(to_lsp_severity(parse_error_severity(error))),
-            code: Some(NumberOrString::String(code_str.to_string())),
+            code: Some(Code::String(code_str.to_string())),
             code_description: lsp_code_description_from_str(code_str),
             source: Some("perl-lsp".to_string()),
-            message,
+            message: message.into(),
             related_information: to_lsp_related_information(uri, text, &[]),
             tags: None,
             data,
@@ -1331,9 +1337,9 @@ impl PullDiagnosticsProvider {
     }
 }
 
-fn lsp_code_description(code: Option<&NumberOrString>) -> Option<CodeDescription> {
+fn lsp_code_description(code: Option<&Code>) -> Option<CodeDescription> {
     match code {
-        Some(NumberOrString::String(code_str)) => lsp_code_description_from_str(code_str),
+        Some(Code::String(code_str)) => lsp_code_description_from_str(code_str),
         _ => None,
     }
 }
@@ -1341,7 +1347,7 @@ fn lsp_code_description(code: Option<&NumberOrString>) -> Option<CodeDescription
 fn lsp_code_description_from_str(code_str: &str) -> Option<CodeDescription> {
     DiagnosticCode::parse_code(code_str)
         .and_then(|code| code.documentation_url())
-        .and_then(|url| url.parse::<Uri>().ok())
+        .and_then(|url| url::Url::parse(url).ok().map(|u| Uri(u.as_str().to_string())))
         .map(|href| CodeDescription { href })
 }
 
@@ -1378,12 +1384,12 @@ fn resolved_parse_diagnostic_offset(error: &ParseError, text: &str) -> usize {
 
 fn to_lsp_severity(severity: InternalDiagnosticSeverity) -> LspDiagnosticSeverity {
     match severity {
-        InternalDiagnosticSeverity::Error => LspDiagnosticSeverity::ERROR,
-        InternalDiagnosticSeverity::Warning => LspDiagnosticSeverity::WARNING,
-        InternalDiagnosticSeverity::Information => LspDiagnosticSeverity::INFORMATION,
-        InternalDiagnosticSeverity::Hint => LspDiagnosticSeverity::HINT,
+        InternalDiagnosticSeverity::Error => LspDiagnosticSeverity::Error,
+        InternalDiagnosticSeverity::Warning => LspDiagnosticSeverity::Warning,
+        InternalDiagnosticSeverity::Information => LspDiagnosticSeverity::Information,
+        InternalDiagnosticSeverity::Hint => LspDiagnosticSeverity::Hint,
         // Forward-compatible fallback for future variants (#2898)
-        _ => LspDiagnosticSeverity::ERROR,
+        _ => LspDiagnosticSeverity::Error,
     }
 }
 
@@ -1399,10 +1405,10 @@ fn to_lsp_tags(tags: &[InternalDiagnosticTag]) -> Option<Vec<LspDiagnosticTag>> 
     Some(
         tags.iter()
             .map(|tag| match tag {
-                InternalDiagnosticTag::Unnecessary => LspDiagnosticTag::UNNECESSARY,
-                InternalDiagnosticTag::Deprecated => LspDiagnosticTag::DEPRECATED,
+                InternalDiagnosticTag::Unnecessary => LspDiagnosticTag::Unnecessary,
+                InternalDiagnosticTag::Deprecated => LspDiagnosticTag::Deprecated,
                 // Forward-compatible fallback for future variants (#2898)
-                _ => LspDiagnosticTag::UNNECESSARY,
+                _ => LspDiagnosticTag::Unnecessary,
             })
             .collect(),
     )
@@ -1433,7 +1439,7 @@ fn to_lsp_related_information(
 
 /// Structured data attached to each LSP diagnostic for client integration.
 ///
-/// Serialized into the `data` field of `lsp_types::Diagnostic` so that clients can
+/// Serialized into the `data` field of `gen_lsp_types::Diagnostic` so that clients can
 /// identify fixable diagnostics, filter by category, and integrate with code actions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticData {
@@ -1509,9 +1515,9 @@ fn is_fixable_diagnostic(code: &str) -> bool {
 /// This resolves the former fragmentation across four strings
 /// (`perl-lsp`, `perl-lsp-critic`, `perlcritic`, `perl-parser`) so that the
 /// same logical finding carries the same source regardless of transport path.
-fn diagnostic_source(code: Option<&NumberOrString>) -> Option<String> {
+fn diagnostic_source(code: Option<&Code>) -> Option<String> {
     match code {
-        Some(NumberOrString::String(code_str)) => {
+        Some(Code::String(code_str)) => {
             // External Perl::Critic policies contain "::" and are not in our
             // DiagnosticCode enum. Native critic codes (`native.*`) and built-in
             // lint codes (`PL***`) are both built-in and use `perl-lsp`.
@@ -1528,11 +1534,13 @@ fn diagnostic_source(code: Option<&NumberOrString>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lsp_types::{DocumentDiagnosticReport, NumberOrString};
+    use gen_lsp_types::{Code, DocumentDiagnosticReport, Message};
 
-    fn get_full_items(report: DocumentDiagnosticReport) -> Vec<lsp_types::Diagnostic> {
+    fn get_full_items(report: DocumentDiagnosticReport) -> Vec<gen_lsp_types::Diagnostic> {
         match report {
-            DocumentDiagnosticReport::Full(full) => full.full_document_diagnostic_report.items,
+            DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(full) => {
+                full.full_document_diagnostic_report.items
+            }
             _ => vec![],
         }
     }
@@ -1540,7 +1548,7 @@ mod tests {
     #[test]
     fn diagnostic_data_for_parse_error() -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///test.pl".parse()?;
+        let uri: Uri = Uri::from("file:///test.pl");
         let items =
             get_full_items(provider.get_document_diagnostics(&uri, "my $x = ;", None, None));
         assert!(!items.is_empty());
@@ -1569,7 +1577,7 @@ mod tests {
     #[test]
     fn diagnostic_data_none_when_no_code() -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///test.pl".parse()?;
+        let uri: Uri = Uri::from("file:///test.pl");
         let report = provider.get_document_diagnostics(&uri, "my $x = 1;\n", None, None);
         let items = get_full_items(report);
         // Any diagnostic without a code must also have data: None
@@ -1580,14 +1588,13 @@ mod tests {
     #[test]
     fn diagnostic_data_for_missing_strict() -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///test.pl".parse()?;
+        let uri: Uri = Uri::from("file:///test.pl");
         let code = "print 'hello';\n";
         let items = get_full_items(provider.get_document_diagnostics(&uri, code, None, None));
         let diag = items
             .iter()
             .find(|d| {
-                d.code.as_ref().map(|c| matches!(c, NumberOrString::String(s) if s == "PL100"))
-                    == Some(true)
+                d.code.as_ref().map(|c| matches!(c, Code::String(s) if s == "PL100")) == Some(true)
             })
             .ok_or("expected PL100 (missing strict) diagnostic for bare print statement")?;
         let data = diag.data.as_ref().ok_or("data should be Some for PL100")?;
@@ -1615,7 +1622,7 @@ mod tests {
 
         assert!(lsp_code_description_from_str("TestingAndDebugging::RequireUseStrict").is_none());
         assert!(lsp_code_description_from_str("PC101").is_none());
-        assert!(lsp_code_description(Some(&NumberOrString::Number(101))).is_none());
+        assert!(lsp_code_description(Some(&Code::Int(101))).is_none());
         assert!(lsp_code_description(None).is_none());
         Ok(())
     }
@@ -1626,13 +1633,12 @@ mod tests {
         // PL105 (VariableRedeclaration) offers a quick-fix that removes the duplicate `my`,
         // so the enriched diagnostic data must advertise it as fixable.
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///test.pl".parse()?;
+        let uri: Uri = Uri::from("file:///test.pl");
         // Redeclare $x in the same scope to trigger PL105
         let code = "use strict; use warnings; my $x = 1; my $x = 2;\n";
         let items = get_full_items(provider.get_document_diagnostics(&uri, code, None, None));
         if let Some(diag) = items.iter().find(|d| {
-            d.code.as_ref().map(|c| matches!(c, NumberOrString::String(s) if s == "PL105"))
-                == Some(true)
+            d.code.as_ref().map(|c| matches!(c, Code::String(s) if s == "PL105")) == Some(true)
         }) {
             let data = diag.data.as_ref().ok_or("data should be Some for PL105")?;
             assert_eq!(data["code"], "PL105");
@@ -1651,7 +1657,7 @@ mod tests {
     #[test]
     fn diagnostic_data_is_valid_json_object() -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///test.pl".parse()?;
+        let uri: Uri = Uri::from("file:///test.pl");
         let items =
             get_full_items(provider.get_document_diagnostics(&uri, "my $x = ;", None, None));
         for diag in &items {
@@ -1671,7 +1677,7 @@ mod tests {
     fn invalid_prototype_syntax_error_maps_to_pl302_warning()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///test.pl".parse()?;
+        let uri: Uri = Uri::from("file:///test.pl");
         let diagnostic = provider.parse_error_to_diagnostic(
             &uri,
             "sub foo (XYZ) {}",
@@ -1681,8 +1687,8 @@ mod tests {
             },
         );
 
-        assert_eq!(diagnostic.code, Some(NumberOrString::String("PL302".to_string())));
-        assert_eq!(diagnostic.severity, Some(LspDiagnosticSeverity::WARNING));
+        assert_eq!(diagnostic.code, Some(Code::String("PL302".to_string())));
+        assert_eq!(diagnostic.severity, Some(LspDiagnosticSeverity::Warning));
         let data = diagnostic.data.as_ref().ok_or("data should be populated")?;
         assert_eq!(data["code"], "PL302");
         Ok(())
@@ -1691,7 +1697,7 @@ mod tests {
     #[test]
     fn pull_diagnostic_preserves_recovered_anchor() -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///test.pl".parse()?;
+        let uri: Uri = Uri::from("file:///test.pl");
         let diagnostic = provider.parse_error_to_diagnostic(
             &uri,
             "ab + ;",
@@ -1709,7 +1715,7 @@ mod tests {
     #[test]
     fn pull_diagnostic_rejects_out_of_range_anchor() -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///test.pl".parse()?;
+        let uri: Uri = Uri::from("file:///test.pl");
         let diagnostic = provider.parse_error_to_diagnostic(
             &uri,
             "abc",
@@ -1723,7 +1729,7 @@ mod tests {
     #[test]
     fn pull_diagnostic_rejects_utf8_interior_anchor() -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///test.pl".parse()?;
+        let uri: Uri = Uri::from("file:///test.pl");
         let diagnostic = provider.parse_error_to_diagnostic(
             &uri,
             "💖",
@@ -1749,7 +1755,7 @@ mod tests {
     fn native_critic_engine_emits_opt_in_lsp_diagnostics() -> Result<(), Box<dyn std::error::Error>>
     {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///test.pl".parse()?;
+        let uri: Uri = Uri::from("file:///test.pl");
         let mut context = PullDiagnosticsContext::new();
         context.critic_engine = CriticEngine::Native;
         context.native_critic_profile = "strict".to_string();
@@ -1768,12 +1774,12 @@ mod tests {
             .find(|diag| {
                 diag.code
                     .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.testing.require_use_strict"))
+                    .is_some_and(|code| matches!(code, Code::String(value) if value == "native.testing.require_use_strict"))
             })
             .ok_or("expected native strict finding")?;
         assert_eq!(strict.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(strict.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(strict.message, "Code does not use strict");
+        assert_eq!(strict.severity, Some(LspDiagnosticSeverity::Warning));
+        assert_eq!(strict.message, Message::String("Code does not use strict".into()));
         let data = strict.data.as_ref().ok_or("native critic data should be populated")?;
         assert_eq!(data["code"], "native.testing.require_use_strict");
         assert_eq!(data["suppressionKey"], "native.testing.require_use_strict");
@@ -1784,7 +1790,7 @@ mod tests {
             .find(|diag| {
                 diag.code
                     .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.testing.require_use_warnings"))
+                    .is_some_and(|code| matches!(code, Code::String(value) if value == "native.testing.require_use_warnings"))
             })
             .ok_or("expected native warnings finding")?;
         assert_eq!(warnings.source.as_deref(), Some("perl-lsp"));
@@ -1794,12 +1800,15 @@ mod tests {
             .find(|diag| {
                 diag.code
                     .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.common.assignment_in_condition"))
+                    .is_some_and(|code| matches!(code, Code::String(value) if value == "native.common.assignment_in_condition"))
             })
             .ok_or("expected native assignment-in-condition finding")?;
         assert_eq!(assignment.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(assignment.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(assignment.message, "Assignment in condition - did you mean '=='?");
+        assert_eq!(assignment.severity, Some(LspDiagnosticSeverity::Warning));
+        assert_eq!(
+            assignment.message,
+            Message::String("Assignment in condition - did you mean '=='?".into())
+        );
         let data = assignment
             .data
             .as_ref()
@@ -1812,15 +1821,17 @@ mod tests {
             .iter()
             .find(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.common.printf_format_arity"),
+                    |code| matches!(code, Code::String(value) if value == "native.common.printf_format_arity"),
                 )
             })
             .ok_or("expected native printf format arity finding")?;
         assert_eq!(printf_format.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(printf_format.severity, Some(LspDiagnosticSeverity::WARNING));
+        assert_eq!(printf_format.severity, Some(LspDiagnosticSeverity::Warning));
         assert_eq!(
             printf_format.message,
-            "`printf` format string has 2 specifiers but 1 argument supplied"
+            Message::String(
+                "`printf` format string has 2 specifiers but 1 argument supplied".into()
+            )
         );
         let data = printf_format
             .data
@@ -1834,13 +1845,16 @@ mod tests {
             .iter()
             .find(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.common.deprecated_defined"),
+                    |code| matches!(code, Code::String(value) if value == "native.common.deprecated_defined"),
                 )
             })
             .ok_or("expected native deprecated-defined finding")?;
         assert_eq!(deprecated_defined.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(deprecated_defined.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(deprecated_defined.message, "Use of 'defined @items' is deprecated");
+        assert_eq!(deprecated_defined.severity, Some(LspDiagnosticSeverity::Warning));
+        assert_eq!(
+            deprecated_defined.message,
+            Message::String("Use of 'defined @items' is deprecated".into())
+        );
         let data = deprecated_defined
             .data
             .as_ref()
@@ -1855,21 +1869,21 @@ mod tests {
         let undef_comparison = items
             .iter()
             .find(|diag| {
-                diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "PL404"),
-                )
+                diag.code
+                    .as_ref()
+                    .is_some_and(|code| matches!(code, Code::String(value) if value == "PL404"))
             })
             .ok_or("expected merged undef-comparison row")?;
         assert_eq!(undef_comparison.source.as_deref(), Some("perl-lsp"));
         assert!(
-            undef_comparison.message.contains("defined"),
+            message_as_str(&undef_comparison.message).contains("defined"),
             "merged row carries the producer message: {}",
-            undef_comparison.message
+            message_as_str(&undef_comparison.message)
         );
         assert!(
             !items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.common.undef_comparison"),
+                    |code| matches!(code, Code::String(value) if value == "native.common.undef_comparison"),
                 )
             }),
             "native undef-comparison spelling must not appear as a separate row"
@@ -1879,13 +1893,16 @@ mod tests {
             .iter()
             .find(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.common.stale_dollar_at"),
+                    |code| matches!(code, Code::String(value) if value == "native.common.stale_dollar_at"),
                 )
             })
             .ok_or("expected native stale-dollar-at finding")?;
         assert_eq!(stale_dollar_at.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(stale_dollar_at.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(stale_dollar_at.message, "Checking $@ after eval can observe a stale error");
+        assert_eq!(stale_dollar_at.severity, Some(LspDiagnosticSeverity::Warning));
+        assert_eq!(
+            stale_dollar_at.message,
+            Message::String("Checking $@ after eval can observe a stale error".into())
+        );
         let data = stale_dollar_at
             .data
             .as_ref()
@@ -1898,13 +1915,16 @@ mod tests {
             .iter()
             .find(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.common.unreachable_code"),
+                    |code| matches!(code, Code::String(value) if value == "native.common.unreachable_code"),
                 )
             })
             .ok_or("expected native unreachable-code finding")?;
         assert_eq!(unreachable_code.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(unreachable_code.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(unreachable_code.message, "Unreachable code: this statement cannot be executed");
+        assert_eq!(unreachable_code.severity, Some(LspDiagnosticSeverity::Warning));
+        assert_eq!(
+            unreachable_code.message,
+            Message::String("Unreachable code: this statement cannot be executed".into())
+        );
         let data = unreachable_code
             .data
             .as_ref()
@@ -1918,12 +1938,15 @@ mod tests {
             .find(|diag| {
                 diag.code
                     .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.io.bareword_filehandle"))
+                    .is_some_and(|code| matches!(code, Code::String(value) if value == "native.io.bareword_filehandle"))
             })
             .ok_or("expected native bareword filehandle finding")?;
         assert_eq!(bareword_filehandle.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(bareword_filehandle.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(bareword_filehandle.message, "Bareword filehandle 'FH' should be lexical");
+        assert_eq!(bareword_filehandle.severity, Some(LspDiagnosticSeverity::Warning));
+        assert_eq!(
+            bareword_filehandle.message,
+            Message::String("Bareword filehandle 'FH' should be lexical".into())
+        );
         let data = bareword_filehandle
             .data
             .as_ref()
@@ -1935,14 +1958,17 @@ mod tests {
         let two_arg_open = items
             .iter()
             .find(|diag| {
-                diag.code
-                    .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.io.two_arg_open"))
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, Code::String(value) if value == "native.io.two_arg_open"),
+                )
             })
             .ok_or("expected native two-arg open finding")?;
         assert_eq!(two_arg_open.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(two_arg_open.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(two_arg_open.message, "Two-argument open should use an explicit mode");
+        assert_eq!(two_arg_open.severity, Some(LspDiagnosticSeverity::Warning));
+        assert_eq!(
+            two_arg_open.message,
+            Message::String("Two-argument open should use an explicit mode".into())
+        );
         let data =
             two_arg_open.data.as_ref().ok_or("native two-arg open data should be populated")?;
         assert_eq!(data["code"], "native.io.two_arg_open");
@@ -1952,14 +1978,14 @@ mod tests {
         let pipe_open = items
             .iter()
             .find(|diag| {
-                diag.code
-                    .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.io.pipe_open"))
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, Code::String(value) if value == "native.io.pipe_open"),
+                )
             })
             .ok_or("expected native pipe-open finding")?;
         assert_eq!(pipe_open.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(pipe_open.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(pipe_open.message, "Pipe-open executes a shell command");
+        assert_eq!(pipe_open.severity, Some(LspDiagnosticSeverity::Warning));
+        assert_eq!(pipe_open.message, Message::String("Pipe-open executes a shell command".into()));
         let data = pipe_open.data.as_ref().ok_or("native pipe-open data should be populated")?;
         assert_eq!(data["code"], "native.io.pipe_open");
         assert_eq!(data["suppressionKey"], "native.io.pipe_open");
@@ -1969,13 +1995,16 @@ mod tests {
             .iter()
             .find(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.io.unchecked_open_close"),
+                    |code| matches!(code, Code::String(value) if value == "native.io.unchecked_open_close"),
                 )
             })
             .ok_or("expected native unchecked open/close finding")?;
         assert_eq!(unchecked_open_close.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(unchecked_open_close.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(unchecked_open_close.message, "open() return value should be checked");
+        assert_eq!(unchecked_open_close.severity, Some(LspDiagnosticSeverity::Warning));
+        assert_eq!(
+            unchecked_open_close.message,
+            Message::String("open() return value should be checked".into())
+        );
         let data = unchecked_open_close
             .data
             .as_ref()
@@ -1989,16 +2018,16 @@ mod tests {
         let pl601_rows = items
             .iter()
             .filter(|diag| {
-                diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "PL601"),
-                )
+                diag.code
+                    .as_ref()
+                    .is_some_and(|code| matches!(code, Code::String(value) if value == "PL601"))
             })
             .count();
         assert_eq!(pl601_rows, 2, "backtick and qx each merge into one PL601 row");
         assert!(
             !items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.security.backtick_exec"),
+                    |code| matches!(code, Code::String(value) if value == "native.security.backtick_exec"),
                 )
             }),
             "native backtick spelling must not appear as a separate row"
@@ -2007,20 +2036,17 @@ mod tests {
         let readpipe = items
             .iter()
             .find(|diag| {
-                diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "PL606"),
-                )
+                diag.code
+                    .as_ref()
+                    .is_some_and(|code| matches!(code, Code::String(value) if value == "PL606"))
             })
             .ok_or("expected merged readpipe row")?;
         assert_eq!(readpipe.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(
-            readpipe.message,
-            "readpipe() executes a shell command (equivalent to qx//). Ensure input is sanitized."
-        );
+        assert_eq!(readpipe.message, Message::String("readpipe() executes a shell command (equivalent to qx//). Ensure input is sanitized.".into()));
         assert!(
             !items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.security.qx_readpipe"),
+                    |code| matches!(code, Code::String(value) if value == "native.security.qx_readpipe"),
                 )
             }),
             "native qx/readpipe spelling must not appear as a separate row"
@@ -2030,13 +2056,13 @@ mod tests {
             .iter()
             .find(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.security.string_eval"),
+                    |code| matches!(code, Code::String(value) if value == "native.security.string_eval"),
                 )
             })
             .ok_or("expected native string eval finding")?;
         assert_eq!(string_eval.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(string_eval.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(string_eval.message, "String eval is a security risk");
+        assert_eq!(string_eval.severity, Some(LspDiagnosticSeverity::Warning));
+        assert_eq!(string_eval.message, Message::String("String eval is a security risk".into()));
         let data =
             string_eval.data.as_ref().ok_or("native string eval data should be populated")?;
         assert_eq!(data["code"], "native.security.string_eval");
@@ -2048,28 +2074,28 @@ mod tests {
         let system_exec = items
             .iter()
             .find(|diag| {
-                diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "PL603"),
-                )
+                diag.code
+                    .as_ref()
+                    .is_some_and(|code| matches!(code, Code::String(value) if value == "PL603"))
             })
             .ok_or("expected merged system row")?;
         assert_eq!(system_exec.source.as_deref(), Some("perl-lsp"));
         assert_eq!(
             system_exec.message,
-            "system() executes a shell command. Ensure input is sanitized."
+            Message::String("system() executes a shell command. Ensure input is sanitized.".into())
         );
         assert!(
             items.iter().any(|diag| {
-                diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "PL604"),
-                )
+                diag.code
+                    .as_ref()
+                    .is_some_and(|code| matches!(code, Code::String(value) if value == "PL604"))
             }),
             "expected merged exec row"
         );
         assert!(
             !items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.security.system_exec"),
+                    |code| matches!(code, Code::String(value) if value == "native.security.system_exec"),
                 )
             }),
             "native system/exec spelling must not appear as a separate row"
@@ -2080,13 +2106,16 @@ mod tests {
             .find(|diag| {
                 diag.code
                     .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.variables.unused_lexical"))
-                    && diag.message == "Lexical variable '$unused' is declared but never used"
+                    .is_some_and(|code| matches!(code, Code::String(value) if value == "native.variables.unused_lexical"))
+                    && message_as_str(&diag.message) == "Lexical variable '$unused' is declared but never used"
             })
             .ok_or("expected native unused lexical finding")?;
         assert_eq!(unused.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(unused.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(unused.message, "Lexical variable '$unused' is declared but never used");
+        assert_eq!(unused.severity, Some(LspDiagnosticSeverity::Warning));
+        assert_eq!(
+            unused.message,
+            Message::String("Lexical variable '$unused' is declared but never used".into())
+        );
         let data = unused.data.as_ref().ok_or("native unused lexical data should be populated")?;
         assert_eq!(data["code"], "native.variables.unused_lexical");
         assert_eq!(data["suppressionKey"], "native.variables.unused_lexical");
@@ -2097,12 +2126,15 @@ mod tests {
             .find(|diag| {
                 diag.code
                     .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.variables.unused_parameter"))
+                    .is_some_and(|code| matches!(code, Code::String(value) if value == "native.variables.unused_parameter"))
             })
             .ok_or("expected native unused parameter finding")?;
         assert_eq!(unused_parameter.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(unused_parameter.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(unused_parameter.message, "Parameter '$unused_param' is never used");
+        assert_eq!(unused_parameter.severity, Some(LspDiagnosticSeverity::Warning));
+        assert_eq!(
+            unused_parameter.message,
+            Message::String("Parameter '$unused_param' is never used".into())
+        );
         let data = unused_parameter
             .data
             .as_ref()
@@ -2116,14 +2148,16 @@ mod tests {
             .find(|diag| {
                 diag.code
                     .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.variables.duplicate_parameter"))
+                    .is_some_and(|code| matches!(code, Code::String(value) if value == "native.variables.duplicate_parameter"))
             })
             .ok_or("expected native duplicate parameter finding")?;
         assert_eq!(duplicate_parameter.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(duplicate_parameter.severity, Some(LspDiagnosticSeverity::WARNING));
+        assert_eq!(duplicate_parameter.severity, Some(LspDiagnosticSeverity::Warning));
         assert_eq!(
             duplicate_parameter.message,
-            "Parameter '$dup_param' appears more than once in this signature"
+            Message::String(
+                "Parameter '$dup_param' appears more than once in this signature".into()
+            )
         );
         let data = duplicate_parameter
             .data
@@ -2138,14 +2172,14 @@ mod tests {
             .find(|diag| {
                 diag.code
                     .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.variables.parameter_shadows_global"))
+                    .is_some_and(|code| matches!(code, Code::String(value) if value == "native.variables.parameter_shadows_global"))
             })
             .ok_or("expected native parameter shadowing finding")?;
         assert_eq!(parameter_shadow.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(parameter_shadow.severity, Some(LspDiagnosticSeverity::WARNING));
+        assert_eq!(parameter_shadow.severity, Some(LspDiagnosticSeverity::Warning));
         assert_eq!(
             parameter_shadow.message,
-            "Parameter '$outer_param' shadows an outer declaration"
+            Message::String("Parameter '$outer_param' shadows an outer declaration".into())
         );
         let data = parameter_shadow
             .data
@@ -2160,14 +2194,16 @@ mod tests {
             .find(|diag| {
                 diag.code
                     .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.variables.duplicate_lexical"))
+                    .is_some_and(|code| matches!(code, Code::String(value) if value == "native.variables.duplicate_lexical"))
             })
             .ok_or("expected native duplicate lexical finding")?;
         assert_eq!(duplicate.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(duplicate.severity, Some(LspDiagnosticSeverity::WARNING));
+        assert_eq!(duplicate.severity, Some(LspDiagnosticSeverity::Warning));
         assert_eq!(
             duplicate.message,
-            "Lexical variable '$x' is declared more than once in the same scope"
+            Message::String(
+                "Lexical variable '$x' is declared more than once in the same scope".into()
+            )
         );
         let data =
             duplicate.data.as_ref().ok_or("native duplicate lexical data should be populated")?;
@@ -2180,12 +2216,15 @@ mod tests {
             .find(|diag| {
                 diag.code
                     .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.variables.shadowed_lexical"))
+                    .is_some_and(|code| matches!(code, Code::String(value) if value == "native.variables.shadowed_lexical"))
             })
             .ok_or("expected native shadowed lexical finding")?;
         assert_eq!(shadowed.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(shadowed.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(shadowed.message, "Lexical variable '$shadow' shadows an outer declaration");
+        assert_eq!(shadowed.severity, Some(LspDiagnosticSeverity::Warning));
+        assert_eq!(
+            shadowed.message,
+            Message::String("Lexical variable '$shadow' shadows an outer declaration".into())
+        );
         let data =
             shadowed.data.as_ref().ok_or("native shadowed lexical data should be populated")?;
         assert_eq!(data["code"], "native.variables.shadowed_lexical");
@@ -2196,15 +2235,15 @@ mod tests {
             .iter()
             .find(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.documentation.require_pod_sections"),
+                    |code| matches!(code, Code::String(value) if value == "native.documentation.require_pod_sections"),
                 )
             })
             .ok_or("expected native required POD sections finding")?;
         assert_eq!(require_pod_sections.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(require_pod_sections.severity, Some(LspDiagnosticSeverity::WARNING));
+        assert_eq!(require_pod_sections.severity, Some(LspDiagnosticSeverity::Warning));
         assert_eq!(
             require_pod_sections.message,
-            "POD is missing required =head1 DESCRIPTION section"
+            Message::String("POD is missing required =head1 DESCRIPTION section".into())
         );
         let data = require_pod_sections
             .data
@@ -2220,7 +2259,7 @@ mod tests {
     fn native_critic_recommended_profile_filters_pull_diagnostics()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///test.pl".parse()?;
+        let uri: Uri = Uri::from("file:///test.pl");
         let mut context = PullDiagnosticsContext::new();
         context.critic_engine = CriticEngine::Native;
         context.native_critic_profile = "recommended".to_string();
@@ -2236,7 +2275,7 @@ mod tests {
         assert!(
             items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.testing.require_use_strict"),
+                    |code| matches!(code, Code::String(value) if value == "native.testing.require_use_strict"),
                 )
             }),
             "recommended native critic profile should keep strict finding: {items:?}"
@@ -2244,7 +2283,7 @@ mod tests {
         assert!(
             items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.common.assignment_in_condition"),
+                    |code| matches!(code, Code::String(value) if value == "native.common.assignment_in_condition"),
                 )
             }),
             "recommended native critic profile should keep common findings: {items:?}"
@@ -2252,7 +2291,7 @@ mod tests {
         assert!(
             !items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.variables.unused_lexical"),
+                    |code| matches!(code, Code::String(value) if value == "native.variables.unused_lexical"),
                 )
             }),
             "recommended native critic profile should omit broader variable findings: {items:?}"
@@ -2265,7 +2304,7 @@ mod tests {
     fn native_critic_legacy_profile_carrier_keeps_invalid_case_fallback_strict()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///test.pl".parse()?;
+        let uri: Uri = Uri::from("file:///test.pl");
         let mut context = PullDiagnosticsContext::new();
         context.critic_engine = CriticEngine::Native;
         context.native_critic_profile = " RECOMMENDED ".to_string();
@@ -2281,7 +2320,7 @@ mod tests {
         assert!(
             items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.variables.unused_lexical"),
+                    |code| matches!(code, Code::String(value) if value == "native.variables.unused_lexical"),
                 )
             }),
             "legacy invalid profile fallback must remain strict: {items:?}"
@@ -2294,7 +2333,7 @@ mod tests {
     fn native_critic_runtime_context_honors_include_and_exclude_filters()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///test.pl".parse()?;
+        let uri: Uri = Uri::from("file:///test.pl");
         let mut context = PullDiagnosticsContext::new();
         context.critic_engine = CriticEngine::Native;
         context.native_critic_profile = "recommended".to_string();
@@ -2312,7 +2351,7 @@ mod tests {
         assert!(
             items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.testing.require_use_strict"),
+                    |code| matches!(code, Code::String(value) if value == "native.testing.require_use_strict"),
                 )
             }),
             "native include should keep selected strict rule: {items:?}"
@@ -2320,7 +2359,7 @@ mod tests {
         assert!(
             !items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.common.assignment_in_condition"),
+                    |code| matches!(code, Code::String(value) if value == "native.common.assignment_in_condition"),
                 )
             }),
             "native include/exclude filters should suppress assignment rule: {items:?}"
@@ -2328,7 +2367,7 @@ mod tests {
         assert!(
             !items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.testing.require_use_warnings"),
+                    |code| matches!(code, Code::String(value) if value == "native.testing.require_use_warnings"),
                 )
             }),
             "native include should suppress non-included warning rule: {items:?}"
@@ -2344,7 +2383,7 @@ mod tests {
         // `include` used to yield no diagnostics at all under the recommended
         // profile, because the profile registry never carried the rule.
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///test.pl".parse()?;
+        let uri: Uri = Uri::from("file:///test.pl");
         let mut context = PullDiagnosticsContext::new();
         context.critic_engine = CriticEngine::Native;
         context.native_critic_profile = "recommended".to_string();
@@ -2361,7 +2400,7 @@ mod tests {
         assert!(
             items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.variables.unused_lexical"),
+                    |code| matches!(code, Code::String(value) if value == "native.variables.unused_lexical"),
                 )
             }),
             "strict-only include should run under the recommended profile: {items:?}"
@@ -2374,18 +2413,18 @@ mod tests {
     fn native_critic_engine_is_default_for_pull_diagnostics()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///test.pl".parse()?;
+        let uri: Uri = Uri::from("file:///test.pl");
         let items =
             get_full_items(provider.get_document_diagnostics(&uri, "my $x = 1;\n", None, None));
 
         assert!(items.iter().any(|diag| {
             diag.code
                 .as_ref()
-                .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.testing.require_use_strict"))
+                .is_some_and(|code| matches!(code, Code::String(value) if value == "native.testing.require_use_strict"))
         }));
         assert!(!items.iter().any(|diag| {
             diag.code.as_ref().is_some_and(|code| {
-                matches!(code, NumberOrString::String(value) if value == "TestingAndDebugging::RequireUseStrict")
+                matches!(code, Code::String(value) if value == "TestingAndDebugging::RequireUseStrict")
             })
         }));
         Ok(())
@@ -2398,7 +2437,7 @@ mod tests {
         // the core PL603 row and the native system row appeared as duplicates.
         // The normalized seam now merges them for both transports.
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///overlap.pl".parse()?;
+        let uri: Uri = Uri::from("file:///overlap.pl");
         let mut context = PullDiagnosticsContext::new();
         context.critic_engine = CriticEngine::Native;
         context.native_critic_profile = "strict".to_string();
@@ -2414,16 +2453,16 @@ mod tests {
         let pl603 = items
             .iter()
             .filter(|diag| {
-                diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "PL603"),
-                )
+                diag.code
+                    .as_ref()
+                    .is_some_and(|code| matches!(code, Code::String(value) if value == "PL603"))
             })
             .count();
         assert_eq!(pl603, 1, "exactly one merged logical row carries PL603: {items:?}");
         assert!(
             !items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(|code| {
-                    matches!(code, NumberOrString::String(value) if value == "native.security.system_exec")
+                    matches!(code, Code::String(value) if value == "native.security.system_exec")
                 })
             }),
             "the native spelling must ride inside the merged row: {items:?}"
@@ -2435,7 +2474,7 @@ mod tests {
     fn pull_overlap_merges_respect_reviewed_shapes_and_distinct_findings()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///shapes.pl".parse()?;
+        let uri: Uri = Uri::from("file:///shapes.pl");
         let mut context = PullDiagnosticsContext::new();
         context.critic_engine = CriticEngine::Native;
         context.native_critic_profile = "strict".to_string();
@@ -2452,9 +2491,9 @@ mod tests {
             items
                 .iter()
                 .filter(|diag| {
-                    diag.code.as_ref().is_some_and(
-                        |code| matches!(code, NumberOrString::String(value) if value == needle),
-                    )
+                    diag.code
+                        .as_ref()
+                        .is_some_and(|code| matches!(code, Code::String(value) if value == needle))
                 })
                 .count()
         };
@@ -2467,7 +2506,7 @@ mod tests {
         assert!(
             !items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(|code| {
-                    matches!(code, NumberOrString::String(value) if value == "native.common.undef_comparison")
+                    matches!(code, Code::String(value) if value == "native.common.undef_comparison")
                 })
             }),
             "the native literal spelling rides inside its merged row: {items:?}"
@@ -2479,7 +2518,7 @@ mod tests {
     fn pull_suppression_by_compat_spelling_removes_the_complete_alias_row()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///suppress.pl".parse()?;
+        let uri: Uri = Uri::from("file:///suppress.pl");
         let mut context = PullDiagnosticsContext::new();
         context.critic_engine = CriticEngine::Native;
         context.native_critic_profile = "strict".to_string();
@@ -2494,9 +2533,9 @@ mod tests {
 
         assert!(
             !items.iter().any(|diag| {
-                diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "PL603"),
-                )
+                diag.code
+                    .as_ref()
+                    .is_some_and(|code| matches!(code, Code::String(value) if value == "PL603"))
             }),
             "suppression must remove the whole logical row in the pull path too: {items:?}"
         );
@@ -2507,7 +2546,7 @@ mod tests {
     fn unknown_subroutine_attribute_syntax_error_stays_warning()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///test.pl".parse()?;
+        let uri: Uri = Uri::from("file:///test.pl");
         let diagnostic = provider.parse_error_to_diagnostic(
             &uri,
             "sub foo :wat {}",
@@ -2517,8 +2556,8 @@ mod tests {
             },
         );
 
-        assert_eq!(diagnostic.code, Some(NumberOrString::String("PL002".to_string())));
-        assert_eq!(diagnostic.severity, Some(LspDiagnosticSeverity::WARNING));
+        assert_eq!(diagnostic.code, Some(Code::String("PL002".to_string())));
+        assert_eq!(diagnostic.severity, Some(LspDiagnosticSeverity::Warning));
         let data = diagnostic.data.as_ref().ok_or("data should be populated")?;
         assert_eq!(data["code"], "PL002");
         Ok(())
@@ -2548,13 +2587,13 @@ mod tests {
         let mut documents = HashMap::new();
         documents.insert("file:///gap_known.pl".to_string(), doc);
         let previous_result_ids =
-            vec![("file:///gap_known.pl".parse()?, "stale-result-id".to_string())];
+            vec![(Uri::from("file:///gap_known.pl"), "stale-result-id".to_string())];
 
         let provider = PullDiagnosticsProvider::new();
         let report = provider.get_workspace_diagnostics(&documents, previous_result_ids);
         assert_eq!(report.items.len(), 1);
         match &report.items[0] {
-            WorkspaceDocumentDiagnosticReport::Full(full) => {
+            WorkspaceDocumentDiagnosticReport::WorkspaceFullDocumentDiagnosticReport(full) => {
                 assert!(
                     full.full_document_diagnostic_report.result_id.is_none(),
                     "a not-ready (gapped) subject must not receive a reusable resultId"
@@ -2582,7 +2621,7 @@ mod tests {
         let report = provider.get_workspace_diagnostics(&documents, Vec::new());
         assert_eq!(report.items.len(), 1);
         match &report.items[0] {
-            WorkspaceDocumentDiagnosticReport::Full(full) => {
+            WorkspaceDocumentDiagnosticReport::WorkspaceFullDocumentDiagnosticReport(full) => {
                 assert!(
                     full.full_document_diagnostic_report.result_id.is_none(),
                     "a not-ready (gapped) subject must not receive a reusable resultId"
@@ -2605,10 +2644,10 @@ mod tests {
 
     fn full_result_id(report: &DocumentDiagnosticReport) -> Option<String> {
         match report {
-            DocumentDiagnosticReport::Full(full) => {
+            DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(full) => {
                 full.full_document_diagnostic_report.result_id.clone()
             }
-            DocumentDiagnosticReport::Unchanged(unchanged) => {
+            DocumentDiagnosticReport::RelatedUnchangedDocumentDiagnosticReport(unchanged) => {
                 Some(unchanged.unchanged_document_diagnostic_report.result_id.clone())
             }
         }
@@ -2620,7 +2659,7 @@ mod tests {
     fn pull_document_unchanged_for_identical_complete_subject()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///identity_stable.pl".parse()?;
+        let uri: Uri = Uri::from("file:///identity_stable.pl");
         let context = PullDiagnosticsContext::new();
 
         let first = provider.get_document_diagnostics_with_context(
@@ -2640,7 +2679,7 @@ mod tests {
             None,
         );
         match &second {
-            DocumentDiagnosticReport::Unchanged(unchanged) => {
+            DocumentDiagnosticReport::RelatedUnchangedDocumentDiagnosticReport(unchanged) => {
                 assert_eq!(
                     unchanged.unchanged_document_diagnostic_report.result_id, result_id,
                     "unchanged response must echo the composed subject ID"
@@ -2658,7 +2697,7 @@ mod tests {
     fn pull_document_full_after_generation_advance_with_identical_bytes()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///identity_generation.pl".parse()?;
+        let uri: Uri = Uri::from("file:///identity_generation.pl");
         let context = PullDiagnosticsContext::new();
 
         let before = DocumentState::new("my $x = 1;\n", 1);
@@ -2694,7 +2733,7 @@ mod tests {
     fn pull_document_supersedes_on_config_movement_over_unchanged_bytes()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///identity_config.pl".parse()?;
+        let uri: Uri = Uri::from("file:///identity_config.pl");
         let mut context = PullDiagnosticsContext::new();
 
         let first = provider.get_document_diagnostics_with_context(
@@ -2732,7 +2771,10 @@ mod tests {
             &context,
             None,
         );
-        assert!(matches!(markup_moved, DocumentDiagnosticReport::Full(_)));
+        assert!(matches!(
+            markup_moved,
+            DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(_)
+        ));
         assert_ne!(
             Some(severity_id),
             full_result_id(&markup_moved),
@@ -2748,7 +2790,7 @@ mod tests {
     fn pull_document_supersedes_on_resolver_environment_movement()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///identity_resolver.pl".parse()?;
+        let uri: Uri = Uri::from("file:///identity_resolver.pl");
         let mut context = PullDiagnosticsContext::new();
 
         let first = provider.get_document_diagnostics_with_context(
@@ -2775,7 +2817,7 @@ mod tests {
             "fixture must actually move the resolver environment"
         );
         assert!(
-            matches!(moved, DocumentDiagnosticReport::Full(_)),
+            matches!(moved, DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(_)),
             "resolver-environment movement must supersede, never return Unchanged"
         );
 
@@ -2788,7 +2830,7 @@ mod tests {
     fn pull_document_treats_foreign_schema_prior_as_full() -> Result<(), Box<dyn std::error::Error>>
     {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///identity_foreign_prior.pl".parse()?;
+        let uri: Uri = Uri::from("file:///identity_foreign_prior.pl");
         let context = PullDiagnosticsContext::new();
 
         let report = provider.get_document_diagnostics_with_context(
@@ -2800,7 +2842,7 @@ mod tests {
         );
 
         assert!(
-            matches!(report, DocumentDiagnosticReport::Full(_)),
+            matches!(report, DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(_)),
             "an unknown-schema prior ID must produce full, not unchanged"
         );
 
@@ -2814,7 +2856,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
         let uri_str = "file:///identity_shared.pl";
-        let uri: Uri = uri_str.parse()?;
+        let uri: Uri = Uri::from(uri_str);
         let content = "my $x = 1;\n";
         let context = PullDiagnosticsContext::new();
 
@@ -2834,7 +2876,10 @@ mod tests {
         let [item] = chunk.items.as_slice() else {
             return Err("expected exactly one partial item".into());
         };
-        let WorkspaceDocumentDiagnosticReport::Full(workspace_full) = item else {
+        let WorkspaceDocumentDiagnosticReport::WorkspaceFullDocumentDiagnosticReport(
+            workspace_full,
+        ) = item
+        else {
             return Err(format!("expected workspace Full report, got: {item:?}").into());
         };
 
@@ -2845,5 +2890,13 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    /// Extract the plain-string view of a substrate `Message` for assertions.
+    fn message_as_str(message: &gen_lsp_types::Message) -> &str {
+        match message {
+            gen_lsp_types::Message::String(s) => s,
+            gen_lsp_types::Message::MarkupContent(markup) => &markup.value,
+        }
     }
 }

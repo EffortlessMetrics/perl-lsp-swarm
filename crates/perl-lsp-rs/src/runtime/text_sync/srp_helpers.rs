@@ -15,9 +15,10 @@ pub(super) fn is_perl_language_id(language_id: &str) -> bool {
 #[cfg(feature = "incremental")]
 pub(super) fn build_incremental_edit_set(
     original_rope: &ropey::Rope,
-    lsp_changes: &[lsp_types::TextDocumentContentChangeEvent],
+    lsp_changes: &[gen_lsp_types::TextDocumentContentChangeEvent],
 ) -> Option<perl_parser::incremental::incremental_edit::IncrementalEditSet> {
     use crate::textdoc::{PosEnc, safe_range_mapping};
+    use gen_lsp_types::TextDocumentContentChangeEvent;
     use perl_parser::incremental::incremental_edit::{IncrementalEdit, IncrementalEditSet};
 
     fn map_offset_to_original_space(evolving: usize, cumulative_shift: isize) -> Option<usize> {
@@ -33,7 +34,16 @@ pub(super) fn build_incremental_edit_set(
     let mut cumulative_shift: isize = 0;
 
     for change in lsp_changes {
-        let range = change.range.as_ref()?;
+        let (range, text) = match change {
+            TextDocumentContentChangeEvent::TextDocumentContentChangePartial(partial) => {
+                (&partial.range, &partial.text)
+            }
+            // A whole-document replacement cannot be expressed as an incremental
+            // edit; the caller falls back to a full reparse (as before).
+            TextDocumentContentChangeEvent::TextDocumentContentChangeWholeDocument(_) => {
+                return None;
+            }
+        };
         let mapping = safe_range_mapping(&working_rope, range, PosEnc::Utf16)?;
         let evolving_start = mapping.start_byte;
         let evolving_end = mapping.end_byte;
@@ -47,13 +57,12 @@ pub(super) fn build_incremental_edit_set(
             );
             return None;
         };
-        edit_set.add(IncrementalEdit::new(orig_start, orig_end, change.text.clone()));
+        edit_set.add(IncrementalEdit::new(orig_start, orig_end, text.clone()));
 
         working_rope.remove(mapping.start_char..mapping.end_char);
-        working_rope.insert(mapping.start_char, &change.text);
+        working_rope.insert(mapping.start_char, text);
 
-        cumulative_shift +=
-            change.text.len() as isize - (evolving_end as isize - evolving_start as isize);
+        cumulative_shift += text.len() as isize - (evolving_end as isize - evolving_start as isize);
     }
 
     if edit_set.is_empty() { None } else { Some(edit_set) }
