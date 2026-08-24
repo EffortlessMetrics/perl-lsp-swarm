@@ -452,7 +452,7 @@ perl-dap --stdio --log
 
 1. **TCP Attach**: Requires Perl::LanguageServer running with DAP mode
 2. **Variable Rendering**: Some complex Perl structures use placeholders
-3. **Multi-threading**: Single-threaded execution model (Perl limitation)
+3. **Multi-threading**: the `threads` request answers with one synthetic main execution context for DAP conformance only; Coro discovery and Perl interpreter-thread discovery are not proven
 
 ---
 
