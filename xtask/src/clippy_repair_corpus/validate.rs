@@ -8,10 +8,12 @@ use super::model::{
     SCHEMA_VERSION,
 };
 use color_eyre::eyre::{Result, WrapErr, bail};
+use regex::Regex;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
+use std::sync::LazyLock;
 
 pub(crate) const FIXTURE_DIR: &str = "fixtures/clippy_repair_falsifiers";
 const MANIFEST_FILE: &str = "manifest.v1.json";
@@ -86,7 +88,7 @@ struct CorpusContext {
     repo_root: std::path::PathBuf,
     gate_names: BTreeSet<String>,
     lint_fragment_text: String,
-    cargo_workspace_lints_text: String,
+    workspace_lint_names: BTreeSet<String>,
 }
 
 impl CorpusContext {
@@ -114,11 +116,13 @@ impl CorpusContext {
             lint_fragment_text.push('\n');
         }
         let cargo = read_repo_file(repo_root, CARGO_MANIFEST)?;
+        let workspace_lint_names = parse_workspace_lint_names(&cargo)
+            .wrap_err_with(|| format!("parsing workspace lints from {CARGO_MANIFEST}"))?;
         Ok(Self {
             repo_root: repo_root.to_path_buf(),
             gate_names,
             lint_fragment_text,
-            cargo_workspace_lints_text: workspace_lints_section(&cargo).to_owned(),
+            workspace_lint_names,
         })
     }
 
@@ -128,7 +132,7 @@ impl CorpusContext {
             return true;
         }
         let bare = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
-        self.cargo_workspace_lints_text.contains(bare)
+        self.workspace_lint_names.contains(bare)
     }
 
     fn gate_exists(&self, gate: &str) -> bool {
@@ -159,14 +163,28 @@ fn parse_gate_names(raw: &str) -> Result<BTreeSet<String>> {
     Ok(names)
 }
 
-fn workspace_lints_section(cargo_toml: &str) -> &str {
-    let start = match cargo_toml.find("[workspace.lints") {
-        Some(index) => index,
-        None => return "",
+/// Collect the exact lint names configured under `[workspace.lints.*]` so
+/// governed-lint resolution reads every tool section (not just the first) and
+/// can never match a partial or commented name.
+fn parse_workspace_lint_names(cargo_toml: &str) -> Result<BTreeSet<String>> {
+    let value: toml::Value = toml::from_str(cargo_toml).wrap_err("parsing Cargo.toml")?;
+    let mut names = BTreeSet::new();
+    let Some(lints) = value
+        .get("workspace")
+        .and_then(|workspace| workspace.get("lints"))
+        .and_then(|l| l.as_table())
+    else {
+        return Ok(names);
     };
-    let rest = &cargo_toml[start + 1..];
-    let end = rest.find("\n[").map_or(rest.len(), |index| index + 1);
-    &cargo_toml[start..start + end]
+    for (tool, entries) in lints {
+        let Some(entries) = entries.as_table() else {
+            bail!("{CARGO_MANIFEST}: [workspace.lints.{tool}] is not a table");
+        };
+        for name in entries.keys() {
+            names.insert(name.clone());
+        }
+    }
+    Ok(names)
 }
 
 fn sha256_hex(content: &str) -> String {
@@ -429,24 +447,18 @@ fn split_symbol_reference(reference: &str) -> std::result::Result<(&str, &str), 
     }
 }
 
+/// The stable case-id grammar, mirroring the schema pattern
+/// `^[A-G][0-9]{2}-[a-z0-9]+(-[a-z0-9]+)*$` from
+/// schemas/clippy_repair_falsifiers.v1.schema.json so the validator and the
+/// schema cannot drift apart.
+#[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
+static STABLE_CASE_ID: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[A-G][0-9]{2}-[a-z0-9]+(-[a-z0-9]+)*$")
+        .expect("static case-id grammar regex is valid")
+});
+
 fn stable_case_id_ok(id: &str) -> bool {
-    let mut chars = id.chars();
-    match chars.next() {
-        Some(first) if first.is_ascii_uppercase() => {}
-        _ => return false,
-    }
-    let mut digits = 0;
-    for c in chars.by_ref() {
-        if c.is_ascii_digit() && digits < 2 {
-            digits += 1;
-            continue;
-        }
-        if c == '-' || c.is_ascii_lowercase() {
-            continue;
-        }
-        return false;
-    }
-    digits == 2 && !id.ends_with('-') && !id.contains("--")
+    STABLE_CASE_ID.is_match(id)
 }
 
 /// Validate the checked-in corpus against every structural invariant.
@@ -623,5 +635,80 @@ pub(crate) fn violations_for(repo_root: &Path) -> Result<Vec<String>> {
     match result {
         Ok(_) => Ok(Vec::new()),
         Err(error) => Ok(vec![format!("{error:#}")]),
+    }
+}
+
+#[cfg(test)]
+mod stable_id_and_lint_parsing_tests {
+    use super::{parse_workspace_lint_names, stable_case_id_ok};
+
+    #[test]
+    fn case_id_grammar_accepts_schema_valid_shapes() {
+        for id in [
+            "A01-file-wide-suppression-carveout",
+            "G50-private-evidence-for-product-package",
+            "B11-same-total-finding-swap",
+            // Digits are legal inside the tail segments.
+            "A01-v2-parsing",
+        ] {
+            assert!(stable_case_id_ok(id), "schema-valid id rejected: {id}");
+        }
+    }
+
+    #[test]
+    fn case_id_grammar_rejects_schema_invalid_shapes() {
+        for id in [
+            // digits not immediately after the family letter
+            "A-01-file",
+            // family letter outside A..=G
+            "Z01-file",
+            // three digits where exactly two are required
+            "A011-file",
+            // too few / missing digits
+            "A1-file",
+            "A01",
+            // wrong case
+            "a01-file",
+            // dangling or doubled separators
+            "A01-",
+            "A01--x",
+            "",
+            "-A01-file",
+        ] {
+            assert!(!stable_case_id_ok(id), "schema-invalid id accepted: {id}");
+        }
+    }
+
+    #[test]
+    fn workspace_lint_names_cover_every_tool_section_exactly() {
+        let cargo = r#"
+[workspace.lints.clippy]
+unwrap_used = "deny"
+await_holding_lock = "deny"
+collapsible_match = { level = "allow", priority = 1 }
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn" }
+
+[package]
+name = "probe"
+"#;
+        let names = parse_workspace_lint_names(cargo).expect("test toml parses");
+        assert_eq!(
+            names,
+            ["await_holding_lock", "collapsible_match", "unexpected_cfgs", "unwrap_used"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        );
+        // Partial-name substrings must never satisfy governance lookups.
+        assert!(names.contains("unwrap_used"));
+        assert!(!names.contains("wrap_use"));
+    }
+
+    #[test]
+    fn workspace_lint_names_fail_closed_on_non_table_sections() {
+        let cargo = "[workspace.lints]\nclippy = \"oops\"\n";
+        assert!(parse_workspace_lint_names(cargo).is_err());
     }
 }
