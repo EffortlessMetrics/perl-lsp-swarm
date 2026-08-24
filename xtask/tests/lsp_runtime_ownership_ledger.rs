@@ -56,6 +56,13 @@ macro_rules! module_row {
 
 const MODULES: &[ModuleRow] = &[
     module_row!(
+        "active_document_readiness_tests",
+        PerlApplication,
+        "perl-lsp-rs",
+        "retain as cfg(test) falsifiers of active-document readiness beside its subject",
+        "#11675"
+    ),
+    module_row!(
         "client_requests",
         TemporaryCoupling,
         "effortless-lsp + perl-lsp-rs",
@@ -84,6 +91,20 @@ const MODULES: &[ModuleRow] = &[
         "#6957"
     ),
     module_row!(
+        "diagnostics_sink",
+        PerlApplication,
+        "perl-lsp-rs",
+        "retain accepted-ticket push-diagnostics publication policy above runtime",
+        "#11673"
+    ),
+    module_row!(
+        "diagnostics_sink_tests",
+        PerlApplication,
+        "perl-lsp-rs",
+        "retain as cfg(test) falsifiers of the accepted-ticket sink beside its subject",
+        "#11673"
+    ),
+    module_row!(
         "dispatch",
         TemporaryCoupling,
         "effortless-lsp + PerlLspAdapter",
@@ -96,6 +117,20 @@ const MODULES: &[ModuleRow] = &[
         "perl-lsp-rs DocumentStore",
         "move document ownership out of LspServer",
         "#8384"
+    ),
+    module_row!(
+        "document_symbols_sink",
+        PerlApplication,
+        "perl-lsp-rs",
+        "retain accepted-ticket document-symbol publication policy above runtime",
+        "#11674"
+    ),
+    module_row!(
+        "document_symbols_sink_tests",
+        PerlApplication,
+        "perl-lsp-rs",
+        "retain as cfg(test) falsifiers of the document-symbol sink beside its subject",
+        "#11674"
     ),
     module_row!(
         "file_discovery",
