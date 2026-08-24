@@ -483,7 +483,7 @@ jobs:
           - name: analysis
             gates: unit_analysis_full
           - name: lsp
-            gates: unit_lsp_core_full unit_lsp_full lsp_smoke
+            gates: unit_lsp_core_full unit_lsp_full lsp_smoke pending_parse_freshness pull_diagnostics_freshness
           - name: support
             gates: unit_dap_support_full
           - name: corpus
