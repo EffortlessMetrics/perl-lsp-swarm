@@ -2366,8 +2366,11 @@ fn shell_command_watchdog_timeout(timeout_secs: u64) -> Duration {
 }
 
 #[cfg(not(windows))]
+const SHELL_WATCHDOG_GRACE_SECONDS: u64 = 75;
+
+#[cfg(not(windows))]
 fn shell_command_watchdog_timeout(timeout_secs: u64) -> Duration {
-    Duration::from_secs(timeout_secs.saturating_add(75))
+    Duration::from_secs(timeout_secs.saturating_add(SHELL_WATCHDOG_GRACE_SECONDS))
 }
 
 fn run_internal_xtask_gate(
@@ -3175,7 +3178,8 @@ mod tests {
         log_reaches_test_execution, output_diff, parse_first_failure, parse_test_execution_reached,
         parse_test_metrics, plan_gates, read_gate_output, run_gate_plan, run_internal_commit_check,
         run_internal_xtask_gate, run_shell_command_with_timeout, run_single_gate,
-        selects_commit_tier_gate, staged_guard_violation, static_gate_plan, write_receipt,
+        selects_commit_tier_gate, shell_command_watchdog_timeout, staged_guard_violation,
+        static_gate_plan, write_receipt,
     };
     use crate::tasks::ci_scope::{
         ArchWidener, DirectCrate, HeavyLaneEntry, LaneDecisions, LaneEntry, PlatformOverrides,
@@ -3318,6 +3322,23 @@ mod tests {
         assert_eq!(GatePlanningRole::RustPackageScoped.to_string(), "rust_package_scoped");
         assert_eq!(GatePlanningRole::Static.to_string(), "static");
         Ok(())
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn watchdog_timeout_includes_process_cleanup_grace() {
+        assert_eq!(
+            shell_command_watchdog_timeout(720),
+            std::time::Duration::from_secs(795),
+            "the Linux watchdog's 75-second TERM/KILL grace must be included in \
+             the Rust backstop after the declared execution window"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn watchdog_timeout_has_no_unix_cleanup_grace() {
+        assert_eq!(shell_command_watchdog_timeout(720), std::time::Duration::from_secs(720));
     }
 
     #[test]
