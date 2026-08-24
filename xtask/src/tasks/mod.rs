@@ -3,6 +3,7 @@
 pub mod active_goal_manifest;
 pub mod agent_capability_policy;
 pub mod agent_flow;
+pub mod agent_implementation_packet;
 pub mod agent_lease;
 pub mod agent_ledgers;
 pub mod agent_receipt;
@@ -62,6 +63,7 @@ pub mod doc_claims;
 pub mod e2e_validate;
 pub mod edge_cases;
 pub mod emacs_train_context;
+pub mod emacs_train_specs;
 pub mod features;
 pub mod file_policy;
 pub mod finalize_check;
