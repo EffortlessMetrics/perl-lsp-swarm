@@ -287,7 +287,9 @@ mod tests {
             review_after: "2026-02-01".into(),
             broad_glob_reason: None,
         };
-        assert!(validate_entries(&[entry.clone()]).iter().any(|error| error.contains("requires regenerate")));
+        assert!(validate_entries(&[entry.clone()])
+            .iter()
+            .any(|error| error.contains("requires regenerate")));
         entry.regenerate = Some("cargo xtask update-status".into());
         assert!(validate_entries(&[entry]).is_empty());
     }
