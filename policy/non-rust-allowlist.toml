@@ -16,7 +16,7 @@ schema_version = 1
 policy = "non-rust-allowlist"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-08-13"
+updated = "2026-08-24"
 
 [defaults]
 rust_is_default = true
@@ -997,8 +997,7 @@ path = ".gitattributes"
 kind = "vcs_config"
 language = "text"
 surface = "tooling"
-classification = "config"
-owner = "release/ci"
+classification = "config"owner = "release/ci"
 reason = "Git attributes for end-of-line normalization and file-type detection."
 covered_by = [
   "cargo xtask check-file-policy",
@@ -1997,8 +1996,7 @@ id = "non-rust-sublime-host-receipt-schema"
 path = "clients/sublime/sublime-host-receipt.v1.schema.json"
 kind = "release_metadata"
 language = "json"
-surface = "editor"
-classification = "documentation"
+surface = "editor"classification = "documentation"
 owner = "editor/sublime"
 reason = "JSON Schema for the exact-source host receipt the journey publishes."
 covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
@@ -3126,3 +3124,60 @@ covered_by = [
 ]
 created = "2026-08-24"
 review_after = "2026-11-24"
+
+# =============================================================================
+# CI and benchmark legacy tooling classification (#2003)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-ci-legacy-tree"
+glob = "ci/**"
+kind = "ci_tooling"
+language = "mixed"
+surface = "ci"
+classification = "tooling"
+owner = "release/ci"
+reason = "Legacy CI shell scripts and text baselines predating xtask; migration candidates per file-policy doctrine."
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask check-executable-files",
+  "cargo xtask check-process-policy",
+]
+broad_glob_reason = "ci/ holds 30+ legacy shell scripts and text baseline files; migration to xtask is per-file and ongoing."
+created = "2026-08-24"
+review_after = "2026-11-22"
+expires = "2027-08-24"
+
+[[allow]]
+id = "non-rust-benchmarks-scripts"
+glob = "benchmarks/scripts/**"
+kind = "benchmark_tooling"
+language = "mixed"
+surface = "tooling"
+classification = "tooling"
+owner = "parser/perf"
+reason = "Benchmark alert/compare/format helpers; Python scripts for criterion extraction and regression checks."
+covered_by = [
+  "just benchmarks",
+  "cargo xtask check-process-policy",
+]
+broad_glob_reason = "Bench scripts are heterogeneous Python + shell helpers."
+created = "2026-08-24"
+review_after = "2026-11-22"
+expires = "2027-08-24"
+
+[[allow]]
+id = "non-rust-benchmarks-data"
+glob = "benchmarks/{baselines,results}/**"
+kind = "benchmark_data"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "parser/perf"
+reason = "Benchmark baseline and result JSON snapshots used by criterion comparison and regression detection."
+covered_by = [
+  "just benchmarks",
+]
+broad_glob_reason = "Benchmark baselines and results accumulate per-version."
+created = "2026-08-24"
+review_after = "2027-02-20"
