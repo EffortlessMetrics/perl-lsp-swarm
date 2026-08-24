@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 7854,
-  "reason": "#7854 transactional activation wiring: bundle grows with the new activationOwner module and the activate()/deactivate() rewiring (out/extension.js 1465078->1479832, archive-measured from the packaged VSIX; sources are LF-forced so the local win32 and CI linux archives agree) and changelog.md records the new Unreleased entry (19955->20736 after the vsce markdown processor). No file added, removed, or loosened; total recomputed 1638246->1653781. [DEBUG build with 7854 diagnostics: temporary baseline bump for the diagnostic dispatch; will be reverted with the diagnostic commit.]",
+  "reason": "#7854 transactional activation wiring: bundle grows with the new activationOwner module and the activate()/deactivate() rewiring (out/extension.js 1465078->1479832, archive-measured from the packaged VSIX; sources are LF-forced so the local win32 and CI linux archives agree) and changelog.md records the new Unreleased entry (19955->20736 after the vsce markdown processor). No file added, removed, or loosened; total recomputed 1638246->1653781.",
   "base_baseline_file_sha256": "0c0505194ee87ddadae4154dc7d77dd005b2791447d7f0278f1f9078f1eabaeb",
-  "candidate_baseline_file_sha256": "0993b087954a27030bed226fbe83235dc6c63f422c3010e567c28e6e6c955482",
+  "candidate_baseline_file_sha256": "7523197239d7d56ab0e9da688aa1cb8a1eb393af7e88f9f5f0b30decad6f1267",
   "base_inventory_sha256": "5b56dd0d313e33cad431fc52e9e16521d10c4e5cbaa0dda80365bd7f0d2f628e",
-  "candidate_inventory_sha256": "f4017ef88e9db6dbf5326b3eea94f33ce05c47cfe7017a69b9be5afd84ab661f"
+  "candidate_inventory_sha256": "2b5bd1ef1929789257658d0b5623b3d36c7a3f8f9d3fbdaac47d5c4af4f878fd"
 }
