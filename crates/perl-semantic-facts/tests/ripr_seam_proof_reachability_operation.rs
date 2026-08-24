@@ -447,6 +447,14 @@ fn external_consumer_validates_budgets_profiles_and_work_honesty_fail_closed()
             ReachabilityWorkHonestyError::FullConstructionAfterValidatedReuse { stage }
         ))
     );
+    let reuse_receipt = tracker.finish();
+    assert!(reuse_receipt.is_validated_reuse_of(&ReachabilityWorkPathTarget::ResultReuse));
+    assert_eq!(reuse_receipt.work_paths()[0].target(), &ReachabilityWorkPathTarget::ResultReuse);
+    assert!(reuse_receipt.work_paths()[0].is_validated_reuse());
+    assert_eq!(
+        reuse_receipt.work_paths()[0].reused_identity().ok_or("reused identity")?.kind(),
+        ReachabilitySubjectIdentityKind::WorkspaceSnapshot
+    );
 
     let subject = subject()?;
     assert_eq!(subject.operation_id().as_str(), "liveness-op-9");
