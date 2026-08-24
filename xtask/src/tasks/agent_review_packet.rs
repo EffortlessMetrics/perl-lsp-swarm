@@ -1036,13 +1036,13 @@ fn validate_packet_old_paths(root: &Map<String, Value>, violations: &mut Vec<Vio
                 "old_paths: disposition is required".to_string(),
             )),
         }
-        if let Some(seam) = &seam {
-            if !dispositioned.insert(seam.clone()) {
-                violations.push(Violation::new(
-                    "duplicate_old_path_seam",
-                    format!("old_paths: seam {seam} dispositioned twice"),
-                ));
-            }
+        if let Some(seam) = &seam
+            && !dispositioned.insert(seam.clone())
+        {
+            violations.push(Violation::new(
+                "duplicate_old_path_seam",
+                format!("old_paths: seam {seam} dispositioned twice"),
+            ));
         }
     }
     // A migrated seam without a typed disposition is not convergence
@@ -1106,10 +1106,10 @@ fn validate_packet_roles(root: &Map<String, Value>, violations: &mut Vec<Violati
         let required =
             require_bool(entry, "required", "malformed_role_required", "roles", violations);
         require_non_empty(entry, "obligation", "missing_role_obligation", "roles", violations);
-        if required == Some(true) {
-            if let Some(role) = role {
-                required_roles.push(role.to_string());
-            }
+        if required == Some(true)
+            && let Some(role) = role
+        {
+            required_roles.push(role.to_string());
         }
     }
     if required_roles.is_empty() {
@@ -1735,14 +1735,14 @@ fn validate_closure(root: &Map<String, Value>, doc: &Value, violations: &mut Vec
         }
         // An external/public stage is never inferred from an internal merge
         // (#10881 negative control 13).
-        if claimed == Some(true) {
-            if observed != Some(true) || string_field(external, "evidence").is_none() {
-                violations.push(Violation::new(
-                    "external_stage_inferred",
-                    "external_stage: an external stage is claimed without actual observation evidence"
-                        .to_string(),
-                ));
-            }
+        if claimed == Some(true)
+            && (observed != Some(true) || string_field(external, "evidence").is_none())
+        {
+            violations.push(Violation::new(
+                "external_stage_inferred",
+                "external_stage: an external stage is claimed without actual observation evidence"
+                    .to_string(),
+            ));
         }
     }
 
@@ -1859,13 +1859,16 @@ fn canonical_packet(doc: &Value) -> Value {
     let Some(object) = root.as_object_mut() else {
         return root;
     };
-    if let Some(subject) = object.get_mut("subject").and_then(Value::as_object_mut) {
-        if let Some(changed) = subject.get_mut("changed").and_then(Value::as_object_mut) {
-            sort_object_array(changed, "authorities", "ref");
-            sort_object_array(changed, "evidence", "identity");
-            if let Some(seams) = changed.get_mut("migrated_seams").and_then(Value::as_array_mut) {
-                *seams = sorted_string_value(seams);
-            }
+    if let Some(changed) = object
+        .get_mut("subject")
+        .and_then(Value::as_object_mut)
+        .and_then(|subject| subject.get_mut("changed"))
+        .and_then(Value::as_object_mut)
+    {
+        sort_object_array(changed, "authorities", "ref");
+        sort_object_array(changed, "evidence", "identity");
+        if let Some(seams) = changed.get_mut("migrated_seams").and_then(Value::as_array_mut) {
+            *seams = sorted_string_value(seams);
         }
     }
     if let Some(challenge) = object.get_mut("challenge").and_then(Value::as_object_mut) {
@@ -1920,12 +1923,13 @@ fn canonical_closure(doc: &Value) -> Value {
         sort_object_array(review_state, "roles", "role");
         sort_object_array(review_state, "findings", "finding_id");
     }
-    if let Some(controls) = object.get_mut("controls").and_then(Value::as_object_mut) {
-        if let Some(identities) =
-            controls.get_mut("generated_identities").and_then(Value::as_array_mut)
-        {
-            *identities = sorted_string_value(identities);
-        }
+    if let Some(identities) = object
+        .get_mut("controls")
+        .and_then(Value::as_object_mut)
+        .and_then(|controls| controls.get_mut("generated_identities"))
+        .and_then(Value::as_array_mut)
+    {
+        *identities = sorted_string_value(identities);
     }
     root
 }
@@ -2359,7 +2363,7 @@ fn render_finding_markdown(root: &Map<String, Value>) -> String {
     }
     out.push_str("\n## Suggested action\n\n");
     out.push_str(string_field(root, "suggested_action").unwrap_or(""));
-    out.push_str("\n");
+    out.push('\n');
     if let Some(response) = root.get("builder_response").and_then(as_str_map) {
         out.push_str("\n## Builder response\n\n");
         out.push_str(&format!(
