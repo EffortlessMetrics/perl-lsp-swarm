@@ -1228,7 +1228,9 @@ gates:
     # consecutive child timeouts (PR #12091 run 32681631693)
     # (PASS / ASSERTION_FAILURE / REQUEST_TIMEOUT / TEARDOWN_TIMEOUT /
     # PROCESS_EXIT / COMPILE_FAILURE / INSTRUMENT_FAILURE / CANCELLED /
-    # NOT_PROVEN): the perllsp prebuild (#9677 keeps this mandatory), the two
+    # NOT_PROVEN): the perllsp prebuild (#9677 keeps this mandatory) blocks
+    # only server-dependent semantic behavior, while the in-process API child
+    # remains independently provable; the two
     # per-target `--no-run` compiles, the four named semantic-definition
     # cases, the client-support registry suite (one grouped child — shared
     # registry-drift failure surface, no sibling suppression), and the
@@ -1243,8 +1245,11 @@ gates:
     # finish in 173-243s including compiles; default build parallelism — not
     # the old CARGO_BUILD_JOBS=1 — cuts the cold-compile wall), 120s behavior.
     #
-    # The 720s gate timeout is the suite runaway bound sized to the hosted
-    # envelope, NOT the arithmetic sum of child budgets (3 x 2 x 300s retrying
+    # The 720s declared gate timeout is the suite runaway bound sized to the
+    # hosted envelope. On Linux the shared gate watchdog adds a 75s TERM/KILL
+    # grace to its Rust backstop after the declared execution window. This is
+    # NOT the arithmetic sum
+    # of child budgets (3 x 2 x 300s retrying
     # compiles + 6 x 120s behavior = 2520s worst case): this gate runs third
     # in the `lsp` CI Gate shard behind unit_lsp_core_full and unit_lsp_full
     # (typically 173-243s each) under the shard runner's 1200s inner watchdog
