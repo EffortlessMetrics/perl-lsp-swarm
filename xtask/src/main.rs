@@ -34,7 +34,7 @@ use tasks::workflow_trigger_lint::WorkflowTriggerLintFormat;
 use tasks::worktree_allocator::AgentWorktreeCommand;
 use tasks::{
     active_goal_manifest, agent_capability_policy, agent_flow, agent_implementation_packet,
-    agent_lease, agent_receipt, aggregate_receipts, badges, bench, benchmarks, build, build_timing,
+    agent_lease, agent_receipt, agent_review_packet, aggregate_receipts, badges, bench, benchmarks, build, build_timing,
     bump_version, change_set, check, check_agent_context, check_lint_policy, check_test_wiring,
     check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_contract, ci_doctor,
     ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route, ci_scope,
@@ -59,6 +59,7 @@ use tasks::{
     srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
     sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract, unwired_scan,
     update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+
     validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
@@ -184,6 +185,33 @@ enum Commands {
         /// adapter or the fake backend.
         #[arg(long)]
         file: PathBuf,
+    },
+
+    /// Validate the shared adversarial review-packet, review-finding, and
+    /// advisory closure-projection contracts (#10881): the closed schemas,
+    /// the programme-neutral fixtures, the fail-closed negative controls,
+    /// the canonical-semantics control, and the deterministic golden
+    /// projections. `--update-golden` rewrites the golden vectors.
+    #[command(name = "check-agent-review-packet")]
+    CheckAgentReviewPacket {
+        /// Rewrite the golden projection vectors (explicit writer action;
+        /// never live review state).
+        #[arg(long)]
+        update_golden: bool,
+    },
+
+    /// Render one projection of a caller-supplied review document (packet,
+    /// finding, or closure projection) to stdout (#10881). Fails closed when
+    /// the document violates the contract. Document instances are
+    /// runtime-local outputs: this command never writes repository files.
+    #[command(name = "render-review-packet")]
+    RenderAgentReviewPacket {
+        /// Projection to render.
+        #[arg(long, value_enum, default_value = "markdown")]
+        format: agent_review_packet::ReviewProjection,
+
+        /// Path to the caller-supplied review document.
+        input: std::path::PathBuf,
     },
 
     /// Run differential oracle comparison (PackageSubTable vertical slice).
@@ -4428,6 +4456,21 @@ fn run_cli(cli: Cli) -> Result<()> {
             let validated = xtask::vim_lsp_specialized_driver::validate_observation_file(&file)
                 .map_err(|error| eyre!("{error:#}"))?;
             println!("validated {validated} specialized vim/vim-lsp observations");
+            Ok(())
+        }
+        Commands::CheckAgentReviewPacket { update_golden } => {
+            agent_review_packet::run(update_golden)
+        }
+        Commands::RenderAgentReviewPacket { format, input } => {
+            let text = std::fs::read_to_string(&input).map_err(|error| {
+                eyre!("failed to read review document {}: {error}", input.display())
+            })?;
+            let doc: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+                eyre!("failed to parse review document {}: {error}", input.display())
+            })?;
+            let rendered = agent_review_packet::render_to_string(&doc, format)?;
+            println!("{rendered}");
+
             Ok(())
         }
         Commands::CheckOracleCompare => oracle_runner::run(),
