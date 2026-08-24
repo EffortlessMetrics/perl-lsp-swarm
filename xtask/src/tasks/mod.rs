@@ -78,6 +78,7 @@ pub mod gate_receipts;
 pub mod gates;
 pub mod generate_semantic_snapshot;
 pub mod generated_files;
+pub mod generated_policy;
 pub mod git_context;
 pub mod github;
 pub mod github_preflight;

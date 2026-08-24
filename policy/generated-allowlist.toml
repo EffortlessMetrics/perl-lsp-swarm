@@ -1,0 +1,54 @@
+schema_version = 1
+policy = "generated-allowlist"
+owner = "EffortlessMetrics"
+status = "advisory"
+updated = "2026-08-24"
+
+[[allow]]
+id = "generated-cargo-lock"
+path = "Cargo.lock"
+kind = "lockfile"
+generated_by = "cargo"
+regenerate = "cargo update --workspace"
+owner = "rust/dependencies"
+reason = "Workspace lockfile pins dependency graph for reproducible CI and release builds."
+covered_by = ["cargo check --locked --workspace", "cargo xtask check-generated"]
+created = "2026-08-24"
+review_after = "2026-11-22"
+
+[[allow]]
+id = "generated-flake-lock"
+path = "flake.lock"
+kind = "lockfile"
+generated_by = "nix"
+regenerate = "nix flake update"
+owner = "devex/dependencies"
+reason = "Nix lockfile pins development tooling inputs."
+covered_by = ["cargo xtask check-generated"]
+created = "2026-08-24"
+review_after = "2026-11-22"
+
+[[allow]]
+id = "generated-status-pages"
+glob = "docs/project/status/**.md"
+kind = "status_page"
+generated_by = "cargo xtask update-status --write"
+regenerate = "cargo xtask update-status --write"
+owner = "docs/status"
+reason = "Status pages are generated from repository evidence and maintained through the status updater."
+covered_by = ["cargo xtask check-generated"]
+created = "2026-08-24"
+review_after = "2026-11-22"
+broad_glob_reason = "Status pages are generated across the status-document subtree."
+
+[[allow]]
+id = "generated-non-rust-inventory"
+path = "docs/policy/NON_RUST_INVENTORY.md"
+kind = "inventory"
+generated_by = "cargo xtask non-rust inventory --write"
+regenerate = "cargo xtask non-rust inventory --write"
+owner = "release/ci"
+reason = "The committed non-Rust inventory is generated from tracked files and the canonical policy ledger."
+covered_by = ["cargo xtask check-generated", "cargo xtask non-rust inventory"]
+created = "2026-08-24"
+review_after = "2026-11-22"
