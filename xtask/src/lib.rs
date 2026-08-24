@@ -7,4 +7,6 @@ pub mod file_identity;
 pub mod git_ancestry;
 pub mod publication_drift;
 pub mod rust_hygiene;
+pub mod vim_lsp_cell_catalog;
+pub mod vim_lsp_specialized_driver;
 pub mod worktree_cleanup;

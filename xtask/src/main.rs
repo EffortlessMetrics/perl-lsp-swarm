@@ -22,6 +22,7 @@ mod utils;
 use tasks::corpus;
 use tasks::dead_code::{DeadCodeConfig, DeadCodeMode};
 use tasks::dependency_hygiene::{DependencyHygieneConfig, DependencyHygieneMode};
+use tasks::emacs_train_specs::{LeafSpecDisposition, SpecsOutputFormat};
 use tasks::gate_policy::GatePolicyProfile;
 use tasks::gates::{GateTier, OutputFormat as GatesOutputFormat};
 use tasks::issue_plan::IssuePlanOutputFormat;
@@ -32,33 +33,33 @@ use tasks::ux_scorecard::UxScorecardFormat;
 use tasks::workflow_trigger_lint::WorkflowTriggerLintFormat;
 use tasks::worktree_allocator::AgentWorktreeCommand;
 use tasks::{
-    active_goal_manifest, agent_capability_policy, agent_flow, agent_lease, agent_receipt,
-    aggregate_receipts, badges, bench, benchmarks, build, build_timing, bump_version, change_set,
-    check, check_agent_context, check_lint_policy, check_test_wiring, check_toolchain,
-    check_version_sync, ci, ci_audit_workflows, ci_contract, ci_doctor, ci_explain, ci_hygiene,
-    ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route, ci_scope, clean, command_evidence,
-    compare, corpus_audit, count_ratchet, cpan_corpus, dead_code, debt_report, dependency_hygiene,
-    dev, devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases, features,
-    finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates,
-    generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
-    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
-    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
-    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
-    merge_ready, methodology_gate, metrics, native_critic, native_format, native_product_surface,
-    native_tooling, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner, parse_rust,
-    parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness, perl_kwalitee,
-    populate_book, pre_push_plan, prep_crates_io_launch, protocol_type_substrate_matrix,
-    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
-    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, receipts, release, release_artifact_check, release_evidence,
-    release_notes, release_turnkey, repo_hygiene, ripr_evidence, seam_diff,
-    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
-    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
-    srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
-    sync_release_docs, targeted_checks, test, test_lsp, unwired_scan, update_homebrew,
-    update_status, ux_regression_receipt, ux_scorecard, validate_workspace_exclusions,
-    workflow_policy_lint, workflow_trigger_lint, workspace_symbol_classes, worktree_allocator,
-    worktrees, writer_admission,
+    active_goal_manifest, agent_capability_policy, agent_flow, agent_implementation_packet,
+    agent_lease, agent_receipt, aggregate_receipts, badges, bench, benchmarks, build, build_timing,
+    bump_version, change_set, check, check_agent_context, check_lint_policy, check_test_wiring,
+    check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_contract, ci_doctor,
+    ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route, ci_scope,
+    clean, command_evidence, compare, corpus_audit, count_ratchet, cpan_corpus, dead_code,
+    debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc, doc_claims,
+    e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features, finalize_check,
+    fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files,
+    github, github_preflight, github_review, goals, hardening, hook_checks, ignored_tests,
+    incremental_proof, inject_sha_assets, inline_completion_quality, inline_completion_smoke,
+    install_surface_check, integration_proof, intent_diff_gate, issue_plan, layer_check,
+    lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate,
+    metrics, module_train, native_critic, native_format, native_product_surface, native_tooling,
+    oracle_fixture_manifest, oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep,
+    parser_matrix, parser_ratchet, perl_core_harness, perl_kwalitee, populate_book, pre_push_plan,
+    prep_crates_io_launch, protocol_type_substrate_matrix, provider_confidence_matrix,
+    provider_promotion_ledger, publication_facts, publish, publish_closure, publish_manifest_check,
+    publish_receipts, quality_baseline, quality_gate, queue_health, queue_snapshot, receipts,
+    release, release_artifact_check, release_evidence, release_notes, release_turnkey,
+    repo_hygiene, ripr_evidence, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
+    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
+    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
+    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
+    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
+    workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
 use tasks::{bindings, compare_parsers, highlight};
@@ -139,6 +140,51 @@ enum Commands {
     /// Validate differential real-Perl oracle receipt schema.
     CheckOracleReceiptSchema,
 
+    /// Validate the shared typed train edge and claim-profile contract
+    /// (train_edge_contract.v1), its programme-neutral fixtures, and the
+    /// declared adaptations of the landed programme train manifests.
+    CheckTrainEdgeContract,
+
+    /// Validate the shared bounded builder-packet contract
+    /// (agent_implementation_packet.v1, #10872): the closed schema, the
+    /// programme-neutral fixtures, the fail-closed negative controls, the
+    /// canonical-semantics control, and the deterministic golden
+    /// projections. `--update-golden` rewrites the golden vectors.
+    #[command(name = "check-agent-implementation-packet")]
+    CheckAgentImplementationPacket {
+        /// Rewrite the golden projection vectors (explicit writer action;
+        /// never live packet state).
+        #[arg(long)]
+        update_golden: bool,
+    },
+
+    /// Render one projection of a caller-supplied packet document to stdout
+    /// (agent_implementation_packet.v1, #10872). Fails closed when the
+    /// document violates the contract. Packet instances are runtime-local
+    /// outputs: this command never writes repository files.
+    #[command(name = "render-agent-packet")]
+    RenderAgentImplementationPacket {
+        /// Projection to render.
+        #[arg(long, value_enum, default_value = "markdown")]
+        format: agent_implementation_packet::PacketProjection,
+
+        /// Path to the caller-supplied packet document.
+        input: std::path::PathBuf,
+    },
+
+    /// Validate specialized Vim/vim-lsp driver observations
+    /// (vim_lsp_specialized_driver.v1, #11380) against the compiled action
+    /// vocabulary: barrier/timeout/generation/result semantics, boundedness,
+    /// and the pinned Vim + vim-lsp + perllsp subject. The file carries one
+    /// JSON observation per line and fails closed on any violation.
+    #[command(name = "check-vim-lsp-specialized-observations")]
+    CheckVimLspSpecializedObservations {
+        /// Path to the JSONL observations file emitted by the specialized
+        /// adapter or the fake backend.
+        #[arg(long)]
+        file: PathBuf,
+    },
+
     /// Run differential oracle comparison (PackageSubTable vertical slice).
     ///
     /// Loads fixtures from the manifest, runs the PackageSubTable extractor
@@ -181,6 +227,16 @@ enum Commands {
     Goals {
         #[command(subcommand)]
         command: GoalsCommand,
+    },
+
+    /// Offline current-tree status and safe parallel frontier over the
+    /// stable `module_train.v1` train graph (#11626 C02, data from #11625).
+    ///
+    /// Reads only the checked-in manifest and local git facts. Performs no
+    /// network or GitHub access, no scheduling, and no mutation.
+    ModuleTrain {
+        #[command(subcommand)]
+        command: ModuleTrainCommand,
     },
 
     /// Capture a GitHub PR queue snapshot for disconnected maintainership.
@@ -271,6 +327,14 @@ enum Commands {
     IssuePlan {
         #[command(subcommand)]
         command: IssuePlanSubcommand,
+    },
+
+    /// Editor-integration train tooling (#7979/#8706). Deterministic,
+    /// offline, fail-closed projections over checked train contracts.
+    #[command(name = "integration")]
+    Integration {
+        #[command(subcommand)]
+        command: IntegrationCommand,
     },
 
     /// Writer admission — read-only pre-admission diagnostic (#3957 W1).
@@ -2122,6 +2186,15 @@ enum Commands {
         receipt: bool,
     },
 
+    /// Run the `lsp_smoke` gate as atomic, bounded, independently terminal
+    /// children with typed per-child receipts (#8063).
+    LspSmokeAtomic {
+        /// Path for the incremental child receipt JSON (gate telemetry; not
+        /// a `test_results` envelope, so it never feeds Test Analytics).
+        #[arg(long)]
+        receipt: PathBuf,
+    },
+
     /// Inspect and validate effective gate policy profiles.
     GatePolicy {
         #[command(subcommand)]
@@ -3808,6 +3881,42 @@ enum SyncDivergenceCommand {
 }
 
 #[derive(Subcommand)]
+enum IntegrationCommand {
+    /// Emacs support train tooling: the exact-tree context engine (CTXENG
+    /// #11756) over the stable emacs_train.v1 graph, the E01R revision
+    /// ledger and the checked population mappings. Offline only.
+    Emacs {
+        #[command(subcommand)]
+        command: EmacsIntegrationCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum EmacsIntegrationCommand {
+    /// Operate on the Emacs support train's checked contracts.
+    Train {
+        #[command(subcommand)]
+        command: EmacsTrainSubcommand,
+    },
+}
+
+/// Union of the Emacs train command families over the stable
+/// `emacs_train.v1` graph: the exact-tree context engine (CTXENG #11756)
+/// and the checked leaf-spec disposition compiler (#11751).
+#[derive(Subcommand)]
+enum EmacsTrainSubcommand {
+    /// Exact-tree context engine operations (#11756).
+    #[command(flatten)]
+    Context(emacs_train_context::EmacsTrainCommand),
+    /// Checked leaf-spec disposition compiler (#11751): plan, compile,
+    /// check and explain per-node spec dispositions.
+    Specs {
+        #[command(subcommand)]
+        command: EmacsTrainSpecsCommand,
+    },
+}
+
+#[derive(Subcommand)]
 enum IssuePlanSubcommand {
     /// Report-only audit of explicit issue work packets and `#0000` references.
     /// Always exits 0; lifecycle labels are not audit authority.
@@ -3835,6 +3944,91 @@ enum IssuePlanSubcommand {
         /// Output format.
         #[arg(long, value_enum, default_value = "human")]
         format: IssuePlanOutputFormat,
+    },
+}
+
+#[derive(Subcommand)]
+enum EmacsTrainSpecsCommand {
+    /// Print the deterministic disposition plan for every stable node
+    /// (report-only; a partial ledger is the normal pre-population state).
+    Plan {
+        /// Stable train manifest path (default: the E01 emacs_train.v1 graph).
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+
+        /// Disposition ledger path (default: .spec/11717-emacs-train-specs/).
+        #[arg(long)]
+        ledger: Option<PathBuf>,
+
+        /// Output format.
+        #[arg(long, value_enum, default_value = "human")]
+        format: SpecsOutputFormat,
+    },
+
+    /// Compile one node (or `--all`) into a checked disposition record.
+    /// Fails closed on any law violation; a disposition change of an
+    /// existing record requires `--readjudicate`.
+    Compile {
+        /// Node id, alias or issue number (omit with `--all`).
+        subject: Option<String>,
+
+        /// Compile the whole denominator from manifest-embedded
+        /// dispositions (all-or-nothing; skips already-compiled nodes).
+        #[arg(long)]
+        all: bool,
+
+        /// Stable train manifest path.
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+
+        /// Disposition ledger path to write.
+        #[arg(long)]
+        ledger: Option<PathBuf>,
+
+        /// Reviewed disposition override (records provenance `adjudicated`).
+        #[arg(long, value_enum)]
+        disposition: Option<LeafSpecDisposition>,
+
+        /// Existing checked bundle path for a `SPEC_COMPILED` adjudication.
+        #[arg(long)]
+        compiled_spec: Option<PathBuf>,
+
+        /// Reviewed reason (required for RETURN_TO_ISSUE / NOT_PROVEN).
+        #[arg(long)]
+        reviewed_reason: Option<String>,
+
+        /// Allow replacing an existing record's disposition.
+        #[arg(long)]
+        readjudicate: bool,
+    },
+
+    /// Fail-closed validation of the whole disposition denominator.
+    Check {
+        /// Stable train manifest path.
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+
+        /// Disposition ledger path.
+        #[arg(long)]
+        ledger: Option<PathBuf>,
+
+        /// Output format.
+        #[arg(long, value_enum, default_value = "human")]
+        format: SpecsOutputFormat,
+    },
+
+    /// Print the disposition and full leaf-contract trace for one node.
+    Explain {
+        /// Node id, alias or issue number.
+        subject: String,
+
+        /// Stable train manifest path.
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+
+        /// Disposition ledger path.
+        #[arg(long)]
+        ledger: Option<PathBuf>,
     },
 }
 
@@ -3878,6 +4072,30 @@ enum DevexCommand {
         /// Receipt path referenced by the generated PR body.
         #[arg(long, default_value = "target/devex/local-proof.json")]
         receipt: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModuleTrainCommand {
+    /// Project every stable node into its typed exact current-tree state.
+    ///
+    /// Implementation presence stays independent from dependency readiness,
+    /// evidence profiles, and support stages. Nodes without a semantic probe
+    /// in this slice are reported `not_proven`, never guessed.
+    Status {
+        /// Exact tree to bind. This slice accepts `HEAD` only (the current
+        /// checkout); arbitrary-tree checkout is a recorded residual.
+        #[arg(long, default_value = "HEAD")]
+        tree: String,
+    },
+
+    /// Print the safe offline parallel frontier: all and only hard-ready,
+    /// role-valid, conflict-recorded leaves with visible limitations.
+    Next {
+        /// Exact tree to bind. This slice accepts `HEAD` only (the current
+        /// checkout); arbitrary-tree checkout is a recorded residual.
+        #[arg(long, default_value = "HEAD")]
+        tree: String,
     },
 }
 
@@ -4097,6 +4315,27 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
+        Commands::CheckTrainEdgeContract => train_edge_contract::run(),
+        Commands::CheckAgentImplementationPacket { update_golden } => {
+            agent_implementation_packet::run(update_golden)
+        }
+        Commands::RenderAgentImplementationPacket { format, input } => {
+            let text = std::fs::read_to_string(&input).map_err(|error| {
+                eyre!("failed to read packet document {}: {error}", input.display())
+            })?;
+            let doc: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+                eyre!("failed to parse packet document {}: {error}", input.display())
+            })?;
+            let rendered = agent_implementation_packet::render_to_string(&doc, format)?;
+            println!("{rendered}");
+            Ok(())
+        }
+        Commands::CheckVimLspSpecializedObservations { file } => {
+            let validated = xtask::vim_lsp_specialized_driver::validate_observation_file(&file)
+                .map_err(|error| eyre!("{error:#}"))?;
+            println!("validated {validated} specialized vim/vim-lsp observations");
+            Ok(())
+        }
         Commands::CheckOracleCompare => oracle_runner::run(),
         Commands::CheckSemanticTokenClasses => semantic_token_classes::run(),
         Commands::CheckLsp318Claims => lsp_318_claims::run(),
@@ -4105,6 +4344,11 @@ fn run_cli(cli: Cli) -> Result<()> {
             protocol_type_substrate_matrix::run(check)
         }
         Commands::CheckWorkspaceSymbolClasses => workspace_symbol_classes::run(),
+        Commands::ModuleTrain { command } => match command {
+            ModuleTrainCommand::Status { tree } => module_train::run_status(&tree),
+            ModuleTrainCommand::Next { tree } => module_train::run_next(&tree),
+        },
+
         Commands::Goals { command } => match command {
             GoalsCommand::Next { program, fixture, json } => goals::next(program, fixture, json),
             GoalsCommand::Reconcile { program, fixture, json } => {
@@ -4471,6 +4715,43 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::IntegrationProof { spec, receipt } => {
             integration_proof::run_from_file(&spec, &receipt)
         }
+        Commands::Integration { command } => match command {
+            IntegrationCommand::Emacs { command } => match command {
+                EmacsIntegrationCommand::Train { command } => match command {
+                    EmacsTrainSubcommand::Context(inner) => emacs_train_context::run(inner),
+                    EmacsTrainSubcommand::Specs { command } => match command {
+                        EmacsTrainSpecsCommand::Plan { manifest, ledger, format } => {
+                            emacs_train_specs::plan(manifest, ledger, format)
+                        }
+                        EmacsTrainSpecsCommand::Compile {
+                            subject,
+                            all,
+                            manifest,
+                            ledger,
+                            disposition,
+                            compiled_spec,
+                            reviewed_reason,
+                            readjudicate,
+                        } => emacs_train_specs::compile(emacs_train_specs::CompileConfig {
+                            subject,
+                            all,
+                            manifest_path: manifest,
+                            ledger_path: ledger,
+                            disposition,
+                            compiled_spec,
+                            reviewed_reason,
+                            readjudicate,
+                        }),
+                        EmacsTrainSpecsCommand::Check { manifest, ledger, format } => {
+                            emacs_train_specs::check(manifest, ledger, format)
+                        }
+                        EmacsTrainSpecsCommand::Explain { subject, manifest, ledger } => {
+                            emacs_train_specs::explain(&subject, manifest, ledger)
+                        }
+                    },
+                },
+            },
+        },
         Commands::RepoHygiene { base, head, receipt, summary } => {
             repo_hygiene::run(repo_hygiene::RepoHygieneConfig { base, head, receipt, summary })
         }
@@ -5157,6 +5438,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             staged: true,
             ..gates::GateRunnerConfig::default()
         }),
+        Commands::LspSmokeAtomic { receipt } => tasks::lsp_smoke_atomic::run_cli(&receipt),
         Commands::GatePolicy { command } => match command {
             GatePolicyCommand::Check => match tasks::gate_policy::check() {
                 Ok(()) => Ok(()),

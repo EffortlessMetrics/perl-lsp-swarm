@@ -9,6 +9,9 @@
 //! - `terminate` with no `restart` arg: event body must NOT include `restart`
 //! - `terminate` with empty args (`{}`): event body must NOT include `restart`
 //! - `terminate` twice in succession: both calls succeed and emit events
+//! - `terminate` then `disconnect`: each client terminal request emits its own
+//!   event (the request closes the session generation and re-arms the
+//!   single-emission gate)
 //! - `disconnect` (no session): terminated event body must be `None`
 //! - `restart` request (no session): fails cleanly per `unsupported` handler
 //!
@@ -130,6 +133,35 @@ fn terminate_twice_in_succession_both_succeed_and_emit_events() -> TestResult {
         second_body.get("restart").and_then(Value::as_bool),
         Some(true),
         "second terminate must echo restart=true, independent of first"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn terminate_then_disconnect_each_acknowledged_with_terminated_event() -> TestResult {
+    let (mut adapter, rx) = create_test_adapter();
+
+    // First terminal request: terminate.
+    let first = adapter.handle_request(1, "terminate", Some(json!({ "restart": false })));
+    assert_response_success(&first, "terminate")?;
+    let first_body = must_some(wait_for_event(&rx, "terminated", 200));
+    assert_eq!(
+        first_body.get("restart").and_then(Value::as_bool),
+        Some(false),
+        "terminate must echo restart=false"
+    );
+
+    // A subsequent disconnect is also a client-initiated terminal request and
+    // must be acknowledged with its own terminated event (null body: no
+    // restart arg was sent). Each client terminal request closes the session
+    // generation, re-arming the single-emission gate for the next one.
+    let second = adapter.handle_request(2, "disconnect", None);
+    assert_response_success(&second, "disconnect")?;
+    let second_body = must_some(wait_for_event(&rx, "terminated", 200));
+    assert!(
+        second_body.get("restart").is_none(),
+        "disconnect after terminate must not carry a restart field, got body={second_body}"
     );
 
     Ok(())

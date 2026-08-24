@@ -1,0 +1,45 @@
+{
+  "schema": "train_edge_contract.v1",
+  "schema_version": 1,
+  "contract_id": "invalid-two-active-conditional-alternatives",
+  "programme": { "name": "invalid-examples" },
+  "authorities": [
+    { "id": "release_decision", "subject": "release scope selection" }
+  ],
+  "propositions": [
+    { "id": "P_gate", "claim_ceiling": "Gated only." },
+    { "id": "P_branch_full", "claim_ceiling": "Full branch only." },
+    { "id": "P_branch_atomic", "claim_ceiling": "Atomic branch only." }
+  ],
+  "edges": [
+    {
+      "source": "P_gate",
+      "kind": "conditional_release_gate",
+      "target": "P_branch_full",
+      "selecting_authority": "release_decision",
+      "selected_value": "full_document",
+      "selection_subject": "editing scope",
+      "active_predecessor": "P_branch_full",
+      "invalidation_rule": "selection expires on change"
+    },
+    {
+      "source": "P_gate",
+      "kind": "conditional_release_gate",
+      "target": "P_branch_atomic",
+      "selecting_authority": "release_decision",
+      "selected_value": "atomic_incremental",
+      "selection_subject": "editing scope",
+      "active_predecessor": "P_branch_atomic",
+      "invalidation_rule": "selection expires on change"
+    }
+  ],
+  "claim_profiles": [
+    {
+      "id": "invalid_profile",
+      "version": 1,
+      "required": ["P_gate"],
+      "allowed_terminal_limitation_states": ["not_proven"],
+      "claim_ceiling": "Invalid example only."
+    }
+  ]
+}

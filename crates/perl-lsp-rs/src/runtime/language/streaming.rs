@@ -38,11 +38,11 @@ impl LspServer {
         let selected_completion = selected_inline_completion_info(&params)?;
         let partial_result_token =
             params.get("partialResultToken").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let document_version = params
-            .get("textDocument")
-            .and_then(|td| td.get("version"))
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
+        // The request's document version, when the client supplies one. An
+        // absent version is "unknown", not zero: it cannot prove staleness.
+        let request_document_version =
+            params.get("textDocument").and_then(|td| td.get("version")).and_then(|v| v.as_i64());
+        let document_version = request_document_version.unwrap_or(0);
 
         // An automatic custom-stream request can never display external output
         // unbidden: delegate to the standard deterministic-only route before
@@ -60,11 +60,21 @@ impl LspServer {
             }
         };
 
-        // Snapshot text
-        let text = {
+        // Snapshot text plus its version/generation identity under the
+        // document lock. The identity binds the prepared AI context to one
+        // immutable snapshot, matching the buffered route.
+        let (text, snapshot_identity) = {
             let documents = self.documents_guard();
             match self.get_document(&documents, uri) {
-                Some(doc) => doc.text_arc.to_string(),
+                Some(doc) => (
+                    doc.text_arc.to_string(),
+                    perl_lsp_rs_core::providers::inline_completion::InlineCompletionSnapshotIdentity {
+                        document_version: Some(i64::from(doc.version)),
+                        source_generation: Some(u64::from(
+                            doc.generation.load(std::sync::atomic::Ordering::Acquire),
+                        )),
+                    },
+                ),
                 None => return Ok(Some(json!(null))),
             }
         };
@@ -103,12 +113,22 @@ impl LspServer {
         };
         let session = self.stream_sessions().start_session(session_key);
 
-        // Prepare context
+        // Prepare context. Invoked AI preparation fails closed here: a stale
+        // request version or a hard-reject cursor makes zero backend calls,
+        // exactly as in the buffered route.
         let provider =
             perl_lsp_rs_core::providers::inline_completion::InlineCompletionProvider::new();
-        let context = match provider.prepare_context(&text, line, character) {
-            Some(ctx) => ctx,
-            None => return Ok(Some(json!(null))),
+        let context = match provider.prepare_invoked_context(
+            &text,
+            line,
+            character,
+            snapshot_identity,
+            request_document_version,
+        ) {
+            perl_lsp_rs_core::providers::inline_completion::PreparedInvocationContext::Ready(
+                ctx,
+            ) => *ctx,
+            _ => return Ok(Some(json!(null))),
         };
 
         // Build request

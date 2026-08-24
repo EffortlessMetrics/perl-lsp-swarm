@@ -1,0 +1,68 @@
+{
+  "schema": "train_edge_contract.adaptations.v1",
+  "schema_version": 1,
+  "description": "Declared class-to-kind adaptations binding landed programme train manifests to the shared train_edge_contract.v1 vocabulary. Programme manifests keep their own bytes; this table binds their local dependency classes to the shared semantic kinds without rewriting them. A manifest class with no declared adaptation row fails closed.",
+  "adaptations": [
+    {
+      "programme_schema": "emacs_train.v1",
+      "class": "hard",
+      "kind": "requires_implementation"
+    },
+    {
+      "programme_schema": "emacs_train.v1",
+      "class": "evidence",
+      "kind": "requires_behavior_for_claim"
+    },
+    {
+      "programme_schema": "emacs_train.v1",
+      "class": "optional",
+      "kind": "consumes_if_available"
+    },
+    {
+      "programme_schema": "issue_controller_train.v1",
+      "class": "hard",
+      "kind": "requires_implementation"
+    },
+    {
+      "programme_schema": "issue_controller_train.v1",
+      "class": "evidence",
+      "kind": "requires_behavior_for_claim"
+    },
+    {
+      "programme_schema": "issue_controller_train.v1",
+      "class": "optional",
+      "kind": "consumes_if_available"
+    },
+    {
+      "programme_schema": "issue_controller_train.v1",
+      "class": "external",
+      "kind": "external_checkpoint",
+      "stage": "manual_authorization",
+      "rationale": "The controller train's external class names explicit human authorization before a live migration (#EXPLICIT-AUTHORIZATION on R05B); manual_authorization is the exact common stage."
+    },
+    {
+      "programme_schema": "module_train.v1",
+      "class": "hard",
+      "kind": "requires_implementation"
+    },
+    {
+      "programme_schema": "module_train.v1",
+      "class": "evidence",
+      "kind": "requires_behavior_for_claim"
+    }
+  ],
+  "manifests": [
+    {
+      "bundle": ".spec/10918-emacs-train-graph",
+      "programme_schema": "emacs_train.v1"
+    },
+    {
+      "bundle": ".spec/11764-controller-train-graph",
+      "programme_schema": "issue_controller_train.v1"
+    },
+    {
+      "bundle": ".spec/11625-module-train-graph",
+      "programme_schema": "module_train.v1"
+    }
+  ]
+}
