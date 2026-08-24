@@ -10,14 +10,14 @@
       wired into the xtask CLI.
 - [x] Frontier derivation from manifest data (typed edges, role rejection,
       controller-satisfaction law, binding-pending gate, ceilings-not-quotas).
-- [x] 24 focused tests in `xtask/src/tasks/module_train_tests.rs`.
+- [x] 29 focused tests in `xtask/src/tasks/module_train_tests.rs`.
 - [x] `.spec/11626-module-train-frontier/` bundle (this file's siblings).
 
 ## Proof (scoped; two-run deterministic)
 
 ```text
 cargo test -p xtask --locked --bin xtask module_train
-  -> test result: ok. 24 passed; 0 failed
+  -> test result: ok. 29 passed; 0 failed
 
 cargo run -q -p xtask --locked -- module-train status --tree HEAD   (x2)
 cargo run -q -p xtask --locked -- module-train next --tree HEAD      (x2)

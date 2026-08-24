@@ -784,8 +784,17 @@ fn insertion_order_does_not_move_any_byte() -> Result<()> {
 
 #[test]
 fn tree_binding_rejects_non_head_trees() -> Result<()> {
-    if tree_binding("origin/main").is_ok() {
-        bail!("non-HEAD tree binding must fail closed in this slice");
+    // Assert the rejection reason, not merely failure: a tree_binding broken
+    // elsewhere (project-root or git spawn faults) must not satisfy this test.
+    let failure = match tree_binding("origin/main") {
+        Err(failure) => failure,
+        Ok(binding) => {
+            bail!("non-HEAD tree binding must fail closed in this slice, got {binding:?}")
+        }
+    };
+    let message = format!("{failure:#}");
+    if !message.contains("binds --tree HEAD only") {
+        bail!("non-HEAD rejection failed for the wrong reason: {message}");
     }
     Ok(())
 }

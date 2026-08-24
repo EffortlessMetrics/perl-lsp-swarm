@@ -1052,7 +1052,21 @@ fn project_states(manifest: &Manifest) -> Result<Vec<NodeStatus>> {
                             }
                         }
                         "optional" => {
-                            reasons.insert(format!("optional_dep_not_current:{target}"));
+                            // Same satisfaction test as the evidence arm:
+                            // optional and evidence edges are both
+                            // visibility-only currentness reasons, so a
+                            // landed-or-controller target must satisfy both
+                            // identically.
+                            let satisfied = if target.starts_with('#') {
+                                false
+                            } else if let Some(target_node) = by_id.get(target) {
+                                target_node.train_role == "controller" || landed.contains(target)
+                            } else {
+                                false
+                            };
+                            if !satisfied {
+                                reasons.insert(format!("optional_dep_not_current:{target}"));
+                            }
                         }
                         "external" => {
                             external_blocks

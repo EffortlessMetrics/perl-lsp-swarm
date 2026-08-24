@@ -30,8 +30,9 @@
 
 - States: `landed_current_tree | ready | blocked_hard | blocked_evidence |
   blocked_external_or_authorization | incomplete_current_tree | superseded |
-  not_proven` (last two unreachable in this slice; populated supersessions
-  fail closed).
+  not_proven` (`incomplete_current_tree` and `superseded` unreachable in
+  this slice; `not_proven` is reachable for role-rejected non-buildable
+  nodes; populated supersessions fail closed).
 - Hard-dep satisfaction: landed node, controller (topology-satisfied per
   manifest `limitations[1]`), or — for cross-programme authorities — honestly
   unestablishable offline (typed reason, still a hard block).
