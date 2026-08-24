@@ -89,8 +89,9 @@ impl Evaluator {
 
         match &node.kind {
             NodeKind::ExpressionStatement { expression } => self.eval(expression, depth + 1),
-            NodeKind::Number { value } => parse_integer(value)
-                .map_or(AbstractValue::Unknown, |value| AbstractValue::Scalar(ScalarValue::Integer(value))),
+            NodeKind::Number { value } => parse_integer(value).map_or(AbstractValue::Unknown, |value| {
+                AbstractValue::Scalar(ScalarValue::Integer(value))
+            }),
             NodeKind::String { value, interpolated } if !interpolated => {
                 let value = unquote(value);
                 if value.len() > self.budget.max_string_length {
@@ -144,14 +145,18 @@ impl Evaluator {
             return AbstractValue::Unknown;
         };
         match (op, lhs, rhs) {
-            ("+", ScalarValue::Integer(a), ScalarValue::Integer(b)) =>
-                a.checked_add(b).map_or(AbstractValue::Unknown, scalar_integer),
-            ("-", ScalarValue::Integer(a), ScalarValue::Integer(b)) =>
-                a.checked_sub(b).map_or(AbstractValue::Unknown, scalar_integer),
-            ("*", ScalarValue::Integer(a), ScalarValue::Integer(b)) =>
-                a.checked_mul(b).map_or(AbstractValue::Unknown, scalar_integer),
-            ("/", ScalarValue::Integer(a), ScalarValue::Integer(b)) if b != 0 =>
-                a.checked_div(b).map_or(AbstractValue::Unknown, scalar_integer),
+            ("+", ScalarValue::Integer(a), ScalarValue::Integer(b)) => {
+                a.checked_add(b).map_or(AbstractValue::Unknown, scalar_integer)
+            }
+            ("-", ScalarValue::Integer(a), ScalarValue::Integer(b)) => {
+                a.checked_sub(b).map_or(AbstractValue::Unknown, scalar_integer)
+            }
+            ("*", ScalarValue::Integer(a), ScalarValue::Integer(b)) => {
+                a.checked_mul(b).map_or(AbstractValue::Unknown, scalar_integer)
+            }
+            ("/", ScalarValue::Integer(a), ScalarValue::Integer(b)) if b != 0 => {
+                a.checked_div(b).map_or(AbstractValue::Unknown, scalar_integer)
+            }
             (".", a, b) => self.concat(a, b),
             ("==", a, b) | ("eq", a, b) => scalar_bool(a == b),
             ("!=", a, b) | ("ne", a, b) => scalar_bool(a != b),
@@ -170,22 +175,36 @@ impl Evaluator {
 
     fn eval_unary(&self, op: &str, operand: &Node, depth: usize) -> AbstractValue {
         let value = self.eval(operand, depth + 1);
-        let AbstractValue::Scalar(value) = value else { return value };
+        let AbstractValue::Scalar(value) = value else {
+            return value;
+        };
         match (op, value) {
-            ("+", ScalarValue::Integer(value)) | ("", ScalarValue::Integer(value)) => scalar_integer(value),
-            ("-", ScalarValue::Integer(value)) => value.checked_neg().map_or(AbstractValue::Unknown, scalar_integer),
+            ("+", ScalarValue::Integer(value)) | ("", ScalarValue::Integer(value)) => {
+                scalar_integer(value)
+            }
+            ("-", ScalarValue::Integer(value)) => {
+                value.checked_neg().map_or(AbstractValue::Unknown, scalar_integer)
+            }
             ("!", value) => scalar_bool(!is_truthy(&value)),
             _ => AbstractValue::Unknown,
         }
     }
 
-    fn eval_ternary(&self, condition: &Node, then_expr: &Node, else_expr: &Node, depth: usize) -> AbstractValue {
+    fn eval_ternary(
+        &self,
+        condition: &Node,
+        then_expr: &Node,
+        else_expr: &Node,
+        depth: usize,
+    ) -> AbstractValue {
         match self.eval(condition, depth + 1) {
             AbstractValue::Scalar(value) if is_truthy(&value) => self.eval(then_expr, depth + 1),
             AbstractValue::Scalar(_) => self.eval(else_expr, depth + 1),
             AbstractValue::OverBudget => AbstractValue::OverBudget,
             AbstractValue::Dynamic => AbstractValue::Dynamic,
-            AbstractValue::Unknown => self.join(self.eval(then_expr, depth + 1), self.eval(else_expr, depth + 1)),
+            AbstractValue::Unknown => {
+                self.join(self.eval(then_expr, depth + 1), self.eval(else_expr, depth + 1))
+            }
             AbstractValue::Finite(_) => AbstractValue::Unknown,
         }
     }
@@ -195,11 +214,15 @@ impl Evaluator {
         for value in [left, right] {
             match value {
                 AbstractValue::Scalar(value) => {
-                    if !values.contains(&value) { values.push(value); }
+                    if !values.contains(&value) {
+                        values.push(value);
+                    }
                 }
                 AbstractValue::Finite(more) => {
                     for value in more {
-                        if !values.contains(&value) { values.push(value); }
+                        if !values.contains(&value) {
+                            values.push(value);
+                        }
                     }
                 }
                 AbstractValue::OverBudget => return AbstractValue::OverBudget,
@@ -215,8 +238,12 @@ impl Evaluator {
     }
 }
 
-fn scalar_integer(value: i128) -> AbstractValue { AbstractValue::Scalar(ScalarValue::Integer(value)) }
-fn scalar_bool(value: bool) -> AbstractValue { scalar_integer(i128::from(value)) }
+fn scalar_integer(value: i128) -> AbstractValue {
+    AbstractValue::Scalar(ScalarValue::Integer(value))
+}
+fn scalar_bool(value: bool) -> AbstractValue {
+    scalar_integer(i128::from(value))
+}
 
 fn is_truthy(value: &ScalarValue) -> bool {
     match value {
@@ -235,14 +262,17 @@ fn format_scalar(value: &ScalarValue) -> String {
 }
 
 fn unquote(value: &str) -> &str {
-    value.strip_prefix('"').and_then(|value| value.strip_suffix('"'))
+    value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
         .or_else(|| value.strip_prefix('\'').and_then(|value| value.strip_suffix('\'')))
         .unwrap_or(value)
 }
 
 fn parse_integer(value: &str) -> Option<i128> {
     let value = value.replace('_', "");
-    let (negative, value) = value.strip_prefix('-').map_or((false, value.as_str()), |value| (true, value));
+    let (negative, value) =
+        value.strip_prefix('-').map_or((false, value.as_str()), |value| (true, value));
     let parsed = if let Some(value) = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")) {
         i128::from_str_radix(value, 16).ok()
     } else if let Some(value) = value.strip_prefix("0b").or_else(|| value.strip_prefix("0B")) {
@@ -251,7 +281,9 @@ fn parse_integer(value: &str) -> Option<i128> {
         i128::from_str_radix(value, 8).ok()
     } else if !value.contains('.') && !value.contains('e') && !value.contains('E') {
         value.parse().ok()
-    } else { None };
+    } else {
+        None
+    };
     parsed.map(|value| if negative { -value } else { value })
 }
 
@@ -261,14 +293,23 @@ mod tests {
     use crate::Parser;
 
     fn expression(source: &str) -> Node {
-        Parser::new(source).parse().expect("fixture should parse")
-            .children().into_iter().next().expect("expression statement").clone()
+        Parser::new(source)
+            .parse()
+            .expect("fixture should parse")
+            .children()
+            .into_iter()
+            .next()
+            .expect("expression statement")
+            .clone()
     }
 
     #[test]
     fn folds_bounded_integer_and_string_expressions() {
         assert_eq!(evaluate(&expression("2 + 3 * 4;")), scalar_integer(14));
-        assert_eq!(evaluate(&expression("'find_' . 'user';")), AbstractValue::Scalar(ScalarValue::String("find_user".into())));
+        assert_eq!(
+            evaluate(&expression("'find_' . 'user';")),
+            AbstractValue::Scalar(ScalarValue::String("find_user".into()))
+        );
     }
 
     #[test]
@@ -279,13 +320,32 @@ mod tests {
 
     #[test]
     fn joins_unknown_condition_without_fabricating_a_single_value() {
-        assert_eq!(evaluate(&expression("$flag ? 'Foo' : 'Bar';")), AbstractValue::Finite(vec![ScalarValue::String("Foo".into()), ScalarValue::String("Bar".into())]));
+        assert_eq!(
+            evaluate(&expression("$flag ? 'Foo' : 'Bar';")),
+            AbstractValue::Finite(vec![
+                ScalarValue::String("Foo".into()),
+                ScalarValue::String("Bar".into())
+            ])
+        );
     }
 
     #[test]
     fn widening_is_explicit_and_budgeted() {
-        let budget = EvaluationBudget { max_alternatives: 1, ..EvaluationBudget::default() };
-        assert_eq!(evaluate_with_budget(&expression("$flag ? 'Foo' : 'Bar';"), budget), AbstractValue::OverBudget);
-        assert_eq!(evaluate(&expression("(1, 2, 3);")), AbstractValue::Finite(vec![ScalarValue::Integer(1), ScalarValue::Integer(2), ScalarValue::Integer(3)]));
+        let budget = EvaluationBudget {
+            max_alternatives: 1,
+            ..EvaluationBudget::default()
+        };
+        assert_eq!(
+            evaluate_with_budget(&expression("$flag ? 'Foo' : 'Bar';"), budget),
+            AbstractValue::OverBudget
+        );
+        assert_eq!(
+            evaluate(&expression("(1, 2, 3);")),
+            AbstractValue::Finite(vec![
+                ScalarValue::Integer(1),
+                ScalarValue::Integer(2),
+                ScalarValue::Integer(3)
+            ])
+        );
     }
 }
