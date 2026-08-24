@@ -804,6 +804,14 @@ struct RiprPrSummaryCounts {
     /// packages' dependent closure (#11690). Dropped before bucket counting and
     /// reported for transparency; not a policy suppression.
     out_of_dependency_graph: usize,
+    /// Findings on non-production paths (#11690) — archived sources and Cargo
+    /// integration-test directories, per [`is_non_production_path`]. Dropped
+    /// from the buckets before counting and reported for transparency; not a
+    /// policy suppression.
+    non_production_excluded: usize,
+    /// Same, for findings whose classification was not recognized. Decrements
+    /// `severe_gaps` directly, like `suppressed_unclassified`.
+    non_production_unclassified: usize,
 }
 
 fn ripr_pr_summary_counts(
@@ -825,6 +833,7 @@ fn ripr_pr_summary_counts(
 
     let mut suppressed = RiprPrSummaryCounts::default();
     let mut outside_head = RiprPrSummaryCounts::default();
+    let mut non_production = RiprPrSummaryCounts::default();
     let mut unsuppressed_from_findings = RiprPrSummaryCounts::default();
     let mut out_of_graph_buckets = RiprPrSummaryCounts::default();
     let mut out_of_graph_total = 0usize;
@@ -848,8 +857,13 @@ fn ripr_pr_summary_counts(
         };
         // A finding is discounted for exactly one reason: suppression policy takes
         // precedence so `suppressed_by_policy` keeps its established meaning, and
-        // head-range filtering (#6260) applies only to what policy left standing.
+        // head-range filtering (#6260) applies only to what policy left standing,
+        // and the non-production filter (#11690) only to what both left standing.
         let outside = head_extents.is_some_and(|extents| extents.finding_is_outside_head(finding));
+        // No resolvable path is never non-production: the structural filter, like
+        // #6260, must not take a fail-open shortcut on ambiguous input.
+        let non_production_surface = ripr_finding_path(finding)
+            .is_some_and(|path| is_non_production_path(&normalize_suppression_match_path(&path)));
         // Path suppression is checked BEFORE the classification guard (#1346).
         // A finding whose classification is unrecognized must still be suppressed if its
         // path matches a policy rule — skipping only path-unknown findings, not
@@ -861,6 +875,9 @@ fn ripr_pr_summary_counts(
             } else if outside {
                 outside_head.outside_head_revision += 1;
                 outside_head.outside_head_unclassified += 1;
+            } else if non_production_surface {
+                non_production.non_production_excluded += 1;
+                non_production.non_production_unclassified += 1;
             }
             continue;
         };
@@ -888,6 +905,9 @@ fn ripr_pr_summary_counts(
         } else if outside {
             outside_head.outside_head_revision += 1;
             &mut outside_head
+        } else if non_production_surface {
+            non_production.non_production_excluded += 1;
+            &mut non_production
         } else {
             &mut unsuppressed_from_findings
         };
@@ -902,28 +922,34 @@ fn ripr_pr_summary_counts(
         // Per-bucket suppression: subtract classified suppressions from their respective buckets.
         // Unclassified suppressions (suppressed_unclassified) cannot be attributed to a bucket,
         // so they are carried through for the caller to subtract from severe_gaps directly.
-        // Findings outside the head revision (#6260) are subtracted the same way.
+        // Findings outside the head revision (#6260) are subtracted the same way, and so are
+        // non-production findings (#11690).
         return RiprPrSummaryCounts {
             weakly_exposed: summary_counts
                 .weakly_exposed
                 .saturating_sub(suppressed.weakly_exposed)
                 .saturating_sub(outside_head.weakly_exposed)
-                .saturating_sub(out_of_graph_buckets.weakly_exposed),
+                .saturating_sub(out_of_graph_buckets.weakly_exposed)
+                .saturating_sub(non_production.weakly_exposed),
             reachable_unrevealed: summary_counts
                 .reachable_unrevealed
                 .saturating_sub(suppressed.reachable_unrevealed)
                 .saturating_sub(outside_head.reachable_unrevealed)
-                .saturating_sub(out_of_graph_buckets.reachable_unrevealed),
+                .saturating_sub(out_of_graph_buckets.reachable_unrevealed)
+                .saturating_sub(non_production.reachable_unrevealed),
             no_static_path: summary_counts
                 .no_static_path
                 .saturating_sub(suppressed.no_static_path)
                 .saturating_sub(outside_head.no_static_path)
-                .saturating_sub(out_of_graph_buckets.no_static_path),
+                .saturating_sub(out_of_graph_buckets.no_static_path)
+                .saturating_sub(non_production.no_static_path),
             suppressed_by_policy: suppressed.suppressed_by_policy,
             suppressed_unclassified: suppressed.suppressed_unclassified,
             outside_head_revision: outside_head.outside_head_revision,
             outside_head_unclassified: outside_head.outside_head_unclassified,
             out_of_dependency_graph: out_of_graph_total,
+            non_production_excluded: non_production.non_production_excluded,
+            non_production_unclassified: non_production.non_production_unclassified,
         };
     }
     // Path B: no summary object — bucket totals come from `unsuppressed_from_findings`, which
@@ -931,12 +957,15 @@ fn ripr_pr_summary_counts(
     // to those buckets, so subtracting `suppressed_unclassified` in pr_evidence_packet would
     // over-subtract and could mask a real gap via saturating_sub.  Zero it out here; the
     // caller's `.saturating_sub(summary.suppressed_unclassified)` then becomes a no-op.
+    // Non-production findings were likewise never added to `unsuppressed_from_findings`.
     RiprPrSummaryCounts {
         suppressed_by_policy: suppressed.suppressed_by_policy,
         suppressed_unclassified: 0,
         outside_head_revision: outside_head.outside_head_revision,
         outside_head_unclassified: 0,
         out_of_dependency_graph: out_of_graph_total,
+        non_production_excluded: non_production.non_production_excluded,
+        non_production_unclassified: 0,
         ..unsuppressed_from_findings
     }
 }
@@ -1417,6 +1446,35 @@ fn normalize_suppression_match_path(path: &str) -> String {
         .map_or_else(|| normalized.to_string(), |index| normalized[index..].to_string())
 }
 
+/// True when a normalized finding path belongs to a surface that is not a
+/// production file for the new-gap basis (#11690).
+///
+/// Production for the blocking count means code a PR can be required to reveal:
+/// active sources compiled into workspace artifacts. Two structural classes are
+/// not production, independent of any mutable suppression policy:
+///
+/// - archived sources under `archive/**` — not active behavior, excluded "on
+///   principle" per #11690 (mirrors the `ripr-suppress-archive` policy kind
+///   `generated_or_non_production_surface`, but structural rather than
+///   policy-scoped so a policy edit alone can never re-inflate the basis);
+/// - files under a Cargo integration-test directory (a path component exactly
+///   `tests/`), e.g. `crates/perl-semantic-facts/tests/prop_json_roundtrip.rs`
+///   — the recurring `test_receipt_surface` class behind #6842's 162-finding
+///   block and the accumulating per-file suppressions. This repository has no
+///   production module directory named `tests` (`crates/*/src/tests` does not
+///   exist), so the component is unambiguous here.
+///
+/// The input must already be normalized by [`normalize_suppression_match_path`]
+/// so Windows/absolute/checkout-prefixed finding paths anchor correctly. A
+/// finding with no resolvable path is never classified non-production — the
+/// gate keeps failing closed on ambiguous input.
+fn is_non_production_path(path: &str) -> bool {
+    if path == "archive" || path.starts_with("archive/") {
+        return true;
+    }
+    path.split('/').any(|component| component == "tests")
+}
+
 #[cfg(test)]
 fn pr_evidence_packet(
     options: &PrEvidenceOptions,
@@ -1461,12 +1519,14 @@ fn pr_evidence_packet_with_count(
     let no_static_path = summary.no_static_path;
     // Per-bucket suppressed counts have already been subtracted from their buckets above.
     // Findings suppressed by path but with an unrecognized classification (#1346) could not
-    // be attributed to a bucket; subtract them from the severe_gaps total now.
+    // be attributed to a bucket; subtract them from the severe_gaps total now. Non-production
+    // findings with an unrecognized classification (#11690) subtract the same way.
     let severe_gaps = weakly_exposed
         .saturating_add(reachable_unrevealed)
         .saturating_add(no_static_path)
         .saturating_sub(summary.suppressed_unclassified)
-        .saturating_sub(summary.outside_head_unclassified);
+        .saturating_sub(summary.outside_head_unclassified)
+        .saturating_sub(summary.non_production_unclassified);
     let ripr_severe_gap = severe_gaps > 0;
     let warnings = if check_summary.is_some() {
         Vec::new()
@@ -1506,6 +1566,7 @@ fn pr_evidence_packet_with_count(
             "suppressed_by_policy": summary.suppressed_by_policy,
             "outside_head_revision": summary.outside_head_revision,
             "out_of_dependency_graph": summary.out_of_dependency_graph,
+            "non_production_excluded": summary.non_production_excluded,
             "suppression_patterns": suppressions.display_patterns.clone(),
         },
         "attribution": attribution_stamp(attribution_scope),
@@ -1621,6 +1682,9 @@ fn validate_pr_evidence_packet(
     if !summary.get("out_of_dependency_graph").is_some_and(Value::is_u64) {
         violations.push("summary.out_of_dependency_graph is missing or not an integer".to_string());
     }
+    if !summary.get("non_production_excluded").is_some_and(Value::is_u64) {
+        violations.push("summary.non_production_excluded is missing or not an integer".to_string());
+    }
     match packet.get("attribution").and_then(Value::as_object) {
         Some(attribution) => {
             if attribution.get("basis").and_then(Value::as_str) != Some(ATTRIBUTION_BASIS) {
@@ -1687,6 +1751,10 @@ fn render_pr_evidence_markdown(packet: &Value) -> String {
     out.push_str(&format!(
         "- outside_head_revision: {}\n",
         count_field(summary, "outside_head_revision")
+    ));
+    out.push_str(&format!(
+        "- non_production_excluded: {}\n",
+        count_field(summary, "non_production_excluded")
     ));
     out.push_str(&format!("- severe gaps: {}\n\n", count_field(summary, "severe_gaps")));
     out.push_str("## Targeted Mutation\n\n");
@@ -4323,6 +4391,301 @@ paths = ["archive/["]
         Ok(())
     }
 
+    /// #11690 reproduction, shaped from the two live incidents in the issue:
+    /// #6842's 162-finding `no_static_path` block inside the PR's own
+    /// `crates/perl-semantic-facts/tests/prop_json_roundtrip.rs`, and #6766's
+    /// archive/caller inflation (`archive/crates/tree-sitter-perl-rs/...`).
+    /// Neither class can be closed by a test the PR could write, so neither may
+    /// inflate the blocking basis. Production seams — including production
+    /// files that simply do not depend on the changed crate, which stay this
+    /// filter's negative control — keep counting.
+    #[test]
+    fn non_production_test_and_archive_findings_do_not_inflate_the_new_gap_basis() -> Result<()> {
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 2, "no_static_path": 3 },
+            "findings": [
+                {
+                    // #6842 class: proptest macro bodies in the PR's own new test file.
+                    "classification": "no_static_path",
+                    "probe": { "path": "crates/perl-semantic-facts/tests/prop_json_roundtrip.rs", "line": 41 }
+                },
+                {
+                    // ripr 0.9.x shape: grip_class + seam.file, also inside a tests/ dir.
+                    "grip_class": "weakly_gripped",
+                    "seam": { "file": "crates/perl-lsp-ux-tests/tests/ux_scenario_62.rs", "line": 7 }
+                },
+                {
+                    // #6766 class: archived sources pulled in by the analyzer's caller expansion.
+                    "classification": "no_static_path",
+                    "seam": { "file": "archive/crates/tree-sitter-perl-rs/src/scanner/mod.rs", "line": 100 }
+                },
+                {
+                    // Production seam in the PR's own crate: still counts.
+                    "grip_class": "reachable_unrevealed",
+                    "seam": { "file": "crates/perl-core-harness/src/contract.rs", "line": 12 }
+                },
+                {
+                    // Production non-dependent file: counts here. Excluding it needs the
+                    // dependency-graph attribution slice, not the production-file filter.
+                    "classification": "no_static_path",
+                    "seam": { "file": "crates/perl-lsp-rs/src/runtime/scheduler.rs", "line": 88 }
+                }
+            ]
+        });
+
+        let packet = pr_evidence_packet(
+            &PrEvidenceOptions {
+                root: ".".to_string(),
+                base: "origin/main".to_string(),
+                head: "HEAD".to_string(),
+                pr_head_sha: None,
+            },
+            &["crates/perl-semantic-facts/tests/prop_json_roundtrip.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &no_suppressions(),
+        );
+
+        // weakly_gripped folds into reachable_unrevealed (0.9.x): the ux
+        // test-file finding leaves that bucket (2 - 1 = 1), and the proptest
+        // and archive findings leave no_static_path (3 - 2 = 1). The two
+        // production seams — the changed crate and the non-dependent
+        // scheduler.rs negative control — keep counting.
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/non_production_excluded"), Some(&json!(3)));
+        assert_eq!(packet.pointer("/summary/suppressed_by_policy"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/ripr_severe_gap"), Some(&json!(true)));
+        Ok(())
+    }
+
+    /// Gate teeth: the filter is bounded to non-production surfaces. An inline
+    /// `#[cfg(test)]` seam in a production source file is NOT under a `tests/`
+    /// directory component, so it keeps blocking — the calibration retires the
+    /// test_receipt_surface treadmill, not test-worthiness itself.
+    #[test]
+    fn production_files_still_count_after_the_non_production_filter() -> Result<()> {
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 2, "no_static_path": 0 },
+            "findings": [
+                {
+                    "classification": "reachable_unrevealed",
+                    "seam": { "file": "crates/perl-core-harness/src/contract.rs", "line": 12 }
+                },
+                {
+                    // A file literally named tests.rs is not a tests/ directory.
+                    "classification": "reachable_unrevealed",
+                    "seam": { "file": "crates/perl-core-harness/src/tests.rs", "line": 3 }
+                }
+            ]
+        });
+
+        let packet = pr_evidence_packet(
+            &PrEvidenceOptions {
+                root: ".".to_string(),
+                base: "origin/main".to_string(),
+                head: "HEAD".to_string(),
+                pr_head_sha: None,
+            },
+            &["crates/perl-core-harness/src/contract.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &no_suppressions(),
+        );
+
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/non_production_excluded"), Some(&json!(0)));
+        Ok(())
+    }
+
+    /// Suppression policy keeps precedence over the structural filter, so a
+    /// reviewed archive suppression is still attributed to policy and the two
+    /// mechanisms never double-count one finding.
+    #[test]
+    fn suppression_takes_precedence_over_the_non_production_filter() -> Result<()> {
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 0, "no_static_path": 1 },
+            "findings": [
+                {
+                    "classification": "no_static_path",
+                    "seam": { "file": "archive/crates/old-crate/src/lib.rs", "line": 9 }
+                }
+            ]
+        });
+        let suppressions = RiprSuppressionRules {
+            display_patterns: vec!["archive/**".to_string()],
+            path_patterns: vec![Pattern::new("archive/**")?],
+            classification_patterns: vec![Vec::new()],
+            invalid_patterns: Vec::new(),
+            suppression_reasons: Vec::new(),
+        };
+
+        let packet = pr_evidence_packet(
+            &PrEvidenceOptions {
+                root: ".".to_string(),
+                base: "origin/main".to_string(),
+                head: "HEAD".to_string(),
+                pr_head_sha: None,
+            },
+            &["archive/crates/old-crate/src/lib.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &suppressions,
+        );
+
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/suppressed_by_policy"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/non_production_excluded"), Some(&json!(0)));
+        Ok(())
+    }
+
+    /// Path B (no summary object): bucket totals come from findings, so
+    /// non-production findings are simply never added; the transparency total
+    /// still reports them.
+    #[test]
+    fn non_production_findings_without_a_summary_object_do_not_count() -> Result<()> {
+        let check_value = json!({
+            "findings": [
+                {
+                    "classification": "no_static_path",
+                    "probe": { "path": "crates/perl-semantic-facts/tests/prop_json_roundtrip.rs", "line": 41 }
+                },
+                {
+                    "classification": "no_static_path",
+                    "seam": { "file": "archive/crates/tree-sitter-perl-rs/src/scanner/mod.rs", "line": 100 }
+                },
+                {
+                    "grip_class": "reachable_unrevealed",
+                    "seam": { "file": "crates/perl-core-harness/src/contract.rs", "line": 12 }
+                }
+            ]
+        });
+
+        let packet = pr_evidence_packet(
+            &PrEvidenceOptions {
+                root: ".".to_string(),
+                base: "origin/main".to_string(),
+                head: "HEAD".to_string(),
+                pr_head_sha: None,
+            },
+            &["crates/perl-core-harness/src/contract.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &no_suppressions(),
+        );
+
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/non_production_excluded"), Some(&json!(2)));
+        Ok(())
+    }
+
+    /// A finding whose classification the producer does not recognize is still
+    /// dropped when its path is non-production: the defensive severe_gaps
+    /// decrement mirrors `suppressed_unclassified` (#1346), and the transparency
+    /// total carries it.
+    #[test]
+    fn unclassified_non_production_findings_decrement_severe_gaps_in_path_a() -> Result<()> {
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 1, "no_static_path": 0 },
+            "findings": [
+                {
+                    "classification": "some_future_class",
+                    "seam": { "file": "archive/crates/old-crate/src/lib.rs", "line": 9 }
+                }
+            ]
+        });
+
+        let packet = pr_evidence_packet(
+            &PrEvidenceOptions {
+                root: ".".to_string(),
+                base: "origin/main".to_string(),
+                head: "HEAD".to_string(),
+                pr_head_sha: None,
+            },
+            &["archive/crates/old-crate/src/lib.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &no_suppressions(),
+        );
+
+        // The unrecognized class cannot be attributed to a bucket, so only the
+        // severe_gaps-side decrement brings the count down.
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/non_production_excluded"), Some(&json!(1)));
+        Ok(())
+    }
+
+    /// The classifier anchors the same path shapes the suppression matcher
+    /// accepts (0.9.x Windows and checkout-prefixed absolute paths), and treats
+    /// a file named `tests.rs` or a `perl-lsp-ux-tests` crate segment as
+    /// production — only a real `tests/` directory component classifies.
+    #[test]
+    fn non_production_paths_classify_windows_and_absolute_forms() {
+        let cases = [
+            (r".\crates\perl-x\tests\case.rs", true),
+            ("//?/H:/Code/Rust3/perl-lsp-swarm/crates/perl-x/tests/case.rs", true),
+            ("/home/runner/work/perl-lsp-swarm/xtask/tests/it/main.rs", true),
+            ("./archive/crates/old-crate/src/lib.rs", true),
+            ("crates/perl-lsp-ux-tests/src/lib.rs", false),
+            ("crates/perl-x/src/tests.rs", false),
+            ("crates/perl-core-harness/src/contract.rs", false),
+            ("xtask/src/tasks/ripr_evidence.rs", false),
+        ];
+        for (raw, expected) in cases {
+            let normalized = normalize_suppression_match_path(raw);
+            assert_eq!(
+                is_non_production_path(&normalized),
+                expected,
+                "path {raw:?} normalized to {normalized:?}"
+            );
+        }
+    }
+
+    /// Fail closed: a finding with no resolvable path is never classified
+    /// non-production, exactly like the #6260 head-range filter.
+    #[test]
+    fn pathless_findings_are_never_non_production() -> Result<()> {
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 1, "no_static_path": 0 },
+            "findings": [
+                {
+                    "classification": "reachable_unrevealed",
+                    "seam": { "line": 12 }
+                }
+            ]
+        });
+
+        let packet = pr_evidence_packet(
+            &PrEvidenceOptions {
+                root: ".".to_string(),
+                base: "origin/main".to_string(),
+                head: "HEAD".to_string(),
+                pr_head_sha: None,
+            },
+            &["crates/perl-core-harness/src/contract.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &no_suppressions(),
+        );
+
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/non_production_excluded"), Some(&json!(0)));
+        Ok(())
+    }
+
     /// Findings carry checkout-prefixed and Windows-separator paths (see the 0.9.x
     /// suppression cases above), so head-range resolution must survive both.
     #[test]
@@ -5057,7 +5420,10 @@ paths = ["archive/["]
         assert_eq!(packet.pointer("/attribution/graph_source"), Some(&json!("cargo_metadata")));
         assert_eq!(packet.pointer("/attribution/status"), Some(&json!("applied")));
 
-        // The same raw check under the previous all-findings basis counted 4.
+        // The same raw check with no attribution scope still applies the
+        // structural non-production filter (#11690): the archived seam drops
+        // there too, while the non-dependent perl-dap seam only drops via the
+        // graph — 3 versus the pre-#11690 basis of 4.
         let unfiltered = pr_evidence_packet_with_count(
             &options,
             &check_value,
@@ -5068,7 +5434,8 @@ paths = ["archive/["]
             None,
             None,
         );
-        assert_eq!(unfiltered.pointer("/summary/severe_gaps"), Some(&json!(4)));
+        assert_eq!(unfiltered.pointer("/summary/severe_gaps"), Some(&json!(3)));
+        assert_eq!(unfiltered.pointer("/summary/non_production_excluded"), Some(&json!(1)));
         assert_eq!(unfiltered.pointer("/attribution/status"), Some(&json!("unavailable")));
         validate_pr_evidence_packet(&packet, &options, 5, true, "base-sha", "head-sha")?;
         Ok(())

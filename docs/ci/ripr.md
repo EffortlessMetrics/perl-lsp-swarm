@@ -101,6 +101,16 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
 - Applies the documented suppression policy to diff-scoped PR evidence as well
   as repo-wide RIPR+ receipts. Suppressed paths remain visible in receipts, but
   they do not count as new blocking gaps.
+- Production-scopes the new-gap basis structurally, independent of the mutable
+  suppression policy (#11690): seams on archived sources (`archive/**`) and on
+  files under a Cargo integration-test directory (a `tests/` path component,
+  e.g. `crates/*/tests/**`, the recurring `test_receipt_surface` class behind
+  #6842) are dropped from the blocking buckets before counting and reported as
+  `summary.non_production_excluded` in the PR evidence receipt and the quality
+  gate receipt. Production seams keep counting, and suppression policy keeps
+  precedence when both mechanisms match one finding: a suppressed finding does
+  not count, and a non-production file does not inflate the basis. Findings
+  with no resolvable path are never classified non-production (fail closed).
 - In CI, review guidance has an explicit timeout. When the guidance pass does
   not finish, the harness emits an `incomplete` receipt that names the
   gate-actionable seams (`reachable_unrevealed` / `no_static_path`) from the
