@@ -1524,17 +1524,14 @@ mod parse_effect_sink_contract_tests {
                 entry.effect_id
             );
             let actual = count_occurrences(entry.file, entry.needle);
-            assert!(
-                actual.is_some(),
-                "ledger could not read {}",
-                entry.file
-            );
+            assert!(actual.is_some(), "ledger could not read {}", entry.file);
             assert_eq!(
                 actual,
                 Some(entry.expected_count),
                 "call-site ratchet drifted for {}:{:?} -- re-register the site against its \
                  parse_effect_sinks_v1 row or fix the regression",
-                entry.file, entry.needle
+                entry.file,
+                entry.needle
             );
         }
         for row in inventory().iter().filter(|row| row.owns_mutation_sites) {
@@ -1575,11 +1572,7 @@ mod parse_effect_sink_contract_tests {
         // Test-module helper invocations of the readiness transition.
         ("crates/perl-lsp-rs/src/runtime/routing.rs", ".transition_to_ready(", 2),
         ("crates/perl-lsp-rs/src/runtime/readiness.rs", ".transition_to_ready(", 3),
-        (
-            "crates/perl-lsp-rs/src/runtime/language/completion.rs",
-            ".transition_to_ready(",
-            5,
-        ),
+        ("crates/perl-lsp-rs/src/runtime/language/completion.rs", ".transition_to_ready(", 5),
         ("crates/perl-lsp-rs/src/runtime/language/rename.rs", ".transition_to_ready(", 4),
         ("crates/perl-lsp-rs/src/runtime/language/misc.rs", ".transition_to_ready(", 1),
         (
