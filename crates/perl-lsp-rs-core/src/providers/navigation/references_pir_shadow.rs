@@ -1121,8 +1121,6 @@ mod tests {
         PirShadowRefusalReason, evaluate_refusal,
         lexical_fact_range as production_lexical_fact_range,
     };
-    use perl_parser_core::pir::LexicalRole;
-    use std::collections::BTreeSet;
 
     fn canonical(range: Option<(usize, usize)>) -> Option<(usize, usize)> {
         production_lexical_fact_range(range)
