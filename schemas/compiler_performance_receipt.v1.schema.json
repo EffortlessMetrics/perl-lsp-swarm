@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/compiler_performance_receipt.v1.schema.json",
+  "title": "Compiler performance receipt v1",
+  "description": "Transport-neutral work and timing evidence for compiler-backed code intelligence. Missing instrumentation is not zero.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "receipt_id", "subject", "workload", "stages", "provider", "limitations"],
+  "properties": {
+    "schema_version": {"const": "compiler_performance_receipt.v1"},
+    "receipt_id": {"type": "string", "minLength": 1},
+    "subject": {"$ref": "#/$defs/subject"},
+    "workload": {"$ref": "#/$defs/workload"},
+    "stages": {"type": "array", "items": {"$ref": "#/$defs/stage"}},
+    "provider": {"$ref": "#/$defs/provider"},
+    "limitations": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "identity": {"type": "object", "additionalProperties": false, "required": ["schema", "profile"], "properties": {"schema": {"type": "string", "minLength": 1}, "profile": {"type": "string", "minLength": 1}}},
+    "subject": {"type": "object", "additionalProperties": false, "required": ["repository", "candidate", "tree", "dirty_tree", "toolchain", "runner", "identities"], "properties": {"repository": {"type": "string", "minLength": 1}, "candidate": {"type": "string", "minLength": 1}, "tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "dirty_tree": {"type": "boolean"}, "toolchain": {"type": "string", "minLength": 1}, "runner": {"type": "string", "minLength": 1}, "identities": {"type": "object", "additionalProperties": false, "required": ["source", "parser", "hir", "pir", "effects", "world", "interfaces"], "properties": {"source": {"$ref": "#/$defs/identity"}, "parser": {"$ref": "#/$defs/identity"}, "hir": {"$ref": "#/$defs/identity"}, "pir": {"$ref": "#/$defs/identity"}, "effects": {"$ref": "#/$defs/identity"}, "world": {"$ref": "#/$defs/identity"}, "interfaces": {"$ref": "#/$defs/identity"}}}}},
+    "workload": {"type": "object", "additionalProperties": false, "required": ["id", "class", "profile", "fixture", "series", "cache_mode"], "properties": {"id": {"type": "string", "minLength": 1}, "class": {"enum": ["focused_fixture", "selected_upstream", "representative_edit", "provider_vertical"]}, "profile": {"type": "string", "minLength": 1}, "fixture": {"type": "string", "minLength": 1}, "series": {"type": "string", "minLength": 1}, "cache_mode": {"enum": ["cold", "warm", "reused", "bypassed", "unknown"]}}},
+    "count": {"type": "integer", "minimum": 0},
+    "work": {"type": "object", "additionalProperties": false, "required": ["status", "units", "objects", "bytes", "reused", "recomputed"], "properties": {"status": {"enum": ["measured", "not_proven", "not_applicable", "failed", "cancelled"]}, "units": {"$ref": "#/$defs/count"}, "objects": {"$ref": "#/$defs/count"}, "bytes": {"$ref": "#/$defs/count"}, "reused": {"$ref": "#/$defs/count"}, "recomputed": {"$ref": "#/$defs/count"}}},
+    "timing": {"type": "object", "additionalProperties": false, "required": ["status"], "properties": {"status": {"enum": ["measured", "not_proven", "not_applicable", "failed", "cancelled"]}, "wall_ns": {"$ref": "#/$defs/count"}, "cpu_ns": {"$ref": "#/$defs/count"}}},
+    "stage": {"type": "object", "additionalProperties": false, "required": ["name", "applicability", "result", "work", "timing", "instrumentation"], "properties": {"name": {"enum": ["upstream", "lex_parse", "hir", "pir", "effects", "module_graph", "world", "interface_invalidation", "fact_projection", "provider_request", "serialization"]}, "applicability": {"enum": ["applicable", "not_applicable", "required_missing"]}, "result": {"enum": ["pass", "failed", "cancelled", "timeout", "not_proven"]}, "work": {"$ref": "#/$defs/work"}, "timing": {"$ref": "#/$defs/timing"}, "instrumentation": {"enum": ["complete", "partial", "missing", "failed"]}}},
+    "correctness": {"type": "object", "additionalProperties": false, "required": ["false_exact", "stale_exact", "unsafe_edit", "unexplained_empty"], "properties": {"false_exact": {"$ref": "#/$defs/count"}, "stale_exact": {"$ref": "#/$defs/count"}, "unsafe_edit": {"$ref": "#/$defs/count"}, "unexplained_empty": {"$ref": "#/$defs/count"}}},
+    "provider": {"type": "object", "additionalProperties": false, "required": ["requests", "exact", "partial", "fallback", "refusal", "correctness", "timing"], "properties": {"requests": {"$ref": "#/$defs/count"}, "exact": {"$ref": "#/$defs/count"}, "partial": {"$ref": "#/$defs/count"}, "fallback": {"$ref": "#/$defs/count"}, "refusal": {"$ref": "#/$defs/count"}, "correctness": {"$ref": "#/$defs/correctness"}, "timing": {"$ref": "#/$defs/timing"}}}
+  }
+}
