@@ -3,20 +3,23 @@
 //!
 //! Negative controls fail when: a first write becomes a declaration; `Modify`
 //! is dropped while completeness stays complete; same-name bindings collapse;
-//! producer naming upgrades proof/completeness; mixed identities validate;
-//! missing facts become exact-empty; a foreign-generation semantic join
-//! validates; or an unknown work field defaults to zero. Positive controls
-//! cover complete, declaration-only, partial/recovered, stale/cancelled/
-//! instrument-failed states plus deterministic output under input-order
-//! variation.
+//! binding ids repeat; occurrence anchors are not source-backed; producer
+//! naming upgrades proof/completeness; mixed identities validate; missing
+//! facts become exact-empty; a foreign-generation semantic join validates; or
+//! an unknown work field defaults to zero. Positive controls cover complete,
+//! declaration-only, partial/recovered, stale/cancelled/instrument-failed
+//! states, every source-backed anchor name, accessor-only envelope reads, and
+//! deterministic fingerprints over the unsigned canonical serialization under
+//! input-order and limitation-order variation.
 
 use perl_parser_core::hir::HirId;
 use perl_parser_core::pir::{
     BuildKind, CompilerProducerIdentity, ContributionCompleteness, ContributionDraft,
     ContributionError, ContributionLimitation, ContributionOccurrence, ContributionSubjectIdentity,
-    ContributionWorkShape, FilePirLexicalContributionV1, LexicalBindingIdentity, LexicalSigil,
-    OccurrenceAnchor, OccurrenceRole, PirSourceAnchor, SemanticSnapshotJoinMetadata,
-    TerminalDisposition, WorkObservation,
+    ContributionWorkShape, FILE_PIR_LEXICAL_CONTRIBUTION_SCHEMA_VERSION,
+    FilePirLexicalContributionV1, LexicalBindingIdentity, LexicalSigil, OccurrenceAnchor,
+    OccurrenceRole, PirSourceAnchor, SemanticSnapshotJoinMetadata, TerminalDisposition,
+    WorkObservation,
 };
 use perl_position_tracking::{ByteSpan, SourceLocation};
 use perl_source_identity::ContentDigest;
@@ -121,6 +124,25 @@ fn committed() -> TerminalDisposition {
     TerminalDisposition::Committed
 }
 
+/// Partial draft base for provenance/canonicalization falsifiers.
+fn partial_draft(
+    bindings: Vec<LexicalBindingIdentity>,
+    occurrences: Vec<ContributionOccurrence>,
+    limitations: Vec<ContributionLimitation>,
+) -> ContributionDraft {
+    ContributionDraft {
+        producer: producer(),
+        subject: subject(21),
+        bindings,
+        occurrences,
+        completeness: ContributionCompleteness::Partial,
+        limitations,
+        work: work(0),
+        terminal_disposition: committed(),
+        semantic_snapshot_join: None,
+    }
+}
+
 #[test]
 fn valid_complete_initialized_lexical_construction_is_exact() -> TestResult {
     let contribution = FilePirLexicalContributionV1::try_new(ContributionDraft {
@@ -182,7 +204,7 @@ fn read_write_and_modify_roles_stay_distinct() -> TestResult {
     })
     .map_err(|error| format!("modify-bearing contribution must construct: {error}"))?;
 
-    let roles: Vec<_> = contribution.occurrences.iter().map(|o| o.role).collect();
+    let roles: Vec<_> = contribution.occurrences().iter().map(|o| o.role).collect();
     assert!(roles.contains(&OccurrenceRole::Modify));
     assert!(roles.contains(&OccurrenceRole::Declaration));
     Ok(())
@@ -211,7 +233,7 @@ fn same_name_in_another_body_is_a_distinct_binding() -> TestResult {
     })
     .map_err(|error| format!("same display name in another body must stay distinct: {error}"))?;
 
-    assert_eq!(contribution.bindings.len(), 2);
+    assert_eq!(contribution.bindings().len(), 2);
     Ok(())
 }
 
@@ -237,7 +259,7 @@ fn sigils_separate_bindings_with_equal_names() -> TestResult {
         semantic_snapshot_join: None,
     })
     .map_err(|error| format!("$x and @x must be distinct bindings: {error}"))?;
-    assert_eq!(contribution.bindings.len(), 2);
+    assert_eq!(contribution.bindings().len(), 2);
     Ok(())
 }
 
@@ -263,7 +285,7 @@ fn source_identical_later_generation_is_another_subject() -> TestResult {
     let later =
         partial_with_recovery(10, &occurrences).map_err(|e| format!("later generation: {e}"))?;
 
-    assert_ne!(earlier.fingerprint, later.fingerprint);
+    assert_ne!(earlier.fingerprint(), later.fingerprint());
     assert!(!earlier.is_exact());
     Ok(())
 }
@@ -376,7 +398,7 @@ fn deterministic_fingerprint_under_input_order_variation() -> TestResult {
         .map_err(|error| format!("order-varied construction must succeed: {error}"))
     };
 
-    assert_eq!(build(false)?.fingerprint, build(true)?.fingerprint);
+    assert_eq!(build(false)?.fingerprint(), build(true)?.fingerprint());
     Ok(())
 }
 
@@ -526,5 +548,188 @@ fn occurrence_anchors_carry_exact_ranges_not_optional_presence() -> TestResult {
     let snapshot =
         OccurrenceAnchor::from_pir_anchor(&pir_anchor).ok_or("explicit anchors must snapshot")?;
     assert_eq!(snapshot.range, (12, 17));
+    Ok(())
+}
+
+// ── Accepted review repairs (#12180 discussion_r3846438509 … r3846439040) ──
+
+#[test]
+fn duplicate_binding_ids_are_rejected_before_lookup_construction() -> TestResult {
+    // Two logically distinct bindings reuse one binding_id. They do not
+    // collapse on (body, scope, sigil, name), so only an explicit id seen-set
+    // can catch them; the lookup collect must never silently keep the last.
+    let error = FilePirLexicalContributionV1::try_new(partial_draft(
+        vec![binding("dup", "x", (4, 5)), binding("dup", "y", (40, 45))],
+        Vec::new(),
+        Vec::new(),
+    ));
+
+    assert_eq!(
+        error.err().ok_or("duplicate binding ids must be rejected")?,
+        ContributionError::DuplicateBindingId { binding_id: "dup".to_string() }
+    );
+    Ok(())
+}
+
+#[test]
+fn non_source_backed_anchor_kinds_are_rejected() -> TestResult {
+    let hand_anchored = |occurrence_id: &str, anchor_kind: &str| -> TestResult<ContributionError> {
+        let occurrence = ContributionOccurrence {
+            occurrence_id: occurrence_id.to_string(),
+            binding_id: "b0".to_string(),
+            role: OccurrenceRole::Read,
+            anchor: OccurrenceAnchor { anchor_kind: anchor_kind.to_string(), range: (20, 25) },
+            operation_provenance: "LexicalRead".to_string(),
+        };
+        FilePirLexicalContributionV1::try_new(partial_draft(
+            vec![binding("b0", "x", (4, 5))],
+            vec![occurrence],
+            Vec::new(),
+        ))
+        .err()
+        .ok_or_else(|| format!("anchor kind {anchor_kind} must not pass as source-backed"))
+    };
+
+    for anchor_kind in ["GeneratedNoSource", "AmbientInput", "Unknown", "TotallyUnrelated"] {
+        assert_eq!(
+            hand_anchored("o-unanchored", anchor_kind)?,
+            ContributionError::UnanchoredOccurrence { occurrence_id: "o-unanchored".to_string() },
+            "anchor kind {anchor_kind} must be rejected as non-source-backed"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn source_backed_anchor_kind_names_are_accepted() -> TestResult {
+    for anchor_kind in ["ExplicitSource", "SourceBackedGenerated", "DynamicBoundary"] {
+        let occurrence = ContributionOccurrence {
+            occurrence_id: "o-anchored".to_string(),
+            binding_id: "b0".to_string(),
+            role: OccurrenceRole::Read,
+            anchor: OccurrenceAnchor { anchor_kind: anchor_kind.to_string(), range: (20, 25) },
+            operation_provenance: "LexicalRead".to_string(),
+        };
+        let contribution = FilePirLexicalContributionV1::try_new(partial_draft(
+            vec![binding("b0", "x", (4, 5))],
+            vec![occurrence],
+            Vec::new(),
+        ))
+        .map_err(|error| format!("{anchor_kind} is source-backed and must construct: {error}"))?;
+        assert_eq!(contribution.occurrences().len(), 1);
+    }
+    Ok(())
+}
+
+#[test]
+fn fingerprint_covers_the_unsigned_serialization_exactly() -> TestResult {
+    let contribution = FilePirLexicalContributionV1::try_new(ContributionDraft {
+        producer: producer(),
+        subject: subject(31),
+        bindings: vec![binding("b0", "x", (4, 5))],
+        occurrences: vec![declaration_occurrence("o0", "b0", (4, 5))?],
+        completeness: ContributionCompleteness::Complete,
+        limitations: Vec::new(),
+        work: work(0),
+        terminal_disposition: committed(),
+        semantic_snapshot_join: None,
+    })
+    .map_err(|error| format!("complete contribution must construct: {error}"))?;
+
+    let unsigned = contribution
+        .unsigned_canonical_json()
+        .map_err(|error| format!("unsigned serialization must succeed: {error}"))?;
+    let unsigned_top_level =
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&unsigned)
+            .map_err(|error| format!("unsigned serialization must be a JSON object: {error}"))?;
+    assert!(
+        !unsigned_top_level.contains_key("fingerprint"),
+        "the fingerprint input must omit the envelope's fingerprint field itself"
+    );
+    assert_eq!(
+        contribution.fingerprint(),
+        &ContentDigest::of_bytes(unsigned.as_bytes()),
+        "stored fingerprint must hash exactly the unsigned canonical bytes"
+    );
+
+    let full = contribution
+        .canonical_json()
+        .map_err(|error| format!("canonical serialization must succeed: {error}"))?;
+    let full_top_level = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&full)
+        .map_err(|error| format!("canonical serialization must be a JSON object: {error}"))?;
+    assert!(full_top_level.contains_key("fingerprint"), "durable envelopes still carry the digest");
+    Ok(())
+}
+
+#[test]
+fn envelope_state_reads_back_through_accessors_only() -> TestResult {
+    let join = SemanticSnapshotJoinMetadata {
+        snapshot_digest: digest(b"snapshot"),
+        generation: 41,
+        parser_input_digest: digest(b"parser-input"),
+    };
+    let contribution = FilePirLexicalContributionV1::try_new(ContributionDraft {
+        producer: producer(),
+        subject: subject(41),
+        bindings: vec![binding("b0", "x", (4, 5)), binding("b1", "y", (30, 35))],
+        occurrences: vec![
+            declaration_occurrence("o0", "b0", (4, 5))?,
+            declaration_occurrence("o1", "b1", (30, 35))?,
+        ],
+        completeness: ContributionCompleteness::Partial,
+        limitations: vec![ContributionLimitation::RecoveredBody],
+        work: work(0),
+        terminal_disposition: committed(),
+        semantic_snapshot_join: Some(join),
+    })
+    .map_err(|error| format!("partial contribution must construct: {error}"))?;
+
+    assert_eq!(contribution.schema_version(), FILE_PIR_LEXICAL_CONTRIBUTION_SCHEMA_VERSION);
+    assert_eq!(contribution.producer(), &producer());
+    assert_eq!(contribution.subject(), &subject(41));
+    assert_eq!(contribution.completeness(), ContributionCompleteness::Partial);
+    assert_eq!(contribution.limitations(), &[ContributionLimitation::RecoveredBody]);
+    assert_eq!(contribution.work(), &work(0));
+    assert_eq!(contribution.terminal_disposition(), &TerminalDisposition::Committed);
+    assert!(contribution.semantic_snapshot_join().is_some());
+    assert_eq!(contribution.bindings().len(), 2);
+    assert_eq!(contribution.occurrences().len(), 2);
+    assert!(!contribution.is_exact());
+    Ok(())
+}
+
+#[test]
+fn fingerprint_is_invariant_under_limitation_order_and_duplicates() -> TestResult {
+    let build =
+        |limitations: Vec<ContributionLimitation>| -> TestResult<FilePirLexicalContributionV1> {
+            FilePirLexicalContributionV1::try_new(partial_draft(
+                vec![binding("b0", "x", (4, 5))],
+                vec![declaration_occurrence("o0", "b0", (4, 5))?],
+                limitations,
+            ))
+            .map_err(|error| format!("partial limitation draft must construct: {error}"))
+        };
+
+    let ordered = build(vec![
+        ContributionLimitation::RecoveredBody,
+        ContributionLimitation::DynamicOperation,
+    ])?;
+    let reversed = build(vec![
+        ContributionLimitation::DynamicOperation,
+        ContributionLimitation::RecoveredBody,
+    ])?;
+    let duplicated = build(vec![
+        ContributionLimitation::RecoveredBody,
+        ContributionLimitation::DynamicOperation,
+        ContributionLimitation::RecoveredBody,
+    ])?;
+
+    assert_eq!(ordered.fingerprint(), reversed.fingerprint());
+    assert_eq!(ordered.fingerprint(), duplicated.fingerprint());
+    assert_eq!(
+        ordered.limitations(),
+        &[ContributionLimitation::RecoveredBody, ContributionLimitation::DynamicOperation],
+        "canonical order follows enum declaration order and duplicates collapse"
+    );
     Ok(())
 }

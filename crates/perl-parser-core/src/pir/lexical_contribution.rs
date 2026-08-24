@@ -22,12 +22,12 @@
 //! semantic snapshot exists; it never participates in construction,
 //! validation of the compiler subject, or completeness upgrades.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use perl_source_identity::ContentDigest;
 use serde::Serialize;
 
-use super::model::PirSourceAnchor;
+use super::model::{PirAnchorKind, PirSourceAnchor};
 /// Current schema version for [`FilePirLexicalContributionV1`].
 pub const FILE_PIR_LEXICAL_CONTRIBUTION_SCHEMA_VERSION: u32 = 1;
 
@@ -175,7 +175,10 @@ pub enum ContributionCompleteness {
 }
 
 /// Limitation classes bounding what a partial contribution omits (#12109).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+///
+/// Ordered by declaration order so limitation sets canonicalize to one
+/// sequence regardless of producer discovery order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[non_exhaustive]
 pub enum ContributionLimitation {
     /// Body recovered through error recovery; facts may be incomplete.
@@ -359,46 +362,91 @@ pub enum ContributionError {
 }
 
 /// Canonical sort keys used for deterministic output under input-order
-/// variation: bindings by id, occurrences by (id, binding).
+/// variation: bindings by id, occurrences by (id, binding), limitations by
+/// their total enum order with duplicate classes collapsed.
 fn canonicalize(
     mut bindings: Vec<LexicalBindingIdentity>,
     mut occurrences: Vec<ContributionOccurrence>,
-) -> (Vec<LexicalBindingIdentity>, Vec<ContributionOccurrence>) {
+    mut limitations: Vec<ContributionLimitation>,
+) -> (Vec<LexicalBindingIdentity>, Vec<ContributionOccurrence>, Vec<ContributionLimitation>) {
     bindings.sort_by(|a, b| a.binding_id.cmp(&b.binding_id));
     occurrences.sort_by(|a, b| {
         a.occurrence_id.cmp(&b.occurrence_id).then_with(|| a.binding_id.cmp(&b.binding_id))
     });
-    (bindings, occurrences)
+    limitations.sort();
+    limitations.dedup();
+    (bindings, occurrences, limitations)
+}
+
+/// Every known [`PirAnchorKind`] provenance class name.
+const PIR_ANCHOR_KIND_NAMES: [PirAnchorKind; 6] = [
+    PirAnchorKind::ExplicitSource,
+    PirAnchorKind::SourceBackedGenerated,
+    PirAnchorKind::GeneratedNoSource,
+    PirAnchorKind::DynamicBoundary,
+    PirAnchorKind::AmbientInput,
+    PirAnchorKind::Unknown,
+];
+
+/// Whether `anchor_kind` names a source-backed [`PirAnchorKind`].
+///
+/// Unknown names and names of receipt-only kinds (generated-no-source,
+/// ambient-input, unknown) never back a source occurrence.
+fn is_source_backed_anchor_name(anchor_kind: &str) -> bool {
+    PIR_ANCHOR_KIND_NAMES.iter().any(|kind| kind.is_source_backed() && kind.name() == anchor_kind)
 }
 
 /// One immutable file-level compiler lexical contribution (#12109).
 ///
 /// Construct exclusively through [`FilePirLexicalContributionV1::try_new`];
-/// every field is validated before the fingerprint is computed.
+/// every field is validated before the fingerprint is computed. The validated
+/// fields are private and read-only through accessors, so no caller can
+/// bypass validation or mutate a record after construction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FilePirLexicalContributionV1 {
     /// Schema version (pinned).
-    pub schema_version: u32,
+    schema_version: u32,
     /// Producer provenance (descriptive).
-    pub producer: CompilerProducerIdentity,
+    producer: CompilerProducerIdentity,
     /// Exact subject identity (load-bearing).
-    pub subject: ContributionSubjectIdentity,
+    subject: ContributionSubjectIdentity,
     /// Bindings, canonically ordered.
-    pub bindings: Vec<LexicalBindingIdentity>,
+    bindings: Vec<LexicalBindingIdentity>,
     /// Occurrences, canonically ordered.
-    pub occurrences: Vec<ContributionOccurrence>,
+    occurrences: Vec<ContributionOccurrence>,
     /// Result/completeness axis.
-    pub completeness: ContributionCompleteness,
-    /// Limitations bounding absent fact classes.
-    pub limitations: Vec<ContributionLimitation>,
+    completeness: ContributionCompleteness,
+    /// Limitations bounding absent fact classes, canonically ordered.
+    limitations: Vec<ContributionLimitation>,
     /// Work-shape observations.
-    pub work: ContributionWorkShape,
+    work: ContributionWorkShape,
     /// Terminal disposition of this record.
-    pub terminal_disposition: TerminalDisposition,
+    terminal_disposition: TerminalDisposition,
     /// Optional matching semantic-snapshot join metadata.
-    pub semantic_snapshot_join: Option<SemanticSnapshotJoinMetadata>,
-    /// Deterministic fingerprint over the canonical serialization.
-    pub fingerprint: ContentDigest,
+    semantic_snapshot_join: Option<SemanticSnapshotJoinMetadata>,
+    /// Deterministic fingerprint over the unsigned canonical serialization.
+    fingerprint: ContentDigest,
+}
+
+/// Canonical serialization view of a contribution with the `fingerprint`
+/// field omitted.
+///
+/// The stored [`FilePirLexicalContributionV1::fingerprint`] hashes exactly
+/// this view's serialization bytes; consumers recompute them from any durable
+/// envelope copy through
+/// [`FilePirLexicalContributionV1::unsigned_canonical_json`].
+#[derive(Serialize)]
+struct UnsignedContributionView<'a> {
+    schema_version: u32,
+    producer: &'a CompilerProducerIdentity,
+    subject: &'a ContributionSubjectIdentity,
+    bindings: &'a [LexicalBindingIdentity],
+    occurrences: &'a [ContributionOccurrence],
+    completeness: ContributionCompleteness,
+    limitations: &'a [ContributionLimitation],
+    work: &'a ContributionWorkShape,
+    terminal_disposition: &'a TerminalDisposition,
+    semantic_snapshot_join: Option<&'a SemanticSnapshotJoinMetadata>,
 }
 
 /// Unvalidated construction input for [`FilePirLexicalContributionV1::try_new`].
@@ -427,10 +475,12 @@ pub struct ContributionDraft {
 impl FilePirLexicalContributionV1 {
     /// Strictly validate and construct one contribution.
     ///
-    /// Fails closed on mixed subjects, collapsed bindings, mislabeled
-    /// declarations, incomplete-but-complete claims, foreign joins, and
-    /// unanchored occurrences. The returned record carries a deterministic
-    /// fingerprint computed over the canonical serialization.
+    /// Fails closed on mixed subjects, collapsed bindings, duplicated binding
+    /// ids, mislabeled declarations, non-source-backed occurrence anchors,
+    /// incomplete-but-complete claims, foreign joins, and unanchored
+    /// occurrences. The returned record carries a deterministic fingerprint
+    /// computed over the unsigned canonical serialization (every field in
+    /// fixed order except the fingerprint itself).
     pub fn try_new(draft: ContributionDraft) -> Result<Self, ContributionError> {
         let ContributionDraft {
             producer,
@@ -460,10 +510,16 @@ impl FilePirLexicalContributionV1 {
             }
         }
 
+        let mut seen_binding_ids = BTreeSet::new();
         let mut seen_bindings = BTreeMap::new();
         for binding in &bindings {
             if binding.binding_id.is_empty() {
                 return Err(ContributionError::EmptyIdentityField { field: "binding_id" });
+            }
+            if !seen_binding_ids.insert(binding.binding_id.as_str()) {
+                return Err(ContributionError::DuplicateBindingId {
+                    binding_id: binding.binding_id.clone(),
+                });
             }
             let key = (
                 binding.body_id.clone(),
@@ -489,6 +545,11 @@ impl FilePirLexicalContributionV1 {
             }
             if seen_occurrences.insert(occurrence.occurrence_id.as_str(), ()).is_some() {
                 return Err(ContributionError::DuplicateOccurrenceId {
+                    occurrence_id: occurrence.occurrence_id.clone(),
+                });
+            }
+            if !is_source_backed_anchor_name(&occurrence.anchor.anchor_kind) {
+                return Err(ContributionError::UnanchoredOccurrence {
                     occurrence_id: occurrence.occurrence_id.clone(),
                 });
             }
@@ -539,8 +600,22 @@ impl FilePirLexicalContributionV1 {
             }
         }
 
-        let (bindings, occurrences) = canonicalize(bindings, occurrences);
-        let mut contribution = Self {
+        let (bindings, occurrences, limitations) = canonicalize(bindings, occurrences, limitations);
+        let unsigned = UnsignedContributionView {
+            schema_version: FILE_PIR_LEXICAL_CONTRIBUTION_SCHEMA_VERSION,
+            producer: &producer,
+            subject: &subject,
+            bindings: &bindings,
+            occurrences: &occurrences,
+            completeness,
+            limitations: &limitations,
+            work: &work,
+            terminal_disposition: &terminal_disposition,
+            semantic_snapshot_join: semantic_snapshot_join.as_ref(),
+        };
+        let canonical = serde_json::to_string(&unsigned)
+            .map_err(|error| ContributionError::Serialization { message: error.to_string() })?;
+        Ok(Self {
             schema_version: FILE_PIR_LEXICAL_CONTRIBUTION_SCHEMA_VERSION,
             producer,
             subject,
@@ -551,19 +626,103 @@ impl FilePirLexicalContributionV1 {
             work,
             terminal_disposition,
             semantic_snapshot_join,
-            fingerprint: ContentDigest::of_bytes(b""),
-        };
-        let canonical = contribution
-            .canonical_json()
-            .map_err(|error| ContributionError::Serialization { message: error.to_string() })?;
-        contribution.fingerprint = ContentDigest::of_bytes(canonical.as_bytes());
-        Ok(contribution)
+            fingerprint: ContentDigest::of_bytes(canonical.as_bytes()),
+        })
+    }
+
+    /// Schema version (pinned).
+    #[must_use]
+    pub const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    /// Producer provenance (descriptive).
+    #[must_use]
+    pub const fn producer(&self) -> &CompilerProducerIdentity {
+        &self.producer
+    }
+
+    /// Exact subject identity (load-bearing).
+    #[must_use]
+    pub const fn subject(&self) -> &ContributionSubjectIdentity {
+        &self.subject
+    }
+
+    /// Bindings, canonically ordered.
+    #[must_use]
+    pub fn bindings(&self) -> &[LexicalBindingIdentity] {
+        &self.bindings
+    }
+
+    /// Occurrences, canonically ordered.
+    #[must_use]
+    pub fn occurrences(&self) -> &[ContributionOccurrence] {
+        &self.occurrences
+    }
+
+    /// Result/completeness axis.
+    #[must_use]
+    pub const fn completeness(&self) -> ContributionCompleteness {
+        self.completeness
+    }
+
+    /// Limitations bounding absent fact classes, canonically ordered and
+    /// deduplicated.
+    #[must_use]
+    pub fn limitations(&self) -> &[ContributionLimitation] {
+        &self.limitations
+    }
+
+    /// Work-shape observations.
+    #[must_use]
+    pub const fn work(&self) -> &ContributionWorkShape {
+        &self.work
+    }
+
+    /// Terminal disposition of this record.
+    #[must_use]
+    pub const fn terminal_disposition(&self) -> &TerminalDisposition {
+        &self.terminal_disposition
+    }
+
+    /// Optional matching semantic-snapshot join metadata.
+    #[must_use]
+    pub const fn semantic_snapshot_join(&self) -> Option<&SemanticSnapshotJoinMetadata> {
+        self.semantic_snapshot_join.as_ref()
+    }
+
+    /// Deterministic fingerprint over the unsigned canonical serialization
+    /// ([`Self::unsigned_canonical_json`]).
+    #[must_use]
+    pub const fn fingerprint(&self) -> &ContentDigest {
+        &self.fingerprint
     }
 
     /// Canonical JSON serialization: collections are pre-sorted, struct field
     /// order is fixed by the derive, and map keys are BTreeMap-ordered.
     pub fn canonical_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
+    }
+
+    /// Canonical JSON of the unsigned fingerprint input: every envelope field
+    /// in fixed structural order with the `fingerprint` field omitted.
+    ///
+    /// The stored [`Self::fingerprint`] covers exactly these bytes, so a
+    /// verifier recomputes it as
+    /// `ContentDigest::of_bytes(unsigned_canonical_json()?.as_bytes())`.
+    pub fn unsigned_canonical_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(&UnsignedContributionView {
+            schema_version: self.schema_version,
+            producer: &self.producer,
+            subject: &self.subject,
+            bindings: self.bindings.as_slice(),
+            occurrences: self.occurrences.as_slice(),
+            completeness: self.completeness,
+            limitations: self.limitations.as_slice(),
+            work: &self.work,
+            terminal_disposition: &self.terminal_disposition,
+            semantic_snapshot_join: self.semantic_snapshot_join.as_ref(),
+        })
     }
 
     /// Whether this contribution proves an exact answer.
