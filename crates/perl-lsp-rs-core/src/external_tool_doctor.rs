@@ -102,14 +102,21 @@ pub fn external_tool_doctor_entries(
 /// Critic compatibility is identified by its recognized configuration file
 /// (`.perlcriticrc`), not by hard-coded policy counts, so the projection
 /// follows the registry row that owns critic configuration compatibility.
+/// The registry does not enforce unique config-file ownership, so this fails
+/// closed: exactly one owning row projects, zero or duplicate owners yield
+/// `None` and the caller reports the ambiguity honestly instead of guessing
+/// by declaration order.
 #[must_use]
 pub fn critic_compatibility_entry(
     registry: &[ExternalToolPolicy],
 ) -> Option<ExternalToolDoctorEntry> {
-    registry
-        .iter()
-        .find(|policy| policy.config_files.contains(&".perlcriticrc"))
-        .map(external_tool_doctor_entry)
+    let mut matches =
+        registry.iter().filter(|policy| policy.config_files.contains(&".perlcriticrc"));
+    let first = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(external_tool_doctor_entry(first))
 }
 
 /// Project one registry row into a typed doctor entry.
@@ -164,13 +171,13 @@ fn safe_next_action(policy: &ExternalToolPolicy, status_code: &'static str) -> &
         return "No product setup exists; familiar configuration is explained process-free and \
             real-tool execution stays in repository conformance.";
     }
-    if policy.install_help_scope == InstallHelpScope::UserRequestedCompatibility {
-        return "Optionally request explicit compatibility setup; guidance is copyable, \
-            environment-scoped, and never auto-executed.";
-    }
     if status_code == STATUS_OPTIONAL_PEER {
         return "Optionally configure an explicit peer session; the native product keeps \
             protocol ownership.";
+    }
+    if policy.install_help_scope == InstallHelpScope::UserRequestedCompatibility {
+        return "Optionally request explicit compatibility setup; guidance is copyable, \
+            environment-scoped, and never auto-executed.";
     }
     "No install guidance is offered for this tool."
 }
@@ -226,8 +233,23 @@ pub fn render_external_tool_doctor_text(entries: &[ExternalToolDoctorEntry]) -> 
     let mut out = String::new();
     out.push_str("perl-lsp doctor — external tooling\n");
     out.push_str("==================================\n\n");
-    out.push_str("Native health is independent of every tool below; absence of any\n");
-    out.push_str("external tool never degrades native readiness.\n\n");
+    let degrading: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.degrades_native_health)
+        .map(|entry| entry.canonical_name)
+        .collect();
+    if degrading.is_empty() {
+        out.push_str("Native health is independent of every tool below; absence of any\n");
+        out.push_str("external tool never degrades native readiness.\n\n");
+    } else {
+        out.push_str(&format!(
+            "WARNING: registry rows claim native health dependence for {}; this\n",
+            degrading.join(", ")
+        ));
+        out.push_str(
+            "contradicts the reviewed registry contract — report it, do not rely on it.\n\n",
+        );
+    }
 
     for entry in entries {
         out.push_str(&format!("{}: {}\n", entry.canonical_name, role_summary(entry)));
@@ -448,7 +470,41 @@ mod tests {
         assert_eq!(ptkdb.status_code, STATUS_OPTIONAL_PEER);
         assert_eq!(ptkdb.reason_code, REASON_EXPLICIT_OPTIONAL_PEER);
         assert_eq!(ptkdb.native_delivery, NativeReplacementDelivery::NotApplicable);
+        // ptkdb's install_help_scope is user_requested_compatibility, but the
+        // peer role must win: a debugger-peer user gets the peer-session next
+        // action, not the generic compatibility-setup text.
+        assert!(ptkdb.safe_next_action.contains("peer session"));
+        assert!(!ptkdb.safe_next_action.contains("compatibility setup"));
         Ok(())
+    }
+
+    #[test]
+    fn critic_compatibility_fails_closed_on_duplicate_config_owner() {
+        // Duplicate .perlcriticrc ownership is not rejected by registry
+        // validation; the doctor projection must not guess by declaration
+        // order.
+        let mut fixture = EXTERNAL_TOOL_REGISTRY.to_vec();
+        let mut impostor = EXTERNAL_TOOL_REGISTRY[2];
+        impostor.canonical_name = "Perl::Impostor";
+        fixture.push(impostor);
+        assert!(critic_compatibility_entry(&fixture).is_none());
+
+        // The real registry still projects exactly one owner.
+        assert!(critic_compatibility_entry(EXTERNAL_TOOL_REGISTRY).is_some());
+    }
+
+    #[test]
+    fn renderer_headline_follows_entry_health_claims() {
+        // A mutated row that claims native-health dependence must change the
+        // aggregate headline, so text and typed JSON cannot disagree.
+        let mut fixture = EXTERNAL_TOOL_REGISTRY.to_vec();
+        fixture[0].required_for_native = true;
+
+        let entries = external_tool_doctor_entries(&fixture);
+        let rendered = render_external_tool_doctor_text(&entries);
+        assert!(rendered.contains("WARNING: registry rows claim native health dependence"));
+        assert!(!rendered.contains("never degrades native readiness"));
+        assert!(entries[0].degrades_native_health);
     }
 
     #[test]
