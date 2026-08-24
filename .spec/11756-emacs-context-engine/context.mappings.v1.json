@@ -420,6 +420,16 @@
           "notes": "landed canonical discriminating twelve-case project-fixture substrate (#7763, pull #8026); REQUIRED_CASES pins the case set both root matrices consume"
         },
         {
+          "component_id": "emacs.stock_project_probe.driver",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "crates/perl-lsp-rs/tests/support/emacs_projects.rs",
+          "symbol": "stock_project_probe_driver",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "behavior-bearing probe driver: the embedded Elisp performs project-current, extracts the root and serializes the receipt with native JSON sentinels; bind_stock_project_probe only binds the probe environment"
+        },
+        {
           "component_id": "emacs.stock_project_probe.substrate",
           "role": "production",
           "kind": "rust_source",
@@ -1017,7 +1027,7 @@
       "write_set_note": null,
       "no_production_component_reason": null,
       "blocker": {
-        "reason": "the canonical #7122 machine-readable client support registry does not exist on this tree (#7122 is open): the only landed catalog-class surface is the Vim/vim-lsp additive cell-catalog (xtask/src/vim_lsp_cell_catalog, #11374), which is family-scoped baseline material and never Emacs registry input, and xtask/src/editor_client_compat.rs is the generic receipt contract, not a registry; import additionally requires the complete public replay denominator (PUB_E_B #8846, PUB_E_R #8849, PUB_L_R #8853, all unimplemented) \u2014 a partial denominator never enables a complete-cut registry claim, and generated docs are never registry authority",
+        "reason": "the machine-readable client support registry already exists at policy/lsp-client-support.toml (lsp-client-support.v1, owner #6739) and its Emacs row sits at configuration_documented with requires_actual_client_receipt = true and no actual_client evidence \u2014 the missing surface is the exact Emacs receipt import over the complete public replay denominator (PUB_E_B #8846, PUB_E_R #8849, PUB_L_R #8853, all unimplemented): a partial denominator never enables a complete-cut registry claim; xtask/src/editor_client_compat.rs is the generic receipt contract the import consumes, not a registry; the Vim/vim-lsp cell-catalog (xtask/src/vim_lsp_cell_catalog, #11374) is family-scoped baseline material and never Emacs registry input; generated docs (docs/project/status/lsp_clients.md) are registry output, never registry authority",
         "owner_issue": 8858,
         "action": "return_to_issue"
       }
@@ -1035,7 +1045,7 @@
       "write_set_note": null,
       "no_production_component_reason": null,
       "blocker": {
-        "reason": "no generated Emacs docs projection exists on this tree: docs/EDITORS/EMACS_SETUP.md is a hand-written setup guide guarded by drift-contract tests (xtask/tests/emacs_docs_contract.rs), not output projected from registry truth, and the projection requires the registry import (REG #8858) whose #7122 registry surface does not exist; a generated doc row never becomes registry authority and never drifts from it, and certification never reads docs as truth",
+        "reason": "a generated registry projection already exists \u2014 docs/project/status/lsp_clients.md is rendered from policy/lsp-client-support.toml with freshness enforced by crates/perl-lsp-rs/tests/lsp_client_support_registry.rs \u2014 but the Emacs setup and support claim projection owned here does not: docs/EDITORS/EMACS_SETUP.md is a hand-written guide cited as documentation evidence in the registry row, not output generated from registry truth, and projecting earned Emacs support claims requires the imported receipts (REG #8858), which wait on the replay denominator; a generated doc row never becomes registry authority and never drifts from it",
         "owner_issue": 8862,
         "action": "return_to_issue"
       }
