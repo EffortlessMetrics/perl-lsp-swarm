@@ -143,13 +143,41 @@ impl ReachabilityStageOutput {
 /// [`append_stage_output`](Self::append_stage_output); no stage may replace
 /// the upstream subject — the type exposes no method that can overwrite an
 /// existing identity.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReachabilityOperationSubject {
     operation_id: ReachabilityOperationId,
     kind: ReachabilityOperationKind,
     identities: Vec<ReachabilitySubjectIdentity>,
     budget_profile_id: ReachabilityProfileId,
     stage_outputs: Vec<ReachabilityStageOutput>,
+}
+
+impl<'de> Deserialize<'de> for ReachabilityOperationSubject {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw {
+            operation_id: ReachabilityOperationId,
+            kind: ReachabilityOperationKind,
+            identities: Vec<ReachabilitySubjectIdentity>,
+            budget_profile_id: ReachabilityProfileId,
+            stage_outputs: Vec<ReachabilityStageOutput>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        let mut subject = ReachabilityOperationSubject::new(
+            raw.operation_id,
+            raw.kind,
+            raw.identities,
+            raw.budget_profile_id,
+        )
+        .map_err(serde::de::Error::custom)?;
+        for output in raw.stage_outputs {
+            subject.append_stage_output(output.stage().clone(), output.output().clone());
+        }
+        Ok(subject)
+    }
 }
 
 impl ReachabilityOperationSubject {

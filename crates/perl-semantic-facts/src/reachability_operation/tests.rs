@@ -1446,3 +1446,61 @@ fn bounded_view_rejects_incoherent_totals_and_zero_omission_under_truncation()
     );
     Ok(())
 }
+
+#[test]
+fn composite_deserialization_cannot_bypass_constructor_validation() -> Result<(), Box<dyn Error>> {
+    let empty_kinds_budget = serde_json::json!({
+        "profile_id": "p",
+        "selected_operation_kinds": [],
+        "dimension_limits": {},
+        "unlimited": {},
+    });
+    assert!(serde_json::from_value::<ReachabilityWorkBudget>(empty_kinds_budget).is_err());
+    let zero_bound = serde_json::json!({
+        "profile_id": "p",
+        "selected_operation_kinds": ["classification"],
+        "dimension_limits": {},
+        "unlimited": {
+            "nodes-admitted": { "reason": "reviewed", "safety_bound": 0 },
+        },
+    });
+    assert!(serde_json::from_value::<ReachabilityWorkBudget>(zero_bound).is_err());
+    let zero_version_profile = serde_json::json!({
+        "profile_id": "p",
+        "version": 0,
+        "purpose": "Batch",
+        "selected_operation_kinds": ["classification"],
+        "selected_fact_families": [],
+        "cancellation_polling": "AtDeclaredCheckpoints",
+        "retention": { "max_explanation_items": null, "max_output_bytes": null },
+        "defaults_source": "authority",
+        "limitations": [],
+    });
+    assert!(serde_json::from_value::<ReachabilityExecutionProfile>(zero_version_profile).is_err());
+    let conflicting_subject = serde_json::json!({
+        "operation_id": "op-5",
+        "kind": "graph-admission",
+        "identities": [
+            { "kind": "WorkspaceSnapshot", "value": "snapshot-a", "generation": "gen-1" },
+            { "kind": "WorkspaceSnapshot", "value": "snapshot-a", "generation": "gen-2" },
+        ],
+        "budget_profile_id": "test-profile",
+        "stage_outputs": [],
+    });
+    assert!(serde_json::from_value::<ReachabilityOperationSubject>(conflicting_subject).is_err());
+    let truncated_zero_view = serde_json::json!({
+        "underlying": {
+            "result_identity": { "kind": "StageOutput", "value": "r", "generation": null },
+            "currentness_authority": { "kind": "WorkspaceSnapshot", "value": "s", "generation": "g" },
+        },
+        "view_profile": "v",
+        "items_returned": 1,
+        "bytes_returned": 8,
+        "known_total": null,
+        "omitted_count": 0,
+        "truncated": true,
+        "truncation_reason": "item-limit",
+    });
+    assert!(serde_json::from_value::<ReachabilityBoundedView>(truncated_zero_view).is_err());
+    Ok(())
+}

@@ -251,10 +251,33 @@ impl ReachabilityProfileId {
 ///
 /// "Unlimited" requires one explicit reviewed reason and a higher-level
 /// safety bound; an unbounded dimension without both is non-pass.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReachabilityUnlimitedJustification {
     reason: String,
     safety_bound: u64,
+}
+
+impl<'de> Deserialize<'de> for ReachabilityUnlimitedJustification {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw {
+            reason: String,
+            safety_bound: u64,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        if raw.reason.is_empty() || raw.safety_bound == 0 {
+            return Err(serde::de::Error::custom(
+                "an unlimited justification requires a reviewed reason and a safety bound",
+            ));
+        }
+        Ok(ReachabilityUnlimitedJustification {
+            reason: raw.reason,
+            safety_bound: raw.safety_bound,
+        })
+    }
 }
 
 impl ReachabilityUnlimitedJustification {
@@ -309,12 +332,35 @@ pub enum ReachabilityDimensionLimit {
 /// work-unit limits with checked arithmetic; representative product values
 /// and ratchets stay with the performance/configuration authorities, and
 /// historical constants do not become product truth by existing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReachabilityWorkBudget {
     profile_id: super::ReachabilityProfileId,
     selected_operation_kinds: Vec<ReachabilityOperationKind>,
     dimension_limits: BTreeMap<ReachabilityWorkDimension, u64>,
     unlimited: BTreeMap<ReachabilityWorkDimension, ReachabilityUnlimitedJustification>,
+}
+
+impl<'de> Deserialize<'de> for ReachabilityWorkBudget {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw {
+            profile_id: ReachabilityProfileId,
+            selected_operation_kinds: Vec<ReachabilityOperationKind>,
+            dimension_limits: BTreeMap<ReachabilityWorkDimension, u64>,
+            unlimited: BTreeMap<ReachabilityWorkDimension, ReachabilityUnlimitedJustification>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        ReachabilityWorkBudget::new(
+            raw.profile_id,
+            raw.selected_operation_kinds,
+            raw.dimension_limits,
+            raw.unlimited,
+        )
+        .map_err(serde::de::Error::custom)
+    }
 }
 
 impl ReachabilityWorkBudget {
@@ -441,7 +487,7 @@ pub struct ReachabilityRetentionLimits {
 /// The profile records mechanism identity — purpose, declared checkpoints,
 /// polling contract, retention limits, and the source of product defaults —
 /// without selecting product budget values.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReachabilityExecutionProfile {
     profile_id: super::ReachabilityProfileId,
     version: u32,
@@ -452,6 +498,39 @@ pub struct ReachabilityExecutionProfile {
     retention: ReachabilityRetentionLimits,
     defaults_source: String,
     limitations: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for ReachabilityExecutionProfile {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw {
+            profile_id: super::ReachabilityProfileId,
+            version: u32,
+            purpose: ReachabilityExecutionPurpose,
+            selected_operation_kinds: Vec<ReachabilityOperationKind>,
+            selected_fact_families: Vec<super::ReachabilityFactFamilyId>,
+            cancellation_polling: ReachabilityCancellationPolling,
+            retention: ReachabilityRetentionLimits,
+            defaults_source: String,
+            limitations: Vec<String>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        ReachabilityExecutionProfile::new(
+            raw.profile_id,
+            raw.version,
+            raw.purpose,
+            raw.selected_operation_kinds,
+            raw.selected_fact_families,
+            raw.cancellation_polling,
+            raw.retention,
+            raw.defaults_source,
+            raw.limitations,
+        )
+        .map_err(serde::de::Error::custom)
+    }
 }
 
 impl ReachabilityExecutionProfile {

@@ -79,7 +79,7 @@ impl ReachabilityCompleteResultRef {
 /// [`ReachabilityCompleteResultRef`] minted from an exact-completed
 /// outcome, while semantic-stage truncation caps the semantic outcome at
 /// `Partial` and can never mint that token.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReachabilityBoundedView {
     underlying: ReachabilityCompleteResultRef,
     view_profile: ReachableViewProfileId,
@@ -89,6 +89,37 @@ pub struct ReachabilityBoundedView {
     omitted_count: Option<u64>,
     truncated: bool,
     truncation_reason: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for ReachabilityBoundedView {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw {
+            underlying: ReachabilityCompleteResultRef,
+            view_profile: ReachableViewProfileId,
+            items_returned: u64,
+            bytes_returned: u64,
+            known_total: Option<u64>,
+            omitted_count: Option<u64>,
+            truncated: bool,
+            truncation_reason: Option<String>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        ReachabilityBoundedView::new(
+            raw.underlying,
+            raw.view_profile,
+            raw.items_returned,
+            raw.bytes_returned,
+            raw.known_total,
+            raw.omitted_count,
+            raw.truncated,
+            raw.truncation_reason,
+        )
+        .map_err(serde::de::Error::custom)
+    }
 }
 
 impl ReachabilityBoundedView {
