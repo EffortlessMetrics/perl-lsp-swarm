@@ -135,8 +135,10 @@ import {
   ActiveDocumentReadiness,
   type ActiveDocumentReadinessSnapshot,
 } from './activeDocumentReadiness';
-import type { ActivationAttemptState } from './activationTransaction';
-import type { ActivationCleanupReceipt } from './activationTransaction';
+import type {
+  ActivationAttemptState,
+  ActivationCleanupReceipt,
+} from './activationTransaction';
 import { ExtensionActivationOwner } from './activationOwner';
 
 // Compatibility projections for existing command/provider code. Lifecycle
