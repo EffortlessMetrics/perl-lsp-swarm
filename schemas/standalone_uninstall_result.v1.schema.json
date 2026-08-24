@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/standalone_uninstall_result.v1.schema.json",
+  "title": "standalone_uninstall_result.v1",
+  "description": "Closed result vocabulary for one standalone uninstall attempt (#11470). Partial failure stays explicit and safely retryable; missing manifest evidence is never clean absence; not_applicable exists only under conditional activation (#11417). This document reports; it deletes nothing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "result",
+    "claim_boundary",
+    "plan_id",
+    "bound_manifest_sha256",
+    "removed_entries",
+    "preserved_entries",
+    "failed_entries",
+    "complete_evidence",
+    "activation_state",
+    "retryable",
+    "limitations"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "standalone_uninstall_result.v1"
+    },
+    "result": {
+      "enum": [
+        "removed",
+        "already_absent_owned_state",
+        "partial_failure",
+        "blocked_running",
+        "blocked_unknown_or_foreign",
+        "root_or_manifest_mismatch",
+        "path_cleanup_failed",
+        "cancelled",
+        "instrument_failure",
+        "not_proven",
+        "not_applicable"
+      ]
+    },
+    "claim_boundary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "plan_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifier of the standalone_removal_plan.v1 this outcome belongs to."
+    },
+    "bound_manifest_sha256": {
+      "$ref": "standalone_owned_state.v1.schema.json#/$defs/sha256"
+    },
+    "removed_entries": {
+      "type": "array",
+      "items": {
+        "$ref": "standalone_owned_state.v1.schema.json#/$defs/relative_path"
+      }
+    },
+    "preserved_entries": {
+      "type": "array",
+      "items": {
+        "$ref": "standalone_owned_state.v1.schema.json#/$defs/relative_path"
+      }
+    },
+    "failed_entries": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/failed_entry"
+      }
+    },
+    "complete_evidence": {
+      "type": "boolean",
+      "description": "True only when enumeration was complete and every postcondition was actually evaluated. already_absent_owned_state requires this; absence without complete evidence is not clean absence."
+    },
+    "activation_state": {
+      "enum": ["conditional_activation_not_selected", "conditional_activation_selected"],
+      "description": "#11417 gate. not_applicable requires conditional_activation_selected; issue existence alone never selects it."
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "failure_stage": {
+      "enum": ["verify", "remove", "marker_cleanup", "postcondition"]
+    },
+    "failed_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "stage", "detail"],
+      "properties": {
+        "relative_path": {
+          "$ref": "standalone_owned_state.v1.schema.json#/$defs/relative_path"
+        },
+        "stage": {
+          "$ref": "#/$defs/failure_stage"
+        },
+        "detail": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

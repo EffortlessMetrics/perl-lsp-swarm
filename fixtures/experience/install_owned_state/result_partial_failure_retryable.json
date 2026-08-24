@@ -1,0 +1,37 @@
+{
+  "schema_version": "standalone_uninstall_result.v1",
+  "result": "partial_failure",
+  "claim_boundary": "Reports one uninstall attempt against one plan (#11470). Owned binaries and receipts were removed; the PATH marker could not be cleaned. Nothing is claimed clean that was not proven.",
+  "plan_id": "plan-full-removal-canonical",
+  "bound_manifest_sha256": "4cd21c03b8bcf7b2ad65d7ecda67695e419dfceb0dfa3197429bfce56b013da4",
+  "removed_entries": [
+    "candidates/v0.18.0-x86_64-unknown-linux-gnu",
+    "candidates/v0.18.0-x86_64-unknown-linux-gnu/manifest.json",
+    "candidates/v0.17.2-x86_64-unknown-linux-gnu",
+    "current",
+    "receipts/current.json",
+    "receipts/previous-v0.17.2.json",
+    "attempts/attempt-2026-08-20T10-00-00Z.json",
+    "transactions/log.jsonl",
+    ".perllsp-profile-marker",
+    "registry/perllsp-uninstall.marker"
+  ],
+  "preserved_entries": [
+    ".perllsp-path-marker",
+    "notes.txt",
+    ".cargo-binstall/perllsp-meta.json"
+  ],
+  "failed_entries": [
+    {
+      "relative_path": ".perllsp-path-marker",
+      "stage": "marker_cleanup",
+      "detail": "marker file locked by the user's running shell; PATH export still present"
+    }
+  ],
+  "complete_evidence": false,
+  "activation_state": "conditional_activation_not_selected",
+  "retryable": true,
+  "limitations": [
+    "fresh-process PATH visibility not re-proven after marker_cleanup failure"
+  ]
+}

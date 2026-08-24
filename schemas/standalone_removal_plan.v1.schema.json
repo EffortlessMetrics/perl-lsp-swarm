@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/standalone_removal_plan.v1.schema.json",
+  "title": "standalone_removal_plan.v1",
+  "description": "Pure, executable-nothing removal plan for one standalone_owned_state.v1 manifest (#11470). Binds exact current root/manifest identity at planning time so changed state forces revalidation or refusal. Every manifest entry row must receive exactly one disposition; destructive actions are legal only for digest-verified owned rows under the explicitly selected lifecycle policy. This document plans; it deletes nothing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_id",
+    "claim_boundary",
+    "bound_subject",
+    "lifecycle_policy",
+    "running_process_policy",
+    "path_cleanup",
+    "actions",
+    "postconditions"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "standalone_removal_plan.v1"
+    },
+    "plan_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "claim_boundary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "bound_subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "install_root_absolute_path",
+        "install_root_digest_sha256",
+        "manifest_sha256"
+      ],
+      "properties": {
+        "install_root_absolute_path": {
+          "$ref": "standalone_owned_state.v1.schema.json#/$defs/absolute_path"
+        },
+        "install_root_digest_sha256": {
+          "$ref": "standalone_owned_state.v1.schema.json#/$defs/sha256"
+        },
+        "manifest_sha256": {
+          "$ref": "standalone_owned_state.v1.schema.json#/$defs/sha256",
+          "description": "Digest of the exact manifest bytes planned against; any later manifest change invalidates this plan (root_or_manifest_mismatch)."
+        }
+      }
+    },
+    "lifecycle_policy": {
+      "enum": ["full_removal_selected", "retain_rollback_selected"],
+      "description": "The exact selected lifecycle policy required before current or rollback-retained state may be removed; rollback and uninstall are distinct and this field is where the distinction is explicit."
+    },
+    "running_process_policy": {
+      "enum": ["abort_on_running", "wait_external_then_abort", "require_manual_confirmation"],
+      "description": "Never kill; running state blocks or waits, it is never overwritten."
+    },
+    "path_cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "entries"],
+      "properties": {
+        "mode": {
+          "enum": ["exact_owned_entries_only", "skipped"]
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "standalone_owned_state.v1.schema.json#/$defs/relative_path"
+          }
+        }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/action"
+      }
+    },
+    "postconditions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fresh_process_proof_required",
+        "verify_entries_absent",
+        "verify_preserved"
+      ],
+      "properties": {
+        "fresh_process_proof_required": {
+          "type": "boolean"
+        },
+        "verify_entries_absent": {
+          "type": "array",
+          "items": {
+            "$ref": "standalone_owned_state.v1.schema.json#/$defs/relative_path"
+          }
+        },
+        "verify_preserved": {
+          "type": "array",
+          "items": {
+            "$ref": "standalone_owned_state.v1.schema.json#/$defs/relative_path"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "action_kind": {
+      "enum": ["remove_exact", "remove_marker", "preserve", "revalidate"]
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "action", "order_index", "reason"],
+      "properties": {
+        "relative_path": {
+          "$ref": "standalone_owned_state.v1.schema.json#/$defs/relative_path"
+        },
+        "action": {
+          "$ref": "#/$defs/action_kind"
+        },
+        "order_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "verified_identity_sha256": {
+          "$ref": "standalone_owned_state.v1.schema.json#/$defs/sha256",
+          "description": "Exact currentness evidence for destructive actions: the entry digest re-verified at planning time."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

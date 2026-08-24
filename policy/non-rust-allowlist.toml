@@ -2870,3 +2870,254 @@ covered_by = [
 created = "2026-08-24"
 review_after = "2026-09-24"
 
+
+[[allow]]
+id = "non-rust-standalone-owned-state-schema"
+path = "schemas/standalone_owned_state.v1.schema.json"
+kind = "contract_schema"
+language = "json"
+surface = "distribution"
+classification = "config"
+owner = "distribution"
+reason = "Closed owned-state manifest contract (#11470): bounded identities, ownership classes, running-state refs, lineage, enumeration completeness, redaction."
+covered_by = ["cargo test -p xtask --example standalone_owned_state --locked"]
+created = "2026-08-24"
+review_after = "2026-09-23"
+
+
+[[allow]]
+id = "non-rust-standalone-removal-plan-schema"
+path = "schemas/standalone_removal_plan.v1.schema.json"
+kind = "contract_schema"
+language = "json"
+surface = "distribution"
+classification = "config"
+owner = "distribution"
+reason = "Pure removal plan contract (#11470): digest-bound subject, total dispositions, destructive-legality matrix, PATH cleanup composition."
+covered_by = ["cargo test -p xtask --example standalone_owned_state --locked"]
+created = "2026-08-24"
+review_after = "2026-09-23"
+
+
+[[allow]]
+id = "non-rust-standalone-uninstall-result-schema"
+path = "schemas/standalone_uninstall_result.v1.schema.json"
+kind = "contract_schema"
+language = "json"
+surface = "distribution"
+classification = "config"
+owner = "distribution"
+reason = "Closed uninstall result vocabulary (#11470) with coherence rules; not_applicable gated on #11417 activation."
+covered_by = ["cargo test -p xtask --example standalone_owned_state --locked"]
+created = "2026-08-24"
+review_after = "2026-09-23"
+
+
+[[allow]]
+id = "non-rust-install-owned-state-canonical-full-install-manifest"
+path = "fixtures/experience/install_owned_state/manifest_canonical_full_install.json"
+kind = "contract_fixture"
+language = "json"
+surface = "distribution"
+classification = "test"
+owner = "distribution"
+reason = "deterministic scenario fixture for the #11470 standalone owned-state manifest/plan/result checked validator."
+covered_by = ["cargo test -p xtask --example standalone_owned_state --locked"]
+created = "2026-08-24"
+review_after = "2026-09-23"
+
+
+[[allow]]
+id = "non-rust-install-owned-state-running-current-manifest"
+path = "fixtures/experience/install_owned_state/manifest_running_current.json"
+kind = "contract_fixture"
+language = "json"
+surface = "distribution"
+classification = "test"
+owner = "distribution"
+reason = "deterministic scenario fixture for the #11470 standalone owned-state manifest/plan/result checked validator."
+covered_by = ["cargo test -p xtask --example standalone_owned_state --locked"]
+created = "2026-08-24"
+review_after = "2026-09-23"
+
+
+[[allow]]
+id = "non-rust-install-owned-state-symlink-substitution-manifest"
+path = "fixtures/experience/install_owned_state/manifest_symlink_substitution.json"
+kind = "contract_fixture"
+language = "json"
+surface = "distribution"
+classification = "test"
+owner = "distribution"
+reason = "deterministic scenario fixture for the #11470 standalone owned-state manifest/plan/result checked validator."
+covered_by = ["cargo test -p xtask --example standalone_owned_state --locked"]
+created = "2026-08-24"
+review_after = "2026-09-23"
+
+
+[[allow]]
+id = "non-rust-install-owned-state-instrument-failed-manifest"
+path = "fixtures/experience/install_owned_state/manifest_instrument_failed.json"
+kind = "contract_fixture"
+language = "json"
+surface = "distribution"
+classification = "test"
+owner = "distribution"
+reason = "deterministic scenario fixture for the #11470 standalone owned-state manifest/plan/result checked validator."
+covered_by = ["cargo test -p xtask --example standalone_owned_state --locked"]
+created = "2026-08-24"
+review_after = "2026-09-23"
+
+
+[[allow]]
+id = "non-rust-install-owned-state-partial-deletion-retry-manifest"
+path = "fixtures/experience/install_owned_state/manifest_partial_deletion_retry.json"
+kind = "contract_fixture"
+language = "json"
+surface = "distribution"
+classification = "test"
+owner = "distribution"
+reason = "deterministic scenario fixture for the #11470 standalone owned-state manifest/plan/result checked validator."
+covered_by = ["cargo test -p xtask --example standalone_owned_state --locked"]
+created = "2026-08-24"
+review_after = "2026-09-23"
+
+
+[[allow]]
+id = "non-rust-install-owned-state-user-edited-path-manifest"
+path = "fixtures/experience/install_owned_state/manifest_user_edited_path.json"
+kind = "contract_fixture"
+language = "json"
+surface = "distribution"
+classification = "test"
+owner = "distribution"
+reason = "deterministic scenario fixture for the #11470 standalone owned-state manifest/plan/result checked validator."
+covered_by = ["cargo test -p xtask --example standalone_owned_state --locked"]
+created = "2026-08-24"
+review_after = "2026-09-23"
+
+
+[[allow]]
+id = "non-rust-install-owned-state-invalid-unknown-role-manifest"
+path = "fixtures/experience/install_owned_state/manifest_invalid_unknown_role.json"
+kind = "contract_fixture"
+language = "json"
+surface = "distribution"
+classification = "test"
+owner = "distribution"
+reason = "negative-control fixture for the #11470 standalone owned-state manifest/plan/result checked validator."
+covered_by = ["cargo test -p xtask --example standalone_owned_state --locked"]
+created = "2026-08-24"
+review_after = "2026-09-23"
+
+
+[[allow]]
+id = "non-rust-install-owned-state-invalid-unbounded-identity-manifest"
+path = "fixtures/experience/install_owned_state/manifest_invalid_unbounded_identity.json"
+kind = "contract_fixture"
+language = "json"
+surface = "distribution"
+classification = "test"
+owner = "distribution"
+reason = "negative-control fixture for the #11470 standalone owned-state manifest/plan/result checked validator."
+covered_by = ["cargo test -p xtask --example standalone_owned_state --locked"]
+created = "2026-08-24"
+review_after = "2026-09-23"
+
+
+[[allow]]
+id = "non-rust-install-owned-state-invalid-ambiguous-running-manifest"
+path = "fixtures/experience/install_owned_state/manifest_invalid_ambiguous_running.json"
+kind = "contract_fixture"
+language = "json"
+surface = "distribution"
+classification = "test"
+owner = "distribution"
+reason = "negative-control fixture for the #11470 standalone owned-state manifest/plan/result checked validator."
+covered_by = ["cargo test -p xtask --example standalone_owned_state --locked"]
+created = "2026-08-24"
+review_after = "2026-09-23"
+
+
+[[allow]]
+id = "non-rust-install-owned-state-full-removal-plan"
+path = "fixtures/experience/install_owned_state/plan_full_removal.json"
+kind = "contract_fixture"
+language = "json"
+surface = "distribution"
+classification = "test"
+owner = "distribution"
+reason = "deterministic scenario fixture for the #11470 standalone owned-state manifest/plan/result checked validator."
+covered_by = ["cargo test -p xtask --example standalone_owned_state --locked"]
+created = "2026-08-24"
+review_after = "2026-09-23"
+
+
+[[allow]]
+id = "non-rust-install-owned-state-rollback-retained-plan"
+path = "fixtures/experience/install_owned_state/plan_rollback_retained.json"
+kind = "contract_fixture"
+language = "json"
+surface = "distribution"
+classification = "test"
+owner = "distribution"
+reason = "deterministic scenario fixture for the #11470 standalone owned-state manifest/plan/result checked validator."
+covered_by = ["cargo test -p xtask --example standalone_owned_state --locked"]
+created = "2026-08-24"
+review_after = "2026-09-23"
+
+
+[[allow]]
+id = "non-rust-install-owned-state-blocked-running-plan"
+path = "fixtures/experience/install_owned_state/plan_blocked_running_all_preserve.json"
+kind = "contract_fixture"
+language = "json"
+surface = "distribution"
+classification = "test"
+owner = "distribution"
+reason = "deterministic scenario fixture for the #11470 standalone owned-state manifest/plan/result checked validator."
+covered_by = ["cargo test -p xtask --example standalone_owned_state --locked"]
+created = "2026-08-24"
+review_after = "2026-09-23"
+
+
+[[allow]]
+id = "non-rust-install-owned-state-stale-binding-plan-negative-control"
+path = "fixtures/experience/install_owned_state/plan_invalid_stale_binding.json"
+kind = "contract_fixture"
+language = "json"
+surface = "distribution"
+classification = "test"
+owner = "distribution"
+reason = "negative-control fixture for the #11470 standalone owned-state manifest/plan/result checked validator."
+covered_by = ["cargo test -p xtask --example standalone_owned_state --locked"]
+created = "2026-08-24"
+review_after = "2026-09-23"
+
+
+[[allow]]
+id = "non-rust-install-owned-state-partial-failure-result"
+path = "fixtures/experience/install_owned_state/result_partial_failure_retryable.json"
+kind = "contract_fixture"
+language = "json"
+surface = "distribution"
+classification = "test"
+owner = "distribution"
+reason = "deterministic scenario fixture for the #11470 standalone owned-state manifest/plan/result checked validator."
+covered_by = ["cargo test -p xtask --example standalone_owned_state --locked"]
+created = "2026-08-24"
+review_after = "2026-09-23"
+
+
+[[allow]]
+id = "non-rust-install-owned-state-already-absent-result"
+path = "fixtures/experience/install_owned_state/result_already_absent_complete_evidence.json"
+kind = "contract_fixture"
+language = "json"
+surface = "distribution"
+classification = "test"
+owner = "distribution"
+reason = "deterministic scenario fixture for the #11470 standalone owned-state manifest/plan/result checked validator."
+covered_by = ["cargo test -p xtask --example standalone_owned_state --locked"]
+created = "2026-08-24"
+review_after = "2026-09-23"

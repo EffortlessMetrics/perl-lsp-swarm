@@ -1,0 +1,359 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/standalone_owned_state.v1.schema.json",
+  "title": "standalone_owned_state.v1",
+  "description": "Closed manifest of one first-party standalone installation's installer-owned state (#11470). Records exact roles, bounded filesystem identities, observed ownership classes, running/active process references, transaction lineage, enumeration completeness, and redaction policy. Filename, version, executable bit, or familiar path is never ownership; every row carries an explicit digest-backed identity or an honest unavailable marker. This document classifies observations; it removes nothing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "claim_boundary",
+    "install_root",
+    "installer",
+    "current_selection",
+    "previous_candidates",
+    "other_roots_observed",
+    "entries",
+    "transactions",
+    "enumeration",
+    "redaction"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "standalone_owned_state.v1"
+    },
+    "claim_boundary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "install_root": {
+      "$ref": "#/$defs/install_root"
+    },
+    "installer": {
+      "$ref": "#/$defs/installer_identity"
+    },
+    "current_selection": {
+      "$ref": "#/$defs/candidate_identity"
+    },
+    "previous_candidates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/candidate_identity"
+      }
+    },
+    "other_roots_observed": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/other_root"
+      }
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/entry"
+      }
+    },
+    "transactions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/transaction"
+      }
+    },
+    "enumeration": {
+      "$ref": "#/$defs/enumeration"
+    },
+    "redaction": {
+      "$ref": "#/$defs/redaction"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)[^\\\\:*?\"<>|]+(/[^\\\\:*?\"<>|]+)*$",
+      "description": "Exact path relative to the install root with forward slashes; absolute paths, drive letters, backslashes, parent segments, and glob metacharacters are structurally invalid because a removal target must be one exact entry."
+    },
+    "absolute_path": {
+      "allOf": [
+        {
+          "type": "string",
+          "minLength": 2
+        },
+        {
+          "anyOf": [
+            { "pattern": "^/" },
+            { "pattern": "^[A-Za-z]:[\\\\/]" },
+            { "pattern": "^\\\\\\\\[^\\\\]" }
+          ]
+        }
+      ],
+      "description": "Bounded absolute filesystem identity for a root observation."
+    },
+    "link_policy": {
+      "enum": ["resolved_physical", "refused_substitution"]
+    },
+    "install_root": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["absolute_path", "identity_digest_sha256", "link_policy"],
+      "properties": {
+        "absolute_path": {
+          "$ref": "#/$defs/absolute_path"
+        },
+        "identity_digest_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest binding the root identity recorded at scan time; substitution after planning fails currentness."
+        },
+        "link_policy": {
+          "$ref": "#/$defs/link_policy"
+        }
+      }
+    },
+    "installer_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "schema_version"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "posix_installer",
+            "powershell_installer",
+            "cargo_binstall",
+            "manual_archive"
+          ]
+        },
+        "schema_version": {
+          "$ref": "#/$defs/non_empty_string"
+        }
+      }
+    },
+    "candidate_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "version",
+        "artifact_sha256",
+        "selection_receipt_path",
+        "retained_for_rollback"
+      ],
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "version": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "artifact_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "selection_receipt_path": {
+          "$ref": "#/$defs/relative_path"
+        },
+        "retained_for_rollback": {
+          "type": "boolean"
+        }
+      }
+    },
+    "other_root": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["absolute_path", "classification"],
+      "properties": {
+        "absolute_path": {
+          "$ref": "#/$defs/absolute_path"
+        },
+        "classification": {
+          "enum": ["foreign_or_user_owned", "package_manager_or_other_route"]
+        }
+      }
+    },
+    "ownership_class": {
+      "enum": [
+        "owned_required",
+        "owned_removable",
+        "owned_retained_for_rollback",
+        "foreign_or_user_owned",
+        "package_manager_or_other_route",
+        "unknown_not_safe_to_delete",
+        "malformed_or_instrument_failed",
+        "running_or_active"
+      ]
+    },
+    "role": {
+      "enum": [
+        "immutable_candidate_dir",
+        "candidate_manifest",
+        "selection_marker",
+        "installation_receipt",
+        "attempt_record",
+        "path_marker",
+        "profile_marker",
+        "registry_marker",
+        "transaction_log",
+        "unowned_file_observed",
+        "external_route_state"
+      ]
+    },
+    "entry_identity_kind": {
+      "enum": ["sha256_content", "directory_tree_digest", "unavailable"]
+    },
+    "process_ref_kind": {
+      "enum": ["pid", "pidfile", "socket", "lockfile", "unknown"]
+    },
+    "process_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/process_ref_kind"
+        },
+        "value": {
+          "$ref": "#/$defs/non_empty_string"
+        }
+      }
+    },
+    "retention_disposition": {
+      "enum": [
+        "retain_required",
+        "retain_for_rollback",
+        "removable",
+        "foreign_preserve",
+        "external_route_preserve",
+        "blocked_pending_revalidation"
+      ]
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "relative_path",
+        "observed",
+        "ownership_class",
+        "identity",
+        "process_refs",
+        "user_modified",
+        "retention"
+      ],
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/role"
+        },
+        "relative_path": {
+          "$ref": "#/$defs/relative_path"
+        },
+        "observed": {
+          "enum": ["present", "absent"]
+        },
+        "ownership_class": {
+          "$ref": "#/$defs/ownership_class"
+        },
+        "identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/entry_identity_kind"
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        },
+        "process_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/process_ref"
+          }
+        },
+        "user_modified": {
+          "type": "boolean"
+        },
+        "retention": {
+          "$ref": "#/$defs/retention_disposition"
+        }
+      }
+    },
+    "operation_kind": {
+      "enum": ["install", "upgrade", "rollback", "repair", "uninstall_attempt"]
+    },
+    "transaction_outcome": {
+      "enum": ["completed", "failed", "interrupted", "orphaned", "not_proven"]
+    },
+    "transaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempt_id", "operation", "outcome"],
+      "properties": {
+        "attempt_id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "operation": {
+          "$ref": "#/$defs/operation_kind"
+        },
+        "outcome": {
+          "$ref": "#/$defs/transaction_outcome"
+        },
+        "record_relative_path": {
+          "$ref": "#/$defs/relative_path"
+        }
+      }
+    },
+    "enumeration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["complete", "instrument"],
+      "properties": {
+        "complete": {
+          "type": "boolean"
+        },
+        "instrument": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "incomplete_reason": {
+          "$ref": "#/$defs/non_empty_string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "complete": { "const": false } }
+          },
+          "then": {
+            "required": ["incomplete_reason"]
+          }
+        }
+      ]
+    },
+    "redaction_policy": {
+      "enum": ["none", "secrets_and_environment", "paths_redacted"]
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy", "redacted_fields"],
+      "properties": {
+        "policy": {
+          "$ref": "#/$defs/redaction_policy"
+        },
+        "redacted_fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        }
+      }
+    }
+  }
+}
