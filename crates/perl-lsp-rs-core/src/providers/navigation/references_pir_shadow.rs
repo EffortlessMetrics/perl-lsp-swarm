@@ -1105,11 +1105,11 @@ mod promote_tests {
             .iter()
             .map(|range| (range.start.character as usize, range.end.character as usize))
             .collect::<Vec<_>>();
-        if !mapped.contains(&(7, 9)) {
-            return Err(format!("promoted declaration was not token-normalized: {mapped:?}"));
+        if !mapped.contains(&(4, 9)) {
+            return Err(format!("promoted declaration was not sourced from the canonical anchor: {mapped:?}"));
         }
-        if mapped.contains(&(4, 9)) {
-            return Err(format!("promoted declaration leaked widened anchor: {mapped:?}"));
+        if mapped.contains(&(0, 1)) {
+            return Err(format!("promoted declaration leaked forged legacy anchor: {mapped:?}"));
         }
         Ok(())
     }
