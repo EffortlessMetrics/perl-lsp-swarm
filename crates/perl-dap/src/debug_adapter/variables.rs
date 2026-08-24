@@ -493,7 +493,11 @@ impl DebugAdapter {
                 "  else {{ ",
                 "    my $f=eval{{$s->FLAGS}}//0; ",
                 "    if ($f & B::SVf_ROK()) {{ ",
-                "      my $qr=eval{{$s->object_2svref}}; ",
+                // Read the RV's referent, not the pad slot: `$a = \$x; $b = $a`
+                // share one referent but sit in distinct slots, so stringifying
+                // the slot would give aliases different addresses. The referent
+                // address also matches the pre-#9590 IV display exactly.
+                "      my $qr=eval{{$s->RV->object_2svref}}; ",
                 "      my $sv=defined $qr?overload::StrVal($qr):''; ",
                 "      if ($sv=~/0x([0-9a-fA-F]+)/) {{ no warnings 'portable'; $v=hex($1) }} ",
                 "      else {{ $v='REF' }} ",
@@ -506,10 +510,12 @@ impl DebugAdapter {
                 // A flagged (wide) PV must not reach perl5db's print: the resulting
                 // "Wide character in print" warning echoes this whole eval back
                 // into the control stream on every locals request and can blow
-                // the bounded capture window. Downgrade to the identical UTF-8
-                // bytes; a value that cannot be downgraded renders an honest
-                // `unicode` marker instead.
-                "  if (defined $v && !ref($v) && utf8::is_utf8($v) && !utf8::downgrade($v,1)) {{ $v='unicode' }} ",
+                // the bounded capture window. Encode in place to the identical
+                // UTF-8 bytes: unlike utf8::downgrade this always succeeds (it
+                // never fails on code points above 255) and never emits raw
+                // Latin-1 bytes that would break the control reader's UTF-8
+                // line decoding.
+                "  if (defined $v && !ref($v) && utf8::is_utf8($v)) {{ utf8::encode($v) }} ",
                 "  $o.=\"$pv = $v\\n\" ",
                 "}} $o }}",
             ),
@@ -1222,8 +1228,8 @@ mod hazard_invariant_tests {
             .next()
             .unwrap_or_default();
         assert!(
-            rok_branch.contains("object_2svref") && rok_branch.contains("overload::StrVal"),
-            "object_2svref must stay inside the ROK branch: {cmd}"
+            rok_branch.contains("$s->RV->object_2svref") && rok_branch.contains("overload::StrVal"),
+            "object_2svref must stay inside the ROK branch and address the referent, not the pad slot: {cmd}"
         );
         assert!(
             cmd.contains("$v='ARRAY(0x0)'") && cmd.contains("$v='HASH(0x0)'"),
@@ -1303,8 +1309,8 @@ mod hazard_invariant_tests {
         assert!(cmd.contains("B::SVf_IOK()"), "integers must be gated on SVf_IOK: {cmd}");
         assert!(cmd.contains("B::SVf_NOK()"), "floats must be read from the NV slot: {cmd}");
         assert!(
-            cmd.contains("utf8::downgrade"),
-            "wide PVs must be downgraded before reaching perl5db's print: {cmd}"
+            cmd.contains("utf8::encode"),
+            "wide PVs must be encoded to UTF-8 bytes before reaching perl5db's print: {cmd}"
         );
     }
 }

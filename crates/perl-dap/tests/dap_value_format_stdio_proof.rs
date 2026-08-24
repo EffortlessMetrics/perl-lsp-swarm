@@ -359,21 +359,28 @@ impl StdioSession {
         }
         session.wait_event("initialized")?;
 
-        let ResponseOutcome::Success(_) = session.request(
-            "launch",
-            Some(json!({
-                "program": script,
-                "args": [canary_path],
-                "stopOnEntry": false,
-                "env": {
-                    "PERL_PERTURB_KEYS": "0",
-                    "PERL_HASH_SEED": "0",
-                    "LC_ALL": "C",
-                    "TZ": "UTC"
-                }
-            })),
-        )?
-        else {
+        // Bind the debuggee to the exact interpreter whose identity the
+        // receipt records. `perlPath` is passed only when the PATH-probed
+        // interpreter's path is directly usable from this host (POSIX hosts
+        // and native Windows installs); a cygwin-style `/usr/bin/perl`
+        // self-reported path is recorded but not forced on the launch,
+        // leaving the adapter's normal resolution in charge on that host
+        // class.
+        let mut launch_arguments = json!({
+            "program": script,
+            "args": [canary_path],
+            "stopOnEntry": false,
+            "env": {
+                "PERL_PERTURB_KEYS": "0",
+                "PERL_HASH_SEED": "0",
+                "LC_ALL": "C",
+                "TZ": "UTC"
+            }
+        });
+        if let Some(perl_path) = spawnable_perl_path() {
+            launch_arguments["perlPath"] = Value::String(perl_path);
+        }
+        let ResponseOutcome::Success(_) = session.request("launch", Some(launch_arguments))? else {
             return Err("launch of the real perl -d fixture failed".into());
         };
         Ok(session)
@@ -493,10 +500,6 @@ impl StdioSession {
     /// the adapter process to exit. The adapter serves `disconnect` and emits
     /// `terminated`, then ends its stdio loop when the client closes the
     /// stream; a process that outlives that close is a cleanup failure.
-    /// Close the client side of stdin (the DAP terminal signal) and wait for
-    /// the adapter process to exit. The adapter serves `disconnect` and emits
-    /// `terminated`, then ends its stdio loop when the client closes the
-    /// stream; a process that outlives that close is a cleanup failure.
     fn close_stdin_and_wait_exit(&mut self) -> ProofResult<()> {
         if let Some(mut stdin) = self.stdin.take() {
             stdin.flush().ok();
@@ -564,6 +567,21 @@ fn note_to_stderr(text: &str) {
     use std::io::Write;
     let mut stderr = std::io::stderr().lock();
     let _ = writeln!(stderr, "{text}");
+}
+
+/// Absolute path of the PATH-resolved interpreter when that path is directly
+/// usable as a `perlPath` launch value from this host; `None` when only a
+/// POSIX-style self-reported path exists (cygwin hosts).
+fn spawnable_perl_path() -> Option<String> {
+    let output = Command::new("perl").arg("-e").arg("print $^X").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() || !Path::new(&path).is_file() {
+        return None;
+    }
+    Some(path)
 }
 
 fn perl_available() -> bool {
@@ -798,7 +816,9 @@ fn write_receipt_to(
         },
         "cleanup": cleanup,
     });
-    fs::write(output, format!("{}\n", serde_json::to_string_pretty(&receipt)?))?;
+    let staged = output.with_extension("json.partial");
+    fs::write(&staged, format!("{}\n", serde_json::to_string_pretty(&receipt)?))?;
+    fs::rename(&staged, output)?;
     Ok(())
 }
 
@@ -824,6 +844,23 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
     let canary_path = workspace.path().join("canary.log");
     let script_str = fixture.to_str().ok_or("fixture path is not valid UTF-8")?.to_string();
     let canary_str = canary_path.to_str().ok_or("canary path is not valid UTF-8")?.to_string();
+
+    // Fail-closed receipt handling: remove any previous artifact at this path
+    // before the run starts, so a skip, a failure, or a timeout can never leave
+    // a stale `pass` receipt that a collector could misattribute to this run.
+    if let Some(output) = receipt_output() {
+        match fs::remove_file(&output) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "cannot invalidate stale receipt {}: {error}",
+                    output.display()
+                )
+                .into());
+            }
+        }
+    }
 
     let mut matrix = Matrix::new();
     let mut dap = StdioSession::spawn(&binary, &script_str, &canary_str)?;
