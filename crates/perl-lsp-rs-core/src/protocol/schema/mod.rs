@@ -529,7 +529,37 @@ pub(super) fn expect_integer(
     value.as_i64().ok_or_else(|| SchemaError::at_value(method, path, "integer", value))
 }
 
-/// LSP metamodel `uint`: an unsigned integer within 32 bits.
+/// The official LSP 3.17 base-type ranges from the specification prose
+/// ("Base Types"): `integer` spans -2^31..=2^31-1 and `uinteger` spans
+/// 0..=2^31-1. The metamodel itself carries no min/max constraints, so these
+/// prose ranges are the authoritative numeric bounds.
+const LSP_INTEGER_MIN: i64 = -2147483648;
+const LSP_INTEGER_MAX: i64 = 2147483647;
+
+/// LSP 3.17 base type `integer`, bounded to -2^31..=2^31-1.
+///
+/// Only schema families introduced under #7113's document-sync slice use this
+/// bound so far; pre-existing families still on #10477 keep the unbounded
+/// JSON-number shape check until their own slices tighten them.
+pub(super) fn expect_lsp_integer(
+    method: Option<&str>,
+    path: &str,
+    value: Option<&Value>,
+) -> Result<i64, SchemaError> {
+    let number = expect_integer(method, path, value)?;
+    if (LSP_INTEGER_MIN..=LSP_INTEGER_MAX).contains(&number) {
+        Ok(number)
+    } else {
+        Err(SchemaError::new(
+            method,
+            path,
+            "integer within -2147483648..=2147483647",
+            number.to_string(),
+        ))
+    }
+}
+
+/// LSP 3.17 base type `uinteger`, bounded to 0..=2^31-1.
 pub(super) fn expect_unsigned_integer(
     method: Option<&str>,
     path: &str,
@@ -540,10 +570,10 @@ pub(super) fn expect_unsigned_integer(
     let number = value
         .as_u64()
         .ok_or_else(|| SchemaError::at_value(method, path, "unsigned integer", value))?;
-    if let Ok(bounded) = u32::try_from(number) {
-        Ok(bounded)
+    if number <= LSP_INTEGER_MAX as u64 {
+        Ok(number as u32)
     } else {
-        Err(SchemaError::at_value(method, path, "unsigned integer within 32 bits", value))
+        Err(SchemaError::at_value(method, path, "unsigned integer within 0..=2147483647", value))
     }
 }
 

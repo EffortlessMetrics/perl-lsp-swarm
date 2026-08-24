@@ -1,5 +1,6 @@
 use super::{
-    SchemaError, expect_integer, expect_null, expect_object, expect_string, expect_unsigned_integer,
+    SchemaError, expect_integer, expect_lsp_integer, expect_null, expect_object, expect_string,
+    expect_unsigned_integer,
 };
 use serde_json::{Map, Value};
 
@@ -218,7 +219,8 @@ fn text_document_identifier(
     document_uri(method, &format!("{path}.uri"), object.get("uri"))
 }
 
-/// LSP 3.17 `VersionedTextDocumentIdentifier` adds required integer `version`.
+/// LSP 3.17 `VersionedTextDocumentIdentifier` adds required integer `version`
+/// (base type range -2^31..=2^31-1).
 fn versioned_text_document_identifier(
     method: &str,
     value: Option<&Value>,
@@ -228,7 +230,7 @@ fn versioned_text_document_identifier(
     })?;
     let object = expect_object(Some(method), "$.params.textDocument", identifier)?;
     document_uri(method, "$.params.textDocument.uri", object.get("uri"))?;
-    expect_integer(Some(method), "$.params.textDocument.version", object.get("version"))?;
+    expect_lsp_integer(Some(method), "$.params.textDocument.version", object.get("version"))?;
     Ok(())
 }
 
@@ -241,7 +243,7 @@ pub(super) fn did_open_params(method: &str, value: &Value) -> Result<(), SchemaE
     let item = expect_object(Some(method), "$.params.textDocument", item)?;
     document_uri(method, "$.params.textDocument.uri", item.get("uri"))?;
     expect_string(Some(method), "$.params.textDocument.languageId", item.get("languageId"))?;
-    expect_integer(Some(method), "$.params.textDocument.version", item.get("version"))?;
+    expect_lsp_integer(Some(method), "$.params.textDocument.version", item.get("version"))?;
     expect_string(Some(method), "$.params.textDocument.text", item.get("text"))?;
     Ok(())
 }

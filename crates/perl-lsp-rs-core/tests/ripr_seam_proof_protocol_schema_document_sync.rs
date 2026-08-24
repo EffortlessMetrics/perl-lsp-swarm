@@ -233,7 +233,44 @@ fn did_change_range_positions_are_bounded_unsigned_integers() {
     );
     assert_eq!(error.expected, "unsigned integer");
 
+    let boundary_batch = json!({
+        "jsonrpc": "2.0",
+        "method": DID_CHANGE_METHOD,
+        "params": {
+            "textDocument": { "uri": "file:///workspace/main.pl", "version": 1 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 2147483647, "character": 2147483647 },
+                    "end": { "line": 2147483647, "character": 2147483647 }
+                },
+                "rangeLength": 2147483647,
+                "text": "x"
+            }]
+        }
+    });
+    validate(&boundary_batch, Direction::ClientToServer, None)
+        .expect("uinteger fields at the inclusive LSP maximum 2^31-1 are structurally valid");
+
     let overflowing_character = json!({
+        "jsonrpc": "2.0",
+        "method": DID_CHANGE_METHOD,
+        "params": {
+            "textDocument": { "uri": "file:///workspace/main.pl", "version": 1 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 2147483648u64 }
+                },
+                "text": "x"
+            }]
+        }
+    });
+    let overflow_error = validate(&overflowing_character, Direction::ClientToServer, None)
+        .expect_err("the first value past the uinteger maximum 2^31-1 must fail");
+    assert_eq!(overflow_error.path, "$.params.contentChanges[0].range.end.character");
+    assert!(overflow_error.expected.contains("0..=2147483647"));
+
+    let u32_overflow_character = json!({
         "jsonrpc": "2.0",
         "method": DID_CHANGE_METHOD,
         "params": {
@@ -247,10 +284,45 @@ fn did_change_range_positions_are_bounded_unsigned_integers() {
             }]
         }
     });
-    let overflow_error = validate(&overflowing_character, Direction::ClientToServer, None)
-        .expect_err("positions beyond the metamodel uint bound must fail");
-    assert_eq!(overflow_error.path, "$.params.contentChanges[0].range.end.character");
-    assert!(overflow_error.expected.contains("32 bits"));
+    let u32_overflow_error = validate(&u32_overflow_character, Direction::ClientToServer, None)
+        .expect_err("values past the unsigned 32-bit shape must also fail");
+    assert_eq!(u32_overflow_error.path, "$.params.contentChanges[0].range.end.character");
+}
+
+#[test]
+fn document_versions_are_bounded_to_the_lsp_integer_range() {
+    let make_change = |version: i64| {
+        json!({
+            "jsonrpc": "2.0",
+            "method": DID_CHANGE_METHOD,
+            "params": {
+                "textDocument": { "uri": "untitled:Untitled-1", "version": version },
+                "contentChanges": []
+            }
+        })
+    };
+
+    validate(&make_change(2147483647), Direction::ClientToServer, None)
+        .expect("didChange version at the inclusive integer maximum is valid");
+    validate(&make_change(-2147483648), Direction::ClientToServer, None)
+        .expect("didChange version at the inclusive integer minimum is valid");
+
+    let above_max = validate(&make_change(2147483648), Direction::ClientToServer, None)
+        .expect_err("didChange version past 2^31-1 leaves the LSP integer range");
+    assert_eq!(above_max.method.as_deref(), Some(DID_CHANGE_METHOD));
+    assert_eq!(above_max.path, "$.params.textDocument.version");
+    assert_eq!(above_max.expected, "integer within -2147483648..=2147483647");
+    assert_eq!(above_max.observed, "2147483648");
+
+    let below_min = validate(&make_change(-2147483649), Direction::ClientToServer, None)
+        .expect_err("didChange version below -2^31 leaves the LSP integer range");
+    assert_eq!(below_min.path, "$.params.textDocument.version");
+
+    let mut open_above_max = did_open("file:///workspace/main.pl");
+    open_above_max["params"]["textDocument"]["version"] = json!(2147483648i64);
+    let open_error = validate(&open_above_max, Direction::ClientToServer, None)
+        .expect_err("didOpen TextDocumentItem.version shares the same LSP integer range");
+    assert_eq!(open_error.path, "$.params.textDocument.version");
 }
 
 #[test]
