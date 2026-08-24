@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11382 |
-| Rust-family files | 3469 |
-| Non-Rust files | 7913 |
-| Allowlisted | 5640 |
+| Total tracked files | 11404 |
+| Rust-family files | 3478 |
+| Non-Rust files | 7926 |
+| Allowlisted | 5653 |
 | Unclassified | 2273 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 401 |
-| documentation | 2631 |
+| config | 402 |
+| documentation | 2641 |
 | generated | 2 |
 | production | 309 |
 | test | 1828 |
-| tooling | 469 |
+| tooling | 471 |
 | unclassified | 2273 |
 
 ## Unclassified files
@@ -2848,6 +2848,7 @@
 | `.github/workflows/droid-security-scan.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/droid.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/em-ci-routed-rust.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/emacs-train-context-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/flake-detection.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/gate-enforcement-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/generated-status-contract.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -3000,6 +3001,9 @@
 | `.spec/11369-vim-lsp-subject-contract/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11369-vim-lsp-subject-contract/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11369-vim-lsp-subject-contract/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11371-vim-bdd-journeys/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11371-vim-bdd-journeys/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11371-vim-bdd-journeys/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3020,6 +3024,10 @@
 | `.spec/11716-emacs-support-architecture/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11716-emacs-support-architecture/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11716-emacs-support-architecture/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11756-emacs-context-engine/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11756-emacs-context-engine/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11756-emacs-context-engine/context.mappings.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11756-emacs-context-engine/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11763-issue-controller-architecture/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11763-issue-controller-architecture/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11763-issue-controller-architecture/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3028,6 +3036,10 @@
 | `.spec/11764-controller-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11764-controller-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11764-controller-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11770-emacs-train-revisions/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11770-emacs-train-revisions/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11770-emacs-train-revisions/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11770-emacs-train-revisions/revisions.ledger.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -4056,6 +4068,7 @@
 | `docs/adr/0042-no-assertion-test-triage-specs.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/0043-module-provenance-detection.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/0044-octopus-cluster-orchestration.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/adr/0045-noncurrent-frame-mutation-disposition.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_001_AGENT_ARCHITECTURE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_002_API_DOCUMENTATION_INFRASTRUCTURE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_003_MISSING_DOCUMENTATION_INFRASTRUCTURE.md` | documentation | `non-rust-docs-tree` | docs |
