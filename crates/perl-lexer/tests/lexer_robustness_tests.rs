@@ -118,9 +118,7 @@ fn malformed_decimal_and_escape_inputs_recover_without_corrupting_spans() {
 
 proptest! {
     #[test]
-    fn lexer_handles_arbitrary_bytes_after_utf8_normalization(
-        bytes in proptest::collection::vec(any::<u8>(), 0..256)
-    ) {
+    fn arbitrary_bytes_terminate(bytes in proptest::collection::vec(any::<u8>(), 0..256)) {
         // PerlLexer accepts UTF-8 source, so arbitrary byte fuzzing must cross
         // the same lossy boundary used by callers that receive invalid files.
         let input = String::from_utf8_lossy(&bytes);
