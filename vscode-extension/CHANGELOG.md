@@ -6,6 +6,28 @@ All notable changes to the Perl Language Server extension will be documented in 
 
 ### Changed
 
+- **Extension activation now runs inside one transactional owner with a
+  deterministic rollback stack.** Every activation-created resource (status
+  and health surfaces, command groups, workspace/configuration listeners,
+  document providers, debugger registrations, the language-client lifecycle,
+  and the server-demand coordinator) registers with a single activation
+  attempt that carries an explicit phase and resource class. A failed
+  activation rolls back in reverse registration order — retaining only the
+  support surfaces needed to report the failure — and clears module-level
+  projections from the same authority; a successful activation commits before
+  `perl-lsp.activated` is published, and ordinary deactivation reuses the
+  same cleanup primitives. (#7854)
+- **Garbage-collect managed server generations only when proven stale.**
+  Installs now mint an immutable candidate manifest and a versioned
+  current-selection record, each extension-host session persists a live
+  reference to the candidate it actually launched (released on clean
+  shutdown), and stale-generation cleanup consumes the landed retention
+  policy: only candidates classified `stale_unreferenced` are deleted. The
+  current selection, the previous-known-good fallback, live-referenced,
+  unknown, and partial generations are always preserved, and unreadable or
+  incomplete evidence blocks destructive cleanup instead of widening it. The
+  legacy `current` pointer stays in place, so rollback to an older extension
+  build keeps working. (#10083)
 - **Moved the extension toolchain authority to Node 26.x and npm 11.18.0; CI
   pins Node 26.5.0.** The shipped-extension compatibility boundary remains
   `engines.vscode`. (#4121)

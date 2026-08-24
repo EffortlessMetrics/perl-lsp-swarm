@@ -1270,6 +1270,140 @@ fn run_critic_legacy_profile_carrier_keeps_invalid_case_fallback_strict()
     Ok(())
 }
 
+// ============= #11919 POST-MERGE POLICY PARITY (perl.runCritic) =============
+// The command surface must apply the same alias-aware post-merge policy as the
+// diagnostics plane: excluding or suppressing any approved spelling of a
+// logical finding removes every command row for the whole alias set, so no
+// second spelling can stay active (#7475 acceptance bullet 7).
+
+/// Source tripping `native.security.backtick_exec` (alias set with `PL601`)
+/// plus an unrelated control finding, `native.security.string_eval`.
+const PARITY_SOURCE: &str =
+    "use strict;\nuse warnings;\nmy $c = '1';\neval $c;\nmy $out = `ls -la`;\n";
+
+fn run_critic_policies(
+    source: &str,
+    exclude: Vec<String>,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    run_critic_policies_with_severity(source, Vec::new(), exclude, 3)
+}
+
+fn run_critic_policies_with_severity(
+    source: &str,
+    include: Vec<String>,
+    exclude: Vec<String>,
+    severity: u8,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let tmp = tempdir()?;
+    let file = tmp.path().join("parity.pl");
+    fs::write(&file, source)?;
+    let provider = ExecuteCommandProvider::new().with_native_critic_config(
+        "recommended".to_string(),
+        include,
+        exclude,
+        severity,
+    );
+    let result = provider.run_native_critic(&file)?;
+    Ok(result["violations"]
+        .as_array()
+        .ok_or("violations is not an array")?
+        .iter()
+        .filter_map(|violation| violation["policy"].as_str())
+        .map(str::to_string)
+        .collect())
+}
+
+#[test]
+fn run_critic_excluding_compat_alias_spelling_removes_backtick_output()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Baseline: without filters both the alias row and the control row report.
+    let baseline = run_critic_policies(PARITY_SOURCE, Vec::new())?;
+    assert!(
+        baseline.iter().any(|policy| policy == "native.security.backtick_exec"),
+        "baseline must report the backtick row: {baseline:?}"
+    );
+    assert!(
+        baseline.iter().any(|policy| policy == "native.security.string_eval"),
+        "unrelated control row must survive in the baseline: {baseline:?}"
+    );
+
+    // Excluding the compatibility spelling `PL601` must remove the backtick
+    // command output even though the raw producer's rule ID is
+    // `native.security.backtick_exec`, and must not touch unrelated rows.
+    let excluded = run_critic_policies(PARITY_SOURCE, vec!["PL601".to_string()])?;
+    assert!(
+        !excluded.iter().any(|policy| policy == "native.security.backtick_exec"),
+        "excluding PL601 must remove every backtick command row: {excluded:?}"
+    );
+    assert!(
+        excluded.iter().any(|policy| policy == "native.security.string_eval"),
+        "excluding PL601 must leave unrelated command rows alone: {excluded:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn run_critic_suppression_directives_remove_alias_row_for_working_spellings()
+-> Result<(), Box<dyn std::error::Error>> {
+    let suppressed = |directive: &str| -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        run_critic_policies(&format!("{directive}\n{PARITY_SOURCE}"), Vec::new())
+    };
+
+    // Canonical spelling.
+    let canonical = suppressed("## no critic critic.security.backtick_exec")?;
+    assert!(
+        !canonical.iter().any(|policy| policy == "native.security.backtick_exec"),
+        "canonical suppression must remove the backtick command row: {canonical:?}"
+    );
+
+    // Direct native producer spelling.
+    let native = suppressed("## no critic native.security.backtick_exec -- trusted command")?;
+    assert!(
+        !native.iter().any(|policy| policy == "native.security.backtick_exec"),
+        "native suppression must remove the backtick command row: {native:?}"
+    );
+
+    // `PL601` names two canonical logical findings (backtick and qx), so it is
+    // ambiguous by design and suppresses nothing (fail closed) — it must NOT be
+    // treated as a working suppression spelling here either.
+    let ambiguous = suppressed("## no critic PL601")?;
+    assert!(
+        ambiguous.iter().any(|policy| policy == "native.security.backtick_exec"),
+        "ambiguous PL601 suppresses nothing; the row must stay reported: {ambiguous:?}"
+    );
+
+    // Every variant keeps reporting the unrelated control row.
+    for policies in [canonical, native, ambiguous] {
+        assert!(
+            policies.iter().any(|policy| policy == "native.security.string_eval"),
+            "suppression directives must leave unrelated command rows alone: {policies:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn run_critic_severity_threshold_matches_diagnostics_plane_policy()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Backtick and string_eval are both Harsh (= 3), so threshold 3 reports
+    // them and the stricter threshold 4 filters both. One policy application
+    // must gate every command row exactly like the diagnostics plane.
+    let at_threshold = run_critic_policies(PARITY_SOURCE, Vec::new())?;
+    assert!(at_threshold.iter().any(|policy| policy == "native.security.backtick_exec"));
+    assert!(at_threshold.iter().any(|policy| policy == "native.security.string_eval"));
+
+    let stricter = run_critic_policies_with_severity(PARITY_SOURCE, Vec::new(), Vec::new(), 4)?;
+    assert!(
+        !stricter.iter().any(|policy| policy == "native.security.backtick_exec"),
+        "threshold 4 must filter the Harsh backtick row: {stricter:?}"
+    );
+    assert!(
+        !stricter.iter().any(|policy| policy == "native.security.string_eval"),
+        "threshold 4 must filter the Harsh control row identically: {stricter:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn external_critic_not_requested_without_config() {
     // The structural guarantee behind "perlcritic on PATH does not change the

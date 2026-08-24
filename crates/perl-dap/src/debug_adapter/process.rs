@@ -1429,9 +1429,15 @@ impl DebugAdapter {
                 tracing::error!("Debuggee watchdog: failed to kill hung debuggee process");
             }
 
-            // Deliver the reserved timeout reason after kill. Blocking send is OK:
-            // the debuggee is already dead; the emitted flag was set at reserve time.
-            if let Some(ref sender) = sender {
+            // Deliver the reserved timeout reason after kill, but only if the
+            // session generation has not been closed or replaced since the
+            // reservation was claimed (before the kill): a stale timeout event
+            // must not leak into a newer client conversation (#12092 review).
+            // Blocking send is OK: the debuggee is already dead; the emitted
+            // flag was set at reserve time.
+            if let Some(ref sender) = sender
+                && terminated_delivery_is_current(&termination_state, Some(session_generation))
+            {
                 let _ = emit_event_safe(
                     sender,
                     &seq,
@@ -1938,6 +1944,7 @@ impl DebugAdapter {
             emit_terminated_event(sender, &self.seq, &self.termination_state, None, None);
         }
         self.clear_active_session_state();
+        self.close_terminal_session_generation();
 
         DapMessage::Response {
             seq,
@@ -1972,6 +1979,7 @@ impl DebugAdapter {
             );
         }
         self.clear_active_session_state();
+        self.close_terminal_session_generation();
 
         DapMessage::Response {
             seq,
@@ -2244,6 +2252,30 @@ fn reserve_terminated_event(
     true
 }
 
+/// Whether a terminal emission reserved under `expected_generation` may still be
+/// delivered: the session generation must not have been closed or replaced since
+/// the reservation was claimed.
+///
+/// A reservation can be held across slow work before its send (the debuggee
+/// watchdog reserves before killing the process and delivers after), so a client
+/// terminal request or a replacement launch can advance the generation while the
+/// send is still outstanding. Delivering that stale send would leak an old
+/// session's `terminated` event into a newer client conversation (e.g. a client
+/// reading it as the replacement session terminating), so delivery must
+/// revalidate and retire it (#12092 review).
+///
+/// `None` (the synchronous client `terminate`/`disconnect` path) is always
+/// current: reservation, send, and generation close run sequentially on the
+/// caller's thread, so nothing can interleave.
+fn terminated_delivery_is_current(
+    termination_state: &Mutex<TerminationState>,
+    expected_generation: Option<u64>,
+) -> bool {
+    let Some(expected) = expected_generation else { return true };
+    let state = lock_or_recover(termination_state, "debug_adapter.termination_state");
+    state.generation == expected
+}
+
 /// Emit interpolated logpoint text on the debug console.
 fn emit_logpoint_messages(
     sender: Option<&SyncSender<DapMessage>>,
@@ -2276,6 +2308,12 @@ fn emit_terminated_event(
     if !reserve_terminated_event(termination_state, expected_generation) {
         return false;
     }
+    if !terminated_delivery_is_current(termination_state, expected_generation) {
+        // The generation was closed or replaced between reservation and
+        // delivery; retire the stale send rather than leak an old session's
+        // terminal event into a newer client conversation (#12092 review).
+        return false;
+    }
     emit_event_safe(sender, seq, "terminated", body)
 }
 
@@ -2284,6 +2322,7 @@ mod tests {
     use super::{
         DebugAdapter, DebugState, current_stopped_frame_id, detect_perl_info,
         emit_terminated_event, format_perl_spawn_error, is_valid_perl_interpreter,
+        reserve_terminated_event, terminated_delivery_is_current,
     };
     use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
@@ -2473,6 +2512,67 @@ mod tests {
             return Err("current session failed to emit termination".to_string());
         }
         Ok(())
+    }
+
+    #[test]
+    fn reserved_termination_retired_when_generation_advances_before_delivery() -> Result<(), String>
+    {
+        let (sender, receiver) = sync_channel(64);
+        let seq = Arc::new(Mutex::new(0));
+        let termination_state =
+            Arc::new(Mutex::new(super::TerminationState { generation: 3, emitted: false }));
+
+        // Watchdog-style early reservation: the debuggee watchdog reserves
+        // before killing the process and delivers only after, so a client
+        // terminal request (or replacement launch) can advance the generation
+        // while this send is still outstanding.
+        if !reserve_terminated_event(&termination_state, Some(3)) {
+            return Err("watchdog-style reservation under the current generation failed".into());
+        }
+
+        // The generation advances while the reserved send is in flight
+        // (`close_terminal_session_generation` / replacement launch shape).
+        {
+            let mut state = termination_state
+                .lock()
+                .map_err(|_| "termination state lock poisoned".to_string())?;
+            state.generation = 4;
+            state.emitted = false;
+        }
+
+        // The stale delivery is retired, not sent.
+        if terminated_delivery_is_current(&termination_state, Some(3)) {
+            return Err("stale delivery reported current after generation advanced".into());
+        }
+
+        // A delivery under the now-current generation is still acknowledged.
+        if !emit_terminated_event(
+            &sender,
+            &seq,
+            &termination_state,
+            Some(4),
+            Some(serde_json::json!({"reason": "current_generation"})),
+        ) {
+            return Err("current-generation emission was suppressed".into());
+        }
+
+        // Exactly one event reached the channel: the current generation's.
+        match receiver.try_recv() {
+            Ok(super::DapMessage::Event { event, body, .. }) => {
+                if event != "terminated"
+                    || body.as_ref().and_then(|v| v.get("reason")).and_then(|v| v.as_str())
+                        != Some("current_generation")
+                {
+                    return Err(format!("unexpected termination event: {event}, {body:?}"));
+                }
+            }
+            other => return Err(format!("expected termination event, got {other:?}")),
+        }
+        match receiver.try_recv() {
+            Err(TryRecvError::Empty) => Ok(()),
+            Err(error) => Err(format!("termination channel error: {error}")),
+            Ok(other) => Err(format!("stale reservation leaked a duplicate event: {other:?}")),
+        }
     }
 
     #[test]
