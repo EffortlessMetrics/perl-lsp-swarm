@@ -653,20 +653,23 @@ fn lsp_smoke_is_atomic_bounded_and_independently_terminal() -> Result<(), Box<dy
          timeout is exactly the twice-retried-600s fleet symptom #8063 fixes"
     );
 
-    // Outer runaway guard: 1500s > sum of child budgets' realistic ceiling and
-    // inside the 30-minute CI Gate shard job (setup + suite).
+    // Outer runaway guard: 720s is the typical hosted window (the lsp shard's
+    // 1200s inner watchdog minus the two unit lanes at their observed
+    // 173-243s hosted durations). It is deliberately NOT the worst-case sum
+    // of child budgets (3 x 2 x 300s retrying compiles + 6 x 120s behavior =
+    // 2520s): the guard bounds the suite and leaves CANCELLED marks in the
+    // child receipt, it does not promise unreachable headroom.
     assert_eq!(
         gate.timeout_seconds,
-        Some(1500),
-        "outer guard must exceed the 1440s sum of per-child budgets \
-         (3 x 420s setup/compile + 6 x 120s behavior) without reaching the \
-         30-minute shard job ceiling"
+        Some(720),
+        "outer guard must fit the hosted lsp shard window (1200s inner \
+         watchdog minus the two preceding unit lanes), not an unreachable sum"
     );
     let budget = gate
         .budgets
         .and_then(|budgets| budgets.max_duration_ms)
         .ok_or("lsp_smoke must declare a duration budget")?;
-    assert_eq!(budget, 1_200_000, "budget must stay at the 0.80 ratio (1200000/1500s)");
+    assert_eq!(budget, 576_000, "budget must stay at the 0.80 ratio (576000/720s)");
 
     Ok(())
 }

@@ -59,11 +59,15 @@ const BEHAVIOR_TIMEOUT_SECONDS: u64 = 120;
 /// Per-child timeout for setup/compile children.
 ///
 /// Cold-cache compile is the observed budget consumer (#10023 race family,
-/// #9779 Cargo.lock cold starts). 420s matches the sibling LSP unit-lane
-/// ceiling; setup/compile children additionally use default cargo build
-/// parallelism (the old composite forced `CARGO_BUILD_JOBS=1`, which is a
-/// determinism lever for test execution, not for compiling artifacts).
-const SETUP_COMPILE_TIMEOUT_SECONDS: u64 = 420;
+/// #9779 Cargo.lock cold starts). 300s is the old composite's whole-gate
+/// budget — the incident compile alone measured ~219s under load, and sibling
+/// unit gates complete in 173-243s *including* their compiles — so each
+/// compile child carrying the old gate's entire budget is a generous bound.
+/// Setup/compile children additionally use default cargo build parallelism
+/// (the old composite forced `CARGO_BUILD_JOBS=1`, which is a determinism
+/// lever for test execution, not for compiling artifacts), which cuts the
+/// cold-compile wall time the single-job build was suffering.
+const SETUP_COMPILE_TIMEOUT_SECONDS: u64 = 300;
 
 /// Setup/compile children are the only children whose watchdog timeout may be
 /// retried once, mirroring the #10023 runner policy: their timeout is a

@@ -1233,12 +1233,21 @@ gates:
     # (`--test-threads=1`) for determinism; setup/compile children use
     # default build parallelism (`CARGO_BUILD_JOBS=1` only slowed compilation).
     #
-    # Per-child budgets: 420s setup/compile (mirrors the LSP unit-lane
-    # ceiling; cold-cache compile is the observed #10023/#9779 consumer),
-    # 120s behavior. The 1500s gate timeout is the outer runaway guard: it
-    # only fires after inner budgets, and the child receipt is persisted after
-    # every child, so an outer kill retains completed children and marks the
-    # running/remaining ones CANCELLED.
+    # Per-child budgets: 300s setup/compile (the old composite's whole-gate
+    # budget; the incident compile measured ~219s and sibling unit gates
+    # finish in 173-243s including compiles; default build parallelism — not
+    # the old CARGO_BUILD_JOBS=1 — cuts the cold-compile wall), 120s behavior.
+    #
+    # The 720s gate timeout is the suite runaway bound sized to the hosted
+    # envelope, NOT the arithmetic sum of child budgets (3 x 2 x 300s retrying
+    # compiles + 6 x 120s behavior = 2520s worst case): this gate runs third
+    # in the `lsp` CI Gate shard behind unit_lsp_core_full and unit_lsp_full
+    # (typically 173-243s each) under the shard runner's 1200s inner watchdog
+    # (scripts/ci/run_gate_shard.py + the `timeout 1200s` step guard), leaving
+    # lsp_smoke roughly 720s in a typical hosted run. If either the gate guard
+    # or the shard watchdog pre-empts the suite, the child receipt — persisted
+    # after every child — retains completed children and marks the
+    # running/remaining ones CANCELLED with explicit execution marks.
     #
     # retry_count is deliberately absent: retry policy is executable only
     # inside the harness, where it is typed — setup/compile children retry a
@@ -1250,9 +1259,9 @@ gates:
       cargo run --locked -p xtask
       -- lsp-smoke-atomic
       --receipt target/receipts/artifacts/lsp_smoke_children.json
-    timeout_seconds: 1500
+    timeout_seconds: 720
     budgets:
-      max_duration_ms: 1200000
+      max_duration_ms: 576000
     quarantine: false
     tags:
       - test
