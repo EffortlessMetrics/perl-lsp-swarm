@@ -548,7 +548,7 @@ fn semantic_token_indices_match_advertised_legend() -> Result<(), BoxError> {
         ((1, 0, 3), "keyword"),   // sub
         ((1, 4, 3), "function"),  // foo
         ((1, 10, 2), "variable"), // $x reference
-        ((2, 0, 5), "function"),  // foo()
+        ((2, 0, 3), "function"),  // foo - call-site name only per #5077
     ];
 
     assert_eq!(

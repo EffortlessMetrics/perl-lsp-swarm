@@ -107,10 +107,10 @@ reason = "Prefer the standard integer logarithm helper where domain and failure 
 
 [[lint]]
 name = "clippy::manual_take"
-level = "warn"
+level = "deny"
 status = "active"
 class = "reviewability"
-reason = "The warning is active today; #1802 owns exact site review and final deny promotion."
+reason = "Promoted to deny by #1802 after zero-site confirmation on current all-targets; std::mem::take or Option::take must be used explicitly."
 
 [[lint]]
 name = "clippy::unnecessary_trailing_comma"

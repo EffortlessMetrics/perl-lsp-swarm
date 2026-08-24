@@ -134,6 +134,8 @@ pub mod stack;
 pub mod types;
 /// Shared Perl value model for DAP parser and renderer (from perl-dap-value).
 pub mod value;
+/// One shared typed presentation policy for the DAP `ValueFormat` option (#9588).
+pub mod value_format;
 /// Variable parsing and rendering for Perl DAP (from perl-dap-variables).
 pub mod variables;
 
@@ -194,6 +196,7 @@ pub use protocol::{
     SetVariableArguments, SetVariableResponseBody, Source, SourceArguments, SourceBreakpoint,
     SourceResponseBody, StackTraceArguments, StackTraceResponseBody, StepInArguments, StepInTarget,
     StepInTargetsArguments, StepInTargetsResponseBody, StepOutArguments, TerminateArguments,
-    TerminateThreadsArguments, Thread, ThreadsResponseBody, VariablesArguments,
+    TerminateThreadsArguments, Thread, ThreadsResponseBody, ValueFormat, VariablesArguments,
     VariablesResponseBody,
 };
+pub use value_format::ValueFormatPolicy;

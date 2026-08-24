@@ -70,6 +70,8 @@ pub mod monitoring;
 pub mod semantic_shadow_compare;
 /// Service-level objective tracking for workspace index operations.
 pub mod slo;
+/// One versioned workspace-symbol query profile and typed match evidence (#10794).
+pub mod workspace_symbol_query;
 
 /// Index lifecycle state machine.
 pub mod state_machine;

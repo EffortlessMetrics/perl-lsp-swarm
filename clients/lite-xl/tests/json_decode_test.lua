@@ -1,4 +1,5 @@
--- Deterministic focused tests for clients/lite-xl/upstream/json.lua (#11197, #11136).
+-- Deterministic focused tests for clients/lite-xl/upstream/json.lua
+-- (#11197, #11136, #11183, #11194).
 --
 -- Run:
 --   lua clients/lite-xl/tests/json_decode_test.lua [path-to-json-module]
@@ -29,6 +30,16 @@ if not module_path then
 end
 
 local json = dofile(module_path)
+local native_math_type = math.type
+local has_native_integers = native_math_type ~= nil and math.maxinteger ~= nil
+local function is_integer(value)
+  if native_math_type then
+    return native_math_type(value) == "integer"
+  end
+  -- Legacy runtimes have no integer subtype; integral doubles are the
+  -- closest available check.
+  return type(value) == "number" and value % 1 == 0
+end
 
 local passed = 0
 local failed = 0
@@ -107,10 +118,13 @@ do
   ok(s == "\195\169\n\t\\", "string escapes decode")
 
   local num = json.decode("-12.5e2")
-  ok(num == -1250, "number decodes")
+  ok(type(num) == "table" and json.is_number(num) and json.number_lexeme(num) == "-12.5e2",
+    "non-canonical number keeps its exact validated lexeme")
+  ok(json.encode(num) == "-12.5e2", "lexeme number re-encodes byte-exactly")
 
   local big = json.decode("123456789012345678901")
-  ok(big == "{{json::num}}123456789012345678901", "long number keeps flag-string form (unchanged)")
+  ok(type(big) == "table" and json.is_number(big), "long integer decodes to typed lexeme value")
+  ok(json.encode(big) == "123456789012345678901", "long integer re-encodes byte-exactly")
 end
 
 -- ---------------------------------------------------------------------------
@@ -345,6 +359,361 @@ do
   ok(rn.result == json.null, "result=null survives as json.null, not nil/false")
   ok(json.encode(rf.result) == "false" and json.encode(rn.result) == "null",
     "false and null results encode distinctly")
+end
+
+-- ---------------------------------------------------------------------------
+-- Numeric and string identity (#11183)
+--
+-- Reviewed policy: a decimal integer that fits int64 with canonical form
+-- equal to its lexeme stays an ordinary Lua integer; every other valid number
+-- keeps its exact validated lexeme in a typed json.number value. Nothing is
+-- rounded through floats, no magic prefix exists, malformed numerals fail.
+-- ---------------------------------------------------------------------------
+
+do
+  -- Exact integer range keeps numeric identity (required cases).
+  ok(json.decode("0") == 0 and is_integer(json.decode("0")), "0 stays an exact integer")
+  ok(json.decode("1") == 1 and json.decode("-1") == -1, "1 and -1 stay integers")
+  if has_native_integers then
+    ok(json.decode("9223372036854775807") == math.maxinteger, "int64 max decodes exactly")
+    ok(json.decode("-9223372036854775808") == math.mininteger, "int64 min decodes exactly")
+  else
+    ok(json.is_number(json.decode("9223372036854775807")), "legacy runtime retains int64 max lexeme")
+    ok(json.is_number(json.decode("-9223372036854775808")), "legacy runtime retains int64 min lexeme")
+  end
+  local beyond_double = json.decode("9007199254740993")
+  if has_native_integers then
+    ok(beyond_double == 9007199254740993 and native_math_type(beyond_double) == "integer",
+      "integer beyond double precision stays exact")
+  else
+    ok(json.is_number(beyond_double) and json.number_lexeme(beyond_double) == "9007199254740993",
+      "legacy runtime retains beyond-double integer lexeme")
+  end
+  ok(json.encode(beyond_double) == "9007199254740993", "beyond-double integer re-encodes exactly")
+
+  -- Just beyond int64 retains the lexeme instead of rounding.
+  local over = json.decode("9223372036854775808")
+  ok(type(over) == "table" and json.is_number(over) and json.number_lexeme(over) == "9223372036854775808",
+    "int64+1 keeps its lexeme")
+  ok(json.encode(over) == "9223372036854775808", "int64+1 re-encodes byte-exactly")
+  local under = json.decode("-9223372036854775809")
+  ok(json.number_lexeme(under) == "-9223372036854775809", "below-int64 keeps its lexeme")
+
+  -- Long decimal integer and exponent forms keep their own bytes.
+  local long = json.decode("123456789012345678901234567890")
+  ok(json.number_lexeme(long) == "123456789012345678901234567890", "long decimal keeps lexeme")
+  ok(json.encode(long) == "123456789012345678901234567890", "long decimal re-encodes byte-exactly")
+  local expnum = json.decode("1e30")
+  ok(json.number_lexeme(expnum) == "1e30", "exponent overflow keeps its own spelling")
+  ok(json.encode(expnum) == "1e30", "exponent overflow re-encodes verbatim")
+
+  -- The old magic-prefix text is now inert in both directions.
+  local flagged = json.decode('"{{json::num}}123456789012345"')
+  ok(flagged == "{{json::num}}123456789012345", "number_flag text decodes as an ordinary string")
+  ok(not json.is_number(flagged), "number_flag text is not a JSON number value")
+  ok(json.encode(flagged) == '"{{json::num}}123456789012345"',
+    "prefix-text string encodes quoted, never as a bare number")
+
+  -- Plain string digits stay strings; numeric digits stay numbers.
+  local sid = json.decode('"123"')
+  ok(sid == "123" and type(sid) == "string" and not json.is_number(sid), 'string "123" stays a string')
+  ok(json.encode(sid) == '"123"', "digit-string encodes quoted")
+  local nid = json.decode("123456789012345")
+  ok(nid == 123456789012345 and is_integer(nid), "15-digit numeric ID stays exact integer")
+  ok(json.encode(nid) == "123456789012345", "15-digit numeric ID re-encodes identically")
+
+  -- Same visible digits, different JSON types: never conflated.
+  local str_frame = json.decode('{"id":"7","method":"x"}')
+  local num_frame = json.decode('{"id":7,"method":"x"}')
+  ok(type(str_frame.id) == "string" and str_frame.id == "7", "string ID keeps type")
+  ok(is_integer(num_frame.id) and num_frame.id == 7, "numeric ID keeps type")
+  ok(str_frame.id ~= num_frame.id, "same-digit string/numeric IDs are distinct values")
+  local wire_str_frame = json.decode(json.encode(str_frame))
+  local wire_num_frame = json.decode(json.encode(num_frame))
+  ok(type(wire_str_frame.id) == "string" and is_integer(wire_num_frame.id)
+    and wire_num_frame.id == 7 and wire_num_frame.method == "x",
+    "independent wire decode preserves string/numeric ID types")
+  ok(json.encode(num_frame.id) == "7", "numeric ID scalar re-encodes byte-exactly")
+
+  -- Independent request/response wire round trip preserves the large typed ID.
+  local req = json.decode('{"id":123456789012345678901,"method":"m"}')
+  local req_wire = json.encode(req)
+  local received_req = json.decode(req_wire)
+  local resp = json.object({ jsonrpc = "2.0", id = received_req.id, result = json.null })
+  local resp_json = json.encode(resp)
+  local received_resp = json.decode(resp_json)
+  ok(json.number_lexeme(received_resp.id) == "123456789012345678901",
+    "independent response decode carries the same typed ID")
+  ok(string.find(resp_json, '"id":123456789012345678901', 1, true) ~= nil,
+    "encoded response echoes the exact ID bytes: " .. resp_json)
+
+  -- Malformed numerals fail honestly instead of being coerced.
+  assert_typed_failure("01", "invalid_number", "leading zero")
+  assert_typed_failure("+1", "unexpected_character", "explicit plus sign")
+  assert_typed_failure("-", "invalid_number", "lone minus")
+  assert_typed_failure("1.", "invalid_number", "trailing dot")
+  assert_typed_failure(".5", "unexpected_character", "leading dot")
+  assert_typed_failure("1e", "invalid_number", "bare exponent")
+  assert_typed_failure("1e+", "invalid_number", "sign without exponent digits")
+  assert_typed_failure("0x10", "invalid_number", "hex numeral is not JSON")
+  assert_typed_failure("1.2.3", "invalid_number", "double dot")
+  assert_typed_failure("1e999", "invalid_number", "overflow to infinity fails at decode")
+
+  -- Constructor validates with the same strict grammar.
+  local bad_lexemes = { "", "-", "01", "+1", "1.", ".5", "1e", "0x10", "--1", "nan", "inf", "Infinity", "1.2.3" }
+  for _, lex in ipairs(bad_lexemes) do
+    local ran, exc = pcall(json.number, lex)
+    ok(ran == false and type(exc) == "string" and string.find(exc, "invalid number lexeme", 1, true),
+      "json.number rejects '" .. tostring(lex) .. "' deterministically: " .. tostring(exc))
+  end
+  local ran, exc = pcall(json.number, 42)
+  ok(ran == false and string.find(exc, "invalid number lexeme", 1, true),
+    "json.number rejects non-string input: " .. tostring(exc))
+
+  -- Typed numbers nest inside containers and round-trip.
+  local nested = json.decode('[9223372036854775808, {"big": 123456789012345678901}]')
+  ok(json.is_number(nested[1]) and json.number_lexeme(nested[1]) == "9223372036854775808",
+    "typed number survives inside array")
+  ok(json.is_number(nested[2].big) and json.number_lexeme(nested[2].big) == "123456789012345678901",
+    "typed number survives inside object field")
+  ok(json.encode(nested) == '[9223372036854775808,{"big":123456789012345678901}]',
+    "nested typed numbers re-encode byte-exactly")
+
+  -- Forged lookalike tags stay inert; predicates ignore foreign metatables.
+  local forged = setmetatable({}, { json_type = "number" })
+  ok(not json.is_number(forged) and json.number_lexeme(forged) == nil,
+    "forged number tag gains nothing")
+  ok(json.encode(forged) == "{}", "forged number-tagged table encodes as plain empty table")
+end
+
+-- ---------------------------------------------------------------------------
+-- Unicode scalar and UTF-8 validity (#11194)
+--
+-- Only valid Unicode scalars decode from \u escapes (lone/malformed surrogates
+-- fail typed), raw string bytes must be valid UTF-8, and outbound strings are
+-- validated before any encoding work.
+-- ---------------------------------------------------------------------------
+
+do
+  -- Required valid cases: exact bytes preserved.
+  ok(json.decode('"abc"') == "abc", "ASCII passthrough")
+  local two = json.decode('"\195\169"')
+  ok(two == "\195\169", "raw 2-byte sequence preserved")
+  local two_esc = json.decode('"\\u00e9"')
+  ok(two_esc == "\195\169", "escaped BMP scalar equals raw bytes")
+  local three = json.decode('"\226\130\172"')
+  ok(three == "\226\130\172", "raw 3-byte sequence preserved")
+  ok(json.decode('"\\u20ac"') == "\226\130\172", "escaped 3-byte scalar composes exactly")
+  local four = json.decode('"\240\159\152\128"')
+  ok(four == "\240\159\152\128", "raw 4-byte non-BMP preserved")
+  local pair = json.decode('"\\ud83d\\ude00"')
+  ok(pair == "\240\159\152\128", "valid surrogate pair decodes to U+1F600 bytes")
+  ok(json.decode('"\\u0000"') == "\0", "escaped NUL stays valid at the JSON layer")
+  ok(json.decode('"a\\u00e9b\195\169c"') == "a\195\169b\195\169c", "mixed raw/escaped decodes")
+
+  -- Outbound: valid strings round-trip byte-exactly; escaping still works.
+  local uni = "x\195\169\226\130\172\240\159\152\128y"
+  ok(json.encode(uni) == '"x\195\169\226\130\172\240\159\152\128y"', "valid unicode encodes byte-exactly")
+  ok(json.encode("\n\"\\") == '"\\n\\"\\\\"', "control/quote/backslash escaping intact")
+  ok(json.decode(json.encode(uni)) == uni, "unicode round trip")
+
+  -- Required invalid escape cases fail typed.
+  assert_typed_failure('"\\ud800"', "invalid_unicode_escape", "lone high surrogate")
+  assert_typed_failure('"\\udbff"', "invalid_unicode_escape", "lone high surrogate at dbff")
+  assert_typed_failure('"\\udc00"', "invalid_unicode_escape", "lone low surrogate")
+  assert_typed_failure('"\\udfff"', "invalid_unicode_escape", "lone low surrogate at dfff")
+  assert_typed_failure('"\\ud800\\ud800"', "invalid_unicode_escape", "high followed by high")
+  assert_typed_failure('"\\ud83d\\u0041"', "invalid_unicode_escape", "high followed by non-low BMP")
+  assert_typed_failure('"\\ud800\\u0041"', "invalid_unicode_escape",
+    "high plus plain escape previously composed garbage silently")
+  assert_typed_failure('"\\ud83d"', "invalid_unicode_escape", "truncated pair at end of input")
+
+  -- Required invalid raw-byte cases fail typed.
+  assert_typed_failure('"\128"', "invalid_utf8", "isolated continuation byte")
+  assert_typed_failure('"\195"', "invalid_utf8", "truncated 2-byte sequence")
+  assert_typed_failure('"\226\130"', "invalid_utf8", "truncated 3-byte sequence")
+  assert_typed_failure('"\240\159\152"', "invalid_utf8", "truncated 4-byte sequence")
+  assert_typed_failure('"\194"', "invalid_utf8", "truncated 2-byte at c2")
+  assert_typed_failure('"\192\175"', "invalid_utf8", "overlong 2-byte encoding")
+  assert_typed_failure('"\224\128\175"', "invalid_utf8", "overlong 3-byte encoding")
+  assert_typed_failure('"\224\128"', "invalid_utf8", "overlong truncated")
+  assert_typed_failure('"\237\160\189"', "invalid_utf8", "raw surrogate encoding D800")
+  assert_typed_failure('"\237\191\191"', "invalid_utf8", "raw surrogate encoding DFFF")
+  assert_typed_failure('"\247\191\191\191"', "invalid_utf8", "value above U+10FFFF")
+  assert_typed_failure('"\193\191"', "invalid_utf8", "overlong lead byte c1")
+  assert_typed_failure('"\245\128\128\128"', "invalid_utf8", "lead byte f5 above plane 16")
+end
+
+do
+  -- Outbound validation rejects invalid UTF-8 with a bounded deterministic
+  -- error before any frame content is produced.
+  local cases = {
+    { "ok\195", "truncated tail" },
+    { "\128", "leading continuation" },
+    { "a\226\130b", "truncated middle" },
+    { "x\237\160\189y", "surrogate bytes outbound" },
+    { "\192\175", "overlong outbound" },
+  }
+  for _, case in ipairs(cases) do
+    local ran, exc = pcall(json.encode, case[1])
+    ok(ran == false and type(exc) == "string"
+      and string.find(exc, "invalid UTF%-8 at byte offset %d+", 1, false) ~= nil,
+      "encode rejects " .. case[2] .. ": " .. tostring(exc))
+  end
+
+  -- The failure message stays bounded and does not echo long bodies.
+  local long_bad = string.rep("a", 4096) .. "\128"
+  local ran, exc = pcall(json.encode, long_bad)
+  ok(ran == false and #tostring(exc) < 200
+    and not string.find(tostring(exc), string.rep("a", 64), 1, true),
+    "encode failure message bounded without body echo")
+
+  -- Typed containers holding invalid strings fail through the same gate.
+  local arr = json.array({ "ok", "bad\195" })
+  ran, exc = pcall(json.encode, arr)
+  ok(ran == false and string.find(exc, "invalid UTF%-8", 1, false),
+    "nested invalid string fails encode: " .. tostring(exc))
+end
+
+-- ---------------------------------------------------------------------------
+-- Structural depth and node budgets (#11186)
+--
+-- Reviewed defaults: 128 nesting levels and 65536 nodes per document, chosen
+-- from real LSP/configuration shapes with a wide margin and documented in the
+-- codec. Decode failures are typed and positional; encode failures raise once,
+-- deterministically, with no partial frame. Syntax/circular errors stay
+-- distinct from budget errors.
+-- ---------------------------------------------------------------------------
+
+local DEPTH_LIMIT = 128
+local NODE_LIMIT = 65536
+
+local function nested_arrays(n)
+  return string.rep("[", n) .. string.rep("]", n)
+end
+
+local function nested_objects(n)
+  return string.rep('{"a":', n) .. "1" .. string.rep("}", n)
+end
+
+local function nested_mixed(n)
+  local open, close = {}, {}
+  for i = 1, n do
+    if i % 2 == 1 then
+      open[i] = "["
+      close[n - i + 1] = "]"
+    else
+      open[i] = '{"a":'
+      close[n - i + 1] = "}"
+    end
+  end
+  return table.concat(open) .. "1" .. table.concat(close)
+end
+
+do
+  -- Ordinary LSP-shaped payloads decode untouched.
+  local caps = json.decode(
+    '{"capabilities":{"textDocumentSync":1,"completion":{"dynamicRegistration":true,"completionItem":{"snippetSupport":false}}}}')
+  ok(json.is_object(caps) and json.is_object(caps.capabilities.completion),
+    "ordinary capabilities fixture decodes")
+  ok(json.encode(caps.capabilities.completion.completionItem) == '{"snippetSupport":false}',
+    "fixture re-encodes byte-exactly")
+
+  -- Nesting exactly at the accepted boundary passes, in all three shapes.
+  local arr_at = json.decode(nested_arrays(DEPTH_LIMIT))
+  ok(json.is_array(arr_at), "array nesting at boundary decodes")
+  local obj_at = json.decode(nested_objects(DEPTH_LIMIT))
+  ok(json.is_object(obj_at.a.a) or json.is_object(obj_at), "object nesting at boundary decodes")
+  local mix_at = json.decode(nested_mixed(DEPTH_LIMIT))
+  ok(mix_at ~= nil, "mixed nesting at boundary decodes")
+  ok(json.encode(arr_at) == nested_arrays(DEPTH_LIMIT),
+    "boundary-depth value re-encodes byte-exactly")
+
+  -- One level beyond the boundary fails typed in every direction.
+  for _, case in ipairs{
+    { nested_arrays(DEPTH_LIMIT + 1), "arrays" },
+    { nested_objects(DEPTH_LIMIT + 1), "objects" },
+    { nested_mixed(DEPTH_LIMIT + 1), "mixed" },
+  } do
+    local ran, res, err = safe_decode(case[1])
+    ok(ran and res == nil and type(err) == "table"
+      and err.reason == "nesting_depth_exceeded",
+      case[2] .. " nested one past the limit fail typed")
+    ok(err and err.reason == "nesting_depth_exceeded"
+      and string.find(err.message, tostring(DEPTH_LIMIT), 1, true) ~= nil,
+      case[2] .. " depth failure carries the limit in its bounded message")
+    ok(err ~= nil and err.byte_offset ~= nil and err.line ~= nil,
+      case[2] .. " depth failure keeps positional metadata")
+  end
+
+  -- A tiny body with extreme nesting terminates on depth, not on EOF.
+  local ran, res, err = safe_decode(string.rep("[", 5000))
+  ok(ran and res == nil and err.reason == "nesting_depth_exceeded",
+    "tiny-byte extreme nesting hits the depth bound before end-of-input")
+
+  -- Flat container one node beyond budget fails; exactly at budget passes.
+  local elems = {}
+  for i = 1, NODE_LIMIT - 1 do
+    elems[i] = tostring(i % 10)
+  end
+  local flat_at = "[" .. table.concat(elems, ",") .. "]"
+  local fv = json.decode(flat_at)
+  ok(type(fv) == "table" and #fv == NODE_LIMIT - 1, "node count exactly at budget decodes")
+
+  elems[NODE_LIMIT] = "7"
+  local ran, res, err = safe_decode("[" .. table.concat(elems, ",") .. "]")
+  ok(ran and res == nil and err.reason == "node_count_exceeded",
+    "flat container one node beyond budget fails typed")
+end
+
+do
+  -- Encode budgets mirror decode budgets without partial output.
+  local deep = json.array({})
+  for _ = 2, DEPTH_LIMIT do
+    deep = json.array({ deep })
+  end
+  local ran, out = pcall(json.encode, deep)
+  ok(ran, "encoding at the depth boundary succeeds")
+
+  local deep_over = json.array({ deep })
+  ran, out = pcall(json.encode, deep_over)
+  ok(ran == false and type(out) == "string"
+    and string.find(out, "maximum depth " .. DEPTH_LIMIT, 1, true) ~= nil,
+    "encoding one past the depth boundary raises with the limit named: " .. tostring(out))
+
+  local many = {}
+  for i = 1, NODE_LIMIT do
+    many[i] = i % 10
+  end
+  ran, out = pcall(json.encode, json.array(many))
+  ok(ran == false and string.find(out, "node count", 1, true),
+    "encoding one node beyond budget raises: " .. tostring(out))
+
+  many[NODE_LIMIT] = nil
+  ran, out = pcall(json.encode, json.array(many))
+  ok(ran, "encoding exactly at the node budget succeeds")
+
+  -- Large flat strings stay byte-bound, not structure-bound.
+  local big_text = string.rep("aBcD", 16384)
+  ran, out = pcall(json.encode, json.array({ big_text }))
+  ok(ran and #out == #big_text + 4, "large flat string encodes without structural rejection")
+
+  -- Circular detection remains a distinct, earlier error.
+  local cyc = json.array({ 1 })
+  cyc[2] = cyc
+  ran, out = pcall(json.encode, cyc)
+  ok(ran == false and string.find(out, "circular reference", 1, true)
+    and not string.find(out, "depth", 1, true),
+    "cyclic encode stays a distinct circular-reference error: " .. tostring(out))
+
+  -- Budget failures never emit partial content: the raise discards assembly.
+  local sink = 0
+  local ok_run, res = pcall(function()
+    local s = json.encode(json.array({ deep_over, 1 }))
+    sink = #s
+    return s
+  end)
+  ok(ok_run == false and sink == 0, "no partial encode result escapes a failed call")
 end
 
 print(string.format("%s: %d passed, %d failed (%s)",

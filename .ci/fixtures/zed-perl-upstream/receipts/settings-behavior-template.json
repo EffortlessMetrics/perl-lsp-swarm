@@ -63,7 +63,7 @@
     },
     {
       "id": "nested_streaming_setting",
-      "key": "perl.aiCompletion.streaming.enabled",
+      "key": "perl.aiCompletion.streaming.updateDebounceMs",
       "result": "not_proven",
       "project_observed": null,
       "zed_override_observed": null,

@@ -78,6 +78,7 @@ impl LspServer {
             progress_token_to_request: Arc::new(Mutex::new(HashMap::new())),
             refresh_controller: refresh::RefreshController::new(),
             diagnostic_debouncer: Mutex::new(None),
+            push_diagnostics_sink: super::diagnostics_sink::PushDiagnosticsSink::default(),
             parse_worker_handle: Mutex::new(None),
             file_watcher_debouncer: Mutex::new(None),
             notebook_store: notebook::NotebookStore::new(),
@@ -130,6 +131,10 @@ impl LspServer {
             client_setting_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
+            document_symbols_sink: super::document_symbols_sink::DocumentSymbolsSink::default(),
+            active_document_readiness: super::readiness::ActiveDocumentParserReadiness::default(),
+            #[cfg(test)]
+            document_symbols_before_commit_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
             ai_backend_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(feature = "incremental")]
@@ -261,6 +266,7 @@ impl LspServer {
             progress_token_to_request: Arc::new(Mutex::new(HashMap::new())),
             refresh_controller: refresh::RefreshController::new(),
             diagnostic_debouncer: Mutex::new(None),
+            push_diagnostics_sink: super::diagnostics_sink::PushDiagnosticsSink::default(),
             parse_worker_handle: Mutex::new(None),
             file_watcher_debouncer: Mutex::new(None),
             notebook_store: notebook::NotebookStore::new(),
@@ -313,6 +319,10 @@ impl LspServer {
             client_setting_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
+            document_symbols_sink: super::document_symbols_sink::DocumentSymbolsSink::default(),
+            active_document_readiness: super::readiness::ActiveDocumentParserReadiness::default(),
+            #[cfg(test)]
+            document_symbols_before_commit_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
             ai_backend_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(feature = "incremental")]
@@ -385,6 +395,7 @@ impl LspServer {
             progress_token_to_request: Arc::new(Mutex::new(HashMap::new())),
             refresh_controller: refresh::RefreshController::new(),
             diagnostic_debouncer: Mutex::new(None),
+            push_diagnostics_sink: super::diagnostics_sink::PushDiagnosticsSink::default(),
             parse_worker_handle: Mutex::new(None),
             file_watcher_debouncer: Mutex::new(None),
             notebook_store: notebook::NotebookStore::new(),
@@ -437,6 +448,10 @@ impl LspServer {
             client_setting_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
+            document_symbols_sink: super::document_symbols_sink::DocumentSymbolsSink::default(),
+            active_document_readiness: super::readiness::ActiveDocumentParserReadiness::default(),
+            #[cfg(test)]
+            document_symbols_before_commit_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
             ai_backend_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(feature = "incremental")]

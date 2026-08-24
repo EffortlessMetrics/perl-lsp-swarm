@@ -1,0 +1,71 @@
+{
+  "schema_version": "vim_lsp_configuration.v1",
+  "artifact_role": "one canonical prabirshrestha/vim-lsp client registration and configuration contract for perllsp; the reviewed shape every later Vim driver, fixture, and doc consumer must copy or reference instead of re-deriving (#11369)",
+  "claim_boundary": "configuration_documented substrate only. This fragment launches nothing, provisions no Vim, proves no behavior, and creates no support claim. Host journeys and fixtures own behavior in later leaves.",
+  "subject_reference": {
+    "manifest": ".ci/editor-clients/vim-vim-lsp-subject.v1.json",
+    "binding": "this configuration is valid for exactly the pinned upstream subject; changing the subject requires a reviewed update of both artifacts"
+  },
+  "registration": {
+    "server_name": "perllsp-under-test",
+    "command_identity": {
+      "argv": ["perllsp", "--stdio"],
+      "law": "executable identity is exactly 'perllsp --stdio' unless a generic product authority changes it (#7691/#7760); any other argv is a contract violation, not a variant",
+      "vim_shape": "'cmd' resolves to a two-element list [perllsp, '--stdio']"
+    },
+    "allowlist_filetypes": ["perl"],
+    "root_uri_contract": {
+      "authority_issue": 7762,
+      "authority_manifest": ".ci/editor-clients/vim-vim-lsp-activation-root.v1.json",
+      "consumption_rule": "root markers, selection order, and filetype policy are consumed from #7762's manifest by reference; this contract defines no second marker policy and no second activation rule",
+      "no_marker_fallback": "cwd_fallback (as declared by #7762)",
+      "workspace_folders_relation": "experimental workspace folders stay disabled by default; see experimental_workspace_folders"
+    },
+    "workspace_configuration_channel": {
+      "shape": {
+        "perl": {
+          "workspace": {
+            "includePaths": "<workspace-contained relative directories resolved against the server root>"
+          }
+        }
+      },
+      "positive_example_law": "the single positive example field is perl.workspace.includePaths with a workspace-contained relative path ('lib'); an absolute or traversal path must never become the positive client example (#4998)",
+      "field_authority_mapping": {
+        "rule": "a Vim-local workspace setting is a client delivery channel, not a second server schema",
+        "admitted_fields_authority": "#6736 configuration authority catalog (crates/perl-lsp-rs-core/src/configuration_authority/catalog.rs): a field may be delivered through workspace/configuration only when its FieldAuthority sources include WorkspaceConfiguration",
+        "preferred_source": ".perl-lsp.toml remains the preferred shared project configuration source; client-local settings are a fallback channel",
+        "forbidden_here": ["duplicating field semantics from #6736", "introducing fields absent from the catalog"]
+      }
+    },
+    "experimental_workspace_folders": {
+      "g:lsp_experimental_workspace_folders_default": false,
+      "law": "remains off unless #10960 directly earns a compatible optional cell; enabling it by inference or convenience is a contract violation",
+      "observation_mode_note": "later actual-host proof may enable it explicitly inside its own governed observation mode without moving this default"
+    },
+    "logging_and_status_hooks": {
+      "model": "bounded instrument configuration only",
+      "allowed_hooks": [
+        "g:lsp_log_verbose = 1",
+        "g:lsp_log_file = <receipt-scoped path>",
+        "env PERL_LSP_LOG_FILE = <server trace path>",
+        "lsp#get_server_status / lsp#collect_server_status inspection at stage boundaries"
+      ],
+      "law": "hooks exist to produce retained wire/process evidence; they add no user-facing feature surface here"
+    }
+  },
+  "laws": [
+    "executable identity is exactly perllsp --stdio unless a generic product authority changes it",
+    "#7762 remains the sole filetype/root authority; no marker policy is copied into this contract",
+    ".perl-lsp.toml remains the preferred shared project configuration source",
+    "Vim-local workspace settings are a client channel, not a second server schema",
+    "positive include-path examples are workspace-contained relative paths unless #4998 explicitly admits a trusted channel",
+    "no blanket .t/.pm/.cgi/.fcgi/POD/XS/template activation rule enters this shared client config",
+    "g:lsp_experimental_workspace_folders remains off unless #10960 directly earns a compatible optional cell"
+  ],
+  "generated_consumption_rules": {
+    "for_consumers": "drivers, fixtures, and documentation consume this artifact plus the subject manifest by reference; copying these values into a new host script or doc surface creates a conflicting second authority and fails validation",
+    "redirect_targets": [
+      "scripts/ux/vim_vim_lsp_smoke.sh consumes the pinned commit from the subject manifest"
+    ]
+  }
+}
