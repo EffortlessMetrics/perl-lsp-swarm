@@ -10,6 +10,16 @@ import * as child_process from 'child_process';
 import * as tar from 'tar';
 import AdmZip from 'adm-zip';
 import { BoundedJsonStatusError, fetchBoundedJson } from './boundedHttpJson';
+import type { ManagedCandidateManifest } from './managedCacheProtocol';
+import {
+  collectStaleManagedCandidates,
+  commitManagedCandidateSelection,
+  enumerateManagedCandidateCatalog,
+  readManagedCurrentSelection,
+  readSessionManagedHostReference,
+  writeInstalledManagedCandidateManifest,
+} from './managedCandidateRuntime';
+import { resolveManagedCandidateForHost } from './managedCandidateSelection';
 import { buildManagedReleaseExpectation, toManagedReleaseRecords } from './managedReleaseAdapter';
 import {
   selectManagedRelease,
@@ -985,6 +995,7 @@ export class BinaryDownloader {
           // Best-effort: copy perl-dap if found in archive
           const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
           const extractedDap = this.findBinary(extractDir, dapName);
+          let installedDapPath: string | null = null;
           if (extractedDap) {
             const dapDest = path.join(installDir, dapName);
             try {
@@ -994,19 +1005,41 @@ export class BinaryDownloader {
               if (process.platform !== 'win32') {
                 fs.chmodSync(dapDest, 0o755);
               }
+              installedDapPath = dapDest;
               this.outputChannel.appendLine(`Debug adapter installed to: ${dapDest}`);
             } catch (e) {
               this.outputChannel.appendLine(`Note: could not install perl-dap: ${e}`);
             }
           }
 
-          // Atomically activate the new install. Old install dirs stay
-          // on disk for one generation as a fallback, then get pruned.
-          // Both the pointer and the prune are scoped to this compatibility
-          // key, so rollback and GC can only ever touch this target's row.
-          this.commitVersionedInstall(installDirName, compatibilityKey);
+          // Mint the immutable candidate identity from the verified bytes
+          // (#10083): the archive checksum stands in for the release topology
+          // digest, and the installed binaries' digests bind the candidate to
+          // exactly the bytes this host will launch.
+          const perllspDigest = await this.calculateSHA256(finalPath);
+          const dapDigest =
+            installedDapPath === null ? null : await this.calculateSHA256(installedDapPath);
+          const manifest = writeInstalledManagedCandidateManifest(
+            installDir,
+            {
+              release: release.tag_name,
+              version: release.tag_name,
+              target,
+              topology_digest: actualChecksum,
+              perllsp_digest: perllspDigest,
+              perl_dap_digest: dapDigest,
+            },
+            (message) => this.outputChannel.appendLine(`Note: ${message}`),
+          );
+
+          // Atomically activate the new install. The legacy `current` dir
+          // pointer stays authoritative for path resolution and rollback;
+          // the versioned selection record alongside it gives collectors and
+          // host selection the policy-governed view. Stale generations are
+          // then pruned only through the landed retention policy.
+          this.commitVersionedInstall(installDirName, compatibilityKey, manifest);
           this.outputChannel.appendLine(`Active managed install: ${installDirName}`);
-          this.pruneOldVersionedInstalls(baseDir, installDirName);
+          this.collectStaleManagedCandidates(baseDir);
 
           progress.report({ increment: 5, message: 'Complete!' });
           this.outputChannel.appendLine(`Binary installed to: ${finalPath}`);
@@ -1487,18 +1520,25 @@ export class BinaryDownloader {
   /**
    * Resolves the active managed install directory for this host.
    *
-   * Admissible keys are walked in preference order and the first namespace
-   * with a valid, self-consistent `current` pointer wins. When no
-   * compatibility-scoped namespace is populated, a pre-#9847 install may be
-   * adopted, but only after its own bytes are revalidated against the key —
-   * path shape alone never promotes legacy bytes (#9847).
+   * Admissible keys are walked in preference order. A namespace carrying a
+   * policy-governed selection record resolves through the landed host
+   * selection policy (#10083); namespaces without one (installs from before
+   * that wiring) keep the pointer-based check. When no compatibility-scoped
+   * namespace is populated, a pre-#9847 install may be adopted, but only
+   * after its own bytes are revalidated against the key — path shape alone
+   * never promotes legacy bytes (#9847).
    */
   private static readActiveManagedInstallDir(context: vscode.ExtensionContext): string | null {
     const keys = hostManagedCompatibilityKeys();
+    const sessionId = vscode.env.sessionId;
     for (const key of keys) {
       const baseDir = managedNamespaceDir(context.globalStorageUri.fsPath, key);
       if (baseDir === null) {
         continue;
+      }
+      const governed = BinaryDownloader.resolvePolicyGovernedInstallDir(baseDir, key, sessionId);
+      if (governed !== null) {
+        return governed;
       }
       const active = BinaryDownloader.readPointedInstallDir(baseDir);
       if (active !== null && BinaryDownloader.installMatchesKey(active, key)) {
@@ -1506,6 +1546,53 @@ export class BinaryDownloader {
       }
     }
     return BinaryDownloader.adoptLegacyManagedInstallDir(context, keys);
+  }
+
+  /**
+   * Resolves one namespace's active install dir through the landed
+   * host-selection policy when the namespace carries a
+   * `managed_current_selection.v1` record (#10083).
+   *
+   * A session holding a `live` host reference stays bound to the exact
+   * candidate it launched (`bound_running`) even after another writer moved
+   * the shared default; fresh resolutions take `selected_current`, or the
+   * caller's most recently installed compatible candidate when current is
+   * unusable. `restart_required` and `no_compatible_candidate` leave this
+   * namespace unusable rather than silently rebinding a running host.
+   */
+  private static resolvePolicyGovernedInstallDir(
+    baseDir: string,
+    key: string,
+    sessionId: string | undefined,
+  ): string | null {
+    const current = readManagedCurrentSelection(baseDir);
+    if (current === null) {
+      return null;
+    }
+    const catalog = enumerateManagedCandidateCatalog(baseDir);
+    if (!catalog.complete) {
+      return null;
+    }
+    const sessionReference =
+      sessionId === undefined ? null : readSessionManagedHostReference(baseDir, sessionId);
+    const runningCandidateId =
+      sessionReference !== null && sessionReference.state === 'live'
+        ? sessionReference.candidate_id
+        : null;
+    const outcome = resolveManagedCandidateForHost({
+      current,
+      candidates: catalog.entries,
+      compatible_candidate_ids: [...catalog.candidateDirs.keys()],
+      running_candidate_id: runningCandidateId,
+    });
+    if (!('candidate_id' in outcome)) {
+      return null;
+    }
+    const dir = catalog.candidateDirs.get(outcome.candidate_id)?.[0];
+    if (dir === undefined || !BinaryDownloader.installMatchesKey(dir, key)) {
+      return null;
+    }
+    return dir;
   }
 
   /**
@@ -1648,9 +1735,16 @@ export class BinaryDownloader {
    * success" we can use with no extra dependencies.
    *
    * The pointer lives inside the compatibility namespace, so committing here
-   * cannot move another target's selection.
+   * cannot move another target's selection. When the install minted a
+   * candidate manifest, the versioned `managed_current_selection.v1` record
+   * is committed alongside it (#10083); a refused record leaves the pointer
+   * authoritative and install success untouched.
    */
-  private commitVersionedInstall(installDirName: string, compatibilityKey?: string): void {
+  private commitVersionedInstall(
+    installDirName: string,
+    compatibilityKey?: string,
+    manifest?: ManagedCandidateManifest | null,
+  ): void {
     const baseDir =
       compatibilityKey === undefined
         ? this.getManagedBaseDir()
@@ -1659,45 +1753,34 @@ export class BinaryDownloader {
     const tmpPath = `${pointerPath}.tmp`;
     fs.writeFileSync(tmpPath, `${installDirName}\n`, { encoding: 'utf8' });
     fs.renameSync(tmpPath, pointerPath);
+    if (manifest !== undefined && manifest !== null) {
+      const selection = commitManagedCandidateSelection(baseDir, manifest, (message) =>
+        this.outputChannel.appendLine(`Note: ${message}`),
+      );
+      if (selection !== null) {
+        this.outputChannel.appendLine(
+          `Managed current selection: generation ${selection.selection_generation} -> ${selection.candidate_id}`,
+        );
+      }
+    }
   }
 
   /**
-   * Removes versioned install dirs older than the most recent two. Best
-   * effort only — failure to prune is logged but never propagates so it
-   * cannot mask install success.
-   *
-   * Keeps `currentName` plus one prior install for fallback recovery.
+   * Garbage-collects this namespace's proven-stale managed generations
+   * through the landed retention policy (#10083): enumeration of the
+   * candidate catalog, the current-selection record, and every persisted host
+   * reference, then deletion only of candidates classified
+   * `stale_unreferenced`. Recency never authorizes deletion; the
+   * immediately-prior generation is retained as the known-good fallback this
+   * runtime has always kept. Best effort — blocked or failed collection is
+   * logged but never propagates, so it cannot mask install success.
    */
-  private pruneOldVersionedInstalls(baseDir: string, currentName: string): void {
-    let entries: { name: string; mtime: number }[] = [];
-    try {
-      entries = fs
-        .readdirSync(baseDir, { withFileTypes: true })
-        .filter((d) => d.isDirectory() && d.name !== currentName)
-        .map((d) => {
-          const full = path.join(baseDir, d.name);
-          let mtime = 0;
-          try {
-            mtime = fs.statSync(full).mtimeMs;
-          } catch {
-            /* ignore */
-          }
-          return { name: d.name, mtime };
-        })
-        .sort((a, b) => b.mtime - a.mtime);
-    } catch {
-      return;
-    }
-    // Keep most recent prior install; remove anything older.
-    for (const entry of entries.slice(1)) {
-      const target = path.join(baseDir, entry.name);
-      try {
-        fs.rmSync(target, { recursive: true, force: true });
-        this.outputChannel.appendLine(`Removed stale managed install: ${entry.name}`);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        this.outputChannel.appendLine(`Could not remove stale install ${entry.name}: ${msg}`);
-      }
+  private collectStaleManagedCandidates(baseDir: string): void {
+    const result = collectStaleManagedCandidates(baseDir, (message) =>
+      this.outputChannel.appendLine(message),
+    );
+    if (result.blockedReason !== null) {
+      this.outputChannel.appendLine(`Managed candidate GC skipped: ${result.blockedReason}.`);
     }
   }
 
