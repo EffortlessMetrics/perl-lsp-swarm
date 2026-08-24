@@ -16,6 +16,11 @@ import type {
 import { PerlTestAdapter } from './testAdapter';
 import { activateDebugger, rewriteTestLensCommand } from './debugAdapter';
 import { BinaryDownloader, parseLocalVersion } from './downloader';
+import {
+  acquireLaunchManagedCandidateReference,
+  mayReleaseManagedCandidateReferences,
+  releaseManagedCandidateSessionReferences,
+} from './managedCandidateRuntime';
 import { runLanguageServerHealthCheck } from './languageServerHealth';
 import { OnboardingManager } from './onboarding';
 import {
@@ -1595,6 +1600,19 @@ function createLanguageClientLifecycle(
       }
     },
     createClient: (serverPath) => {
+      // Bind this extension-host session to the exact managed candidate
+      // before the server process can spawn (#10083), so no collector can
+      // delete the candidate between selection and reference establishment.
+      // No-op for user-managed or pre-policy installs, which are never
+      // deletion subjects.
+      const boundCandidateId = acquireLaunchManagedCandidateReference(
+        serverPath,
+        vscode.env.sessionId,
+        (message) => outputChannel.info(`[managed-candidate] ${message}`),
+      );
+      if (boundCandidateId !== null) {
+        outputChannel.info(`[managed-candidate] session bound to ${boundCandidateId}`);
+      }
       languageClientStartupMetrics.beginServerStart();
       languageClientStartupMetrics.beginInitialize();
       return createLanguageClient(serverPath);
@@ -2818,9 +2836,37 @@ async function disposeLanguageClient(): Promise<void> {
   autoRestartAttempts = 0;
   stableRunningSince = undefined;
   disposeClientIntegrations();
+  let shutdownProvedTerminal = false;
   if (languageClientLifecycle) {
     await languageClientLifecycle.stop();
+    // stop() resolves — never rejects — even when stop/dispose timed out and
+    // the lifecycle transitioned to `failed`. Only the clean `stopped` state
+    // proves the server process is terminal (#10083); anything else keeps
+    // the session's host references `live` so a collector cannot delete the
+    // candidate under a possibly-still-running process.
+    shutdownProvedTerminal = mayReleaseManagedCandidateReferences(
+      languageClientLifecycle.snapshot.state,
+    );
     syncLifecycleProjection();
+  }
+  // The server process bound to the managed candidate is proven terminal
+  // now, so this session's exact host references can be released (#10083).
+  // Crashes and unproven shutdowns never reach the release — their
+  // references stay `live` and conservative for a later recovery path
+  // (#11539) rather than authorizing deletion.
+  const managedStorageRoot = extensionContext?.globalStorageUri?.fsPath;
+  if (typeof managedStorageRoot !== 'string') {
+    outputChannel.info(
+      '[managed-candidate] no managed storage root available; host reference release skipped.',
+    );
+  } else if (shutdownProvedTerminal) {
+    releaseManagedCandidateSessionReferences(managedStorageRoot, vscode.env.sessionId, (message) =>
+      outputChannel.info(`[managed-candidate] ${message}`),
+    );
+  } else {
+    outputChannel.info(
+      '[managed-candidate] shutdown did not prove process termination; host references retained.',
+    );
   }
   // No generation is running any more. Reinstall stops the client and then
   // restarts it, so leaving demand on `running` here would make that restart a
