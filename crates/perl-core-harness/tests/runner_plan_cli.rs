@@ -157,6 +157,8 @@ fn build_writes_plan_and_prints_exact_summary() {
         "--state-ordering",
         "--property",
         "lane=nightly",
+        "--frame",
+        "canonical_repository_path",
     ]);
     assert!(output.status.success(), "build failed: {}", String::from_utf8_lossy(&output.stderr));
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -168,7 +170,9 @@ fn build_writes_plan_and_prints_exact_summary() {
     let plan: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&plan_path).expect("plan receipt must exist"))
             .expect("plan receipt must be valid JSON");
-    assert_eq!(plan["schema_version"], "perl_core_harness.runner_plan.v1");
+    assert_eq!(plan["schema_version"], "perl_core_harness.runner_plan.v2");
+    assert_eq!(plan["discovery_frame"], "canonical_repository_path");
+    assert_eq!(plan["normalization_schema"], "perl_core_harness.source_identity.v2");
     assert_eq!(plan["target_id"], "component_base");
     assert_eq!(plan["runner"], "test");
     assert_eq!(plan["normalized_membership"], serde_json::json!(["t/base/cond.t", "t/base/if.t"]));
