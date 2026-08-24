@@ -140,10 +140,7 @@ assert "binary" not in path_settings["lsp"]["perllsp"]
     let output = Command::new(python())
         .arg("-c")
         .arg(script)
-        .env(
-            "ZED_EXPECTED_PERLLSP_PATH",
-            PathBuf::from("/tmp/perllsp").to_string_lossy().as_ref(),
-        )
+        .env("ZED_EXPECTED_PERLLSP_PATH", PathBuf::from("/tmp/perllsp").to_string_lossy().as_ref())
         .current_dir(&root)
         .output()?;
     assert!(
