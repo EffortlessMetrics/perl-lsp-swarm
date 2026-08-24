@@ -38,13 +38,7 @@ pub(super) fn count_lsp_coverage(root: &Path) -> Result<LspCoverage> {
 
     let ux_implemented: Vec<_> = ux_trackable
         .iter()
-        .filter(|f| {
-            matches!(
-                f.maturity,
-                perl_lsp_rs_core::feature_catalog::Maturity::Ga
-                    | perl_lsp_rs_core::feature_catalog::Maturity::Production
-            )
-        })
+        .filter(|f| f.maturity == perl_lsp_rs_core::feature_catalog::Maturity::Proven)
         .collect();
 
     // Protocol surface labels: every catalog feature, regardless of
@@ -63,11 +57,11 @@ pub(super) fn count_lsp_coverage(root: &Path) -> Result<LspCoverage> {
     let protocol_implemented: Vec<_> = protocol_trackable
         .iter()
         .filter(|f| {
-            matches!(
+            !matches!(
                 f.maturity,
-                perl_lsp_rs_core::feature_catalog::Maturity::Ga
-                    | perl_lsp_rs_core::feature_catalog::Maturity::Production
-                    | perl_lsp_rs_core::feature_catalog::Maturity::Preview
+                perl_lsp_rs_core::feature_catalog::Maturity::Planned
+                    | perl_lsp_rs_core::feature_catalog::Maturity::Unsupported
+                    | perl_lsp_rs_core::feature_catalog::Maturity::NotProven
             )
         })
         .collect();
@@ -111,13 +105,13 @@ pub(super) fn generate_lsp_status(
         .to_string();
 
     let lsp_coverage_bullet = format!(
-        "- **Advertised ga/production rows**: {} of {} catalog-tracked advertised rows declare \
-         ga/production (navigation count from `features.toml`)",
+        "- **Proven rows**: {} of {} catalog-tracked advertised rows carry the `proven` \
+         earned-claim label (navigation count from `features.toml`; #7029)",
         cov.ux_implemented, cov.ux_total
     );
     let protocol_compliance_bullet = format!(
-        "- **Protocol surface labels**: {} of {} declared rows carry ga/production/preview labels \
-         (navigation only)",
+        "- **Protocol surface labels**: {} of {} declared rows carry implemented-or-preview \
+         labels (navigation only; #7029)",
         cov.protocol_implemented, cov.protocol_total
     );
     let evidence_bullet =

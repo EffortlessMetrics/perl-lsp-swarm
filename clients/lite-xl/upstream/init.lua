@@ -1066,13 +1066,57 @@ function lsp.start_server(filename, project_directory)
         end
 
         -- Respond to workspace/configuration request
+        -- Local patch (#11147): workspace/configuration is positional —
+        -- result[i] answers params.items[i]. Items must be one dense JSON
+        -- array of objects; iterate by position (never pairs()), keep
+        -- duplicate sections as distinct slots, emit [] for zero items, and
+        -- answer one exact InvalidParams instead of any partial result when
+        -- items are not an array of objects.
         client:add_request_listener(
           "workspace/configuration",
           function(server, request)
+            local params = request.params
+            local items = params and params.items
+            local valid_items = json.is_array(items)
+            if valid_items then
+              for i = 1, #items do
+                local item = items[i]
+                -- One ConfigurationItem per slot: object only, optional
+                -- string section/scopeUri. Non-object elements and
+                -- non-string scopeUri values are malformed here rather than
+                -- crashing later in section lookup or URI conversion.
+                if
+                  not json.is_object(item)
+                  or (
+                    item.scopeUri ~= nil
+                    and type(item.scopeUri) ~= "string"
+                  )
+                then
+                  valid_items = false
+                  break
+                end
+              end
+            end
+
+            if not valid_items then
+              server:log("Invalid workspace/configuration items")
+              server:push_response(
+                request.method,
+                request.id,
+                nil,
+                {
+                  code = -32602,
+                  message = "Invalid params: items must be an array of objects"
+                }
+              )
+              return
+            end
+
             local settings_default = lsp.get_workspace_settings(server)
 
             local settings_list = {}
-            for _, item in pairs(request.params.items) do
+            for i = 1, #items do
+              local item = items[i]
               local value = nil
               if item.section then
                 -- No workspace was specified so we return from default settings
@@ -1095,7 +1139,12 @@ function lsp.start_server(filename, project_directory)
 
               table.insert(settings_list, value or json.null)
             end
-            server:push_response(request.method, request.id, settings_list)
+
+            server:push_response(
+              request.method,
+              request.id,
+              json.array(settings_list)
+            )
           end
         )
 
