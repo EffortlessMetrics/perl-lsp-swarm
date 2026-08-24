@@ -2438,11 +2438,8 @@ mod tests {
         relative.validate()?;
 
         let mut leaked = raw_envelope(b"base/ok.t\n", b"");
-        leaked.working_directory = std::env::current_dir()?
-            .join("prepared-tree")
-            .join("t")
-            .display()
-            .to_string();
+        leaked.working_directory =
+            std::env::current_dir()?.join("prepared-tree").join("t").display().to_string();
         let Err(error) = leaked.validate() else {
             bail!("an absolute host path must not be published as evidence");
         };
