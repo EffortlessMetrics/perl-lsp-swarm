@@ -2135,6 +2135,15 @@ enum Commands {
         receipt: bool,
     },
 
+    /// Run the `lsp_smoke` gate as atomic, bounded, independently terminal
+    /// children with typed per-child receipts (#8063).
+    LspSmokeAtomic {
+        /// Path for the incremental child receipt JSON (gate telemetry; not
+        /// a `test_results` envelope, so it never feeds Test Analytics).
+        #[arg(long)]
+        receipt: PathBuf,
+    },
+
     /// Inspect and validate effective gate policy profiles.
     GatePolicy {
         #[command(subcommand)]
@@ -5191,6 +5200,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             staged: true,
             ..gates::GateRunnerConfig::default()
         }),
+        Commands::LspSmokeAtomic { receipt } => tasks::lsp_smoke_atomic::run_cli(&receipt),
         Commands::GatePolicy { command } => match command {
             GatePolicyCommand::Check => match tasks::gate_policy::check() {
                 Ok(()) => Ok(()),
