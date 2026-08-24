@@ -266,7 +266,14 @@ describe('transactional production activation (#7854)', () => {
 
     // Module-level compatibility projections were cleared from the same
     // authority, so no disposed resource stays reachable and the crash
-    // handler cannot adopt an uncommitted attempt.
+    // handler cannot adopt an uncommitted attempt. They must clear LAST —
+    // after the language-client lifecycle teardown ran — or the teardown
+    // would observe cleared projections and leak a partially started client.
+    const cleanedResources = state?.lastCleanupReceipt?.cleaned_resources ?? [];
+    expect(cleanedResources[cleanedResources.length - 1]).toBe('module-projections');
+    expect(cleanedResources.indexOf('module-projections')).toBeGreaterThan(
+      cleanedResources.indexOf('language-client-lifecycle'),
+    );
     expect(_activationProjectionsClearedForTest()).toBe(true);
 
     // Deactivation after a rolled-back attempt stays on the fallback path.
