@@ -570,7 +570,7 @@ impl ChildExecutor for CargoChildExecutor {
         working_dir: Option<&Path>,
         log_path: &Path,
     ) -> Result<RawOutcome> {
-        apply_child_environment(spec.kind);
+        apply_child_environment(spec.kind, working_dir);
         let executable = executable.map(|path| path.display().to_string());
         let command = command_line(spec, executable.as_deref());
         let retries = match spec.kind {
@@ -639,31 +639,44 @@ impl ChildExecutor for CargoChildExecutor {
 ///
 /// SAFETY: the xtask runner is single-threaded when a gate executes, the same
 /// pattern `gates::run_single_gate` uses for policy environment variables.
-fn apply_child_environment(kind: ChildKind) {
+fn apply_child_environment(kind: ChildKind, behavior_dir: Option<&Path>) {
     unsafe {
         std::env::remove_var("RUSTC_WRAPPER");
         std::env::remove_var("CARGO_BUILD_JOBS");
+        std::env::remove_var("CARGO_MANIFEST_DIR");
     }
     match kind {
         ChildKind::Setup | ChildKind::Compile => unsafe {
             std::env::remove_var("RUST_TEST_THREADS");
         },
-        ChildKind::Behavior => unsafe {
-            std::env::set_var("RUST_TEST_THREADS", "1");
-            // cargo sets this for test processes; the harness's binary
-            // resolution reads it at runtime to locate the workspace for its
-            // perllsp freshness pre-build.
-            std::env::set_var("CARGO_MANIFEST_DIR", BEHAVIOR_WORKING_DIR);
-        },
+        ChildKind::Behavior => {
+            let Some(dir) = behavior_dir else {
+                return;
+            };
+            unsafe {
+                std::env::set_var("RUST_TEST_THREADS", "1");
+                // cargo sets the ABSOLUTE package path for test processes;
+                // the harness's binary resolution reads it at runtime to
+                // locate the workspace root for its perllsp freshness
+                // pre-build. A relative value here made the pre-build run
+                // cargo from a nonexistent directory (run 32686346867).
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            }
+        }
     }
 }
 
-fn child_env_record(kind: ChildKind) -> (BTreeMap<String, String>, Vec<String>) {
+fn child_env_record(
+    kind: ChildKind,
+    behavior_dir: Option<&Path>,
+) -> (BTreeMap<String, String>, Vec<String>) {
     let mut set = BTreeMap::new();
     let mut unset = vec!["RUSTC_WRAPPER".to_string(), "CARGO_BUILD_JOBS".to_string()];
     if kind == ChildKind::Behavior {
         set.insert("RUST_TEST_THREADS".to_string(), "1".to_string());
-        set.insert("CARGO_MANIFEST_DIR".to_string(), BEHAVIOR_WORKING_DIR.to_string());
+        if let Some(dir) = behavior_dir {
+            set.insert("CARGO_MANIFEST_DIR".to_string(), dir.display().to_string());
+        }
     }
     (set, unset)
 }
@@ -671,7 +684,7 @@ fn child_env_record(kind: ChildKind) -> (BTreeMap<String, String>, Vec<String>) 
 /// Placeholder entry for a child that has not reached a terminal verdict in
 /// the persisted snapshot: `CANCELLED` + execution mark, never a pass.
 fn placeholder(spec: &ChildSpec, mark: &str, sha: &str) -> ChildEntry {
-    let (env_set, env_unset) = child_env_record(spec.kind);
+    let (env_set, env_unset) = child_env_record(spec.kind, None);
     ChildEntry {
         id: spec.id.to_string(),
         kind: spec.kind,
@@ -803,7 +816,7 @@ pub fn run_suite(receipt_path: &Path, executor: &mut dyn ChildExecutor) -> Resul
         let duration_ms = start.elapsed().as_millis() as u64;
         let status = classify(spec.kind, &outcome);
 
-        let (env_set, env_unset) = child_env_record(spec.kind);
+        let (env_set, env_unset) = child_env_record(spec.kind, working_dir);
         let entry = ChildEntry {
             id: spec.id.to_string(),
             kind: spec.kind,
@@ -1278,17 +1291,26 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
         assert_eq!(doc.suite_state, "complete");
         assert!(doc.aggregate.as_ref().is_some_and(|agg| agg.status == "pass"));
         assert!(doc.children.iter().all(|child| child.status == ChildStatus::Pass));
-        // Behavior children record the cargo-equivalent working directory.
+        // Behavior children record the cargo-equivalent working directory
+        // and the ABSOLUTE CARGO_MANIFEST_DIR cargo itself would set.
         for child in &doc.children {
             match child.kind {
-                ChildKind::Behavior => assert!(
-                    child
-                        .working_dir
-                        .as_deref()
-                        .is_some_and(|dir| dir.ends_with(BEHAVIOR_WORKING_DIR)),
-                    "behavior children must run from the package directory cargo uses: {:?}",
-                    child.working_dir
-                ),
+                ChildKind::Behavior => {
+                    assert!(
+                        child
+                            .working_dir
+                            .as_deref()
+                            .is_some_and(|dir| dir.ends_with(BEHAVIOR_WORKING_DIR)),
+                        "behavior children must run from the package directory cargo uses: {:?}",
+                        child.working_dir
+                    );
+                    let manifest_dir = child.env_set.get("CARGO_MANIFEST_DIR");
+                    assert!(
+                        manifest_dir.is_some_and(|dir| dir.ends_with(BEHAVIOR_WORKING_DIR)
+                            && Path::new(dir).is_absolute()),
+                        "CARGO_MANIFEST_DIR must be cargo's absolute package path: {manifest_dir:?}"
+                    );
+                }
                 ChildKind::Setup | ChildKind::Compile => {
                     assert!(child.working_dir.is_none())
                 }
