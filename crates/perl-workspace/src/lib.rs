@@ -95,6 +95,3 @@ pub use workspace::workspace_rename;
 
 #[cfg(test)]
 mod workspace_index_utf16_test;
-
-#[cfg(test)]
-mod reachability_operation_tests;

@@ -18,10 +18,10 @@ use perl_semantic_facts::reachability_operation::{
     ReachabilityOperationId, ReachabilityOperationKind, ReachabilityOperationOutcome,
     ReachabilityOperationSubject, ReachabilityProfileId, ReachabilityPublicationEligibility,
     ReachabilityRetentionLimits, ReachabilitySemanticOutcome, ReachabilityStageId,
-    ReachabilityStageOutput, ReachabilitySubjectIdentity, ReachabilitySubjectIdentityKind,
-    ReachabilityTerminalObservation, ReachabilityTerminalState, ReachabilityUnlimitedJustification,
-    ReachabilityWorkBudget, ReachabilityWorkDimension, ReachabilityWorkHonestyError,
-    ReachabilityWorkPath, ReachabilityWorkPathTarget, ReachabilityWorkReceipt,
+    ReachabilityStageLimitation, ReachabilityStageOutput, ReachabilitySubjectIdentity,
+    ReachabilitySubjectIdentityKind, ReachabilityTerminalObservation, ReachabilityTerminalState,
+    ReachabilityUnlimitedJustification, ReachabilityWorkBudget, ReachabilityWorkDimension,
+    ReachabilityWorkHonestyError, ReachabilityWorkPathTarget, ReachabilityWorkReceipt,
     ReachabilityWorkTracker, ReachableViewProfileId,
 };
 use std::collections::BTreeMap;
@@ -159,18 +159,23 @@ fn external_consumer_walks_one_operation_from_subject_to_eligible_publication()
     assert_eq!(receipt.charged().get(&ReachabilityWorkDimension::NodesValidated), Some(&12));
     assert!(receipt.exhausted_attempts().is_empty());
     assert_eq!(receipt.checkpoints_observed(), std::slice::from_ref(&stage));
+    assert_eq!(receipt.checkpoints_observed()[0].as_str(), "entity-query");
     assert_eq!(receipt.completed_stages(), std::slice::from_ref(&stage));
+    assert_eq!(receipt.completed_stages()[0].as_str(), "entity-query");
     assert!(receipt.stage_limitations().is_empty());
     assert!(receipt.terminal().is_none());
     assert_eq!(receipt.work_after_eligibility_lost(), 0);
     assert!(receipt.instrument_identity().is_some());
+    assert_eq!(
+        receipt.instrument_identity().ok_or("instrument")?.kind(),
+        ReachabilitySubjectIdentityKind::Instrument
+    );
     assert!(receipt.instrument_evidence_complete());
     assert!(!receipt.is_validated_reuse_of(&ReachabilityWorkPathTarget::GraphInput));
-    let path: &ReachabilityWorkPath = &receipt.work_paths()[0];
-    assert_eq!(path.stage(), &stage);
-    assert_eq!(path.target(), &ReachabilityWorkPathTarget::QueryProjection);
-    assert!(!path.is_validated_reuse());
-    assert!(path.reused_identity().is_none());
+    assert_eq!(receipt.work_paths()[0].stage(), &stage);
+    assert_eq!(receipt.work_paths()[0].target(), &ReachabilityWorkPathTarget::QueryProjection);
+    assert!(!receipt.work_paths()[0].is_validated_reuse());
+    assert!(receipt.work_paths()[0].reused_identity().is_none());
 
     let answer = ReachabilityOperationOutcome::complete(
         ReachabilitySemanticOutcome::Complete,
@@ -232,6 +237,7 @@ fn external_consumer_sees_typed_terminals_for_cancel_exhaustion_and_supersession
     tracker.charge(ReachabilityWorkDimension::NodesValidated, 3)?;
     let receipt = tracker.finish();
     assert_eq!(receipt.work_after_eligibility_lost(), 3);
+    assert!(receipt.work_after_eligibility_lost() > 0);
     let outcome = ReachabilityOperationOutcome::<Vec<String>>::terminal_from(
         &terminal,
         cancelled_stage,
@@ -262,9 +268,18 @@ fn external_consumer_sees_typed_terminals_for_cancel_exhaustion_and_supersession
         );
     }
     let receipt = tracker.finish();
-    let attempts: &[ReachabilityExhaustionAttempt] = receipt.exhausted_attempts();
-    assert_eq!(attempts.len(), 1);
-    assert_eq!(attempts[0].limit, 10);
+    assert_eq!(receipt.exhausted_attempts().len(), 1);
+    assert_eq!(receipt.exhausted_attempts()[0].limit, 10);
+    assert_eq!(receipt.exhausted_attempts()[0].charged, 10);
+    let attempt = ReachabilityExhaustionAttempt {
+        dimension: ReachabilityWorkDimension::EntityQueries,
+        limit: 10,
+        charged: 10,
+    };
+    assert_eq!(attempt.dimension, ReachabilityWorkDimension::EntityQueries);
+    assert_eq!(attempt.limit, 10);
+    assert_eq!(attempt.charged, 10);
+    assert_eq!(receipt.exhausted_attempts()[0].dimension, attempt.dimension);
     let outcome = ReachabilityOperationOutcome::<Vec<String>>::terminal_from(
         &terminal,
         exhausted_stage,
@@ -603,5 +618,114 @@ fn receipts_serialize_identically_from_outside_the_crate() -> Result<(), Box<dyn
     let round_tripped: ReachabilityWorkReceipt =
         serde_json::from_str(&serde_json::to_string(&first_receipt)?)?;
     assert_eq!(round_tripped, first_receipt);
+    Ok(())
+}
+
+#[test]
+fn external_consumer_classifies_every_truth_limitation_and_path_variant()
+-> Result<(), Box<dyn Error>> {
+    // Truth variants: non-valued states never carry values; only Complete
+    // and LegitimateEmpty are exact.
+    for truth in [
+        ReachabilitySemanticOutcome::NotReady,
+        ReachabilitySemanticOutcome::Ambiguous,
+        ReachabilitySemanticOutcome::Dynamic,
+        ReachabilitySemanticOutcome::Unsupported,
+        ReachabilitySemanticOutcome::InstrumentFailure,
+    ] {
+        assert!(!truth.may_carry_value());
+        assert!(!truth.is_exact());
+    }
+    assert!(
+        ReachabilitySemanticOutcome::Partial {
+            limitations: vec![ReachabilityClaimLimitation::DynamicBoundary],
+        }
+        .may_carry_value()
+    );
+    assert!(
+        !ReachabilitySemanticOutcome::Partial {
+            limitations: vec![ReachabilityClaimLimitation::DynamicBoundary],
+        }
+        .is_exact()
+    );
+
+    // Claim-limitation variants stay distinct and ordered.
+    let runtime = ReachabilityFactFamilyId::new("runtime-edges")?;
+    let activation = ReachabilityFactFamilyId::new("activation-roots")?;
+    let limitations = [
+        ReachabilityClaimLimitation::MissingFactFamily(runtime.clone()),
+        ReachabilityClaimLimitation::UnsupportedFamily(activation.clone()),
+        ReachabilityClaimLimitation::PartialDenominator,
+        ReachabilityClaimLimitation::DynamicBoundary,
+        ReachabilityClaimLimitation::TerminalStage(ReachabilityStageId::new("closure")?),
+        ReachabilityClaimLimitation::BoundedComputation,
+    ];
+    assert_eq!(limitations[0], ReachabilityClaimLimitation::MissingFactFamily(runtime.clone()));
+    assert_ne!(limitations[2], ReachabilityClaimLimitation::MissingFactFamily(runtime.clone()));
+    assert_eq!(limitations[1], ReachabilityClaimLimitation::UnsupportedFamily(activation));
+
+    // Fact-family statuses: only Complete supports an exact claim.
+    for status in [
+        ReachabilityFactFamilyStatus::Complete,
+        ReachabilityFactFamilyStatus::Partial,
+        ReachabilityFactFamilyStatus::Missing,
+        ReachabilityFactFamilyStatus::Unsupported,
+        ReachabilityFactFamilyStatus::Stale,
+    ] {
+        assert_eq!(status.is_complete(), status == ReachabilityFactFamilyStatus::Complete);
+    }
+
+    // Work-path targets stay distinct.
+    let targets = [
+        ReachabilityWorkPathTarget::GraphInput,
+        ReachabilityWorkPathTarget::ComponentGraph,
+        ReachabilityWorkPathTarget::Closure,
+        ReachabilityWorkPathTarget::QueryProjection,
+        ReachabilityWorkPathTarget::DiagnosticProjection,
+        ReachabilityWorkPathTarget::ResultReuse,
+    ];
+    for (index, target) in targets.iter().enumerate() {
+        assert!(!matches!(
+            target,
+            ReachabilityWorkPathTarget::DiagnosticProjection if index != 4
+        ));
+    }
+    assert_eq!(targets[4], ReachabilityWorkPathTarget::DiagnosticProjection);
+
+    // Deadline observations are distinct from cancellation and supersession.
+    let deadline = ReachabilityTerminalObservation::DeadlineExceeded {
+        deadline_profile: ReachabilitySubjectIdentity::new(
+            ReachabilitySubjectIdentityKind::ExternalControl,
+            "deadline-profile-3",
+            None,
+        )?,
+    };
+    assert!(deadline.is_deadline());
+    assert!(!deadline.is_cancellation());
+    assert!(!deadline.is_supersession());
+
+    // Product failures are bounded terminal outcomes with receipts.
+    let mut tracker = tracked()?;
+    tracker.note_instrument_evidence(instrument()?);
+    let stage = ReachabilityStageId::new("classification")?;
+    let failure = ReachabilityOperationOutcome::<Vec<String>>::ProductFailure {
+        stage: stage.clone(),
+        cause: String::from("bounded cause"),
+        work_receipt: tracker.finish(),
+    };
+    assert!(failure.is_execution_terminal());
+    assert!(!failure.may_claim_exact());
+    assert_eq!(failure.work_receipt().completed_stages().len(), 0);
+
+    // Stage limitation records expose their stage and limitation directly.
+    let record = ReachabilityStageLimitation {
+        stage: stage.clone(),
+        limitation: ReachabilityClaimLimitation::TerminalStage(stage.clone()),
+    };
+    assert_eq!(record.stage.as_str(), "classification");
+    assert_eq!(
+        record.limitation,
+        ReachabilityClaimLimitation::TerminalStage(ReachabilityStageId::new("classification")?)
+    );
     Ok(())
 }
