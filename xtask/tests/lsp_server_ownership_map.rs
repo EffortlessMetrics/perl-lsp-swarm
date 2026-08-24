@@ -617,22 +617,13 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8400"
     ),
     row!(
-        "critic_workspace_warnings_sent",
+        "session_warning_dedup",
         ClientSession,
-        "Mutex<HashSet>",
-        "connection replacement",
-        "client session + configuration",
+        "owned store (per-family Mutex)",
+        "connection replacement + family lifecycle clear",
+        "typed warning family/code/subject fingerprint",
         false,
-        "#8386"
-    ),
-    row!(
-        "client_setting_warnings_sent",
-        ClientSession,
-        "Mutex<HashSet>",
-        "connection replacement",
-        "client session + configuration",
-        false,
-        "#8386"
+        "#9769"
     ),
     row!(
         "diagnostic_after_snapshot_hook",
@@ -660,15 +651,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "configuration + backend subject",
         true,
         "#8400"
-    ),
-    row!(
-        "ai_backend_warnings_sent",
-        ClientSession,
-        "Mutex<HashSet>",
-        "connection replacement",
-        "client session + backend subject",
-        false,
-        "#8386"
     ),
     row!(
         "incremental_eager",
@@ -851,6 +833,36 @@ fn ownership_map_covers_every_current_lsp_server_field() -> Result<()> {
         discover_lsp_server_fields(&source)?,
         governed_fields(),
         "LspServer fields and the #8383 ownership map must move together"
+    );
+
+    Ok(())
+}
+
+/// #9769 negative control: a governed session-warning family may not return
+/// as a raw string-keyed set. Warning dedup identities must stay typed,
+/// fingerprinted, and hard-capped inside `SessionWarningDedupStore`, so a
+/// warning-named `HashSet`/`HashMap` declaration directly on `LspServer`
+/// fails here (other governed maps keep their own #8383 rows).
+#[test]
+fn session_warning_dedup_is_not_a_raw_string_set() -> Result<()> {
+    let source = fs::read_to_string(repo_root()?.join("crates/perl-lsp-rs/src/runtime/mod.rs"))?;
+    let body = lsp_server_body(&source)?;
+    let declarations = split_declarations(&body)?;
+
+    for declaration in &declarations {
+        let is_warning_store = declaration.contains("warning")
+            && (declaration.contains("HashSet") || declaration.contains("HashMap"));
+        ensure!(
+            !is_warning_store,
+            "LspServer must not retain raw string-keyed warning state (#9769): {declaration}"
+        );
+    }
+
+    ensure!(
+        declarations.iter().any(|declaration| declaration.starts_with(
+            "pub(crate) session_warning_dedup: session_warning_dedup::SessionWarningDedupStore"
+        )),
+        "the bounded #9769 warning-dedup store must remain a governed field"
     );
 
     Ok(())

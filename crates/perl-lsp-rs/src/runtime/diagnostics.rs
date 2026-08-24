@@ -2385,7 +2385,8 @@ impl LspServer {
             || (!skip_check && !crate::execute_command::command_exists("perlcritic"))
         {
             self.emit_perlcritic_workspace_warning(
-                "missing-binary".to_string(),
+                super::session_warning_dedup::SessionWarningCode::CriticMissingBinary,
+                None,
                 "Perl::Critic is enabled but `perlcritic` was not found on PATH. Install Perl::Critic (for example: `cpanm Perl::Critic`) or disable perl.perlcritic.enabled.",
             );
             return;
@@ -2400,7 +2401,8 @@ impl LspServer {
             );
             if resolved.is_none() {
                 self.emit_perlcritic_workspace_warning(
-                    format!("missing-profile:{configured_profile}"),
+                    super::session_warning_dedup::SessionWarningCode::CriticMissingProfile,
+                    Some(configured_profile),
                     &format!(
                         "Perl::Critic profile path does not exist: {configured_profile}. Update perl.perlcritic.profile or create the profile file."
                     ),
@@ -2509,7 +2511,8 @@ impl LspServer {
             }
             Some(Err(e)) => {
                 self.emit_perlcritic_workspace_warning(
-                    format!("execution-failed:{e}"),
+                    super::session_warning_dedup::SessionWarningCode::CriticExecutionFailed,
+                    Some(&e.to_string()),
                     &format!("Perl::Critic execution failed: {e}"),
                 );
                 tracing::warn!(uri, error = %e, "perlcritic failed");
@@ -2528,10 +2531,30 @@ impl LspServer {
     ) {
     }
 
+    /// Show a workspace-scoped Perl::Critic warning unless the same reviewed
+    /// subject was already emitted this session (#9769). `subject` is the
+    /// client/environment-controlled identity (configured profile string,
+    /// execution error text); only its deterministic fingerprint is retained.
     #[cfg(not(target_arch = "wasm32"))]
-    fn emit_perlcritic_workspace_warning(&self, key: String, message: &str) {
-        let mut sent = self.critic_workspace_warnings_sent.lock();
-        if sent.insert(key) {
+    fn emit_perlcritic_workspace_warning(
+        &self,
+        code: super::session_warning_dedup::SessionWarningCode,
+        subject: Option<&str>,
+        message: &str,
+    ) {
+        let identity = match subject {
+            Some(subject) => super::session_warning_dedup::SessionWarningIdentity::fingerprinted(
+                code,
+                super::session_warning_dedup::SessionWarningSubjectTag::None,
+                subject,
+            ),
+            None => super::session_warning_dedup::SessionWarningIdentity::subjectless(code),
+        };
+        if !matches!(
+            self.session_warning_dedup
+                .note(super::session_warning_dedup::SessionWarningFamily::Critic, identity),
+            super::session_warning_dedup::SessionWarningDecision::Suppress
+        ) {
             self.show_message_or_log(super::window::MessageType::Warning, message);
         }
     }
