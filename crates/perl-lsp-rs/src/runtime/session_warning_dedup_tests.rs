@@ -234,6 +234,73 @@ fn guarded_emission_holds_the_reservation_through_the_send() {
     assert_eq!(server.session_warning_dedup_snapshot().ai_backend.entries, 1);
 }
 
+/// Realistic wrong implementation: `note()` releases the family lock before
+/// the send, so a concurrent caller can answer `Suppress` against a
+/// reservation whose send then fails. Caller A blocks inside its send; while
+/// that send is unresolved, a concurrent dedup query must not be answered at
+/// all (the family lock is held through decide/send/rollback), and once A's
+/// send has failed, the next query must emit again.
+#[test]
+fn concurrent_failure_window_never_suppresses_an_undelivered_warning()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::Arc;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let server = Arc::new(LspServer::new());
+    let auth = SessionWarningIdentity::subjectless(SessionWarningCode::AiBackendAuthFailure);
+
+    let (entered_send, a_is_sending) = mpsc::channel::<()>();
+    let (release_a, a_may_finish) = mpsc::channel::<()>();
+    let server_a = Arc::clone(&server);
+    let caller_a = std::thread::spawn(move || {
+        server_a.session_warning_dedup.emit_once_with(SessionWarningFamily::AiBackend, auth, || {
+            // A is now inside the critical section; hold the send open
+            // until the test releases it, then report the send as failed.
+            entered_send.send(()).ok();
+            let _released = a_may_finish.recv();
+            false
+        })
+    });
+
+    a_is_sending.recv().map_err(|_| "caller A never entered its send")?;
+
+    // B asks the store while A's send is unresolved.
+    let (b_answer, b_answered) = mpsc::channel::<SessionWarningDecision>();
+    let server_b = Arc::clone(&server);
+    let caller_b = std::thread::spawn(move || {
+        let decision = server_b.session_warning_dedup.note(SessionWarningFamily::AiBackend, auth);
+        b_answer.send(decision).ok();
+    });
+
+    // With decide/send/rollback in one critical section, B is parked on the
+    // family lock and cannot answer before A's send resolves. An immediate
+    // `Suppress` here is exactly the lost-warning race.
+    let premature = b_answered.recv_timeout(Duration::from_secs(2));
+    if let Ok(answer) = premature {
+        return Err(format!(
+            "the store answered {answer:?} while the reservation's send was still unresolved"
+        )
+        .into());
+    }
+
+    // A's send fails; the rollback must make B's parked query emit again.
+    release_a.send(()).map_err(|_| "caller A exited before release")?;
+    let decision_a = caller_a.join().map_err(|_| "caller A panicked")?;
+    caller_b.join().map_err(|_| "caller B panicked")?;
+    let decision_b = b_answered
+        .recv_timeout(Duration::from_secs(5))
+        .map_err(|_| "caller B never answered after the send resolved")?;
+
+    assert_eq!(decision_a, SessionWarningDecision::EmitFirst);
+    assert_eq!(
+        decision_b,
+        SessionWarningDecision::EmitFirst,
+        "a concurrent caller must not suppress against a reservation whose send failed"
+    );
+    Ok(())
+}
+
 #[test]
 fn client_setting_identity_is_setting_and_value_type_aware() {
     let server = LspServer::new();
