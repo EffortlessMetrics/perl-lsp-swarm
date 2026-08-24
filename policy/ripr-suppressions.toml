@@ -1213,8 +1213,7 @@ created = "2026-06-15"
 review_after = "2026-07-15"
 expires = "2026-09-30"
 
-# ======================================================================
-# -----------------------------------------------------------------------------
+# ===============================================================# -----------------------------------------------------------------------------
 # Coverage measure/route decoupling (PR #1482 / #1470): ripr#1429-class
 # predicate-infection-untraceable seams in two xtask coverage decision points.
 #
@@ -2787,3 +2786,40 @@ created = "2026-08-24"
 review_after = "2026-09-24"
 expires = "2026-10-24"
 removal_criteria = "ripr#1428 fixed upstream, OR ripr-suppress-seam-proof-tests corrected to match the classification ripr reports, then delete this companion entry."
+# module-train C02 offline projection tests (#11626): executable proof
+# fixtures for the offline status/frontier slice, not production behavior.
+# Mirrors the #8305 receipt-harness precedent: RIPR's diff-scoped tracer
+# cannot connect test-helper plumbing (`?` propagation, helper returns,
+# fixture mutation arms) inside a newly added test module to the assertions
+# that drive it, and reports them as new seams in the test file itself.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-11626-module-train-frontier-tests"
+kind = "test_receipt_surface"
+paths = ["xtask/src/tasks/module_train_tests.rs"]
+classification = ["call_deletion", "error_path", "match_arm", "return_value", "side_effect", "predicate"]
+owner = "module-train-c02"
+issue = "#11626"
+reason = "PR #12055 (issue #11626) adds the C02 offline module-train projection with its focused test module. RIPR 0.10.0 reports 76 reachable_unrevealed seams inside xtask/src/tasks/module_train_tests.rs itself (call_deletion/return_value on helper `Ok(())` returns and `?` propagation, match arms in fixture helpers, error paths of the temp-dir fixtures). These are test-harness plumbing in a test-only file, the same class as the #8305 and seam-proof-test precedents; the proof the module delivers is the 29-test discriminating suite (digest pin, fail-closed mutations, frontier known answers, landing-by-data discriminators, determinism) executed by cargo test -p xtask and PR Smoke. The production module keeps its own seams visible to RIPR under its own narrower entry. Remove when EffortlessMetrics/ripr#1428 stops flagging newly added test files as production seams."
+created = "2026-08-23"
+review_after = "2026-09-23"
+expires = "2026-10-31"
+removal_criteria = "ripr#1428 lands (test-harness plumbing distinguished from production seams) or the test module is restructured so RIPR traces its helpers; then delete this entry and expect the existing suite to clear without it."
+
+# -----------------------------------------------------------------------------
+# module-train C02 production module (#11626): success-return and defensive
+# expression seams that green tests execute but per-expression static
+# exposure cannot connect to an assertion.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-11626-module-train-success-path-seams"
+kind = "call_presence_static_tracing_limit"
+paths = ["xtask/src/tasks/module_train.rs"]
+classification = ["reachable_unrevealed"]
+owner = "module-train-c02"
+issue = "#11626"
+reason = "PR #12055 (issue #11626) adds the offline module-train projection. After the review round added direct discriminating assertions (manifest_sections_reveal_identity_values pins every top-level section identity; render_binding_reveals_both_worktree_states pins both dirty branches; non_edge_import_cannot_carry_a_dependency_edge and load_errors_name_their_exact_cause pin the remaining reachable error arms), the enforce-new-ripr residue on this file is the analyzer-shape set: `Ok(())` success returns of validate/canonical-walk/render functions that every green test executes through `?` without a per-expression value assertion, the visit_acyclic recursion edge, the load_manifest_from strict-schema `?` unreachable behind the digest pin (a schema-invalid manifest cannot match the pinned digest, so only the pin error is observable), and the `_ =>` bail arms in the dependency-class match and colour match that earlier closed-set validation makes unreachable for schema-valid input. The genuinely reachable holes RIPR did find (the never-asserted dirty render branch, the unasserted section identities, the untested load error paths) were fixed with real tests, not suppressed. Keep this entry narrow: classification records reachable_unrevealed only (the matcher is path-scoped; see the dispatch.rs scope note) and it must be removed when ripr can trace success-path returns to their executing tests or when targeted mutation replaces this advisory path."
+created = "2026-08-23"
+review_after = "2026-09-23"
+expires = "2026-10-31"
+removal_criteria = "ripr#1429-class tracing connects success returns to executing tests, OR the module's proof moves to targeted mutation, OR a new reachable_unrevealed seam appears that a real focused test could cover (then fix by test instead of extending this entry)."
