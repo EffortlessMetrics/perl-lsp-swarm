@@ -46,18 +46,19 @@ use tasks::{
     incremental_proof, inject_sha_assets, inline_completion_quality, inline_completion_smoke,
     install_surface_check, integration_proof, intent_diff_gate, issue_plan, layer_check,
     lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate,
-    metrics, module_train, native_critic, native_format, native_product_surface, native_tooling,
-    oracle_fixture_manifest, oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep,
-    parser_matrix, parser_ratchet, perl_core_harness, perl_kwalitee, populate_book, pre_push_plan,
-    prep_crates_io_launch, protocol_type_substrate_matrix, provider_confidence_matrix,
-    provider_promotion_ledger, publication_facts, publish, publish_closure, publish_manifest_check,
-    publish_receipts, quality_baseline, quality_gate, queue_health, queue_snapshot, receipts,
-    release, release_artifact_check, release_evidence, release_notes, release_turnkey,
-    repo_hygiene, ripr_evidence, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
-    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
-    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
-    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
-    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    metrics, module_train, module_train_live, native_critic, native_format, native_product_surface,
+    native_tooling, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner, parse_rust,
+    parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness, perl_kwalitee,
+    populate_book, pre_push_plan, prep_crates_io_launch, protocol_type_substrate_matrix,
+    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
+    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
+    queue_health, queue_snapshot, receipts, release, release_artifact_check, release_evidence,
+    release_notes, release_turnkey, repo_hygiene, ripr_evidence, seam_diff,
+    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
+    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
+    srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
+    sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract, unwired_scan,
+    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
     validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
@@ -4127,6 +4128,61 @@ enum ModuleTrainCommand {
         #[arg(long, default_value = "HEAD")]
         tree: String,
     },
+
+    /// Read-only live frontier over the checked train (#11627 C03): join
+    /// candidate/stack/worktree/check/review observation to the offline
+    /// projection and recommend one safe action per writer/conflict surface.
+    /// Only `refresh` (without `--from-fixture`) touches the network, strictly
+    /// through read-only observation commands; nothing mutates anything.
+    Live {
+        #[command(subcommand)]
+        command: ModuleTrainLiveCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModuleTrainLiveCommand {
+    /// Observe live Git/GitHub state and write the immutable
+    /// `module_train_live.v1` snapshot. The only networked subcommand;
+    /// `--from-fixture` normalizes a stored raw observation instead (offline,
+    /// deterministic, test path).
+    Refresh {
+        /// Snapshot output path.
+        #[arg(long)]
+        output: PathBuf,
+
+        /// Normalize this raw-observation fixture instead of observing live
+        /// state (offline; never touches the network).
+        #[arg(long)]
+        from_fixture: Option<PathBuf>,
+    },
+
+    /// Validate a snapshot offline: schema, semantic digest, vocabularies,
+    /// one-action-per-conflict-surface, and stored-action consistency.
+    Check {
+        /// Snapshot path.
+        #[arg(long)]
+        snapshot: PathBuf,
+    },
+
+    /// Project the safe live frontier from a validated snapshot.
+    Next {
+        /// Snapshot path.
+        #[arg(long)]
+        snapshot: PathBuf,
+    },
+
+    /// Compose one node's static packet with its live addendum: why this
+    /// action now, unavailable facts and their consequence, next bounded
+    /// action, closeout route.
+    Explain {
+        /// Node id (for example `C03`).
+        node: String,
+
+        /// Snapshot path.
+        #[arg(long)]
+        snapshot: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4377,6 +4433,18 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::ModuleTrain { command } => match command {
             ModuleTrainCommand::Status { tree } => module_train::run_status(&tree),
             ModuleTrainCommand::Next { tree } => module_train::run_next(&tree),
+            ModuleTrainCommand::Live { command } => match command {
+                ModuleTrainLiveCommand::Refresh { output, from_fixture } => {
+                    module_train_live::run_refresh(&output, from_fixture.as_deref())
+                }
+                ModuleTrainLiveCommand::Check { snapshot } => {
+                    module_train_live::run_check(&snapshot)
+                }
+                ModuleTrainLiveCommand::Next { snapshot } => module_train_live::run_next(&snapshot),
+                ModuleTrainLiveCommand::Explain { node, snapshot } => {
+                    module_train_live::run_explain(&node, &snapshot)
+                }
+            },
         },
 
         Commands::Goals { command } => match command {

@@ -34,7 +34,11 @@ impl TextDocumentSyncOptions {
             open_close: true,
             change,
             will_save: true,
-            will_save_wait_until: true,
+            // Formatter-owned willSaveWaitUntil is withdrawn (#11955): the
+            // save-owner decision is #8092's and a second unproven edit
+            // producer must not be advertised. Direct requests receive the
+            // truthful method-not-advertised refusal.
+            will_save_wait_until: false,
             save: SaveOptions { include_text: true },
         }
     }

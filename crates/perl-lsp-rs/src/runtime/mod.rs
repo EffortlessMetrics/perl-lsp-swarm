@@ -31,6 +31,7 @@ mod notebook;
 pub(crate) mod outbound;
 #[allow(unused_imports)]
 use outbound::OutboundSink;
+pub(crate) mod parse_effect_contract;
 pub(crate) mod parse_worker;
 #[cfg(feature = "workspace")]
 pub(crate) mod readiness;
@@ -98,7 +99,6 @@ use crate::features::{
     code_lens_provider::{CodeLensProvider, get_shebang_lens, resolve_code_lens},
     diagnostics::{DiagnosticSeverity as InternalDiagnosticSeverity, DiagnosticsProvider},
     document_highlight::DocumentHighlightProvider,
-    formatting::{CodeFormatter, FormattingOptions},
     implementation_provider::ImplementationProvider,
     type_hierarchy::TypeHierarchyProvider,
 };

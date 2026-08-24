@@ -107,6 +107,7 @@ pub mod merge_ready;
 pub mod methodology_gate;
 pub mod metrics;
 pub mod module_train;
+pub mod module_train_live;
 pub mod native_critic;
 pub mod native_format;
 pub mod native_product_surface;

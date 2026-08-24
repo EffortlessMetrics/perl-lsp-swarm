@@ -1675,6 +1675,21 @@ created = "2026-08-15"
 review_after = "2026-09-15"
 
 [[allow]]
+id = "non-rust-module-train-live-observation-fixtures"
+glob = "xtask/tests/fixtures/module-train-live/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "devex/module-train"
+reason = "Deterministic raw-observation fixtures for the read-only module live frontier (#11627): one 12-PR corpus covering every candidate-state family and one clean-surface baseline. They pin the normalizer/classifier laws (byte-identical double normalization, order permutation, fail-closed instruments) so GitHub observation failures can never silently become absence or pass."
+covered_by = [
+  "cargo test -p xtask --locked --bins module_train_live",
+]
+created = "2026-08-24"
+review_after = "2026-09-24"
+
+[[allow]]
 id = "non-rust-dependency-hygiene-machete-fixtures"
 glob = "xtask/tests/fixtures/dependency-hygiene/*.json"
 kind = "test_fixture"
