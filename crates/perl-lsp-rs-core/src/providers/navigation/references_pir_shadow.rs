@@ -46,7 +46,7 @@
 
 use std::collections::BTreeSet;
 
-use perl_parser_core::pir::{LexicalExtractorReceipt, LexicalRole};
+use perl_parser_core::pir::LexicalExtractorReceipt;
 use perl_semantic_facts::{
     Confidence, Provenance, ProviderFactFreshness, ProviderFactSourceKind, ProviderFactTrace,
     ProviderFallbackState, ProviderSurface,
