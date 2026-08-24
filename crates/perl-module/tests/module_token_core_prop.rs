@@ -1,6 +1,4 @@
-use perl_module::token_core::{
-    ModuleTokenSpan, has_standalone_module_token_boundaries, parse_module_token,
-};
+use perl_module::{ModuleTokenSpan, has_standalone_module_token_boundaries, parse_module_token};
 use proptest::prelude::*;
 
 fn head_chars() -> impl Strategy<Value = String> {

@@ -6,21 +6,21 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11615 |
-| Rust-family files | 3517 |
-| Non-Rust files | 8098 |
-| Allowlisted | 5773 |
+| Total tracked files | 11675 |
+| Rust-family files | 3520 |
+| Non-Rust files | 8155 |
+| Allowlisted | 5830 |
 | Unclassified | 2325 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 407 |
-| documentation | 2667 |
+| config | 413 |
+| documentation | 2668 |
 | generated | 2 |
 | production | 317 |
-| test | 1901 |
+| test | 1951 |
 | tooling | 479 |
 | unclassified | 2325 |
 
@@ -2393,6 +2393,7 @@
 | `.cargo/config.toml` | config | `non-rust-cargo-config` | release/ci |
 | `.cargo/mutants.toml` | config | `non-rust-cargo-config` | release/ci |
 | `.changes/header.tpl.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.changes/unreleased/product-0000-Changed-module-facade-seal.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-10004-Changed-201500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-10100-Added-025500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-10532-Added-121200.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2866,6 +2867,8 @@
 | `.github/actions/setup-rust/action.yml` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/setup-vscode-toolchain/action.yml` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/upload-receipt/action.yml` | config | `non-rust-github-actions` | release/ci |
+| `.github/actions/upload-receipt/test_validate_paths.py` | config | `non-rust-github-actions` | release/ci |
+| `.github/actions/upload-receipt/validate_paths.py` | config | `non-rust-github-actions` | release/ci |
 | `.github/ci-config.yml` | config | `non-rust-github-policy` | release/ci |
 | `.github/copilot-instructions.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.github/dependabot.yml` | config | `non-rust-github-policy` | release/ci |
@@ -5837,6 +5840,56 @@
 | `fixtures/agent_implementation_packet/invalid/unconditional_profile_with_decision.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/live_observed_candidate.v1.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/shuffled/bounded_leaf_offline_shuffled.v1.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_review_packet/challenger_service_marker.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/closure_open_finding.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/closure_service_marker_eligible.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/consumer_issue_controller_t07_shape.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/finding_stale_marker_resolved.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/challenger_service_marker.compact.txt` | test | `non-rust-agent-review-packet-golden-text` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/challenger_service_marker.machine.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/challenger_service_marker.markdown.md` | test | `non-rust-agent-review-packet-golden-markdown` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/closure_open_finding.compact.txt` | test | `non-rust-agent-review-packet-golden-text` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/closure_open_finding.machine.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/closure_open_finding.markdown.md` | test | `non-rust-agent-review-packet-golden-markdown` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/closure_service_marker_eligible.compact.txt` | test | `non-rust-agent-review-packet-golden-text` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/closure_service_marker_eligible.machine.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/closure_service_marker_eligible.markdown.md` | test | `non-rust-agent-review-packet-golden-markdown` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/consumer_issue_controller_t07_shape.compact.txt` | test | `non-rust-agent-review-packet-golden-text` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/consumer_issue_controller_t07_shape.machine.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/consumer_issue_controller_t07_shape.markdown.md` | test | `non-rust-agent-review-packet-golden-markdown` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/finding_stale_marker_resolved.compact.txt` | test | `non-rust-agent-review-packet-golden-text` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/finding_stale_marker_resolved.machine.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/finding_stale_marker_resolved.markdown.md` | test | `non-rust-agent-review-packet-golden-markdown` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/builder_contract_changed.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/circular_expectation.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/claim_widening.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/compatibility_projection_unowned.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/control_not_load_bearing.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/defect_resolution_prose_only.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/eligible_with_open_finding.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/expected_errors.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/external_stage_inferred.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/force_cleanup_as_success.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/generic_challenge.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/instrument_failure_resolved.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/merge_authority_claimed.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/missing_diff_identity.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/missing_evidence_identity.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/missing_negative_control.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/missing_required_input.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/missing_required_lens.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/missing_subject_binding.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/mutable_review_state.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/prose_resolution.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/required_role_skipped.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/sole_builder_review.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/stale_generated_output.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/stale_head_binding.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/undispositioned_old_path.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/unjustified_lens_skip.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/unverified_obligation.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/weak_discriminator.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/shuffled/challenger_service_marker_shuffled.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
 | `fixtures/debug-peer/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `fixtures/debug-peer/perl/minimal_ptkdb_peer.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `fixtures/experience/install_owned_state/manifest_canonical_full_install.json` | test | `non-rust-install-owned-state-canonical-full-install-manifest` | distribution |
@@ -5969,6 +6022,7 @@
 | `policy/clippy-lints.d/70-iteration-suppression.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/clippy-lints.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/framework-adapters.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/generated-allowlist.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/generated-status-contract.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/generated-status-evidence.json` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/install-surface-registry.toml` | config | `non-rust-policy-ledgers` | release/ci |
@@ -5995,6 +6049,8 @@
 | `ripr/pr/repo-exposure.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `rust-analyzer.toml` | tooling | `non-rust-rust-analyzer-toml` | developer-experience |
 | `schemas/agent_implementation_packet.v1.schema.json` | config | `non-rust-agent-implementation-packet-schema` | tooling/agent-packet |
+| `schemas/agent_review_finding.v1.schema.json` | config | `non-rust-agent-review-finding-schema` | tooling/agent-review |
+| `schemas/agent_review_packet.v1.schema.json` | config | `non-rust-agent-review-packet-schema` | tooling/agent-review |
 | `schemas/binary_identity_protocol.v1.schema.json` | config | `non-rust-binary-identity-schema` | identity |
 | `schemas/install_identity_verification.v1.schema.json` | documentation | `non-rust-install-identity-verification-schema` | release/ci |
 | `schemas/perl_builtin_semantics.v1.schema.json` | config | `non-rust-compiler-builtin-semantics-schema` | compiler |
@@ -6009,6 +6065,7 @@
 | `schemas/perl_core_harness_target_topology_drift.v1.schema.json` | config | `non-rust-core-harness-target-topology-drift-schema` | compiler |
 | `schemas/publication_runtime_identity.v1.schema.json` | config | `non-rust-publication-runtime-identity-schema` | release/ci |
 | `schemas/release_topology.v1.schema.json` | config | `non-rust-release-topology-schema` | release/ci |
+| `schemas/stage_closure_projection.v1.schema.json` | config | `non-rust-stage-closure-projection-schema` | tooling/agent-review |
 | `schemas/standalone_owned_state.v1.schema.json` | config | `non-rust-standalone-owned-state-schema` | distribution |
 | `schemas/standalone_removal_plan.v1.schema.json` | config | `non-rust-standalone-removal-plan-schema` | distribution |
 | `schemas/standalone_uninstall_result.v1.schema.json` | config | `non-rust-standalone-uninstall-result-schema` | distribution |

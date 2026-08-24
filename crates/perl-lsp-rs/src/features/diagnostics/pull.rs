@@ -23,7 +23,7 @@ use perl_lsp_rs_core::providers::diagnostics::{parse_error_code, parse_error_sev
 use perl_lsp_rs_core::tooling::perl_critic::{
     CriticConfig, CriticContext, NativeCriticProfile, NativeCriticRegistry, Severity,
 };
-use perl_module::resolution::use_lib::{
+use perl_module::{
     UseLibOperation, extract_use_lib_operations_with_offsets,
     no_lib_cancelled_paths_from_operations_at_offset,
     resolve_use_lib_paths_from_operations_at_offset,

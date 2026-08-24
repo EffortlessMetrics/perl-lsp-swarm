@@ -1,4 +1,4 @@
-use perl_module::token_parser::{ModuleTokenSpan, parse_module_token};
+use perl_module::{ModuleTokenSpan, parse_module_token};
 
 #[test]
 fn handles_simple_canonical_module_tokens() {
