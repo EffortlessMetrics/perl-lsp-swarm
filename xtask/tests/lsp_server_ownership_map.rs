@@ -410,6 +410,33 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#9510"
     ),
     row!(
+        "active_document_readiness",
+        RuntimeServices,
+        "Mutex",
+        "server instance drop",
+        "open-document readiness states",
+        false,
+        "#11675"
+    ),
+    row!(
+        "push_diagnostics_sink",
+        RuntimeServices,
+        "Mutex",
+        "server instance drop",
+        "per-URI committed diagnostic tickets",
+        false,
+        "#11673"
+    ),
+    row!(
+        "document_symbols_sink",
+        RuntimeServices,
+        "Mutex",
+        "server instance drop",
+        "per-URI committed symbol tickets",
+        false,
+        "#11674"
+    ),
+    row!(
         "workspace_readiness_receipt",
         WorkspaceServices,
         "Arc<Mutex>",
@@ -615,6 +642,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "test runtime",
         true,
         "#7394"
+    ),
+    row!(
+        "document_symbols_before_commit_hook",
+        RuntimeServices,
+        "Mutex<Option<Box>>",
+        "test hook release / server drop",
+        "test runtime",
+        true,
+        "#11674"
     ),
     row!(
         "ai_inline_backend",
