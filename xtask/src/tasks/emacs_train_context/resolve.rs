@@ -19,7 +19,14 @@ use color_eyre::eyre::{Context, Result, bail};
 use serde_json::Value;
 
 use super::digest::{composite_digest, git_identity, sha256_file, sha256_hex, title_fingerprint};
-use super::model::*;
+use super::model::{
+    ContextBinding, KINDS, MANIFEST_SCHEMA_NAME, MAPPING_SCHEMA_NAME, MappingDocument,
+    NodeContextPacket, NodeMapping, PACKET_SCHEMA_NAME, PacketBounds, PacketCheckedSpec,
+    PacketComponent, PacketDependency, PacketDigest, PacketGap, PacketGenerated, PacketGraph,
+    PacketInstruction, PacketNode, PacketNotAuthority, PacketOmission, PacketPrivacy,
+    PacketProposition, PacketRevisionCurrency, PacketSpec, PacketTest, ROLES, SCHEMA_VERSION,
+    TrainManifest, TrainNode,
+};
 
 /// Repository-relative locations of the engine's data inputs.
 pub const MANIFEST_RELATIVE_PATH: &str = ".spec/10918-emacs-train-graph/train.manifest.json";
@@ -243,15 +250,16 @@ pub(crate) fn validate_manifest(manifest: &TrainManifest) -> Result<()> {
     }
     for node in &manifest.nodes {
         for dependency in &node.dependencies {
-            if let Some(target) = manifest.node(&dependency.target) {
-                if !target.successors.contains(&node.node_id) {
-                    bail!(
-                        "L04 asymmetric edge: {} -> {} is declared as a dependency but the \
-                         target does not list it as a successor",
-                        node.node_id,
-                        dependency.target
-                    );
-                }
+            let Some(target) = manifest.node(&dependency.target) else {
+                continue;
+            };
+            if !target.successors.contains(&node.node_id) {
+                bail!(
+                    "L04 asymmetric edge: {} -> {} is declared as a dependency but the \
+                     target does not list it as a successor",
+                    node.node_id,
+                    dependency.target
+                );
             }
         }
     }
@@ -838,6 +846,7 @@ fn role_allows_kind(role: &str, kind: &str) -> bool {
 }
 
 fn validate_relative_path(path: &str) -> Result<PathBuf> {
+    const MAX_PATH_BYTES: usize = 512;
     let candidate = Path::new(path);
     if candidate.is_absolute()
         || path.contains("..")
@@ -848,6 +857,15 @@ fn validate_relative_path(path: &str) -> Result<PathBuf> {
         // L11 privacy/bounds: only normalized repository-relative paths are
         // ever accepted or emitted.
         bail!("L11 invalid path '{path}': expected a normalized repository-relative path");
+    }
+    if path.len() > MAX_PATH_BYTES {
+        // L11 bounds: emitted packets stay bounded in bytes as well as in
+        // entry counts; an oversized path is a mapping defect, not a bigger
+        // valid packet.
+        bail!(
+            "L11 bound exceeded: path is {} bytes, above the {MAX_PATH_BYTES}-byte ceiling",
+            path.len()
+        );
     }
     Ok(candidate.to_path_buf())
 }

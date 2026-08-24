@@ -583,3 +583,16 @@ fn missing_git_identity_fails_closed() -> Result<()> {
     assert!(format!("{failure:#}").contains("L10"));
     Ok(())
 }
+
+#[test]
+fn oversized_path_bytes_fail_closed() -> Result<()> {
+    // Bounded means bytes too, not just counts: a mapping entry with an
+    // oversized path is a defect, never a larger valid packet (L11).
+    let root = fixture_tree("l11-bytes")?;
+    load_fixture_inputs(&root)?;
+    let oversized = format!("src/{}.rs", "x".repeat(600));
+    mutate_mapping(&root, |mapping| {
+        mapping["nodes"][0]["read_set"] = json!([oversized]);
+    })?;
+    expect_law_failure(&root, "L11")
+}

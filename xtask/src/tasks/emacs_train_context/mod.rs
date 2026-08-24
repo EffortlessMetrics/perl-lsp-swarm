@@ -106,14 +106,24 @@ pub(crate) fn run_contexts_at(root: &Path, strict: bool) -> Result<()> {
     for node in &inputs.manifest.nodes {
         let resolution = resolve_node(root, &inputs, node)
             .with_context(|| format!("resolving context for node {}", node.node_id))?;
-        // In-process determinism proof: two independent renders must agree
-        // byte-for-byte for every node in the denominator.
+        // In-process determinism and schema round-trip proof: two
+        // independent renders must agree byte-for-byte and re-parse through
+        // the packet schema for every node in the denominator.
         let first = render_json(resolution.packet())?;
         let second = render_json(resolution.packet())?;
         if first != second {
             bail!(
                 "non-deterministic render for node {}: two consecutive renders of the same \
                  resolution differ",
+                node.node_id
+            );
+        }
+        let round_tripped = render::parse_json(&first)
+            .with_context(|| format!("round-tripping the packet of node {}", node.node_id))?;
+        if render_json(&round_tripped)? != first {
+            bail!(
+                "non-idempotent schema round-trip for node {}: re-serializing the parsed \
+                 packet changed bytes",
                 node.node_id
             );
         }
