@@ -4,12 +4,15 @@ const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
 const {
+  activationFailureLegEnv,
   bundleTargetForPlatform,
+  composeActivationRecoveryReceipt,
   computeOverallStatus,
   finalizeSmokeRun,
   interpretTransitionResult,
   shouldRunBehavioralSmoke,
   stageServerForPackage,
+  validateActivationRecoveryChildReceipts,
   validateChildSmokeReceipt,
   writeJsonAtomic,
 } = require('./run-local-vsix-smoke');
@@ -502,4 +505,225 @@ void test('a child receipt without environment identity is rejected', () => {
   });
   assert.equal(result.ok, false);
   assert.match(result.violations.join('; '), /missing its environment identity/);
+});
+
+void test('activation-failure journey stage is required for an overall pass', () => {
+  const passingBase = {
+    package_creation: { status: 'pass' },
+    package_inventory: { status: 'pass', classification: 'pass', behavior_safe: true },
+    behavioral_smoke: { status: 'pass' },
+  };
+  assert.equal(
+    computeOverallStatus({ ...passingBase, activation_failure_journey: { status: 'pass' } }),
+    'pass',
+  );
+  assert.equal(
+    computeOverallStatus({
+      ...passingBase,
+      activation_failure_journey: { status: 'not_run', reason: 'not_started' },
+    }),
+    'pass',
+    'a not_run journey (upstream package block) inherits the upstream verdict',
+  );
+  assert.equal(
+    computeOverallStatus({
+      ...passingBase,
+      activation_failure_journey: { status: 'not_proven', reason: 'child receipts missing' },
+    }),
+    'not_proven',
+  );
+  assert.equal(
+    computeOverallStatus({
+      ...passingBase,
+      activation_failure_journey: { status: 'failed', reason: 'leg failed' },
+    }),
+    'failed',
+  );
+});
+
+void test('activation-failure leg env arms only the failure leg with the fault', () => {
+  const context = {
+    vsixPath: '/tmp/perl-lsp-rs-0.17.0.vsix',
+    vsixSha256: 'a'.repeat(64),
+    revision: 'r'.repeat(40),
+    serverSourceRevision: 'r'.repeat(40),
+    workspacePath: '/tmp/workspace',
+    userDataDir: '/tmp/profile/user-data',
+    extensionsDir: '/tmp/profile/extensions',
+  };
+  const failureEnv = activationFailureLegEnv(
+    {
+      PERL_LSP_CURRENT_SOURCE_SMOKE: '1',
+      PERL_LSP_PACKAGED_BUNDLE_SMOKE: '1',
+      PERL_LSP_FIRST_HOUR_SERVER_PATH: '/ambient/server',
+      PERL_LSP_CURRENT_SOURCE_SHA: 'c'.repeat(40),
+      PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE: 'stale-from-outer-env',
+    },
+    'failure',
+    true,
+    context,
+  );
+  assert.equal(failureEnv.PERL_LSP_ACTIVATION_FAILURE_SMOKE, '1');
+  assert.equal(failureEnv.PERL_LSP_ACTIVATION_FAILURE_LEG, 'failure');
+  assert.equal(failureEnv.PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE, 'debugger');
+  assert.equal(failureEnv.PERL_LSP_PUBLISHED_EXTENSION_SOURCE, 'vsix');
+  assert.equal(failureEnv.PERL_LSP_PUBLISHED_VSIX_PATH, context.vsixPath);
+  assert.equal(failureEnv.PERL_LSP_SMOKE_USER_DATA_DIR, context.userDataDir);
+  assert.equal(failureEnv.PERL_LSP_SMOKE_EXTENSIONS_DIR, context.extensionsDir);
+  assert.equal(failureEnv.PERL_LSP_CURRENT_SOURCE_SMOKE, undefined);
+  assert.equal(failureEnv.PERL_LSP_PACKAGED_BUNDLE_SMOKE, undefined);
+  assert.equal(failureEnv.PERL_LSP_FIRST_HOUR_SERVER_PATH, undefined);
+  assert.equal(
+    failureEnv.PERL_LSP_CURRENT_SOURCE_SHA,
+    undefined,
+    'candidate-bound mode is Linux-only and must not leak into the journey legs',
+  );
+
+  const retryEnv = activationFailureLegEnv({}, 'retry', false, context);
+  assert.equal(retryEnv.PERL_LSP_ACTIVATION_FAILURE_LEG, 'retry');
+  assert.equal(retryEnv.PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE, undefined);
+});
+
+function recoveryChild(leg, overrides = {}) {
+  return {
+    schema_version: 'vscode_activation_recovery_leg.v1',
+    leg,
+    verdict: 'pass',
+    candidate: {
+      vsix_sha256: 'v'.repeat(64),
+      bundled_server: { sha256: 's'.repeat(64) },
+      extension_version: '0.17.0',
+    },
+    observations: {},
+    ...overrides,
+  };
+}
+
+void test('activation recovery child receipts must bind this run exactly', () => {
+  const files = new Map([
+    ['/receipts/failure.json', JSON.stringify(recoveryChild('failure'))],
+    ['/receipts/retry.json', JSON.stringify(recoveryChild('retry'))],
+  ]);
+  const bound = validateActivationRecoveryChildReceipts({
+    failureReceiptFile: '/receipts/failure.json',
+    retryReceiptFile: '/receipts/retry.json',
+    expectedVsixSha256: 'v'.repeat(64),
+    expectedBundledServerSha256: 's'.repeat(64),
+    expectedExtensionVersion: '0.17.0',
+    exists: (file) => files.has(file),
+    readFile: (file) => files.get(file) ?? '',
+  });
+  assert.equal(bound.ok, true);
+
+  const wrongVsix = validateActivationRecoveryChildReceipts({
+    failureReceiptFile: '/receipts/failure.json',
+    retryReceiptFile: '/receipts/retry.json',
+    expectedVsixSha256: 'w'.repeat(64),
+    expectedBundledServerSha256: 's'.repeat(64),
+    expectedExtensionVersion: '0.17.0',
+    exists: (file) => files.has(file),
+    readFile: (file) => files.get(file) ?? '',
+  });
+  assert.equal(wrongVsix.ok, false);
+  assert.match(wrongVsix.violations.join('; '), /VSIX digest .* is not this run's package/);
+
+  const missing = validateActivationRecoveryChildReceipts({
+    failureReceiptFile: '/receipts/missing.json',
+    retryReceiptFile: '/receipts/retry.json',
+    expectedVsixSha256: 'v'.repeat(64),
+    expectedBundledServerSha256: 's'.repeat(64),
+    expectedExtensionVersion: '0.17.0',
+    exists: () => false,
+    readFile: () => '',
+  });
+  assert.equal(missing.ok, false);
+  assert.match(missing.violations.join('; '), /failure leg did not write its journey receipt/);
+});
+
+void test('the joined activation recovery receipt is fail-closed', () => {
+  const baseInput = {
+    vsixSha256: 'v'.repeat(64),
+    extensionVersion: '0.17.0',
+    bundledServerSha256: 's'.repeat(64),
+    serverSourceRevision: 'r'.repeat(40),
+    repositorySha: 'r'.repeat(40),
+    vscodeVersion: 'stable',
+    workspaceFixtureSha256: 'f'.repeat(64),
+    violations: [],
+    legExitCodes: { failure: 0, retry: 0 },
+  };
+  const failureChild = recoveryChild('failure', {
+    observations: {
+      bundled_server_processes_after_failure: [],
+      bundled_server_processes_after_demand_window: [],
+      crash_budget_evidence: ['no bundled-server process at any scan'],
+    },
+  });
+  const retryChild = recoveryChild('retry', {
+    observations: {
+      bundled_server_processes_running: ['<installed>/bin/win32-x64/perllsp.exe'],
+      bundled_server_processes_after_second_demand: ['<installed>/bin/win32-x64/perllsp.exe'],
+      bundled_server_processes_after_stop: [],
+      stop_seam: 'stopped',
+    },
+  });
+
+  const passReceipt = composeActivationRecoveryReceipt({
+    ...baseInput,
+    failure: failureChild,
+    retry: retryChild,
+    postHostExitProcesses: [],
+  });
+  assert.equal(passReceipt.schema_version, 'vscode_activation_recovery.v1');
+  assert.equal(passReceipt.verdict, 'pass');
+  assert.equal(passReceipt.failure.cleanup, 'pass');
+  assert.equal(passReceipt.failure.process_remaining, false);
+  assert.equal(passReceipt.failure.crash_budget_consumed, false);
+  assert.equal(passReceipt.retry.activation, 'pass');
+  assert.equal(passReceipt.retry.duplicate_resources, 0);
+  assert.equal(passReceipt.deactivation, 'pass');
+
+  const survivor = composeActivationRecoveryReceipt({
+    ...baseInput,
+    failure: failureChild,
+    retry: retryChild,
+    postHostExitProcesses: ['<installed>/bin/win32-x64/perllsp.exe'],
+  });
+  assert.equal(survivor.verdict, 'failed');
+  assert.equal(survivor.deactivation, 'failed');
+
+  const unbound = composeActivationRecoveryReceipt({
+    ...baseInput,
+    violations: ['the retry leg did not write its journey receipt'],
+    failure: failureChild,
+    retry: null,
+    postHostExitProcesses: [],
+  });
+  assert.equal(unbound.verdict, 'not_proven');
+  assert.equal(unbound.retry.activation, 'not_proven');
+  assert.equal(unbound.deactivation, 'not_proven');
+
+  const duplicates = composeActivationRecoveryReceipt({
+    ...baseInput,
+    failure: failureChild,
+    retry: recoveryChild('retry', {
+      observations: {
+        bundled_server_processes_running: ['a', 'b'],
+        bundled_server_processes_after_second_demand: ['a', 'b'],
+        bundled_server_processes_after_stop: [],
+      },
+    }),
+    postHostExitProcesses: [],
+  });
+  assert.equal(duplicates.retry.duplicate_resources, 2);
+
+  const unobservedDuplicates = composeActivationRecoveryReceipt({
+    ...baseInput,
+    failure: failureChild,
+    retry: recoveryChild('retry', {
+      observations: { bundled_server_processes_after_stop: [] },
+    }),
+    postHostExitProcesses: [],
+  });
+  assert.equal(unobservedDuplicates.retry.duplicate_resources, 'not_proven');
 });

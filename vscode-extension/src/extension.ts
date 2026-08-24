@@ -140,8 +140,16 @@ import {
   ActiveDocumentReadiness,
   type ActiveDocumentReadinessSnapshot,
 } from './activeDocumentReadiness';
-import type { ActivationAttemptState, ActivationCleanupReceipt } from './activationTransaction';
-import { ExtensionActivationOwner } from './activationOwner';
+import type {
+  ActivationAttemptState,
+  ActivationCleanupReceipt,
+  ActivationPhase,
+} from './activationTransaction';
+import { ACTIVATION_PHASES } from './activationTransaction';
+import {
+  ExtensionActivationOwner,
+  _setActivationPhaseFailureInjectorForTest,
+} from './activationOwner';
 
 // Compatibility projections for existing command/provider code. Lifecycle
 // ownership lives in `languageClientLifecycle`; these values are synchronized
@@ -570,6 +578,7 @@ export async function activate(context: vscode.ExtensionContext) {
     outputChannel?.error(message);
   });
   extensionActivation = activation;
+  const harnessFailureArmed = armHarnessActivationFailureInjection();
   try {
     const extensionApi = await runExtensionActivation(context, activation);
     // Commit before publishing the activation-complete context key: the
@@ -586,7 +595,60 @@ export async function activate(context: vscode.ExtensionContext) {
       `[activation] Attempt ${receipt.attempt_id} failed and was rolled back: ${reason}`,
     );
     throw error;
+  } finally {
+    if (harnessFailureArmed) {
+      _setActivationPhaseFailureInjectorForTest(null);
+    }
   }
+}
+
+/**
+ * The extension id of the private published-smoke harness that ships only in
+ * this repository (`src/test/published/harness`) and is never published: its
+ * presence in a host is the discriminator that makes the packaged-journey
+ * failure seam (#7856) available only in that harness.
+ */
+const PUBLISHED_SMOKE_HARNESS_EXTENSION_ID = 'EffortlessMetrics.perl-lsp-published-smoke-harness';
+
+/**
+ * Test-only packaged-journey seam (#7856): arm the #7855 phase-boundary failure
+ * injector from the extension-test environment so the published-smoke harness
+ * can fail one deterministic pre-commit resource boundary of the INSTALLED
+ * extension — the exact shape a mid-activation host failure takes — without
+ * patching package bytes.
+ *
+ * Available only in the harness: it requires BOTH the namespaced test
+ * environment variable naming a real activation phase AND the private
+ * published-smoke harness extension to be present in the host. Real
+ * installations never satisfy both, and the guard is checked before any
+ * injector is installed, so the seam cannot affect a normal activation. The
+ * injector fires once, at the first boundary of the named phase, and is cleared
+ * when the attempt ends, so a later explicit retry cannot inherit the fault.
+ * @internal
+ */
+function armHarnessActivationFailureInjection(): boolean {
+  const phase = process.env.PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE;
+  if (!phase || !isActivationPhase(phase)) {
+    return false;
+  }
+  if (!vscode.extensions.getExtension(PUBLISHED_SMOKE_HARNESS_EXTENSION_ID)) {
+    return false;
+  }
+  let injected = false;
+  _setActivationPhaseFailureInjectorForTest((boundary) => {
+    if (injected || boundary.phase !== phase) {
+      return null;
+    }
+    injected = true;
+    return new Error(
+      `harness-injected activation failure after ${boundary.resource_id} (#7856 packaged journey)`,
+    );
+  });
+  return true;
+}
+
+function isActivationPhase(value: string): value is ActivationPhase {
+  return (ACTIVATION_PHASES as readonly string[]).includes(value);
 }
 
 async function runExtensionActivation(
