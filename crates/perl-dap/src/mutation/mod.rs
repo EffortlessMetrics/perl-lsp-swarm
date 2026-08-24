@@ -6,7 +6,7 @@
 mod structured_value;
 
 pub use structured_value::{
-    fresh_referent_kind, parse_structured_mutation, structured_payload, ExactDecimal,
-    FreshReferentKind, MutationStructuredValueV1, StructuredMutationLimits, StructuredRefusal,
-    StructuredValue, MUTATION_STRUCTURED_VALUE_SCHEMA_VERSION, STRUCTURED_PREFIX,
+    ExactDecimal, FreshReferentKind, MUTATION_STRUCTURED_VALUE_SCHEMA_VERSION,
+    MutationStructuredValueV1, STRUCTURED_PREFIX, StructuredMutationLimits, StructuredRefusal,
+    StructuredValue, fresh_referent_kind, parse_structured_mutation, structured_payload,
 };

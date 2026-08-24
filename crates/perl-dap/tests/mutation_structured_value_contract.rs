@@ -9,9 +9,9 @@
 //! deterministic and fingerprint-stable under key order.
 
 use perl_dap::mutation::{
-    fresh_referent_kind, parse_structured_mutation, structured_payload, FreshReferentKind,
-    StructuredMutationLimits, StructuredRefusal, StructuredValue,
-    MUTATION_STRUCTURED_VALUE_SCHEMA_VERSION,
+    FreshReferentKind, MUTATION_STRUCTURED_VALUE_SCHEMA_VERSION, StructuredMutationLimits,
+    StructuredRefusal, StructuredValue, fresh_referent_kind, parse_structured_mutation,
+    structured_payload,
 };
 use std::fmt::Write as _;
 
