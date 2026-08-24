@@ -55,8 +55,8 @@ use tasks::{
     ripr_evidence, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
     semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
     shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
-    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, unwired_scan,
-    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
+    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
     validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
@@ -138,6 +138,11 @@ enum Commands {
 
     /// Validate differential real-Perl oracle receipt schema.
     CheckOracleReceiptSchema,
+
+    /// Validate the shared typed train edge and claim-profile contract
+    /// (train_edge_contract.v1), its programme-neutral fixtures, and the
+    /// declared adaptations of the landed programme train manifests.
+    CheckTrainEdgeContract,
 
     /// Run differential oracle comparison (PackageSubTable vertical slice).
     ///
@@ -4134,6 +4139,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
+        Commands::CheckTrainEdgeContract => train_edge_contract::run(),
         Commands::CheckOracleCompare => oracle_runner::run(),
         Commands::CheckSemanticTokenClasses => semantic_token_classes::run(),
         Commands::CheckLsp318Claims => lsp_318_claims::run(),
