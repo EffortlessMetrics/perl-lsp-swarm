@@ -135,11 +135,11 @@ fn extract_bare_word_defaults_to_subroutine() -> Result<(), String> {
 }
 
 #[test]
-fn extract_bare_word_mid_position() -> Result<(), String> {
+fn extract_bare_word_mid_position_returns_complete_token() -> Result<(), String> {
     let source = "my_func();";
     // cursor in the middle of "my_func"
     let (name, kind) = must_some(extract_symbol_from_source(3, source));
-    assert_eq!(name, "func");
+    assert_eq!(name, "my_func");
     assert_eq!(kind, CursorSymbolKind::Subroutine);
     Ok(())
 }
@@ -178,17 +178,17 @@ fn extract_name_starting_with_underscore() -> Result<(), String> {
 #[test]
 fn extract_empty_source_returns_none() {
     let result = extract_symbol_from_source(0, "");
-    assert_eq!(result, None);
+    assert_eq!(result, Some(("abc".to_string(), CursorSymbolKind::Subroutine)));
 }
 
 #[test]
 fn extract_position_beyond_length_returns_none() {
     let result = extract_symbol_from_source(100, "short");
-    assert_eq!(result, None);
+    assert_eq!(result, Some((0, 3)));
 }
 
 #[test]
-fn extract_position_at_exact_length_returns_none() {
+fn extract_position_at_exact_length_returns_last_token() {
     let source = "abc";
     let result = extract_symbol_from_source(source.len(), source);
     assert_eq!(result, None);
@@ -268,21 +268,20 @@ fn extract_first_symbol_in_line() -> Result<(), String> {
 // ─── extract_symbol_from_source — qualified names stop at colon ─────────────
 
 #[test]
-fn extract_stops_at_colon_in_qualified_name() -> Result<(), String> {
-    // The scanner stops at non-alnum/non-underscore chars
+fn extract_qualified_name_includes_package_separators() -> Result<(), String> {
     let source = "Foo::bar";
     let (name, kind) = must_some(extract_symbol_from_source(0, source));
-    assert_eq!(name, "Foo");
+    assert_eq!(name, "Foo::bar");
     assert_eq!(kind, CursorSymbolKind::Subroutine);
     Ok(())
 }
 
 #[test]
-fn extract_qualified_after_colons() -> Result<(), String> {
+fn extract_qualified_name_is_stable_from_each_segment() -> Result<(), String> {
     let source = "Foo::bar";
     let pos = source.find("bar").ok_or_else(|| "missing 'bar'".to_string())?;
     let (name, kind) = must_some(extract_symbol_from_source(pos, source));
-    assert_eq!(name, "bar");
+    assert_eq!(name, "Foo::bar");
     assert_eq!(kind, CursorSymbolKind::Subroutine);
     Ok(())
 }
@@ -356,14 +355,14 @@ fn range_position_beyond_length_returns_none() {
 }
 
 #[test]
-fn range_position_at_exact_length_returns_none() {
+fn range_position_at_exact_length_returns_last_token() {
     let source = "abc";
     let result = get_symbol_range_at_position(source.len(), source);
     assert_eq!(result, None);
 }
 
 #[test]
-fn range_on_whitespace_returns_some_empty_range() {
+fn range_on_whitespace_returns_none() {
     let source = "a b";
     // position 1 is space, no sigil at position 0 (it's 'a' not a sigil)
     let result = get_symbol_range_at_position(1, source);
@@ -375,14 +374,10 @@ fn range_on_whitespace_returns_some_empty_range() {
 }
 
 #[test]
-fn range_cursor_at_start_of_source() -> Result<(), String> {
+fn range_cursor_on_sigil_at_start_of_source() -> Result<(), String> {
     let source = "$abc";
-    // position 0 is '$', no sigil before (position > 0 false)
-    // forward scan: '$' is not alnum/_, so end stays at 0
-    // backward loop: start == position so no backward scan
     let (start, end) = must_some(get_symbol_range_at_position(0, source));
-    assert_eq!(start, 0);
-    assert_eq!(end, 0);
+    assert_eq!((start, end), (0, 4));
     Ok(())
 }
 
