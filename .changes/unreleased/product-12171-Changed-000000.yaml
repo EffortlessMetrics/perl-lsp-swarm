@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Changed
+body: The live initialized-lexical references route now truthfully identifies itself as semantic source-backed (route flag, tier docs, runtime-proof receipt keys, and notes) instead of claiming compiler/PIR production that does not participate yet, with a recurrence guard that forbids nominal compiler attribution until a real contribution envelope joins the lineage (#12102).
+time: 2026-08-24T00:00:00Z
+custom:
+  PR: "12171"
+  Slug: references-truthful-semantic-producer
+  Breaking: "no"
