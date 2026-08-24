@@ -103,7 +103,7 @@ git diff --check
 ```bash
 for f in context.md acceptance.md checklist.md; do [ -f ".spec/11661-cargo-executor-command/$f" ] || exit 1; done
 rg -c "CEXC-C(0[1-9]|1[0-5])" .spec/11661-cargo-executor-command/acceptance.md   # expect >= 15 contract rows
-rg -c "^\| [0-9]+ \| \*\*" .spec/11661-cargo-executor-command/acceptance.md      # expect >= 17 falsifier rows... see note
+rg -c "^\| [0-9]+ \| " .spec/11661-cargo-executor-command/acceptance.md        # expect exactly 17 falsifier rows
 rg -n "main@f1e74db90" .spec/11661-cargo-executor-command/context.md             # pinned evidence base
 rg -n "cargo-safe|publication_drift|session_receipt" .spec/11661-cargo-executor-command/context.md
 git diff --check
