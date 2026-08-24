@@ -15,6 +15,21 @@ const PERL_LSP_REPO: &str = "tree-sitter-perl/perl-tree-sitter-lsp";
 const PERLLSP_SERVER_ID: &str = "perllsp";
 const PERLLSP_REPO: &str = "EffortlessMetrics/perl-lsp";
 
+// EffortlessMetrics' DAP debug adapter. This identity is deliberately
+// independent from every language-server ID above: `perl-dap` never aliases
+// `perllsp`, `perl-lsp`, or `perlnavigator-server`, and no language-server
+// executable, cache family, or receipt may satisfy it (#9485).
+const PERL_DAP_ADAPTER_ID: &str = "perl-dap";
+const PERL_DAP_BINARY_NAME: &str = "perl-dap";
+// The canonical release topology is shared with perllsp: the same
+// EffortlessMetrics/perl-lsp release archives ship both binaries
+// (`perllsp-{version}-{triple}` archives containing `perllsp` and `perl-dap`).
+const PERL_DAP_REPO: &str = PERLLSP_REPO;
+// Debugger-specific managed cache boundary. Only directories with this prefix
+// belong to the adapter route; cleanup can never touch `perllsp-`/`perl-lsp-`
+// language-server caches, user binaries, or extension state.
+const PERL_DAP_MANAGED_PREFIX: &str = "perl-dap-managed-";
+
 // Durable accepted-current selection state for managed perllsp startup
 // (#11308). The manifest records the exact installed identity so an already
 // verified binary can be reconstructed offline after extension restart; it is
@@ -271,6 +286,7 @@ struct PerlExtension {
     did_find_server: bool,
     perl_lsp_path: Option<String>,
     perllsp_path: Option<String>,
+    perl_dap_path: Option<String>,
     update_state: UpdateState,
     cold_install_attempts: u32,
 }
@@ -623,6 +639,111 @@ impl PerlExtension {
         self.perllsp_path = Some(binary_path.clone());
         Ok(binary_path)
     }
+
+    /// Checked resolution for the exact `perl-dap` adapter binary.
+    ///
+    /// Order: explicit user override (only where the Zed API supplies one) →
+    /// worktree/PATH exact `perl-dap` → managed public release asset. The
+    /// resolver can never select `perllsp`, `perl-lsp`, another adapter, or an
+    /// unrelated same-named executable: the only admitted names are the exact
+    /// `perl-dap` override, the exact `perl-dap` PATH hit, and the
+    /// `perl-dap`/`perl-dap.exe` member of a canonical release archive.
+    fn perl_dap_binary(
+        &mut self,
+        user_provided_debug_adapter_path: Option<String>,
+        worktree: &zed::Worktree,
+    ) -> Result<String> {
+        if let Some(path) = user_provided_debug_adapter_path {
+            if path.trim().is_empty() {
+                return Err(
+                    "debugger `perl-dap` binary path override must not be empty".to_string()
+                );
+            }
+            return Ok(path);
+        }
+
+        if let Some(path) = worktree.which(PERL_DAP_BINARY_NAME) {
+            return Ok(path);
+        }
+
+        self.download_perl_dap()
+    }
+
+    /// Managed download of `perl-dap` from the canonical release topology.
+    ///
+    /// The adapter consumes the same EffortlessMetrics/perl-lsp release
+    /// archives as the perllsp route (`perllsp-{version}-{triple}` archives
+    /// shipping both binaries) — never a private target table — but extracts
+    /// and caches under the debugger-specific `perl-dap-managed-` boundary so
+    /// cleanup can never cross into language-server caches or user state.
+    fn download_perl_dap(&mut self) -> Result<String> {
+        // Process-memory fast path: an adapter resolved in this activation.
+        if let Some(path) = &self.perl_dap_path {
+            if fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
+                return Ok(path.clone());
+            }
+        }
+
+        let (os, arch) = zed::current_platform();
+        let release = zed::latest_github_release(
+            PERL_DAP_REPO,
+            zed::GithubReleaseOptions { require_assets: true, pre_release: false },
+        )
+        .map_err(|error| {
+            format!("failed to resolve EffortlessMetrics perl-dap releases: {error}")
+        })?;
+        let version = normalize_release_version(&release.version);
+        if version.is_empty() {
+            return Err("perl-dap release metadata carried an empty version".to_string());
+        }
+        let target = perl_dap_target(os, arch)?;
+        let (archive_ext, file_type) = match os {
+            zed::Os::Windows => ("zip", zed::DownloadedFileType::Zip),
+            _ => ("tar.gz", zed::DownloadedFileType::GzipTar),
+        };
+        let asset_name = perllsp_asset_name(version, target, archive_ext);
+        let asset =
+            release.assets.iter().find(|asset| asset.name == asset_name).ok_or_else(|| {
+                format!(
+                    "no asset named `{asset_name}` in EffortlessMetrics perl-dap release {}",
+                    release.version
+                )
+            })?;
+
+        let version_dir = format!("{PERL_DAP_MANAGED_PREFIX}{version}-{target}");
+        let binary_path = perl_dap_binary_path(&version_dir, version, target, os);
+
+        // Bounded recovery: an already-present known-good member is reused;
+        // only a missing member triggers a download.
+        if !fs::metadata(&binary_path).is_ok_and(|metadata| metadata.is_file()) {
+            if fs::metadata(&version_dir).is_ok() {
+                fs::remove_dir_all(&version_dir).map_err(|error| {
+                    format!(
+                        "failed to remove incomplete perl-dap download `{version_dir}`: {error}"
+                    )
+                })?;
+            }
+            zed::download_file(&asset.download_url, &version_dir, file_type).map_err(|error| {
+                format!("failed to download EffortlessMetrics perl-dap: {error}")
+            })?;
+            if !fs::metadata(&binary_path).is_ok_and(|metadata| metadata.is_file()) {
+                return Err(format!(
+                    "downloaded `{asset_name}` but did not find expected member `{}` (expected at `{binary_path}`)",
+                    perl_dap_archive_member(os, version, target)
+                ));
+            }
+            if !matches!(os, zed::Os::Windows) {
+                zed::make_file_executable(&binary_path)?;
+            }
+        }
+
+        // Cleanup stays inside the debugger-specific managed boundary: only
+        // `perl-dap-managed-` directories are ever removed.
+        remove_old_downloads(PERL_DAP_MANAGED_PREFIX, &version_dir);
+
+        self.perl_dap_path = Some(binary_path.clone());
+        Ok(binary_path)
+    }
 }
 
 fn perllsp_command_settings(worktree: &zed::Worktree) -> Result<PerllspCommandSettings> {
@@ -739,6 +860,162 @@ fn archive_member_for(os: zed::Os, version: &str, target: &str) -> String {
     }
 }
 
+/// Managed target projection for the `perl-dap` adapter.
+///
+/// This is the same canonical release topology projection the accepted
+/// perllsp route uses (see [`perllsp_target`]): the
+/// EffortlessMetrics/perl-lsp release contract ships `perl-dap` inside the
+/// exact same `perllsp-{version}-{triple}` archives for exactly these
+/// managed triples, with `aarch64-pc-windows-msvc` explicitly unclaimed. The
+/// fixture manifest (`.ci/fixtures/zed-perl-upstream/manifest.toml`) and its
+/// CI check bind this table to the canonical release contract.
+fn perl_dap_target(os: zed::Os, arch: zed::Architecture) -> Result<&'static str> {
+    match (os, arch) {
+        (zed::Os::Mac, zed::Architecture::Aarch64) => Ok("aarch64-apple-darwin"),
+        (zed::Os::Mac, zed::Architecture::X8664) => Ok("x86_64-apple-darwin"),
+        (zed::Os::Linux, zed::Architecture::X8664) => Ok("x86_64-unknown-linux-musl"),
+        (zed::Os::Linux, zed::Architecture::Aarch64) => Ok("aarch64-unknown-linux-musl"),
+        (zed::Os::Windows, zed::Architecture::X8664) => Ok("x86_64-pc-windows-msvc"),
+        (zed::Os::Windows, zed::Architecture::Aarch64) => Err(
+            "aarch64-pc-windows-msvc managed perl-dap downloads are not yet published; install a proven compatible perl-dap binary on PATH"
+                .to_string(),
+        ),
+        _ => Err(format!(
+            "EffortlessMetrics perl-dap has no managed binary for {os:?}/{arch:?}; install it on PATH instead"
+        )),
+    }
+}
+
+/// The `perl-dap` member inside a canonical `perllsp-{version}-{triple}`
+/// release archive, once extracted into the adapter-owned cache directory.
+fn perl_dap_binary_path(version_dir: &str, version: &str, target: &str, os: zed::Os) -> String {
+    match os {
+        // The Windows zip archives carry the binaries at the archive root.
+        zed::Os::Windows => format!("{version_dir}/perl-dap.exe"),
+        // The tar.gz archives carry a single top-level package directory.
+        _ => format!("{version_dir}/perllsp-{version}-{target}/perl-dap"),
+    }
+}
+
+/// The archive member the managed perl-dap install launches, matching the
+/// canonical release archive layout (the same layout as [`archive_member_for`],
+/// naming the `perl-dap` member).
+fn perl_dap_archive_member(os: zed::Os, version: &str, target: &str) -> String {
+    match os {
+        zed::Os::Windows => "perl-dap.exe".to_string(),
+        _ => format!("perllsp-{version}-{target}/perl-dap"),
+    }
+}
+
+/// A validated `perl-dap` launch configuration.
+///
+/// The shape is bound to the canonical `perl-dap` product contract (launch
+/// request with an explicit program), not invented Zed-only semantics. Unknown
+/// keys are preserved by pass-through instead of rejected: the public product
+/// schema is forward-compatible.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PerlDapLaunchConfig {
+    program: String,
+    args: Vec<String>,
+    cwd: Option<String>,
+    env: Vec<(String, String)>,
+}
+
+/// Validate the debugger configuration object shared by
+/// `dap_request_kind` and `get_dap_binary`.
+///
+/// Fails closed with a typed, actionable error naming the exact missing or
+/// unsupported field: an unknown or missing `request` can never silently
+/// select another request kind, adapter, or transport.
+fn parse_perl_dap_request_kind(value: &zed::serde_json::Value) -> Result<()> {
+    let Some(request) = value.get("request") else {
+        return Err(
+            "perl-dap debugger configuration lacks the required `request` field".to_string()
+        );
+    };
+    let Some(request) = request.as_str() else {
+        return Err(
+            "perl-dap debugger configuration `request` must be the string `launch`".to_string()
+        );
+    };
+    match request {
+        "launch" => Ok(()),
+        "attach" => Err(concat!(
+            "perl-dap `attach` configurations are not supported by this extension yet; ",
+            "use a `launch` configuration"
+        )
+        .to_string()),
+        other => Err(format!(
+            "perl-dap debugger configuration has an unsupported `request` value `{other}`; only `launch` is supported"
+        )),
+    }
+}
+
+/// Parse and validate the JSON-encoded `perl-dap` launch configuration.
+///
+/// The canonical product contract requires a launch request with an explicit,
+/// non-empty `program`; `args`, `cwd`, and `env` are optional with typed
+/// shapes. Unknown keys are intentionally preserved (pass-through), because
+/// the public `perl-dap` schema is forward-compatible.
+fn parse_perl_dap_launch_config(text: &str) -> Result<PerlDapLaunchConfig> {
+    let value: zed::serde_json::Value = zed::serde_json::from_str(text)
+        .map_err(|error| format!("perl-dap debugger configuration is not valid JSON: {error}"))?;
+    parse_perl_dap_request_kind(&value)?;
+
+    let Some(object) = value.as_object() else {
+        return Err("perl-dap debugger configuration must be a JSON object".to_string());
+    };
+
+    let program =
+        object.get("program").and_then(zed::serde_json::Value::as_str).ok_or_else(|| {
+            "perl-dap launch configuration lacks the required `program` field".to_string()
+        })?;
+    if program.trim().is_empty() {
+        return Err("perl-dap launch configuration `program` must not be empty".to_string());
+    }
+
+    let mut args = Vec::new();
+    if let Some(raw_args) = object.get("args") {
+        let raw_args = raw_args.as_array().ok_or(
+            "perl-dap launch configuration `args` must be an array of strings".to_string(),
+        )?;
+        for argument in raw_args {
+            let argument = argument.as_str().ok_or(
+                "perl-dap launch configuration `args` must be an array of strings".to_string(),
+            )?;
+            args.push(argument.to_string());
+        }
+    }
+
+    let cwd = match object.get("cwd") {
+        None => None,
+        Some(raw) => {
+            let raw = raw
+                .as_str()
+                .ok_or("perl-dap launch configuration `cwd` must be a string".to_string())?;
+            if raw.trim().is_empty() {
+                return Err("perl-dap launch configuration `cwd` must not be empty".to_string());
+            }
+            Some(raw.to_string())
+        }
+    };
+
+    let mut env = Vec::new();
+    if let Some(raw_env) = object.get("env") {
+        let raw_env = raw_env.as_object().ok_or(
+            "perl-dap launch configuration `env` must be an object of string to string".to_string(),
+        )?;
+        for (key, raw_value) in raw_env {
+            let raw_value = raw_value.as_str().ok_or_else(|| {
+                format!("perl-dap launch configuration `env` value for `{key}` must be a string")
+            })?;
+            env.push((key.clone(), raw_value.to_string()));
+        }
+    }
+
+    Ok(PerlDapLaunchConfig { program: program.to_string(), args, cwd, env })
+}
+
 fn remove_old_downloads(prefix: &str, current_dir: &str) {
     let Ok(entries) = fs::read_dir(".") else {
         return;
@@ -758,6 +1035,7 @@ impl zed::Extension for PerlExtension {
             did_find_server: false,
             perl_lsp_path: None,
             perllsp_path: None,
+            perl_dap_path: None,
             update_state: UpdateState::NotRequested,
             cold_install_attempts: 0,
         }
@@ -785,6 +1063,61 @@ impl zed::Extension for PerlExtension {
             .and_then(|lsp_settings| lsp_settings.settings)
             .unwrap_or_default();
         Ok(Some(settings))
+    }
+
+    /// Debug-adapter request-kind selection for the exact `perl-dap` adapter.
+    ///
+    /// Unknown adapter IDs fail closed instead of falling through to another
+    /// adapter, and unsupported/missing request kinds fail with a typed
+    /// actionable error instead of silently selecting launch.
+    fn dap_request_kind(
+        &mut self,
+        adapter_name: String,
+        config: zed::serde_json::Value,
+    ) -> Result<zed::StartDebuggingRequestArgumentsRequest> {
+        if adapter_name != PERL_DAP_ADAPTER_ID {
+            return Err(format!("unknown Perl debug adapter id `{adapter_name}`"));
+        }
+        parse_perl_dap_request_kind(&config)?;
+        Ok(zed::StartDebuggingRequestArgumentsRequest::Launch)
+    }
+
+    /// Launch the canonical `perl-dap` debug adapter for a launch scenario.
+    ///
+    /// The adapter speaks DAP over stdio by default (the canonical product
+    /// contract needs no transport flag), so the resolved binary is launched
+    /// with no extra arguments; the validated user configuration is forwarded
+    /// verbatim as the launch `configuration`, preserving forward-compatible
+    /// fields, while generated adapter transport fields stay distinct from
+    /// project/user configuration.
+    fn get_dap_binary(
+        &mut self,
+        adapter_name: String,
+        config: zed::DebugTaskDefinition,
+        user_provided_debug_adapter_path: Option<String>,
+        worktree: &zed::Worktree,
+    ) -> Result<zed::DebugAdapterBinary> {
+        if adapter_name != PERL_DAP_ADAPTER_ID {
+            return Err(format!("unknown Perl debug adapter id `{adapter_name}`"));
+        }
+        let launch = parse_perl_dap_launch_config(&config.config)?;
+        let command = self.perl_dap_binary(user_provided_debug_adapter_path, worktree)?;
+
+        let mut envs = worktree.shell_env();
+        envs.extend(launch.env);
+
+        Ok(zed::DebugAdapterBinary {
+            command: Some(command),
+            // stdio is the default editor link; no transport arguments.
+            arguments: Vec::new(),
+            envs,
+            cwd: launch.cwd,
+            connection: None,
+            request_args: zed::StartDebuggingRequestArguments {
+                request: zed::StartDebuggingRequestArgumentsRequest::Launch,
+                configuration: config.config,
+            },
+        })
     }
 }
 
@@ -1065,5 +1398,170 @@ mod tests {
             ),
             "perllsp-0.18.0-x86_64-pc-windows-msvc/perllsp.exe"
         );
+    }
+
+    // ---- perl-dap debug-adapter authority (#9485) ----
+
+    #[test]
+    fn debug_adapter_identity_is_independent_from_every_language_server() {
+        // The adapter ID must never alias a language-server ID.
+        assert_ne!(PERL_DAP_ADAPTER_ID, PERLNAVIGATOR_SERVER_ID);
+        assert_ne!(PERL_DAP_ADAPTER_ID, PERL_LSP_SERVER_ID);
+        assert_ne!(PERL_DAP_ADAPTER_ID, PERLLSP_SERVER_ID);
+        assert_ne!(PERL_DAP_ADAPTER_ID, PERL_LSP_REPO);
+        assert_ne!(PERL_DAP_ADAPTER_ID, PERLLSP_REPO);
+        // And no language server classification may accept the adapter ID.
+        assert!(classify_server_id(PERL_DAP_ADAPTER_ID).is_err());
+        // The exact binary name is the adapter ID: `perl-dap`, not `perllsp`.
+        assert_eq!(PERL_DAP_ADAPTER_ID, PERL_DAP_BINARY_NAME);
+    }
+
+    #[test]
+    fn launch_configuration_accepts_the_canonical_shape() {
+        let config = parse_perl_dap_launch_config(
+            r#"{"request":"launch","program":"script.pl","args":["-w"],"cwd":"/tmp","env":{"PERL5LIB":"lib"},"stopOnEntry":true}"#,
+        )
+        .ok();
+        assert_eq!(
+            config,
+            Some(PerlDapLaunchConfig {
+                program: "script.pl".to_string(),
+                args: vec!["-w".to_string()],
+                cwd: Some("/tmp".to_string()),
+                env: vec![("PERL5LIB".to_string(), "lib".to_string())],
+            })
+        );
+        // Unknown forward-compatible keys (e.g. `stopOnEntry`) are preserved
+        // by pass-through, not rejected.
+    }
+
+    #[test]
+    fn malformed_launch_configurations_fail_closed_with_typed_errors() {
+        let missing_request = parse_perl_dap_launch_config(r#"{"program":"script.pl"}"#);
+        assert!(missing_request.is_err());
+        assert!(missing_request.unwrap_err().contains("lacks the required `request` field"));
+
+        let attach = parse_perl_dap_launch_config(r#"{"request":"attach","program":"script.pl"}"#);
+        assert!(attach.is_err());
+        assert!(attach.unwrap_err().contains("`attach` configurations are not supported"));
+
+        let unknown_request =
+            parse_perl_dap_launch_config(r#"{"request":"reverse","program":"script.pl"}"#);
+        assert!(unknown_request.is_err());
+        assert!(unknown_request.unwrap_err().contains("unsupported `request` value `reverse`"));
+
+        let non_string_request =
+            parse_perl_dap_launch_config(r#"{"request":1,"program":"script.pl"}"#);
+        assert!(non_string_request.is_err());
+        assert!(non_string_request.unwrap_err().contains("must be the string `launch`"));
+
+        let missing_program = parse_perl_dap_launch_config(r#"{"request":"launch"}"#);
+        assert!(missing_program.is_err());
+        assert!(missing_program.unwrap_err().contains("lacks the required `program` field"));
+
+        let empty_program = parse_perl_dap_launch_config(r#"{"request":"launch","program":"  "}"#);
+        assert!(empty_program.is_err());
+        assert!(empty_program.unwrap_err().contains("`program` must not be empty"));
+
+        let bad_args = parse_perl_dap_launch_config(
+            r#"{"request":"launch","program":"script.pl","args":"-w"}"#,
+        );
+        assert!(bad_args.is_err());
+        assert!(bad_args.unwrap_err().contains("`args` must be an array of strings"));
+
+        let bad_env = parse_perl_dap_launch_config(
+            r#"{"request":"launch","program":"script.pl","env":{"PERL5LIB":3}}"#,
+        );
+        assert!(bad_env.is_err());
+        assert!(bad_env.unwrap_err().contains("`env` value for `PERL5LIB` must be a string"));
+
+        let bad_json = parse_perl_dap_launch_config("not json");
+        assert!(bad_json.is_err());
+        assert!(bad_json.unwrap_err().contains("is not valid JSON"));
+    }
+
+    #[test]
+    fn managed_perl_dap_targets_match_the_canonical_release_projection() {
+        assert_eq!(
+            perl_dap_target(zed::Os::Linux, zed::Architecture::X8664).ok(),
+            Some("x86_64-unknown-linux-musl")
+        );
+        assert_eq!(
+            perl_dap_target(zed::Os::Windows, zed::Architecture::X8664).ok(),
+            Some("x86_64-pc-windows-msvc")
+        );
+        // The adapter consumes the same canonical archive set as the accepted
+        // perllsp managed route: identical triples platform by platform.
+        for (os, arch) in [
+            (zed::Os::Linux, zed::Architecture::X8664),
+            (zed::Os::Linux, zed::Architecture::Aarch64),
+            (zed::Os::Mac, zed::Architecture::X8664),
+            (zed::Os::Mac, zed::Architecture::Aarch64),
+            (zed::Os::Windows, zed::Architecture::X8664),
+        ] {
+            assert_eq!(
+                perl_dap_target(os, arch).ok(),
+                perllsp_target(os, arch).ok(),
+                "perl-dap and perllsp managed projections must agree for {os:?}/{arch:?}"
+            );
+        }
+        // Unsupported platforms refuse instead of guessing.
+        let unsupported = perl_dap_target(zed::Os::Windows, zed::Architecture::Aarch64);
+        assert!(unsupported.is_err());
+        assert!(unsupported
+            .unwrap_err()
+            .contains("aarch64-pc-windows-msvc managed perl-dap downloads are not yet published"));
+    }
+
+    #[test]
+    fn managed_perl_dap_paths_name_the_exact_dap_member() {
+        // Non-Windows archives carry a single top-level package directory.
+        assert_eq!(
+            perl_dap_binary_path(
+                "perl-dap-managed-0.18.0-x86_64-unknown-linux-musl",
+                "0.18.0",
+                "x86_64-unknown-linux-musl",
+                zed::Os::Linux,
+            ),
+            "perl-dap-managed-0.18.0-x86_64-unknown-linux-musl/perllsp-0.18.0-x86_64-unknown-linux-musl/perl-dap"
+        );
+        // Windows zips carry the binaries at the archive root.
+        assert_eq!(
+            perl_dap_binary_path(
+                "perl-dap-managed-0.18.0-x86_64-pc-windows-msvc",
+                "0.18.0",
+                "x86_64-pc-windows-msvc",
+                zed::Os::Windows,
+            ),
+            "perl-dap-managed-0.18.0-x86_64-pc-windows-msvc/perl-dap.exe"
+        );
+        // The archive member projection names perl-dap, never perllsp.
+        assert_eq!(
+            perl_dap_archive_member(zed::Os::Linux, "0.18.0", "x86_64-unknown-linux-musl"),
+            "perllsp-0.18.0-x86_64-unknown-linux-musl/perl-dap"
+        );
+        assert_eq!(
+            perl_dap_archive_member(zed::Os::Windows, "0.18.0", "x86_64-pc-windows-msvc"),
+            "perl-dap.exe"
+        );
+    }
+
+    #[test]
+    fn cleanup_boundary_never_crosses_into_language_server_caches() {
+        // The adapter's managed prefix is distinct from every
+        // language-server cache family.
+        for lsp_dir in [
+            "perllsp-0.18.0-x86_64-unknown-linux-musl",
+            "perllsp-selection.v1.json",
+            "perl-lsp-0.3.0",
+        ] {
+            assert!(
+                !lsp_dir.starts_with(PERL_DAP_MANAGED_PREFIX),
+                "`{lsp_dir}` must never fall inside the perl-dap managed boundary"
+            );
+        }
+        // And the adapter directory does belong to its own boundary.
+        assert!("perl-dap-managed-0.18.0-x86_64-unknown-linux-musl"
+            .starts_with(PERL_DAP_MANAGED_PREFIX));
     }
 }
