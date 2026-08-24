@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11512 |
+| Total tracked files | 11513 |
 | Rust-family files | 3505 |
-| Non-Rust files | 8007 |
-| Allowlisted | 5734 |
+| Non-Rust files | 8008 |
+| Allowlisted | 5735 |
 | Unclassified | 2273 |
 
 ## Non-Rust files by category
@@ -21,7 +21,7 @@
 | generated | 2 |
 | production | 315 |
 | test | 1881 |
-| tooling | 476 |
+| tooling | 477 |
 | unclassified | 2273 |
 
 ## Unclassified files
@@ -3036,6 +3036,7 @@
 | `.spec/11716-emacs-support-architecture/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11716-emacs-support-architecture/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11716-emacs-support-architecture/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11717-emacs-train-specs/specs.ledger.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11756-emacs-context-engine/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11756-emacs-context-engine/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11756-emacs-context-engine/context.mappings.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
