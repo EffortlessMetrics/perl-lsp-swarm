@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11513 |
-| Rust-family files | 3507 |
-| Non-Rust files | 8006 |
-| Allowlisted | 5733 |
+| Total tracked files | 11512 |
+| Rust-family files | 3505 |
+| Non-Rust files | 8007 |
+| Allowlisted | 5734 |
 | Unclassified | 2273 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 404 |
-| documentation | 2657 |
+| documentation | 2656 |
 | generated | 2 |
 | production | 315 |
 | test | 1881 |
-| tooling | 474 |
+| tooling | 476 |
 | unclassified | 2273 |
 
 ## Unclassified files
@@ -2355,7 +2355,6 @@
 | `.changes/unreleased/product-12022-Removed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12024-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12094-Fixed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
-| `.changes/unreleased/product-12185-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -6240,6 +6239,8 @@
 | `scripts/test-control-plane-lock.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test-e2e-capped.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test-lsp-cancellation.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/emacs-clients/eglot-bundled-config.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/emacs-clients/eglot-bundled.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-host-driver.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
