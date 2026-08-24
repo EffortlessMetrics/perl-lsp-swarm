@@ -1383,12 +1383,7 @@ fn attribution_scope_for_repo(
     diff: &CommittedDiffReceipt,
 ) -> Result<AttributionScope> {
     let metadata = crate::tasks::ci_scope::load_metadata(repo)?;
-    let changed_paths = diff
-        .entries
-        .iter()
-        .filter_map(|entry| entry.new_path.as_deref().or(entry.old_path.as_deref()))
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let changed_paths = committed_diff_entry_paths(&diff.entries);
     dependency_attribution_scope(&metadata, &changed_paths)
 }
 
@@ -2707,6 +2702,19 @@ struct CommittedDiffEntry {
     status: String,
     old_path: Option<String>,
     new_path: Option<String>,
+}
+
+/// Every path a diff entry touches. For renames and copies that is both
+/// endpoints: a file moving from package A to unrelated package B still
+/// removed content from A, so A and its dependent closure must stay
+/// attributed instead of collapsing into `out_of_dependency_graph` (#11690).
+fn committed_diff_entry_paths(entries: &[CommittedDiffEntry]) -> Vec<String> {
+    entries
+        .iter()
+        .flat_map(|entry| [entry.old_path.as_deref(), entry.new_path.as_deref()])
+        .flatten()
+        .map(str::to_owned)
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4859,6 +4867,61 @@ paths = ["archive/["]
         assert_eq!(
             attribution.resolve("crates/gap-lone/src/lib.rs"),
             AttributionPathState::OutOfGraph
+        );
+        Ok(())
+    }
+
+    /// A cross-package rename touches both endpoints: the source package and
+    /// its dependents must stay attributed even though only the destination
+    /// path survives at HEAD — narrowing past that would reclassify source-
+    /// side findings as `out_of_dependency_graph` without reachability basis.
+    #[test]
+    fn cross_package_rename_attributes_both_endpoints() -> Result<()> {
+        let entries = [CommittedDiffEntry {
+            status: "R100".to_string(),
+            old_path: Some("crates/perl-origin/src/moved.rs".to_string()),
+            new_path: Some("crates/perl-destination/src/moved.rs".to_string()),
+        }];
+        assert_eq!(
+            committed_diff_entry_paths(&entries),
+            vec![
+                "crates/perl-origin/src/moved.rs".to_string(),
+                "crates/perl-destination/src/moved.rs".to_string(),
+            ]
+        );
+
+        let metadata = fake_workspace_metadata(
+            "/ws",
+            &[
+                ("perl-origin", "crates", &[] as &[&str]),
+                ("perl-origin-dependent", "crates", &["perl-origin"]),
+                ("perl-destination", "crates", &[]),
+                ("perl-unrelated", "crates", &[]),
+            ],
+        );
+        let scope = dependency_attribution_scope(&metadata, &committed_diff_entry_paths(&entries))?;
+        let Some(attribution) = scope.applied() else {
+            bail!("a two-package rename must activate the graph filter");
+        };
+        assert_eq!(
+            attribution.changed_packages,
+            BTreeSet::from(["perl-origin".to_string(), "perl-destination".to_string(),])
+        );
+        for path in [
+            "crates/perl-origin/src/still_here.rs",
+            "crates/perl-origin-dependent/src/closure.rs",
+            "crates/perl-destination/src/new_home.rs",
+        ] {
+            assert_eq!(
+                attribution.resolve(path),
+                AttributionPathState::InReachablePackage,
+                "{path} must stay attributed"
+            );
+        }
+        assert_eq!(
+            attribution.resolve("crates/perl-unrelated/src/lib.rs"),
+            AttributionPathState::OutOfGraph,
+            "an untouched package must still drop"
         );
         Ok(())
     }
