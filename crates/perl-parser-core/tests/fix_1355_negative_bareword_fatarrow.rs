@@ -420,12 +420,16 @@ fn test_ripr_seam_lookahead_fatarrow_not_assign() {
     // Using '=' instead of '=>' must NOT produce a bareword identifier.
     // The lookahead specifically checks for FatArrow token.
     let source = "my $x; -and = 5;";
-    // Parsing exercises the '=' lookahead path; a regression would desync the
-    // parser or surface as an error node in downstream sexp assertions.
-    let _ast = parse(source);
-    // The sexp may contain an error (can't assign to -and) but must not
-    // produce a clean bareword identifier "-and" in the intended bareword context.
-    // If the lookahead is broken, it might incorrectly treat this as bareword.
+    let ast = parse(source);
+    let sexp = ast.to_sexp();
+    // Plain '=' must be REJECTED where '=>' accepts the bareword: a broken
+    // lookahead (accepting any '='-family token) would classify `-and`
+    // through the word-op path as a bareword Identifier and parse cleanly.
+    assert!(sexp.contains("ERROR"), "plain '=' must not accept the `-and` bareword; got:\n{sexp}");
+    assert!(
+        !sexp.contains("-and"),
+        "`-and` must stay distinct from the FatArrow case and not survive as a classified bareword; got:\n{sexp}"
+    );
 }
 
 /// Test the is_word_op_keyword boundary: only these 5 keywords trigger the path.
