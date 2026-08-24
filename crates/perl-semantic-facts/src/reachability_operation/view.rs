@@ -7,8 +7,18 @@ use super::{
 use serde::{Deserialize, Serialize};
 
 /// Stable identity of one bounded-view profile.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct ReachableViewProfileId(pub String);
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct ReachableViewProfileId(String);
+
+impl<'de> Deserialize<'de> for ReachableViewProfileId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        ReachableViewProfileId::new(value).map_err(serde::de::Error::custom)
+    }
+}
 
 impl ReachableViewProfileId {
     /// Construct a view-profile identifier, rejecting empty values.
@@ -88,8 +98,11 @@ impl ReachabilityBoundedView {
     ///
     /// Returns [`ReachabilityContractError::IncoherentBoundedView`] when
     /// the view claims truncation without a reason, omits the omitted-count
-    /// even though the total is known and exceeds the returned items, or
-    /// claims an omitted count of zero while truncated.
+    /// even though the total is known and exceeds the returned items, claims
+    /// an omitted count of zero while truncated (truncation always omits at
+    /// least one item; a bytes-only truncation reports an unknown omitted
+    /// count, not zero), or reports a known total smaller than the items
+    /// returned.
     pub fn new(
         underlying: ReachabilityCompleteResultRef,
         view_profile: ReachableViewProfileId,
@@ -101,6 +114,14 @@ impl ReachabilityBoundedView {
         truncation_reason: Option<String>,
     ) -> Result<Self, ReachabilityContractError> {
         if truncated && truncation_reason.as_deref().is_none_or(str::is_empty) {
+            return Err(ReachabilityContractError::IncoherentBoundedView);
+        }
+        if let Some(total) = known_total
+            && total < items_returned
+        {
+            return Err(ReachabilityContractError::IncoherentBoundedView);
+        }
+        if truncated && omitted_count == Some(0) {
             return Err(ReachabilityContractError::IncoherentBoundedView);
         }
         if let Some(total) = known_total
@@ -178,10 +199,11 @@ impl ReachabilityBoundedView {
 impl<T> ReachabilityOperationOutcome<T> {
     /// Mint the complete-result token a bounded view requires.
     ///
-    /// Returns `None` unless this outcome is `Completed` with `Complete`
-    /// truth over a clean receipt: a truncated semantic computation, a
-    /// partial value, a terminal outcome, or missing instrument evidence
-    /// cannot underlie a complete bounded view.
+    /// Returns `None` unless this outcome is `Completed` with exact truth —
+    /// a complete value or a proven legitimate empty — over a clean receipt:
+    /// a truncated semantic computation, a partial value, a terminal
+    /// outcome, or missing instrument evidence cannot underlie a complete
+    /// bounded view.
     #[must_use]
     pub fn bounded_view_source(
         &self,

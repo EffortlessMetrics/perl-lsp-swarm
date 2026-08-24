@@ -167,7 +167,11 @@ impl<T> ReachabilityOperationOutcome<T> {
     ///   when a value is retained.
     /// - Truth states that cannot carry a value forbid one.
     /// - `Complete`/`LegitimateEmpty` conflict with any stage limitation or
-    ///   terminal state recorded in the receipt.
+    ///   terminal state recorded in the receipt
+    ///   ([`ReachabilityContractError::ClaimConflictsWithLimitations`]);
+    /// - `Complete`/`LegitimateEmpty` over a receipt without complete
+    ///   instrument evidence fail with
+    ///   [`ReachabilityContractError::MissingInstrumentEvidence`].
     ///
     /// # Errors
     ///
@@ -177,9 +181,9 @@ impl<T> ReachabilityOperationOutcome<T> {
         value: Option<T>,
         work_receipt: ReachabilityWorkReceipt,
     ) -> Result<Self, ReachabilityContractError> {
-        let receipt_exact_capable = work_receipt.terminal().is_none()
-            && work_receipt.stage_limitations().is_empty()
-            && work_receipt.instrument_evidence_complete();
+        let receipt_has_limitations_or_terminal =
+            work_receipt.terminal().is_some() || !work_receipt.stage_limitations().is_empty();
+        let receipt_has_instrument_evidence = work_receipt.instrument_evidence_complete();
         match (&semantic_outcome, value.as_ref()) {
             (ReachabilitySemanticOutcome::Complete, None) => {
                 return Err(ReachabilityContractError::CompleteWithoutValue);
@@ -199,8 +203,11 @@ impl<T> ReachabilityOperationOutcome<T> {
             }
             _ => {}
         }
-        if semantic_outcome.is_exact() && !receipt_exact_capable {
+        if semantic_outcome.is_exact() && receipt_has_limitations_or_terminal {
             return Err(ReachabilityContractError::ClaimConflictsWithLimitations);
+        }
+        if semantic_outcome.is_exact() && !receipt_has_instrument_evidence {
+            return Err(ReachabilityContractError::MissingInstrumentEvidence);
         }
         Ok(Self::Completed { semantic_outcome, value, work_receipt })
     }
@@ -208,13 +215,14 @@ impl<T> ReachabilityOperationOutcome<T> {
     /// Construct the terminal outcome implied by a latched terminal state.
     ///
     /// Budget exhaustion, overflow, and external control observations map to
-    /// their distinct variants; an absent terminal state yields
-    /// [`ReachabilityContractError::IncoherentOutcome`].
+    /// their distinct variants.
     ///
     /// # Errors
     ///
     /// Returns [`ReachabilityContractError::IncoherentOutcome`] when
-    /// `terminal` is `None`.
+    /// `terminal` is a variant this mapping does not cover (the non-exhaustive
+    /// wildcard arm; current variants are all covered, future variants fail
+    /// closed rather than mapping to a wrong terminal).
     pub fn terminal_from(
         terminal: &ReachabilityTerminalState,
         stage: ReachabilityStageId,

@@ -602,7 +602,7 @@ fn missing_instrument_is_not_zero_work() -> Result<(), Box<dyn Error>> {
             Some(String::from("value")),
             receipt_without_instrument,
         ))?,
-        ReachabilityContractError::ClaimConflictsWithLimitations
+        ReachabilityContractError::MissingInstrumentEvidence
     );
     tracker.note_instrument_evidence(instrument_identity()?);
     let receipt = tracker.finish();
@@ -1315,5 +1315,134 @@ fn bounded_view_surface_exposes_its_view_profile_and_returned_bounds() -> Result
     assert_eq!(view.omitted_count(), Some(1));
     assert!(view.truncated());
     assert_eq!(view.truncation_reason(), Some("item-limit"));
+    Ok(())
+}
+
+#[test]
+fn same_kind_different_generation_is_a_conflict_not_an_ordering() -> Result<(), Box<dyn Error>> {
+    let conflicting = ReachabilityOperationSubject::new(
+        ReachabilityOperationId::new("op-4")?,
+        ReachabilityOperationKind::GraphAdmission,
+        vec![snapshot_identity("snapshot-a", "gen-1")?, snapshot_identity("snapshot-a", "gen-2")?],
+        ReachabilityProfileId::new("test-profile")?,
+    );
+    assert!(conflicting.is_err());
+    Ok(())
+}
+
+#[test]
+fn empty_operation_kind_selection_has_its_own_error() -> Result<(), Box<dyn Error>> {
+    assert_eq!(
+        contract_error(ReachabilityWorkBudget::new(
+            ReachabilityProfileId::new("p")?,
+            Vec::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        ))?,
+        ReachabilityContractError::EmptyOperationKindSelection
+    );
+    assert_eq!(
+        contract_error(ReachabilityExecutionProfile::new(
+            ReachabilityProfileId::new("p")?,
+            1,
+            ReachabilityExecutionPurpose::Batch,
+            Vec::new(),
+            Vec::new(),
+            ReachabilityCancellationPolling::AtDeclaredCheckpoints,
+            ReachabilityRetentionLimits { max_explanation_items: None, max_output_bytes: None },
+            "authority",
+            Vec::new(),
+        ))?,
+        ReachabilityContractError::EmptyOperationKindSelection
+    );
+    Ok(())
+}
+
+#[test]
+fn deserialization_validates_every_opaque_id_and_identity() -> Result<(), Box<dyn Error>> {
+    let empty = serde_json::Value::String(String::new());
+    assert!(serde_json::from_value::<ReachabilityOperationId>(empty.clone()).is_err());
+    assert!(serde_json::from_value::<ReachabilityStageId>(empty.clone()).is_err());
+    assert!(serde_json::from_value::<ReachabilityFactFamilyId>(empty.clone()).is_err());
+    assert!(serde_json::from_value::<ReachabilityProfileId>(empty.clone()).is_err());
+    assert!(serde_json::from_value::<ReachableViewProfileId>(empty.clone()).is_err());
+    let stage = ReachabilityStageId::new("closure")?;
+    assert_eq!(
+        serde_json::from_value::<ReachabilityStageId>(serde_json::to_value(&stage)?)?,
+        stage
+    );
+    let empty_identity = serde_json::json!({
+        "kind": "Project",
+        "value": "",
+        "generation": null,
+    });
+    assert!(serde_json::from_value::<ReachabilitySubjectIdentity>(empty_identity).is_err());
+    let empty_generation = serde_json::json!({
+        "kind": "Project",
+        "value": "p1",
+        "generation": "",
+    });
+    assert!(serde_json::from_value::<ReachabilitySubjectIdentity>(empty_generation).is_err());
+    let identity = snapshot_identity("snapshot-a", "gen-1")?;
+    assert_eq!(
+        serde_json::from_value::<ReachabilitySubjectIdentity>(serde_json::to_value(&identity)?)?,
+        identity
+    );
+    Ok(())
+}
+
+#[test]
+fn bounded_view_rejects_incoherent_totals_and_zero_omission_under_truncation()
+-> Result<(), Box<dyn Error>> {
+    let mut tracker = new_tracker(ReachabilityWorkDimension::NodesAdmitted, 100)?;
+    tracker.note_instrument_evidence(instrument_identity()?);
+    let output = ReachabilitySubjectIdentity::new(
+        ReachabilitySubjectIdentityKind::StageOutput,
+        "classification-1",
+        None,
+    )?;
+    tracker.complete_stage(
+        ReachabilityStageId::new("classification")?,
+        Some(output.clone()),
+        Vec::new(),
+    );
+    let outcome = ReachabilityOperationOutcome::<Vec<String>>::complete(
+        ReachabilitySemanticOutcome::Complete,
+        Some(vec![String::from("row")]),
+        tracker.finish(),
+    )?;
+    let source = outcome
+        .bounded_view_source(output, snapshot_identity("snapshot-a", "gen-1")?)
+        .ok_or("exact outcome must mint the view source")?;
+
+    // Truncated with a known-zero omitted count claims truncation while
+    // omitting nothing.
+    assert!(
+        ReachabilityBoundedView::new(
+            source.clone(),
+            ReachableViewProfileId::new("v")?,
+            1,
+            8,
+            None,
+            Some(0),
+            true,
+            Some(String::from("item-limit")),
+        )
+        .is_err()
+    );
+    // A known total smaller than the returned items is incoherent.
+    assert!(
+        ReachabilityBoundedView::new(
+            source,
+            ReachableViewProfileId::new("v")?,
+            10,
+            64,
+            Some(3),
+            None,
+            false,
+            None,
+        )
+        .is_err()
+    );
     Ok(())
 }

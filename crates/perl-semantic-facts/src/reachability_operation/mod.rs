@@ -174,8 +174,18 @@ impl ReachabilityOperationKind {
 ///
 /// Identifiers are opaque, non-empty, and assigned by the owning runtime;
 /// this contract never mints them.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct ReachabilityOperationId(pub String);
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct ReachabilityOperationId(String);
+
+impl<'de> Deserialize<'de> for ReachabilityOperationId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        ReachabilityOperationId::new(value).map_err(serde::de::Error::custom)
+    }
+}
 
 impl ReachabilityOperationId {
     /// Construct an operation identifier, rejecting empty values.
@@ -204,8 +214,18 @@ impl ReachabilityOperationId {
 /// Stage identifiers are declared by the consuming stage (for example graph
 /// admission, SCC condensation, closure traversal); they are opaque,
 /// non-empty strings, never display names or URIs.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct ReachabilityStageId(pub String);
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct ReachabilityStageId(String);
+
+impl<'de> Deserialize<'de> for ReachabilityStageId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        ReachabilityStageId::new(value).map_err(serde::de::Error::custom)
+    }
+}
 
 impl ReachabilityStageId {
     /// Construct a stage identifier, rejecting empty values.
@@ -233,8 +253,18 @@ impl ReachabilityStageId {
 ///
 /// Fact families are named by their owning producer; the identifier is
 /// opaque and non-empty.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct ReachabilityFactFamilyId(pub String);
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct ReachabilityFactFamilyId(String);
+
+impl<'de> Deserialize<'de> for ReachabilityFactFamilyId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        ReachabilityFactFamilyId::new(value).map_err(serde::de::Error::custom)
+    }
+}
 
 impl ReachabilityFactFamilyId {
     /// Construct a fact-family identifier, rejecting empty values.
@@ -303,8 +333,11 @@ pub enum ReachabilityContractError {
     /// A value was retained alongside a truth state that cannot carry one.
     ValueWithNonValuedTruth,
     /// An exact or legitimate-empty claim conflicts with stage limitations
-    /// recorded in the work receipt.
+    /// or a terminal state recorded in the work receipt.
     ClaimConflictsWithLimitations,
+    /// An exact or legitimate-empty claim was made over a receipt without
+    /// complete instrument evidence.
+    MissingInstrumentEvidence,
     /// The retained value or receipt shape does not match the requested
     /// operation.
     IncoherentOutcome,
@@ -356,6 +389,9 @@ impl std::fmt::Display for ReachabilityContractError {
             }
             Self::ClaimConflictsWithLimitations => {
                 write!(f, "an exact claim conflicts with receipt limitations or terminal state")
+            }
+            Self::MissingInstrumentEvidence => {
+                write!(f, "an exact claim requires complete instrument evidence")
             }
             Self::IncoherentOutcome => write!(f, "the outcome shape is incoherent"),
             Self::WorkHonesty(error) => write!(f, "work honesty violation: {error}"),

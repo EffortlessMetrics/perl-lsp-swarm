@@ -189,7 +189,7 @@ fn external_consumer_walks_one_operation_from_subject_to_eligible_publication()
 
     let verdict = ReachabilityPublicationEligibility::evaluate(
         &subject()?,
-        snapshot("gen-3").as_ref().ok(),
+        Some(&snapshot("gen-3")?),
         ReachabilitySubjectIdentityKind::WorkspaceSnapshot,
         std::slice::from_ref(&stage),
         &answer,
@@ -237,6 +237,7 @@ fn external_consumer_sees_typed_terminals_for_cancel_exhaustion_and_supersession
     tracker.charge(ReachabilityWorkDimension::NodesValidated, 3)?;
     let receipt = tracker.finish();
     assert_eq!(receipt.work_after_eligibility_lost(), 3);
+    assert!(!receipt.work_after_eligibility_lost_overflow());
     assert!(receipt.work_after_eligibility_lost() > 0);
     let outcome = ReachabilityOperationOutcome::<Vec<String>>::terminal_from(
         &terminal,
@@ -261,6 +262,7 @@ fn external_consumer_sees_typed_terminals_for_cancel_exhaustion_and_supersession
     let terminal = tracker.terminal().cloned().ok_or("exhaustion must latch a terminal")?;
     assert!(terminal.is_resource_exhausted());
     assert!(!terminal.is_cancellation());
+    assert!(matches!(terminal, ReachabilityTerminalState::ResourceExhausted { .. }));
     if let ReachabilityTerminalState::ResourceExhausted { dimension, limit, charged } = &terminal {
         assert_eq!(
             (*dimension, *limit, *charged),
@@ -285,6 +287,7 @@ fn external_consumer_sees_typed_terminals_for_cancel_exhaustion_and_supersession
         exhausted_stage,
         receipt,
     )?;
+    assert!(matches!(outcome, ReachabilityOperationOutcome::ResourceExhausted { .. }));
     if let ReachabilityOperationOutcome::ResourceExhausted { dimension, limit, charged, .. } =
         &outcome
     {
@@ -314,6 +317,7 @@ fn external_consumer_sees_typed_terminals_for_cancel_exhaustion_and_supersession
         stage,
         tracker.finish(),
     )?;
+    assert!(matches!(outcome, ReachabilityOperationOutcome::SupersededOrStale { .. }));
     if let ReachabilityOperationOutcome::SupersededOrStale { expected, observed, .. } = &outcome {
         assert_eq!(expected.generation(), Some("gen-3"));
         assert_eq!(observed.generation(), Some("gen-4"));
@@ -563,7 +567,7 @@ fn external_consumer_cannot_conflate_partial_or_empty_claims()
     assert!(!ledger.requires_complete(std::slice::from_ref(&runtime)));
     let verdict = ReachabilityPublicationEligibility::evaluate(
         &subject()?,
-        snapshot("gen-3").as_ref().ok(),
+        Some(&snapshot("gen-3")?),
         ReachabilitySubjectIdentityKind::WorkspaceSnapshot,
         &[],
         &empty,

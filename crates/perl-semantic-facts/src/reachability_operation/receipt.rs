@@ -137,6 +137,7 @@ pub struct ReachabilityWorkReceipt {
     stage_limitations: Vec<ReachabilityStageLimitation>,
     terminal: Option<ReachabilityTerminalState>,
     work_after_eligibility_lost: u64,
+    work_after_eligibility_lost_overflow: bool,
     instrument_identity: Option<ReachabilitySubjectIdentity>,
     instrument_evidence_complete: bool,
 }
@@ -154,6 +155,7 @@ impl ReachabilityWorkReceipt {
         stage_limitations: Vec<ReachabilityStageLimitation>,
         terminal: Option<ReachabilityTerminalState>,
         work_after_eligibility_lost: u64,
+        work_after_eligibility_lost_overflow: bool,
         instrument_identity: Option<ReachabilitySubjectIdentity>,
         instrument_evidence_complete: bool,
     ) -> Self {
@@ -166,6 +168,7 @@ impl ReachabilityWorkReceipt {
             stage_limitations,
             terminal,
             work_after_eligibility_lost,
+            work_after_eligibility_lost_overflow,
             instrument_identity,
             instrument_evidence_complete,
         }
@@ -229,6 +232,14 @@ impl ReachabilityWorkReceipt {
     #[must_use]
     pub const fn work_after_eligibility_lost(&self) -> u64 {
         self.work_after_eligibility_lost
+    }
+
+    /// Whether the post-eligibility work accounting itself overflowed, so
+    /// [`Self::work_after_eligibility_lost`] is a lower bound rather than an
+    /// exact total. The receipt is already non-publishable when this is set.
+    #[must_use]
+    pub const fn work_after_eligibility_lost_overflow(&self) -> bool {
+        self.work_after_eligibility_lost_overflow
     }
 
     /// The instrument identity that supplied evidence, when retained.

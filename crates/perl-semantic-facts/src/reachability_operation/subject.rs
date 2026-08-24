@@ -42,11 +42,28 @@ pub enum ReachabilitySubjectIdentityKind {
 }
 
 /// One typed, opaque identity slot inside an operation subject.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct ReachabilitySubjectIdentity {
     kind: ReachabilitySubjectIdentityKind,
     value: String,
     generation: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for ReachabilitySubjectIdentity {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw {
+            kind: ReachabilitySubjectIdentityKind,
+            value: String,
+            generation: Option<String>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        ReachabilitySubjectIdentity::new(raw.kind, raw.value, raw.generation)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 impl ReachabilitySubjectIdentity {
@@ -158,12 +175,11 @@ impl ReachabilityOperationSubject {
         let mut identities = identities;
         identities.sort();
         identities.dedup();
-        // Conflicting identities for one kind remain distinguishable after
-        // sorting; reject them so authority is never ambiguous.
-        let mut_conflicting = identities
-            .windows(2)
-            .any(|pair| pair[0].kind() == pair[1].kind() && pair[0].as_str() != pair[1].as_str());
-        if mut_conflicting {
+        // After dedup, any two adjacent identities of one kind differ in
+        // value or generation: reject them so authority is never ambiguous
+        // (two snapshots of one workspace with different generations are a
+        // conflict, not a coincidence to order by).
+        if identities.windows(2).any(|pair| pair[0].kind() == pair[1].kind()) {
             return Err(ReachabilityContractError::EmptyIdentity);
         }
         Ok(Self { operation_id, kind, identities, budget_profile_id, stage_outputs: Vec::new() })

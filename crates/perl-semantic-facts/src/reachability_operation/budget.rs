@@ -159,63 +159,71 @@ impl ReachabilityWorkDimension {
     /// Returns [`ReachabilityContractError::UnknownWorkDimension`] when the
     /// name is not one of the registry dimensions.
     pub fn parse(name: &str) -> Result<Self, ReachabilityContractError> {
-        const LAST: usize = ReachabilityWorkDimension::WorkAfterEligibilityLost as usize;
-        let names: [(&str, Self); LAST + 1] = [
-            ("workspace-snapshots-captured", Self::WorkspaceSnapshotsCaptured),
-            ("fact-families-inspected", Self::FactFamiliesInspected),
-            ("fact-families-admitted", Self::FactFamiliesAdmitted),
-            ("fact-families-rejected", Self::FactFamiliesRejected),
-            ("nodes-admitted", Self::NodesAdmitted),
-            ("nodes-validated", Self::NodesValidated),
-            ("edges-admitted", Self::EdgesAdmitted),
-            ("edges-validated", Self::EdgesValidated),
-            ("edges-normalized", Self::EdgesNormalized),
-            ("root-facts-inspected", Self::RootFactsInspected),
-            ("activation-facts-inspected", Self::ActivationFactsInspected),
-            ("exposure-facts-inspected", Self::ExposureFactsInspected),
-            ("blocker-facts-inspected", Self::BlockerFactsInspected),
-            ("scc-nodes-visited", Self::SccNodesVisited),
-            ("scc-edges-visited", Self::SccEdgesVisited),
-            ("scc-stack-operations", Self::SccStackOperations),
-            ("components-formed", Self::ComponentsFormed),
-            ("condensed-edges-constructed", Self::CondensedEdgesConstructed),
-            ("production-closure-nodes-traversed", Self::ProductionClosureNodesTraversed),
-            ("production-closure-edges-traversed", Self::ProductionClosureEdgesTraversed),
-            ("test-closure-nodes-traversed", Self::TestClosureNodesTraversed),
-            ("test-closure-edges-traversed", Self::TestClosureEdgesTraversed),
-            ("classification-rows", Self::ClassificationRows),
-            ("entity-queries", Self::EntityQueries),
-            ("component-queries", Self::ComponentQueries),
-            ("source-queries", Self::SourceQueries),
-            ("source-partitions", Self::SourcePartitions),
-            ("explanation-components", Self::ExplanationComponents),
-            ("explanation-edges", Self::ExplanationEdges),
-            ("explanation-members", Self::ExplanationMembers),
-            ("explanation-paths", Self::ExplanationPaths),
-            ("policy-candidates-inspected", Self::PolicyCandidatesInspected),
-            ("policy-candidates-selected", Self::PolicyCandidatesSelected),
-            ("policy-candidates-refused", Self::PolicyCandidatesRefused),
-            ("diagnostic-candidates", Self::DiagnosticCandidates),
-            ("diagnostic-items", Self::DiagnosticItems),
-            ("transport-projections", Self::TransportProjections),
-            ("transport-chunks", Self::TransportChunks),
-            ("serialized-evidence-bytes", Self::SerializedEvidenceBytes),
-            ("serialized-output-bytes", Self::SerializedOutputBytes),
-            ("cache-lookups", Self::CacheLookups),
-            ("validated-reuse-hits", Self::ValidatedReuseHits),
-            ("work-after-eligibility-lost", Self::WorkAfterEligibilityLost),
+        const ALL: [ReachabilityWorkDimension;
+            ReachabilityWorkDimension::WorkAfterEligibilityLost as usize + 1] = [
+            ReachabilityWorkDimension::WorkspaceSnapshotsCaptured,
+            ReachabilityWorkDimension::FactFamiliesInspected,
+            ReachabilityWorkDimension::FactFamiliesAdmitted,
+            ReachabilityWorkDimension::FactFamiliesRejected,
+            ReachabilityWorkDimension::NodesAdmitted,
+            ReachabilityWorkDimension::NodesValidated,
+            ReachabilityWorkDimension::EdgesAdmitted,
+            ReachabilityWorkDimension::EdgesValidated,
+            ReachabilityWorkDimension::EdgesNormalized,
+            ReachabilityWorkDimension::RootFactsInspected,
+            ReachabilityWorkDimension::ActivationFactsInspected,
+            ReachabilityWorkDimension::ExposureFactsInspected,
+            ReachabilityWorkDimension::BlockerFactsInspected,
+            ReachabilityWorkDimension::SccNodesVisited,
+            ReachabilityWorkDimension::SccEdgesVisited,
+            ReachabilityWorkDimension::SccStackOperations,
+            ReachabilityWorkDimension::ComponentsFormed,
+            ReachabilityWorkDimension::CondensedEdgesConstructed,
+            ReachabilityWorkDimension::ProductionClosureNodesTraversed,
+            ReachabilityWorkDimension::ProductionClosureEdgesTraversed,
+            ReachabilityWorkDimension::TestClosureNodesTraversed,
+            ReachabilityWorkDimension::TestClosureEdgesTraversed,
+            ReachabilityWorkDimension::ClassificationRows,
+            ReachabilityWorkDimension::EntityQueries,
+            ReachabilityWorkDimension::ComponentQueries,
+            ReachabilityWorkDimension::SourceQueries,
+            ReachabilityWorkDimension::SourcePartitions,
+            ReachabilityWorkDimension::ExplanationComponents,
+            ReachabilityWorkDimension::ExplanationEdges,
+            ReachabilityWorkDimension::ExplanationMembers,
+            ReachabilityWorkDimension::ExplanationPaths,
+            ReachabilityWorkDimension::PolicyCandidatesInspected,
+            ReachabilityWorkDimension::PolicyCandidatesSelected,
+            ReachabilityWorkDimension::PolicyCandidatesRefused,
+            ReachabilityWorkDimension::DiagnosticCandidates,
+            ReachabilityWorkDimension::DiagnosticItems,
+            ReachabilityWorkDimension::TransportProjections,
+            ReachabilityWorkDimension::TransportChunks,
+            ReachabilityWorkDimension::SerializedEvidenceBytes,
+            ReachabilityWorkDimension::SerializedOutputBytes,
+            ReachabilityWorkDimension::CacheLookups,
+            ReachabilityWorkDimension::ValidatedReuseHits,
+            ReachabilityWorkDimension::WorkAfterEligibilityLost,
         ];
-        let found = names
-            .into_iter()
-            .find(|(dimension_name, _)| *dimension_name == name)
-            .map(|(_, dimension)| dimension);
-        found.ok_or_else(|| ReachabilityContractError::UnknownWorkDimension(name.to_string()))
+        ALL.into_iter()
+            .find(|dimension| dimension.as_str() == name)
+            .ok_or_else(|| ReachabilityContractError::UnknownWorkDimension(name.to_string()))
     }
 }
 
 /// Stable identity of one execution/budget profile.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct ReachabilityProfileId(pub String);
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct ReachabilityProfileId(String);
+
+impl<'de> Deserialize<'de> for ReachabilityProfileId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        ReachabilityProfileId::new(value).map_err(serde::de::Error::custom)
+    }
+}
 
 impl ReachabilityProfileId {
     /// Construct a profile identifier, rejecting empty values.
@@ -314,17 +322,17 @@ impl ReachabilityWorkBudget {
     ///
     /// # Errors
     ///
-    /// Returns a contract error when the profile identifier is empty, no
-    /// operation kind is selected, or an unlimited justification is
-    /// malformed.
+    /// Returns [`ReachabilityContractError::EmptyOperationKindSelection`]
+    /// when no operation kind is selected; the profile identifier itself is
+    /// already validated by [`ReachabilityProfileId::new`].
     pub fn new(
         profile_id: super::ReachabilityProfileId,
         selected_operation_kinds: Vec<ReachabilityOperationKind>,
         dimension_limits: BTreeMap<ReachabilityWorkDimension, u64>,
         unlimited: BTreeMap<ReachabilityWorkDimension, ReachabilityUnlimitedJustification>,
     ) -> Result<Self, ReachabilityContractError> {
-        if profile_id.as_str().is_empty() || selected_operation_kinds.is_empty() {
-            return Err(ReachabilityContractError::EmptyIdentity);
+        if selected_operation_kinds.is_empty() {
+            return Err(ReachabilityContractError::EmptyOperationKindSelection);
         }
         Ok(Self { profile_id, selected_operation_kinds, dimension_limits, unlimited })
     }
@@ -451,9 +459,11 @@ impl ReachabilityExecutionProfile {
     ///
     /// # Errors
     ///
-    /// Returns a contract error when the profile identifier or defaults
-    /// source is empty, the version is zero, or no operation kind is
-    /// selected.
+    /// Returns
+    /// [`ReachabilityContractError::EmptyOperationKindSelection`] when no
+    /// operation kind is selected, or [`ReachabilityContractError::EmptyIdentity`]
+    /// when the defaults source is empty or the version is zero; the profile
+    /// identifier is already validated by [`ReachabilityProfileId::new`].
     #[allow(clippy::too_many_arguments)] // mirrors the profile contract fields
     pub fn new(
         profile_id: super::ReachabilityProfileId,
@@ -466,8 +476,8 @@ impl ReachabilityExecutionProfile {
         defaults_source: impl Into<String>,
         limitations: Vec<String>,
     ) -> Result<Self, ReachabilityContractError> {
-        if profile_id.as_str().is_empty() || selected_operation_kinds.is_empty() {
-            return Err(ReachabilityContractError::EmptyIdentity);
+        if selected_operation_kinds.is_empty() {
+            return Err(ReachabilityContractError::EmptyOperationKindSelection);
         }
         let defaults_source = defaults_source.into();
         if defaults_source.is_empty() || version == 0 {

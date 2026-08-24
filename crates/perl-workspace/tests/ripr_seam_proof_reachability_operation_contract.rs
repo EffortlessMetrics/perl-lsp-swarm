@@ -260,9 +260,30 @@ fn reachability_operation_narrower_operation_keeps_its_own_exact_result()
     query_tracker.note_instrument_evidence(instrument()?);
     let query_receipt = query_tracker.finish();
     assert!(query_receipt.is_validated_reuse_of(&ReachabilityWorkPathTarget::QueryProjection));
-    // Queries cannot increment graph/SCC/closure build counters: the reuse
-    // entry is the only work path and no construction was charged.
-    assert_eq!(query_receipt.charged().get(&ReachabilityWorkDimension::SccNodesVisited), None);
+    // A query operation charges only query-side dimensions: every charged
+    // dimension of this receipt is a query counter, and the graph/SCC/closure
+    // build counters stay absent while the component graph is validated for
+    // reuse instead of reconstructed.
+    let build_dimensions = [
+        ReachabilityWorkDimension::SccNodesVisited,
+        ReachabilityWorkDimension::SccEdgesVisited,
+        ReachabilityWorkDimension::SccStackOperations,
+        ReachabilityWorkDimension::ComponentsFormed,
+        ReachabilityWorkDimension::CondensedEdgesConstructed,
+        ReachabilityWorkDimension::ProductionClosureNodesTraversed,
+        ReachabilityWorkDimension::ProductionClosureEdgesTraversed,
+        ReachabilityWorkDimension::TestClosureNodesTraversed,
+        ReachabilityWorkDimension::TestClosureEdgesTraversed,
+    ];
+    for dimension in build_dimensions {
+        assert_eq!(query_receipt.charged().get(&dimension), None);
+    }
+    assert!(
+        query_receipt
+            .charged()
+            .keys()
+            .all(|dimension| matches!(dimension, ReachabilityWorkDimension::EntityQueries))
+    );
     let query_outcome = ReachabilityOperationOutcome::<String>::complete(
         ReachabilitySemanticOutcome::Complete,
         Some(String::from("query-answer")),
@@ -373,9 +394,7 @@ fn reachability_operation_supersession_before_publication_blocks_reuse()
         &[],
     );
     assert!(!verdict.is_eligible());
-    assert!(
-        verdict.reasons().contains(&ReachabilityIneligibilityReason::SubjectSuperseded)
-            || verdict.reasons().contains(&ReachabilityIneligibilityReason::TerminalState)
-    );
+    assert!(verdict.reasons().contains(&ReachabilityIneligibilityReason::SubjectSuperseded));
+    assert!(verdict.reasons().contains(&ReachabilityIneligibilityReason::TerminalState));
     Ok(())
 }

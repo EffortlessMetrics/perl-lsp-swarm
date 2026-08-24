@@ -177,6 +177,7 @@ pub struct ReachabilityWorkTracker {
     stage_limitations: Vec<ReachabilityStageLimitation>,
     terminal: Option<ReachabilityTerminalState>,
     work_after_eligibility_lost: u64,
+    work_after_eligibility_lost_overflow: bool,
     instrument_identity: Option<ReachabilitySubjectIdentity>,
     instrument_evidence_complete: bool,
 }
@@ -207,6 +208,7 @@ impl ReachabilityWorkTracker {
             stage_limitations: Vec::new(),
             terminal: None,
             work_after_eligibility_lost: 0,
+            work_after_eligibility_lost_overflow: false,
             instrument_identity: None,
             instrument_evidence_complete: false,
         })
@@ -285,7 +287,11 @@ impl ReachabilityWorkTracker {
             match self.work_after_eligibility_lost.checked_add(units) {
                 Some(total_after) => self.work_after_eligibility_lost = total_after,
                 None => {
-                    self.latch_terminal(ReachabilityTerminalState::CounterOverflow { dimension });
+                    // The terminal is already latched, so the receipt is
+                    // already non-publishable; the receipt still records that
+                    // the post-eligibility accounting itself overflowed
+                    // instead of silently under-reporting charged work.
+                    self.work_after_eligibility_lost_overflow = true;
                 }
             }
         }
@@ -416,6 +422,7 @@ impl ReachabilityWorkTracker {
             self.stage_limitations,
             self.terminal,
             self.work_after_eligibility_lost,
+            self.work_after_eligibility_lost_overflow,
             self.instrument_identity,
             self.instrument_evidence_complete,
         )
