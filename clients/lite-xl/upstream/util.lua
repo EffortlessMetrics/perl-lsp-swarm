@@ -23,6 +23,18 @@
 -- launch/reveal sequence runs through one testable util.show_document seam.
 -- No shell command string is ever constructed.
 
+-- Local patch (#11165): local file URI <-> path conversion is owned by one
+-- typed authority pair, util.uri_to_path and util.path_to_uri. The legacy
+-- touri()/tofilename() prefix-strip/percent-decode helpers are removed; every
+-- local-document consumer routes through the pair. The authority requires the
+-- admitted `file` scheme (admission itself stays in util.classify_uri and is
+-- not broadened), validates percent escapes before decoding exactly once,
+-- rejects decoded NUL/control bytes, keeps drive-letter case and POSIX
+-- leading-slash runs as data, admits UNC authorities as \\server\share paths
+-- on Windows only, and never returns a suspicious input unchanged. Wire URI,
+-- platform path, display shaping (home_expand/normalize_to_project_dir) and
+-- containment policy (#8997/#9001) remain distinct layers above it.
+
 -- Local patch (#11143): util.deep_merge is a typed configuration merge.
 -- Objects merge recursively by string key; arrays are indivisible values
 -- replaced atomically by the later side (a later empty array clears an
@@ -41,6 +53,15 @@ local json = require "plugins.lsp.json"
 local process = require "process"
 
 local util = {}
+
+---Local/virtual URI classes the client can actually reveal internally
+---(#11162), hoisted above first use so the #11165 conversion authority can
+---reuse the exact same admission table. The first baseline admits local file
+---URIs only; other classes need direct implementation and proof before
+---admission.
+util.INTERNAL_URI_SCHEMES = {
+  file = true,
+}
 
 ---Check if the given file is currently opened on the editor.
 ---@param abs_filename string
@@ -167,46 +188,229 @@ function util.file_exists(file_path)
  return false
 end
 
----Converts the given LSP DocumentUri into a valid filename path.
----@param uri string LSP DocumentUri to convert into a filename.
----@return string
-function util.tofilename(uri)
-  local filename = ""
-  if PLATFORM == "Windows" then
-    filename = uri:gsub('^file:///', '')
-  else
-    filename = uri:gsub('^file://', '')
+---Maximum accepted URI length in bytes (#11162), hoisted above first use so
+---the #11165 conversion authority can reuse the exact same bound: a path is
+---convertible exactly when its canonical URI fits this bound, so every
+---producer output reads back.
+local MAX_URI_BYTES = 2048
+
+---True when the string carries a raw NUL/control byte that cannot be a safe
+---local path component (#11165). Applies after percent decoding.
+local function has_control_byte(s)
+  for index = 1, #s do
+    local byte = string.byte(s, index)
+    if byte < 0x20 or byte == 0x7f then
+      return true
+    end
   end
-
-  filename = filename:gsub(
-    '%%(%x%x)',
-    function(hex) return string.char(tonumber(hex, 16)) end
-  )
-
-  if PLATFORM == "Windows" then filename = filename:gsub('/', '\\') end
-
-  return filename
+  return false
 end
 
----Convert a file path to a LSP valid uri.
----@param file_path string
----@return string
-function util.touri(file_path)
-  local function char_escape(char)
-    if string.match(char, "[_.~-]") then return char end
-    if char == "/" then return char end
-    if char == "\\" and PLATFORM == "Windows" then return "/" end
+---Decodes every validated %XX escape exactly once (#11165). Callers must
+---reject malformed escapes first (util.classify_uri does); `%25` yields the
+---literal `%` byte and is never re-scanned.
+local function decode_percent_bytes(s)
+  return s:gsub(
+    "%%(%x%x)",
+    function(hex) return string.char(tonumber(hex, 16)) end
+  )
+end
+
+---Encodes one raw path into URI path bytes exactly once (#11165). Unreserved
+---bytes, `/` separators and `:` (drive-colon form per RFC 8089, legal pchar)
+---stay literal; every other byte becomes uppercase %XX.
+local function encode_path_bytes(s)
+  return s:gsub("[^%w%.%~%-/%:]", function(char)
     return string.format("%%%02X", string.byte(char))
+  end)
+end
+
+---Authority table reusing the #11162 internal admission policy unchanged:
+---only local `file` URIs are convertible; virtual/remote schemes fail closed.
+local LOCAL_FILE_SCHEMES = util.INTERNAL_URI_SCHEMES
+
+---Converts one LSP DocumentUri into the exact local platform path (#11165).
+---
+---Typed authority for the wire-URI -> platform-path direction. Returns nil
+---with a stable reason token instead of ever returning a suspicious input
+---unchanged. Semantics:
+--- - only the admitted `file` scheme converts (`unsupported_scheme` etc. from
+---   util.classify_uri, which also bounds length and rejects malformed
+---   percent escapes and raw control characters);
+--- - empty or `localhost` authority is local; any other authority is an
+---   admitted UNC source on Windows only (`\\server\share\...`) and
+---   `remote_authority` elsewhere; authorities carrying userinfo/port bytes
+---   are never local;
+--- - raw query/fragment components (`?`/`#`) are stripped before decoding;
+---   encoded `%23`/`%3F` filename bytes stay data;
+--- - decoded path bytes are decoded exactly once; NUL/control results are
+---   rejected;
+--- - POSIX paths keep leading-slash runs as data and must be absolute;
+--- - Windows accepts only drive form (`C:\...`, case preserved) or UNC;
+---   device namespaces (`\\?\`) and rooted-without-drive shapes are refused.
+---@param uri any Candidate wire URI from a server or editor surface
+---@return string|nil path Exact local path when convertible
+---@return string|nil failure_reason Stable rejection token otherwise
+function util.uri_to_path(uri)
+  local ok, reason = util.classify_uri(uri, LOCAL_FILE_SCHEMES)
+  if not ok then
+    return nil, reason
   end
 
-  file_path = string.gsub(file_path, "([%W ])", char_escape)
-  if PLATFORM ~= "Windows" then
-    file_path = 'file://' .. file_path
+  -- classify_uri validated the scheme grammar, so the first colon is the
+  -- scheme delimiter regardless of letter case.
+  local rest = uri:sub(uri:find(":", 1, true) + 1)
+
+  -- Raw `#` and `?` start fragment/query components (RFC 3986); they never
+  -- belong to a local path. Literal bytes in filenames arrive percent-encoded
+  -- (%23/%3F) and survive as data. Cut before any decoding.
+  local fragment = rest:find("#", 1, true)
+  if fragment then
+    rest = rest:sub(1, fragment - 1)
+  end
+  local query = rest:find("?", 1, true)
+  if query then
+    rest = rest:sub(1, query - 1)
+  end
+
+  local authority = ""
+  if rest:sub(1, 2) == "//" then
+    local auth_end = rest:find("/", 3, true)
+    if auth_end then
+      authority = rest:sub(3, auth_end - 1)
+      rest = rest:sub(auth_end)
+    else
+      authority = rest:sub(3)
+      rest = ""
+    end
+  elseif rest ~= "" and rest:sub(1, 1) ~= "/" then
+    -- file:relative/path and friends carry no absolute path component.
+    return nil, "relative_path"
+  end
+
+  authority = decode_percent_bytes(authority)
+  if has_control_byte(authority) then
+    return nil, "control_character"
+  end
+  if authority:find("@", 1, true) or authority:find(":", 1, true) then
+    -- Userinfo or port bytes never name a local volume or SMB host.
+    return nil, "remote_authority"
+  end
+  if authority:find("/", 1, true) or authority:find("\\", 1, true) then
+    -- Encoded separators decode into UNC structure (#11165 review); host
+    -- names never contain them, so this is malformed rather than data.
+    return nil, "invalid_unc"
+  end
+
+  local is_local_authority = authority == ""
+    or authority:lower() == "localhost"
+  local is_unc_source = not is_local_authority
+
+  local path = decode_percent_bytes(rest)
+  if has_control_byte(path) then
+    return nil, "control_character"
+  end
+
+  if PLATFORM == "Windows" then
+    if is_unc_source then
+      -- Mirror the producer grammar (#11165 review): a UNC target needs a
+      -- non-empty share segment; authority plus bare separators
+      -- ("file://server//") is not one.
+      local share_path = path:gsub("^/+", "")
+      if share_path == "" or not share_path:match("[^/]") then
+        return nil, "invalid_unc"
+      end
+      return "\\\\" .. authority .. "\\" .. share_path:gsub("/", "\\"), nil
+    end
+    local drive = path:match("^/([%a]):")
+    if not drive then
+      return nil, "unsupported_path_shape"
+    end
+    if #path < 4 or path:sub(4, 4) ~= "/" then
+      -- "/C:" and "/C:x" leave a drive-relative residue that Windows would
+      -- resolve against drive C's current directory; refuse honestly.
+      return nil, "relative_path"
+    end
+    return path:sub(2):gsub("/", "\\"), nil
+  end
+
+  if is_unc_source then
+    return nil, "remote_authority"
+  end
+  if path:sub(1, 1) ~= "/" then
+    return nil, "relative_path"
+  end
+  return path, nil
+end
+
+---Converts one exact local platform path into its canonical `file:` URI
+---(#11165). Typed authority for the platform-path -> wire-URI direction.
+---Semantics:
+--- - POSIX requires an absolute path; leading-slash runs are preserved as
+---   data so `//data/x` round trips through `file:////data/x`;
+--- - Windows admits drive-rooted paths (`C:\x`, `C:/x`; case preserved,
+---   separators normalized to `/`) and UNC paths
+---   (`\\server\share\...` -> `file://server/share/...`);
+--- - device namespaces (`\\?\`, `\\.\`), drive-relative and relative shapes
+---   are refused instead of guessed onto the current drive;
+--- - every non-unreserved byte is percent-encoded exactly once, so spaces,
+---   `#`, `?`, `%`, quotes and multi-byte UTF-8 round trip without double
+---   encoding and literal `%` stays `%25`;
+--- - the canonical URI must fit the same MAX_URI_BYTES bound uri_to_path
+---   enforces (`path_above_wire_bound`), so producer output always reads
+---   back — the pair cannot emit identities its own consumer refuses.
+---@param path any Candidate exact local path
+---@return string|nil uri Canonical file URI when convertible
+---@return string|nil failure_reason Stable rejection token otherwise
+function util.path_to_uri(path)
+  if type(path) ~= "string" or #path == 0 then
+    return nil, "empty_path"
+  end
+  if has_control_byte(path) then
+    return nil, "control_character"
+  end
+
+  local uri
+  if PLATFORM == "Windows" then
+    if path:match("^[\\/][\\/][%?%.][\\/]") then
+      -- Device namespace forms are not filesystem shares.
+      return nil, "unsupported_device_path"
+    end
+    if path:sub(1, 2) == "\\\\" or path:sub(1, 2) == "//" then
+      local unc = path:sub(3):gsub("[\\/]", "/")
+      if not unc:match("^[^/]+/[^/]") then
+        -- \\server alone (with or without a dangling separator) names no
+        -- share; a UNC target needs host plus share components.
+        return nil, "invalid_unc"
+      end
+      -- Symmetric with uri_to_path (#11165 review): `localhost` authority is
+      -- the local machine in file URI space, so a \\localhost\... UNC would
+      -- produce an identity this same authority reads back as a drive-less
+      -- local path. Refuse instead of emitting an unreadable form.
+      if unc:lower():match("^localhost/") then
+        return nil, "invalid_unc"
+      end
+      uri = "file://" .. encode_path_bytes(unc)
+    elseif not path:match("^[%a]:[\\/]") then
+      -- Relative, drive-relative ("C:x") and rooted-without-drive ("\x")
+      -- shapes would silently bind to an unknown current drive.
+      return nil, "relative_path"
+    else
+      uri = "file:///" .. encode_path_bytes(path:gsub("\\", "/"))
+    end
   else
-    file_path = 'file:///' .. file_path:gsub('\\', '/')
+    if path:sub(1, 1) ~= "/" then
+      return nil, "relative_path"
+    end
+    uri = "file://" .. encode_path_bytes(path)
   end
 
-  return file_path
+  if #uri > MAX_URI_BYTES then
+    -- Symmetric bound (#11165): a canonical URI above the read-back limit
+    -- could never round trip through this same authority.
+    return nil, "path_above_wire_bound"
+  end
+  return uri, nil
 end
 
 ---Converts a document range returned by lsp to a valid document selection.
@@ -279,17 +483,6 @@ util.EXTERNAL_URI_SCHEMES = {
   https = true,
   file = true,
 }
-
----Local/virtual URI classes the client can actually reveal internally
----(#11162). The first baseline admits local file URIs only; other classes
----need direct implementation and proof before admission.
-util.INTERNAL_URI_SCHEMES = {
-  file = true,
-}
-
----Maximum accepted URI length in bytes (#11162). Bounded input keeps every
----downstream prompt/validation path bounded.
-local MAX_URI_BYTES = 2048
 
 ---True when the text carries a percent escape that is not exactly two hex
 ---digits (#11162).

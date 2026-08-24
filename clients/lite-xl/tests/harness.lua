@@ -529,6 +529,11 @@ function harness.new_world(options)
         diagnostics_log[#diagnostics_log + 1] =
           { op = "retire_provider", name = name }
       end,
+      -- #11128 rendering-resolver seam; combined-tree repair for this lane
+      -- (#11165): the init.lua call entered main without updating this fake.
+      set_render_resolver = function(resolver)
+        diagnostics_log[#diagnostics_log + 1] = { op = "set_render_resolver" }
+      end,
       publish = function()
         diagnostics_log[#diagnostics_log + 1] = { op = "publish" }
         return true, nil

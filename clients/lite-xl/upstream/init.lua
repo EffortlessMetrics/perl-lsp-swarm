@@ -205,7 +205,7 @@ diagnostics.set_render_resolver(
   function(uri)
     for _, open_doc in ipairs(core.docs) do
       if open_doc.filename
-        and util.touri(core.project_absolute_path(open_doc.filename)) == uri
+        and util.path_to_uri(core.project_absolute_path(open_doc.filename)) == uri
       then
         return open_doc
       end
@@ -500,9 +500,20 @@ end
 ---@param line integer
 ---@param col integer
 local function get_buffer_position_params(doc, line, col)
+  -- Local patch (#11165): the wire identity comes from the one file URI/path
+  -- conversion authority; an unconvertible editor path drops the request
+  -- instead of sending a fabricated URI.
+  local uri = util.path_to_uri(core.project_absolute_path(doc.filename))
+  if not uri then
+    core.log_quiet(
+      "[LSP] request dropped, unconvertible path: %s",
+      tostring(doc.filename)
+    )
+    return nil
+  end
   return {
     textDocument = {
-      uri = util.touri(core.project_absolute_path(doc.filename)),
+      uri = uri,
     },
     position = {
       line = line - 1,
@@ -581,9 +592,17 @@ local function get_location_preview(location)
   local line1, col1 = util.toselection(
     location.range or location.targetRange
   )
-  local filename = core.normalize_to_project_dir(
-    util.tofilename(location.uri or location.targetUri)
-  )
+  -- Local patch (#11165): non-file or malformed URIs yield no preview
+  -- instead of being treated as local filenames.
+  local path, path_reason = util.uri_to_path(location.uri or location.targetUri)
+  if not path then
+    core.log_quiet(
+      "[LSP] preview unavailable (%s)",
+      path_reason or "unconvertible uri"
+    )
+    return "", ""
+  end
+  local filename = core.normalize_to_project_dir(path)
   local abs_filename = core.project_absolute_path(filename)
 
   local file = io.open(abs_filename)
@@ -873,11 +892,19 @@ end
 ---Open a document location returned by LSP
 ---@param location table
 function lsp.goto_location(location)
+  -- Local patch (#11165): navigation only follows convertible local files;
+  -- non-file and malformed URIs are refused instead of opened as paths.
+  local path, path_reason = util.uri_to_path(location.uri or location.targetUri)
+  if not path then
+    core.log_quiet(
+      "[LSP] location not navigable (%s)",
+      path_reason or "unconvertible uri"
+    )
+    return
+  end
   local doc_view = core.root_view:open_doc(
     core.open_doc(
-      common.home_expand(
-        util.tofilename(location.uri or location.targetUri)
-      )
+      common.home_expand(path)
     )
   )
   local line1, col1 = util.toselection(
@@ -1173,8 +1200,20 @@ function lsp.start_server(filename, project_directory)
                   value = util.table_get_field(settings_default, item.section)
                 -- A workspace was specified so we return from that workspace
                 else
+                  -- Local patch (#11165): scope URIs convert through the one
+                  -- authority; an unconvertible scope falls back to the
+                  -- default settings instead of a fabricated path.
+                  local scope_path, scope_reason =
+                    util.uri_to_path(item.scopeUri)
+                  if not scope_path then
+                    core.log_quiet(
+                      "[LSP] %s scope not resolvable (%s)",
+                      "workspace/configuration",
+                      scope_reason or "unconvertible uri"
+                    )
+                  end
                   local settings_workspace = lsp.get_workspace_settings(
-                    server, util.tofilename(item.scopeUri)
+                    server, scope_path
                   )
                   value = util.table_get_field(settings_workspace, item.section)
                 end
@@ -1213,7 +1252,20 @@ function lsp.start_server(filename, project_directory)
                 MessageBox.BUTTONS_YES_NO
               )
             else
-              local document = util.tofilename(request.params.uri)
+              -- Local patch (#11165): internal reveal converts through the
+              -- one authority; non-file or malformed URIs fail closed with a
+              -- truthful response instead of opening fabricated paths.
+              local document, document_reason = util.uri_to_path(
+                request.params.uri
+              )
+              if not document then
+                core.log_quiet(
+                  "[LSP] showDocument refused (%s)",
+                  document_reason or "unconvertible uri"
+                )
+                server:push_response(request.method, request.id, {success=false})
+                return
+              end
               ---@type core.docview
               local doc_view = core.root_view:open_doc(
                 core.open_doc(common.home_expand(document))
@@ -1293,7 +1345,20 @@ function lsp.start_server(filename, project_directory)
         end)
 
         -- Start the server initialization process
-        client:initialize(project_directory, "Lite XL", VERSION)
+        -- Local patch (#11165): initialize reports an unconvertible
+        -- workspace instead of sending a fabricated rootUri. A refused
+        -- initialization unregisters the freshly started client so a later
+        -- attempt can start it again instead of skipping a dead entry.
+        local initialized, init_reason = client:initialize(
+          project_directory, "Lite XL", VERSION)
+        if not initialized then
+          lsp.servers_running[name] = nil
+          core.error(
+            "[LSP] could not start %s (%s)",
+            name,
+            tostring(init_reason or "unconvertible workspace")
+          )
+        end
       end
     end
     ::continue::
@@ -1322,7 +1387,17 @@ end
 ---@param server lsp.server
 ---@param params table PublishDiagnosticsParams
 function lsp.handle_publish_diagnostics(server, params)
-  local abs_filename = util.tofilename(params.uri)
+  -- Local patch (#11165): publications for non-file or malformed URIs are
+  -- refused through the one authority instead of becoming local filenames.
+  local abs_filename, uri_reason = util.uri_to_path(params.uri)
+  if not abs_filename then
+    core.log_quiet(
+      "[LSP] %s publication dropped (%s)",
+      "textDocument/publishDiagnostics",
+      uri_reason or "unconvertible"
+    )
+    return
+  end
   local filename = core.normalize_to_project_dir(abs_filename)
 
   if server.verbose then
@@ -1438,6 +1513,17 @@ function lsp.open_document(doc)
     return
   end
 
+  -- Local patch (#11165): one conversion per document through the authority;
+  -- an unconvertible path opens no session and sends no didOpen.
+  local doc_uri = util.path_to_uri(doc_path)
+  if not doc_uri then
+    core.error(
+      "[LSP] could not open, unconvertible path: %s",
+      tostring(doc.filename)
+    )
+    return
+  end
+
   local active_servers = lsp.get_active_servers(doc.filename, true)
 
   if #active_servers > 0 then
@@ -1447,8 +1533,7 @@ function lsp.open_document(doc)
       -- Local patch (#11115): one session per admitted open, created before
       -- the didOpen payload so every accepted mutation after this point
       -- belongs to the new version stream.
-      local session = lsp.create_document_session(
-        doc, server, util.touri(core.project_absolute_path(doc.filename)))
+      local session = lsp.create_document_session(doc, server, doc_uri)
       if server.capabilities.textDocumentSync.openClose then
         if server.exit_timer then
           server.exit_timer:stop()
@@ -1513,6 +1598,17 @@ end
 function lsp.save_document(doc)
   if not doc.lsp_open then return end
 
+  -- Local patch (#11165): one conversion per save through the authority;
+  -- an unconvertible path saves no session state on the wire.
+  local doc_uri = util.path_to_uri(core.project_absolute_path(doc.filename))
+  if not doc_uri then
+    core.log_quiet(
+      "[LSP] didSave dropped, unconvertible path: %s",
+      tostring(doc.filename)
+    )
+    return
+  end
+
   local active_servers = lsp.get_active_servers(doc.filename, true)
   if #active_servers > 0 then
     for _, name in pairs(active_servers) do
@@ -1534,7 +1630,7 @@ function lsp.save_document(doc)
             .. '"method": "textDocument/didSave",\n'
             .. '"params": {\n'
             .. '"textDocument": {\n'
-            .. '"uri": "'..util.touri(core.project_absolute_path(doc.filename))..'"\n'
+            .. '"uri": "'..doc_uri..'"\n'
             .. '},\n'
             .. '"text": "'..text..'"\n'
             .. '}\n'
@@ -1544,7 +1640,7 @@ function lsp.save_document(doc)
           server:push_notification('textDocument/didSave', {
             params = {
               textDocument = {
-                uri = util.touri(core.project_absolute_path(doc.filename))
+                uri = doc_uri
               }
             }
           })
@@ -1559,6 +1655,16 @@ end
 function lsp.close_document(doc)
   if not doc.lsp_open then return end
 
+  -- Local patch (#11165): one conversion per close through the authority.
+  local doc_uri = util.path_to_uri(core.project_absolute_path(doc.filename))
+  if not doc_uri then
+    core.log_quiet(
+      "[LSP] didClose dropped, unconvertible path: %s",
+      tostring(doc.filename)
+    )
+    return
+  end
+
   local active_servers = lsp.get_active_servers(doc.filename, true)
   if #active_servers > 0 then
     for _, name in pairs(active_servers) do
@@ -1570,7 +1676,7 @@ function lsp.close_document(doc)
         server:push_notification('textDocument/didClose', {
           params = {
             textDocument = {
-              uri = util.touri(core.project_absolute_path(doc.filename)),
+              uri = doc_uri,
               languageId = server:get_language_id(doc)
             }
           }
@@ -1717,6 +1823,8 @@ function lsp.request_completion(doc, line, col, forced)
       local trigger_char = false
 
       local request = get_buffer_position_params(doc, line, col)
+      -- Local patch (#11165): no wire identity means no request.
+      if not request then return end
 
       -- without providing context some language servers like the
       -- lua-language-server behave poorly and return garbage.
@@ -1933,15 +2041,22 @@ function lsp.request_signature(doc, line, col, forced, fallback)
         )
       )
     then
-      -- Local patch (#11108): bind this request to its exact subject.
+      -- Local patches (#11165, #11108): both request inputs are computed
+      -- before any goto continue because Lua forbids a goto that skips
+      -- into the scope of a later local.
+      local position_params = get_buffer_position_params(doc, line, col)
       local subject = lsp.make_request_subject(
         'textDocument/signatureHelp', doc, server, line, col)
+      -- No wire identity means no request (#11165).
+      if not position_params then
+        goto continue
+      end
       if not subject then
         goto continue
       end
 
       server:push_request('textDocument/signatureHelp', {
-        params = get_buffer_position_params(doc, line, col),
+        params = position_params,
         overwrite = true,
         callback = function(server, response)
           -- Local patch (#11108): admission replaces the caret-only guard;
@@ -2018,9 +2133,14 @@ function lsp.request_hover(doc, line, col, in_tab)
       if not subject then
         break
       end
+      -- Local patch (#11165): no wire identity means no request.
+      local position_params = get_buffer_position_params(doc, line, col)
+      if not position_params then
+        break
+      end
 
       server:push_request('textDocument/hover', {
-        params = get_buffer_position_params(doc, line, col),
+        params = position_params,
         callback = function(server, response)
           -- Local patch (#11108): admission before any tooltip effect.
           local admitted, disposition = lsp.admit_response(subject)
@@ -2119,6 +2239,10 @@ function lsp.request_references(doc, line, col)
     local server = lsp.servers_running[name]
     if server.capabilities.hoverProvider then
       local request_params = get_buffer_position_params(doc, line, col)
+      -- Local patch (#11165): no wire identity means no request.
+      if not request_params then
+        break
+      end
       request_params.context = {includeDeclaration = true}
       -- Local patch (#11108): bind this request to its exact subject.
       local subject = lsp.make_request_subject(
@@ -2185,8 +2309,13 @@ function lsp.request_call_hierarchy(doc, line, col)
       if not subject then
         return
       end
+      -- Local patch (#11165): no wire identity means no request.
+      local position_params = get_buffer_position_params(doc, line, col)
+      if not position_params then
+        return
+      end
       server:push_request('textDocument/prepareCallHierarchy', {
-        params = get_buffer_position_params(doc, line, col),
+        params = position_params,
         callback = function(server, response)
           -- Local patch (#11108): admission before any effect.
           local admitted, disposition = lsp.admit_response(subject)
@@ -2224,6 +2353,10 @@ function lsp.request_symbol_rename(doc, line, col, new_name)
     local server = lsp.servers_running[name]
     if server.capabilities.renameProvider then
       local request_params = get_buffer_position_params(doc, line, col)
+      -- Local patch (#11165): no wire identity means no request.
+      if not request_params then
+        return
+      end
       request_params.newName = new_name
       -- Local patch (#11108): bind this edit-producing request to its exact
       -- subject; its future workspace-edit application must never mutate a
@@ -2342,10 +2475,16 @@ function lsp.request_document_symbols(doc)
       if not subject then
         break
       end
+      -- Local patch (#11165): no wire identity means no request.
+      local doc_uri = util.path_to_uri(core.project_absolute_path(doc.filename))
+      if not doc_uri then
+        log(server, "Document symbols dropped, unconvertible path")
+        break
+      end
       server:push_request('textDocument/documentSymbol', {
         params = {
           textDocument = {
-            uri = util.touri(core.project_absolute_path(doc.filename)),
+            uri = doc_uri,
           }
         },
         callback = function(server, response)
@@ -2445,10 +2584,16 @@ function lsp.request_document_format(doc)
       if not subject then
         break
       end
+      -- Local patch (#11165): no wire identity means no request.
+      local doc_uri = util.path_to_uri(core.project_absolute_path(doc.filename))
+      if not doc_uri then
+        log(server, "Formatting dropped, unconvertible path")
+        break
+      end
       server:push_request('textDocument/formatting', {
         params = {
           textDocument = {
-            uri = util.touri(core.project_absolute_path(doc.filename)),
+            uri = doc_uri,
           },
           options = {
             tabSize = indent_size,
@@ -2645,8 +2790,14 @@ function lsp.goto_symbol(doc, line, col, implementation)
     -- Send document updates first
     lsp.update_document(doc)
 
+    -- Local patch (#11165): no wire identity means no request.
+    local position_params = get_buffer_position_params(doc, line, col)
+    if not position_params then
+      return
+    end
+
     server:push_request("textDocument/" .. method, {
-      params = get_buffer_position_params(doc, line, col),
+      params = position_params,
       callback = function(server, response)
         local location = response.result
 
