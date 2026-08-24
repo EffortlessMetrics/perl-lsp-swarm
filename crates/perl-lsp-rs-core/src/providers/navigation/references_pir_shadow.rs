@@ -1106,10 +1106,10 @@ mod promote_tests {
             .map(|range| (range.start.character as usize, range.end.character as usize))
             .collect::<Vec<_>>();
         if !mapped.contains(&(4, 9)) {
-            return Err(format!("promoted declaration was not sourced from the canonical anchor: {mapped:?}"));
+            return Err(format!(\n                "promoted declaration was not sourced from the canonical anchor: {mapped:?}"\n            ));
         }
         if mapped.contains(&(0, 1)) {
-            return Err(format!("promoted declaration leaked forged legacy anchor: {mapped:?}"));
+            return Err(format!(\n                "promoted declaration leaked forged legacy anchor: {mapped:?}"\n            ));
         }
         Ok(())
     }
