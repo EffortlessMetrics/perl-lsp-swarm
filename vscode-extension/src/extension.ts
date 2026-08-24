@@ -565,21 +565,17 @@ export async function activate(context: vscode.ExtensionContext) {
     outputChannel?.error(message);
   });
   extensionActivation = activation;
-  console.error('[7854-debug] activate entered');
   try {
     const extensionApi = await runExtensionActivation(context, activation);
     // Commit before publishing the activation-complete context key: the
     // commandPalette/walkthrough `perl-lsp.activated` gate must not claim a
     // committed runtime while the attempt is still rolling forward (#7854).
     activation.commit();
-    console.error('[7854-debug] committed', activation.attemptId);
     vscode.commands.executeCommand('setContext', 'perl-lsp.activated', true);
     return extensionApi;
   } catch (error: unknown) {
     const reason = error instanceof Error ? error.message : String(error);
-    console.error('[7854-debug] activation failed, rolling back:', reason);
     const receipt = await activation.rollback();
-    console.error('[7854-debug] rollback receipt', JSON.stringify(receipt));
     vscode.commands.executeCommand('setContext', 'perl-lsp.activated', false);
     outputChannel?.error(
       `[activation] Attempt ${receipt.attempt_id} failed and was rolled back: ${reason}`,
@@ -1123,14 +1119,12 @@ async function runExtensionActivation(
 }
 
 export async function deactivate() {
-  console.error('[7854-debug] deactivate entered');
   try {
     // A committed activation owns shutdown through the same cleanup
     // primitives rollback uses (#7854). Without a committed runtime
     // (activation never ran to commit, or the attempt was rolled back) the
     // pre-transaction shutdown path stays authoritative.
     const receipt = (await extensionActivation?.deactivate()) ?? null;
-    console.error('[7854-debug] deactivate receipt', JSON.stringify(receipt));
     if (receipt === null) {
       await disposeLanguageClient();
     }
@@ -2716,7 +2710,6 @@ function stopWatchdog(): void {
 }
 
 async function handleUnexpectedServerStop(): Promise<void> {
-  console.error('[7854-debug] unexpected server stop handled');
   const context = extensionContext;
   const hint =
     lastStartupDiagnosis?.hint ??
@@ -2802,7 +2795,6 @@ function disposeClientIntegrations(): void {
 }
 
 async function disposeLanguageClient(): Promise<void> {
-  console.error('[7854-debug] disposeLanguageClient entered');
   // Extension shutdown is user-initiated; suppress the crash handler and
   // clear crash-recovery state so a re-activation starts with a fresh budget.
   userInitiatedStopPending = true;
@@ -2811,7 +2803,6 @@ async function disposeLanguageClient(): Promise<void> {
   disposeClientIntegrations();
   if (languageClientLifecycle) {
     await languageClientLifecycle.stop();
-    console.error('[7854-debug] lifecycle stopped');
     syncLifecycleProjection();
   }
   // No generation is running any more. Reinstall stops the client and then
