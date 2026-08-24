@@ -869,6 +869,44 @@ fn save_cannot_be_filled_by_another_family_row() -> Result<()> {
 }
 
 #[test]
+fn save_stale_result_cell_laws_fail_closed() -> Result<()> {
+    // The stale-result cell must bind the save-event trigger identity, so a
+    // held manual-format result cannot pose as save evidence.
+    assert_save_rejects(
+        |catalog| {
+            let cell = save_cell_mut(catalog, "vim.vim_lsp.save.stale_result_rejected")?;
+            cell.subject_dimensions.retain(|token| token != "save.trigger");
+            Ok(())
+        },
+        "save.trigger and save.owner identities",
+    )?;
+    // Cleanup evidence is independently load-bearing for stale rejection.
+    assert_save_rejects(
+        |catalog| {
+            let cell = save_cell_mut(catalog, "vim.vim_lsp.save.stale_result_rejected")?;
+            cell.instrument_evidence
+                .retain(|token| !matches!(token, InstrumentEvidence::CleanupObservation));
+            Ok(())
+        },
+        "must require cleanup evidence",
+    )
+}
+
+#[test]
+fn save_failure_cell_cannot_admit_pass() -> Result<()> {
+    // The no-pass law is enforced by the validator, not only by the factory:
+    // a save-shaped catalog whose failure cell admits pass fails closed.
+    assert_save_rejects(
+        |catalog| {
+            let cell = save_cell_mut(catalog, "vim.vim_lsp.save.failure")?;
+            cell.allowed_results.push("pass".to_string());
+            Ok(())
+        },
+        "the failure cell must never admit pass",
+    )
+}
+
+#[test]
 fn save_family_vocabulary_stage_and_result_laws_fail_closed() -> Result<()> {
     assert_save_rejects(
         |catalog| {

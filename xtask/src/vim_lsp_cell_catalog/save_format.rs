@@ -152,6 +152,7 @@ const STALE_RESULT_DIMENSIONS: &[&str] = &[
     "generation.document",
     "generation.source",
     "save.owner",
+    "save.trigger",
     "server.executable_identity",
     "stage.exact_source_local",
 ];
@@ -163,6 +164,7 @@ const SETTLEMENT_INSTRUMENT: &[InstrumentEvidence] = &[
     InstrumentEvidence::ProcessLedger,
 ];
 const STALE_INSTRUMENT: &[InstrumentEvidence] = &[
+    InstrumentEvidence::CleanupObservation,
     InstrumentEvidence::ClientLog,
     InstrumentEvidence::DriverOutput,
     InstrumentEvidence::ProcessLedger,
@@ -480,6 +482,31 @@ pub fn validate_save_catalog(catalog: &CellCatalog, ledger: &ScenarioLedger) -> 
         );
         covered.extend(cell.scenario_owners.iter().cloned());
     }
+
+    // Proposition-specific laws the shared shape cannot state.
+    let cell_of = |id: &str| {
+        catalog
+            .cells
+            .iter()
+            .find(|cell| cell.cell_id == id)
+            .ok_or_else(|| anyhow::anyhow!("save catalog omitted cell {id}"))
+    };
+    let stale = cell_of("vim.vim_lsp.save.stale_result_rejected")?;
+    ensure!(
+        stale.subject_dimensions.iter().any(|token| token == "save.trigger")
+            && stale.subject_dimensions.iter().any(|token| token == "save.owner"),
+        "the stale-result cell must bind the save.trigger and save.owner identities; a held manual or non-save formatting result is not save evidence"
+    );
+    ensure!(
+        stale.instrument_evidence.contains(&InstrumentEvidence::CleanupObservation),
+        "the stale-result cell must require cleanup evidence; cleanup stays independently load-bearing and cannot ride a product pass"
+    );
+    let failure = cell_of("vim.vim_lsp.save.failure")?;
+    ensure!(
+        !failure.allowed_results.iter().any(|result| result == "pass"),
+        "the failure cell must never admit pass; a clean save is the applied/no-change cells' proposition"
+    );
+
     let expected_coverage: BTreeSet<&str> =
         actions.iter().filter(|action| !CONTROL_ACTIONS.contains(action)).copied().collect();
     let uncovered: Vec<&str> =
