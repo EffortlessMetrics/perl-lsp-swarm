@@ -367,8 +367,10 @@ pub fn route_envelope(
         SemanticConfidence::Known(Confidence::High),
         SemanticFreshness::Fresh,
         boundary.map(|kind| {
+            // No separate boundary fact is minted: the typed boundary lives in
+            // the route payload, so the link carries no foreign boundary id.
             crate::BoundaryLink::new(
-                Some(fact_id),
+                None,
                 kind,
                 BoundaryDisposition::Degrade,
                 boundary_reason,
