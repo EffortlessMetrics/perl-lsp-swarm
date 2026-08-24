@@ -296,7 +296,10 @@ impl DebugAdapter {
     /// single-emission gate). Closing the generation afterwards:
     ///
     /// - keeps every asynchronous emitter of the closed generation suppressed
-    ///   through the generation check in `reserve_terminated_event`, and
+    ///   through the generation check in `reserve_terminated_event`, and retires
+    ///   a reservation still outstanding at delivery time via
+    ///   `terminated_delivery_is_current` (an old session's terminal event must
+    ///   not leak into a newer client conversation), and
     /// - re-arms the gate so the *next* client terminal request is acknowledged
     ///   with its own `terminated` event (#383 terminate-idempotency matrix,
     ///   re-established by #12082 after the gate landed without moving the
