@@ -102,9 +102,11 @@ fn test_ga_capabilities_contract() -> Result<(), Box<dyn std::error::Error>> {
         !caps["selectionRangeProvider"].is_null(),
         "selectionRangeProvider must be advertised (v0.8.4)"
     );
+    // Withdrawn route (#11955): on-type formatting must not be advertised
+    // until #9320 lands the proven cutover.
     assert!(
-        !caps["documentOnTypeFormattingProvider"].is_null(),
-        "documentOnTypeFormattingProvider must be advertised (v0.8.4)"
+        caps["documentOnTypeFormattingProvider"].is_null(),
+        "documentOnTypeFormattingProvider is withdrawn and must NOT be advertised"
     );
 
     // Features that should NOT be advertised

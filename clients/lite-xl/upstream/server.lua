@@ -430,11 +430,19 @@ end
 
 ---Starts the LSP server process, any listeners should be registered before
 ---calling this method and this method should be called before any pushes.
+---Local patch (#11165): the root URI comes from the one file URI/path
+---conversion authority; an unconvertible workspace refuses initialization
+---with a typed reason instead of sending a fabricated rootUri.
 ---@param workspace string
 ---@param editor_name? string
 ---@param editor_version? string
+---@return boolean initialized
+---@return string|nil failure_reason Stable token when not initialized
 function Server:initialize(workspace, editor_name, editor_version)
-  local root_uri = util.touri(workspace);
+  local root_uri, uri_reason = util.path_to_uri(workspace)
+  if not root_uri then
+    return false, uri_reason or "unconvertible_workspace"
+  end
 
   self.path = workspace or ""
   self.editor_name = editor_name or "unknown"
@@ -624,6 +632,8 @@ function Server:initialize(workspace, editor_name, editor_version)
       end
     end
   })
+
+  return true, nil
 end
 
 ---Register an event listener.

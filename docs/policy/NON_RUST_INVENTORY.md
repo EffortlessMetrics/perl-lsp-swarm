@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11468 |
-| Rust-family files | 3495 |
-| Non-Rust files | 7973 |
-| Allowlisted | 5700 |
-| Unclassified | 2273 |
+| Total tracked files | 11615 |
+| Rust-family files | 3517 |
+| Non-Rust files | 8098 |
+| Allowlisted | 5773 |
+| Unclassified | 2325 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 406 |
-| documentation | 2651 |
+| config | 407 |
+| documentation | 2667 |
 | generated | 2 |
-| production | 312 |
-| test | 1857 |
-| tooling | 472 |
-| unclassified | 2273 |
+| production | 317 |
+| test | 1901 |
+| tooling | 479 |
+| unclassified | 2325 |
 
 ## Unclassified files
 
@@ -215,6 +215,57 @@
 | `distribution/test-release.sh` | `sh` |
 | `distribution/windows/update-manifests.ps1` | `ps1` |
 | `distribution/winget/perl-lsp.yaml` | `yaml` |
+| `fixtures/clippy_repair_falsifiers/cases/A01-file-wide-suppression-carveout.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/A02-dead-code-baseline-absorption.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/A03-cfg-test-attr-general-carveout.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/A04-exact-lint-group-substitution.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/A05-command-missing-docs-reintroduction.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/A06-required-target-omission.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/A07-required-feature-profile-reduction.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/A08-platform-substitution-linux-for-hosted.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/A09-zero-work-or-malformed-as-success.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/A10-candidate-refresh-baseline-absorption.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/B11-same-total-finding-swap.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/B12-accepted-finding-copy-to-other-path.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/B13-consumed-finding-identity-reintroduction.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/B14-suppression-displacement-count-equal.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/B15-stale-cross-toolchain-receipt.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/B16-open-world-item-as-closed-cleanup.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/C17-ok-erasure-of-result.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/C18-let-underscore-must-use-discard.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/C19-uncontracted-underscore-binding.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/C20-log-only-error-consumption.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/C21-panic-assertion-flow-substitution.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/C22-redaction-weakening-for-cause-retention.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/C23-renamed-error-variable-still-ignored.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/D24-unchecked-byte-slicing-swap.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/D25-get-unwrap-indexing-substitution.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/D26-clamp-default-range-semantics-swap.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/D27-ascii-only-unicode-evidence.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/D28-numeric-helper-semantics-drift.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/D29-atomic-mutex-substitution-unproved.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/D30-await-structure-change-unproofed.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/D31-unsafe-boundary-widening-unowned.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/E32-parameter-bag-without-owner.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/E33-type-alias-only-hiding.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/E34-trampoline-ordering-split.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/E35-ownership-theater-clone-wrapper.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/E36-invariant-free-accessor.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/E37-api-shape-change-as-compliance.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/E38-generated-output-edited-generator-stale.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/F39-lib-only-helper-deletion.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/F40-default-feature-import-deletion.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/F41-auto-suggestion-reexport-deletion.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/F42-unbounded-clippy-fix-scope.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/F43-machine-applicable-crossing-authorities.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/F44-malformed-suggestion-auto-application.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/G45-restating-documentation.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/G46-invented-guarantee-documentation.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/G47-test-proof-weakening-for-green.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/G48-cargo-feature-surface-compliance-change.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/G49-dependency-upgrade-as-duplicate-fix.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/G50-private-evidence-for-product-package.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/manifest.v1.json` | `json` |
 | `fixtures/debug-peer/hello_request.json` | `json` |
 | `fixtures/debug-peer/hello_response.json` | `json` |
 | `fixtures/debug-peer/set_breakpoints_request.json` | `json` |
@@ -1954,6 +2005,7 @@
 | `ripr/pr/pr.diff` | `diff` |
 | `ripr/pr/repo-exposure.json` | `json` |
 | `schemas/agent_context.v1.schema.json` | `json` |
+| `schemas/clippy_repair_falsifiers.v1.schema.json` | `json` |
 | `schemas/compiler_compatibility.v1.schema.json` | `json` |
 | `schemas/diagnostic_explanation.v1.schema.json` | `json` |
 | `schemas/documentation-standards.schema.yml` | `yml` |
@@ -2354,6 +2406,7 @@
 | `.changes/unreleased/product-11950-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12022-Removed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12024-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12094-Fixed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2495,6 +2548,7 @@
 | `.changes/unreleased/product-8016-Added-213950.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-8025-Added-221500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-8027-Added-222500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-8063-Changed-214000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-8250-Added-223800.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-8311-Changed-164000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9103-Added-211500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -3015,9 +3069,20 @@
 | `.spec/11625-module-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11626-module-train-frontier/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11626-module-train-frontier/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11626-module-train-frontier/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11627-module-train-live/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11627-module-train-live/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11627-module-train-live/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11649-clippy-repair-falsifier-corpus/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11672-parse-effect-sink-contract/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11672-parse-effect-sink-contract/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11672-parse-effect-sink-contract/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11672-parse-effect-sink-contract/inventory.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11673-accepted-ticket-diagnostics-sink/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11673-accepted-ticket-diagnostics-sink/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11673-accepted-ticket-diagnostics-sink/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3034,6 +3099,7 @@
 | `.spec/11716-emacs-support-architecture/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11716-emacs-support-architecture/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11716-emacs-support-architecture/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11717-emacs-train-specs/specs.ledger.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11756-emacs-context-engine/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11756-emacs-context-engine/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11756-emacs-context-engine/context.mappings.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
@@ -3352,6 +3418,7 @@
 | `book/src/user-guides/troubleshooting.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `book/src/user-guides/workspace-navigation.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `clients/lite-xl/tests/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `clients/lite-xl/tests/diagnostic_position_test.lua` | test | `non-rust-litexl-diagnostic-position-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/diagnostics_currentness_test.lua` | test | `non-rust-litexl-diagnostics-currentness-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/harness.lua` | test | `non-rust-litexl-journey-harness` | editor/lite-xl |
 | `clients/lite-xl/tests/init_configuration_items_test.lua` | test | `non-rust-litexl-init-configuration-items-tests` | editor/lite-xl |
@@ -3361,6 +3428,8 @@
 | `clients/lite-xl/tests/json_decode_test.lua` | test | `non-rust-litexl-json-decode-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_frame_test.lua` | test | `non-rust-litexl-server-frame-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_logging_test.lua` | test | `non-rust-litexl-server-logging-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/util_config_merge_test.lua` | test | `non-rust-litexl-config-merge-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/util_file_uri_test.lua` | test | `non-rust-litexl-file-uri-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_show_document_test.lua` | test | `non-rust-litexl-show-document-tests` | editor/lite-xl |
 | `clients/lite-xl/upstream/diagnostics.lua` | production | `non-rust-litexl-diagnostics-store` | editor/lite-xl |
 | `clients/lite-xl/upstream/init.lua` | production | `non-rust-litexl-init-plugin` | editor/lite-xl |
@@ -3525,6 +3594,7 @@
 | `crates/perl-dap/tests/fixtures/performance/large_file.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-dap/tests/fixtures/performance/medium_file.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-dap/tests/fixtures/performance/small_file.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-dap/tests/fixtures/value_format_stdio_matrix.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-diagnostics/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-diagnostics/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-incremental-parsing/BENCHMARK_REPORT.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -5727,6 +5797,46 @@
 | `examples/perl/simple.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `examples/perl/unicode.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `features.toml` | config | `non-rust-features-toml` | lsp/features |
+| `fixtures/agent_implementation_packet/bounded_leaf_offline.v1.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/consumer_emacs_e06_shape.v1.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/golden/bounded_leaf_offline.compact.txt` | test | `non-rust-agent-implementation-packet-golden-text` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/golden/bounded_leaf_offline.machine.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/golden/bounded_leaf_offline.markdown.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `fixtures/agent_implementation_packet/golden/consumer_emacs_e06_shape.compact.txt` | test | `non-rust-agent-implementation-packet-golden-text` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/golden/consumer_emacs_e06_shape.machine.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/golden/consumer_emacs_e06_shape.markdown.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `fixtures/agent_implementation_packet/golden/live_observed_candidate.compact.txt` | test | `non-rust-agent-implementation-packet-golden-text` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/golden/live_observed_candidate.machine.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/golden/live_observed_candidate.markdown.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `fixtures/agent_implementation_packet/invalid/authority_current_without_proof.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/blocked_node_without_edge.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/conditional_profile_without_decision.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/controller_node_as_work.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/current_authority_without_digest.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/duplicate_authority_ref.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/expected_errors.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/fabricated_observation.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/generic_falsifier_statement.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/generic_verification.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/hidden_writer_slots.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/historical_branch_as_current_authority.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/incomplete_observation.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/invented_stop_authority.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/local_diff_claimed_delivered.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/missing_claim_ceiling.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/missing_diff_check.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/missing_falsifier.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/missing_generated_obligation.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/missing_required_input_frontier.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/mutable_agent_state.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/null_frontier_section.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/overlapping_writer_keys.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/ready_node_with_spurious_edge.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/stale_authority_tree.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/unauthorized_stop_boundary.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/invalid/unconditional_profile_with_decision.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/live_observed_candidate.v1.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_implementation_packet/shuffled/bounded_leaf_offline_shuffled.v1.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/debug-peer/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `fixtures/debug-peer/perl/minimal_ptkdb_peer.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `fixtures/experience/install_owned_state/manifest_canonical_full_install.json` | test | `non-rust-install-owned-state-canonical-full-install-manifest` | distribution |
@@ -5742,6 +5852,7 @@
 | `fixtures/experience/install_owned_state/plan_full_removal.json` | test | `non-rust-install-owned-state-full-removal-plan` | distribution |
 | `fixtures/experience/install_owned_state/plan_invalid_stale_binding.json` | test | `non-rust-install-owned-state-stale-binding-plan-negative-control` | distribution |
 | `fixtures/experience/install_owned_state/plan_rollback_retained.json` | test | `non-rust-install-owned-state-rollback-retained-plan` | distribution |
+| `fixtures/experience/install_owned_state/result_already_absent_complete_evidence.json` | test | `non-rust-install-owned-state-already-absent-result` | distribution |
 | `fixtures/experience/install_owned_state/result_partial_failure_retryable.json` | test | `non-rust-install-owned-state-partial-failure-result` | distribution |
 | `fixtures/train_edge_contract/external_stages.v1.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
 | `fixtures/train_edge_contract/invalid/expected_errors.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
@@ -5883,6 +5994,7 @@
 | `ripr.toml` | config | `non-rust-ripr-toml` | quality/ripr |
 | `ripr/pr/repo-exposure.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `rust-analyzer.toml` | tooling | `non-rust-rust-analyzer-toml` | developer-experience |
+| `schemas/agent_implementation_packet.v1.schema.json` | config | `non-rust-agent-implementation-packet-schema` | tooling/agent-packet |
 | `schemas/binary_identity_protocol.v1.schema.json` | config | `non-rust-binary-identity-schema` | identity |
 | `schemas/install_identity_verification.v1.schema.json` | documentation | `non-rust-install-identity-verification-schema` | release/ci |
 | `schemas/perl_builtin_semantics.v1.schema.json` | config | `non-rust-compiler-builtin-semantics-schema` | compiler |
@@ -6212,6 +6324,10 @@
 | `scripts/test-control-plane-lock.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test-e2e-capped.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test-lsp-cancellation.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/emacs-clients/eglot-bundled-config.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/emacs-clients/eglot-bundled.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/emacs-clients/eglot-released-config.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/emacs-clients/eglot-released.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-host-driver.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6319,6 +6435,8 @@
 | `scripts/ux/vim_coc_smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ux/vim_vim_lsp_driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ux/vim_vim_lsp_smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ux/vim_vim_lsp_specialized.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ux/vim_vim_lsp_specialized_smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ux/vim_vimspector_dap_driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ux/vim_vimspector_dap_smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate-release-scope.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -7804,6 +7922,7 @@
 | `vscode-extension/src/languageClientStartupMetrics.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/languageServerHealth.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedCacheProtocol.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/managedCandidateRuntime.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedCandidateSelection.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedHostTarget.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedReleaseAdapter.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -7830,6 +7949,7 @@
 | `vscode-extension/src/supportPacket.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/__mocks__/vscode.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/accessibilityInventory.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/activationFailureInjection.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/activationOwner.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/activationOwnership.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/activationStartup.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -7887,6 +8007,7 @@
 | `vscode-extension/src/test/languageClientStartupMetrics.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/languageServerHealth.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedCacheProtocol.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/managedCandidateRuntime.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedCandidateSelection.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedHostTarget.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedNamespaceIsolation.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -7906,8 +8027,10 @@
 | `vscode-extension/src/test/packagedSemanticTokensSmoke.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/packagedServerVersion.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/podPreview.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/published/activationFailureJourney.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/harness/extension.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/harness/package.json` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/published/journeySupport.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/managedBinaryPublishedSmoke.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/packagedBundleJourney.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/runPublishedSmoke.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -7995,6 +8118,8 @@
 | `xtask/tests/fixtures/dependency-hygiene/machete-malformed.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
 | `xtask/tests/fixtures/dependency-hygiene/machete-missing-ignored-used.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
 | `xtask/tests/fixtures/dependency-hygiene/machete-missing-unused.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
+| `xtask/tests/fixtures/module-train-live/raw-clean-surface.json` | test | `non-rust-module-train-live-observation-fixtures` | devex/module-train |
+| `xtask/tests/fixtures/module-train-live/raw-corpus.json` | test | `non-rust-module-train-live-observation-fixtures` | devex/module-train |
 | `xtask/tests/fixtures/native-critic/false-positive/checked_io.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `xtask/tests/fixtures/native-critic/false-positive/clean_module.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `xtask/tests/fixtures/native-critic/false-positive/closure_and_eval.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |

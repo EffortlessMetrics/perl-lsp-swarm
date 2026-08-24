@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 7854,
-  "reason": "#7854 transactional activation wiring: bundle grows with the new activationOwner module, the activate()/deactivate() rewiring, and the recoverable activation-API stop seam (out/extension.js 1465078->1480680, archive-measured from the packaged VSIX; sources are LF-forced so the local win32 and CI linux archives agree) and changelog.md records the new Unreleased entry (19955->20736 after the vsce markdown processor). No file added, removed, or loosened; total recomputed 1638246->1654629.",
-  "base_baseline_file_sha256": "0c0505194ee87ddadae4154dc7d77dd005b2791447d7f0278f1f9078f1eabaeb",
-  "candidate_baseline_file_sha256": "87ea128634d0f3d56d39f91975ea2761c4f94e51a7b1ca5ca10f9edce020d12c",
-  "base_inventory_sha256": "5b56dd0d313e33cad431fc52e9e16521d10c4e5cbaa0dda80365bd7f0d2f628e",
-  "candidate_inventory_sha256": "cc4fda96f2f218068294c6a3c2e4397edcbf865a169c5c0a9746df9c68e3eefe"
+  "owner_issue": 7856,
+  "reason": "#7856 adds the harness-gated packaged activation-failure seam to activate() (out/extension.js 1516689->1519372 archive-measured on top of the #11983 package.json withdrawal) and the packaged cleanup/retry journey plus its changelog entry (changelog.md 22224->23221 after the vsce markdown processor). No file added, removed, or loosened; total recomputed ->1695683.",
+  "base_baseline_file_sha256": "a4f9360c51a5d263c45628c1b4ec2da9e6861a7a4d8912aa55e7e66e57dbc6b5",
+  "candidate_baseline_file_sha256": "4a662d41a6f80249245b526e89b6b706d1b847195c16231fe0d303cbd44a5011",
+  "base_inventory_sha256": "d70d8236a4363008fab2965595c2add0b79a5161c705017283141a44d9fe1521",
+  "candidate_inventory_sha256": "3087c97c983e74fbc5d814d8739e985dbacc26a54e7ad32c43f1e3f9dae7c19e"
 }
