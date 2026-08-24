@@ -2740,3 +2740,50 @@ created = "2026-08-23"
 review_after = "2026-09-23"
 expires = "2026-11-23"
 removal_criteria = "EffortlessMetrics/ripr#1429 connects diff-scoped analysis to tests/ harnesses and sibling cfg(test) modules; then delete this entry and rerun the enforce-new-ripr gate expecting the existing focused proof to clear the seams without it. Remove or narrow it immediately if a receipt reports any class outside no_static_path / reachable_unrevealed / weakly_gripped in these files, if the listed oracles stop covering a reported seam, or if target-contract validation drift makes the two guarded arms reachable through read_matrix; those conditions are automatic do-not-merge unless a separate evidence-backed review justifies the disposition."
+
+# -----------------------------------------------------------------------------
+# Reachability operation contract (#11553, PR #12049): declaration-line
+# probes on private-field contract types. Campaign-root ruling of
+# 2026-08-24 accepted the reviewed-suppression option after the lane's
+# decisive falsification: the external seam proof constructs
+# ReachabilityOperationOutcome::ProductFailure { stage, cause, work_receipt }
+# literally and asserts on it, yet the probe on that exact work_receipt
+# field remains no_static_path (run 32670894487) — direct literal
+# construction does not resolve the probe class. Precedent: same-class
+# entries above (const_data_no_static_path, target-matrix, #1962), all
+# tracking EffortlessMetrics/ripr#1429.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-reachability-contract-declarations"
+kind = "declaration_line_no_static_path"
+paths = ["crates/perl-semantic-facts/src/reachability_operation/**"]
+classification = ["no_static_path"]
+owner = "reachability-contract-lane"
+issue = "#11553"
+reason = "PR #12049 (#11553) adds the reachability operation contract as private-field types with canonical constructors (unforgeable receipts/outcomes are the issue's own evidence law), and ripr 0.9.x reports 52 no_static_path probes on their declaration lines — field_construction on private struct fields (ReachabilityWorkReceipt, ReachabilityOperationOutcome payloads, ReachabilityCompleteResultRef, ReachabilityExecutionProfile, tracker state), call_deletion on enum payload declarations, and return_value on the tracker-only from_parts parameter list — all reach:no 'No static test path'. The falsification is decisive: the external seam proof constructs ReachabilityOperationOutcome::ProductFailure { stage, cause, work_receipt } literally and asserts on it, yet the probe on that exact work_receipt field stays no_static_path (run 32670894487), and the passing precedent (#6772) resolved only pub-primitive-typed fields constructed by struct literal in tests. Every executable seam of the contract is asserted by 27 inline falsifiers plus 6 external-consumer seam-proof tests (subject-to-publication walk, all terminal classes, fail-closed budget/profile/work-honesty validation, partial-vs-empty separation, serialization determinism). Remove when EffortlessMetrics/ripr#1429 resolves declaration-line probes for private non-primitive-typed fields via constructor-call paths, or when a reviewed alternative lands."
+created = "2026-08-24"
+review_after = "2026-09-24"
+expires = "2026-10-24"
+removal_criteria = "EffortlessMetrics/ripr#1429 fixed upstream so declaration-line probes resolve through constructor-call paths, OR a reviewed design decision lands an alternative (pub-field DTO redesign was explicitly rejected by the 2026-08-24 campaign ruling because forgeable receipts defeat #11553's evidence law), then delete this entry and rerun the enforce-new-ripr gate. HONEST SCOPE NOTE: the matcher is path-scoped and classification-qualified as enforced by ripr 0.9.x on this head (the 52 no_static_path findings were suppressed while the module's reachable_unrevealed side_effect findings were not); a future blocking class in this module is NOT masked by this entry and must be dispositioned separately."
+
+# -----------------------------------------------------------------------------
+# Workspace reachability composition harness (#11553, PR #12049): the
+# ripr-suppress-seam-proof-tests entry names probe families
+# (call_deletion/return_value/error_path) rather than the classification
+# ripr 0.9.x actually reports for `?`-operator plumbing in these harnesses
+# (reachable_unrevealed), so this lane's harness `)?` seams fall through.
+# Lane-scoped to this one file; remove together with the parent
+# reachability-contract entry when ripr#1428/#1429 land.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-reachability-workspace-harness-error-paths"
+kind = "test_receipt_surface"
+paths = ["crates/perl-workspace/tests/ripr_seam_proof_reachability_operation_contract.rs"]
+classification = ["reachable_unrevealed"]
+owner = "reachability-contract-lane"
+issue = "#11553"
+reason = "The four reachable_unrevealed findings in this file are error_path probes on `)?` plumbing lines of the ripr_seam_proof_* harness itself, the exact class ripr-suppress-seam-proof-tests describes; that entry lists probe-family names where ripr 0.9.x reports the reachable_unrevealed classification, so this file-scoped companion closes the gap for this lane only. Remove when EffortlessMetrics/ripr#1428 is fixed or the parent reachability-contract entry is removed."
+created = "2026-08-24"
+review_after = "2026-09-24"
+expires = "2026-10-24"
+removal_criteria = "ripr#1428 fixed upstream, OR ripr-suppress-seam-proof-tests corrected to match the classification ripr reports, then delete this companion entry."
