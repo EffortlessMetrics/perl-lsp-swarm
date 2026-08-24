@@ -22,7 +22,18 @@
 //! Output order and the view fingerprint are deterministic under input
 //! ordering: all containers are ordered maps over canonical keys and rows are
 //! sorted before insertion, so permuting the model's fact vectors produces a
-//! byte-identical view.
+//! byte-identical view. This guarantee covers the fingerprint and every index
+//! table; it deliberately excludes [`SemanticQueryView::model_snapshot_identity`],
+//! which tracks the raw model serialization (including fact-vector order) by
+//! design.
+//!
+//! Generation semantics: `ProjectModel` carries per-file generation identity
+//! only — there is no model-level accepted-generation counter. Independent
+//! files legitimately sit at different generations in one steady-state model,
+//! so this view does not enforce cross-shard generation uniformity. The
+//! accepted-generation basis is [`SemanticQueryView::model_snapshot_identity`];
+//! caller-supplied floors (`CheckedBuildInput::min_shard_generation`) are
+//! per-shard floors, checked against each adopted shard individually.
 //!
 //! Non-goals: no package/relationship indexes, no query matching/ranking, no
 //! LSP projection, no live publication, no persistence.
@@ -157,7 +168,7 @@ pub enum ViewRejection {
         /// Files lacking a shard state while others were adopted.
         unadopted_paths: Vec<String>,
     },
-    /// An adopted shard sits below the caller's required minimum generation.
+    /// An adopted shard sits below the caller's required per-shard floor.
     StaleGeneration {
         /// The offending shard's relative path.
         path: String,
@@ -297,8 +308,10 @@ pub struct AnchorRow {
 /// full-shard scan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AnchorLookupWork {
-    /// Comparison probes spent by the interval search.
+    /// Comparison probes spent by the right-cut descent (logarithmic).
     pub probes: usize,
+    /// Window rows actually examined by the overlap filter.
+    pub scanned_rows: usize,
     /// Total anchor rows available for the queried file.
     pub candidate_rows: usize,
 }
@@ -328,7 +341,8 @@ pub struct CheckedBuildInput<'m> {
     pub model: &'m ProjectModel,
     /// Required root, when the caller pins it.
     pub expected_root: Option<&'m str>,
-    /// Minimum adopted generation every shard must meet.
+    /// Minimum adopted generation every shard must individually meet (a
+    /// per-shard floor; the model carries no model-level generation).
     pub min_shard_generation: Option<u64>,
 }
 
@@ -351,6 +365,9 @@ pub struct SemanticQueryView {
     packages: BTreeMap<PackageId, DeclarationRow>,
     /// Declaration anchors sorted by start byte, keyed by file id.
     anchors_by_file: BTreeMap<FileId, Vec<AnchorRow>>,
+    /// Suffix-maximum end byte per anchor row (same key/order as
+    /// `anchors_by_file`), enabling nesting-safe interval descent.
+    anchor_max_ends: BTreeMap<FileId, Vec<u32>>,
     /// Typed completeness per family, keyed by family name.
     completeness: BTreeMap<&'static str, IndexCompleteness>,
     /// Build work receipt.
@@ -386,6 +403,7 @@ impl SemanticQueryView {
         let sources = index_sources(model);
         let (declarations_by_file, symbols, packages) = index_declarations(model);
         let anchors_by_file = index_anchors(&declarations_by_file);
+        let anchor_max_ends = anchor_suffix_max_ends(&anchors_by_file);
         let completeness = classify_families(model);
         let work = measure_work(&sources, &declarations_by_file, &symbols, &packages);
         let fingerprint = fingerprint_view(model, &sources, &declarations_by_file, &completeness);
@@ -401,6 +419,7 @@ impl SemanticQueryView {
             symbols,
             packages,
             anchors_by_file,
+            anchor_max_ends,
             completeness,
             work,
             fingerprint,
@@ -483,6 +502,11 @@ impl SemanticQueryView {
     }
 
     /// Ordered declaration contributions of one logical source.
+    ///
+    /// Denominator semantics: the rows of one file within this generation.
+    /// A `FileId` absent from this generation therefore answers
+    /// [`IndexAnswer::Complete`] with zero rows — a legitimate exact empty,
+    /// distinct from a not-proven family.
     #[must_use]
     pub fn declarations_in_file(&self, file_id: &FileId) -> IndexAnswer<'_, &[DeclarationRow]> {
         match self.declaration_state_for(file_id) {
@@ -519,6 +543,14 @@ impl SemanticQueryView {
 
     /// Declaration anchors overlapping `[start, end)` in one file revision.
     ///
+    /// Anchors nest (a package span encloses its members), so the descent is
+    /// driven by a per-file suffix-maximum end index rather than raw end
+    /// order; overlapping and nested anchors are all reported.
+    ///
+    /// As with [`Self::declarations_in_file`], a `FileId` absent from this
+    /// generation is a legitimate exact empty: complete denominator, zero
+    /// rows.
+    ///
     /// The binary search spends `probes` comparisons against `candidate_rows`
     /// available rows; a hot lookup never scans the full anchor set.
     #[must_use]
@@ -531,29 +563,53 @@ impl SemanticQueryView {
         let candidates = match self.declaration_state_for(file_id) {
             Ok(()) => self.anchors_by_file.get(file_id),
             Err(answer) => {
-                return answer
-                    .map(|()| (Vec::new(), AnchorLookupWork { probes: 0, candidate_rows: 0 }));
+                return answer.map(|()| {
+                    (Vec::new(), AnchorLookupWork { probes: 0, scanned_rows: 0, candidate_rows: 0 })
+                });
             }
         };
-        let candidates: &[AnchorRow] = candidates.map(Vec::as_slice).unwrap_or(&[]);
-        let work = AnchorLookupWork { candidate_rows: candidates.len(), probes: 0 };
+        let Some(rows) = candidates else {
+            return IndexAnswer::Complete((
+                Vec::new(),
+                AnchorLookupWork { probes: 0, scanned_rows: 0, candidate_rows: 0 },
+            ));
+        };
 
-        // First anchor whose end could still overlap `start`.
+        // Anchors nest (a package span encloses its members), so end_byte is
+        // not monotone over start order and a single end-driven descent is
+        // unsound. Strategy (rationale: per-file anchor sets are file-local
+        // declaration counts — tens to thousands of contiguous rows — so a
+        // two-sided window scan is far below any cross-file shard scan):
+        //  1. exact right cut over the start-sorted vector drops every anchor
+        //     starting at or after `end` (logarithmic descent);
+        //  2. the remaining window is filtered by `end_byte > start`.
+        // `max_ends[0]` gives a constant-time global exit when no anchor in
+        // the file reaches `start` at all.
+        let max_ends = self.anchor_max_ends.get(file_id).map(Vec::as_slice).unwrap_or(&[]);
+        if max_ends.first().is_none_or(|longest| *longest <= start) {
+            return IndexAnswer::Complete((
+                Vec::new(),
+                AnchorLookupWork { probes: 0, scanned_rows: 0, candidate_rows: rows.len() },
+            ));
+        }
+
         let mut probes = 0usize;
         let mut low = 0usize;
-        let mut high = candidates.len();
+        let mut high = rows.len();
         while low < high {
             probes += 1;
             let mid = low + (high - low) / 2;
-            if candidates[mid].end_byte <= start {
+            if rows[mid].start_byte < end {
                 low = mid + 1;
             } else {
                 high = mid;
             }
         }
-        let hits: Vec<&AnchorRow> =
-            candidates[low..].iter().take_while(|row| row.start_byte < end).collect();
-        IndexAnswer::Complete((hits, AnchorLookupWork { probes, ..work }))
+        let hits: Vec<&AnchorRow> = rows[..low].iter().filter(|row| row.end_byte > start).collect();
+        IndexAnswer::Complete((
+            hits,
+            AnchorLookupWork { probes, scanned_rows: low, candidate_rows: rows.len() },
+        ))
     }
 
     /// Typed occurrence contributions for a canonical entity.
@@ -764,6 +820,23 @@ fn index_anchors(
         anchors.insert(file_id.clone(), file_anchors);
     }
     anchors
+}
+
+fn anchor_suffix_max_ends(
+    anchors_by_file: &BTreeMap<FileId, Vec<AnchorRow>>,
+) -> BTreeMap<FileId, Vec<u32>> {
+    let mut max_ends = BTreeMap::new();
+    for (file_id, rows) in anchors_by_file {
+        let mut suffix: Vec<u32> = Vec::with_capacity(rows.len());
+        let mut running = 0u32;
+        for row in rows.iter().rev() {
+            running = running.max(row.end_byte);
+            suffix.push(running);
+        }
+        suffix.reverse();
+        max_ends.insert(file_id.clone(), suffix);
+    }
+    max_ends
 }
 
 fn classify_families(model: &ProjectModel) -> BTreeMap<&'static str, IndexCompleteness> {
@@ -1360,6 +1433,75 @@ mod tests {
     }
 
     #[test]
+    fn nested_anchor_enclosures_are_found() {
+        // The review repro: package span encloses member spans; a query past
+        // the member's end must still find the enclosing package.
+        let content = "nested";
+        let mut model = ProjectModel::empty("proj", FactClasses::all());
+        model.files.push(file("lib/N.pm", content));
+        let pkg = package_record("lib/N.pm", content, "N", 0, 100);
+        let inner = symbol("lib/N.pm", content, Some("N"), "run", "N::run", 10, 20);
+        model.packages.push(pkg);
+        model.symbols.push(inner);
+
+        let view = SemanticQueryView::build(&model).unwrap();
+        let file_id = FileId::new("lib/N.pm", &Digest::of(content));
+
+        let (hits, _) = view.anchors_overlapping(&file_id, 50, 60).rows().unwrap();
+        assert_eq!(hits.len(), 1, "enclosing package anchor must be found");
+        assert!(hits[0].entity_key.starts_with("pkg:"));
+
+        // Query inside the member reports both nested anchors.
+        let (both, _) = view.anchors_overlapping(&file_id, 12, 18).rows().unwrap();
+        assert_eq!(both.len(), 2);
+
+        // Deeper chain: only ancestors enclosing the query survive.
+        let deep_pkg = package_record("lib/N.pm", content, "M", 5, 95);
+        let deep_sub = symbol("lib/N.pm", content, Some("M"), "go", "M::go", 30, 40);
+        model.packages.push(deep_pkg);
+        model.symbols.push(deep_sub);
+        let view2 = SemanticQueryView::build(&model).unwrap();
+        let (deep_hits, _) = view2.anchors_overlapping(&file_id, 50, 60).rows().unwrap();
+        assert_eq!(deep_hits.len(), 2, "package spans [0,100) and [5,95) enclose [50,60)");
+    }
+
+    #[test]
+    fn anchor_interval_boundaries_are_half_open() {
+        let content = "edges";
+        let mut model = ProjectModel::empty("proj", FactClasses::all());
+        model.files.push(file("lib/E.pm", content));
+        // Anchor exactly left of the query and exactly right of it.
+        model.symbols.push(symbol("lib/E.pm", content, None, "l", "L::l", 0, 10));
+        model.symbols.push(symbol("lib/E.pm", content, None, "r", "R::r", 20, 30));
+        let view = SemanticQueryView::build(&model).unwrap();
+        let file_id = FileId::new("lib/E.pm", &Digest::of(content));
+
+        // Touching on either edge does not overlap [10, 20).
+        let (touching, _) = view.anchors_overlapping(&file_id, 10, 20).rows().unwrap();
+        assert!(touching.is_empty(), "edge-touching anchors must not overlap");
+
+        // One byte into each neighbor overlaps it.
+        let (left_hit, _) = view.anchors_overlapping(&file_id, 9, 11).rows().unwrap();
+        assert_eq!(left_hit.iter().filter(|row| row.start_byte == 0).count(), 1);
+        let (right_hit, _) = view.anchors_overlapping(&file_id, 19, 21).rows().unwrap();
+        assert_eq!(right_hit.iter().filter(|row| row.end_byte == 30).count(), 1);
+
+        // Zero-width anchor at 15: reachable from strictly-inside queries.
+        let mut with_point = ProjectModel::empty("proj", FactClasses::all());
+        with_point.files.push(file("lib/P.pm", content));
+        with_point.symbols.push(symbol("lib/P.pm", content, None, "p", "P::p", 15, 15));
+        let point_view = SemanticQueryView::build(&with_point).unwrap();
+        let point_id = FileId::new("lib/P.pm", &Digest::of(content));
+        let (inside, _) = point_view.anchors_overlapping(&point_id, 14, 16).rows().unwrap();
+        assert_eq!(inside.len(), 1, "zero-width anchor reachable from an enclosing query");
+        let (at_start_edge, _) = point_view.anchors_overlapping(&point_id, 15, 16).rows().unwrap();
+        assert!(
+            at_start_edge.is_empty(),
+            "zero-width anchor coincident with the query start is empty under half-open rules"
+        );
+    }
+
+    #[test]
     fn hot_anchor_lookup_avoids_full_scan() {
         let content = "anchors";
         let mut model = ProjectModel::empty("proj", FactClasses::all());
@@ -1388,12 +1530,20 @@ mod tests {
         let (hits, work) = answer.rows().unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(work.candidate_rows, total as usize);
+        // The right-cut descent is logarithmic; the overlap filter then
+        // examines exactly the window rows reported in `scanned_rows`.
+        let log2 = (work.candidate_rows as f64).log2().ceil() as usize;
         assert!(
-            work.probes * 4 < work.candidate_rows,
-            "hot lookup spent {} probes on {} rows",
+            work.probes <= log2 + 1,
+            "hot lookup spent {} descent probes on {} rows; expected <= ceil(log2)+1",
             work.probes,
             work.candidate_rows
         );
+        assert!(work.scanned_rows <= work.candidate_rows);
+        // A query beyond every anchor exits without scanning the window.
+        let (_, beyond) =
+            view.anchors_overlapping(&file_id, 70 * 100, 70 * 100 + 5).rows().unwrap();
+        assert_eq!(beyond.scanned_rows, 0);
 
         // Boundary semantics: [start, end) overlap.
         let gap_answer = view.anchors_overlapping(&file_id, 11, 99);
