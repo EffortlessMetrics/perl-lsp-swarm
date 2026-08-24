@@ -1877,6 +1877,7 @@ dependencies = [
  "ropey",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
