@@ -55,3 +55,10 @@ level = "deny"
 status = "tracked"
 class = "unsafe-memory"
 reason = "Packed repr must specify an ABI to avoid accidental layout assumptions."
+
+[[lint]]
+name = "clippy::same_length_and_capacity"
+level = "deny"
+status = "active"
+class = "unsafe-memory"
+reason = "Activated by #1804 after zero-site confirmation on current all-targets; protects raw-parts reconstruction (Vec::from_raw_parts, etc.) from length/capacity identity errors that corrupt allocation bounds."

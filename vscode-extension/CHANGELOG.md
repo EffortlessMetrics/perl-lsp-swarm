@@ -87,7 +87,7 @@ All notable changes to the Perl Language Server extension will be documented in 
 - Unclosed-block diagnostics anchor at the opening brace, not end-of-input.
 - POD command parsing no longer misidentifies `=cutlery` or `=headache`.
 
-Full release notes: [v0.17.0](docs/releases/v0.17.0.md)
+Full release notes: [v0.17.0](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/releases/v0.17.0.md)
 
 ## [0.16.0] - 2026-06-06
 
@@ -96,7 +96,7 @@ Full release notes: [v0.17.0](docs/releases/v0.17.0.md)
 - **Workspace indexing** rewritten with generation-guarded freshness.
 - **JSON-RPC type safety** hardening across the dispatch layer.
 
-Full release notes: [v0.16.0](docs/releases/v0.16.0.md)
+Full release notes: [v0.16.0](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/releases/v0.16.0.md)
 
 ## [0.15.2] - 2026-05-26
 

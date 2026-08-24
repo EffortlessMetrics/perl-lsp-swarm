@@ -16,8 +16,227 @@ use super::normalized::{
 };
 use super::{
     CriticFindingOrigin, CriticFindingShape, CriticObservedIdentity, Severity,
-    native::{CriticFinding, CriticSuppressionMap, NativeCriticRegistry},
+    native::{CriticFinding, CriticSuppressionMap, NativeCriticRegistry, range_for_byte_span},
 };
+
+/// One producer-owned overlap observation declared by a core lint emitter
+/// while it still owns the proposition (#11918).
+///
+/// The checked critic identity, reviewed shape, and critic-scale severity are
+/// producer declarations made at the syntax branch that observed the finding.
+/// They are never reconstructed from the finished diagnostic, its LSP
+/// severity, code string, message, or range: the core producer states the
+/// critic-scale fact before that information can collapse.
+///
+/// Construction is named for the admitted reviewed overlap cohort only. The
+/// ordinary core diagnostic keeps its existing severity and behavior; this
+/// observation is the independent critic-scale declaration that lets the row
+/// merge with its native alias in [`normalize_critic_findings`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltInCriticObservation {
+    identity: CriticObservedIdentity<'static>,
+    severity: Severity,
+    byte_range: (usize, usize),
+    message: String,
+    explanation: Option<String>,
+}
+
+impl BuiltInCriticObservation {
+    /// Built-in PL404 comparison against an explicit literal `undef`.
+    #[must_use]
+    pub fn pl404_literal_undef_comparison(
+        severity: Severity,
+        byte_range: (usize, usize),
+        message: String,
+        explanation: Option<String>,
+    ) -> Self {
+        Self::new(
+            CriticObservedIdentity::built_in_literal_undef_comparison(),
+            severity,
+            byte_range,
+            message,
+            explanation,
+        )
+    }
+
+    /// Built-in PL404 comparison whose operand may be undefined through data
+    /// flow. This shape has no native alias and stays a distinct finding.
+    #[must_use]
+    pub fn pl404_potentially_undef_comparison(
+        severity: Severity,
+        byte_range: (usize, usize),
+        message: String,
+        explanation: Option<String>,
+    ) -> Self {
+        Self::new(
+            CriticObservedIdentity::built_in_potentially_undef_comparison(),
+            severity,
+            byte_range,
+            message,
+            explanation,
+        )
+    }
+
+    /// Built-in PL601 backtick command execution.
+    #[must_use]
+    pub fn pl601_backtick(
+        severity: Severity,
+        byte_range: (usize, usize),
+        message: String,
+        explanation: Option<String>,
+    ) -> Self {
+        Self::new(
+            CriticObservedIdentity::built_in_backtick_exec(),
+            severity,
+            byte_range,
+            message,
+            explanation,
+        )
+    }
+
+    /// Built-in PL601 `qx` command execution.
+    #[must_use]
+    pub fn pl601_qx(
+        severity: Severity,
+        byte_range: (usize, usize),
+        message: String,
+        explanation: Option<String>,
+    ) -> Self {
+        Self::new(
+            CriticObservedIdentity::built_in_qx_exec(),
+            severity,
+            byte_range,
+            message,
+            explanation,
+        )
+    }
+
+    /// Built-in PL606 `readpipe` command execution.
+    #[must_use]
+    pub fn pl606_readpipe(
+        severity: Severity,
+        byte_range: (usize, usize),
+        message: String,
+        explanation: Option<String>,
+    ) -> Self {
+        Self::new(
+            CriticObservedIdentity::built_in_readpipe_exec(),
+            severity,
+            byte_range,
+            message,
+            explanation,
+        )
+    }
+
+    /// Built-in PL603 `system` process execution.
+    #[must_use]
+    pub fn pl603_system(
+        severity: Severity,
+        byte_range: (usize, usize),
+        message: String,
+        explanation: Option<String>,
+    ) -> Self {
+        Self::new(
+            CriticObservedIdentity::built_in_system_call(),
+            severity,
+            byte_range,
+            message,
+            explanation,
+        )
+    }
+
+    /// Built-in PL604 `exec` process replacement.
+    #[must_use]
+    pub fn pl604_exec(
+        severity: Severity,
+        byte_range: (usize, usize),
+        message: String,
+        explanation: Option<String>,
+    ) -> Self {
+        Self::new(
+            CriticObservedIdentity::built_in_exec_call(),
+            severity,
+            byte_range,
+            message,
+            explanation,
+        )
+    }
+
+    fn new(
+        identity: CriticObservedIdentity<'static>,
+        severity: Severity,
+        byte_range: (usize, usize),
+        message: impl Into<String>,
+        explanation: Option<String>,
+    ) -> Self {
+        Self { identity, severity, byte_range, message: message.into(), explanation }
+    }
+
+    /// Checked producer-declared critic identity.
+    #[must_use]
+    pub const fn identity(&self) -> CriticObservedIdentity<'static> {
+        self.identity
+    }
+
+    /// Critic-scale severity declared by the core producer.
+    #[must_use]
+    pub const fn severity(&self) -> Severity {
+        self.severity
+    }
+
+    /// Exact producer-observed byte range.
+    #[must_use]
+    pub const fn byte_range(&self) -> (usize, usize) {
+        self.byte_range
+    }
+
+    /// Producer-owned message.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Producer-owned detailed explanation.
+    #[must_use]
+    pub fn explanation(&self) -> Option<&str> {
+        self.explanation.as_deref()
+    }
+
+    fn into_candidate(
+        self,
+        source: &str,
+        source_identity: CriticSourceIdentity,
+    ) -> CriticFindingCandidate {
+        let range = range_for_byte_span(source, self.byte_range.0, self.byte_range.1);
+        CriticFindingCandidate::new(
+            self.identity,
+            source_identity,
+            self.severity,
+            range,
+            self.message,
+            self.explanation,
+        )
+    }
+}
+
+/// Convert producer-declared built-in overlap observations into normalization
+/// candidates bound to one exact logical source subject (#11918).
+///
+/// Only the line/column coordinates are completed here, from the same source
+/// text and byte span the emitter observed — the same coordinate math the
+/// native path applies to its byte spans. Identity, shape, and severity are
+/// already producer declarations and are never derived here.
+#[must_use]
+pub fn built_in_observation_candidates(
+    observations: impl IntoIterator<Item = BuiltInCriticObservation>,
+    source: &str,
+    source_identity: CriticSourceIdentity,
+) -> Vec<CriticFindingCandidate> {
+    observations
+        .into_iter()
+        .map(|observation| observation.into_candidate(source, source_identity))
+        .collect()
+}
 
 /// A native finding whose `(rule_id, observed_shape)` pair has no registered
 /// producer disposition. Normalization fails closed instead of guessing.
@@ -296,6 +515,388 @@ mod tests {
 
     fn subject() -> CriticSourceIdentity {
         CriticSourceIdentity::new(SOURCE_KEY, GENERATION)
+    }
+
+    // --- producer-owned built-in overlap observations (#11918) ---
+
+    const OVERLAP_SOURCE: &str = "use strict;\nuse warnings;\nsystem('ls');\n";
+
+    /// A native finding whose range is derived from the same source bytes a
+    /// built-in emitter observed, so both producers agree on the exact range.
+    fn native_finding_at_source_bytes(
+        rule_id: &str,
+        shape: CriticFindingShape,
+        severity: Severity,
+        byte_range: (usize, usize),
+    ) -> CriticFinding {
+        CriticFinding {
+            rule_id: rule_id.to_string(),
+            category: super::super::native::CriticCategory::Security,
+            severity,
+            range: super::range_for_byte_span(OVERLAP_SOURCE, byte_range.0, byte_range.1),
+            message: "native finding".to_string(),
+            explanation: "native explanation".to_string(),
+            suppression_key: rule_id.to_string(),
+            observed_shape: shape,
+            related: Vec::new(),
+            fix: None,
+        }
+    }
+
+    /// The `system('ls')` byte span inside [`OVERLAP_SOURCE`].
+    fn system_call_bytes() -> (usize, usize) {
+        let start = OVERLAP_SOURCE.find("system('ls')").unwrap_or(0);
+        (start, start + "system('ls')".len())
+    }
+
+    fn merged_rows_for_one_system_call() -> Vec<super::NormalizedCriticFinding> {
+        let bytes = system_call_bytes();
+        let (native_candidates, unresolved) = native_finding_candidates(
+            [native_finding_at_source_bytes(
+                "native.security.system_exec",
+                CriticFindingShape::SystemCall,
+                Severity::Harsh,
+                bytes,
+            )],
+            subject(),
+        );
+        assert!(unresolved.is_empty());
+
+        let built_in = super::built_in_observation_candidates(
+            [super::BuiltInCriticObservation::pl603_system(
+                Severity::Harsh,
+                bytes,
+                "system() executes a shell command. Ensure input is sanitized.".to_string(),
+                None,
+            )],
+            OVERLAP_SOURCE,
+            subject(),
+        );
+
+        normalize_critic_findings(native_candidates.into_iter().chain(built_in))
+    }
+
+    #[test]
+    fn built_in_overlap_observations_merge_with_every_reviewed_native_alias() {
+        let bytes = system_call_bytes();
+        for (rule_id, shape, observe, canonical_id) in [
+            (
+                "native.security.system_exec",
+                CriticFindingShape::SystemCall,
+                super::BuiltInCriticObservation::pl603_system
+                    as fn(
+                        Severity,
+                        (usize, usize),
+                        String,
+                        Option<String>,
+                    ) -> super::BuiltInCriticObservation,
+                "critic.security.system_call",
+            ),
+            (
+                "native.security.system_exec",
+                CriticFindingShape::ExecCall,
+                super::BuiltInCriticObservation::pl604_exec
+                    as fn(
+                        Severity,
+                        (usize, usize),
+                        String,
+                        Option<String>,
+                    ) -> super::BuiltInCriticObservation,
+                "critic.security.exec_call",
+            ),
+            (
+                "native.security.qx_readpipe",
+                CriticFindingShape::Qx,
+                super::BuiltInCriticObservation::pl601_qx
+                    as fn(
+                        Severity,
+                        (usize, usize),
+                        String,
+                        Option<String>,
+                    ) -> super::BuiltInCriticObservation,
+                "critic.security.qx_exec",
+            ),
+            (
+                "native.security.qx_readpipe",
+                CriticFindingShape::Readpipe,
+                super::BuiltInCriticObservation::pl606_readpipe
+                    as fn(
+                        Severity,
+                        (usize, usize),
+                        String,
+                        Option<String>,
+                    ) -> super::BuiltInCriticObservation,
+                "critic.security.readpipe_exec",
+            ),
+            (
+                "native.security.backtick_exec",
+                CriticFindingShape::Backtick,
+                super::BuiltInCriticObservation::pl601_backtick
+                    as fn(
+                        Severity,
+                        (usize, usize),
+                        String,
+                        Option<String>,
+                    ) -> super::BuiltInCriticObservation,
+                "critic.security.backtick_exec",
+            ),
+            (
+                "native.common.undef_comparison",
+                CriticFindingShape::LiteralUndefComparison,
+                super::BuiltInCriticObservation::pl404_literal_undef_comparison
+                    as fn(
+                        Severity,
+                        (usize, usize),
+                        String,
+                        Option<String>,
+                    ) -> super::BuiltInCriticObservation,
+                "critic.common.undef_comparison",
+            ),
+        ] {
+            let (native_candidates, unresolved) = native_finding_candidates(
+                [native_finding_at_source_bytes(rule_id, shape, Severity::Harsh, bytes)],
+                subject(),
+            );
+            assert!(unresolved.is_empty(), "{rule_id}/{shape:?} must resolve");
+
+            let built_in = super::built_in_observation_candidates(
+                [observe(Severity::Harsh, bytes, "built-in finding".to_string(), None)],
+                OVERLAP_SOURCE,
+                subject(),
+            );
+
+            let rows = normalize_critic_findings(native_candidates.into_iter().chain(built_in));
+            assert_eq!(rows.len(), 1, "{rule_id}/{shape:?} must merge into one row");
+            let row = &rows[0];
+            assert_eq!(row.canonical_id(), Some(canonical_id));
+            assert_eq!(row.contributors().len(), 2, "both producer identities retained");
+            assert!(
+                row.contributors().iter().any(|contributor| {
+                    contributor.identity().origin() == CriticFindingOrigin::BuiltInDiagnostic
+                }),
+                "built-in contributor identity retained"
+            );
+            assert!(
+                row.contributors().iter().any(|contributor| {
+                    contributor.identity().origin() == CriticFindingOrigin::NativeCritic
+                }),
+                "native contributor identity retained"
+            );
+        }
+    }
+
+    #[test]
+    fn producer_declared_security_severity_survives_without_invented_conflict() {
+        // Discriminates against a reverse mapping from the LSP `WARNING`
+        // severity: mapping Warning -> Stern would flip the merged severity to
+        // Stern AND raise a conflict flag the producers never declared.
+        let rows = merged_rows_for_one_system_call();
+        let row = &rows[0];
+        assert!(!row.has_severity_conflict(), "both producers declared Harsh");
+        assert_eq!(row.severity(), Severity::Harsh, "declared severity wins, not a mapped one");
+    }
+
+    #[test]
+    fn pl404_literal_declares_stern_matching_its_native_alias() {
+        let bytes = system_call_bytes();
+        let (native_candidates, _) = native_finding_candidates(
+            [native_finding_at_source_bytes(
+                "native.common.undef_comparison",
+                CriticFindingShape::LiteralUndefComparison,
+                Severity::Stern,
+                bytes,
+            )],
+            subject(),
+        );
+        let built_in = super::built_in_observation_candidates(
+            [super::BuiltInCriticObservation::pl404_literal_undef_comparison(
+                Severity::Stern,
+                bytes,
+                "undef comparison".to_string(),
+                None,
+            )],
+            OVERLAP_SOURCE,
+            subject(),
+        );
+
+        let rows = normalize_critic_findings(native_candidates.into_iter().chain(built_in));
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].has_severity_conflict());
+        assert_eq!(rows[0].severity(), Severity::Stern);
+    }
+
+    #[test]
+    fn wrong_shape_cannot_merge_backtick_against_native_qx() {
+        let bytes = system_call_bytes();
+        let (native_qx, _) = native_finding_candidates(
+            [native_finding_at_source_bytes(
+                "native.security.qx_readpipe",
+                CriticFindingShape::Qx,
+                Severity::Harsh,
+                bytes,
+            )],
+            subject(),
+        );
+        let built_in_backtick = super::built_in_observation_candidates(
+            [super::BuiltInCriticObservation::pl601_backtick(
+                Severity::Harsh,
+                bytes,
+                "built-in backtick finding".to_string(),
+                None,
+            )],
+            OVERLAP_SOURCE,
+            subject(),
+        );
+
+        let rows = normalize_critic_findings(native_qx.into_iter().chain(built_in_backtick));
+        assert_eq!(
+            rows.len(),
+            2,
+            "an emitter that declared the wrong reviewed shape must not merge"
+        );
+    }
+
+    #[test]
+    fn pl404_potentially_undef_shape_never_merges_with_the_literal_native_alias() {
+        let bytes = system_call_bytes();
+        let (native_literal, _) = native_finding_candidates(
+            [native_finding_at_source_bytes(
+                "native.common.undef_comparison",
+                CriticFindingShape::LiteralUndefComparison,
+                Severity::Stern,
+                bytes,
+            )],
+            subject(),
+        );
+        let built_in_potential = super::built_in_observation_candidates(
+            [super::BuiltInCriticObservation::pl404_potentially_undef_comparison(
+                Severity::Stern,
+                bytes,
+                "maybe-undef comparison".to_string(),
+                None,
+            )],
+            OVERLAP_SOURCE,
+            subject(),
+        );
+
+        let rows = normalize_critic_findings(native_literal.into_iter().chain(built_in_potential));
+        assert_eq!(rows.len(), 2, "data-flow shape is a deliberately distinct finding");
+    }
+
+    #[test]
+    fn readpipe_system_and_exec_retain_separate_canonical_findings() {
+        let bytes = system_call_bytes();
+        let mut candidates = Vec::new();
+        for (rule_id, shape) in [
+            ("native.security.qx_readpipe", CriticFindingShape::Readpipe),
+            ("native.security.system_exec", CriticFindingShape::SystemCall),
+            ("native.security.system_exec", CriticFindingShape::ExecCall),
+        ] {
+            let (native, _) = native_finding_candidates(
+                [native_finding_at_source_bytes(rule_id, shape, Severity::Harsh, bytes)],
+                subject(),
+            );
+            candidates.extend(native);
+        }
+
+        let rows = normalize_critic_findings(candidates);
+        assert_eq!(rows.len(), 3, "same range and severity must not merge distinct identities");
+        let canonical_ids: Vec<&str> = rows.iter().filter_map(|row| row.canonical_id()).collect();
+        for expected in [
+            "critic.security.readpipe_exec",
+            "critic.security.system_call",
+            "critic.security.exec_call",
+        ] {
+            assert!(canonical_ids.contains(&expected), "missing {expected} in {canonical_ids:?}");
+        }
+    }
+
+    #[test]
+    fn built_in_only_and_native_only_rows_remain_exactly_one_row_each() {
+        let rows = merged_rows_for_one_system_call();
+        assert_eq!(rows.len(), 1);
+
+        let built_in_only = super::built_in_observation_candidates(
+            [super::BuiltInCriticObservation::pl603_system(
+                Severity::Harsh,
+                system_call_bytes(),
+                "built-in only".to_string(),
+                None,
+            )],
+            OVERLAP_SOURCE,
+            subject(),
+        );
+        let rows = normalize_critic_findings(built_in_only);
+        assert_eq!(rows.len(), 1, "core-only row stays one valid row");
+        assert_eq!(rows[0].contributors().len(), 1);
+
+        let (native_only, _) = native_finding_candidates(
+            [native_finding_at_source_bytes(
+                "native.security.system_exec",
+                CriticFindingShape::SystemCall,
+                Severity::Harsh,
+                system_call_bytes(),
+            )],
+            subject(),
+        );
+        let rows = normalize_critic_findings(native_only);
+        assert_eq!(rows.len(), 1, "native-only row stays one valid row");
+        assert_eq!(rows[0].contributors().len(), 1);
+    }
+
+    #[test]
+    fn overlap_candidate_permutation_is_byte_equivalent() {
+        let bytes = system_call_bytes();
+        let (native, _) = native_finding_candidates(
+            [native_finding_at_source_bytes(
+                "native.security.system_exec",
+                CriticFindingShape::SystemCall,
+                Severity::Harsh,
+                bytes,
+            )],
+            subject(),
+        );
+        let built_in = super::built_in_observation_candidates(
+            [super::BuiltInCriticObservation::pl603_system(
+                Severity::Harsh,
+                bytes,
+                "built-in finding".to_string(),
+                None,
+            )],
+            OVERLAP_SOURCE,
+            subject(),
+        );
+
+        let forward = normalize_critic_findings(native.clone().into_iter().chain(built_in.clone()));
+        let backward = normalize_critic_findings(built_in.into_iter().chain(native));
+        assert_eq!(forward, backward);
+    }
+
+    #[test]
+    fn different_generation_or_source_never_merges_overlap_candidates() {
+        let bytes = system_call_bytes();
+        let built_in = super::built_in_observation_candidates(
+            [super::BuiltInCriticObservation::pl603_system(
+                Severity::Harsh,
+                bytes,
+                "built-in finding".to_string(),
+                None,
+            )],
+            OVERLAP_SOURCE,
+            subject(),
+        );
+        let (native, _) = native_finding_candidates(
+            [native_finding_at_source_bytes(
+                "native.security.system_exec",
+                CriticFindingShape::SystemCall,
+                Severity::Harsh,
+                bytes,
+            )],
+            CriticSourceIdentity::new(SOURCE_KEY, GENERATION + 1),
+        );
+
+        let rows = normalize_critic_findings(built_in.into_iter().chain(native));
+        assert_eq!(rows.len(), 2, "stale generations must not merge");
     }
 
     fn qx_native_candidates() -> Vec<CriticFindingCandidate> {

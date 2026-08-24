@@ -1,0 +1,3737 @@
+{
+  "schema": "issue_controller_train.v1",
+  "schema_version": 1,
+  "programme": {
+    "controller_issue": 11681,
+    "home_programme": "issue-controllers",
+    "durable_architecture_issue": 11763,
+    "durable_architecture_bundle": ".spec/11763-issue-controller-architecture",
+    "method_authority": "#3983"
+  },
+  "authority_planes": [
+    {
+      "plane": "stable train contract",
+      "owns": "the issue_controller_train.v1 topology, node contracts, writer/conflict identities and dependency classes",
+      "never_substitutes": "no live plane establishes, extends or waives a stable contract fact"
+    },
+    {
+      "plane": "semantic train revision",
+      "owns": "T02R classification of semantic graph change and invalidation of affected derived artifacts",
+      "never_substitutes": "a label edit, issue close or green check is not a semantic revision"
+    },
+    {
+      "plane": "current-tree implementation state",
+      "owns": "exact-tree probes of what is implemented on one committed tree",
+      "never_substitutes": "issue closure, PR merge or green checks are not tree currency"
+    },
+    {
+      "plane": "offline readiness/frontier",
+      "owns": "deterministic offline status, blocker chains and safe-frontier projection",
+      "never_substitutes": "structural readiness is not candidate vacancy or review currentness"
+    },
+    {
+      "plane": "exact-tree context",
+      "owns": "bounded per-node mapping onto one exact tree for fresh agents",
+      "never_substitutes": "a detailed issue body is not exact-tree context"
+    },
+    {
+      "plane": "live collaboration/candidate state",
+      "owns": "read-only branch/worktree/PR/check/review/writer observation",
+      "never_substitutes": "current-tree state does not prove no candidate exists, and a candidate does not prove readiness"
+    },
+    {
+      "plane": "exact-head proof/review closeout",
+      "owns": "one exact node, base, head, diff and current evidence set bound to checked train/spec/packet input",
+      "never_substitutes": "focused green tests or a detailed issue body alone cannot claim completion"
+    },
+    {
+      "plane": "live GitHub metadata state",
+      "owns": "observed label/navigation/metadata drift against reviewed expectations",
+      "never_substitutes": "drift clean is not product/support truth; applied labels are not registry authority"
+    },
+    {
+      "plane": "behavior/proof/support/external truth",
+      "owns": "composed behavior, executed proof, support verdicts and external authorization",
+      "never_substitutes": "composed proof does not authorize metadata mutation or merge; dogfood does not create routing policy"
+    }
+  ],
+  "train_role_vocabulary": [
+    {
+      "role": "controller",
+      "owns": "programme conjunction decomposed into child leaves; not assignable to ordinary implementation"
+    },
+    {
+      "role": "specification",
+      "owns": "checked declarative contract compilation (bundles, leaf specs)"
+    },
+    {
+      "role": "stable_contract",
+      "owns": "versioned stable machine-readable contract artifact"
+    },
+    {
+      "role": "validator",
+      "owns": "independent structural validation, closeout checking or revision governance"
+    },
+    {
+      "role": "current_tree_probe",
+      "owns": "exact immutable-tree implementation observation"
+    },
+    {
+      "role": "offline_frontier",
+      "owns": "deterministic offline status/blocker/frontier projection"
+    },
+    {
+      "role": "context_projection",
+      "owns": "bounded exact-tree context per node"
+    },
+    {
+      "role": "live_observer",
+      "owns": "read-only live candidate/collaboration or metadata observation"
+    },
+    {
+      "role": "packet_adapter",
+      "owns": "derivation of shared-contract actor packets without new schemas"
+    },
+    {
+      "role": "implementation",
+      "owns": "one assignable one-PR repository proposition"
+    },
+    {
+      "role": "proof",
+      "owns": "assignable evidence/acceptance work without product-repair authority"
+    },
+    {
+      "role": "fan_in",
+      "owns": "aggregation/closeout validation of current child evidence; cannot execute missing work"
+    },
+    {
+      "role": "integration",
+      "owns": "adoption/cutover seam between the train and existing repository surfaces"
+    },
+    {
+      "role": "external_gate",
+      "owns": "separately authorized external/privileged operation; authorization never inferred"
+    },
+    {
+      "role": "dogfood",
+      "owns": "bounded real-agent evaluation cohorts"
+    }
+  ],
+  "evidence_semantics": {
+    "not_proven_law": "missing, partial, stale, contradictory or instrument-failed evidence is not_proven and never pass",
+    "optional_visibility": "optional and unavailable rows remain explicit and never disappear"
+  },
+  "external_authorities": [
+    {
+      "id": "#1848",
+      "subject": "generic CI result vocabulary"
+    },
+    {
+      "id": "#3390",
+      "subject": "generic CI route/result authority"
+    },
+    {
+      "id": "#3693",
+      "subject": "review currentness authority"
+    },
+    {
+      "id": "#3786",
+      "subject": "canonical PR checking workflow"
+    },
+    {
+      "id": "#3949",
+      "subject": "repository development method"
+    },
+    {
+      "id": "#3957",
+      "subject": "writer/work preparation safety"
+    },
+    {
+      "id": "#3982",
+      "subject": "existing-work/writer admission and GitHub coordination"
+    },
+    {
+      "id": "#3983",
+      "subject": "issue/spec preparation and .spec tooling authority"
+    },
+    {
+      "id": "#3985",
+      "subject": "canonical PR checking workflow"
+    },
+    {
+      "id": "#3986",
+      "subject": "canonical PR checking workflow"
+    },
+    {
+      "id": "#4177",
+      "subject": "existing-work admission"
+    },
+    {
+      "id": "#4787",
+      "subject": "generic CI fan-in"
+    },
+    {
+      "id": "#4789",
+      "subject": "generic CI fan-in successor"
+    },
+    {
+      "id": "#6188",
+      "subject": "stack boundary authority"
+    },
+    {
+      "id": "#6193",
+      "subject": "review semantics authority"
+    },
+    {
+      "id": "#6276",
+      "subject": "generic issue reconciliation"
+    },
+    {
+      "id": "#8042",
+      "subject": "candidate/current boundary authority"
+    },
+    {
+      "id": "#8267",
+      "subject": "candidate/current-main boundary authority"
+    },
+    {
+      "id": "#9603",
+      "subject": "protected-main boundary authority"
+    },
+    {
+      "id": "#10168",
+      "subject": "semantic closeout authority"
+    },
+    {
+      "id": "#10554",
+      "subject": "shared train-mechanics extraction gate"
+    },
+    {
+      "id": "#10858",
+      "subject": "typed dependency/evidence semantics"
+    },
+    {
+      "id": "#10872",
+      "subject": "model-neutral bounded builder packets (agent_implementation_packet.v1)"
+    },
+    {
+      "id": "#10881",
+      "subject": "adversarial review/finding/closure packets"
+    },
+    {
+      "id": "#11106",
+      "subject": "generic change graph"
+    },
+    {
+      "id": "#11114",
+      "subject": "generic fresh/lower-cost agent evaluation vocabulary"
+    },
+    {
+      "id": "#11219",
+      "subject": "reachability programme adapter (reference only, not reusable policy)"
+    },
+    {
+      "id": "#11224",
+      "subject": "stack boundary authority"
+    },
+    {
+      "id": "#11229",
+      "subject": "protected-main boundary authority"
+    },
+    {
+      "id": "#11232",
+      "subject": "protected-main boundary authority"
+    },
+    {
+      "id": "#11375",
+      "subject": "reference revision model"
+    },
+    {
+      "id": "#EXPLICIT-AUTHORIZATION",
+      "subject": "explicit external authorization for privileged operations; never inferred from readiness, labels, green PRs or tool availability"
+    }
+  ],
+  "open_decisions_routed_elsewhere": [
+    {
+      "id": "OD1",
+      "subject": "checked registry bytes versus tracked-state prohibition: schema, placement, cadence and the stable-decision/runtime-plan boundary (co-owned with C01 #11682 per the S00 bundle)",
+      "owning_node": "C02",
+      "owning_issue": 11683
+    },
+    {
+      "id": "OD2",
+      "subject": "bulk live metadata application scope, frequency, initial cohort and rollback policy",
+      "owning_node": "R05B",
+      "owning_issue": 11785
+    },
+    {
+      "id": "OD3",
+      "subject": "generated navigation-block format, placement and regeneration trigger inside issue bodies",
+      "owning_node": "C03",
+      "owning_issue": 11684
+    },
+    {
+      "id": "OD4",
+      "subject": "directory-informed entry coupled to skill-based routing without bypassing named $deliver-*/$prepare-* skills",
+      "owning_node": "I01",
+      "owning_issue": 11777
+    },
+    {
+      "id": "OD5",
+      "subject": "proof-depth routing seam: configuration, adapter or route class inside the existing router",
+      "owning_node": "T08C",
+      "owning_issue": 11784
+    }
+  ],
+  "nodes": [
+    {
+      "node_id": "C01",
+      "issue": 11682,
+      "title": "tooling(issue-controllers): define the canonical issue-role schema and candidate inventory",
+      "title_fingerprint": "8F66383F626F6320",
+      "aliases": [
+        "R01"
+      ],
+      "train_role": "implementation",
+      "lane": "functional",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Define the canonical issue-role schema and non-authoritative candidate inventory with offline deterministic operations.",
+      "authority_before": "No role schema; title prefixes and prose signal roles.",
+      "authority_after": "issue_role_contract.v1 and issue_controller_candidate_inventory.v1 exist as the role vocabulary and discovery surface.",
+      "buildable": true,
+      "dependencies": [],
+      "claim_ceiling": "Schema/inventory only; no registry adjudication, label creation/application, body rewrites, readiness computation, live candidate inspection or scheduling.",
+      "writer": {
+        "conflict_key": "issue_controllers.role_schema",
+        "parallel_group": "none",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#10554",
+        "#10858",
+        "#3949",
+        "#3982",
+        "#3983"
+      ],
+      "allowed_components": [
+        "role schema contract",
+        "candidate inventory model",
+        "offline deterministic operations",
+        "false-positive fixtures"
+      ],
+      "forbidden_adjacent_owners": [
+        "registry adjudication (C02)",
+        "label application (C03/R05B)",
+        "readiness (T04)"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "C01",
+        "stale_policy": "role vocabulary changes classified by T02R and re-adjudicated by C02"
+      },
+      "first_falsifier": "A title prefix is accepted as establishing controller role in the inventory.",
+      "controls": {
+        "positive": "candidates carry sources and reasons; schema validates deterministically",
+        "opposite": "inventory row treated as an adjudicated role",
+        "stale": "inventory from old signals after vocabulary revision",
+        "wrong_subject": "domain-noun controller (MVC/host/process) marked non-assignable",
+        "fault": "offline operation requiring network",
+        "mutation": "manual exception without source and reason"
+      },
+      "proof": {
+        "focused": "false-positive title/body/label fixtures before population",
+        "routed": "later T08C binds schema-change proof depth"
+      },
+      "review_forward": {
+        "questions": [
+          "Do signals stay non-authoritative?"
+        ],
+        "lenses": [
+          "signal/adjudication separation"
+        ]
+      },
+      "obligations": {
+        "schema": "issue_role_contract.v1 + issue_controller_candidate_inventory.v1",
+        "generated": "none",
+        "docs": "schema notes",
+        "changelog": "none (internal contract)",
+        "receipt": "inventory run receipts"
+      },
+      "exits": {
+        "old_path": "none (new surface)",
+        "compatibility": "none",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "revert schema; signals return to prose",
+        "return_to_issue": "return here when role vocabulary meaning changes",
+        "not_proven": "ambiguous candidates stay ambiguous_blocked, never guessed",
+        "stop": "stop before adjudication or application"
+      },
+      "successors": [
+        "C02",
+        "C03",
+        "C04",
+        "C05",
+        "C06",
+        "I01",
+        "I02",
+        "P01",
+        "P02"
+      ],
+      "identity_fields": [
+        "role vocabulary",
+        "assignability rules",
+        "signal source set"
+      ],
+      "limitations": [
+        "OD1 (registry byte boundary) partially routes here via C02; this manifest does not decide it."
+      ]
+    },
+    {
+      "node_id": "C02",
+      "issue": 11683,
+      "title": "tooling(issue-controllers): adjudicate and populate the active controller registry",
+      "title_fingerprint": "900FD162FC867297",
+      "aliases": [
+        "R02"
+      ],
+      "train_role": "implementation",
+      "lane": "functional",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Adjudicate and populate the active controller registry covering the full denominator with false-positive dispositions.",
+      "authority_before": "No reviewed registry; every consumer re-derives controllers.",
+      "authority_after": "issue_controller_registry.v1 is the reviewed stable authority for roles, homes and routes.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "C01",
+          "class": "hard",
+          "provenance": "S00 plan.md ordering boundaries"
+        }
+      ],
+      "claim_ceiling": "Registry population only; no re-adjudication during planning/applying and no duplicate programme leaf DAGs.",
+      "writer": {
+        "conflict_key": "issue_controllers.active_registry",
+        "parallel_group": "post-C01-parallel",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#10858",
+        "#11106",
+        "#3949"
+      ],
+      "allowed_components": [
+        "reviewed registry population",
+        "false-positive dispositions",
+        "import/consumer relations"
+      ],
+      "forbidden_adjacent_owners": [
+        "label projection (C03)",
+        "directory routing (C04)",
+        "live mutation (R05B)"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "C02",
+        "stale_policy": "denominator changes classified by T02R; unexecuted metadata plans invalidated"
+      },
+      "first_falsifier": "A registry row appears for a body-mention-only domain controller.",
+      "controls": {
+        "positive": "complete denominator adjudicated with one primary role per row",
+        "opposite": "second home programme without import relation",
+        "stale": "registry stale after controller split/merge",
+        "wrong_subject": "registry duplicating a programme-local leaf DAG",
+        "fault": "missing source row disappears from denominator",
+        "mutation": "ambiguous_blocked rendered as adjudicated"
+      },
+      "proof": {
+        "focused": "duplicate-home and false-positive fixtures",
+        "routed": "later T08C binds registry-change proof depth"
+      },
+      "review_forward": {
+        "questions": [
+          "Is every false positive dispositioned with source?"
+        ],
+        "lenses": [
+          "denominator completeness"
+        ]
+      },
+      "obligations": {
+        "schema": "issue_controller_registry.v1",
+        "generated": "none",
+        "docs": "registry notes",
+        "changelog": "none (internal contract)",
+        "receipt": "population receipts"
+      },
+      "exits": {
+        "old_path": "none (new surface)",
+        "compatibility": "none",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "revert population; registry empty",
+        "return_to_issue": "return here when adjudication semantics change",
+        "not_proven": "ambiguous/missing/instrument-failed rows block coverage claims",
+        "stop": "stop before label application or mutation"
+      },
+      "successors": [
+        "C03",
+        "C04",
+        "C05",
+        "C06",
+        "I01",
+        "I02",
+        "P01",
+        "P02",
+        "R05B"
+      ],
+      "identity_fields": [
+        "registry rows",
+        "home/import relations"
+      ],
+      "limitations": [
+        "OD1 (checked registry bytes boundary) is routed here; this manifest does not decide it."
+      ]
+    },
+    {
+      "node_id": "C03",
+      "issue": 11684,
+      "title": "tooling(issue-controllers): codify role labels and generated issue-navigation metadata",
+      "title_fingerprint": "D9B0887E4E61026B",
+      "aliases": [
+        "R03"
+      ],
+      "train_role": "implementation",
+      "lane": "functional",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Codify role labels and the generated issue-navigation metadata projection with dry-run plan/render/check.",
+      "authority_before": "No label vocabulary or navigation projection contract.",
+      "authority_after": "issue_role_labels.v1 and issue_controller_metadata_projection.v1 define the generated-projection surface.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "C01",
+          "class": "hard",
+          "provenance": "S00 plan.md ordering boundaries"
+        },
+        {
+          "target": "C02",
+          "class": "evidence",
+          "provenance": "#11684 body references"
+        }
+      ],
+      "claim_ceiling": "Vocabulary and dry-run projection only; no broad live mutation (owned by R05B).",
+      "writer": {
+        "conflict_key": "issue_controllers.metadata_projection",
+        "parallel_group": "post-C01-parallel",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#11106",
+        "#3949",
+        "#3957",
+        "#4177"
+      ],
+      "allowed_components": [
+        "label vocabulary contract",
+        "navigation-block projection with plan/render/check"
+      ],
+      "forbidden_adjacent_owners": [
+        "live application (R05B)",
+        "registry authority",
+        "product readiness semantics"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "C03",
+        "stale_policy": "projection format changes classified by T02R; applied receipts remain immutable"
+      },
+      "first_falsifier": "A right-looking label overrides a contradictory registry row.",
+      "controls": {
+        "positive": "projection derives deterministically from the registry",
+        "opposite": "label treated as registry authority",
+        "stale": "projection rendered from a moved registry version",
+        "wrong_subject": "unrelated body edit swallowed by the navigation update",
+        "fault": "dry-run path requiring network",
+        "mutation": "existing facets (area/type/priority/size/review/status) not preserved"
+      },
+      "proof": {
+        "focused": "wrong-role and unrelated-loss fixtures",
+        "routed": "later T08C binds projection-change proof depth"
+      },
+      "review_forward": {
+        "questions": [
+          "Does the generated block stay identifiably generated?"
+        ],
+        "lenses": [
+          "projection direction"
+        ]
+      },
+      "obligations": {
+        "schema": "issue_role_labels.v1 + issue_controller_metadata_projection.v1",
+        "generated": "navigation blocks (dry-run)",
+        "docs": "projection notes",
+        "changelog": "none (internal contract)",
+        "receipt": "dry-run plan receipts"
+      },
+      "exits": {
+        "old_path": "none (new surface)",
+        "compatibility": "existing label facets preserved orthogonally",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "revert projection; metadata unmapped",
+        "return_to_issue": "return here when projection semantics change",
+        "not_proven": "conflicting inputs render not_proven",
+        "stop": "stop before live application"
+      },
+      "successors": [
+        "C04",
+        "C05",
+        "C06",
+        "I02",
+        "P01",
+        "P02",
+        "R05B"
+      ],
+      "identity_fields": [
+        "label vocabulary",
+        "block format"
+      ],
+      "limitations": [
+        "OD3 (block format/placement) is routed here; this manifest does not decide it."
+      ]
+    },
+    {
+      "node_id": "C04",
+      "issue": 11685,
+      "title": "tooling(issue-controllers): generate the repository controller directory and route explanations",
+      "title_fingerprint": "7DC669E590782490",
+      "aliases": [
+        "R04"
+      ],
+      "train_role": "implementation",
+      "lane": "functional",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Generate the repository controller directory and deterministic offline route explanations.",
+      "authority_before": "Navigation re-derived per consumer.",
+      "authority_after": "issue_controller_directory.v1 is the stable navigation surface and offline router.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "C01",
+          "class": "hard",
+          "provenance": "#11685 body references"
+        },
+        {
+          "target": "C02",
+          "class": "hard",
+          "provenance": "S00 plan.md node row"
+        },
+        {
+          "target": "C03",
+          "class": "hard",
+          "provenance": "S00 plan.md node row"
+        }
+      ],
+      "claim_ceiling": "Directory/router only; no current-tree state, GitHub inspection, candidate selection or scheduling.",
+      "writer": {
+        "conflict_key": "issue_controllers.directory_router",
+        "parallel_group": "none",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#10554",
+        "#10858",
+        "#3949"
+      ],
+      "allowed_components": [
+        "deterministic offline directory/router (route/explain/docs)",
+        "one derived document"
+      ],
+      "forbidden_adjacent_owners": [
+        "current-tree state (T03)",
+        "live observation (T06)",
+        "global implementation DAG"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "C04",
+        "stale_policy": "directory shape changes classified by T02R"
+      },
+      "first_falsifier": "The router copies a home programme's complete leaf DAG instead of navigating to it.",
+      "controls": {
+        "positive": "route/explain resolve any issue to role/chain/entry/closeout deterministically",
+        "opposite": "directory grows ordering/assignment/liveness/scheduling powers",
+        "stale": "directory from a stale registry",
+        "wrong_subject": "router chooses the wrong programme for a multi-consumed leaf",
+        "fault": "route requiring network",
+        "mutation": "deterministic presentation order read as dependency order"
+      },
+      "proof": {
+        "focused": "nested-controller and multi-consumer fixtures",
+        "routed": "later T08C binds directory-change proof depth"
+      },
+      "review_forward": {
+        "questions": [
+          "Does navigation stay projection, not DAG?"
+        ],
+        "lenses": [
+          "no-scheduler law"
+        ]
+      },
+      "obligations": {
+        "schema": "issue_controller_directory.v1",
+        "generated": "one derived directory document",
+        "docs": "router usage notes",
+        "changelog": "none (internal contract)",
+        "receipt": "route receipts"
+      },
+      "exits": {
+        "old_path": "none (new surface)",
+        "compatibility": "none",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "revert directory; navigation manual",
+        "return_to_issue": "return here when navigation semantics change",
+        "not_proven": "unroutable issue renders not_proven",
+        "stop": "stop before readiness or scheduling claims"
+      },
+      "successors": [
+        "C05",
+        "C06",
+        "I01",
+        "I02",
+        "P01",
+        "P02",
+        "R05B"
+      ],
+      "identity_fields": [
+        "navigation-bearing relation set",
+        "route vocabulary"
+      ],
+      "limitations": [
+        "The directory does not duplicate programme-local leaf DAGs."
+      ]
+    },
+    {
+      "node_id": "C05",
+      "issue": 11686,
+      "title": "tooling(issue-controllers): implement bounded role-label and navigation metadata reconciliation",
+      "title_fingerprint": "D75313E9D08327AA",
+      "aliases": [
+        "R05",
+        "R05A"
+      ],
+      "train_role": "implementation",
+      "lane": "functional",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Implement bounded role-label and navigation metadata reconciliation tooling with plan/apply/verify/rollback proven on fixtures and fakes.",
+      "authority_before": "No bounded metadata write mechanism.",
+      "authority_after": "The reusable expected-old-state metadata planner/applicator/verifier/rollback tooling exists, proven offline.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "C01",
+          "class": "hard",
+          "provenance": "#11686 body references"
+        },
+        {
+          "target": "C02",
+          "class": "hard",
+          "provenance": "S00 plan.md node row"
+        },
+        {
+          "target": "C03",
+          "class": "hard",
+          "provenance": "S00 plan.md node row"
+        },
+        {
+          "target": "C04",
+          "class": "hard",
+          "provenance": "S00 plan.md node row"
+        },
+        {
+          "target": "T02R",
+          "class": "hard",
+          "provenance": "S00 plan.md node row"
+        }
+      ],
+      "claim_ceiling": "Tooling only; no execution of the reviewed live migration (R05B owns the operation).",
+      "writer": {
+        "conflict_key": "issue_controllers.metadata_reconciliation_tooling",
+        "parallel_group": "none",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#11106",
+        "#3957",
+        "#3982"
+      ],
+      "allowed_components": [
+        "metadata planner/applicator/verifier/rollback tooling",
+        "expected-old-state validation",
+        "immutable rollback-planning receipts"
+      ],
+      "forbidden_adjacent_owners": [
+        "live migration execution (R05B)",
+        "prose rewrites outside generated blocks",
+        "assignee/milestone/PR mutation"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "C05",
+        "stale_policy": "tooling contract changes classified by T02R"
+      },
+      "first_falsifier": "A plan authorizes mutation after a load-bearing subject moves.",
+      "controls": {
+        "positive": "plan/apply/verify/rollback proven on fixtures and fakes with immutable receipts",
+        "opposite": "apply without expected-old-state revalidation",
+        "stale": "plan built from a moved snapshot",
+        "wrong_subject": "tooling mutates prose outside the generated block",
+        "fault": "partial-apply failure state unrecoverable",
+        "mutation": "conflict rendered as success"
+      },
+      "proof": {
+        "focused": "expected-old-state and conflict fixtures",
+        "routed": "later T08C binds metadata-tooling proof depth"
+      },
+      "review_forward": {
+        "questions": [
+          "Is every mutation bounded and compare-before-write?"
+        ],
+        "lenses": [
+          "mutation bounds"
+        ]
+      },
+      "obligations": {
+        "schema": "consumes registry/projection contracts",
+        "generated": "none",
+        "docs": "tooling safety notes",
+        "changelog": "none (internal tooling)",
+        "receipt": "plan/apply/verify receipts"
+      },
+      "exits": {
+        "old_path": "none (new surface)",
+        "compatibility": "none",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "revert tooling; no live writer exists",
+        "return_to_issue": "return here when mutation safety semantics change",
+        "not_proven": "conflict/instrument failure blocks, never guesses",
+        "stop": "stop before live execution"
+      },
+      "successors": [
+        "C06",
+        "I02",
+        "P01",
+        "P02",
+        "R05B"
+      ],
+      "identity_fields": [
+        "plan schema",
+        "bounded mutation set"
+      ],
+      "limitations": [
+        "Landing this tooling never authorizes the live operation."
+      ]
+    },
+    {
+      "node_id": "C06",
+      "issue": 11687,
+      "title": "tooling(issue-controllers): detect live controller-metadata drift without mutating GitHub",
+      "title_fingerprint": "D28C2FD10CED7B59",
+      "aliases": [
+        "R06"
+      ],
+      "train_role": "implementation",
+      "lane": "functional",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Detect live controller-metadata drift without mutating GitHub.",
+      "authority_before": "No drift observation; registry and live state diverge silently.",
+      "authority_after": "issue_controller_live_snapshot.v1 and issue_controller_drift.v1 provide the read-only drift surface.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "C01",
+          "class": "hard",
+          "provenance": "#11687 body references"
+        },
+        {
+          "target": "C02",
+          "class": "hard",
+          "provenance": "#11687 body references"
+        },
+        {
+          "target": "C03",
+          "class": "hard",
+          "provenance": "#11687 body references"
+        },
+        {
+          "target": "C04",
+          "class": "hard",
+          "provenance": "#11687 body references"
+        },
+        {
+          "target": "C05",
+          "class": "hard",
+          "provenance": "S00 plan.md programme shape"
+        }
+      ],
+      "claim_ceiling": "Read-only observation only; no GitHub mutation and no registry rewrite from live state.",
+      "writer": {
+        "conflict_key": "issue_controllers.metadata_drift_observer",
+        "parallel_group": "none",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#11106",
+        "#3693",
+        "#3957",
+        "#4177",
+        "#8042"
+      ],
+      "allowed_components": [
+        "immutable live snapshot model",
+        "deterministic drift classification",
+        "focused correction routes"
+      ],
+      "forbidden_adjacent_owners": [
+        "any GitHub mutation",
+        "registry rewriting",
+        "product/support truth claims"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "C06",
+        "stale_policy": "drift semantics changes classified by T02R"
+      },
+      "first_falsifier": "Drift-clean is read as product or support truth.",
+      "controls": {
+        "positive": "snapshot/drift compare live metadata with checked expectations deterministically",
+        "opposite": "observer rewrites the registry to match GitHub",
+        "stale": "observation from a stale snapshot",
+        "wrong_subject": "drift answers work-state instead of metadata",
+        "fault": "API failure rendered as no-drift",
+        "mutation": "multiple drift classes collapsed to one scalar"
+      },
+      "proof": {
+        "focused": "drift-class fixtures incl. instrument-failure rows",
+        "routed": "later T08C binds observer proof depth"
+      },
+      "review_forward": {
+        "questions": [
+          "Does correction route back through reviewed channels?"
+        ],
+        "lenses": [
+          "read-only law"
+        ]
+      },
+      "obligations": {
+        "schema": "issue_controller_live_snapshot.v1 + issue_controller_drift.v1",
+        "generated": "none",
+        "docs": "drift semantics notes",
+        "changelog": "none (internal tooling)",
+        "receipt": "snapshot/drift receipts"
+      },
+      "exits": {
+        "old_path": "none (new surface)",
+        "compatibility": "none",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "revert observer; drift manual",
+        "return_to_issue": "return here when drift semantics change",
+        "not_proven": "instrument failure yields unknown, never clean",
+        "stop": "stop before any mutation"
+      },
+      "successors": [
+        "I02",
+        "P01",
+        "P02"
+      ],
+      "identity_fields": [
+        "drift classification set",
+        "snapshot binding"
+      ],
+      "limitations": [
+        "#11681's prose sketch chains R05B before this node; per the S00 bundle shape and this leaf's own references, the hard chain is C05 to C06, with R05B a sibling privileged stage."
+      ]
+    },
+    {
+      "node_id": "CTRL",
+      "issue": 11681,
+      "title": "program(issue-controllers): make controller roles, labels, and navigation explicit",
+      "title_fingerprint": "A559A9F03345ACE4",
+      "aliases": [],
+      "train_role": "controller",
+      "lane": "controller",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Programme meaning and decomposition only; no implementation PR lands against this issue.",
+      "authority_before": "Controller roles, labels and navigation encoded across title prefixes, prose, labels and memory.",
+      "authority_after": "Owns programme meaning, child decomposition and closeout denominator; assignable = false for ordinary implementation.",
+      "buildable": false,
+      "dependencies": [],
+      "claim_ceiling": "Programme conjunction and closeout denominator; never a builder frontier, readiness claim or metadata mutation.",
+      "writer": {
+        "conflict_key": "issue_controllers.programme_controller",
+        "parallel_group": "none",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#10168",
+        "#10554",
+        "#10858",
+        "#10872",
+        "#10881",
+        "#11114",
+        "#1848",
+        "#3390",
+        "#3693",
+        "#3949",
+        "#3957",
+        "#3982",
+        "#3983",
+        "#4177",
+        "#4787",
+        "#4789",
+        "#6193",
+        "#8267"
+      ],
+      "allowed_components": [
+        "issue prose",
+        "child decomposition",
+        "closeout denominator"
+      ],
+      "forbidden_adjacent_owners": [
+        "any implementation surface",
+        "writer admission",
+        "scheduling"
+      ],
+      "spec": {
+        "disposition": "CONTROLLER_NO_CODING_SPEC",
+        "owner": "CTRL",
+        "stale_policy": "child set or denominator semantics revised via T02R classification"
+      },
+      "first_falsifier": "A controller issue is delivered as a normal builder leaf and closes on a single PR.",
+      "controls": {
+        "positive": "open controller with all children terminal closes via P02 fan-in",
+        "opposite": "controller closed while child denominator incomplete still shows programme complete",
+        "stale": "child supersession leaves controller denominator unchanged",
+        "wrong_subject": "domain-noun controller (MVC/host/process) treated as this programme controller",
+        "fault": "controller body edited by metadata reconciliation becomes a product PR",
+        "mutation": "controller re-titled or re-role without T02R classification"
+      },
+      "proof": {
+        "focused": "not applicable (non-buildable)",
+        "routed": "not applicable (non-buildable)"
+      },
+      "review_forward": {
+        "questions": [
+          "Does any node or edge make this controller buildable?"
+        ],
+        "lenses": [
+          "controller assignability"
+        ]
+      },
+      "obligations": {
+        "schema": "none (declarative node)",
+        "generated": "none",
+        "docs": "bundle markdown only",
+        "changelog": "none",
+        "receipt": "none"
+      },
+      "exits": {
+        "old_path": "none",
+        "compatibility": "none",
+        "supersession": "supersession requires explicit successor link and T02R invalidation",
+        "transfer": "transfer only via T02R-classified revision with exact successor"
+      },
+      "rollback": {
+        "rollback": "revert programme edits; children unaffected",
+        "return_to_issue": "return here when decomposition, denominator or closeout meaning changes",
+        "not_proven": "child evidence missing, partial or instrument-failed is not_proven",
+        "stop": "stop before implementing any child proposition directly against this issue"
+      },
+      "successors": [],
+      "identity_fields": [
+        "child set",
+        "closeout denominator"
+      ],
+      "limitations": [
+        "Landing state of children is live state and is not recorded here."
+      ]
+    },
+    {
+      "node_id": "D01",
+      "issue": 11781,
+      "title": "test(agents,issue-controllers): prove deterministic controller-to-leaf routing scenarios",
+      "title_fingerprint": "F287171502C3BE87",
+      "aliases": [],
+      "train_role": "proof",
+      "lane": "dogfood",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Prove deterministic controller-to-leaf routing scenarios without real models.",
+      "authority_before": "No deterministic routing-scenario suite.",
+      "authority_after": "A deterministic packet-sufficiency/routing scenario suite proves contract sufficiency.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "I01",
+          "class": "hard",
+          "provenance": "#11781 body references"
+        },
+        {
+          "target": "I02",
+          "class": "hard",
+          "provenance": "#11781 body references"
+        },
+        {
+          "target": "P01",
+          "class": "hard",
+          "provenance": "#11681 dependency graph"
+        },
+        {
+          "target": "T01",
+          "class": "hard",
+          "provenance": "#11781 body references"
+        },
+        {
+          "target": "T02S",
+          "class": "hard",
+          "provenance": "#11781 body references"
+        },
+        {
+          "target": "T04",
+          "class": "hard",
+          "provenance": "#11781 body references"
+        },
+        {
+          "target": "T05",
+          "class": "hard",
+          "provenance": "#11781 body references"
+        },
+        {
+          "target": "T06",
+          "class": "hard",
+          "provenance": "#11781 body references"
+        },
+        {
+          "target": "T07",
+          "class": "hard",
+          "provenance": "#11781 body references"
+        },
+        {
+          "target": "T08",
+          "class": "hard",
+          "provenance": "#11781 body references"
+        }
+      ],
+      "claim_ceiling": "Deterministic scenarios only; may expose contract defects but may not repair them inside the scenario PR; no real model cohort, local dogfood schema or scheduler.",
+      "writer": {
+        "conflict_key": "issue_controllers.routing_scenarios",
+        "parallel_group": "none",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#10872",
+        "#10881",
+        "#11114"
+      ],
+      "allowed_components": [
+        "deterministic routing scenario suite"
+      ],
+      "forbidden_adjacent_owners": [
+        "real model invocation",
+        "dogfood result schema",
+        "scheduler"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "D01",
+        "stale_policy": "scenario staleness owned by T02R on contract revision"
+      },
+      "first_falsifier": "Scenarios pass while a real route would diverge from the directory answer.",
+      "controls": {
+        "positive": "every scenario routes deterministically to the declared leaf/route/boundary",
+        "opposite": "scenario suite invokes real models",
+        "stale": "scenarios run against superseded packet contracts",
+        "wrong_subject": "scenario answers a scheduling question",
+        "fault": "fixture instrument failure rendered as pass",
+        "mutation": "unavailable scenario row dropped"
+      },
+      "proof": {
+        "focused": "routing scenario fixtures incl. divergence control",
+        "routed": "routed via T08C dogfood profile"
+      },
+      "review_forward": {
+        "questions": [
+          "Do scenarios discriminate routing, not merely execute it?"
+        ],
+        "lenses": [
+          "sufficiency discrimination"
+        ]
+      },
+      "obligations": {
+        "schema": "consumes #11114 vocabulary",
+        "generated": "none",
+        "docs": "scenario catalog notes",
+        "changelog": "none (proof-internal)",
+        "receipt": "scenario run receipts"
+      },
+      "exits": {
+        "old_path": "none (new surface)",
+        "compatibility": "none",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "revert scenarios; routing sufficiency unproven",
+        "return_to_issue": "return here when routing contracts change",
+        "not_proven": "missing scenario coverage is not_proven",
+        "stop": "stop before real agents or policy claims"
+      },
+      "successors": [
+        "D02",
+        "P02"
+      ],
+      "identity_fields": [
+        "scenario catalog",
+        "expected route set"
+      ],
+      "limitations": [
+        "Deterministic predecessor of D02 by law."
+      ]
+    },
+    {
+      "node_id": "D02",
+      "issue": 11782,
+      "title": "test(agents,issue-controllers): run bounded fresh-agent and independent-review dogfood cohorts",
+      "title_fingerprint": "EBB94B7991EB64DF",
+      "aliases": [],
+      "train_role": "dogfood",
+      "lane": "dogfood",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Run bounded fresh-agent, lower-cost and independent-review dogfood cohorts.",
+      "authority_before": "No real-agent evaluation of the contracts.",
+      "authority_after": "Bounded real cohorts prove fresh agents can start, resume, review, refuse and hand off safely.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "D01",
+          "class": "hard",
+          "provenance": "#11681 dependency graph"
+        },
+        {
+          "target": "I01",
+          "class": "hard",
+          "provenance": "#11782 body references"
+        },
+        {
+          "target": "I02",
+          "class": "hard",
+          "provenance": "#11782 body references"
+        },
+        {
+          "target": "P01",
+          "class": "hard",
+          "provenance": "#11782 body references"
+        },
+        {
+          "target": "T02S",
+          "class": "hard",
+          "provenance": "#11782 body references"
+        },
+        {
+          "target": "T05",
+          "class": "hard",
+          "provenance": "#11782 body references"
+        },
+        {
+          "target": "T06",
+          "class": "hard",
+          "provenance": "#11782 body references"
+        },
+        {
+          "target": "T07",
+          "class": "hard",
+          "provenance": "#11782 body references"
+        },
+        {
+          "target": "T08",
+          "class": "hard",
+          "provenance": "#11782 body references"
+        }
+      ],
+      "claim_ceiling": "Evaluation only; no packet/spec/product repair inside the evaluation PR, no persistent agent state, transcripts, ranking or scheduler.",
+      "writer": {
+        "conflict_key": "issue_controllers.agent_dogfood",
+        "parallel_group": "none",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#10872",
+        "#10881",
+        "#11114"
+      ],
+      "allowed_components": [
+        "bounded cohort definitions",
+        "result records in #11114 vocabulary"
+      ],
+      "forbidden_adjacent_owners": [
+        "model scheduler",
+        "leaderboard",
+        "transcript archives",
+        "packet/schema repair"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "D02",
+        "stale_policy": "cohort design changes classified by T02R"
+      },
+      "first_falsifier": "A cohort that cannot fail reports agent sufficiency.",
+      "controls": {
+        "positive": "fresh agents complete start/resume/review/refuse/handoff scenarios",
+        "opposite": "evaluation PR repairs contracts to make cohorts pass",
+        "stale": "cohort run against stale packets/specs",
+        "wrong_subject": "cohort measures model quality instead of contract sufficiency",
+        "fault": "agent/instrument failure rendered as pass",
+        "mutation": "refusal case dropped from results"
+      },
+      "proof": {
+        "focused": "cohort scenario fixtures incl. refusal control",
+        "routed": "routed via T08C real-agent profile"
+      },
+      "review_forward": {
+        "questions": [
+          "Does the cohort bound remain honest after failures?"
+        ],
+        "lenses": [
+          "failure visibility"
+        ]
+      },
+      "obligations": {
+        "schema": "consumes #11114 vocabulary",
+        "generated": "none",
+        "docs": "cohort report notes",
+        "changelog": "none (evaluation-internal)",
+        "receipt": "cohort receipts"
+      },
+      "exits": {
+        "old_path": "none (new surface)",
+        "compatibility": "none",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "revert cohorts; agent sufficiency unproven",
+        "return_to_issue": "return here when cohort semantics change",
+        "not_proven": "interrupted cohorts are not_proven",
+        "stop": "stop before policy claims or persistent state"
+      },
+      "successors": [
+        "P02"
+      ],
+      "identity_fields": [
+        "cohort definitions",
+        "result vocabulary binding"
+      ],
+      "limitations": [
+        "No local dogfood schema; #11114 owns the vocabulary."
+      ]
+    },
+    {
+      "node_id": "I01",
+      "issue": 11777,
+      "title": "integration(issue-controllers): route generic work preparation through the checked directory",
+      "title_fingerprint": "9400749F12CF9286",
+      "aliases": [],
+      "train_role": "integration",
+      "lane": "integration",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Route generic work preparation through the checked directory and retire the old routing heuristics.",
+      "authority_before": "Entry routed by title/body/label heuristics.",
+      "authority_after": "Generic existing-issue entry consumes the checked directory and hands off to home trains.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "C01",
+          "class": "hard",
+          "provenance": "#11777 body references"
+        },
+        {
+          "target": "C02",
+          "class": "hard",
+          "provenance": "#11777 body references"
+        },
+        {
+          "target": "C04",
+          "class": "hard",
+          "provenance": "#11681 dependency graph"
+        },
+        {
+          "target": "T01",
+          "class": "hard",
+          "provenance": "#11777 body references"
+        },
+        {
+          "target": "T04",
+          "class": "hard",
+          "provenance": "#11777 body references"
+        },
+        {
+          "target": "T05",
+          "class": "hard",
+          "provenance": "#11777 body references"
+        },
+        {
+          "target": "T06",
+          "class": "hard",
+          "provenance": "#11777 body references"
+        },
+        {
+          "target": "T07",
+          "class": "hard",
+          "provenance": "#11681 dependency graph"
+        },
+        {
+          "target": "T08",
+          "class": "hard",
+          "provenance": "#11681 dependency graph"
+        }
+      ],
+      "claim_ceiling": "Entry routing only; no global DAG, readiness decisions, writer claims or GitHub mutation.",
+      "writer": {
+        "conflict_key": "issue_controllers.generic_entry_cutover",
+        "parallel_group": "none",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#10872",
+        "#10881",
+        "#11106",
+        "#3949",
+        "#3957",
+        "#3982",
+        "#4177"
+      ],
+      "allowed_components": [
+        "directory-consuming entry preparation",
+        "old-heuristic retirement dispositions"
+      ],
+      "forbidden_adjacent_owners": [
+        "routing authority over named skills",
+        "scheduling",
+        "writer admission"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "I01",
+        "stale_policy": "entry seam changes classified by T02R"
+      },
+      "first_falsifier": "The old heuristic route keeps resolving after cutover with no retirement disposition.",
+      "controls": {
+        "positive": "entry resolves through the directory to home train/leaf/route/boundary",
+        "opposite": "entry bypasses the directory via heuristics",
+        "stale": "entry uses a moved directory version",
+        "wrong_subject": "entry decides programme-local readiness",
+        "fault": "entry failure silently falls back to heuristics",
+        "mutation": "packet treated as assignment"
+      },
+      "proof": {
+        "focused": "cutover fixtures incl. heuristic-divergence control",
+        "routed": "later T08C binds entry-surface proof depth"
+      },
+      "review_forward": {
+        "questions": [
+          "Does the directory inform, not replace, named route skills?"
+        ],
+        "lenses": [
+          "skill-boundary respect"
+        ]
+      },
+      "obligations": {
+        "schema": "consumes directory contract",
+        "generated": "none",
+        "docs": "entry cutover notes",
+        "changelog": "entry surface deprecation notes when user-visible",
+        "receipt": "cutover receipts"
+      },
+      "exits": {
+        "old_path": "retire title/body/label heuristics for routing; prefixes remain human-readable signal",
+        "compatibility": "existing skills/docs/IDE/task surfaces become thin consumers or get exact deprecation dispositions",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "revert cutover; heuristics still resolve",
+        "return_to_issue": "return here when entry semantics change",
+        "not_proven": "ambiguous entry is not_proven and routes to review",
+        "stop": "stop before writer claims or mutation"
+      },
+      "successors": [
+        "D01",
+        "D02",
+        "I02",
+        "P01",
+        "P02"
+      ],
+      "identity_fields": [
+        "entry seam",
+        "retired heuristic set"
+      ],
+      "limitations": [
+        "OD4 (coupling seam) is routed here and not decided by this manifest."
+      ]
+    },
+    {
+      "node_id": "I02",
+      "issue": 11778,
+      "title": "integration(issue-controllers): require reviewed role and route during issue preparation",
+      "title_fingerprint": "58455D8E4E28E6A6",
+      "aliases": [],
+      "train_role": "integration",
+      "lane": "integration",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Require reviewed role and route during new-issue preparation.",
+      "authority_before": "New issues enter as untyped prose.",
+      "authority_after": "Shift-left admission guarantees new controller/leaf prose is typed at preparation time.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "C01",
+          "class": "hard",
+          "provenance": "#11778 body references"
+        },
+        {
+          "target": "C02",
+          "class": "hard",
+          "provenance": "#11778 body references"
+        },
+        {
+          "target": "C03",
+          "class": "optional",
+          "provenance": "#11778 body references"
+        },
+        {
+          "target": "C04",
+          "class": "hard",
+          "provenance": "#11778 body references"
+        },
+        {
+          "target": "C05",
+          "class": "optional",
+          "provenance": "#11778 body references"
+        },
+        {
+          "target": "C06",
+          "class": "optional",
+          "provenance": "#11778 body references"
+        },
+        {
+          "target": "I01",
+          "class": "hard",
+          "provenance": "#11681 dependency graph"
+        },
+        {
+          "target": "T01",
+          "class": "evidence",
+          "provenance": "#11778 body references"
+        },
+        {
+          "target": "T02S",
+          "class": "evidence",
+          "provenance": "#11778 body references"
+        },
+        {
+          "target": "T07",
+          "class": "evidence",
+          "provenance": "#11778 body references"
+        },
+        {
+          "target": "T08",
+          "class": "evidence",
+          "provenance": "#11778 body references"
+        }
+      ],
+      "claim_ceiling": "Preparation-time admission only; no auto-creating issues, unreviewed adjudication or self-updating registry.",
+      "writer": {
+        "conflict_key": "issue_controllers.issue_admission",
+        "parallel_group": "none",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#3949",
+        "#3957",
+        "#3982",
+        "#3983",
+        "#4177"
+      ],
+      "allowed_components": [
+        "issue-preparation extension for role/route admission"
+      ],
+      "forbidden_adjacent_owners": [
+        "parallel issue-preparation framework",
+        "auto-adjudication"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "I02",
+        "stale_policy": "admission template changes classified by T02R"
+      },
+      "first_falsifier": "A new controller enters as untyped prose after the admission leaf lands.",
+      "controls": {
+        "positive": "new issues carry reviewed role/route before entering the backlog",
+        "opposite": "admission auto-creates or auto-adjudicates issues",
+        "stale": "admission template stale after registry revision",
+        "wrong_subject": "admission applied to historical issues instead of new ones",
+        "fault": "preparation failure creates the issue anyway",
+        "mutation": "unreviewed role accepted silently"
+      },
+      "proof": {
+        "focused": "admission fixtures incl. untyped-prose rejection",
+        "routed": "later T08C binds admission-surface proof depth"
+      },
+      "review_forward": {
+        "questions": [
+          "Does admission stay reviewed rather than automatic?"
+        ],
+        "lenses": [
+          "review-before-admission"
+        ]
+      },
+      "obligations": {
+        "schema": "consumes preparation method",
+        "generated": "none",
+        "docs": "admission guidance notes",
+        "changelog": "preparation workflow notes when user-visible",
+        "receipt": "admission receipts"
+      },
+      "exits": {
+        "old_path": "extends existing preparation method",
+        "compatibility": "none",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "revert admission; preparation returns to untyped",
+        "return_to_issue": "return here when admission semantics change",
+        "not_proven": "unreviewable admission is not_proven",
+        "stop": "stop before issue creation or registry mutation"
+      },
+      "successors": [
+        "D01",
+        "D02",
+        "P01",
+        "P02"
+      ],
+      "identity_fields": [
+        "admission checks",
+        "role/route vocabulary binding"
+      ],
+      "limitations": [
+        "Applies to new issues only; existing-issue cutover is I01."
+      ]
+    },
+    {
+      "node_id": "P01",
+      "issue": 11779,
+      "title": "test(issue-controllers): prove role, registry, directory, metadata, and work-entry composition",
+      "title_fingerprint": "FB87BA097ADB5F57",
+      "aliases": [],
+      "train_role": "proof",
+      "lane": "proof",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Independent composed proof of role, registry, directory, metadata and work-entry composition.",
+      "authority_before": "No composed proof of the functional rail.",
+      "authority_after": "One governed composed-proof receipt covers the selected functional denominator.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "C01",
+          "class": "hard",
+          "provenance": "#11779 body references"
+        },
+        {
+          "target": "C02",
+          "class": "hard",
+          "provenance": "#11779 body references"
+        },
+        {
+          "target": "C03",
+          "class": "hard",
+          "provenance": "#11779 body references"
+        },
+        {
+          "target": "C04",
+          "class": "hard",
+          "provenance": "#11779 body references"
+        },
+        {
+          "target": "C05",
+          "class": "hard",
+          "provenance": "#11779 body references"
+        },
+        {
+          "target": "C06",
+          "class": "hard",
+          "provenance": "#11779 body references"
+        },
+        {
+          "target": "I01",
+          "class": "hard",
+          "provenance": "#11681 dependency graph"
+        },
+        {
+          "target": "I02",
+          "class": "hard",
+          "provenance": "#11681 dependency graph"
+        },
+        {
+          "target": "R05B",
+          "class": "optional",
+          "provenance": "#11681 dependency graph"
+        },
+        {
+          "target": "S00",
+          "class": "evidence",
+          "provenance": "#11779 body references"
+        },
+        {
+          "target": "T01",
+          "class": "evidence",
+          "provenance": "#11779 body references"
+        },
+        {
+          "target": "T02R",
+          "class": "evidence",
+          "provenance": "#11779 body references"
+        },
+        {
+          "target": "T02S",
+          "class": "evidence",
+          "provenance": "#11779 body references"
+        },
+        {
+          "target": "T08",
+          "class": "hard",
+          "provenance": "#11681 dependency graph"
+        }
+      ],
+      "claim_ceiling": "Proof only; may expose product defects but may not repair product behavior inside the proof PR. No metadata mutation, merge authorization or scheduler.",
+      "writer": {
+        "conflict_key": "issue_controllers.composed_proof",
+        "parallel_group": "none",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#10168",
+        "#10881",
+        "#3693"
+      ],
+      "allowed_components": [
+        "composed proof suite",
+        "deterministic denominator and expected results",
+        "receipt validation"
+      ],
+      "forbidden_adjacent_owners": [
+        "product repair authority",
+        "migration execution",
+        "routing policy"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "P01",
+        "stale_policy": "proof staleness owned by T02R on any input revision"
+      },
+      "first_falsifier": "A proof run over partial subjects reports the composition proven.",
+      "controls": {
+        "positive": "deterministic rows plus exact immutable receipts validate the composition",
+        "opposite": "proof PR repairs product behavior",
+        "stale": "proof run against moved components",
+        "wrong_subject": "proof of a different denominator than declared",
+        "fault": "instrument failure rendered as pass",
+        "mutation": "non-pass row disappears from the receipt"
+      },
+      "proof": {
+        "focused": "composed scenario fixtures incl. defect-filing control",
+        "routed": "routed via T08C composed-proof profile"
+      },
+      "review_forward": {
+        "questions": [
+          "Does every non-pass row return to its exact owning leaf?"
+        ],
+        "lenses": [
+          "no-repair boundary",
+          "denominator honesty"
+        ]
+      },
+      "obligations": {
+        "schema": "proof receipt schema",
+        "generated": "none",
+        "docs": "proof composition notes",
+        "changelog": "none (proof-internal)",
+        "receipt": "composed receipts"
+      },
+      "exits": {
+        "old_path": "none (new surface)",
+        "compatibility": "none",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "revert proof; composition returns unproven",
+        "return_to_issue": "return here when the composed denominator changes",
+        "not_proven": "missing/partial/instrument-failed subjects are not_proven",
+        "stop": "stop before product repair, migration or merge authorization"
+      },
+      "successors": [
+        "D01",
+        "D02",
+        "P02"
+      ],
+      "identity_fields": [
+        "denominator",
+        "expected-result set"
+      ],
+      "limitations": [
+        "#11779 body references live observation as '#11787', an unrelated closed issue; the drift-observer edge is encoded against C06 #11687 per #11681 child links. R05B receipts are optional, selected only when that authorized stage has run."
+      ]
+    },
+    {
+      "node_id": "P02",
+      "issue": 11783,
+      "title": "tooling(issue-controllers): fan in exact-current programme closeout and maintenance state",
+      "title_fingerprint": "71F77843CB63C921",
+      "aliases": [],
+      "train_role": "fan_in",
+      "lane": "closeout",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Fan in exact-current programme closeout and maintenance state; close CTRL only when complete.",
+      "authority_before": "Controller open/closed state tracked manually.",
+      "authority_after": "The final fan-in validates the complete selected denominator and produces the maintenance projection.",
+      "buildable": false,
+      "dependencies": [
+        {
+          "target": "C01",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "C02",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "C03",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "C04",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "C05",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "C06",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "D01",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "D02",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "I01",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "I02",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "P01",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "R05B",
+          "class": "optional",
+          "provenance": "#11785 body fan-in consumers"
+        },
+        {
+          "target": "S00",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "T01",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "T02",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "T02R",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "T02S",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "T03",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "T04",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "T05",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "T06",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "T07",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        },
+        {
+          "target": "T08",
+          "class": "hard",
+          "provenance": "#11783 body references"
+        }
+      ],
+      "claim_ceiling": "Fan-in validation only; may not execute missing work, make non-pass evidence green, or mutate metadata without authorization. No product repair.",
+      "writer": {
+        "conflict_key": "issue_controllers.programme_closeout",
+        "parallel_group": "none",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#10168",
+        "#10881",
+        "#3693"
+      ],
+      "allowed_components": [
+        "closeout profile validation",
+        "maintenance projection"
+      ],
+      "forbidden_adjacent_owners": [
+        "executing missing work",
+        "unauthorized metadata mutation",
+        "green-washing non-pass rows"
+      ],
+      "spec": {
+        "disposition": "FAN_IN_OR_CERTIFICATION_SPEC",
+        "owner": "P02",
+        "stale_policy": "denominator changes classified by T02R before fan-in reruns"
+      },
+      "first_falsifier": "The fan-in closes the controller while a mandatory profile is partial.",
+      "controls": {
+        "positive": "every mandatory profile terminal/current closes the controller; honest partial leaves it open",
+        "opposite": "fan-in executes missing work to force completion",
+        "stale": "fan-in over stale child evidence",
+        "wrong_subject": "fan-in certifies a different denominator than declared",
+        "fault": "instrument failure rendered as pass",
+        "mutation": "non-pass aggregate hidden"
+      },
+      "proof": {
+        "focused": "fan-in fixtures incl. partial-aggregate control",
+        "routed": "routed via T08C final-result profile"
+      },
+      "review_forward": {
+        "questions": [
+          "Is every non-terminal profile honestly visible?"
+        ],
+        "lenses": [
+          "denominator completeness"
+        ]
+      },
+      "obligations": {
+        "schema": "consumes closeout contracts",
+        "generated": "maintenance projection",
+        "docs": "programme status notes",
+        "changelog": "none (closeout-internal)",
+        "receipt": "fan-in receipts"
+      },
+      "exits": {
+        "old_path": "none (new surface)",
+        "compatibility": "none",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "revert fan-in; closeout returns to manual",
+        "return_to_issue": "return here when the denominator changes",
+        "not_proven": "any non-terminal profile is not_proven for closure",
+        "stop": "stop before executing work or unauthorized mutation"
+      },
+      "successors": [],
+      "identity_fields": [
+        "denominator",
+        "profile set"
+      ],
+      "limitations": [
+        "R05B participation is optional and selected only when that authorized stage is in the denominator."
+      ]
+    },
+    {
+      "node_id": "R05B",
+      "issue": 11785,
+      "title": "ops(issue-controllers): execute and verify the reviewed role-label and navigation migration",
+      "title_fingerprint": "B0F3043A6421E586",
+      "aliases": [],
+      "train_role": "external_gate",
+      "lane": "functional",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Execute and verify the reviewed role-label and navigation migration as one privileged live operation with an immutable receipt.",
+      "authority_before": "No authorized live migration path.",
+      "authority_after": "The sole executed live migration carries an immutable expected-old-state receipt.",
+      "buildable": false,
+      "dependencies": [
+        {
+          "target": "#EXPLICIT-AUTHORIZATION",
+          "class": "external",
+          "provenance": "#11785 body references"
+        },
+        {
+          "target": "C02",
+          "class": "hard",
+          "provenance": "#11785 body references"
+        },
+        {
+          "target": "C03",
+          "class": "hard",
+          "provenance": "#11785 body references"
+        },
+        {
+          "target": "C04",
+          "class": "hard",
+          "provenance": "#11785 body references"
+        },
+        {
+          "target": "C05",
+          "class": "hard",
+          "provenance": "S00 plan.md ordering boundaries"
+        },
+        {
+          "target": "T08C",
+          "class": "evidence",
+          "provenance": "#11785 body references"
+        }
+      ],
+      "claim_ceiling": "Privileged operation only with explicit external authorization; authorization is never inferred from readiness, labels, green PRs or tool availability. No registry semantics or product behavior change.",
+      "writer": {
+        "conflict_key": "issue_controllers.live_metadata_writer",
+        "parallel_group": "none",
+        "stack_relation": "requires C05 tooling landed on protected main; never stacked with ordinary builder frontiers"
+      },
+      "consumed_authorities": [
+        "#11106",
+        "#3957",
+        "#3982"
+      ],
+      "allowed_components": [
+        "one reviewed migration execution",
+        "immutable migration receipt",
+        "second-run no-op verification"
+      ],
+      "forbidden_adjacent_owners": [
+        "authorization inference",
+        "unbounded mutation",
+        "registry semantic edits"
+      ],
+      "spec": {
+        "disposition": "EXTERNAL_OR_MANUAL_NO_CODING_SPEC",
+        "owner": "R05B",
+        "stale_policy": "denominator movement invalidates unexecuted plans via T02R; applied receipts stay immutable"
+      },
+      "first_falsifier": "The migration runs because the tooling landed and the PR is green.",
+      "controls": {
+        "positive": "exact expected-old-state plan applies, verifies, and no-ops on second run with immutable receipt",
+        "opposite": "operation executed without explicit external authorization",
+        "stale": "plan built from a moved denominator",
+        "wrong_subject": "operation mutates prose outside generated blocks or non-label facets",
+        "fault": "partial apply or verify failure rendered as success",
+        "mutation": "receipt regenerated to hide a failed row"
+      },
+      "proof": {
+        "focused": "pilot-then-full fixtures with rollback planning",
+        "routed": "routed via T08C live-op profile"
+      },
+      "review_forward": {
+        "questions": [
+          "Is authorization explicit and external to every packet?"
+        ],
+        "lenses": [
+          "authorization externality"
+        ]
+      },
+      "obligations": {
+        "schema": "consumes C05 receipts",
+        "generated": "none",
+        "docs": "migration record notes",
+        "changelog": "none (operations record)",
+        "receipt": "immutable migration receipt"
+      },
+      "exits": {
+        "old_path": "none (new operation)",
+        "compatibility": "none",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "rollback via planned receipt; never silent",
+        "return_to_issue": "return here when the migration denominator changes",
+        "not_proven": "conflict or verification failure is not_proven",
+        "stop": "stop without explicit authorization"
+      },
+      "successors": [
+        "P01",
+        "P02"
+      ],
+      "identity_fields": [
+        "denominator digest set",
+        "receipt identity"
+      ],
+      "limitations": [
+        "OD2 (bulk application scope) is routed here; this manifest does not decide it."
+      ]
+    },
+    {
+      "node_id": "S00",
+      "issue": 11763,
+      "title": "spec(issue-controllers): compile durable role, navigation, and execution architecture",
+      "title_fingerprint": "777551CBC4DBF759",
+      "aliases": [],
+      "train_role": "specification",
+      "lane": "control",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Compile the durable programme architecture and evidence-boundary contract as one checked bundle.",
+      "authority_before": "Accepted architecture distributed across issue bodies and generic method issues.",
+      "authority_after": "The .spec/11763-issue-controller-architecture bundle is the durable semantic input for the whole train.",
+      "buildable": true,
+      "dependencies": [],
+      "claim_ceiling": "Architecture compilation only; no implementation, registry population or metadata change.",
+      "writer": {
+        "conflict_key": "issue_controllers.durable_architecture_bundle",
+        "parallel_group": "none",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#10168",
+        "#10554",
+        "#10858",
+        "#10872",
+        "#10881",
+        "#11114",
+        "#1848",
+        "#3390",
+        "#3693",
+        "#3949",
+        "#3957",
+        "#3982",
+        "#3983",
+        "#4177",
+        "#4787",
+        "#4789"
+      ],
+      "allowed_components": [
+        "checked spec bundle (context, plan, acceptance, checklist)"
+      ],
+      "forbidden_adjacent_owners": [
+        "implementation",
+        "registry population",
+        "metadata mutation",
+        "train topology encoding"
+      ],
+      "spec": {
+        "disposition": "SPEC_COMPILED",
+        "owner": "S00",
+        "stale_policy": "superseded only by an explicitly linked successor bundle; T02R governs invalidation"
+      },
+      "first_falsifier": "Later nodes rebuild the architecture from archaeology and diverge from the compiled laws.",
+      "controls": {
+        "positive": "bundle sections present and structurally checked twice with identical output",
+        "opposite": "a plane substitution law removed while bundle still passes review",
+        "stale": "bundle edited without successor link after consumers exist",
+        "wrong_subject": "a generic method issue treated as the programme-specific authority",
+        "fault": "checker invented a generated receipt for an absent validator",
+        "mutation": "live state enters bundle bytes"
+      },
+      "proof": {
+        "focused": "structural two-run checker over the four bundle files",
+        "routed": "not routed (spec-only); consumed semantically by T01"
+      },
+      "review_forward": {
+        "questions": [
+          "Do the compiled laws still match the accepted architecture?"
+        ],
+        "lenses": [
+          "law completeness",
+          "plane separation"
+        ]
+      },
+      "obligations": {
+        "schema": "none (declarative node)",
+        "generated": "none",
+        "docs": "bundle markdown only",
+        "changelog": "none",
+        "receipt": "none"
+      },
+      "exits": {
+        "old_path": "none",
+        "compatibility": "none",
+        "supersession": "explicit successor bundle by link; T02R invalidation",
+        "transfer": "transfer only via successor bundle"
+      },
+      "rollback": {
+        "rollback": "revert the bundle commit; no runtime state depends on it",
+        "return_to_issue": "return here when a durable programme-wide decision is missing",
+        "not_proven": "unproven laws remain recorded, not papered over",
+        "stop": "stop before train implementation"
+      },
+      "successors": [
+        "P01",
+        "P02",
+        "T01",
+        "T02",
+        "T02R",
+        "T02S",
+        "T03",
+        "T04",
+        "T05",
+        "T07",
+        "T08",
+        "T08C"
+      ],
+      "identity_fields": [
+        "bundle file set",
+        "compiled law set"
+      ],
+      "limitations": [
+        "The bundle records open decisions OD1-OD5 without deciding them."
+      ]
+    },
+    {
+      "node_id": "T01",
+      "issue": 11764,
+      "title": "tooling(issue-controller-train): define the canonical stable implementation graph",
+      "title_fingerprint": "F05612DBD75254A4",
+      "aliases": [],
+      "train_role": "stable_contract",
+      "lane": "control",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Encode the complete train as the stable, deterministic issue_controller_train.v1 manifest with node contracts.",
+      "authority_before": "Only the S00 prose node map exists; no machine-readable stable topology.",
+      "authority_after": "The checked train manifest is the stable topology and node-contract authority consumed by T02/T02R without reparsing issue prose.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "S00",
+          "class": "hard",
+          "provenance": "S00 plan.md node row"
+        }
+      ],
+      "claim_ceiling": "Topology and contract encoding only; no validation command, probe, observation, packet, mutation, proof execution or scheduler.",
+      "writer": {
+        "conflict_key": "issue_controllers.train_manifest",
+        "parallel_group": "none",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#10554",
+        "#10858",
+        "#10872",
+        "#10881",
+        "#3983"
+      ],
+      "allowed_components": [
+        "stable manifest artifact (issue_controller_train.v1)",
+        "spec bundle structural checker",
+        "generated static reference view (optional, derived)"
+      ],
+      "forbidden_adjacent_owners": [
+        "validator command (T02)",
+        "current-tree probes (T03)",
+        "frontier (T04)",
+        "context (T05)",
+        "live observation (T06)",
+        "packet rendering (T07)",
+        "metadata mutation (C05/R05B)"
+      ],
+      "spec": {
+        "disposition": "SPEC_COMPILED",
+        "owner": "T01",
+        "stale_policy": "node/edge/conflict-key topology change requires T02R classification before merge"
+      },
+      "first_falsifier": "A manifest that parses and enumerates all nodes but silently reclassifies a graph-law edge or duplicates an authority-after proposition.",
+      "controls": {
+        "positive": "canonical manifest validates twice with identical semantic digest",
+        "opposite": "controller or fan_in node admitted as ordinary builder frontier",
+        "stale": "manifest edge set drifting from leaf-body dependency statements",
+        "wrong_subject": "a sibling programme's node imported as a home leaf",
+        "fault": "malformed node or unknown key accepted by lenient parsing",
+        "mutation": "live SHA/PR/check/writer state injected into stable bytes"
+      },
+      "proof": {
+        "focused": "embedded two-run structural checker with 15 fail-closed mutation controls",
+        "routed": "not routed (spec artifact); later T08C classifies its proof depth"
+      },
+      "review_forward": {
+        "questions": [
+          "Does every edge trace to a leaf-body or controller-graph dependency statement?",
+          "Does the manifest decide any open decision routed to OD1-OD5 owners?"
+        ],
+        "lenses": [
+          "edge traceability",
+          "open-decision neutrality",
+          "plane separation"
+        ]
+      },
+      "obligations": {
+        "schema": "issue_controller_train.v1 schema_version 1",
+        "generated": "static reference view only if derived from checked input",
+        "docs": "bundle context/acceptance/checklist",
+        "changelog": "none (spec-only)",
+        "receipt": "two-run checker output in PR body"
+      },
+      "exits": {
+        "old_path": "none (new stable surface)",
+        "compatibility": "none",
+        "supersession": "supersession by successor manifest version via T02R",
+        "transfer": "transfer only via T02R-classified revision with exact successor"
+      },
+      "rollback": {
+        "rollback": "revert the bundle commit; no runtime state depends on it",
+        "return_to_issue": "return here when topology or node-contract meaning changes",
+        "not_proven": "absent validators and future tooling remain not_proven",
+        "stop": "stop before validator commands, probes, frontier, packets, GitHub state or product behavior"
+      },
+      "successors": [
+        "D01",
+        "I01",
+        "I02",
+        "P01",
+        "P02",
+        "T02",
+        "T02R",
+        "T02S",
+        "T03",
+        "T04",
+        "T05",
+        "T06",
+        "T07",
+        "T08",
+        "T08C"
+      ],
+      "identity_fields": [
+        "node_id set",
+        "edge set and classes",
+        "conflict keys",
+        "authority_after propositions",
+        "schema version"
+      ],
+      "limitations": [
+        "Likely source paths are intentionally absent; T05 resolves them on one exact tree."
+      ]
+    },
+    {
+      "node_id": "T02",
+      "issue": 11765,
+      "title": "tooling(issue-controller-train): validate the stable graph and generate its checked projection",
+      "title_fingerprint": "9B8771A1E926D2D4",
+      "aliases": [],
+      "train_role": "validator",
+      "lane": "control",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Independent static validation of the stable graph and the sole checked graph projection.",
+      "authority_before": "Only the manifest's embedded bundle checker exists; no independent validator.",
+      "authority_after": "An independent validator and generated human graph projection exist and never rewrite the manifest to pass.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "S00",
+          "class": "hard",
+          "provenance": "#11765 body references"
+        },
+        {
+          "target": "T01",
+          "class": "hard",
+          "provenance": "S00 plan.md node row"
+        }
+      ],
+      "claim_ceiling": "Validation and projection only; no manifest rewrite, issue edit, label mutation or candidate selection.",
+      "writer": {
+        "conflict_key": "issue_controllers.train_validator",
+        "parallel_group": "none",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#10554",
+        "#10858",
+        "#3983"
+      ],
+      "allowed_components": [
+        "independent static validator",
+        "checked graph projection (generated human view)"
+      ],
+      "forbidden_adjacent_owners": [
+        "manifest authorship",
+        "readiness decisions",
+        "live GitHub inspection"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "T02",
+        "stale_policy": "manifest schema revision requires re-derivation of validator fixtures via T02R"
+      },
+      "first_falsifier": "A validator that only checks node count passes a cyclic or authority-colliding graph.",
+      "controls": {
+        "positive": "valid manifest passes; projection renders deterministically",
+        "opposite": "validator rewrites the manifest to make it pass",
+        "stale": "validator run against a superseded manifest version",
+        "wrong_subject": "validator applied to a sibling programme's graph",
+        "fault": "validator crashes on malformed input instead of failing closed",
+        "mutation": "edge reclassified between hard/evidence/optional/external undetected"
+      },
+      "proof": {
+        "focused": "mutation fixtures for duplicate node, cycle, wrong dependency class, missing edge",
+        "routed": "later T08C binds validator runs into sufficient proof depth"
+      },
+      "review_forward": {
+        "questions": [
+          "Can the validator detect every falsifier class the manifest declares?"
+        ],
+        "lenses": [
+          "independence from manifest authorship"
+        ]
+      },
+      "obligations": {
+        "schema": "consumes issue_controller_train.v1",
+        "generated": "checked graph projection from validated input",
+        "docs": "projection usage notes",
+        "changelog": "none (tooling-internal)",
+        "receipt": "validator run receipts for closeout"
+      },
+      "exits": {
+        "old_path": "none (new surface)",
+        "compatibility": "projection regenerates cleanly",
+        "supersession": "validator supersession via T02R",
+        "transfer": "transfer with the manifest under T02R revision"
+      },
+      "rollback": {
+        "rollback": "revert validator; manifest remains authority",
+        "return_to_issue": "return here when validation semantics change",
+        "not_proven": "instrument-failed validation is not_proven",
+        "stop": "stop before readiness, frontier or live state claims"
+      },
+      "successors": [
+        "P02",
+        "T02R",
+        "T02S",
+        "T03",
+        "T04",
+        "T05",
+        "T07",
+        "T08",
+        "T08C"
+      ],
+      "identity_fields": [
+        "validator rule set",
+        "projection schema"
+      ],
+      "limitations": [
+        "Validator independence is architectural; proof of independence is review's job."
+      ]
+    },
+    {
+      "node_id": "T02R",
+      "issue": 11767,
+      "title": "tooling(issue-controller-train): govern semantic revisions and invalidate affected work",
+      "title_fingerprint": "652D7AC524EA7CFD",
+      "aliases": [],
+      "train_role": "validator",
+      "lane": "control",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Semantic train revision governance: classify changes and invalidate affected downstream artifacts.",
+      "authority_before": "No revision governance; manifest edits pass ad hoc.",
+      "authority_after": "Deterministic semantic change classification and impact/invalidation projection owns graph evolution.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "S00",
+          "class": "hard",
+          "provenance": "#11767 body references"
+        },
+        {
+          "target": "T01",
+          "class": "hard",
+          "provenance": "#11767 body references"
+        },
+        {
+          "target": "T02",
+          "class": "hard",
+          "provenance": "#11681 dependency graph"
+        }
+      ],
+      "claim_ceiling": "Classification and invalidation only; no manifest rewrite to pass, issue edits, label mutation or candidate selection.",
+      "writer": {
+        "conflict_key": "issue_controllers.train_revision",
+        "parallel_group": "none",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#10168",
+        "#11375",
+        "#6276"
+      ],
+      "allowed_components": [
+        "semantic diff classifier",
+        "impact/invalidation projection"
+      ],
+      "forbidden_adjacent_owners": [
+        "manifest authorship",
+        "metadata mutation",
+        "scheduling"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "T02R",
+        "stale_policy": "self-revision requires an explicit meta-disposition recorded in the projection"
+      },
+      "first_falsifier": "A material revision leaves stale probes/specs/packets/candidates/reviews valid.",
+      "controls": {
+        "positive": "node_add/dependency_reclassify changes invalidate exactly the affected artifacts",
+        "opposite": "revision rewrites the manifest to make validation pass",
+        "stale": "impact projection misses a downstream packet derived from a changed node",
+        "wrong_subject": "classification run against a foreign programme's graph",
+        "fault": "classifier crash emits empty impact instead of not_proven",
+        "mutation": "supersession loses unique work or exact successor"
+      },
+      "proof": {
+        "focused": "revision scenario fixtures with expected stale sets",
+        "routed": "later T08C routes revision-impact proof depth"
+      },
+      "review_forward": {
+        "questions": [
+          "Does every change class have an exact invalidation consequence?"
+        ],
+        "lenses": [
+          "invalidation completeness"
+        ]
+      },
+      "obligations": {
+        "schema": "revision/impact vocabulary",
+        "generated": "impact projection",
+        "docs": "revision governance notes",
+        "changelog": "none (tooling-internal)",
+        "receipt": "revision receipts"
+      },
+      "exits": {
+        "old_path": "none (new surface)",
+        "compatibility": "older projections marked stale, never edited",
+        "supersession": "supersession via successor classifier",
+        "transfer": "transfer with the manifest under explicit revision"
+      },
+      "rollback": {
+        "rollback": "revert classifier; prior revisions remain historical fact",
+        "return_to_issue": "return here when the graph changes semantically",
+        "not_proven": "unclassifiable change is not_proven and blocks",
+        "stop": "stop before executing invalidated work or mutating GitHub"
+      },
+      "successors": [
+        "C05",
+        "P01",
+        "P02",
+        "T02S",
+        "T03",
+        "T04",
+        "T05",
+        "T06",
+        "T07",
+        "T08",
+        "T08C"
+      ],
+      "identity_fields": [
+        "change-class vocabulary",
+        "invalidation rules"
+      ],
+      "limitations": [
+        "Reference model #11375 is consumed, not cloned."
+      ]
+    },
+    {
+      "node_id": "T02S",
+      "issue": 11774,
+      "title": "spec(issue-controller-train): compile checked leaf specifications and exact dispositions",
+      "title_fingerprint": "1E45F74D89425B69",
+      "aliases": [],
+      "train_role": "specification",
+      "lane": "control",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Compile checked per-node leaf specifications with exact dispositions.",
+      "authority_before": "Leaf specs live as unbounded issue prose.",
+      "authority_after": "Checked .spec compilation per concrete node owns the builder-facing spec surface.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "S00",
+          "class": "hard",
+          "provenance": "#11774 body references"
+        },
+        {
+          "target": "T01",
+          "class": "hard",
+          "provenance": "#11774 body references"
+        },
+        {
+          "target": "T02",
+          "class": "hard",
+          "provenance": "#11774 body references"
+        },
+        {
+          "target": "T02R",
+          "class": "hard",
+          "provenance": "#11681 dependency graph"
+        }
+      ],
+      "claim_ceiling": "Spec compilation only; no issue archaeology as builder input, no implementation.",
+      "writer": {
+        "conflict_key": "issue_controllers.leaf_spec_compilation",
+        "parallel_group": "none",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#10872",
+        "#10881",
+        "#3983"
+      ],
+      "allowed_components": [
+        "per-node .spec bundles",
+        "exact disposition records"
+      ],
+      "forbidden_adjacent_owners": [
+        "another spec engine",
+        "implementation work"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "T02S",
+        "stale_policy": "material changes flow through T02R invalidation before recompilation"
+      },
+      "first_falsifier": "A node with a contradictory or missing disposition still reaches builder eligibility.",
+      "controls": {
+        "positive": "every concrete node carries one exact disposition",
+        "opposite": "spec compilation edits issue semantics",
+        "stale": "compiled spec stale after semantic revision still used",
+        "wrong_subject": "spec compiled for the wrong proposition",
+        "fault": "missing disposition silently treated as sufficient",
+        "mutation": "generated docs become a second authority source"
+      },
+      "proof": {
+        "focused": "disposition fixtures incl. missing/contradictory rows",
+        "routed": "later T08C binds spec disposition into proof routing"
+      },
+      "review_forward": {
+        "questions": [
+          "Does each disposition name its exact basis?"
+        ],
+        "lenses": [
+          "disposition exactness"
+        ]
+      },
+      "obligations": {
+        "schema": "consumes .spec conventions",
+        "generated": "none",
+        "docs": "compiled leaf specs",
+        "changelog": "none (spec-internal)",
+        "receipt": "disposition receipts"
+      },
+      "exits": {
+        "old_path": "none (new surface)",
+        "compatibility": "none",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "revert compilations; issue bodies remain authority",
+        "return_to_issue": "return here when spec basis changes",
+        "not_proven": "unsettleable disposition is NOT_PROVEN and blocks eligibility",
+        "stop": "stop before implementation"
+      },
+      "successors": [
+        "D01",
+        "D02",
+        "I02",
+        "P01",
+        "P02",
+        "T04",
+        "T07",
+        "T08",
+        "T08C"
+      ],
+      "identity_fields": [
+        "disposition set",
+        "node coverage"
+      ],
+      "limitations": [
+        "Spec dispositions in this manifest are the T01-time basis; T02S owns their per-node compilation."
+      ]
+    },
+    {
+      "node_id": "T03",
+      "issue": 11769,
+      "title": "tooling(issue-controller-train): derive exact current-tree implementation state",
+      "title_fingerprint": "DA25C7B7609F5272",
+      "aliases": [],
+      "train_role": "current_tree_probe",
+      "lane": "control",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Derive exact current-tree implementation state per node via proposition-specific probes.",
+      "authority_before": "Implementation state inferred from issue/PR/label state.",
+      "authority_after": "Exact immutable-tree observation owns tree-state truth for every declared node.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "S00",
+          "class": "hard",
+          "provenance": "#11769 body references"
+        },
+        {
+          "target": "T01",
+          "class": "hard",
+          "provenance": "#11769 body references"
+        },
+        {
+          "target": "T02",
+          "class": "hard",
+          "provenance": "#11769 body references"
+        },
+        {
+          "target": "T02R",
+          "class": "hard",
+          "provenance": "#11681 dependency graph"
+        }
+      ],
+      "claim_ceiling": "Observation only; no readiness decision, GitHub inspection or proof execution.",
+      "writer": {
+        "conflict_key": "issue_controllers.current_tree_state",
+        "parallel_group": "none",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#10858"
+      ],
+      "allowed_components": [
+        "proposition-specific probe set",
+        "per-node tree-state model"
+      ],
+      "forbidden_adjacent_owners": [
+        "readiness decisions (T04)",
+        "live GitHub state (T06/C06)",
+        "scope definition (T05)"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "T03",
+        "stale_policy": "probe invalidation owned by T02R on semantic revision"
+      },
+      "first_falsifier": "A closed issue with no probe result is reported implemented.",
+      "controls": {
+        "positive": "probe on exact tree returns stable per-node state",
+        "opposite": "closure or green PR read as implementation state",
+        "stale": "probe result from an older tree reused",
+        "wrong_subject": "probe answers a different proposition than the node's",
+        "fault": "probe instrument failure yields unknown instead of not_proven",
+        "mutation": "producer_without_consumer state counted as implemented"
+      },
+      "proof": {
+        "focused": "per-node probe fixtures incl. producer_without_consumer",
+        "routed": "later T08C binds probe freshness into closeout"
+      },
+      "review_forward": {
+        "questions": [
+          "Does each probe bind to the node's exact proposition?"
+        ],
+        "lenses": [
+          "tree/live separation"
+        ]
+      },
+      "obligations": {
+        "schema": "tree-state model",
+        "generated": "none",
+        "docs": "probe semantics notes",
+        "changelog": "none (tooling-internal)",
+        "receipt": "probe receipts bound to tree identity"
+      },
+      "exits": {
+        "old_path": "none (new surface)",
+        "compatibility": "none",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "revert probes; no state depends on them",
+        "return_to_issue": "return here when implementation-state meaning changes",
+        "not_proven": "instrument-failed probes are not_proven",
+        "stop": "stop before readiness, frontier or live claims"
+      },
+      "successors": [
+        "P02",
+        "T04",
+        "T05",
+        "T06",
+        "T07",
+        "T08",
+        "T08C"
+      ],
+      "identity_fields": [
+        "probe set",
+        "state vocabulary"
+      ],
+      "limitations": [
+        "Observation subjects C01-C06 and later nodes; subjects are not dependencies."
+      ]
+    },
+    {
+      "node_id": "T04",
+      "issue": 11771,
+      "title": "tooling(issue-controller-train): derive the deterministic offline frontier and blocker chains",
+      "title_fingerprint": "084F25878880CA0B",
+      "aliases": [],
+      "train_role": "offline_frontier",
+      "lane": "control",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Derive the deterministic offline frontier, status and blocker chains as a planning projection.",
+      "authority_before": "No offline status; blockers live in labels and memory.",
+      "authority_after": "Offline status/blocker/safe-frontier projection owns planning visibility without writer claims.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "S00",
+          "class": "hard",
+          "provenance": "#11771 body references"
+        },
+        {
+          "target": "T01",
+          "class": "hard",
+          "provenance": "#11771 body references"
+        },
+        {
+          "target": "T02",
+          "class": "hard",
+          "provenance": "#11771 body references"
+        },
+        {
+          "target": "T02R",
+          "class": "hard",
+          "provenance": "#11771 body references"
+        },
+        {
+          "target": "T02S",
+          "class": "evidence",
+          "provenance": "#11681 dependency graph"
+        },
+        {
+          "target": "T03",
+          "class": "hard",
+          "provenance": "#11681 dependency graph"
+        }
+      ],
+      "claim_ceiling": "Planning projection only; no writer-freedom, vacancy, review-currentness or authorization claims.",
+      "writer": {
+        "conflict_key": "issue_controllers.offline_frontier",
+        "parallel_group": "none",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#10858"
+      ],
+      "allowed_components": [
+        "offline status model",
+        "blocker-chain derivation",
+        "safe-frontier projection"
+      ],
+      "forbidden_adjacent_owners": [
+        "writer admission",
+        "live observation (T06)",
+        "authorization (R05B)"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "T04",
+        "stale_policy": "frontier staleness owned by T02R impact projection"
+      },
+      "first_falsifier": "Frontier marks a node ready while a live candidate/writer is still active.",
+      "controls": {
+        "positive": "blocked chains derive deterministically from exact inputs",
+        "opposite": "structural readiness reported as candidate vacancy",
+        "stale": "frontier computed from stale tree state",
+        "wrong_subject": "frontier answers scheduling instead of planning",
+        "fault": "profile collapse into one readiness scalar",
+        "mutation": "optional dependency disappearing from blocker view"
+      },
+      "proof": {
+        "focused": "blocker/profile fixtures incl. one-scalar-forbidden check",
+        "routed": "later T08C routes frontier proof depth"
+      },
+      "review_forward": {
+        "questions": [
+          "Are profile-specific blockers kept independent?"
+        ],
+        "lenses": [
+          "readiness honesty"
+        ]
+      },
+      "obligations": {
+        "schema": "status/blocker vocabulary",
+        "generated": "frontier projection",
+        "docs": "frontier semantics notes",
+        "changelog": "none (tooling-internal)",
+        "receipt": "frontier derivation receipts"
+      },
+      "exits": {
+        "old_path": "none (new surface)",
+        "compatibility": "none",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "revert frontier; planning returns to manual",
+        "return_to_issue": "return here when status meaning changes",
+        "not_proven": "missing input rows render not_proven, never ready",
+        "stop": "stop before writer admission or live claims"
+      },
+      "successors": [
+        "D01",
+        "I01",
+        "P02",
+        "T05",
+        "T06",
+        "T07",
+        "T08",
+        "T08C"
+      ],
+      "identity_fields": [
+        "blocker vocabulary",
+        "profile set"
+      ],
+      "limitations": [
+        "Manual explicit routes must be named, not papered over as ready."
+      ]
+    },
+    {
+      "node_id": "T05",
+      "issue": 11772,
+      "title": "tooling(issue-controller-train): compile bounded exact-tree implementation context for each node",
+      "title_fingerprint": "D90F93C6B2A1168B",
+      "aliases": [],
+      "train_role": "context_projection",
+      "lane": "control",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Compile bounded exact-tree implementation context per node for fresh agents.",
+      "authority_before": "Agents re-derive scope via controller archaeology.",
+      "authority_after": "Per-node exact-tree context owns the no-archaeology execution surface.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "S00",
+          "class": "hard",
+          "provenance": "#11772 body references"
+        },
+        {
+          "target": "T01",
+          "class": "hard",
+          "provenance": "#11772 body references"
+        },
+        {
+          "target": "T02",
+          "class": "hard",
+          "provenance": "#11772 body references"
+        },
+        {
+          "target": "T02R",
+          "class": "hard",
+          "provenance": "#11772 body references"
+        },
+        {
+          "target": "T03",
+          "class": "hard",
+          "provenance": "#11772 body references"
+        },
+        {
+          "target": "T04",
+          "class": "hard",
+          "provenance": "#11681 dependency graph"
+        }
+      ],
+      "claim_ceiling": "Context projection only; no scope definition, readiness change or second source index.",
+      "writer": {
+        "conflict_key": "issue_controllers.tree_context",
+        "parallel_group": "post-T04-parallel",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#10858",
+        "#10872"
+      ],
+      "allowed_components": [
+        "per-node context model",
+        "component/instruction/test/generated-output mapping"
+      ],
+      "forbidden_adjacent_owners": [
+        "scope authority (leaf issues)",
+        "another repository index",
+        "readiness (T04)"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "T05",
+        "stale_policy": "context invalidation owned by T02R on revision or tree movement"
+      },
+      "first_falsifier": "Context maps a plausible path set that does not exist on the exact tree.",
+      "controls": {
+        "positive": "context binds each component to exact-tree evidence",
+        "opposite": "context defines scope instead of projecting it",
+        "stale": "context regenerated after tree movement without invalidation",
+        "wrong_subject": "context written for the wrong node proposition",
+        "fault": "missing component silently omitted",
+        "mutation": "path order presented as semantic dependency order"
+      },
+      "proof": {
+        "focused": "context fixtures incl. wrong-path and missing-component controls",
+        "routed": "later T08C binds context freshness into closeout"
+      },
+      "review_forward": {
+        "questions": [
+          "Does the context stay a projection, not an authority?"
+        ],
+        "lenses": [
+          "projection purity"
+        ]
+      },
+      "obligations": {
+        "schema": "context model",
+        "generated": "context views",
+        "docs": "context usage notes",
+        "changelog": "none (tooling-internal)",
+        "receipt": "context receipts bound to tree identity"
+      },
+      "exits": {
+        "old_path": "none (new surface)",
+        "compatibility": "none",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "revert context; agents fall back to archaeology",
+        "return_to_issue": "return here when context meaning changes",
+        "not_proven": "unresolvable mappings are not_proven",
+        "stop": "stop before readiness or live claims"
+      },
+      "successors": [
+        "D01",
+        "D02",
+        "I01",
+        "P02",
+        "T07",
+        "T08"
+      ],
+      "identity_fields": [
+        "component mapping",
+        "tree binding"
+      ],
+      "limitations": [
+        "Source paths resolve here for the first time; the manifest deliberately omits them."
+      ]
+    },
+    {
+      "node_id": "T06",
+      "issue": 11773,
+      "title": "tooling(issue-controller-train): reconcile live candidates and collaboration state read-only",
+      "title_fingerprint": "8D6B1133E9F07469",
+      "aliases": [],
+      "train_role": "live_observer",
+      "lane": "control",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Reconcile live candidates and collaboration state read-only.",
+      "authority_before": "Live candidate state discovered ad hoc per agent.",
+      "authority_after": "Read-only live candidate/collaboration reconciliation owns plane-6 observation.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "T01",
+          "class": "hard",
+          "provenance": "#11773 body references"
+        },
+        {
+          "target": "T02R",
+          "class": "hard",
+          "provenance": "#11773 body references"
+        },
+        {
+          "target": "T03",
+          "class": "hard",
+          "provenance": "#11773 body references"
+        },
+        {
+          "target": "T04",
+          "class": "hard",
+          "provenance": "#11773 body references"
+        }
+      ],
+      "claim_ceiling": "Observation only; no mutation, assignment, scheduling or merge.",
+      "writer": {
+        "conflict_key": "issue_controllers.live_candidate_observer",
+        "parallel_group": "post-T04-parallel",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#10168",
+        "#3693",
+        "#3957",
+        "#3982",
+        "#4177",
+        "#6193",
+        "#8267"
+      ],
+      "allowed_components": [
+        "live candidate observer",
+        "collaboration-state reconciliation"
+      ],
+      "forbidden_adjacent_owners": [
+        "any GitHub mutation",
+        "metadata drift (C06 subject)",
+        "readiness (T04)"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "T06",
+        "stale_policy": "observation currency governed by generic review/currentness authorities"
+      },
+      "first_falsifier": "Local/current-tree proof read as live candidate vacancy.",
+      "controls": {
+        "positive": "candidate/stack/review state reconciled read-only",
+        "opposite": "observer mutates assignment or scheduling",
+        "stale": "stale observation treated as current",
+        "wrong_subject": "observer answers metadata drift instead of work state",
+        "fault": "API/instrument failure rendered as vacancy or unchanged",
+        "mutation": "review state collapsed into a single scalar"
+      },
+      "proof": {
+        "focused": "candidate-state fixtures incl. instrument-failure rows",
+        "routed": "later T08C binds observation currentness into closeout"
+      },
+      "review_forward": {
+        "questions": [
+          "Is the observer strictly read-only?"
+        ],
+        "lenses": [
+          "mutation freedom"
+        ]
+      },
+      "obligations": {
+        "schema": "observation model",
+        "generated": "none",
+        "docs": "observation notes",
+        "changelog": "none (tooling-internal)",
+        "receipt": "observation receipts with currency"
+      },
+      "exits": {
+        "old_path": "none (new surface)",
+        "compatibility": "none",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "revert observer; observation returns to manual",
+        "return_to_issue": "return here when collaboration-state meaning changes",
+        "not_proven": "instrument-failed observation is not_proven",
+        "stop": "stop before any mutation or merge action"
+      },
+      "successors": [
+        "D01",
+        "D02",
+        "I01",
+        "P02",
+        "T07",
+        "T08"
+      ],
+      "identity_fields": [
+        "observation vocabulary",
+        "currency rules"
+      ],
+      "limitations": [
+        "Leaf body does not list S00/T02 as direct inputs; only its stated references are encoded as edges."
+      ]
+    },
+    {
+      "node_id": "T07",
+      "issue": 11775,
+      "title": "tooling(issue-controller-train): generate bounded builder, reviewer, and reconciliation packets",
+      "title_fingerprint": "79EC7053F6AEFEA2",
+      "aliases": [],
+      "train_role": "packet_adapter",
+      "lane": "control",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Derive bounded builder/reviewer/reconciliation packets by adapting into shared contracts.",
+      "authority_before": "No packet derivation; agents brief from archaeology.",
+      "authority_after": "The packet adapter owns programme-lens projection into #10872/#10881 without new schemas.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "S00",
+          "class": "hard",
+          "provenance": "#11775 body references"
+        },
+        {
+          "target": "T01",
+          "class": "hard",
+          "provenance": "#11775 body references"
+        },
+        {
+          "target": "T02",
+          "class": "hard",
+          "provenance": "#11775 body references"
+        },
+        {
+          "target": "T02R",
+          "class": "hard",
+          "provenance": "#11775 body references"
+        },
+        {
+          "target": "T02S",
+          "class": "hard",
+          "provenance": "#11775 body references"
+        },
+        {
+          "target": "T03",
+          "class": "hard",
+          "provenance": "#11775 body references"
+        },
+        {
+          "target": "T04",
+          "class": "hard",
+          "provenance": "#11775 body references"
+        },
+        {
+          "target": "T05",
+          "class": "hard",
+          "provenance": "#11681 dependency graph"
+        },
+        {
+          "target": "T06",
+          "class": "hard",
+          "provenance": "#11681 dependency graph"
+        }
+      ],
+      "claim_ceiling": "Adaptation only; no new packet schema, independent readiness/search/GitHub inspection or model invocation.",
+      "writer": {
+        "conflict_key": "issue_controllers.packet_adapter",
+        "parallel_group": "none",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#10168",
+        "#10872",
+        "#10881",
+        "#3693",
+        "#3957",
+        "#3982",
+        "#4177",
+        "#6193",
+        "#8267"
+      ],
+      "allowed_components": [
+        "packet adapter into agent_implementation_packet.v1 and #10881 contracts"
+      ],
+      "forbidden_adjacent_owners": [
+        "new packet schema",
+        "independent readiness",
+        "independent GitHub inspection",
+        "model invocation"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "T07",
+        "stale_policy": "packet staleness owned by T02R invalidation of inputs"
+      },
+      "first_falsifier": "Builder and reviewer criterion sets collapse into one mirrored set.",
+      "controls": {
+        "positive": "both shared schemas emitted unchanged with programme lenses",
+        "opposite": "adapter clones or merges the shared contracts",
+        "stale": "packet derived from stale spec/context",
+        "wrong_subject": "packet assigned as work state",
+        "fault": "packet generation failure rendered as empty success",
+        "mutation": "criteria copied instead of referenced"
+      },
+      "proof": {
+        "focused": "packet-shape fixtures incl. collapse-detection control",
+        "routed": "later T08C binds packet identity into closeout"
+      },
+      "review_forward": {
+        "questions": [
+          "Do packets stay disposable projections?"
+        ],
+        "lenses": [
+          "contract separation"
+        ]
+      },
+      "obligations": {
+        "schema": "consumes #10872/#10881 shapes",
+        "generated": "ephemeral packet instances (never tracked)",
+        "docs": "adapter notes",
+        "changelog": "none (tooling-internal)",
+        "receipt": "packet identity receipts"
+      },
+      "exits": {
+        "old_path": "none (new surface)",
+        "compatibility": "none",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "revert adapter; briefing returns to manual",
+        "return_to_issue": "return here when packet boundaries change",
+        "not_proven": "missing input renders packet not_proven",
+        "stop": "stop before assignment, branch/PR creation or model execution"
+      },
+      "successors": [
+        "D01",
+        "D02",
+        "I01",
+        "I02",
+        "P02",
+        "T08"
+      ],
+      "identity_fields": [
+        "adapter lens set",
+        "target contract identities"
+      ],
+      "limitations": [
+        "Packet instances are ephemeral by law; no archive is created."
+      ]
+    },
+    {
+      "node_id": "T08",
+      "issue": 11776,
+      "title": "tooling(issue-controller-train): add exact-head PR closeout for declared train nodes",
+      "title_fingerprint": "AE5AFAD14B8D58F5",
+      "aliases": [],
+      "train_role": "validator",
+      "lane": "control",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Add exact-head structural closeout for declared train nodes.",
+      "authority_before": "Completion claimed from focused green tests or detailed bodies.",
+      "authority_after": "Exact-head closeout binds node, base, head, diff and current evidence set to checked input.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "S00",
+          "class": "hard",
+          "provenance": "#11776 body references"
+        },
+        {
+          "target": "T01",
+          "class": "hard",
+          "provenance": "#11776 body references"
+        },
+        {
+          "target": "T02",
+          "class": "hard",
+          "provenance": "#11776 body references"
+        },
+        {
+          "target": "T02R",
+          "class": "hard",
+          "provenance": "#11776 body references"
+        },
+        {
+          "target": "T02S",
+          "class": "hard",
+          "provenance": "#11776 body references"
+        },
+        {
+          "target": "T03",
+          "class": "hard",
+          "provenance": "#11776 body references"
+        },
+        {
+          "target": "T04",
+          "class": "hard",
+          "provenance": "#11776 body references"
+        },
+        {
+          "target": "T05",
+          "class": "hard",
+          "provenance": "#11776 body references"
+        },
+        {
+          "target": "T06",
+          "class": "hard",
+          "provenance": "#11776 body references"
+        },
+        {
+          "target": "T07",
+          "class": "hard",
+          "provenance": "#11681 dependency graph"
+        },
+        {
+          "target": "T08C",
+          "class": "hard",
+          "provenance": "#11681 dependency graph"
+        }
+      ],
+      "claim_ceiling": "Structural closeout only; not review approval, merge authorization, issue closure or R05B authorization.",
+      "writer": {
+        "conflict_key": "issue_controllers.pr_closeout",
+        "parallel_group": "none",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#10168",
+        "#3693",
+        "#3786",
+        "#3985",
+        "#3986",
+        "#6193",
+        "#8267"
+      ],
+      "allowed_components": [
+        "closeout checker extension for declared nodes"
+      ],
+      "forbidden_adjacent_owners": [
+        "parallel checker",
+        "review approval",
+        "merge authorization"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "T08",
+        "stale_policy": "closeout rule changes route through T02R classification"
+      },
+      "first_falsifier": "A detailed issue body plus focused green tests claims node completion.",
+      "controls": {
+        "positive": "closeout requires every owned obligation current at exact head",
+        "opposite": "closeout passing treated as review approval or merge authorization",
+        "stale": "closeout against a moved head",
+        "wrong_subject": "closeout run for an undeclared node",
+        "fault": "instrument failure yields pass",
+        "mutation": "missing old-path disposition accepted"
+      },
+      "proof": {
+        "focused": "closeout fixtures incl. stale-head and missing-receipt controls",
+        "routed": "consumes T08C route/result identities"
+      },
+      "review_forward": {
+        "questions": [
+          "Does closeout stay structural?"
+        ],
+        "lenses": [
+          "obligation completeness"
+        ]
+      },
+      "obligations": {
+        "schema": "consumes checker contracts",
+        "generated": "none",
+        "docs": "closeout semantics notes",
+        "changelog": "none (tooling-internal)",
+        "receipt": "closeout receipts"
+      },
+      "exits": {
+        "old_path": "none (new surface)",
+        "compatibility": "none",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "revert extension; closeout returns to manual judgment",
+        "return_to_issue": "return here when closeout obligations change",
+        "not_proven": "missing evidence is not_proven and blocks",
+        "stop": "stop before approval, merge or closure actions"
+      },
+      "successors": [
+        "D01",
+        "D02",
+        "I01",
+        "I02",
+        "P01",
+        "P02"
+      ],
+      "identity_fields": [
+        "obligation set",
+        "evidence bindings"
+      ],
+      "limitations": [
+        "Closeout consumes T08C identities; it does not own routing."
+      ]
+    },
+    {
+      "node_id": "T08C",
+      "issue": 11784,
+      "title": "ci(issue-controllers): route changes to sufficient proof depth and one stable final result",
+      "title_fingerprint": "E496D0FF8896A723",
+      "aliases": [],
+      "train_role": "integration",
+      "lane": "control",
+      "chain": {
+        "home": "issue-controllers",
+        "controller": "CTRL"
+      },
+      "one_pr_outcome": "Route issue-controller changes to sufficient proof depth and one stable final result through the existing CI router.",
+      "authority_before": "No component-specific proof-depth routing.",
+      "authority_after": "The semantic-component to proof-depth map and stable final result extend the existing router without a second one.",
+      "buildable": true,
+      "dependencies": [
+        {
+          "target": "S00",
+          "class": "hard",
+          "provenance": "#11784 body references"
+        },
+        {
+          "target": "T01",
+          "class": "hard",
+          "provenance": "#11784 body references"
+        },
+        {
+          "target": "T02",
+          "class": "hard",
+          "provenance": "#11784 body references"
+        },
+        {
+          "target": "T02R",
+          "class": "hard",
+          "provenance": "#11784 body references"
+        },
+        {
+          "target": "T02S",
+          "class": "hard",
+          "provenance": "#11784 body references"
+        },
+        {
+          "target": "T03",
+          "class": "hard",
+          "provenance": "#11784 body references"
+        },
+        {
+          "target": "T04",
+          "class": "hard",
+          "provenance": "#11681 dependency graph"
+        }
+      ],
+      "claim_ceiling": "Routing only; no second router, second result/fan-in schema or proof execution.",
+      "writer": {
+        "conflict_key": "issue_controllers.proof_depth_routing",
+        "parallel_group": "post-T04-parallel",
+        "stack_relation": "none"
+      },
+      "consumed_authorities": [
+        "#11219",
+        "#11224",
+        "#11229",
+        "#11232",
+        "#1848",
+        "#3390",
+        "#4787",
+        "#4789",
+        "#6188",
+        "#8042",
+        "#8267",
+        "#9603"
+      ],
+      "allowed_components": [
+        "proof-depth map for semantic components",
+        "stable final-result binding in the existing router"
+      ],
+      "forbidden_adjacent_owners": [
+        "second router",
+        "second result schema",
+        "review approval semantics"
+      ],
+      "spec": {
+        "disposition": "ISSUE_PLAN_SUFFICIENT",
+        "owner": "T08C",
+        "stale_policy": "routing map changes classified by T02R"
+      },
+      "first_falsifier": "Every change routes to maximal proof depth, hiding the sufficient-depth discrimination.",
+      "controls": {
+        "positive": "component changes route to declared sufficient depth",
+        "opposite": "a second router or result schema appears",
+        "stale": "routing from a stale component map",
+        "wrong_subject": "reachability policy copied from #11219",
+        "fault": "router failure renders as pass",
+        "mutation": "ordinary control-plane change forced into live-op profile"
+      },
+      "proof": {
+        "focused": "routing scenario fixtures incl. wrong-depth controls",
+        "routed": "this node IS the routed-proof owner for the programme"
+      },
+      "review_forward": {
+        "questions": [
+          "Is the existing router extended, not duplicated?"
+        ],
+        "lenses": [
+          "single-router law"
+        ]
+      },
+      "obligations": {
+        "schema": "consumes existing router contracts",
+        "generated": "none",
+        "docs": "routing map notes",
+        "changelog": "none (tooling-internal)",
+        "receipt": "route/result receipts"
+      },
+      "exits": {
+        "old_path": "extends existing router configuration",
+        "compatibility": "existing routes unchanged",
+        "supersession": "supersession via T02R",
+        "transfer": "transfer with manifest revision"
+      },
+      "rollback": {
+        "rollback": "revert routing; generic depth applies",
+        "return_to_issue": "return here when proof-depth semantics change",
+        "not_proven": "unroutable change is not_proven",
+        "stop": "stop before executing proof or authorizing operations"
+      },
+      "successors": [
+        "R05B",
+        "T08"
+      ],
+      "identity_fields": [
+        "component map",
+        "result identity"
+      ],
+      "limitations": [
+        "OD5 (seam shape) is routed here and not decided by this manifest."
+      ]
+    }
+  ],
+  "supersessions": [],
+  "revision_governance": {
+    "owner_node": "T02R",
+    "owner_issue": 11767,
+    "invalidates": "affected probes, specs, packets, candidates, reviews and unexecuted metadata plans become stale and must be re-derived",
+    "never": "revision never rewrites the manifest to make it pass and never mutates GitHub"
+  },
+  "limitations": [
+    "Edge classes follow each leaf body's own reference block; where the #11681 controller graph is stricter or looser, the difference is recorded per edge provenance and in node limitations.",
+    "T04's T02S edge is evidence-class per the controller graph while the T04 leaf body is silent on T02S.",
+    "T06's leaf body lists no S00/T02 direct input; only its stated references are encoded.",
+    "R05B participation in P01/P02 is optional because the stage is authorization-gated and selected, per external-gate law.",
+    "#11779 body cites live observation as '#11787', an unrelated closed issue; the edge is encoded against C06 #11687 per #11681 child links.",
+    "No current source paths appear; T05 resolves them on one exact tree.",
+    "No landing, PR, check, writer, model or live metadata state is recorded; those are other planes."
+  ]
+}

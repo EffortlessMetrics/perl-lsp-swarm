@@ -28,6 +28,7 @@ fn make_diag(start: usize, end: usize, code: &str, message: &str) -> Diagnostic 
         tags: Vec::new(),
         suggestion: None,
         fixable: false,
+        critic_observation: None,
     }
 }
 

@@ -57,8 +57,15 @@ pkg-url = "{ repo }/releases/download/v{ version }/perllsp-{ version }-{ target 
 bin-dir = "perllsp-{ version }-{ target }/{ bin }{ binary-ext }"
 pkg-fmt = "tgz"
 
-# Windows is the only target in the release matrix that ships a .zip, and 7z is
-# invoked with a trailing /* so the archive has no top-level directory.
+# Every Windows target in the release matrix ships a .zip, and 7z is invoked
+# with a trailing /* so the archive has no top-level directory. The override
+# set must stay equal to the matrix's Windows targets:
+# `binstall_overrides_derive_from_release_topology` in
+# xtask/src/tasks/release_artifact_check.rs fails when either side drifts.
 [package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
 pkg-fmt = "zip"
 bin-dir = "{ bin }{ binary-ext }"

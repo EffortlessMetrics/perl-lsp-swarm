@@ -1,5 +1,6 @@
 use perl_lsp_rs_core::config::{FormatterMode, Perl5LibPrecedence, ServerConfig, WorkspaceConfig};
 use perl_lsp_rs_core::runtime::LspLimits;
+use perl_tdd_support::must_some;
 use serde_json::{Value, json};
 use std::{error::Error, time::Duration};
 
@@ -103,18 +104,105 @@ fn load_schema() -> Result<Value, Box<dyn Error>> {
     }
 }
 
+/// #8311 recurrence check, part 1: every section exposed by the public
+/// generic settings schema must map to a registered runtime owner.
+///
+/// A public configuration key may not name an editor/provider surface that
+/// has no registered runtime owner; `nextEdit` was hidden for exactly that
+/// reason. Adding a schema section without a registered owner (or retiring a
+/// section without dropping its mapping) fails here. Reintroducing something
+/// like `nextEdit` requires a dedicated issue/programme plus an actually
+/// registered provider, at which point it earns a mapping entry.
+#[test]
+fn generic_schema_sections_have_registered_runtime_owners() -> Result<(), Box<dyn Error>> {
+    /// Sections of the generic settings schema and the registered runtime
+    /// owner that consumes each one. Deny-by-default: no entry, no exposure.
+    const REGISTERED_OWNERS: &[(&str, &str)] = &[
+        ("workspace", "WorkspaceConfig::update_from_value"),
+        ("inlayHints", "ServerConfig::update_from_value"),
+        ("limits", "LspLimits::update_from_value"),
+        ("telemetry", "ServerConfig::update_from_value"),
+        ("perlcritic", "ServerConfig::update_from_value (deprecated alias)"),
+        ("critic", "ServerConfig::update_from_value"),
+        ("formatting", "ServerConfig::update_from_value"),
+        ("aiCompletion", "ServerConfig::update_from_value + registered inline-completion runtime"),
+    ];
+
+    let schema = load_schema()?;
+    let sections = schema["properties"]["perl"]["properties"]
+        .as_object()
+        .ok_or("generic settings schema has no perl.properties object")?;
+
+    for (section, owner) in REGISTERED_OWNERS {
+        assert!(
+            sections.contains_key(*section),
+            "registered owner mapping for `{section}` ({owner}) has no matching schema section; \
+             remove the stale mapping",
+        );
+    }
+    for section in sections.keys() {
+        assert!(
+            REGISTERED_OWNERS.iter().any(|(name, _)| name == section),
+            "public settings section `{section}` has no registered runtime owner (#8311): a \
+             public configuration key may not name an editor/provider surface with no \
+             registered runtime owner",
+        );
+    }
+
+    Ok(())
+}
+
+/// #8311 recurrence check, part 2: the hidden next-edit setting must stay
+/// absent from every surface that advertises public configuration.
+///
+/// The internal scaffold types remain (default-off, receipt-only, exercised
+/// only by dev harnesses) and legacy supplied keys are answered with one
+/// bounded ignored/deprecation reason by the config layer, but no schema,
+/// example, onboarding, or editor-contribution surface may advertise
+/// `nextEdit`/`[next_edit]` again until a provider is registered.
+#[test]
+fn hidden_next_edit_setting_stays_absent_from_public_configuration_surfaces() {
+    let surfaces = [
+        ("settings schema", include_str!("../../../schemas/perllsp-settings.schema.json")),
+        ("configuration reference", include_str!("../../../docs/reference/CONFIG.md")),
+        ("configuration guide", include_str!("../../../docs/reference/CONFIGURATION.md")),
+        (
+            "configuration schema reference",
+            include_str!("../../../docs/reference/CONFIGURATION_SCHEMA.md"),
+        ),
+        ("example project config", include_str!("../../../.perl-lsp.toml.example")),
+        (
+            "fuzz corpus example project config",
+            include_str!("../../../fuzz/corpus/config_surfaces/.perl-lsp.toml.example"),
+        ),
+        ("vscode extension contributions", include_str!("../../../vscode-extension/package.json")),
+    ];
+    let forbidden = ["nextEdit", "next_edit"];
+
+    for (surface_name, surface) in surfaces {
+        for marker in forbidden {
+            assert!(
+                !surface.contains(marker),
+                "hidden next-edit setting marker {marker:?} reintroduced in {surface_name} (#8311)"
+            );
+        }
+    }
+}
+
 #[test]
 fn generic_settings_schema_is_server_native_and_namespaced() -> Result<(), Box<dyn Error>> {
     let schema = load_schema()?;
     let properties = &schema["properties"]["perl"]["properties"];
     assert_eq!(properties.get("testRunner"), None);
+    // #8311: `nextEdit` names an editor provider surface with no registered
+    // runtime owner, so it must not appear as a public settings section.
+    assert_eq!(properties.get("nextEdit"), None);
 
     for section in [
         "workspace",
         "inlayHints",
         "limits",
         "telemetry",
-        "nextEdit",
         "perlcritic",
         "critic",
         "formatting",
@@ -178,7 +266,6 @@ fn generic_schema_fields_are_behavior_backed_by_runtime_config() {
             "astCacheMaxMemoryBytes": 3000
         },
         "telemetry": { "enabled": true },
-        "nextEdit": { "enabled": true },
         "critic": {
             "enabled": true,
             "severity": 4,
@@ -228,7 +315,6 @@ fn generic_schema_fields_are_behavior_backed_by_runtime_config() {
     assert!(server.inlay_hints_chained_hints);
     assert_eq!(server.inlay_hints_max_length, 48);
     assert!(server.telemetry_enabled);
-    assert!(server.next_edit.enabled);
     assert_eq!(server.perlcritic_severity, 4);
     assert_eq!(server.native_critic_profile, "strict");
     assert!(!server.format_on_save);
@@ -237,14 +323,21 @@ fn generic_schema_fields_are_behavior_backed_by_runtime_config() {
     assert_eq!(server.perltidy_indent_columns, Some(2));
     assert_eq!(server.perltidy_tabs, Some(false));
     assert_eq!(server.perltidy_timeout_secs, 12);
-    assert!(server.ai_completion.user_enabled);
-    assert_eq!(server.ai_completion.model, "fixture-model");
+    // #4997: activation/selection fields from the generic schema are rejected;
+    // compiled defaults survive. Envelope fields remain behavior-backed.
+    assert!(!server.ai_completion.user_enabled);
+    assert_eq!(
+        server.ai_completion.activation_authority,
+        perl_lsp_rs_core::config::AiActivationAuthority::Unavailable
+    );
+    assert_eq!(server.ai_completion.provider, "openai_compat");
+    assert_eq!(server.ai_completion.model, "gpt-4o-mini");
     assert_eq!(server.ai_completion.timeout_ms, 2200);
     assert_eq!(server.ai_completion.max_output_tokens, 96);
     assert_eq!(server.ai_completion.max_inflight, 2);
     assert!(!server.ai_completion.fallback);
     assert!(server.ai_completion.local_model_mode);
-    assert!(!server.ai_completion.streaming.user_enabled);
+    assert!(server.ai_completion.streaming.user_enabled);
     assert_eq!(server.ai_completion.streaming.update_debounce_ms, 80);
 
     let mut workspace = WorkspaceConfig::default();
@@ -302,6 +395,29 @@ fn generic_schema_excludes_security_sensitive_lsp_settings() -> Result<(), Box<d
     assert!(ai.get("apiKeyEnv").is_none());
     assert!(ai.get("apiKeyHeader").is_none());
     assert!(ai.get("apiKeyPrefix").is_none());
+
+    // #4997: activation and selection fields remain documented for the future
+    // trusted adapter but advertise no generic client transport.
+    for activation_field in ["enabled", "provider", "model"] {
+        assert!(
+            ai.get(activation_field).is_some(),
+            "aiCompletion.{activation_field} must stay documented"
+        );
+        let field = must_some(ai.get(activation_field));
+        assert_eq!(
+            field["x-perllsp-transports"],
+            json!([]),
+            "aiCompletion.{activation_field} must not advertise client transports (#4997)",
+        );
+        assert_eq!(field["x-perllsp-scope"], json!("machine"));
+    }
+    let streaming_enabled =
+        &perl["aiCompletion"]["properties"]["streaming"]["properties"]["enabled"];
+    assert_eq!(
+        streaming_enabled["x-perllsp-transports"],
+        json!([]),
+        "streaming.enabled must not advertise client transports (#4997)",
+    );
 
     Ok(())
 }

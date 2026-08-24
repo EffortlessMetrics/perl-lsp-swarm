@@ -34,18 +34,24 @@ macro_rules! layer {
 }
 
 const LAYERS: &[LayerRow] = &[
+    layer!("active_document_readiness_tests", ObservabilityTest),
     layer!("client_requests", AdapterPolicy),
     layer!("constructors", ProductComposition),
     layer!("diagnostic_debounce", ApplicationServices),
     layer!("diagnostics", ApplicationServices),
+    layer!("diagnostics_sink", ApplicationServices),
+    layer!("diagnostics_sink_tests", ObservabilityTest),
     layer!("dispatch", AdapterPolicy),
     layer!("document_access", ApplicationServices),
+    layer!("document_symbols_sink", ApplicationServices),
+    layer!("document_symbols_sink_tests", ObservabilityTest),
     layer!("file_discovery", ApplicationServices),
     layer!("file_watcher_debounce", ApplicationServices),
     layer!("language", ApplicationServices),
     layer!("latency", ObservabilityTest),
     layer!("lifecycle", RuntimeProtocol),
     layer!("notebook", ApplicationServices),
+    layer!("open_buffer_authority_tests", ObservabilityTest),
     layer!("outbound", RuntimeProtocol),
     layer!("parse_worker", ApplicationServices),
     layer!("readiness", ApplicationServices),
@@ -233,6 +239,14 @@ fn every_runtime_module_has_one_layer() {
             row.module
         );
     }
+}
+
+#[test]
+fn open_buffer_authority_tests_keep_the_decided_layer() {
+    assert_eq!(
+        LAYERS.iter().find(|row| row.module == "open_buffer_authority_tests").map(|row| row.layer),
+        Some(Layer::ObservabilityTest)
+    );
 }
 
 #[test]

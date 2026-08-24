@@ -34,6 +34,7 @@ pub fn detect_heredoc_antipatterns(source: &str) -> Vec<Diagnostic> {
                 related_information: Vec::new(),
                 tags: Vec::new(),
                 fixable: false,
+                critic_observation: None,
                 suggestion: d.suggested_fix,
             }
         })

@@ -453,7 +453,34 @@ impl Coordinator {
     }
 
     fn request_shutdown(&self) {
+        // The flag MUST be stored while holding `state`'s lock. `take_next`
+        // reads `shutdown` while holding that lock, in the gap between its
+        // `ready` scan and its `cvar.wait` (which atomically releases the
+        // lock and parks). A store performed WITHOUT the lock can land in
+        // that gap -- after the worker has already read `false` but before
+        // it is actually parked -- and the `notify_all` below then finds no
+        // waiter and is lost forever (parking_lot notifications are not
+        // latched for future waiters). The worker sleeps through shutdown on
+        // an empty queue, `Drop for ParseWorker`'s `handle.join()` blocks
+        // with no ceiling, and whatever test was tearing down hangs silently
+        // with every assertion already passed (#10213; empirically confirmed
+        // by the `shutdown_notification_is_never_lost_against_a_worker_
+        // entering_take_next_wait` regression test below).
+        //
+        // Holding the lock across the store closes the window completely:
+        // either the worker acquires the lock after the store, observes
+        // `true`, and returns `None` without parking, or it parks first
+        // (releasing the lock inside `wait`), in which case this thread's
+        // lock acquisition orders the store before the park and the
+        // post-unlock `notify_all` is guaranteed to find it waiting.
+        //
+        // Constraint introduced by this ordering: `request_shutdown` must
+        // never be called from a thread that already holds `state` (no
+        // current caller can -- `Drop` runs on owner/callback threads,
+        // every callback fires outside `state`'s critical sections).
+        let state = self.state.lock();
         self.shutdown.store(true, Ordering::SeqCst);
+        drop(state);
         self.cvar.notify_all();
     }
 
@@ -573,11 +600,15 @@ impl ParseWorkerTestBarrier {
     ///
     /// Bounded by a generous ceiling -- not a correctness requirement (the
     /// underlying wait is otherwise event-driven, never polled) but a
-    /// test-harness legibility nicety (#3812): without it, CPU starvation
-    /// from concurrent builds/tests contending for cores silently hangs
-    /// this call for the full test-harness timeout with no diagnostic at
-    /// all. Bounding it turns that into a fast, clearly-labeled failure
-    /// instead. Test-harness only -- does not change worker behavior.
+    /// test-harness legibility nicety (#3812): without it, a job that never
+    /// pauses would silently hang this call for the full test-harness
+    /// timeout with no diagnostic at all. Bounding it turns that into a
+    /// fast, clearly-labeled failure instead. The ceiling expiring means
+    /// the armed job was never dequeued-and-paused within a minute -- a
+    /// real synchronization defect to report, not scheduler noise to retry
+    /// away (#10213 retired the old "CPU starvation, retry serially"
+    /// misdiagnosis that had been absorbing exactly such defects).
+    /// Test-harness only -- does not change worker behavior.
     pub(crate) fn wait_until_paused(&self) {
         const CEILING: std::time::Duration = std::time::Duration::from_mins(1);
         let deadline = std::time::Instant::now() + CEILING;
@@ -587,9 +618,9 @@ impl ParseWorkerTestBarrier {
             assert!(
                 now < deadline,
                 "ParseWorkerTestBarrier::wait_until_paused timed out after {CEILING:?} \
-                 waiting for the armed worker to reach its pause point -- likely CPU \
-                 starvation from concurrent builds/tests rather than a real bug; retry \
-                 serially"
+                 waiting for the armed worker to reach its pause point -- the armed job \
+                 was never dequeued and paused within the ceiling; treat this as a real \
+                 synchronization defect and report it, not as noise to retry away"
             );
             self.cvar.wait_for(&mut state, deadline - now);
         }
@@ -2457,6 +2488,50 @@ mod tests {
         }
         assert_eq!(worker.metrics().jobs_published, 1);
         assert_eq!(calls.lock().as_slice(), &[(uri.to_string(), 2)]);
+    }
+
+    /// #10213 regression net: `request_shutdown` used to store `shutdown`
+    /// WITHOUT holding `state`'s lock and then `notify_all`, so a worker
+    /// sitting in the gap between `take_next`'s shutdown read (false) and
+    /// its `cvar.wait` slept through the notification permanently --
+    /// `Drop for ParseWorker`'s `handle.join()` then hung the tearing-down
+    /// test with no ceiling and no diagnostic, every assertion already
+    /// passed (the reported "~10% deadlock" of
+    /// `on_activated_completes_before_enqueue_returns_no_race_with_worker_
+    /// settle`, which passes its whole body and hangs in teardown).
+    ///
+    /// Each iteration reproduces that teardown shape exactly -- enqueue one
+    /// trivial job, observe its publish settle, then drop the pool so
+    /// `request_shutdown` races the just-finished worker's re-entry into
+    /// `take_next`'s wait. This is deliberately a probabilistic net, not a
+    /// deterministic proof: each iteration rolls the lost-wakeup window
+    /// once, so a reintroduced race manifests as this test hanging (caught
+    /// by the suite watchdog) rather than as a clean failure. 2048
+    /// iterations keep the clean runtime at a few seconds. The
+    /// deterministic half of the proof is the lock ordering itself: with
+    /// the store under `state`'s lock, no interleaving can park a worker
+    /// between the store and its notification.
+    #[test]
+    fn shutdown_notification_is_never_lost_against_a_worker_entering_take_next_wait() {
+        for i in 0..2048 {
+            let uri = "file:///shutdown_lost_wakeup_stress.pl";
+            let (documents, generation_handle) = one_doc(uri, "my $a = 1;\n");
+            let (cb, _calls) = counting_callback();
+            let worker = ParseWorker::spawn(documents, cb);
+            generation_handle.fetch_add(1, Ordering::SeqCst);
+            worker.enqueue(
+                uri.to_string(),
+                uri.to_string(),
+                1,
+                Arc::clone(&generation_handle),
+                Arc::from("my $aa = 1;\n"),
+            );
+            assert!(
+                wait_for(|| worker.metrics().jobs_published >= 1, TEST_TIMEOUT),
+                "iteration {i}: the job must publish before the drop races take_next re-entry"
+            );
+            drop(worker);
+        }
     }
 
     // ---- Self-join hazard: the last strong reference dropping from a ----

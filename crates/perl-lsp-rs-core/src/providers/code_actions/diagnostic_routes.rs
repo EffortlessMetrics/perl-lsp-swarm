@@ -259,6 +259,7 @@ mod tests {
             tags: Vec::new(),
             suggestion: None,
             fixable: false,
+            critic_observation: None,
         }
     }
 

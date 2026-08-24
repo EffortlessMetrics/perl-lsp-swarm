@@ -47,7 +47,10 @@ fn has_inline_items(response: &Value) -> bool {
 #[test]
 fn bdd_streaming_emits_progress_with_session_identity() -> Result<(), Box<dyn std::error::Error>> {
     let scenario = Scenario::new("Streaming completion emits session-tagged progress");
-    scenario.given("an initialized workspace with AI inline completion enabled");
+    scenario.given(
+        "an initialized workspace with a generic-client AI enablement attempt \
+         the server rejects (#4997)",
+    );
 
     let mut ux = InlineCompletionUxHarness::start(
         "file:///bdd_streaming_progress.pl",
