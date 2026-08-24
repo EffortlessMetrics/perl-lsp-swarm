@@ -59,7 +59,11 @@ fn token_span(position: usize, source: &str) -> Option<TokenSpan> {
     }
 
     let anchor = if position == bytes.len() {
-        position.checked_sub(1)?
+        let previous = position.checked_sub(1)?;
+        if !is_name_byte(bytes[previous]) && !is_sigil(bytes[previous]) {
+            return None;
+        }
+        previous
     } else if is_name_byte(bytes[position]) || is_sigil(bytes[position]) {
         position
     } else if position > 0
@@ -73,8 +77,10 @@ fn token_span(position: usize, source: &str) -> Option<TokenSpan> {
     };
 
     let mut start = anchor;
-    while start > 0 && is_name_byte(bytes[start - 1]) {
-        start -= 1;
+    if !is_sigil(bytes[anchor]) {
+        while start > 0 && is_name_byte(bytes[start - 1]) {
+            start -= 1;
+        }
     }
     if start > 0 && is_sigil(bytes[start - 1]) {
         start -= 1;
