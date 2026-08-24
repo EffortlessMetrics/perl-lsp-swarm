@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11501 |
-| Rust-family files | 3499 |
-| Non-Rust files | 8002 |
-| Allowlisted | 5729 |
+| Total tracked files | 11508 |
+| Rust-family files | 3504 |
+| Non-Rust files | 8004 |
+| Allowlisted | 5731 |
 | Unclassified | 2273 |
 
 ## Non-Rust files by category
@@ -21,7 +21,7 @@
 | generated | 2 |
 | production | 314 |
 | test | 1881 |
-| tooling | 472 |
+| tooling | 474 |
 | unclassified | 2273 |
 
 ## Unclassified files
@@ -6346,6 +6346,8 @@
 | `scripts/ux/vim_coc_smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ux/vim_vim_lsp_driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ux/vim_vim_lsp_smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ux/vim_vim_lsp_specialized.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ux/vim_vim_lsp_specialized_smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ux/vim_vimspector_dap_driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ux/vim_vimspector_dap_smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate-release-scope.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
