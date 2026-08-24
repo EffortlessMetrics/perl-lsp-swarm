@@ -354,6 +354,57 @@ paths = ["src/authority/catalog.rs"]
         root = self.make_root(manifest)
         self.assert_strict_failure(root, "missing_independent_challenge")
 
+    # ------------------------------------------------------------------
+    # Review-thread regressions (#12272)
+    # ------------------------------------------------------------------
+
+    def test_validated_pattern_route_with_valid_identity_passes_strict(self) -> None:
+        manifest = compliant_manifest_text().replace(
+            'code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "deferred" }\npaths = ["src/authority/**"]',
+            'code_owner_route = { kind = "validated_pattern", identity = "EffortlessSteven" }\npaths = ["src/authority/**"]',
+            1,
+        )
+        root = self.make_root(manifest)
+        patchers = self.fixture_detectors()
+        for patcher in patchers:
+            patcher.start()
+        self.addCleanup(patchers[1].stop)
+        self.addCleanup(patchers[0].stop)
+        status, output = self.run_main(root, ["--strict"])
+        self.assertEqual(0, status, output)
+        self.assertNotIn("unknown_field", output)
+
+    def test_non_string_textual_field_fails_closed(self) -> None:
+        manifest = compliant_manifest_text().replace(
+            'controller = "#10790"',
+            'controller = 10790',
+            1,
+        )
+        root = self.make_root(manifest)
+        output = self.assert_strict_failure(root, "wrong_type")
+        self.assertIn("surface.authority_catalog.controller", output)
+
+    def test_duplicate_binding_outside_detector_set_still_conflicts(self) -> None:
+        extra_surface = """
+[surface.peripheral_notes]
+family = "configuration_authority"
+authority = "Peripheral notes."
+controller = "#9999"
+conflict_key = "config.public_schema"
+risk_class = "configuration_control"
+review_profile = "public_api_or_retirement_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "Conflict outside the detector set."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "deferred" }
+paths = ["src/authority/extra.rs"]
+"""
+        root = self.make_root(compliant_manifest_text() + extra_surface)
+        write_tree(root, {"src/authority/extra.rs": "extra"})
+        output = self.assert_strict_failure(root, "duplicate_path_binding")
+        self.assertIn("contradictory_path_ownership", output)
+        self.assertNotIn("unclassified_sensitive_path", output)
+
 
 if __name__ == "__main__":
     unittest.main()

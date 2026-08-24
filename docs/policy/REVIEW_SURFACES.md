@@ -88,6 +88,7 @@ Semantic issue completion: close-proof policy, issue contracts, containment, evi
 - Code-owner route: `not_proven` (resolution owner #11796): No narrow CODEOWNERS pattern added at advisory stage; routing promotion requires platform-validated owner identity.
 - Bound paths:
   - `docs/agents/CLOSE_PROOF_POLICY.md`
+  - `xtask/src/tasks/pr_close_proof.rs`
 
 ### `semantic_close_trusted_workflow`
 
@@ -236,6 +237,9 @@ Executable policy and public migration: suppression policy, receipt schemas, pub
 - Code-owner route: `not_proven` (resolution owner #11796): Routing promotion deferred to #11796.
 - Bound paths:
   - `schemas/agent_review_packet.v1.schema.json`
+  - `schemas/agent_review_finding.v1.schema.json`
+  - `schemas/stage_closure_projection.v1.schema.json`
+  - `xtask/src/tasks/agent_review_packet.rs`
   - `fixtures/agent_review_packet/**`
 
 ### `codeowners_routing_declaration`

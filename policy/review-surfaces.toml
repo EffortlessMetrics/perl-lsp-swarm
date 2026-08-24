@@ -125,7 +125,7 @@ required_evidence = "current_head_reviewer_packet"
 first_falsifier = "A weaker close-proof rule (for example, dropping merge-base ancestry proof) passes review because no fresh-direction challenge re-derives the 29-PR false-close class it exists to prevent."
 enforcement_successor = "#11796"
 code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "No narrow CODEOWNERS pattern added at advisory stage; routing promotion requires platform-validated owner identity." }
-paths = ["docs/agents/CLOSE_PROOF_POLICY.md"]
+paths = ["docs/agents/CLOSE_PROOF_POLICY.md", "xtask/src/tasks/pr_close_proof.rs"]
 
 [surface.semantic_close_containment_evaluator]
 family = "semantic_issue_completion"
@@ -414,7 +414,13 @@ required_evidence = "current_head_reviewer_packet"
 first_falsifier = "A new invented review kind enters the closed lens/role vocabulary and packets stop being comparable across programmes."
 enforcement_successor = "#11796"
 code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
-paths = ["schemas/agent_review_packet.v1.schema.json", "fixtures/agent_review_packet/**"]
+paths = [
+  "schemas/agent_review_packet.v1.schema.json",
+  "schemas/agent_review_finding.v1.schema.json",
+  "schemas/stage_closure_projection.v1.schema.json",
+  "xtask/src/tasks/agent_review_packet.rs",
+  "fixtures/agent_review_packet/**",
+]
 
 [surface.review_surface_manifest_self]
 family = "executable_policy_and_public_migration"

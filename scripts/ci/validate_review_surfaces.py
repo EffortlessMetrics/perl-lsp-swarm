@@ -94,8 +94,9 @@ KNOWN_PACKET_CONTRACTS = ("schemas/agent_review_packet.v1.schema.json",)
 KNOWN_HANDOFF_AUTHORITIES = ("#11701", "#10881")
 MANDATORY_ROLE = "adversarial_challenger"
 
+# Textual top-level fields must be non-empty strings. schema_version is not
+# listed here: it is an integer literal checked by its own equality contract.
 TOP_LEVEL_STRING_KEYS = (
-    "schema_version",
     "policy",
     "owner",
     "status",
@@ -115,7 +116,7 @@ TOP_LEVEL_TABLE_KEYS = (
     "surface",
     "residue",
 )
-TOP_LEVEL_KEYS = TOP_LEVEL_STRING_KEYS + TOP_LEVEL_TABLE_KEYS
+TOP_LEVEL_KEYS = ("schema_version",) + TOP_LEVEL_STRING_KEYS + TOP_LEVEL_TABLE_KEYS
 
 PROFILE_KEYS = (
     "fresh_direction",
@@ -141,12 +142,21 @@ SURFACE_KEYS = (
 
 SURFACE_OPTIONAL_KEYS = ("predecessor_exit",)
 
-ROUTE_KEYS = ("kind", "resolution_owner", "note")
+ROUTE_KEYS = ("kind", "identity", "resolution_owner", "note")
 
 IDENTITY_KEYS = ("kind", "status", "validation_method", "evidence_date")
 IDENTITY_OPTIONAL_KEYS = ("permission", "reason")
 
 RESIDUE_KEYS = ("authority", "parent_issue", "reason", "resolution_owner")
+
+# Required fields whose type is a container checked by its own typed logic;
+# every other required field must be a non-empty string (#12272 review).
+CONTAINER_FIELDS: dict[str, type] = {
+    "lenses": list,
+    "required_roles": list,
+    "paths": list,
+    "code_owner_route": dict,
+}
 
 VALID_OWNER_STATUSES = ("valid", "invalid_as_code_owner", "not_proven")
 
@@ -172,6 +182,8 @@ DETECTOR_FILES = (
     "xtask/src/bin/semantic-close-containment.rs",
     "xtask/src/tasks/ripr_evidence.rs",
     "xtask/src/tasks/pr_ledger.rs",
+    "xtask/src/tasks/pr_close_proof.rs",
+    "xtask/src/tasks/agent_review_packet.rs",
     "xtask/tests/public_api_ratchet_tests.rs",
     "scripts/ci/ripr_summary.py",
     "scripts/ci/validate_review_surfaces.py",
@@ -179,6 +191,8 @@ DETECTOR_FILES = (
     "schemas/perllsp-settings.schema.json",
     "schemas/ripr-perl-facts-v1.schema.json",
     "schemas/agent_review_packet.v1.schema.json",
+    "schemas/agent_review_finding.v1.schema.json",
+    "schemas/stage_closure_projection.v1.schema.json",
     "policy/ripr-suppressions.toml",
     "policy/review-surfaces.toml",
     "ripr.toml",
@@ -222,14 +236,24 @@ def check_required_fields(
     doc: dict[str, Any],
     fields: tuple[str, ...],
 ) -> None:
-    """Require presence; strings must be non-empty. Lists/tables are validated
-    by their own typed checks."""
+    """Require presence with an honest type. Textual fields must be non-empty
+    strings; container fields are validated by their own typed checks."""
     for field in fields:
         value = doc.get(field)
         if value is None:
             issues.append(f"{where}.{field}: missing_field")
-        elif isinstance(value, str) and not value.strip():
-            issues.append(f"{where}.{field}: missing_field (non-empty string required)")
+            continue
+        container_kind = CONTAINER_FIELDS.get(field)
+        if container_kind is not None:
+            if not isinstance(value, container_kind):
+                issues.append(
+                    f"{where}.{field}: wrong_type ({container_kind.__name__} required)"
+                )
+        elif isinstance(value, str):
+            if not value.strip():
+                issues.append(f"{where}.{field}: missing_field (non-empty string required)")
+        else:
+            issues.append(f"{where}.{field}: wrong_type (non-empty string required)")
 
 
 def load_manifest(manifest_path: Path, issues: list[str]) -> dict[str, Any]:
@@ -458,6 +482,36 @@ def binding_covers(pattern: str, file_rel: str) -> bool:
     if is_dir_glob(pattern):
         return file_rel.startswith(pattern[: -len("/**")] + "/")
     return pattern == file_rel
+
+
+def bindings_overlap(pattern_a: str, pattern_b: str) -> bool:
+    def covers(outer: str, inner: str) -> bool:
+        if is_dir_glob(outer):
+            prefix = outer[: -len("/**")]
+            if inner == prefix or inner.startswith(prefix + "/"):
+                return True
+            return is_dir_glob(inner) and inner[: -len("/**")].startswith(prefix + "/")
+        return outer == inner
+
+    return covers(pattern_a, pattern_b) or covers(pattern_b, pattern_a)
+
+
+def check_binding_conflicts(bindings: list[tuple[str, str, str]], issues: list[str]) -> None:
+    """Duplicate and contradictory ownership across every collected binding,
+    independent of the sensitive-path detector set (#12272 review)."""
+    ordered = sorted(bindings)
+    for index, (surface_a, profile_a, pattern_a) in enumerate(ordered):
+        for surface_b, profile_b, pattern_b in ordered[index + 1 :]:
+            if surface_a == surface_b or not bindings_overlap(pattern_a, pattern_b):
+                continue
+            issues.append(
+                f"{pattern_b}: duplicate_path_binding (claimed by {surface_a}, {surface_b})"
+            )
+            if profile_a != profile_b:
+                issues.append(
+                    f"{pattern_b}: contradictory_path_ownership "
+                    f"(profiles {profile_a}, {profile_b})"
+                )
 
 
 def check_coverage(
@@ -710,6 +764,7 @@ def main() -> int:
         valid_owners = validate_identities(doc.get("code_owner_identity"), issues)
         surfaces = doc.get("surface") if isinstance(doc.get("surface"), dict) else {}
         bindings = collect_surface_bindings(doc, root, issues, valid_owners)
+        check_binding_conflicts(bindings, issues)
         sensitive_files = detect_sensitive_files(root, issues)
         check_coverage(sensitive_files, bindings, issues)
         check_self_surface(surfaces, bindings, issues)
