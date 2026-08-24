@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11520 |
+| Total tracked files | 11526 |
 | Rust-family files | 3507 |
-| Non-Rust files | 8013 |
-| Allowlisted | 5740 |
+| Non-Rust files | 8019 |
+| Allowlisted | 5746 |
 | Unclassified | 2273 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 404 |
-| documentation | 2659 |
+| documentation | 2663 |
 | generated | 2 |
 | production | 315 |
 | test | 1883 |
-| tooling | 477 |
+| tooling | 479 |
 | unclassified | 2273 |
 
 ## Unclassified files
@@ -3023,6 +3023,10 @@
 | `.spec/11661-cargo-executor-command/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11672-parse-effect-sink-contract/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11672-parse-effect-sink-contract/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11672-parse-effect-sink-contract/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11672-parse-effect-sink-contract/inventory.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11673-accepted-ticket-diagnostics-sink/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11673-accepted-ticket-diagnostics-sink/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11673-accepted-ticket-diagnostics-sink/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -6245,6 +6249,8 @@
 | `scripts/test-lsp-cancellation.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-clients/eglot-bundled-config.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-clients/eglot-bundled.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/emacs-clients/eglot-released-config.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/emacs-clients/eglot-released.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-host-driver.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |

@@ -32,54 +32,163 @@ use xtask::editor_client_compat::{
     WorkspaceFixtureIdentity, canonical_expectation_set_digest, fixture_digest,
 };
 
-/// The one exact client subject wired by this slice: bundled Eglot inside
-/// exact Emacs 30.1.  Later subjects are new registry rows, never silent
-/// replacements of this identity.
-pub const SUBJECT_BUNDLED_EGLOT_EMACS_30_1: &str = "bundled_eglot_emacs_30_1";
-const BUNDLED_EGLOT_EMACS_30_1_VERSION: &str = "1.17.30";
-const BUNDLED_EGLOT_EMACS_30_1_SOURCE_REF: &str = "emacs-30.1";
-/// The host-build token the pinned subject requires in the probed
-/// `emacs --version` line. A host without this token is a different subject.
-const PINNED_EMACS_VERSION_TOKEN: &str = "30.1";
 const REPOSITORY: &str = "EffortlessMetrics/perl-lsp-swarm";
-const JOURNEY_SELECTOR: &str = "bundled_eglot_lifecycle.v1";
-const FIXTURE_ID: &str = "bundled_eglot_lifecycle_v1";
 const DEFAULT_TIMEOUT_MS: u64 = 180_000;
 
-/// Every exact client subject the execution surface can run today.
-pub fn known_subjects() -> &'static [&'static str] {
-    &[SUBJECT_BUNDLED_EGLOT_EMACS_30_1]
+/// One exact client subject of the Emacs host runner registry.
+///
+/// A subject is an immutable identity: a new client release or a different
+/// host build is a new variant, never a silent edit of an existing row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmacsClientSubject {
+    /// Bundled Eglot inside exact Emacs 30.1 (slice 1).
+    BundledEglotEmacs301,
+    /// Standalone Eglot released as GNU ELPA 1.23 (slice 2).
+    ReleasedEglotGnuElpa123,
 }
 
-/// The pinned identity of the bundled-Eglot subject.  Public so the
-/// contract tests can pin the registry row without a host.
-pub fn bundled_eglot_client_subject(source_sha256: String) -> emacs_host_runner::ClientSubject {
-    emacs_host_runner::ClientSubject {
-        client_id: SUBJECT_BUNDLED_EGLOT_EMACS_30_1.to_string(),
-        kind: EmacsClientKind::BundledEglot,
-        version: BUNDLED_EGLOT_EMACS_30_1_VERSION.to_string(),
-        source_state: ClientSourceState::Bundled,
-        source_ref: BUNDLED_EGLOT_EMACS_30_1_SOURCE_REF.to_string(),
-        source_sha256,
-        package_sha256: None,
+impl EmacsClientSubject {
+    /// Parse a CLI subject id. Unknown ids are typed errors listing the
+    /// registry, never a fallback to whatever matches loosely.
+    pub fn from_id(id: &str) -> Result<Self> {
+        match id {
+            "bundled_eglot_emacs_30_1" => Ok(Self::BundledEglotEmacs301),
+            "released_eglot_gnu_elpa_1_23" => Ok(Self::ReleasedEglotGnuElpa123),
+            _ => bail!(
+                "unknown client subject {id}: known subjects are {}",
+                Self::known_ids().join(", ")
+            ),
+        }
+    }
+
+    /// Every exact client subject the execution surface can run today.
+    pub fn known_ids() -> &'static [&'static str] {
+        &["bundled_eglot_emacs_30_1", "released_eglot_gnu_elpa_1_23"]
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::BundledEglotEmacs301 => "bundled_eglot_emacs_30_1",
+            Self::ReleasedEglotGnuElpa123 => "released_eglot_gnu_elpa_1_23",
+        }
+    }
+
+    /// The host-build token the subject requires in the probed
+    /// `emacs --version` line. A host without this token is a different
+    /// subject, not this run.
+    pub fn pinned_emacs_version_token(self) -> &'static str {
+        match self {
+            Self::BundledEglotEmacs301 | Self::ReleasedEglotGnuElpa123 => "30.1",
+        }
+    }
+
+    /// The subject pins the exact host build before anything is launched.
+    pub fn ensure_pinned_host_version(self, emacs_version: &str) -> Result<()> {
+        let token = self.pinned_emacs_version_token();
+        ensure!(
+            emacs_version.contains(token),
+            "Emacs host {emacs_version} does not match the pinned subject {} ({token})",
+            self.id()
+        );
+        Ok(())
+    }
+
+    /// The pinned client identity for the subject.  Public so the contract
+    /// tests can pin the registry row without a host.
+    pub fn client_identity(
+        self,
+        source_sha256: String,
+        package_sha256: Option<String>,
+    ) -> emacs_host_runner::ClientSubject {
+        let (kind, version, source_state, source_ref) = match self {
+            Self::BundledEglotEmacs301 => {
+                (EmacsClientKind::BundledEglot, "1.17.30", ClientSourceState::Bundled, "emacs-30.1")
+            }
+            Self::ReleasedEglotGnuElpa123 => (
+                EmacsClientKind::ExternalEglot,
+                "1.23",
+                ClientSourceState::Released,
+                "gnu-elpa-eglot-1.23",
+            ),
+        };
+        emacs_host_runner::ClientSubject {
+            client_id: self.id().to_string(),
+            kind,
+            version: version.to_string(),
+            source_state,
+            source_ref: source_ref.to_string(),
+            source_sha256,
+            package_sha256,
+        }
+    }
+
+    /// Checked-in adapter path relative to the repository root.
+    pub fn adapter_relative_path(self) -> &'static str {
+        match self {
+            Self::BundledEglotEmacs301 => "scripts/test/emacs-clients/eglot-bundled.el",
+            Self::ReleasedEglotGnuElpa123 => "scripts/test/emacs-clients/eglot-released.el",
+        }
+    }
+
+    /// Checked-in configuration path relative to the repository root.
+    pub fn configuration_relative_path(self) -> &'static str {
+        match self {
+            Self::BundledEglotEmacs301 => "scripts/test/emacs-clients/eglot-bundled-config.el",
+            Self::ReleasedEglotGnuElpa123 => "scripts/test/emacs-clients/eglot-released-config.el",
+        }
+    }
+
+    /// Journey selector token bound into the run plan and receipt.
+    pub fn journey_selector(self) -> &'static str {
+        match self {
+            Self::BundledEglotEmacs301 => "bundled_eglot_lifecycle.v1",
+            Self::ReleasedEglotGnuElpa123 => "released_eglot_lifecycle.v1",
+        }
+    }
+
+    /// Fixture identity token for the materialized journey fixture.
+    pub fn fixture_id(self) -> &'static str {
+        match self {
+            Self::BundledEglotEmacs301 => "bundled_eglot_lifecycle_v1",
+            Self::ReleasedEglotGnuElpa123 => "released_eglot_lifecycle_v1",
+        }
+    }
+
+    /// Released subjects carry an exact package identity; bundled subjects
+    /// cannot (`validate_client_subject` rejects that combination).
+    pub fn requires_client_package(self) -> bool {
+        match self {
+            Self::BundledEglotEmacs301 => false,
+            Self::ReleasedEglotGnuElpa123 => true,
+        }
+    }
+
+    /// A released subject resolves its client source only through the
+    /// declared package inputs, never by searching the host installation.
+    pub fn resolves_client_source_from_installation(self) -> bool {
+        match self {
+            Self::BundledEglotEmacs301 => true,
+            Self::ReleasedEglotGnuElpa123 => false,
+        }
     }
 }
 
-/// Inputs for one bundled-Eglot host run.  Every path must be absolute and
+/// Inputs for one client-subject host run.  Every path must be absolute and
 /// exact; the plan builder verifies digests before the host is launched.
-pub struct BundledEglotHostRun {
+pub struct EmacsHostRunInputs {
     pub emacs_executable: PathBuf,
     pub candidate_executable: PathBuf,
     pub client_source: PathBuf,
+    pub client_package: Option<PathBuf>,
     pub out_root: PathBuf,
     pub timeout_ms: u64,
 }
 
 /// Materialize the bounded journey fixture under `root` and return its
-/// digest-identity root.  The fixture is intentionally small: slice one
-/// proves the client lifecycle, and semantic expectations stay with the
+/// digest-identity root.  The fixture is intentionally small: these slices
+/// prove the client lifecycle, and semantic expectations stay with the
 /// canonical expectation set rather than a journey-local oracle.
-pub fn materialize_bundled_eglot_fixture(root: &Path) -> Result<PathBuf> {
+pub fn materialize_client_subject_fixture(root: &Path) -> Result<PathBuf> {
     ensure!(root.is_absolute(), "fixture root must be absolute");
     let lib = root.join("lib/My");
     let script = root.join("script");
@@ -87,7 +196,7 @@ pub fn materialize_bundled_eglot_fixture(root: &Path) -> Result<PathBuf> {
     fs::create_dir_all(&script).with_context(|| format!("creating {}", script.display()))?;
     fs::write(
         lib.join("Thing.pm"),
-        "package My::Thing;\nuse strict;\nuse warnings;\nsub sentinel { \"BUNDLED_EGLOT_LIFECYCLE\" }\n1;\n",
+        "package My::Thing;\nuse strict;\nuse warnings;\nsub sentinel { \"CLIENT_SUBJECT_LIFECYCLE\" }\n1;\n",
     )?;
     fs::write(
         script.join("probe.pl"),
@@ -163,18 +272,6 @@ pub fn ensure_fresh_output_root(out_root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The subject pins the exact host build: a different Emacs is a different
-/// subject, not this run. The pin token is matched against the probed
-/// version line before anything is launched.
-pub fn ensure_pinned_host_version(emacs_version: &str) -> Result<()> {
-    ensure!(
-        emacs_version.contains(PINNED_EMACS_VERSION_TOKEN),
-        "Emacs host {emacs_version} does not match the pinned subject \
-         {SUBJECT_BUNDLED_EGLOT_EMACS_30_1} ({PINNED_EMACS_VERSION_TOKEN})"
-    );
-    Ok(())
-}
-
 /// Extract a standalone 40-hex commit-like token from a version line, if it
 /// carries one. Used to bind a candidate's self-reported build revision to
 /// the repository commit before the receipt claims that provenance. A longer
@@ -240,22 +337,36 @@ fn candidate_commit_identity(repo_root: &Path) -> Result<String> {
     Ok(sha.to_lowercase())
 }
 
-/// Build the complete run plan for the bundled-Eglot subject over the
-/// checked tree.  Validation (digest verification of every exact input)
-/// happens inside `build_emacs_command`, so a returned plan has already
-/// proven its file identities.
-pub fn build_bundled_eglot_run_plan(
+/// Build the complete run plan for one client subject over the checked
+/// tree.  Validation (digest verification of every exact input) happens
+/// inside `build_emacs_command`, so a returned plan has already proven its
+/// file identities.
+pub fn build_client_subject_run_plan(
     repo_root: &Path,
-    run: &BundledEglotHostRun,
+    subject: EmacsClientSubject,
+    run: &EmacsHostRunInputs,
     commit: &str,
     candidate_version: &str,
     emacs_version: &str,
 ) -> Result<(EmacsHostRunPlan, HermeticLayout)> {
     let driver = repo_root.join("scripts/test/emacs-host-driver.el");
-    let adapter = repo_root.join("scripts/test/emacs-clients/eglot-bundled.el");
-    let configuration = repo_root.join("scripts/test/emacs-clients/eglot-bundled-config.el");
-    let fixture_root = materialize_bundled_eglot_fixture(&run.out_root.join("fixture"))?;
+    let adapter = repo_root.join(subject.adapter_relative_path());
+    let configuration = repo_root.join(subject.configuration_relative_path());
+    let fixture_root = materialize_client_subject_fixture(&run.out_root.join("fixture"))?;
     let layout = HermeticLayout::prepare(&run.out_root.join("hermetic"))?;
+    let package_sha256 = match (&run.client_package, subject.requires_client_package()) {
+        (Some(package), true) => Some(file_sha256(package)?),
+        (None, true) => bail!(
+            "subject {} requires an exact client package file (released packages bind package \
+             identity); pass --client-package",
+            subject.id()
+        ),
+        (Some(_), false) => bail!(
+            "subject {} cannot carry a separate package identity (bundled source state)",
+            subject.id()
+        ),
+        (None, false) => None,
+    };
     let plan = EmacsHostRunPlan {
         identity: emacs_host_runner::EmacsHostRunIdentity {
             schema_version: emacs_host_runner::RUN_PLAN_SCHEMA_VERSION.to_string(),
@@ -264,7 +375,7 @@ pub fn build_bundled_eglot_run_plan(
             candidate_sha: commit.to_string(),
             emacs_version: emacs_version.to_string(),
             emacs_build_sha256: file_sha256(&run.emacs_executable)?,
-            client: bundled_eglot_client_subject(file_sha256(&run.client_source)?),
+            client: subject.client_identity(file_sha256(&run.client_source)?, package_sha256),
             driver_sha256: file_sha256(&driver)?,
             adapter_sha256: file_sha256(&adapter)?,
             configuration_sha256: file_sha256(&configuration)?,
@@ -272,12 +383,12 @@ pub fn build_bundled_eglot_run_plan(
             candidate_build_revision: commit.to_string(),
             candidate_artifact_sha256: file_sha256(&run.candidate_executable)?,
             fixture: WorkspaceFixtureIdentity {
-                id: FIXTURE_ID.to_string(),
+                id: subject.fixture_id().to_string(),
                 digest: fixture_digest(&fixture_root)?,
                 expectation_set_id: CANONICAL_EXPECTATION_SET_ID.to_string(),
                 expectation_set_digest: canonical_expectation_set_digest()?,
             },
-            journey_selector: JOURNEY_SELECTOR.to_string(),
+            journey_selector: subject.journey_selector().to_string(),
             platform: current_platform()?,
             registration_state: RegistrationState::ManualClientRegistration,
             timeout_ms: if run.timeout_ms == 0 { DEFAULT_TIMEOUT_MS } else { run.timeout_ms },
@@ -285,7 +396,7 @@ pub fn build_bundled_eglot_run_plan(
         paths: EmacsHostPaths {
             emacs_executable: run.emacs_executable.clone(),
             client_source: run.client_source.clone(),
-            client_package: None,
+            client_package: run.client_package.clone(),
             driver,
             adapter,
             configuration,
@@ -321,23 +432,19 @@ pub struct HostRunOutcome {
     pub driver_complete: bool,
 }
 
-/// CLI entry: validate the subject id, resolve the bundled client source
-/// when the caller did not pin one, and execute the run.
+/// CLI entry: validate the subject id, resolve the client source when the
+/// subject allows installation resolution, and execute the run.
 pub fn host_run_from_cli(
     repo_root: &Path,
     subject: &str,
     emacs_executable: PathBuf,
     candidate_executable: PathBuf,
     client_source: Option<PathBuf>,
+    client_package: Option<PathBuf>,
     out_root: PathBuf,
     timeout_ms: u64,
 ) -> Result<HostRunOutcome> {
-    if subject != SUBJECT_BUNDLED_EGLOT_EMACS_30_1 {
-        bail!(
-            "unknown client subject {subject}: known subjects are {}",
-            known_subjects().join(", ")
-        );
-    }
+    let subject = EmacsClientSubject::from_id(subject)?;
     // Exact inputs are checked before any installation walk or launch: an
     // unavailable host or candidate is a typed error here, never a skip and
     // never a search through an unrelated directory tree.
@@ -348,35 +455,62 @@ pub fn host_run_from_cli(
         ensure!(path.is_file(), "{label} is not a file: {}", path.display());
     }
     ensure!(out_root.is_absolute(), "output root must be an absolute path: {}", out_root.display());
+    if let Some(package) = &client_package {
+        ensure!(
+            package.is_absolute() && package.is_file(),
+            "client package must be an absolute file path: {}",
+            package.display()
+        );
+    }
     let client_source = match client_source {
-        Some(path) => path,
-        None => resolve_bundled_client_source(&emacs_executable)?,
+        Some(path) => {
+            ensure!(
+                path.is_absolute() && path.is_file(),
+                "client source must be an absolute file path: {}",
+                path.display()
+            );
+            path
+        }
+        None => {
+            ensure!(
+                subject.resolves_client_source_from_installation(),
+                "subject {} requires an explicit --client-source (the exact eglot.el from the \
+                 released package); it is never searched from the host installation",
+                subject.id()
+            );
+            resolve_bundled_client_source(&emacs_executable)?
+        }
     };
     host_run(
         repo_root,
-        &BundledEglotHostRun {
+        subject,
+        &EmacsHostRunInputs {
             emacs_executable,
             candidate_executable,
             client_source,
+            client_package,
             out_root,
             timeout_ms,
         },
     )
 }
 
-/// Execute one bundled-Eglot actual-host run and write its receipt.
+/// Execute one client-subject actual-host run and write its receipt.
 ///
 /// Missing or unusable inputs are typed errors before launch: an unavailable
 /// host is never reported as a green or skipped run.
-pub fn host_run(repo_root: &Path, run: &BundledEglotHostRun) -> Result<HostRunOutcome> {
-    ensure!(!known_subjects().is_empty(), "no client subjects registered");
+pub fn host_run(
+    repo_root: &Path,
+    subject: EmacsClientSubject,
+    run: &EmacsHostRunInputs,
+) -> Result<HostRunOutcome> {
     ensure_fresh_output_root(&run.out_root)?;
     let commit = candidate_commit_identity(repo_root)?;
     let candidate_version =
         first_output_line(Command::new(&run.candidate_executable).arg("--version"), "candidate")?;
     let emacs_version =
         first_output_line(Command::new(&run.emacs_executable).arg("--version"), "Emacs")?;
-    ensure_pinned_host_version(&emacs_version)?;
+    subject.ensure_pinned_host_version(&emacs_version)?;
     // When the candidate's own version line carries a build revision, it
     // must agree with the repository commit the run plan is about to claim;
     // otherwise the receipt would assert a provenance it never observed.
@@ -388,8 +522,14 @@ pub fn host_run(repo_root: &Path, run: &BundledEglotHostRun) -> Result<HostRunOu
     }
     fs::create_dir_all(&run.out_root)
         .with_context(|| format!("creating output root {}", run.out_root.display()))?;
-    let (plan, layout) =
-        build_bundled_eglot_run_plan(repo_root, run, &commit, &candidate_version, &emacs_version)?;
+    let (plan, layout) = build_client_subject_run_plan(
+        repo_root,
+        subject,
+        run,
+        &commit,
+        &candidate_version,
+        &emacs_version,
+    )?;
 
     let mut command = build_emacs_command(&plan, &layout)?;
     let observation = run_owned_process(&mut command, &plan, &layout)?;
@@ -431,6 +571,9 @@ pub fn host_run(repo_root: &Path, run: &BundledEglotHostRun) -> Result<HostRunOu
                 .to_string(),
         );
     }
+    if let Some(observed) = &outcome.runtime_version_mismatch {
+        limitations.push(observed.clone());
+    }
     if extract_commit_like_token(&plan.identity.candidate_version).is_none() {
         limitations.push(
             "candidate version line carries no build revision; candidate_build_revision is bound \
@@ -450,7 +593,10 @@ pub fn host_run(repo_root: &Path, run: &BundledEglotHostRun) -> Result<HostRunOu
         outcome.result,
         outcome.failure_class,
         limitations,
-        format!("#7778 {JOURNEY_SELECTOR}: actual-host substrate proof, no support claim"),
+        format!(
+            "#7778 {}: actual-host substrate proof, no support claim",
+            subject.journey_selector()
+        ),
     );
     let receipt_path = run.out_root.join("receipt.json");
     fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt)?)
@@ -467,10 +613,13 @@ struct OutcomeJudgment {
     result: ObservationResult,
     failure_class: Option<FailureClass>,
     runtime_digest_match: bool,
+    runtime_version_mismatch: Option<String>,
 }
 
-/// Cross-check the adapter's runtime identity attestation (the loaded
-/// bundled library digest) against the run plan, then judge the run.
+/// Cross-check the adapter's runtime identity attestation (the loaded client
+/// library digest, and — for released subjects, where the version is a
+/// required identity field — the observed version header) against the run
+/// plan, then judge the run.
 fn evaluate_observation(
     plan: &EmacsHostRunPlan,
     observation: &ProcessObservation,
@@ -482,21 +631,43 @@ fn evaluate_observation(
         .strip_prefix("sha256:")
         .unwrap_or(&plan.identity.client.source_sha256)
         .to_string();
-    let observed_digest = observation
+    let client_loaded = observation
         .events
         .iter()
-        .find(|event| event.kind == emacs_host_runner::DriverEventKind::ClientLoaded)
-        .and_then(|event| event.details.get("source_sha256"))
-        .cloned();
+        .find(|event| event.kind == emacs_host_runner::DriverEventKind::ClientLoaded);
+    let observed_digest =
+        client_loaded.and_then(|event| event.details.get("source_sha256")).cloned();
     let runtime_digest_match = match observed_digest {
         Some(observed) => observed == planned_digest,
         None => false,
     };
+    // `released` is a required identity field for released subjects: the
+    // version header the adapter read from the loaded file must equal the
+    // registry pin, byte for byte, or the run cannot be this subject.
+    let runtime_version_mismatch = (plan.identity.client.source_state
+        == ClientSourceState::Released)
+        .then(|| {
+            client_loaded
+                .and_then(|event| event.details.get("version"))
+                .map(|observed| (observed.to_string(), plan.identity.client.version.clone()))
+        })
+        .flatten()
+        .and_then(|(observed, planned)| {
+            (observed != planned).then(|| {
+                format!(
+                    "runtime client version {observed} does not match the pinned subject version \
+                     {planned}"
+                )
+            })
+        });
     let driver_failed = observation
         .events
         .iter()
         .any(|event| event.kind == emacs_host_runner::DriverEventKind::DriverFailed);
-    let result = if observation.passed_process_boundary() && runtime_digest_match {
+    let result = if observation.passed_process_boundary()
+        && runtime_digest_match
+        && runtime_version_mismatch.is_none()
+    {
         ObservationResult::Pass
     } else if driver_failed
         || observation.timed_out
@@ -510,12 +681,12 @@ fn evaluate_observation(
         Some(FailureClass::HostClient)
     } else if observation.cleanup != CleanupResult::Pass {
         Some(FailureClass::Cleanup)
-    } else if !runtime_digest_match {
+    } else if !runtime_digest_match || runtime_version_mismatch.is_some() {
         Some(FailureClass::Environment)
     } else {
         None
     };
-    Ok(OutcomeJudgment { result, failure_class, runtime_digest_match })
+    Ok(OutcomeJudgment { result, failure_class, runtime_digest_match, runtime_version_mismatch })
 }
 
 fn outcome_journey(observation: &ProcessObservation) -> Vec<JourneyCell> {
