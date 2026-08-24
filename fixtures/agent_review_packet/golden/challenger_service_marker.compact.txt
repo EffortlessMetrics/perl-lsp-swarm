@@ -48,4 +48,18 @@ ROLES:
   [required] adversarial_challenger: An independent challenger attempts the weak-oracle, wrong-subject, and duplicate-authority escapes named by this packet.
   [optional] specialist: A train-graph specialist joins only when the probe touches shared edge vocabulary.
   [optional] evidence_worker: Bounded evidence workers may gather receipts; they never review.
-FALSIFIERS-MUST-BE-LOAD-BEARING: every declared falsifier carries its six-criterion audit; challenge any evidence you can break.
+NEGATIVE-CONTROLS (challenge any evidence you can break):
+  F_marker_missing_fails:
+    exists: established (service_marker_probe focused test exists at head b31d5e9a2 and runs in the focused route.)
+    red_before_or_mutation_evidence: established (Deleting the emission path turns the focused stale-marker test red before the module lands.)
+    passes_only_intended_implementation: established (The test asserts the typed mismatch enum variant, not a log line or exit-count proxy.)
+    correct_subject_and_generation: established (The fixture is a hand-written stale marker, not output generated from the probe under test.)
+    independent_expectation_source: established (Expected mismatch values are literal fixture expectations authored before the implementation.)
+    alternate_subject_exclusion: established (A marker file recorded against a different tree is rejected, so an unrelated fresh file cannot satisfy the test.)
+  F_fresh_marker_passes:
+    exists: established (Positive-control test feeds a current marker and asserts no mismatch.)
+    red_before_or_mutation_evidence: established (Inverting the tree comparison flips this control red together with the stale-marker falsifier.)
+    passes_only_intended_implementation: established (The control distinguishes fresh from stale by tree identity, not by file presence.)
+    correct_subject_and_generation: established (The current marker fixture is hand-authored against the observed tree.)
+    independent_expectation_source: established (No-mismatch expectation is the literal absence in the fixture, independent of probe output.)
+    alternate_subject_exclusion: established (The control binds the marker to the observed tree identity; alternate-tree markers fail.)

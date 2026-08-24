@@ -573,6 +573,17 @@ fn validate_packet_subject(root: &Map<String, Value>, violations: &mut Vec<Viola
     };
     check_unknown_keys(subject, SUBJECT_KEYS, "subject", violations);
     require_non_empty(subject, "owning_issue", "missing_owning_issue", "subject", violations);
+    // Every exact-subject binding is required: an omitted child section
+    // fails closed instead of silently skipping its validation (PR #12220
+    // review finding).
+    for child in ["repository", "programme", "builder_packet", "changed"] {
+        if subject.get(child).is_none() {
+            violations.push(Violation::new(
+                "missing_subject_binding",
+                format!("subject: required binding {child} was not supplied"),
+            ));
+        }
+    }
 
     if let Some(repository) = subject.get("repository").and_then(as_str_map) {
         check_unknown_keys(repository, REPOSITORY_KEYS, "subject.repository", violations);
@@ -1408,6 +1419,18 @@ fn validate_finding_consistency(
         )),
         (None, _) => {}
     }
+    // Any final disposition claiming current-head resolution — defect
+    // classes included — must carry current-head evidence, not prose (PR
+    // #12220 review finding).
+    if final_disposition == "resolved_on_current_head"
+        && (!has_resolution || resolution_evidence_empty)
+    {
+        violations.push(Violation::new(
+            "prose_resolution",
+            "finding: resolved_on_current_head requires current-head resolution evidence"
+                .to_string(),
+        ));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1581,11 +1604,20 @@ fn validate_closure(root: &Map<String, Value>, doc: &Value, violations: &mut Vec
                     "review_state.roles: state is required".to_string(),
                 )),
             }
-            if required == Some(true)
-                && string_field(entry, "state") != Some("terminal")
-                && string_field(entry, "state") != Some("not_applicable")
-            {
-                role_blockers += 1;
+            if required == Some(true) {
+                match string_field(entry, "state") {
+                    Some("terminal") => {}
+                    // A programme-required role cannot be skipped with a
+                    // reason: the profile that requires it owns that
+                    // decision (PR #12220 review finding).
+                    Some("not_applicable") => violations.push(Violation::new(
+                        "required_role_not_applicable",
+                        format!(
+                            "review_state.roles: required role {role:?} cannot be not_applicable; fix the profile"
+                        ),
+                    )),
+                    _ => role_blockers += 1,
+                }
             }
         }
         let mut seen_findings: BTreeSet<String> = BTreeSet::new();
@@ -1638,7 +1670,13 @@ fn validate_closure(root: &Map<String, Value>, doc: &Value, violations: &mut Vec
                             ),
                         ));
                     }
-                    if state == "open" {
+                    if state == "open"
+                        && (entry.get("material").and_then(Value::as_bool) == Some(true)
+                            || outcome == Some("instrument_failure"))
+                    {
+                        // Only open material or instrument-failure findings
+                        // block eligibility; a nonmaterial bounded follow-up
+                        // does not (PR #12220 review finding).
                         finding_blockers += 1;
                     }
                 }
@@ -1966,6 +2004,17 @@ fn semantic_anchors(doc: &Value) -> Vec<String> {
             {
                 if let Some(entry) = as_str_map(entry) {
                     push(string_field(entry, "falsifier_id"));
+                    // The audit evidence itself is semantic: a projection
+                    // that asserts load-bearing controls without their
+                    // evidence has dropped the challenge surface (PR #12220
+                    // review finding).
+                    if let Some(checks) = entry.get("checks").and_then(as_str_map) {
+                        for criterion in CHECK_CRITERIA {
+                            if let Some(result) = checks.get(*criterion).and_then(as_str_map) {
+                                push(string_field(result, "evidence"));
+                            }
+                        }
+                    }
                 }
             }
             for entry in root.get("old_paths").and_then(Value::as_array).unwrap_or(&Vec::new()) {
@@ -2603,7 +2652,23 @@ fn render_packet_compact(root: &Map<String, Value>) -> String {
             string_field(entry, "obligation").unwrap_or("")
         ));
     }
-    out.push_str("FALSIFIERS-MUST-BE-LOAD-BEARING: every declared falsifier carries its six-criterion audit; challenge any evidence you can break.\n");
+    out.push_str("NEGATIVE-CONTROLS (challenge any evidence you can break):\n");
+    for entry in root.get("negative_controls").and_then(Value::as_array).unwrap_or(&Vec::new()) {
+        let Some(entry) = as_str_map(entry) else { continue };
+        out.push_str(&format!("  {}:\n", string_field(entry, "falsifier_id").unwrap_or("")));
+        if let Some(checks) = entry.get("checks").and_then(as_str_map) {
+            for criterion in CHECK_CRITERIA {
+                if let Some(result) = checks.get(*criterion).and_then(as_str_map) {
+                    out.push_str(&format!(
+                        "    {}: {} ({})\n",
+                        criterion,
+                        string_field(result, "status").unwrap_or(""),
+                        string_field(result, "evidence").unwrap_or("")
+                    ));
+                }
+            }
+        }
+    }
     out
 }
 
@@ -3284,6 +3349,100 @@ mod tests {
             root.insert("severity".to_string(), Value::String("material".to_string()));
         }
         assert!(has(&doc, "severity_outcome_mismatch"));
+        Ok(())
+    }
+
+    // PR #12220 review repairs: omitted subject bindings fail closed.
+    #[test]
+    fn omitted_subject_bindings_fail_closed() -> TestResult {
+        let doc = invalid_fixture("missing_subject_binding.json")?;
+        assert!(has(&doc, "missing_subject_binding"));
+        Ok(())
+    }
+
+    // PR #12220 review repairs: defect-class resolutions need evidence too.
+    #[test]
+    fn defect_resolutions_need_current_head_evidence() -> TestResult {
+        let doc = invalid_fixture("defect_resolved_without_evidence.json")?;
+        assert!(has(&doc, "prose_resolution"));
+        Ok(())
+    }
+
+    // PR #12220 review repairs: a programme-required role cannot be skipped.
+    #[test]
+    fn required_roles_cannot_be_skipped() -> TestResult {
+        let doc = invalid_fixture("required_role_skipped.json")?;
+        assert!(has(&doc, "required_role_not_applicable"));
+        Ok(())
+    }
+
+    // PR #12220 review repairs: nonmaterial open follow-ups do not block
+    // closure eligibility; material and instrument failures do.
+    #[test]
+    fn nonmaterial_open_followups_do_not_block_eligibility() -> TestResult {
+        let mut doc = fixture("closure_open_finding.v1.json")?;
+        // Resolve the material finding and terminalize the pending role; the
+        // open nonmaterial bounded follow-up alone must leave the honest
+        // projection eligible.
+        if let Some(review_state) = doc
+            .as_object_mut()
+            .and_then(|root| root.get_mut("review_state"))
+            .and_then(Value::as_object_mut)
+        {
+            for role in review_state
+                .get_mut("roles")
+                .and_then(Value::as_array_mut)
+                .unwrap_or(&mut Vec::new())
+            {
+                if role.get("role").and_then(Value::as_str) == Some("specialist") {
+                    if let Some(role) = role.as_object_mut() {
+                        role.insert("state".to_string(), Value::String("terminal".to_string()));
+                        role.insert(
+                            "reference".to_string(),
+                            Value::String("specialist review@c44e0d1b7".to_string()),
+                        );
+                    }
+                }
+            }
+            for finding in review_state
+                .get_mut("findings")
+                .and_then(Value::as_array_mut)
+                .unwrap_or(&mut Vec::new())
+            {
+                if finding.get("material").and_then(Value::as_bool) == Some(true) {
+                    if let Some(finding) = finding.as_object_mut() {
+                        finding.insert(
+                            "state".to_string(),
+                            Value::String("resolved_on_current_head".to_string()),
+                        );
+                    }
+                }
+            }
+        }
+        if let Some(root) = doc.as_object_mut() {
+            root.insert("eligibility".to_string(), Value::String("closure_eligible".to_string()));
+        }
+        assert!(valid(&doc), "an open nonmaterial follow-up must not block eligibility");
+        Ok(())
+    }
+
+    // PR #12220 review repairs: the compact challenger prompt carries the
+    // negative-control audit evidence, and completeness verifies it.
+    #[test]
+    fn compact_prompt_carries_control_evidence() -> TestResult {
+        let doc = fixture("challenger_service_marker.v1.json")?;
+        let compact = render_compact(&doc);
+        assert!(compact.contains("NEGATIVE-CONTROLS"));
+        assert!(compact.contains("independent_expectation_source: established"));
+        let tampered = compact.replace(
+            "Expected mismatch values are literal fixture expectations authored before the implementation.",
+            "",
+        );
+        let violations = projection_completeness_violations(&doc, &tampered, "compact");
+        assert!(
+            violations.iter().any(|violation| violation.code == "projection_dropped_semantics"),
+            "a compact prompt without control evidence must fail completeness"
+        );
         Ok(())
     }
 }

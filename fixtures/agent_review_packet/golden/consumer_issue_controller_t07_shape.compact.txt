@@ -52,4 +52,18 @@ ROLES:
   [required] adversarial_challenger: An independent challenger attempts the false-positive-controller, registry-substitution, and dry-run-becomes-live escapes.
   [required] specialist: A GitHub-surface specialist challenges API pagination/permission failure handling and expected-old-state preservation.
   [optional] evidence_worker: Bounded evidence workers may fetch recorded API fixtures; they never review or mutate.
-FALSIFIERS-MUST-BE-LOAD-BEARING: every declared falsifier carries its six-criterion audit; challenge any evidence you can break.
+NEGATIVE-CONTROLS (challenge any evidence you can break):
+  F_no_independent_readiness:
+    exists: established (Focused test removes the node-graph input and asserts the adapter fails closed.)
+    red_before_or_mutation_evidence: established (Removing the missing-input guard makes the focused test red against plausible-prose output.)
+    passes_only_intended_implementation: established (The test asserts the typed missing-input error, not a non-zero exit alone.)
+    correct_subject_and_generation: established (The missing-input fixture is hand-authored; it is not generated from the adapter.)
+    independent_expectation_source: established (Expected failure text is pinned in the fixture before implementation.)
+    alternate_subject_exclusion: established (The test binds the exact node identity, so an unrelated node's packet cannot satisfy it.)
+  F_dry_run_not_live:
+    exists: established (Focused test drives the R03 dry-run route against a recorded API fixture and asserts no mutation call is issued.)
+    red_before_or_mutation_evidence: established (Routing the dry-run path through the live mutation client turns the test red.)
+    passes_only_intended_implementation: established (The test asserts the exact zero-mutation call log, not a summary count.)
+    correct_subject_and_generation: established (The recorded API fixture is authored from the documented response shape, not captured from the code under test.)
+    independent_expectation_source: established (Expected zero-mutation outcome is derived from the R03/R05 ruling in #11775, independent of the implementation.)
+    alternate_subject_exclusion: established (The fixture binds the exact controller and route; another route's recording cannot satisfy the test.)
