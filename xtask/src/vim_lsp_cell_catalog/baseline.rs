@@ -30,11 +30,17 @@ pub const BASELINE_FIXTURE_SUBSTRATE: &[&str] = &[
     "vim-vim-lsp-subject.v1",
 ];
 
-/// Baseline result vocabulary (#11374): the generic dispositions plus the
-/// client-exposure state. `instrument_failed` stays a receipt-level failure
-/// class (#7777), not a cell result, in the baseline family.
+/// Baseline result vocabulary (#11374): exactly the dispositions the generic
+/// `editor_client_compat.v1` `ObservationResult` can serialize
+/// (`pass`/`fail`/`partial`/`not_proven`/`unsupported`). Exposure states such
+/// as `client_not_exposed` ride as admitted limitation tokens on
+/// limitation-requiring results instead of result tokens, so a catalog-valid
+/// cell is always encodable in the receipt it pre-registers for;
+/// `instrument_failed` stays a receipt-level failure class (#7777), not a
+/// cell result, in the baseline family. Future families whose owning
+/// contracts permit richer dispositions declare their own vocabulary.
 pub const BASELINE_RESULT_VOCABULARY: &[&str] =
-    &["pass", "fail", "partial", "client_not_exposed", "unsupported", "not_proven"];
+    &["pass", "fail", "partial", "not_proven", "unsupported"];
 
 const SUBJECT_CONFIG_FIXTURES: &[&str] =
     &["vim-vim-lsp-subject.v1", "vim-vim-lsp-configuration.v1"];

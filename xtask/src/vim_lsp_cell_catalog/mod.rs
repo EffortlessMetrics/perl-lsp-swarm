@@ -93,14 +93,19 @@ pub const LIMITATION_REQUIRING_RESULTS: &[&str] =
     &["partial", "not_proven", "unsupported", "client_not_exposed"];
 
 /// The one exact subject this registry admits, mirroring the #11369 pin
-/// (#12050): Vim host, `prabirshrestha/vim-lsp` client, `perllsp --stdio`
-/// server, generic-LSP integration. The pinned bytes live in
-/// `.ci/editor-clients/vim-vim-lsp-subject.v1.json`; this constant names the
-/// identity, it does not copy the digests.
+/// (#12050): Vim host, the pinned `prabirshrestha/vim-lsp` client plugin,
+/// `perllsp --stdio` server, generic-LSP integration.
+///
+/// `client_id` uses the receipt-valid stable token `vim-lsp`: the plugin's
+/// repository path (`prabirshrestha/vim-lsp`, which contains `/` and so is
+/// not a valid `HostIdentity.client_id` reason token) is identified by this
+/// documentation and bound through the pinned bytes in
+/// `.ci/editor-clients/vim-vim-lsp-subject.v1.json` plus the
+/// `client.pinned_commit` subject dimension, never by a second pin here.
 pub fn vim_vim_lsp_subject() -> CellSubject {
     CellSubject {
         host_product: "vim".to_string(),
-        client_id: "prabirshrestha/vim-lsp".to_string(),
+        client_id: "vim-lsp".to_string(),
         server_executable: "perllsp".to_string(),
         launch_command: vec!["perllsp".to_string(), "--stdio".to_string()],
         integration_mode: "generic_lsp".to_string(),
@@ -372,6 +377,13 @@ fn validate_ledger(ledger: &ScenarioLedger) -> Result<()> {
 
 /// Validate one catalog (its own laws) and return its summary with digest.
 pub fn validate_catalog(catalog: &CellCatalog, ledger: &ScenarioLedger) -> Result<CatalogSummary> {
+    ensure!(
+        catalog.ledger_id == ledger.ledger_id,
+        "catalog {} declares ledger {} but was validated against ledger {}",
+        catalog.catalog_id,
+        catalog.ledger_id,
+        ledger.ledger_id
+    );
     ensure!(
         !catalog.fixture_substrate.is_empty(),
         "catalog {} must declare a non-empty fixture substrate",
@@ -713,6 +725,12 @@ pub fn catalog_digest(catalog: &CellCatalog) -> Result<String> {
     let canonical = serde_json::to_string(&CatalogDigestView {
         catalog_id: catalog.catalog_id.clone(),
         catalog_version: catalog.catalog_version,
+        ledger_id: catalog.ledger_id.clone(),
+        coverage: wire(&catalog.coverage)?,
+        fixture_substrate: sorted(catalog.fixture_substrate.clone()),
+        allowed_stages: sorted_wire(&catalog.allowed_stages)?,
+        allowed_result_vocabulary: sorted(catalog.allowed_result_vocabulary.clone()),
+        core_profile: catalog.core_profile.clone(),
         cell_digests: digests,
     })
     .with_context(|| format!("serializing catalog digest: {}", catalog.catalog_id))?;
@@ -781,9 +799,20 @@ struct CellDigestView {
 }
 
 #[derive(Serialize)]
+/// Canonical digest projection of a catalog binding: identity and version,
+/// every catalog-level semantic (ledger, coverage rule, fixture substrate,
+/// stage bound, result vocabulary, core profile), and every cell digest. A
+/// change to any binding surface with the version held fixed therefore
+/// changes the advertised identity.
 struct CatalogDigestView {
     catalog_id: String,
     catalog_version: u32,
+    ledger_id: String,
+    coverage: String,
+    fixture_substrate: Vec<String>,
+    allowed_stages: Vec<String>,
+    allowed_result_vocabulary: Vec<String>,
+    core_profile: Option<String>,
     cell_digests: Vec<String>,
 }
 

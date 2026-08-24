@@ -151,18 +151,23 @@ fn baseline_result_vocabulary_matches_the_documented_baseline_dispositions() -> 
     let compiled = baseline::baseline_catalog();
     let vocabulary: BTreeSet<&str> =
         compiled.allowed_result_vocabulary.iter().map(|token| token.as_str()).collect();
+    // Exactly the dispositions the generic `ObservationResult` can serialize.
     let expected: BTreeSet<&str> =
-        ["pass", "fail", "partial", "client_not_exposed", "unsupported", "not_proven"]
-            .into_iter()
-            .collect();
+        ["pass", "fail", "partial", "not_proven", "unsupported"].into_iter().collect();
     ensure!(
         vocabulary == expected,
-        "baseline result vocabulary drifted from the documented baseline dispositions: {vocabulary:?}"
+        "baseline result vocabulary drifted from the receipt-serializable dispositions: {vocabulary:?}"
     );
     ensure!(
         !vocabulary.contains("instrument_failed"),
         "instrument_failed is a receipt-level failure class (#7777), not a baseline cell result"
     );
+    // Exposure states ride as limitation tokens, never as baseline results.
+    let limitation_carried = compiled
+        .cells
+        .iter()
+        .any(|cell| cell.allowed_limitations.iter().any(|token| token == "client_not_exposed"));
+    ensure!(limitation_carried, "client_not_exposed must remain an admitted limitation token");
     Ok(())
 }
 
@@ -358,6 +363,16 @@ fn versioning_and_vocabulary_violations_fail_closed() -> Result<()> {
             Ok(())
         },
         "positive version",
+    )?;
+    // Exposure states are limitation tokens in the baseline family: admitting
+    // client_not_exposed as a baseline result must fail closed.
+    assert_rejects(
+        |catalog| {
+            let cell = cell_mut(catalog, "vim.vim_lsp.core.bootstrap")?;
+            cell.allowed_results = vec!["client_not_exposed".to_string()];
+            Ok(())
+        },
+        "outside catalog",
     )?;
     assert_rejects(
         |catalog| {
@@ -743,6 +758,49 @@ fn cell_digests_discriminate_binding_edits() -> Result<()> {
     ensure!(
         before.starts_with("sha256:") && before.len() == "sha256:".len() + 64,
         "cell digest is not a sha256 identity: {before}"
+    );
+    Ok(())
+}
+
+#[test]
+fn direct_catalog_validator_requires_the_declared_ledger() -> Result<()> {
+    let catalog = baseline::baseline_catalog();
+    let other = future_family_ledger();
+    let error = catalog::validate_catalog(&catalog, &other)
+        .err()
+        .context("validate_catalog accepted a ledger other than the catalog's declared ledger")?;
+    ensure!(
+        error.to_string().contains("declares ledger"),
+        "wrong rejection for a mismatched ledger: {error}"
+    );
+    catalog::validate_catalog(&catalog, &baseline::baseline_ledger())?;
+    Ok(())
+}
+
+#[test]
+fn catalog_digest_covers_catalog_level_semantics() -> Result<()> {
+    let compiled = baseline::baseline_catalog();
+    let before = catalog::catalog_digest(&compiled)?;
+
+    let mut widened = compiled.clone();
+    widened.fixture_substrate.push("vim-vim-lsp-freshness-fixture.v1".to_string());
+    ensure!(
+        before != catalog::catalog_digest(&widened)?,
+        "a fixture-substrate change left the catalog digest unchanged"
+    );
+
+    let mut devocabularied = compiled.clone();
+    devocabularied.allowed_result_vocabulary.push("explicit_reload_required".to_string());
+    ensure!(
+        before != catalog::catalog_digest(&devocabularied)?,
+        "a result-vocabulary change left the catalog digest unchanged"
+    );
+
+    let mut reledgered = compiled.clone();
+    reledgered.ledger_id = "vim.bdd.11371.other".to_string();
+    ensure!(
+        before != catalog::catalog_digest(&reledgered)?,
+        "a ledger change left the catalog digest unchanged"
     );
     Ok(())
 }
