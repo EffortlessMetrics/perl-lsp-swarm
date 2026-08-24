@@ -3670,10 +3670,6 @@ impl WorkspaceIndex {
         reindex_metrics::record_eval_sub(eval_sub_start.elapsed());
         let dynamic_boundaries: Vec<perl_semantic_facts::OccurrenceFact> =
             eval_sub_triples.iter().map(|(_, _, occ)| occ.clone()).collect();
-        let (hir_boundary_anchors, hir_boundary_occurrences) =
-            dynamic_isa_facts(uri, ast, file_id);
-        let mut dynamic_boundaries = dynamic_boundaries;
-        dynamic_boundaries.extend(hir_boundary_occurrences);
         #[cfg(test)]
         let generated_member_start = Instant::now();
         let generated_member_facts =
@@ -14480,3 +14476,56 @@ sub bar { return $greeting; }
         assert_eq!(index.indexed_generation(uri.as_str()), Some(1));
         assert_eq!(
             index.index_live_file(uri.clone(), text, SourceCommit::new(generation_two)),
+            SourceCommitOutcome::NoOp
+        );
+        assert_eq!(index.indexed_generation(uri.as_str()), Some(2));
+        assert_eq!(
+            index.index_live_file(
+                uri,
+                "package NoOpGeneration; sub older { 2 } 1;".to_string(),
+                SourceCommit::new(generation_one),
+            ),
+            SourceCommitOutcome::RejectedStale
+        );
+    }
+
+    #[test]
+    fn live_noop_rejects_generation_below_pending_high_water() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit-pending-noop.pl"));
+        let text = "package PendingNoOp; sub stable { 1 } 1;".to_string();
+        let generation_one = must_some(NonZeroU32::new(1));
+
+        must(index.index_initial_file(uri.clone(), text.clone()));
+        let key = DocumentStore::uri_key(uri.as_str());
+        {
+            // Model the ordered state after a newer live writer reserves its
+            // generation but before it publishes parsed content. The lower
+            // live commit has identical content, which used to bypass the
+            // pending high-water guard through the NoOp fast path.
+            let mut files = index.files.write();
+            let file = must_some(files.get_mut(&key));
+            file.pending_generation = 3;
+            assert_eq!(file.generation, 0);
+        }
+
+        assert_eq!(
+            index.index_live_file(uri, text, SourceCommit::new(generation_one)),
+            SourceCommitOutcome::RejectedStale
+        );
+    }
+
+    #[test]
+    fn stale_internal_live_candidate_is_not_accepted_by_legacy_mapping() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit-stale-mapping.pl"));
+        let current = "package StaleMapping; sub current { 2 } 1;".to_string();
+        let stale = "package StaleMapping; sub stale { 1 } 1;".to_string();
+
+        must(index.index_file_with_generation(uri.clone(), current, 2));
+        assert_eq!(
+            index.index_file_with_generation_outcome(uri, stale, 1),
+            Ok(IndexFileWithGenerationOutcome::RejectedStale)
+        );
+    }
+}
