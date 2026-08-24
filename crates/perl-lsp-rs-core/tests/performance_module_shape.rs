@@ -30,3 +30,23 @@ fn performance_ast_cache_stores_and_retrieves() {
     // which is complex. This test verifies the cache is instantiable.
     let _cache = cache;
 }
+
+#[test]
+fn parallel_given_zero_workers_when_processing_then_all_files_are_still_processed() {
+    let files = vec!["a.pm".to_string(), "b.pm".to_string(), "c.pm".to_string()];
+
+    let mut processed = parallel::process_files_parallel(files, 0, |file| file);
+    processed.sort();
+
+    assert_eq!(processed, vec!["a.pm", "b.pm", "c.pm"]);
+}
+
+#[test]
+fn parallel_given_more_workers_than_files_when_processing_then_each_file_processed_once() {
+    let files = vec!["one.pm".to_string(), "two.pm".to_string()];
+
+    let mut processed = parallel::process_files_parallel(files, 16, |file| file);
+    processed.sort();
+
+    assert_eq!(processed, vec!["one.pm", "two.pm"]);
+}
