@@ -4,7 +4,7 @@
   "claim_widening.json": "claim_widening",
   "compatibility_projection_unowned.json": "compatibility_projection_unowned",
   "control_not_load_bearing.json": "control_not_load_bearing",
-  "defect_resolved_without_evidence.json": "prose_resolution",
+  "defect_resolution_prose_only.json": "prose_resolution",
   "eligible_with_open_finding.json": "eligibility_mismatch",
   "external_stage_inferred.json": "external_stage_inferred",
   "force_cleanup_as_success.json": "force_cleanup_as_success",

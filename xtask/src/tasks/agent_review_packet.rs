@@ -3367,7 +3367,7 @@ mod tests {
     // PR #12220 review repairs: defect-class resolutions need evidence too.
     #[test]
     fn defect_resolutions_need_current_head_evidence() -> TestResult {
-        let doc = invalid_fixture("defect_resolved_without_evidence.json")?;
+        let doc = invalid_fixture("defect_resolution_prose_only.json")?;
         assert!(has(&doc, "prose_resolution"));
         Ok(())
     }
