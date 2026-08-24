@@ -714,27 +714,39 @@ impl PerlExtension {
         let binary_path = perl_dap_binary_path(&version_dir, version, target, os);
 
         // Bounded recovery: an already-present known-good member is reused;
-        // only a missing member triggers a download.
+        // only a missing member triggers a download. An interrupted download
+        // can never occupy the durable directory, because every download is
+        // staged in a `.tmp` sibling and promoted by an atomic rename only
+        // after the expected member exists and is executable — mere presence
+        // of a partial extraction is never accepted as readiness.
         if !fs::metadata(&binary_path).is_ok_and(|metadata| metadata.is_file()) {
-            if fs::metadata(&version_dir).is_ok() {
-                fs::remove_dir_all(&version_dir).map_err(|error| {
-                    format!(
-                        "failed to remove incomplete perl-dap download `{version_dir}`: {error}"
-                    )
+            let staging_dir = perl_dap_staging_dir(&version_dir);
+            if fs::metadata(&staging_dir).is_ok() {
+                fs::remove_dir_all(&staging_dir).map_err(|error| {
+                    format!("failed to remove incomplete perl-dap staging `{staging_dir}`: {error}")
                 })?;
             }
-            zed::download_file(&asset.download_url, &version_dir, file_type).map_err(|error| {
+            zed::download_file(&asset.download_url, &staging_dir, file_type).map_err(|error| {
                 format!("failed to download EffortlessMetrics perl-dap: {error}")
             })?;
-            if !fs::metadata(&binary_path).is_ok_and(|metadata| metadata.is_file()) {
+            let staged_binary = perl_dap_binary_path(&staging_dir, version, target, os);
+            if !fs::metadata(&staged_binary).is_ok_and(|metadata| metadata.is_file()) {
                 return Err(format!(
-                    "downloaded `{asset_name}` but did not find expected member `{}` (expected at `{binary_path}`)",
+                    "downloaded `{asset_name}` but did not find expected member `{}` (expected at `{staged_binary}`)",
                     perl_dap_archive_member(os, version, target)
                 ));
             }
             if !matches!(os, zed::Os::Windows) {
-                zed::make_file_executable(&binary_path)?;
+                zed::make_file_executable(&staged_binary)?;
             }
+            if fs::metadata(&version_dir).is_ok() {
+                fs::remove_dir_all(&version_dir).map_err(|error| {
+                    format!(
+                        "failed to remove superseded perl-dap download `{version_dir}`: {error}"
+                    )
+                })?;
+            }
+            promote_staged_dir(&staging_dir, &version_dir)?;
         }
 
         // Cleanup stays inside the debugger-specific managed boundary: only
@@ -907,20 +919,6 @@ fn perl_dap_archive_member(os: zed::Os, version: &str, target: &str) -> String {
     }
 }
 
-/// A validated `perl-dap` launch configuration.
-///
-/// The shape is bound to the canonical `perl-dap` product contract (launch
-/// request with an explicit program), not invented Zed-only semantics. Unknown
-/// keys are preserved by pass-through instead of rejected: the public product
-/// schema is forward-compatible.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct PerlDapLaunchConfig {
-    program: String,
-    args: Vec<String>,
-    cwd: Option<String>,
-    env: Vec<(String, String)>,
-}
-
 /// Validate the debugger configuration object shared by
 /// `dap_request_kind` and `get_dap_binary`.
 ///
@@ -951,13 +949,17 @@ fn parse_perl_dap_request_kind(value: &zed::serde_json::Value) -> Result<()> {
     }
 }
 
-/// Parse and validate the JSON-encoded `perl-dap` launch configuration.
+/// Validate the JSON-encoded `perl-dap` launch configuration.
 ///
 /// The canonical product contract requires a launch request with an explicit,
 /// non-empty `program`; `args`, `cwd`, and `env` are optional with typed
 /// shapes. Unknown keys are intentionally preserved (pass-through), because
-/// the public `perl-dap` schema is forward-compatible.
-fn parse_perl_dap_launch_config(text: &str) -> Result<PerlDapLaunchConfig> {
+/// the public `perl-dap` schema is forward-compatible. The validated
+/// configuration is forwarded verbatim to the adapter inside
+/// `request_args.configuration`: debuggee-only fields such as `env` and `cwd`
+/// describe the debugged process, so they are deliberately never applied to
+/// the adapter process itself.
+fn validate_perl_dap_launch_config(text: &str) -> Result<()> {
     let value: zed::serde_json::Value = zed::serde_json::from_str(text)
         .map_err(|error| format!("perl-dap debugger configuration is not valid JSON: {error}"))?;
     parse_perl_dap_request_kind(&value)?;
@@ -974,46 +976,58 @@ fn parse_perl_dap_launch_config(text: &str) -> Result<PerlDapLaunchConfig> {
         return Err("perl-dap launch configuration `program` must not be empty".to_string());
     }
 
-    let mut args = Vec::new();
     if let Some(raw_args) = object.get("args") {
         let raw_args = raw_args.as_array().ok_or(
             "perl-dap launch configuration `args` must be an array of strings".to_string(),
         )?;
         for argument in raw_args {
-            let argument = argument.as_str().ok_or(
-                "perl-dap launch configuration `args` must be an array of strings".to_string(),
-            )?;
-            args.push(argument.to_string());
+            if argument.as_str().is_none() {
+                return Err(
+                    "perl-dap launch configuration `args` must be an array of strings".to_string()
+                );
+            }
         }
     }
 
-    let cwd = match object.get("cwd") {
-        None => None,
-        Some(raw) => {
-            let raw = raw
-                .as_str()
-                .ok_or("perl-dap launch configuration `cwd` must be a string".to_string())?;
-            if raw.trim().is_empty() {
-                return Err("perl-dap launch configuration `cwd` must not be empty".to_string());
-            }
-            Some(raw.to_string())
+    if let Some(raw) = object.get("cwd") {
+        let raw = raw
+            .as_str()
+            .ok_or("perl-dap launch configuration `cwd` must be a string".to_string())?;
+        if raw.trim().is_empty() {
+            return Err("perl-dap launch configuration `cwd` must not be empty".to_string());
         }
-    };
+    }
 
-    let mut env = Vec::new();
     if let Some(raw_env) = object.get("env") {
         let raw_env = raw_env.as_object().ok_or(
             "perl-dap launch configuration `env` must be an object of string to string".to_string(),
         )?;
         for (key, raw_value) in raw_env {
-            let raw_value = raw_value.as_str().ok_or_else(|| {
-                format!("perl-dap launch configuration `env` value for `{key}` must be a string")
-            })?;
-            env.push((key.clone(), raw_value.to_string()));
+            if raw_value.as_str().is_none() {
+                return Err(format!(
+                    "perl-dap launch configuration `env` value for `{key}` must be a string"
+                ));
+            }
         }
     }
 
-    Ok(PerlDapLaunchConfig { program: program.to_string(), args, cwd, env })
+    Ok(())
+}
+
+/// The staging sibling a managed perl-dap download extracts into before it is
+/// verified and atomically promoted to `version_dir`.
+fn perl_dap_staging_dir(version_dir: &str) -> String {
+    format!("{version_dir}.tmp")
+}
+
+/// Atomically promote a fully staged managed download into its durable
+/// directory. The rename is the commit point: a staged tree only becomes
+/// visible at `dest` whole, so an interrupted download can never be accepted
+/// later as a known-good subject.
+fn promote_staged_dir(staging_dir: &str, dest: &str) -> Result<(), String> {
+    fs::rename(staging_dir, dest).map_err(|error| {
+        format!("failed to promote staged perl-dap download `{staging_dir}` to `{dest}`: {error}")
+    })
 }
 
 fn remove_old_downloads(prefix: &str, current_dir: &str) {
@@ -1100,18 +1114,19 @@ impl zed::Extension for PerlExtension {
         if adapter_name != PERL_DAP_ADAPTER_ID {
             return Err(format!("unknown Perl debug adapter id `{adapter_name}`"));
         }
-        let launch = parse_perl_dap_launch_config(&config.config)?;
+        validate_perl_dap_launch_config(&config.config)?;
         let command = self.perl_dap_binary(user_provided_debug_adapter_path, worktree)?;
-
-        let mut envs = worktree.shell_env();
-        envs.extend(launch.env);
 
         Ok(zed::DebugAdapterBinary {
             command: Some(command),
             // stdio is the default editor link; no transport arguments.
             arguments: Vec::new(),
-            envs,
-            cwd: launch.cwd,
+            // Adapter-process environment only: debuggee `env`/`cwd` travel
+            // verbatim inside the forwarded `configuration`, never on the
+            // adapter process, so debuggee variables such as `PATH` cannot
+            // alter or prevent adapter startup.
+            envs: worktree.shell_env(),
+            cwd: None,
             connection: None,
             request_args: zed::StartDebuggingRequestArguments {
                 request: zed::StartDebuggingRequestArgumentsRequest::Launch,
@@ -1418,64 +1433,61 @@ mod tests {
 
     #[test]
     fn launch_configuration_accepts_the_canonical_shape() {
-        let config = parse_perl_dap_launch_config(
-            r#"{"request":"launch","program":"script.pl","args":["-w"],"cwd":"/tmp","env":{"PERL5LIB":"lib"},"stopOnEntry":true}"#,
-        )
-        .ok();
-        assert_eq!(
-            config,
-            Some(PerlDapLaunchConfig {
-                program: "script.pl".to_string(),
-                args: vec!["-w".to_string()],
-                cwd: Some("/tmp".to_string()),
-                env: vec![("PERL5LIB".to_string(), "lib".to_string())],
-            })
-        );
         // Unknown forward-compatible keys (e.g. `stopOnEntry`) are preserved
         // by pass-through, not rejected.
+        assert!(validate_perl_dap_launch_config(
+            r#"{"request":"launch","program":"script.pl","args":["-w"],"cwd":"/tmp","env":{"PERL5LIB":"lib"},"stopOnEntry":true}"#
+        )
+        .is_ok());
+        assert!(validate_perl_dap_launch_config(
+            r#"{"request":"launch","program":"script.pl","externalDebugger":{"mode":"connect"}}"#
+        )
+        .is_ok());
     }
 
     #[test]
     fn malformed_launch_configurations_fail_closed_with_typed_errors() {
-        let missing_request = parse_perl_dap_launch_config(r#"{"program":"script.pl"}"#);
+        let missing_request = validate_perl_dap_launch_config(r#"{"program":"script.pl"}"#);
         assert!(missing_request.is_err());
         assert!(missing_request.unwrap_err().contains("lacks the required `request` field"));
 
-        let attach = parse_perl_dap_launch_config(r#"{"request":"attach","program":"script.pl"}"#);
+        let attach =
+            validate_perl_dap_launch_config(r#"{"request":"attach","program":"script.pl"}"#);
         assert!(attach.is_err());
         assert!(attach.unwrap_err().contains("`attach` configurations are not supported"));
 
         let unknown_request =
-            parse_perl_dap_launch_config(r#"{"request":"reverse","program":"script.pl"}"#);
+            validate_perl_dap_launch_config(r#"{"request":"reverse","program":"script.pl"}"#);
         assert!(unknown_request.is_err());
         assert!(unknown_request.unwrap_err().contains("unsupported `request` value `reverse`"));
 
         let non_string_request =
-            parse_perl_dap_launch_config(r#"{"request":1,"program":"script.pl"}"#);
+            validate_perl_dap_launch_config(r#"{"request":1,"program":"script.pl"}"#);
         assert!(non_string_request.is_err());
         assert!(non_string_request.unwrap_err().contains("must be the string `launch`"));
 
-        let missing_program = parse_perl_dap_launch_config(r#"{"request":"launch"}"#);
+        let missing_program = validate_perl_dap_launch_config(r#"{"request":"launch"}"#);
         assert!(missing_program.is_err());
         assert!(missing_program.unwrap_err().contains("lacks the required `program` field"));
 
-        let empty_program = parse_perl_dap_launch_config(r#"{"request":"launch","program":"  "}"#);
+        let empty_program =
+            validate_perl_dap_launch_config(r#"{"request":"launch","program":"  "}"#);
         assert!(empty_program.is_err());
         assert!(empty_program.unwrap_err().contains("`program` must not be empty"));
 
-        let bad_args = parse_perl_dap_launch_config(
+        let bad_args = validate_perl_dap_launch_config(
             r#"{"request":"launch","program":"script.pl","args":"-w"}"#,
         );
         assert!(bad_args.is_err());
         assert!(bad_args.unwrap_err().contains("`args` must be an array of strings"));
 
-        let bad_env = parse_perl_dap_launch_config(
+        let bad_env = validate_perl_dap_launch_config(
             r#"{"request":"launch","program":"script.pl","env":{"PERL5LIB":3}}"#,
         );
         assert!(bad_env.is_err());
         assert!(bad_env.unwrap_err().contains("`env` value for `PERL5LIB` must be a string"));
 
-        let bad_json = parse_perl_dap_launch_config("not json");
+        let bad_json = validate_perl_dap_launch_config("not json");
         assert!(bad_json.is_err());
         assert!(bad_json.unwrap_err().contains("is not valid JSON"));
     }
@@ -1544,6 +1556,34 @@ mod tests {
             perl_dap_archive_member(zed::Os::Windows, "0.18.0", "x86_64-pc-windows-msvc"),
             "perl-dap.exe"
         );
+    }
+
+    #[test]
+    fn staged_downloads_promote_atomically_and_partial_stages_never_win(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let base = dir.path();
+        let staging = perl_dap_staging_dir("perl-dap-managed-0.18.0-x86_64-unknown-linux-musl");
+        assert_eq!(staging, "perl-dap-managed-0.18.0-x86_64-unknown-linux-musl.tmp");
+        // Staging siblings stay inside the managed cleanup boundary.
+        assert!(staging.starts_with(PERL_DAP_MANAGED_PREFIX));
+
+        let staged = base.join(&staging);
+        fs::create_dir_all(staged.join("perllsp-0.18.0-x86_64-unknown-linux-musl"))?;
+        fs::write(
+            staged.join("perllsp-0.18.0-x86_64-unknown-linux-musl/perl-dap"),
+            b"perl-dap-bytes",
+        )?;
+        let dest = base.join("perl-dap-managed-0.18.0-x86_64-unknown-linux-musl");
+        promote_staged_dir(&staged.to_string_lossy(), &dest.to_string_lossy())?;
+        // Whole-tree promotion: the durable directory holds the member and
+        // the staging sibling is gone.
+        assert!(dest.join("perllsp-0.18.0-x86_64-unknown-linux-musl/perl-dap").is_file());
+        assert!(!staged.exists());
+        // A second promote from a missing staging directory must fail loudly
+        // rather than silently leave a stale durable subject.
+        assert!(promote_staged_dir(&staged.to_string_lossy(), &dest.to_string_lossy(),).is_err());
+        Ok(())
     }
 
     #[test]
