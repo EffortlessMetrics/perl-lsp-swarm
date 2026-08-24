@@ -57,6 +57,7 @@ notify = "8.2.0"
 flate2 = "1.1.5"
 tar = "0.4.46"
 sha2.workspace = true
+sha1 = "0.10.6"
 tempfile.workspace = true
 glob = "0.3.3"
 

@@ -169,6 +169,7 @@ pub mod update_status;
 pub mod ux_regression_receipt;
 pub mod ux_scorecard;
 pub mod validate_workspace_exclusions;
+pub mod vim_host_toolchain;
 pub mod workflow_policy_lint;
 pub mod workflow_trigger_lint;
 pub mod workflows;

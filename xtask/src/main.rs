@@ -57,8 +57,8 @@ use tasks::{
     srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
     sync_release_docs, targeted_checks, test, test_lsp, unwired_scan, update_homebrew,
     update_status, ux_regression_receipt, ux_scorecard, validate_workspace_exclusions,
-    workflow_policy_lint, workflow_trigger_lint, workspace_symbol_classes, worktree_allocator,
-    worktrees, writer_admission,
+    vim_host_toolchain, workflow_policy_lint, workflow_trigger_lint, workspace_symbol_classes,
+    worktree_allocator, worktrees, writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
 use tasks::{bindings, compare_parsers, highlight};
@@ -416,6 +416,13 @@ enum Commands {
         /// Receipt JSON path to write.
         #[arg(long, default_value = "target/receipts/supported-editor-inline-smoke.json")]
         receipt: PathBuf,
+    },
+
+    /// Provision and verify the content-bound Vim + vim-lsp host test toolchain (#11372).
+    #[command(name = "vim-host-toolchain")]
+    VimHostToolchain {
+        #[command(subcommand)]
+        command: VimHostToolchainCommand,
     },
 
     /// Run release UX smoke fixtures over stdio and optionally write receipts.
@@ -2446,6 +2453,42 @@ enum CheckFilePolicyCliMode {
 }
 
 #[derive(Subcommand)]
+enum VimHostToolchainCommand {
+    /// Acquire and identity-bind the pinned vim-lsp subject plus the resolved
+    /// Vim executable, writing a deterministic machine-path-free manifest.
+    Provision {
+        /// Directory receiving the vim-lsp checkout and the toolchain manifest.
+        #[arg(long)]
+        output: PathBuf,
+
+        /// Explicit Vim executable subject; resolves from PATH when omitted.
+        #[arg(long)]
+        vim: Option<PathBuf>,
+
+        /// Existing git checkout to clone the pinned commit from instead of
+        /// fetching over the network from the governed upstream repository.
+        #[arg(long)]
+        vim_lsp_source: Option<PathBuf>,
+    },
+
+    /// Revalidate an existing provisioned toolchain against the governed
+    /// #11369 subject authority and the recorded content identities.
+    Verify {
+        /// Toolchain manifest produced by `vim-host-toolchain provision`.
+        #[arg(long)]
+        manifest: PathBuf,
+
+        /// Vim executable subject; must match how the manifest was provisioned.
+        #[arg(long)]
+        vim: Option<PathBuf>,
+
+        /// vim-lsp checkout; defaults to `<manifest dir>/vim-lsp`.
+        #[arg(long)]
+        vim_lsp_dir: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
 enum NonRustCommand {
     /// Walk `git ls-files`, classify tracked files against the allowlist,
     /// and emit `target/policy/non-rust-inventory.{md,json}`.
@@ -4179,6 +4222,24 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::SupportedEditorInlineSmoke { receipt } => {
             supported_editor_inline_smoke::run(receipt)
         }
+        Commands::VimHostToolchain { command } => match command {
+            VimHostToolchainCommand::Provision { output, vim, vim_lsp_source } => {
+                vim_host_toolchain::run_provision(vim_host_toolchain::ProvisionArgs {
+                    output,
+                    vim,
+                    vim_lsp_source,
+                })
+                .map_err(|failure| eyre!("{failure}"))
+            }
+            VimHostToolchainCommand::Verify { manifest, vim, vim_lsp_dir } => {
+                vim_host_toolchain::run_verify(vim_host_toolchain::VerifyArgs {
+                    manifest,
+                    vim,
+                    vim_lsp_dir,
+                })
+                .map_err(|failure| eyre!("{failure}"))
+            }
+        },
         Commands::LspUxSmoke { fixture, receipt, binary, no_build } => {
             lsp_ux_smoke::run(lsp_ux_smoke::LspUxSmokeConfig {
                 fixture_root: fixture,
