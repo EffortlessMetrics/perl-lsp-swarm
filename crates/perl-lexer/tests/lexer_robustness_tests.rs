@@ -1,4 +1,5 @@
 use perl_lexer::{PerlLexer, Token, TokenType};
+use proptest::prelude::*;
 
 fn recovery_token(input: &str, expected_start: usize) -> Option<Token> {
     PerlLexer::new(input)
@@ -66,5 +67,45 @@ fn unterminated_heredoc_reports_recovery_at_body_start() {
         assert_eq!(token.start, body_start);
         assert_eq!(token.end, input.len());
         assert_eq!(token.text.as_ref(), &input[body_start..]);
+    }
+}
+
+fn assert_terminates_with_valid_spans(input: &str) {
+    let tokens = PerlLexer::new(input).collect_tokens();
+    let mut previous_end = 0;
+
+    for token in &tokens {
+        assert!(token.start <= token.end, "invalid token span: {token:?}");
+        assert!(token.start >= previous_end, "overlapping token span: {token:?}");
+        assert!(token.end <= input.len(), "token extends past input: {token:?}");
+        assert_eq!(token.text.as_ref(), &input[token.start..token.end]);
+        previous_end = token.end;
+    }
+
+    assert!(
+        tokens.iter().any(|token| token.token_type == TokenType::EOF),
+        "lexer did not emit EOF for {input:?}"
+    );
+}
+
+#[test]
+fn malformed_decimal_and_escape_inputs_recover_without_corrupting_spans() {
+    for input in [
+        "1.2.3.4.5",
+        r#"my $x = "\\z""#,
+        r#"my $x = "\\u{invalid}""#,
+        "my $h = <<EOF;\n",
+    ] {
+        assert_terminates_with_valid_spans(input);
+    }
+}
+
+proptest! {
+    #[test]
+    fn lexer_handles_arbitrary_bytes_after_utf8_normalization(bytes in proptest::collection::vec(any::<u8>(), 0..256)) {
+        // PerlLexer accepts UTF-8 source, so arbitrary byte fuzzing must cross
+        // the same lossy boundary used by callers that receive invalid files.
+        let input = String::from_utf8_lossy(&bytes);
+        assert_terminates_with_valid_spans(&input);
     }
 }
