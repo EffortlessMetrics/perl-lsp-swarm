@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11532 |
+| Total tracked files | 11533 |
 | Rust-family files | 3509 |
-| Non-Rust files | 8023 |
-| Allowlisted | 5750 |
+| Non-Rust files | 8024 |
+| Allowlisted | 5751 |
 | Unclassified | 2273 |
 
 ## Non-Rust files by category
@@ -20,7 +20,7 @@
 | documentation | 2663 |
 | generated | 2 |
 | production | 317 |
-| test | 1885 |
+| test | 1886 |
 | tooling | 479 |
 | unclassified | 2273 |
 
@@ -3373,6 +3373,7 @@
 | `clients/lite-xl/tests/server_frame_test.lua` | test | `non-rust-litexl-server-frame-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_logging_test.lua` | test | `non-rust-litexl-server-logging-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_config_merge_test.lua` | test | `non-rust-litexl-config-merge-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/util_file_uri_test.lua` | test | `non-rust-litexl-file-uri-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_show_document_test.lua` | test | `non-rust-litexl-show-document-tests` | editor/lite-xl |
 | `clients/lite-xl/upstream/diagnostics.lua` | production | `non-rust-litexl-diagnostics-store` | editor/lite-xl |
 | `clients/lite-xl/upstream/init.lua` | production | `non-rust-litexl-init-plugin` | editor/lite-xl |
