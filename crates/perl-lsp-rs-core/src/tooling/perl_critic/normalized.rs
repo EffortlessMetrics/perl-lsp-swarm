@@ -290,6 +290,10 @@ pub struct NormalizedCriticFinding {
     contributors: Vec<CriticFindingContributor>,
     fix_available: bool,
     #[serde(skip)]
+    remediation_suggestion: Option<String>,
+    #[serde(skip)]
+    remediation_related_information: Vec<CriticRelatedInformation>,
+    #[serde(skip)]
     presentation_rank: u8,
     #[serde(skip)]
     explanation_rank: u8,
@@ -334,8 +338,10 @@ impl NormalizedCriticFinding {
             source_identity: candidate.source_identity,
             message: candidate.message,
             explanation: candidate.explanation,
-            contributors: vec![contributor],
             fix_available: candidate.fix_available,
+            remediation_suggestion: contributor.remediation_suggestion().map(str::to_string),
+            remediation_related_information: contributor.remediation_related_information().to_vec(),
+            contributors: vec![contributor],
             presentation_rank,
             explanation_rank,
             explanation_code,
@@ -391,7 +397,30 @@ impl NormalizedCriticFinding {
         self.approved_aliases.dedup();
         self.contributors.sort_by(compare_contributors);
         self.contributors.dedup();
+        self.reconcile_remediation();
         self
+    }
+
+    /// Fold every contributor's producer-owned remediation into the row-level
+    /// view (#12004): the suggestion is the first declared under the
+    /// deterministic contributor order, and related information is the sorted,
+    /// deduplicated union so merged contributors never silently drop each
+    /// other's content.
+    fn reconcile_remediation(&mut self) {
+        self.remediation_suggestion = self
+            .contributors
+            .iter()
+            .find_map(CriticFindingContributor::remediation_suggestion)
+            .map(str::to_string);
+        let mut related = self
+            .contributors
+            .iter()
+            .flat_map(CriticFindingContributor::remediation_related_information)
+            .cloned()
+            .collect::<Vec<_>>();
+        related.sort_by(compare_related_information);
+        related.dedup_by(|left, right| compare_related_information(left, right) == Ordering::Equal);
+        self.remediation_related_information = related;
     }
 
     /// Canonical logical finding ID, or `None` for an unregistered policy.
@@ -473,32 +502,26 @@ impl NormalizedCriticFinding {
     }
 
     /// Producer-owned suggestion text retained from the contributing ordinary
-    /// diagnostic (#12004).
+    /// diagnostics (#12004).
     ///
-    /// Contributors are sorted deterministically by [`Self::finalize`], so the
-    /// first contributor that carries remediation content is arrival-order
-    /// independent. Only built-in overlap producers declare this today.
+    /// Reconciled across every contributor in [`Self::finalize`]: the first
+    /// declared suggestion under the deterministic contributor order wins, so
+    /// the value is arrival-order independent and never hides a later
+    /// contributor's related information.
     #[must_use]
     pub fn remediation_suggestion(&self) -> Option<&str> {
-        remediating_contributor(self).and_then(CriticFindingContributor::remediation_suggestion)
+        self.remediation_suggestion.as_deref()
     }
 
     /// Producer-owned related information retained from the contributing
-    /// ordinary diagnostic (#12004).
+    /// ordinary diagnostics (#12004).
+    ///
+    /// Reconciled as the sorted, deduplicated union of every contributor's
+    /// entries, so merged rows surface all of them.
     #[must_use]
     pub fn remediation_related_information(&self) -> &[CriticRelatedInformation] {
-        remediating_contributor(self)
-            .map_or(&[], CriticFindingContributor::remediation_related_information)
+        &self.remediation_related_information
     }
-}
-
-/// The first contributor of one merged row that declared user-visible
-/// remediation content, under the deterministic contributor order.
-fn remediating_contributor(finding: &NormalizedCriticFinding) -> Option<&CriticFindingContributor> {
-    finding.contributors.iter().find(|contributor| {
-        contributor.remediation_suggestion.is_some()
-            || !contributor.remediation_related_information.is_empty()
-    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -598,12 +621,42 @@ fn compare_contributors(
     left: &CriticFindingContributor,
     right: &CriticFindingContributor,
 ) -> Ordering {
-    (&left.identity, severity_score(left.severity), &left.message, &left.explanation).cmp(&(
-        &right.identity,
-        severity_score(right.severity),
-        &right.message,
-        &right.explanation,
-    ))
+    (&left.identity, severity_score(left.severity), &left.message, &left.explanation)
+        .cmp(&(&right.identity, severity_score(right.severity), &right.message, &right.explanation))
+        .then_with(|| left.remediation_suggestion.cmp(&right.remediation_suggestion))
+        .then_with(|| {
+            compare_related_information_slices(
+                &left.remediation_related_information,
+                &right.remediation_related_information,
+            )
+        })
+}
+
+/// Deterministic total order over one related-information entry: range
+/// coordinates first, then message.
+fn compare_related_information(
+    left: &CriticRelatedInformation,
+    right: &CriticRelatedInformation,
+) -> Ordering {
+    (RangeIdentity::from(left.range), &left.message)
+        .cmp(&(RangeIdentity::from(right.range), &right.message))
+}
+
+/// Lexicographic order over related-information entry lists.
+fn compare_related_information_slices(
+    left: &[CriticRelatedInformation],
+    right: &[CriticRelatedInformation],
+) -> Ordering {
+    for ordering in left
+        .iter()
+        .zip(right.iter())
+        .map(|(left_entry, right_entry)| compare_related_information(left_entry, right_entry))
+    {
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+    left.len().cmp(&right.len())
 }
 
 fn compare_normalized(left: &NormalizedCriticFinding, right: &NormalizedCriticFinding) -> Ordering {
@@ -621,6 +674,7 @@ fn compare_normalized(left: &NormalizedCriticFinding, right: &NormalizedCriticFi
 #[cfg(test)]
 mod tests {
     use perl_parser_core::position::{Position, Range};
+    use perl_tdd_support::must;
 
     use super::{
         CriticFindingCandidate, CriticSourceIdentity, OwnedCriticObservedIdentity,
@@ -773,6 +827,10 @@ mod tests {
         ]
     }
 
+    fn related_information(range: Range, message: &str) -> CriticRelatedInformation {
+        CriticRelatedInformation { range, message: message.to_string() }
+    }
+
     #[test]
     fn merged_row_retains_the_builtin_twin_remediation_verbatim() {
         // #12004: retiring the ordinary overlap twin must not retire its
@@ -813,6 +871,159 @@ mod tests {
             forward[0].remediation_related_information(),
             backward[0].remediation_related_information()
         );
+    }
+
+    fn same_identity_candidates_differing_only_in_remediation(
+        source_identity: CriticSourceIdentity,
+    ) -> Vec<CriticFindingCandidate> {
+        let range = range(10, 20);
+        let identity = CriticObservedIdentity::built_in_system_call();
+        vec![
+            CriticFindingCandidate::new(
+                identity.clone(),
+                source_identity,
+                Severity::Harsh,
+                range,
+                "system() executes a shell command",
+                None,
+            )
+            .with_remediation(
+                Some("Alpha suggestion".to_string()),
+                vec![related_information(range, "alpha related")],
+            ),
+            CriticFindingCandidate::new(
+                identity,
+                source_identity,
+                Severity::Harsh,
+                range,
+                "system() executes a shell command",
+                None,
+            )
+            .with_remediation(
+                Some("Zulu suggestion".to_string()),
+                vec![related_information(range, "zulu related")],
+            ),
+        ]
+    }
+
+    #[test]
+    fn contributors_identical_except_remediation_stay_byte_identical_across_arrival_orders() {
+        // The contributor order must be total over remediation content: two
+        // contributions that differ only there compare unequal for sorting, so
+        // reversed arrival order cannot change the normalized bytes.
+        let forward = normalize_critic_findings(
+            same_identity_candidates_differing_only_in_remediation(source(1, 7)),
+        );
+        let mut reversed = same_identity_candidates_differing_only_in_remediation(source(1, 7));
+        reversed.reverse();
+        let backward = normalize_critic_findings(reversed);
+
+        assert_eq!(forward, backward);
+        assert_eq!(forward.len(), 1);
+        assert_eq!(forward[0].contributors().len(), 2);
+        assert_eq!(must(serde_json::to_string(&forward)), must(serde_json::to_string(&backward)));
+        assert_eq!(forward[0].remediation_suggestion(), Some("Alpha suggestion"));
+        let related = forward[0].remediation_related_information();
+        assert_eq!(related.len(), 2);
+        assert_eq!(related[0].message, "alpha related");
+        assert_eq!(related[1].message, "zulu related");
+    }
+
+    #[test]
+    fn merged_row_surfaces_every_contributors_distinct_remediation() {
+        // One contributor carries only a suggestion, another only related
+        // information; the logical row must surface the first suggestion and
+        // both related entries (#12004 retain-every-contributor-content).
+        let range = range(10, 20);
+        let candidates = vec![
+            CriticFindingCandidate::new(
+                CriticObservedIdentity::built_in_system_call(),
+                source(1, 7),
+                Severity::Harsh,
+                range,
+                "system() executes a shell command",
+                None,
+            )
+            .with_remediation(Some("Use the list form".to_string()), Vec::new()),
+            CriticFindingCandidate::new(
+                CriticObservedIdentity::native_system_call(),
+                source(1, 7),
+                Severity::Harsh,
+                range,
+                "system() executes a shell command",
+                None,
+            )
+            .with_remediation(
+                None,
+                vec![
+                    related_information(
+                        range_with_positions(40, 2, 5, 50, 2, 15),
+                        "zulu native related",
+                    ),
+                    related_information(
+                        range_with_positions(20, 1, 0, 30, 1, 10),
+                        "alpha native related",
+                    ),
+                ],
+            ),
+        ];
+        let forward = normalize_critic_findings(candidates.clone());
+        let mut reversed = candidates;
+        reversed.reverse();
+        let backward = normalize_critic_findings(reversed);
+
+        assert_eq!(forward, backward);
+        assert_eq!(forward.len(), 1);
+        assert_eq!(forward[0].remediation_suggestion(), Some("Use the list form"));
+        let related = forward[0].remediation_related_information();
+        assert_eq!(related.len(), 2);
+        assert_eq!(related[0].message, "alpha native related");
+        assert_eq!(related[1].message, "zulu native related");
+    }
+
+    #[test]
+    fn reconciled_related_information_is_the_sorted_deduplicated_union() {
+        // Contributors declaring overlapping related entries must not
+        // duplicate them on the merged row.
+        let shared_range = range(30, 40);
+        let candidates = vec![
+            CriticFindingCandidate::new(
+                CriticObservedIdentity::built_in_system_call(),
+                source(1, 7),
+                Severity::Harsh,
+                range(10, 20),
+                "system() executes a shell command",
+                None,
+            )
+            .with_remediation(
+                Some("Use the list form".to_string()),
+                vec![related_information(shared_range, "shared related")],
+            ),
+            CriticFindingCandidate::new(
+                CriticObservedIdentity::native_system_call(),
+                source(1, 7),
+                Severity::Harsh,
+                range(10, 20),
+                "system() executes a shell command",
+                None,
+            )
+            .with_remediation(
+                None,
+                vec![
+                    related_information(range(5, 8), "unique related"),
+                    related_information(shared_range, "shared related"),
+                ],
+            ),
+        ];
+
+        let normalized = normalize_critic_findings(candidates);
+        assert_eq!(normalized.len(), 1);
+        let related = normalized[0].remediation_related_information();
+        assert_eq!(related.len(), 2);
+        assert_eq!(related[0].message, "unique related");
+        assert_eq!(related[0].range, range(5, 8));
+        assert_eq!(related[1].message, "shared related");
+        assert_eq!(related[1].range, shared_range);
     }
 
     #[test]
