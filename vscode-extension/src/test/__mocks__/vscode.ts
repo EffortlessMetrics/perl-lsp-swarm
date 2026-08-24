@@ -184,6 +184,16 @@ export function _registeredCommandsForTest(): string[] {
   return [..._commands.keys()];
 }
 
+/**
+ * Test-only identity view of the mocked command registry: which exact
+ * callback the host would currently dispatch for each command. Lets a test
+ * prove a retry REPLACED a stale registration instead of merely re-registering
+ * alongside it (#7855).
+ */
+export function _registeredCommandEntriesForTest(): Map<string, CommandCallback> {
+  return new Map(_commands);
+}
+
 function createMockOutputChannel() {
   const appendLine = jest.fn();
   return {

@@ -226,6 +226,13 @@ function registeredCommandIds(): string[] {
   return vscodeMock._registeredCommandsForTest?.() ?? [];
 }
 
+function registeredCommandEntries(): Map<string, unknown> {
+  const vscodeMock = vscode as unknown as {
+    _registeredCommandEntriesForTest?: () => Map<string, unknown>;
+  };
+  return vscodeMock._registeredCommandEntriesForTest?.() ?? new Map();
+}
+
 function makeContext(extensionPath: string): vscode.ExtensionContext {
   const state = {
     get: jest.fn(() => undefined),
@@ -431,6 +438,31 @@ async function activateWithInjectedFailure(
   await expect(activate(context)).rejects.toThrow(`injected failure after ${target.resource_id}`);
   _setActivationPhaseFailureInjectorForTest(null);
 
+  const state = _extensionActivationStateForTest();
+  expect(state?.state).toBe('activation_failed');
+  return {
+    context,
+    seen,
+    receipt: state?.lastCleanupReceipt ?? null,
+    attemptId: state?.attemptId ?? 'unknown',
+  };
+}
+
+/**
+ * Run one production activation whose failure comes from OUTSIDE the
+ * injector (for example a vscode factory mock), with a purely recording
+ * injector so the boundaries the attempt crossed before the failure are
+ * still captured.
+ */
+async function activateWithRecordingBoundaries(expectedError: string): Promise<FailedAttempt> {
+  const seen: ActivationPhaseBoundary[] = [];
+  _setActivationPhaseFailureInjectorForTest((boundary) => {
+    seen.push(boundary);
+    return null;
+  });
+  const context = makeContext(makeExtensionRoot());
+  await expect(activate(context)).rejects.toThrow(expectedError);
+  _setActivationPhaseFailureInjectorForTest(null);
   const state = _extensionActivationStateForTest();
   expect(state?.state).toBe('activation_failed');
   return {
@@ -684,6 +716,74 @@ describe('production activation failure injection (#7855)', () => {
     },
   );
 
+  test('a command-factory failure mid-batch rolls back every owned resource', async () => {
+    // The real host failure shape INSIDE a command group: the first command
+    // registers, then a later registration in the same group throws before
+    // the group returns, so the whole batch never reaches ownDisposables.
+    const registerMock = vscode.commands.registerCommand as jest.Mock;
+    const originalImpl = registerMock.getMockImplementation();
+    let commandRegistrations = 0;
+    registerMock.mockImplementation((...args: unknown[]) => {
+      commandRegistrations += 1;
+      if (commandRegistrations === 2) {
+        throw new Error('command factory refused');
+      }
+      return originalImpl?.(...args);
+    });
+    let failure: FailedAttempt;
+    try {
+      failure = await activateWithRecordingBoundaries('command factory refused');
+    } finally {
+      registerMock.mockImplementation(originalImpl);
+    }
+
+    // Activation rejects, settles failed, and rolls back every resource the
+    // attempt actually owned — in exact reverse order, projections last, the
+    // output channel retained to the host net.
+    const state = _extensionActivationStateForTest();
+    expect(state?.state).toBe('activation_failed');
+    const receipt = state?.lastCleanupReceipt;
+    const ownedIds = failure.seen.map((boundary) => boundary.resource_id);
+    expect(receipt?.cleaned_resources).toEqual(
+      ownedIds.filter((id) => !retainedResourceIds.has(id)).reverse(),
+    );
+    expect(receipt?.retained_support_resources).toEqual(['base-2']);
+    expect(failure.context.subscriptions).toHaveLength(1);
+    const cleanedIds = receipt?.cleaned_resources ?? [];
+    expect(cleanedIds[cleanedIds.length - 1]).toBe('module-projections');
+    expect(cleanedIds.indexOf('module-projections')).toBeGreaterThan(
+      cleanedIds.indexOf('language-client-lifecycle'),
+    );
+    expect(_activationProjectionsClearedForTest()).toBe(true);
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+      'setContext',
+      'perl-lsp.activated',
+      false,
+    );
+
+    // Pinned #7854 wiring boundary, recorded against the wiring owner: the
+    // first command of the failed group was created and registered host-side
+    // but never entered the attempt ledger — command groups own their
+    // disposables only after the whole group returns, so a mid-batch factory
+    // failure leaves the earlier siblings as an UNAPPROVED surviving surface
+    // (undisposed, still registered, absent from the host net). Repairing the
+    // batch ownership is the activation-wiring owner's slice, not this test
+    // slice's; this assertion makes the gap visible and falsifiable instead
+    // of hiding it behind batch-complete injection points.
+    const showOutput = tracked.find((entry) => entry.label === 'cmd:perl-lsp.showOutput');
+    expect(showOutput).toBeDefined();
+    expect(showOutput?.disposable.dispose).not.toHaveBeenCalled();
+    expect(registeredCommandIds()).toContain('perl-lsp.showOutput');
+    expect(failure.context.subscriptions).not.toContain(showOutput?.disposable);
+    expect(disposedLabels()).not.toContain('cmd:perl-lsp.showOutput');
+
+    // The partial state still deactivates through the fallback path,
+    // idempotently, without touching the leaked sibling.
+    await expect(deactivate()).resolves.toBeUndefined();
+    await expect(deactivate()).resolves.toBeUndefined();
+    expect(showOutput?.disposable.dispose).not.toHaveBeenCalled();
+  });
+
   test('a failed activation retries cleanly in the same host process', async () => {
     // Fail after the final pre-commit boundary so every production resource
     // exists when the attempt rolls back.
@@ -704,6 +804,12 @@ describe('production activation failure injection (#7855)', () => {
     ]) {
       expect(commandsAfterFailure).toContain(supportCommand);
     }
+    // Identity of the live retained registrations, so the retry can be proved
+    // to REPLACE them rather than register duplicates alongside them.
+    const retainedCallbacksBeforeRetry = registeredCommandEntries();
+    const retainedFromFailedAttempt = [...firstFailure.context.subscriptions] as unknown as {
+      dispose: jest.Mock;
+    }[];
 
     // Retry: a fresh attempt in the same host process starts from baseline and
     // completes. Attempt ids are unique generations, not a resumed attempt.
@@ -723,10 +829,29 @@ describe('production activation failure injection (#7855)', () => {
     );
 
     // No duplicate resources: the retry registered exactly one fresh set of
-    // commands — the baseline count, not double.
+    // commands — the baseline count, not double — and every retained command
+    // the failed attempt left behind was REPLACED by the retry's callback
+    // (one live registration per command id), never left as a simultaneous
+    // stale resource. The retry's host net carries only retry-created
+    // disposables.
     expect(
       (vscode.commands.registerCommand as jest.Mock).mock.calls.length - commandsBeforeRetry,
     ).toBe(baselineCommandRegistrations);
+    const retainedCallbacksAfterRetry = registeredCommandEntries();
+    for (const supportCommand of [
+      'perl-lsp.showWhatsNew',
+      'perl-lsp.openConfigurationGuide',
+      'perl-lsp.checkForUpdate',
+      'perl-lsp.reportIssue',
+    ]) {
+      expect(retainedCallbacksAfterRetry.get(supportCommand)).toBeDefined();
+      expect(retainedCallbacksAfterRetry.get(supportCommand)).not.toBe(
+        retainedCallbacksBeforeRetry.get(supportCommand),
+      );
+    }
+    for (const retainedDisposable of retainedFromFailedAttempt) {
+      expect(retryContext.subscriptions).not.toContain(retainedDisposable);
+    }
 
     // The failed attempt's demand listeners cannot reach the new runtime: the
     // host bus holds exactly the retry's live listener, and dispatching a
