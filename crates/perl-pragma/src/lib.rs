@@ -12,12 +12,16 @@ use std::ops::Range;
 mod args;
 mod conditional;
 mod features;
+mod import_into;
 mod map;
 mod range_builder;
 mod version;
 
 pub use map::{
     CompileTimePragmaEnvironment, PragmaEntry, PragmaMap, PragmaQueryCursor, PragmaStateQuery,
+};
+pub use import_into::{
+    ImportIntoCall, ImportIntoSource, ImportIntoTarget, find_import_into_calls,
 };
 pub use version::{
     PerlVersion, features_enabled_by_version, parse_perl_version, version_implies_strict,
