@@ -136,11 +136,7 @@ assert settings["lsp"]["perllsp"]["settings"]["perl"] == {"trace": True}
 path_settings = _settings({}, Path("/tmp/perllsp"), "worktree_path")
 assert "binary" not in path_settings["lsp"]["perllsp"]
 "#;
-    let output = Command::new(python())
-        .arg("-c")
-        .arg(script)
-        .current_dir(&root)
-        .output()?;
+    let output = Command::new(python()).arg("-c").arg(script).current_dir(&root).output()?;
     assert!(
         output.status.success(),
         "Python contract test failed\nstdout:\n{}\nstderr:\n{}",
