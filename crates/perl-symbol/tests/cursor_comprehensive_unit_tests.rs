@@ -178,13 +178,13 @@ fn extract_name_starting_with_underscore() -> Result<(), String> {
 #[test]
 fn extract_empty_source_returns_none() {
     let result = extract_symbol_from_source(0, "");
-    assert_eq!(result, Some(("abc".to_string(), CursorSymbolKind::Subroutine)));
+    assert_eq!(result, None);
 }
 
 #[test]
 fn extract_position_beyond_length_returns_none() {
     let result = extract_symbol_from_source(100, "short");
-    assert_eq!(result, Some((0, 3)));
+    assert_eq!(result, None);
 }
 
 #[test]
