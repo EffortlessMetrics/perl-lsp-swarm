@@ -110,12 +110,7 @@ fn token_span(position: usize, source: &str) -> Option<TokenSpan> {
         return None;
     }
 
-    Some(TokenSpan {
-        start,
-        end,
-        name_start,
-        kind,
-    })
+    Some(TokenSpan { start, end, name_start, kind })
 }
 
 /// Extract a symbol and its kind from source at position.
@@ -181,8 +176,8 @@ pub fn is_word_boundary(text: &[u8], pos: usize, word_len: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        byte_offset_utf16, extract_symbol_from_source, get_symbol_range_at_position,
-        is_modchar, is_word_boundary, token_under_cursor, CursorSymbolKind,
+        CursorSymbolKind, byte_offset_utf16, extract_symbol_from_source,
+        get_symbol_range_at_position, is_modchar, is_word_boundary, token_under_cursor,
     };
 
     #[test]
@@ -193,25 +188,16 @@ mod tests {
                 extract_symbol_from_source(position, source),
                 Some(("my_func".to_string(), CursorSymbolKind::Scalar))
             );
-            assert_eq!(
-                get_symbol_range_at_position(position, source),
-                Some((3, 11))
-            );
+            assert_eq!(get_symbol_range_at_position(position, source), Some((3, 11)));
         }
-        assert_eq!(
-            token_under_cursor(source, 0, 7),
-            Some("$my_func".to_string())
-        );
+        assert_eq!(token_under_cursor(source, 0, 7), Some("$my_func".to_string()));
     }
 
     #[test]
     fn qualified_names_and_bare_subroutines_share_the_same_range() {
         let source = "Demo::Worker";
         for position in 0..source.len() {
-            assert_eq!(
-                get_symbol_range_at_position(position, source),
-                Some((0, source.len()))
-            );
+            assert_eq!(get_symbol_range_at_position(position, source), Some((0, source.len())));
         }
         assert_eq!(
             extract_symbol_from_source(6, source),
@@ -239,10 +225,7 @@ mod tests {
 
     #[test]
     fn whitespace_boundary_is_supported_but_punctuation_is_not() {
-        assert_eq!(
-            get_symbol_range_at_position(3, "foo bar"),
-            Some((0, 3))
-        );
+        assert_eq!(get_symbol_range_at_position(3, "foo bar"), Some((0, 3)));
         assert_eq!(get_symbol_range_at_position(3, "foo;"), None);
         assert_eq!(get_symbol_range_at_position(3, "foo.bar"), None);
         assert_eq!(get_symbol_range_at_position(0, " "), None);
@@ -252,34 +235,21 @@ mod tests {
     fn invalid_utf8_boundary_is_rejected() {
         let source = "😀foo";
         assert_eq!(get_symbol_range_at_position(1, source), None);
-        assert_eq!(
-            get_symbol_range_at_position(4, source),
-            Some((4, source.len()))
-        );
+        assert_eq!(get_symbol_range_at_position(4, source), Some((4, source.len())));
     }
 
     #[test]
     fn unsupported_braced_and_nested_sigil_forms_are_explicitly_rejected() {
-        assert!(
-            extract_symbol_from_source(1, concat!("$", "{foo}")).is_none()
-        );
+        assert!(extract_symbol_from_source(1, concat!("$", "{foo}")).is_none());
         assert!(extract_symbol_from_source(1, "$$foo").is_none());
-        assert!(
-            extract_symbol_from_source(1, concat!("$", "{^MATCH}")).is_none()
-        );
+        assert!(extract_symbol_from_source(1, concat!("$", "{^MATCH}")).is_none());
     }
 
     #[test]
     fn token_under_cursor_handles_utf16_and_end_boundaries() {
         let source = "😀 Demo::Worker";
-        assert_eq!(
-            token_under_cursor(source, 0, 5),
-            Some("Demo::Worker".to_string())
-        );
-        assert_eq!(
-            token_under_cursor("use Demo::Worker", 0, 16),
-            Some("Demo::Worker".to_string())
-        );
+        assert_eq!(token_under_cursor(source, 0, 5), Some("Demo::Worker".to_string()));
+        assert_eq!(token_under_cursor("use Demo::Worker", 0, 16), Some("Demo::Worker".to_string()));
         assert_eq!(token_under_cursor("my $value = 1;", 0, 11), None);
     }
 
