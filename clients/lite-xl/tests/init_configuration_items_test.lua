@@ -177,6 +177,7 @@ package.preload["plugins.lsp.diagnostics"] = function()
     note_provider = function() end,
     close_session = function() end,
     retire_provider = function() end,
+    set_render_resolver = function() end,
     publish = function() return true, nil end,
   }
 end

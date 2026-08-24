@@ -205,7 +205,7 @@ diagnostics.set_render_resolver(
   function(uri)
     for _, open_doc in ipairs(core.docs) do
       if open_doc.filename
-        and util.touri(core.project_absolute_path(open_doc.filename)) == uri
+        and util.path_to_uri(core.project_absolute_path(open_doc.filename)) == uri
       then
         return open_doc
       end

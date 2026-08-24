@@ -199,10 +199,13 @@ end
 package.preload["plugins.lsp.diagnostics"] = function()
   -- Lifecycle seams consumed by init.lua (#11124); inert in this suite,
   -- whose subject is document-session/version behavior, not publications.
+  -- set_render_resolver: combined-tree repair for this lane (#11165); the
+  -- #11128 seam call entered init.lua on main without updating these fakes.
   return {
     note_provider = function() end,
     close_session = function() end,
     retire_provider = function() end,
+    set_render_resolver = function() end,
     publish = function() return true, nil end,
   }
 end
