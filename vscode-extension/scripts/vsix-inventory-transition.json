@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 7845,
-  "reason": "#7845 routes the process-exit crash handler, the watchdog timeout path, and the automatic-restart budget in extension.ts through the landed CrashRecoveryArbiter, including review-hardened stale-watchdog generation binding and snapshot-based episode settlement (out/extension.js 1519372->1528404 archive-measured on the current-source Linux smoke). No file added, removed, or loosened; total recomputed ->1704715.",
+  "reason": "#7845 routes the process-exit crash handler, the watchdog timeout path, and the automatic-restart budget in extension.ts through the landed CrashRecoveryArbiter, including review-hardened stale-watchdog generation binding, snapshot-based episode settlement, and removal of the unreachable manual-restart catch (out/extension.js 1519372->1528230 archive-measured on the current-source Linux smoke). No file added, removed, or loosened; total recomputed ->1704541.",
   "base_baseline_file_sha256": "4a662d41a6f80249245b526e89b6b706d1b847195c16231fe0d303cbd44a5011",
-  "candidate_baseline_file_sha256": "cb80313659ca285adcc82b2dde6d8ac33da5572fb3a9097597d43c10cb5fbca0",
+  "candidate_baseline_file_sha256": "9ef8c155bcbcdd0d7a4005a6be261bdef34d4a7fc343ad6163b69a0501f6d14d",
   "base_inventory_sha256": "3087c97c983e74fbc5d814d8739e985dbacc26a54e7ad32c43f1e3f9dae7c19e",
-  "candidate_inventory_sha256": "9f0947a5f8bc8b7468f0c4abce8934424c627db68ecfdafcd7c527d2fe77965f"
+  "candidate_inventory_sha256": "d562831764cf5819d0425b5b025ba775a51e16d2029f8968f4aac15f3f1218c2"
 }

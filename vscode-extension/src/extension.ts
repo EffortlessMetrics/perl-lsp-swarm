@@ -2908,13 +2908,9 @@ async function reportCrashBudgetExhausted(): Promise<void> {
   if (selection === 'Restart Server' && context) {
     // A manual restart is an explicit user restart (#7845): it resets the
     // automatic crash-recovery budget without ever having consumed it.
+    // restartServer never rejects; it surfaces its own failure dialogs.
     crashRecoveryArbiter.resetForExplicitRecovery();
-    try {
-      await restartServer(context);
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      outputChannel?.error(`[lifecycle] Manual restart failed: ${msg}`);
-    }
+    await restartServer(context);
   } else if (selection === 'Run Health Check') {
     const serverPath = currentServerPath ?? undefined;
     await vscode.commands.executeCommand('perl-lsp.runHealthCheck', serverPath);
