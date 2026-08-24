@@ -9,8 +9,8 @@
 | Total tracked files | 11408 |
 | Rust-family files | 3478 |
 | Non-Rust files | 7930 |
-| Allowlisted | 5656 |
-| Unclassified | 2274 |
+| Allowlisted | 5657 |
+| Unclassified | 2273 |
 
 ## Non-Rust files by category
 
@@ -19,10 +19,10 @@
 | config | 402 |
 | documentation | 2644 |
 | generated | 2 |
-| production | 308 |
+| production | 309 |
 | test | 1829 |
 | tooling | 471 |
-| unclassified | 2274 |
+| unclassified | 2273 |
 
 ## Unclassified files
 
@@ -124,7 +124,6 @@
 | `ci/unwrap_prod_baseline.txt` | `txt` |
 | `ci/unwrap_server_impl_baseline.txt` | `txt` |
 | `ci/xtask_wrapper.sh` | `sh` |
-| `clients/lite-xl/upstream/json.lua` | `lua` |
 | `contracts/actual_host_receipt.v1.schema.json` | `json` |
 | `crates/perl-corpus/concepts/incremental.toml` | `toml` |
 | `crates/perl-corpus/concepts/lexer.toml` | `toml` |
@@ -3356,6 +3355,7 @@
 | `clients/lite-xl/tests/util_show_document_test.lua` | test | `non-rust-litexl-show-document-tests` | editor/lite-xl |
 | `clients/lite-xl/upstream/diagnostics.lua` | production | `non-rust-litexl-diagnostics-store` | editor/lite-xl |
 | `clients/lite-xl/upstream/init.lua` | production | `non-rust-litexl-init-plugin` | editor/lite-xl |
+| `clients/lite-xl/upstream/json.lua` | production | `non-rust-litexl-json-codec` | editor/lite-xl |
 | `clients/lite-xl/upstream/server.lua` | production | `non-rust-litexl-server-transport` | editor/lite-xl |
 | `clients/lite-xl/upstream/util.lua` | production | `non-rust-litexl-util-support` | editor/lite-xl |
 | `clients/sublime/LSP-perllsp/.python-version` | documentation | `non-rust-sublime-python-version` | editor/sublime |

@@ -177,10 +177,11 @@ function util.file_exists(file_path)
  return false
 end
 
----Maximum accepted local path length in bytes (#11165). Mirrors the URI
----bound: bounded input keeps every conversion and downstream file-API path
----bounded.
-local MAX_PATH_BYTES = 8192
+---Maximum accepted URI length in bytes (#11162), hoisted above first use so
+---the #11165 conversion authority can reuse the exact same bound: a path is
+---convertible exactly when its canonical URI fits this bound, so every
+---producer output reads back.
+local MAX_URI_BYTES = 2048
 
 ---True when the string carries a raw NUL/control byte that cannot be a safe
 ---local path component (#11165). Applies after percent decoding.
@@ -229,6 +230,8 @@ local LOCAL_FILE_SCHEMES = util.INTERNAL_URI_SCHEMES
 ---   admitted UNC source on Windows only (`\\server\share\...`) and
 ---   `remote_authority` elsewhere; authorities carrying userinfo/port bytes
 ---   are never local;
+--- - raw query/fragment components (`?`/`#`) are stripped before decoding;
+---   encoded `%23`/`%3F` filename bytes stay data;
 --- - decoded path bytes are decoded exactly once; NUL/control results are
 ---   rejected;
 --- - POSIX paths keep leading-slash runs as data and must be absolute;
@@ -246,6 +249,18 @@ function util.uri_to_path(uri)
   -- classify_uri validated the scheme grammar, so the first colon is the
   -- scheme delimiter regardless of letter case.
   local rest = uri:sub(uri:find(":", 1, true) + 1)
+
+  -- Raw `#` and `?` start fragment/query components (RFC 3986); they never
+  -- belong to a local path. Literal bytes in filenames arrive percent-encoded
+  -- (%23/%3F) and survive as data. Cut before any decoding.
+  local fragment = rest:find("#", 1, true)
+  if fragment then
+    rest = rest:sub(1, fragment - 1)
+  end
+  local query = rest:find("?", 1, true)
+  if query then
+    rest = rest:sub(1, query - 1)
+  end
 
   local authority = ""
   if rest:sub(1, 2) == "//" then
@@ -292,8 +307,9 @@ function util.uri_to_path(uri)
     if not drive then
       return nil, "unsupported_path_shape"
     end
-    if #path < 4 then
-      -- "/C:" with nothing after the colon is drive-relative, not a root.
+    if #path < 4 or path:sub(4, 4) ~= "/" then
+      -- "/C:" and "/C:x" leave a drive-relative residue that Windows would
+      -- resolve against drive C's current directory; refuse honestly.
       return nil, "relative_path"
     end
     return path:sub(2):gsub("/", "\\"), nil
@@ -320,7 +336,10 @@ end
 ---   are refused instead of guessed onto the current drive;
 --- - every non-unreserved byte is percent-encoded exactly once, so spaces,
 ---   `#`, `?`, `%`, quotes and multi-byte UTF-8 round trip without double
----   encoding and literal `%` stays `%25`.
+---   encoding and literal `%` stays `%25`;
+--- - the canonical URI must fit the same MAX_URI_BYTES bound uri_to_path
+---   enforces (`path_above_wire_bound`), so producer output always reads
+---   back — the pair cannot emit identities its own consumer refuses.
 ---@param path any Candidate exact local path
 ---@return string|nil uri Canonical file URI when convertible
 ---@return string|nil failure_reason Stable rejection token otherwise
@@ -328,13 +347,11 @@ function util.path_to_uri(path)
   if type(path) ~= "string" or #path == 0 then
     return nil, "empty_path"
   end
-  if #path > MAX_PATH_BYTES then
-    return nil, "path_above_bound"
-  end
   if has_control_byte(path) then
     return nil, "control_character"
   end
 
+  local uri
   if PLATFORM == "Windows" then
     if path:match("^[\\/][\\/][%?%.][\\/]") then
       -- Device namespace forms are not filesystem shares.
@@ -347,20 +364,27 @@ function util.path_to_uri(path)
         -- share; a UNC target needs host plus share components.
         return nil, "invalid_unc"
       end
-      return "file://" .. encode_path_bytes(unc), nil
-    end
-    if not path:match("^[%a]:[\\/]") then
+      uri = "file://" .. encode_path_bytes(unc)
+    elseif not path:match("^[%a]:[\\/]") then
       -- Relative, drive-relative ("C:x") and rooted-without-drive ("\x")
       -- shapes would silently bind to an unknown current drive.
       return nil, "relative_path"
+    else
+      uri = "file:///" .. encode_path_bytes(path:gsub("\\", "/"))
     end
-    return "file:///" .. encode_path_bytes(path:gsub("\\", "/")), nil
+  else
+    if path:sub(1, 1) ~= "/" then
+      return nil, "relative_path"
+    end
+    uri = "file://" .. encode_path_bytes(path)
   end
 
-  if path:sub(1, 1) ~= "/" then
-    return nil, "relative_path"
+  if #uri > MAX_URI_BYTES then
+    -- Symmetric bound (#11165): a canonical URI above the read-back limit
+    -- could never round trip through this same authority.
+    return nil, "path_above_wire_bound"
   end
-  return "file://" .. encode_path_bytes(path), nil
+  return uri, nil
 end
 
 ---Converts a document range returned by lsp to a valid document selection.
@@ -433,10 +457,6 @@ util.EXTERNAL_URI_SCHEMES = {
   https = true,
   file = true,
 }
-
----Maximum accepted URI length in bytes (#11162). Bounded input keeps every
----downstream prompt/validation path bounded.
-local MAX_URI_BYTES = 2048
 
 ---True when the text carries a percent escape that is not exactly two hex
 ---digits (#11162).

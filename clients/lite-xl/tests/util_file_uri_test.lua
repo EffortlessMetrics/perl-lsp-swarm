@@ -38,12 +38,16 @@
 --    (double decode turns %2520 into a space) and malformed-escape cases
 --    stop failing deterministically.
 -- 3. Encode from a word-character allowlist that keeps ':' or high bytes
---    unencoded, or re-encode already-percent-like bytes: the canonical
---    Windows/Unicode expectations fail and round trips are no longer
---    byte-exact ('%20' in a filename becomes a space).
+--    unencoded, re-encode already-percent-like bytes, or drop the
+--    producer/consumer wire-bound symmetry check: the canonical
+--    Windows/Unicode expectations fail, round trips are no longer byte-exact,
+--    and the boundary cases stop failing at exactly one byte past the limit.
 -- 4. Drop the platform gate on UNC authorities: POSIX remote-authority
 --    cases fail; drop the share-segment requirement: invalid_unc cases
 --    fail.
+-- 5. Decode the raw query/fragment tail instead of stripping it (or strip
+--    after decoding): 'file:///x?rev=1' cases fail because '?'/'#' bytes
+--    leak into the filesystem name.
 -- Red baseline: against the pristine origin/main util.lua (pre-#11165,
 -- legacy touri/tofilename only) this suite cannot pass: uri_to_path and
 -- path_to_uri are absent (call on nil), and the legacy helpers demonstrably
@@ -196,6 +200,12 @@ with_platform("Linux", function()
     },
     -- Leading-slash runs are preserved as data, not normalized away.
     { "file:////data/x.pl", "//data/x.pl" },
+    -- Raw query/fragment components are stripped before decoding; encoded
+    -- filename bytes stay data (#11165 review disposition).
+    { "file:///tmp/module.pl?rev=1#L42", "/tmp/module.pl" },
+    { "file:///tmp/x.pl?rev=1", "/tmp/x.pl" },
+    { "file:///tmp/x.pl#L42", "/tmp/x.pl" },
+    { "file:///tmp/a%3Fb%23c.pl", "/tmp/a?b#c.pl" },
   }
   for _, case in ipairs(cases) do
     local path, why = util.uri_to_path(case[1])
@@ -351,6 +361,12 @@ with_platform("Windows", function()
   rejects(util.path_to_uri, "\\rooted\\x.pl", "relative_path",
     "rooted-without-drive path")
 
+  -- Wire URIs carrying a drive-relative residue refuse the same way.
+  rejects(util.uri_to_path, "file:///C:x", "relative_path",
+    "drive-relative URI path")
+  rejects(util.uri_to_path, "file:///c:", "relative_path",
+    "bare drive URI")
+
   -- Device namespaces are not filesystem shares.
   rejects(util.path_to_uri, "\\\\?\\C:\\huge\\x.pl", "unsupported_device_path",
     "device namespace")
@@ -360,10 +376,23 @@ with_platform("Windows", function()
   -- Bounded and typed inputs.
   rejects(util.path_to_uri, "", "empty_path", "empty path")
   rejects(util.path_to_uri, nil, "empty_path", "non-string path")
-  rejects(util.path_to_uri, string.rep("C:\\dir\\", 1200), "path_above_bound",
+  rejects(util.path_to_uri, string.rep("C:\\dir\\", 1200), "path_above_wire_bound",
     "over-bound path")
   rejects(util.path_to_uri, "C:\\bad\0name.pl", "control_character",
     "embedded NUL path")
+end)
+
+with_platform("Linux", function()
+  -- Producer/consumer bound symmetry (#11165): the exact boundary round
+  -- trips, one byte past it refuses. POSIX prefix "file://" is 7 bytes.
+  local at_limit = "/" .. string.rep("a", 2040)
+  local limit_uri = util.path_to_uri(at_limit)
+  ok(limit_uri == "file://" .. at_limit,
+    "canonical URI at exactly the wire bound converts")
+  ok(select(1, util.uri_to_path(limit_uri)) == at_limit,
+    "wire-bound URI reads back byte-exact")
+  rejects(util.path_to_uri, "/" .. string.rep("a", 2041), "path_above_wire_bound",
+    "one byte past the wire bound")
 end)
 
 -- ---------------------------------------------------------------------------
