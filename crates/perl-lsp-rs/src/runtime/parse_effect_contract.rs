@@ -518,16 +518,19 @@ static PARSE_EFFECT_SINKS_V1: &[ParseEffectSinkRowV1] = &[
         )],
         sink_local_subject: "publishDiagnostics stream keyed by client URI (empty or binary set)",
         store: SinkStoreV1::OUTBOUND_PUBLISH_DIAGNOSTICS,
-        owns_mutation_sites: true,
-        mutation_boundary: "Direct Outbound::notify(\"textDocument/publishDiagnostics\") in the didOpen/didChange \
-            template, oversize, and binary guard branches",
+        owns_mutation_sites: false,
+        mutation_boundary: "shares the #12031 sink-local diagnostics_sink::commit_push_diagnostics \
+            boundary with diagnostics.parser-outbound-publication; its pre-#12031 direct \
+            Outbound::notify guard branches retired into that single enqueue",
         currentness_comparison: CurrentnessComparisonV1::SameThreadAdmissionPreAcceptance,
         terminal_policy: ClearReplacePolicyV1::publish_current_terminal(),
         focused_proof_filter: "parse_effect_sink",
         composed_proof_owner: "#11676",
         compatibility_adapter: None,
         disposition: SinkDispositionV1::NewFocusedChild("#11673"),
-        claim_ceiling: "Inventory + ledger registration only; admission route unchanged in this PR.",
+        claim_ceiling: "Inventory + ledger registration only; admission route unchanged in this PR. \
+            Mutation-site ownership is reported through the shared diagnostics_sink registration \
+            until #11673 gives this row its own focused commit law.",
     },
     ParseEffectSinkRowV1 {
         effect_id: "document-symbols.replace-or-clear",
@@ -538,8 +541,9 @@ static PARSE_EFFECT_SINKS_V1: &[ParseEffectSinkRowV1] = &[
         sink_local_subject: "per-URI symbol document inside symbol_index",
         store: SinkStoreV1::SYMBOL_INDEX,
         owns_mutation_sites: true,
-        mutation_boundary: "symbol_index.lock().replace_document_symbols(uri, symbols) / \
-            symbol_index.lock().remove_document(uri) under one lock acquisition",
+        mutation_boundary: "document_symbols_sink replace_document_symbols(uri, symbols) / \
+            remove_document(uri) under one lock acquisition (#12035 accepted-symbols boundary; \
+            the pre-#12035 text_sync call sites retired with it)",
         currentness_comparison: CurrentnessComparisonV1::HelperPrecheckThenCallback,
         terminal_policy: ClearReplacePolicyV1::replace_on_success_clear_on_failure(),
         focused_proof_filter: "parse_effect_sink",
@@ -881,10 +885,17 @@ const CALL_SITE_LEDGER: &[CallSiteLedgerEntry] = &[
         expected_count: 1,
         effect_id: "compat.legacy-generic-callback-helper",
     },
-    // Document symbols.
+    // Document symbols (#12035 relocated the mutation boundary into the
+    // accepted-symbols sink).
     CallSiteLedgerEntry {
-        file: "crates/perl-lsp-rs/src/runtime/text_sync/symbols.rs",
+        file: "crates/perl-lsp-rs/src/runtime/document_symbols_sink.rs",
         needle: "replace_document_symbols(",
+        expected_count: 1,
+        effect_id: "document-symbols.replace-or-clear",
+    },
+    CallSiteLedgerEntry {
+        file: "crates/perl-lsp-rs/src/runtime/document_symbols_sink.rs",
+        needle: "remove_document(",
         expected_count: 1,
         effect_id: "document-symbols.replace-or-clear",
     },
@@ -894,16 +905,11 @@ const CALL_SITE_LEDGER: &[CallSiteLedgerEntry] = &[
         expected_count: 1,
         effect_id: "document-symbols.replace-or-clear",
     },
+    // Definition surface of the clear helper plus its single eviction call.
     CallSiteLedgerEntry {
-        file: "crates/perl-lsp-rs/src/runtime/text_sync.rs",
-        needle: ".reindex_document_symbols(",
-        expected_count: 2,
-        effect_id: "document-symbols.replace-or-clear",
-    },
-    CallSiteLedgerEntry {
-        file: "crates/perl-lsp-rs/src/runtime/text_sync.rs",
-        needle: "self.clear_document_symbols(",
-        expected_count: 8,
+        file: "crates/perl-lsp-rs/src/runtime/text_sync/symbols.rs",
+        needle: "clear_document_symbols(",
+        expected_count: 1,
         effect_id: "document-symbols.replace-or-clear",
     },
     CallSiteLedgerEntry {
@@ -912,20 +918,23 @@ const CALL_SITE_LEDGER: &[CallSiteLedgerEntry] = &[
         expected_count: 1,
         effect_id: "document-symbols.replace-or-clear",
     },
-    // Parser diagnostics outbound publication.
+    // Parser diagnostics outbound publication (#12031 moved the didChange/
+    // didOpen stream boundary into the sink-local commit_push_diagnostics).
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/diagnostics.rs",
         needle: "textDocument/publishDiagnostics",
-        expected_count: 8,
+        expected_count: 7,
         effect_id: "diagnostics.parser-outbound-publication",
     },
-    // didOpen guard admissions + their direct publications.
     CallSiteLedgerEntry {
-        file: "crates/perl-lsp-rs/src/runtime/text_sync.rs",
+        file: "crates/perl-lsp-rs/src/runtime/diagnostics_sink.rs",
         needle: "textDocument/publishDiagnostics",
-        expected_count: 6,
-        effect_id: "diagnostics.didopen-guard-admission-publication",
+        expected_count: 3,
+        effect_id: "diagnostics.parser-outbound-publication",
     },
+    // didOpen guard admissions. Their direct publishDiagnostics sites moved
+    // into diagnostics_sink with the #12031 stream boundary; the entry above
+    // now carries that surface for both outbound rows.
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/text_sync.rs",
         needle: "minimal_state(text, version)",
@@ -995,7 +1004,7 @@ const CALL_SITE_LEDGER: &[CallSiteLedgerEntry] = &[
         effect_id: "readiness.active-document-parse-lifecycle",
     },
     CallSiteLedgerEntry {
-        file: "crates/perl-lsp-rs/src/runtime/text_sync.rs",
+        file: "crates/perl-lsp-rs/src/runtime/readiness.rs",
         needle: "::send_active_document_ready_notification(",
         expected_count: 1,
         effect_id: "readiness.open-ready-publication",
@@ -1208,6 +1217,12 @@ pub(crate) fn render_inventory_projection() -> String {
         let _ = writeln!(out, "- claim ceiling: {}", row.claim_ceiling);
         let _ = writeln!(out);
     }
+    // Single trailing newline: a blank line at EOF trips `git diff --check`
+    // in the Repository Contract advisory.
+    while out.ends_with('\n') {
+        out.pop();
+    }
+    out.push('\n');
     out
 }
 

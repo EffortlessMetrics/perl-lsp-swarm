@@ -34,8 +34,8 @@ Checked static inventory generated from `crates/perl-lsp-rs/src/runtime/parse_ef
 - ticket inputs: none (pre-parse admission; no accepted ticket exists by construction until #11668 mints one for guarded opens)
 - sink-local subject: publishDiagnostics stream keyed by client URI (empty or binary set)
 - store: outbound_publishDiagnostics
-- owns mutation sites: yes
-- mutation boundary: Direct Outbound::notify("textDocument/publishDiagnostics") in the didOpen/didChange template, oversize, and binary guard branches
+- owns mutation sites: no
+- mutation boundary: shares the #12031 sink-local diagnostics_sink::commit_push_diagnostics boundary with diagnostics.parser-outbound-publication; its pre-#12031 direct Outbound::notify guard branches retired into that single enqueue
 - currentness comparison: same-thread admission before acceptance exists
 - terminal/clear policy:
   - clean: publish
@@ -50,7 +50,7 @@ Checked static inventory generated from `crates/perl-lsp-rs/src/runtime/parse_ef
 - composed proof owner: #11676
 - compatibility adapter: none
 - disposition: new focused child (#11673)
-- claim ceiling: Inventory + ledger registration only; admission route unchanged in this PR.
+- claim ceiling: Inventory + ledger registration only; admission route unchanged in this PR. Mutation-site ownership is reported through the shared diagnostics_sink registration until #11673 gives this row its own focused commit law.
 
 ## `document-symbols.replace-or-clear`
 
@@ -60,7 +60,7 @@ Checked static inventory generated from `crates/perl-lsp-rs/src/runtime/parse_ef
 - sink-local subject: per-URI symbol document inside symbol_index
 - store: symbol_index
 - owns mutation sites: yes
-- mutation boundary: symbol_index.lock().replace_document_symbols(uri, symbols) / symbol_index.lock().remove_document(uri) under one lock acquisition
+- mutation boundary: document_symbols_sink replace_document_symbols(uri, symbols) / remove_document(uri) under one lock acquisition (#12035 accepted-symbols boundary; the pre-#12035 text_sync call sites retired with it)
 - currentness comparison: helper precheck then callback (residual window admitted)
 - terminal/clear policy:
   - clean: replace
@@ -351,4 +351,3 @@ Checked static inventory generated from `crates/perl-lsp-rs/src/runtime/parse_ef
 - compatibility adapter: commit_parse_effect_if_current (exit: #7379)
 - disposition: compatibility projection with exit
 - claim ceiling: Reported compatibility adapter with explicit consumers and removal owner (#7379 fan-in); retires as focused children cut each call site over to sink-local compare-and-mutate commits returning ParseEffectCommitOutcomeV1.
-
