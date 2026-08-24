@@ -362,12 +362,9 @@ impl LspServer {
     }
 
     // On-type formatting
-    pub(super) fn handle_on_type_formatting_dispatch(
-        &self,
-        params: Option<Value>,
-    ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_on_type_formatting(params)
-    }
+    //
+    // Withdrawn (#11955): no dispatch arm exists; the shared policy route
+    // refuses the method before the routing table is consulted.
 
     // Code lens
     pub(super) fn handle_code_lens_dispatch(
@@ -495,19 +492,11 @@ impl LspServer {
         self.handle_formatting_cancellable(params, request_id)
     }
 
-    pub(super) fn handle_range_formatting_dispatch(
-        &self,
-        params: Option<Value>,
-    ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_range_formatting(params)
-    }
-
-    pub(super) fn handle_ranges_formatting_dispatch(
-        &self,
-        params: Option<Value>,
-    ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_ranges_formatting(params)
-    }
+    // Range formatting
+    //
+    // Withdrawn (#11955): no dispatch arms exist for
+    // `textDocument/rangeFormatting` or `textDocument/rangesFormatting`; the
+    // shared policy route refuses both before the routing table is consulted.
 
     // Call hierarchy
     pub(super) fn handle_prepare_call_hierarchy_dispatch(
