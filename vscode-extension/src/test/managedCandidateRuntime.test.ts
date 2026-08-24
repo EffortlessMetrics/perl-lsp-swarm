@@ -28,6 +28,7 @@ import {
   commitManagedCandidateSelection,
   enumerateManagedCandidateCatalog,
   enumerateManagedHostReferences,
+  mayReleaseManagedCandidateReferences,
   readInstalledManagedCandidateManifest,
   readManagedCurrentSelection,
   readSessionManagedHostReference,
@@ -235,6 +236,16 @@ describe('managed host reference lifecycle', () => {
       ),
     ).toBeNull();
     expect(fs.existsSync(path.join(baseDir, 'host-refs'))).toBe(false);
+  });
+
+  test('only a proven-terminal shutdown may release session references', () => {
+    // The lifecycle's stop() resolves without rejecting even when stop or
+    // dispose timed out (state `failed`), so only the clean `stopped` state
+    // counts as termination evidence (#10083).
+    expect(mayReleaseManagedCandidateReferences('stopped')).toBe(true);
+    for (const unproven of ['failed', 'stopping', 'running', 'starting', 'resolving']) {
+      expect(mayReleaseManagedCandidateReferences(unproven)).toBe(false);
+    }
   });
 });
 

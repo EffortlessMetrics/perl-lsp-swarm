@@ -328,11 +328,25 @@ export function enumerateManagedHostReferences(baseDir: string): ManagedHostRefe
 }
 
 /**
+ * Decides whether a language-client shutdown proved process termination and
+ * may therefore release this session's host references (#10083). The
+ * lifecycle's `stop()` resolves — it does not reject — after transitioning
+ * to `failed` when stop/dispose times out, so "stop() returned" alone is
+ * not termination evidence. Only the clean `stopped` state proves the
+ * bound process is terminal; `failed` and every transient state retain the
+ * `live` reference conservatively (crash recovery remains #11539).
+ */
+export function mayReleaseManagedCandidateReferences(shutdownState: string): boolean {
+  return shutdownState === 'stopped';
+}
+
+/**
  * Marks this session's reference `released` in every compatibility namespace
- * under one storage root. Runs at language-client teardown: the process bound
- * to the candidate is terminal by then. Only the exact session-owned file is
- * touched; other sessions' references and unrecognizable states are left
- * alone for conservative recovery (#11539).
+ * under one storage root. Runs at language-client teardown after shutdown
+ * was proven terminal (see {@link mayReleaseManagedCandidateReferences}).
+ * Only the exact session-owned file is touched; other sessions' references
+ * and unrecognizable states are left alone for conservative recovery
+ * (#11539).
  */
 export function releaseManagedCandidateSessionReferences(
   storageRoot: string,

@@ -1537,12 +1537,18 @@ export class BinaryDownloader {
         continue;
       }
       const governed = BinaryDownloader.resolvePolicyGovernedInstallDir(baseDir, key, sessionId);
-      if (governed !== null) {
+      if (governed !== 'no-policy-record' && governed !== 'refused') {
         return governed;
       }
-      const active = BinaryDownloader.readPointedInstallDir(baseDir);
-      if (active !== null && BinaryDownloader.installMatchesKey(active, key)) {
-        return active;
+      // A namespace without a policy record keeps the legacy pointer
+      // behavior. A namespace WITH one is policy-governed: a refusal must
+      // not silently launch a candidate through the pointer the policy just
+      // declined, so the key is skipped and resolution continues (#10083).
+      if (governed === 'no-policy-record') {
+        const active = BinaryDownloader.readPointedInstallDir(baseDir);
+        if (active !== null && BinaryDownloader.installMatchesKey(active, key)) {
+          return active;
+        }
       }
     }
     return BinaryDownloader.adoptLegacyManagedInstallDir(context, keys);
@@ -1557,21 +1563,24 @@ export class BinaryDownloader {
    * candidate it launched (`bound_running`) even after another writer moved
    * the shared default; fresh resolutions take `selected_current`, or the
    * caller's most recently installed compatible candidate when current is
-   * unusable. `restart_required` and `no_compatible_candidate` leave this
-   * namespace unusable rather than silently rebinding a running host.
+   * unusable. Every other outcome is a refusal, never a pointer fallback:
+   * `restart_required` must not silently rebind a session whose live
+   * reference says another candidate may still be running, incomplete
+   * enumeration is not evidence, and a namespace disagreement means the dir
+   * is not this host's to launch.
    */
   private static resolvePolicyGovernedInstallDir(
     baseDir: string,
     key: string,
     sessionId: string | undefined,
-  ): string | null {
+  ): string | 'no-policy-record' | 'refused' {
     const current = readManagedCurrentSelection(baseDir);
     if (current === null) {
-      return null;
+      return 'no-policy-record';
     }
     const catalog = enumerateManagedCandidateCatalog(baseDir);
     if (!catalog.complete) {
-      return null;
+      return 'refused';
     }
     const sessionReference =
       sessionId === undefined ? null : readSessionManagedHostReference(baseDir, sessionId);
@@ -1585,12 +1594,12 @@ export class BinaryDownloader {
       compatible_candidate_ids: [...catalog.candidateDirs.keys()],
       running_candidate_id: runningCandidateId,
     });
-    if (!('candidate_id' in outcome)) {
-      return null;
+    if (!('candidate_id' in outcome) || outcome.kind === 'restart_required') {
+      return 'refused';
     }
     const dir = catalog.candidateDirs.get(outcome.candidate_id)?.[0];
     if (dir === undefined || !BinaryDownloader.installMatchesKey(dir, key)) {
-      return null;
+      return 'refused';
     }
     return dir;
   }
@@ -1730,15 +1739,16 @@ export class BinaryDownloader {
   }
 
   /**
-   * Atomically updates the `current` pointer to a freshly populated install
-   * dir. The temp + rename pattern is the strongest form of "commit on
-   * success" we can use with no extra dependencies.
-   *
-   * The pointer lives inside the compatibility namespace, so committing here
-   * cannot move another target's selection. When the install minted a
-   * candidate manifest, the versioned `managed_current_selection.v1` record
-   * is committed alongside it (#10083); a refused record leaves the pointer
-   * authoritative and install success untouched.
+   * Commits a freshly populated install dir: the versioned
+   * `managed_current_selection.v1` record first, then the legacy `current`
+   * dir pointer. Ordering is the consistency contract (#10083): when the
+   * selection record cannot be written (transient lock, full disk), the
+   * pointer is left unmoved so the previous selection stays authoritative
+   * in both records instead of the pointer claiming a new active install
+   * the policy would refuse. The temp + rename pattern is the strongest
+   * form of "commit on success" available with no extra dependencies, and
+   * the pointer lives inside the compatibility namespace, so committing here
+   * cannot move another target's selection.
    */
   private commitVersionedInstall(
     installDirName: string,
@@ -1750,19 +1760,26 @@ export class BinaryDownloader {
         ? this.getManagedBaseDir()
         : this.getManagedBaseDirForKey(compatibilityKey);
     const pointerPath = path.join(baseDir, 'current');
-    const tmpPath = `${pointerPath}.tmp`;
-    fs.writeFileSync(tmpPath, `${installDirName}\n`, { encoding: 'utf8' });
-    fs.renameSync(tmpPath, pointerPath);
     if (manifest !== undefined && manifest !== null) {
       const selection = commitManagedCandidateSelection(baseDir, manifest, (message) =>
         this.outputChannel.appendLine(`Note: ${message}`),
       );
-      if (selection !== null) {
+      if (selection === null) {
+        // Never move the pointer past a selection record the policy still
+        // refutes: the previous selection remains authoritative and the
+        // freshly landed dir stays on disk as an unreferenced fallback.
         this.outputChannel.appendLine(
-          `Managed current selection: generation ${selection.selection_generation} -> ${selection.candidate_id}`,
+          `Note: managed selection commit refused; activation pointer left unchanged (${installDirName} remains inactive).`,
         );
+        return;
       }
+      this.outputChannel.appendLine(
+        `Managed current selection: generation ${selection.selection_generation} -> ${selection.candidate_id}`,
+      );
     }
+    const tmpPath = `${pointerPath}.tmp`;
+    fs.writeFileSync(tmpPath, `${installDirName}\n`, { encoding: 'utf8' });
+    fs.renameSync(tmpPath, pointerPath);
   }
 
   /**

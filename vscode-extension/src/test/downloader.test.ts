@@ -947,6 +947,148 @@ describe('Versioned managed install layout', () => {
     }
   });
 
+  test('a policy-governed namespace never falls back to the pointer after restart_required', () => {
+    const previousSessionId = vscodeEnv.sessionId;
+    try {
+      vscodeEnv.sessionId = 'window-stuck';
+      const currentName = 'v0.13.4-current';
+      const currentDir = path.join(baseDir, currentName);
+      fs.mkdirSync(currentDir);
+      fs.writeFileSync(path.join(currentDir, lspBinaryName), 'current bytes');
+      const currentManifest = buildManagedCandidateManifest({
+        release: 'v0.13.4',
+        version: 'v0.13.4',
+        target: HOST_COMPATIBILITY_KEY,
+        topology_digest: '1'.repeat(64),
+        perllsp_digest: '2'.repeat(64),
+        perl_dap_digest: null,
+      });
+      fs.writeFileSync(
+        path.join(currentDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+        JSON.stringify(currentManifest),
+      );
+      // The pointer would happily resolve the current dir...
+      fs.writeFileSync(path.join(baseDir, 'current'), `${currentName}\n`);
+      // ...but this session holds a live reference to a candidate that no
+      // longer exists in the catalog: policy says restart_required, and the
+      // pointer must not silently rebind the session instead.
+      const absentManifest = buildManagedCandidateManifest({
+        release: 'v0.13.0',
+        version: 'v0.13.0',
+        target: HOST_COMPATIBILITY_KEY,
+        topology_digest: '3'.repeat(64),
+        perllsp_digest: '4'.repeat(64),
+        perl_dap_digest: null,
+      });
+      commitManagedCandidateSelection(baseDir, currentManifest, () => {
+        /* quiet */
+      });
+      acquireSessionManagedHostReference(
+        baseDir,
+        'window-stuck',
+        absentManifest.candidate_id,
+        () => {
+          /* quiet */
+        },
+      );
+
+      // The namespace is refused, so resolution falls past it to the flat
+      // legacy layout rather than launching the pointer-named binary.
+      expect(downloader.getLocalBinaryPath()).toBe(path.join(baseDir, lspBinaryName));
+    } finally {
+      vscodeEnv.sessionId = previousSessionId;
+    }
+  });
+
+  test('a policy-governed namespace resolves current despite a structurally invalid sibling manifest', () => {
+    const currentName = 'v0.13.4-current';
+    const currentDir = path.join(baseDir, currentName);
+    fs.mkdirSync(currentDir);
+    fs.writeFileSync(path.join(currentDir, lspBinaryName), 'current bytes');
+    const currentManifest = buildManagedCandidateManifest({
+      release: 'v0.13.4',
+      version: 'v0.13.4',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '5'.repeat(64),
+      perllsp_digest: '6'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(
+      path.join(currentDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify(currentManifest),
+    );
+    fs.writeFileSync(path.join(baseDir, 'current'), `${currentName}\n`);
+    commitManagedCandidateSelection(baseDir, currentManifest, () => {
+      /* quiet */
+    });
+    // A structurally invalid manifest sibling is filtered by the landed
+    // host-selection policy (it poisons GC, not selection): resolution stays
+    // governed, the valid current wins on its own, and the pointer is not
+    // consulted.
+    const broken = path.join(baseDir, 'broken');
+    fs.mkdirSync(broken);
+    fs.writeFileSync(
+      path.join(broken, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify({ schema_version: 'managed_candidate_manifest.v1', candidate_id: 'nope' }),
+    );
+
+    expect(downloader.getLocalBinaryPath()).toBe(path.join(currentDir, lspBinaryName));
+  });
+
+  test('a refused selection commit leaves the activation pointer unmoved', () => {
+    const oldName = 'v0.13.3-old';
+    const oldDir = path.join(baseDir, oldName);
+    fs.mkdirSync(oldDir);
+    const oldManifest = buildManagedCandidateManifest({
+      release: 'v0.13.3',
+      version: 'v0.13.3',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '7'.repeat(64),
+      perllsp_digest: '8'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(
+      path.join(oldDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify(oldManifest),
+    );
+    commitManagedCandidateSelection(baseDir, oldManifest, () => {
+      /* quiet */
+    });
+    downloader.commitVersionedInstall(oldName, undefined, oldManifest);
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
+
+    // Block the selection record's atomic write the way a transient lock or
+    // full disk would: the temp path cannot be written.
+    fs.mkdirSync(path.join(baseDir, `${MANAGED_CURRENT_SELECTION_FILE}.tmp`));
+    const newName = 'v0.13.4-new';
+    fs.mkdirSync(path.join(baseDir, newName));
+    const newManifest = buildManagedCandidateManifest({
+      release: 'v0.13.4',
+      version: 'v0.13.4',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '9'.repeat(64),
+      perllsp_digest: 'a'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(
+      path.join(baseDir, newName, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify(newManifest),
+    );
+
+    downloader.commitVersionedInstall(newName, undefined, newManifest);
+
+    // Both records still name the old selection: the pointer must not claim
+    // an activation the policy record refutes.
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
+    expect(readManagedCurrentSelection(baseDir)?.candidate_id).toBe(oldManifest.candidate_id);
+
+    // Once the transient failure clears, the commit lands coherently.
+    fs.rmdirSync(path.join(baseDir, `${MANAGED_CURRENT_SELECTION_FILE}.tmp`));
+    downloader.commitVersionedInstall(newName, undefined, newManifest);
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(newName);
+    expect(readManagedCurrentSelection(baseDir)?.candidate_id).toBe(newManifest.candidate_id);
+  });
+
   test('install lands side-by-side with a flat layout and the pointer activates it', () => {
     // Seed a legacy 0.13.2-style flat binary that a long-running user would have.
     const flatBin = path.join(baseDir, lspBinaryName);
