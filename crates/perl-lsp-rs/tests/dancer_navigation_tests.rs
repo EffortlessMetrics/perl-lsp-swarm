@@ -36,41 +36,14 @@ mod dancer_navigation_tests {
         Ok(())
     }
 
-    // Dancer2 string handlers are not exact subroutine references (#8910): the
-    // named sub must not report the string handler position as a reference site.
-    // (A same-file word-name goto-definition fallback is generic Perl behavior
-    // and is not a route fact, so the containment contract is asserted on
-    // references, not on definition resolution.)
-    #[test]
-    fn dancer2_route_target_string_is_not_a_sub_reference_site() -> TestResult {
-        let code =
-            "use Dancer2;\nget '/status' => 'show_status';\nsub show_status { return 'ok'; }\n";
-        let uri = "file:///dancer2_route_target.pl";
-
-        let server = TestServerBuilder::new().build();
-        server.open_document(uri, code);
-        let (line, character) = semantic::find_pos(code, "show_status", 2);
-        let resp = server.get_references(uri, line, character, true);
-        let sites = resp
-            .as_array()
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter_map(|entry| entry.pointer("/range/start/line").and_then(|l| l.as_u64()))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        server.shutdown();
-        assert!(
-            !sites.contains(&1),
-            "Dancer2 string handler line must not be reported as a reference of `show_status`; got lines {sites:?}"
-        );
-        assert!(
-            sites.contains(&2),
-            "positive control: the `show_status` definition itself must be reported; got lines {sites:?}"
-        );
-        Ok(())
-    }
+    // The former `dancer2_route_target_definitions_to_named_sub` string-handler test
+    // was removed per #8910: Dancer2 string targets are not exact subroutine
+    // references. The analyzer-level containment contract is proven in
+    // `perl-semantic-analyzer/tests/frameworks_web.rs`
+    // (`dancer2_route_target_string_does_not_add_subroutine_reference`); the
+    // navigation-level controls are the inline-handler containment test and the
+    // activation-removal staleness test below (a same-file word-name
+    // goto-definition fallback is generic Perl behavior, not a route fact).
 
     // Valid inline CodeRef handler stays navigable under exact Dancer2 activation.
     #[test]
