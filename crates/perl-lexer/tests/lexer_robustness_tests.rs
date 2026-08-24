@@ -71,7 +71,23 @@ fn unterminated_heredoc_reports_recovery_at_body_start() {
 }
 
 fn assert_terminates_with_valid_spans(input: &str) {
-    let tokens = PerlLexer::new(input).collect_tokens();
+    let mut lexer = PerlLexer::new(input);
+    let max_tokens = input.len().saturating_mul(2).saturating_add(100);
+    let mut tokens = Vec::new();
+    let mut reached_eof = false;
+
+    for _ in 0..max_tokens {
+        let Some(token) = lexer.next_token() else {
+            break;
+        };
+        reached_eof = token.token_type == TokenType::EOF;
+        tokens.push(token);
+        if reached_eof {
+            break;
+        }
+    }
+
+    assert!(reached_eof, "lexer did not terminate for {input:?}");
     let mut previous_end = 0;
 
     for token in &tokens {
@@ -92,8 +108,8 @@ fn assert_terminates_with_valid_spans(input: &str) {
 fn malformed_decimal_and_escape_inputs_recover_without_corrupting_spans() {
     for input in [
         "1.2.3.4.5",
-        r#"my $x = "\\z""#,
-        r#"my $x = "\\u{invalid}""#,
+        r#"my $x = "\z""#,
+        r#"my $x = "\u{invalid}""#,
         "my $h = <<EOF;\n",
     ] {
         assert_terminates_with_valid_spans(input);
