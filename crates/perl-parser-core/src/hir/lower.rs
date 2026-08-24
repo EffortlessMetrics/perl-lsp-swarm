@@ -4062,6 +4062,15 @@ impl<'a> BodyBuilder2<'a> {
                     "our" => VariableKind::Package,
                     _ => VariableKind::Lexical,
                 };
+                // Anchor at the variable token, not the whole `my $i` declaration
+                // span — mirrors the statement-level VariableDeclaration path,
+                // which anchors at `variable.location` (body.rs). Anchoring at
+                // `node.location` widens PIR lexical-write anchors to include
+                // the declarator keyword (#12191/#12274).
+                let binding_node = match &variable.kind {
+                    NodeKind::VariableWithAttributes { variable, .. } => variable.as_ref(),
+                    _ => variable.as_ref(),
+                };
                 self.alloc_expr(
                     HirExpr::Variable(HirVariable {
                         sigil: sigil_from_str(sigil),
@@ -4069,7 +4078,7 @@ impl<'a> BodyBuilder2<'a> {
                         kind,
                         access: AccessMode::Write,
                     }),
-                    node.location,
+                    binding_node.location,
                 )
             }
             _ => self.lower_expr(node),
