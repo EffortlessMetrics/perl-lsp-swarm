@@ -6,9 +6,8 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::super::LspServer;
-    use crate::runtime::document_symbols_sink::{
-        DocumentSymbolCommitOutcome, DocumentSymbolIdentity,
-    };
+    use crate::runtime::document_symbols_sink::DocumentSymbolIdentity;
+    use crate::runtime::parse_effect_contract::ParseEffectCommitOutcomeV1;
     use serde_json::json;
 
     fn make_server() -> LspServer {
@@ -92,7 +91,7 @@ mod tests {
 
         assert_eq!(
             outcome,
-            DocumentSymbolCommitOutcome::RejectedWrongDocumentInstance,
+            ParseEffectCommitOutcomeV1::RejectedWrongDocumentInstance,
             "a candidate derived from a removed document instance must be rejected"
         );
         assert!(
@@ -119,7 +118,7 @@ mod tests {
 
         assert_eq!(
             server.clear_document_symbols_for_identity(&stale_identity),
-            DocumentSymbolCommitOutcome::RejectedSupersededGeneration
+            ParseEffectCommitOutcomeV1::RejectedStaleTicket
         );
         assert!(
             has_symbol(&server, "beta_gen2"),

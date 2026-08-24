@@ -14,6 +14,23 @@
 //! result-ID consumer exists on current main (the `textDocument/documentSymbol`
 //! request path computes live), so this claim only records the identity.
 //!
+//! Outcomes use the shared #11672 contract vocabulary
+//! [`ParseEffectCommitOutcomeV1`] with the sink-local mapping:
+//!
+//! - document absent from the map (closed entirely or never opened) ->
+//!   [`ParseEffectCommitOutcomeV1::RejectedLifecycleState`]: the close/open
+//!   lifecycle left no live sink subject the ticket could validate against;
+//! - live document on a different instance than the candidate (close/reopen
+//!   ABA) -> [`ParseEffectCommitOutcomeV1::RejectedWrongDocumentInstance`];
+//! - same instance but a newer generation was accepted before this candidate
+//!   reached the boundary -> [`ParseEffectCommitOutcomeV1::RejectedStaleTicket`];
+//! - currency passed but the ledger already recorded a newer committed
+//!   generation for this instance ->
+//!   [`ParseEffectCommitOutcomeV1::RejectedSinkGenerationAdvanced`].
+//!
+//! The local store mutation cannot fail on its own, so transport/failure
+//! variants are unreachable here and never returned.
+//!
 //! Lock order: sink lock -> documents lock (brief validation read) and sink
 //! lock -> `symbol_index` lock (the mutation itself). No path acquires either
 //! pair in reverse order.
@@ -25,6 +42,7 @@ use std::sync::atomic::AtomicU32;
 use parking_lot::Mutex;
 
 use super::LspServer;
+use super::parse_effect_contract::ParseEffectCommitOutcomeV1;
 
 /// Accepted parse state a document-symbol candidate was derived from. Same
 /// identity shape as the push-diagnostics sink (#11673) and
@@ -56,27 +74,6 @@ impl DocumentSymbolIdentity {
 pub(crate) enum DocumentSymbolsDisposition {
     Replace(Vec<String>),
     Clear,
-}
-
-/// Exact outcome of one sink-boundary symbol commit attempt. Claim-local
-/// vocabulary (#11674), shaped for retargeting onto #11672's
-/// `ParseEffectCommitOutcome` family when that contract lands. The local
-/// store mutation cannot fail on its own, so there is no transport outcome.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum DocumentSymbolCommitOutcome {
-    /// Current exact replacement installed atomically.
-    CommittedCurrent,
-    /// Current clear installed atomically.
-    SafeClearCommitted,
-    /// Document absent from the map: closed entirely or never opened.
-    RejectedDocumentClosed,
-    /// Live document exists but is a different instance than the candidate's
-    /// (close/reopen ABA).
-    RejectedWrongDocumentInstance,
-    /// Same instance but a newer generation was accepted before this
-    /// candidate reached the boundary, or the ledger already recorded a
-    /// newer commit.
-    RejectedSupersededGeneration,
 }
 
 struct CommittedDocumentSymbols {
@@ -111,7 +108,7 @@ impl LspServer {
         &self,
         identity: &DocumentSymbolIdentity,
         disposition: DocumentSymbolsDisposition,
-    ) -> DocumentSymbolCommitOutcome {
+    ) -> ParseEffectCommitOutcomeV1 {
         let mut committed = self.document_symbols_sink.committed.lock();
 
         let currency = {
@@ -124,10 +121,10 @@ impl LspServer {
             })
         };
         let rejection = match currency {
-            None => DocumentSymbolCommitOutcome::RejectedDocumentClosed,
-            Some((false, _)) => DocumentSymbolCommitOutcome::RejectedWrongDocumentInstance,
+            None => ParseEffectCommitOutcomeV1::RejectedLifecycleState,
+            Some((false, _)) => ParseEffectCommitOutcomeV1::RejectedWrongDocumentInstance,
             Some((true, live_generation)) if live_generation != identity.generation => {
-                DocumentSymbolCommitOutcome::RejectedSupersededGeneration
+                ParseEffectCommitOutcomeV1::RejectedStaleTicket
             }
             Some((true, _)) => {
                 return self.install_committed_document_symbols(
@@ -154,12 +151,12 @@ impl LspServer {
         committed: &mut HashMap<String, CommittedDocumentSymbols>,
         identity: &DocumentSymbolIdentity,
         disposition: DocumentSymbolsDisposition,
-    ) -> DocumentSymbolCommitOutcome {
+    ) -> ParseEffectCommitOutcomeV1 {
         if let Some(entry) = committed.get(&identity.normalized_uri)
             && Arc::ptr_eq(&entry.document_instance, &identity.document_instance)
             && identity.generation < entry.generation
         {
-            return DocumentSymbolCommitOutcome::RejectedSupersededGeneration;
+            return ParseEffectCommitOutcomeV1::RejectedSinkGenerationAdvanced;
         }
 
         let sequence =
@@ -192,7 +189,7 @@ impl LspServer {
                     identity.generation,
                     crate::runtime::readiness::CoreEffectKind::DocumentSymbols,
                 );
-                DocumentSymbolCommitOutcome::CommittedCurrent
+                ParseEffectCommitOutcomeV1::CommittedCurrent
             }
             DocumentSymbolsDisposition::Clear => {
                 self.symbol_index.lock().remove_document(&identity.normalized_uri);
@@ -208,7 +205,7 @@ impl LspServer {
                     identity.generation,
                     crate::runtime::readiness::CoreEffectKind::DocumentSymbols,
                 );
-                DocumentSymbolCommitOutcome::SafeClearCommitted
+                ParseEffectCommitOutcomeV1::SafeClearCommitted
             }
         }
     }
