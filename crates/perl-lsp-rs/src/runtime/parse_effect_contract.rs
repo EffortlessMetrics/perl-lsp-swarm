@@ -963,17 +963,21 @@ const CALL_SITE_LEDGER: &[CallSiteLedgerEntry] = &[
         expected_count: 1,
         effect_id: "parser-state.accepted-snapshot-publication",
     },
-    // Workspace-index live contribution replacement.
+    // Workspace-index live contribution replacement. Needles are split
+    // through concat! so these ratchet patterns are not mistaken by the
+    // #11301 text-level caller scan for actual index_live_file call sites.
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/text_sync.rs",
-        needle: ".index_live_file(",
+        needle: concat!(".index_live", "_file("),
         expected_count: 2,
         effect_id: "workspace-index.live-contribution-replacement",
     },
-    // Save-reconciliation live commit route.
+    // Save-reconciliation live commit route. The needle is split through
+    // concat! so this ratchet pattern is not mistaken by the #11301
+    // text-level caller scan for an actual index_live_file call site.
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs",
-        needle: ".index_live_file(",
+        needle: concat!(".index_live", "_file("),
         expected_count: 1,
         effect_id: "workspace-index.live-contribution-replacement",
     },
