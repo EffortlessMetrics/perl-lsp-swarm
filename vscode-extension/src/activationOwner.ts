@@ -71,7 +71,8 @@ export class ExtensionActivationOwner {
     resourceClass: ActivationResourceClass,
     disposable: vscode.Disposable,
   ): vscode.Disposable {
-    const id = this.nextResourceId(phase);
+    const ordinal = this.nextPhaseOrdinal(phase);
+    const id = `${phase}-${ordinal}`;
     this.transaction.registerResource({
       id,
       phase,
@@ -82,6 +83,7 @@ export class ExtensionActivationOwner {
     });
     this.ownedDisposablesById.set(id, disposable);
     this.ownedDisposables.push(disposable);
+    maybeInjectPhaseBoundaryFailure({ phase, ordinal, resource_id: id });
     return disposable;
   }
 
@@ -106,6 +108,11 @@ export class ExtensionActivationOwner {
     cleanup: () => void | Promise<void>,
   ): void {
     this.transaction.registerResource({ id, phase, resource_class: resourceClass, cleanup });
+    maybeInjectPhaseBoundaryFailure({
+      phase,
+      ordinal: this.nextPhaseOrdinal(phase),
+      resource_id: id,
+    });
   }
 
   /**
@@ -190,10 +197,10 @@ export class ExtensionActivationOwner {
     return receipt;
   }
 
-  private nextResourceId(phase: ActivationPhase): string {
+  private nextPhaseOrdinal(phase: ActivationPhase): number {
     const ordinal = (this.phaseOrdinals.get(phase) ?? 0) + 1;
     this.phaseOrdinals.set(phase, ordinal);
-    return `${phase}-${ordinal}`;
+    return ordinal;
   }
 
   private createRoutedSubscriptions(
@@ -219,4 +226,49 @@ let extensionActivationSequence = 0;
 function nextExtensionActivationAttemptId(): string {
   extensionActivationSequence += 1;
   return `extension-activation-${extensionActivationSequence}`;
+}
+
+/**
+ * One production resource boundary as the attempt crosses it (#7855): the
+ * phase the registration belongs to, its per-phase ordinal (counting every
+ * `own*` registration in that phase, in creation order), and the ledger id the
+ * attempt recorded.
+ */
+export interface ActivationPhaseBoundary {
+  phase: ActivationPhase;
+  ordinal: number;
+  resource_id: string;
+}
+
+/**
+ * Test-only phase-boundary failure injection (#7855).
+ *
+ * The injector is consulted immediately AFTER a production resource boundary
+ * completes — the resource was created by the production activation body and
+ * registered with the attempt — so returning an Error fails the activation at
+ * a named boundary through exactly the path any real mid-activation exception
+ * takes: it propagates out of the registration call site, `activate()` rolls
+ * the attempt back, and the error is rethrown. It must never be set outside
+ * tests; production code never reads it.
+ * @internal
+ */
+export type ActivationPhaseFailureInjector = (boundary: ActivationPhaseBoundary) => Error | null;
+
+let activationPhaseFailureInjector: ActivationPhaseFailureInjector | null = null;
+
+/**
+ * Install (or clear) the test-only phase-boundary failure injector (#7855).
+ * @internal
+ */
+export function _setActivationPhaseFailureInjectorForTest(
+  injector: ActivationPhaseFailureInjector | null,
+): void {
+  activationPhaseFailureInjector = injector;
+}
+
+function maybeInjectPhaseBoundaryFailure(boundary: ActivationPhaseBoundary): void {
+  const error = activationPhaseFailureInjector?.(boundary) ?? null;
+  if (error !== null) {
+    throw error;
+  }
 }
