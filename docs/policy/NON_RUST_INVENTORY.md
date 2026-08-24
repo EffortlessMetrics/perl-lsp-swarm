@@ -6,8 +6,8 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11515 |
-| Rust-family files | 3507 |
+| Total tracked files | 11513 |
+| Rust-family files | 3505 |
 | Non-Rust files | 8008 |
 | Allowlisted | 5735 |
 | Unclassified | 2273 |
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 404 |
-| documentation | 2657 |
+| documentation | 2656 |
 | generated | 2 |
 | production | 315 |
 | test | 1881 |
-| tooling | 476 |
+| tooling | 477 |
 | unclassified | 2273 |
 
 ## Unclassified files
@@ -2355,7 +2355,6 @@
 | `.changes/unreleased/product-12022-Removed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12024-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12094-Fixed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
-| `.changes/unreleased/product-12180-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -3037,6 +3036,7 @@
 | `.spec/11716-emacs-support-architecture/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11716-emacs-support-architecture/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11716-emacs-support-architecture/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11717-emacs-train-specs/specs.ledger.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11756-emacs-context-engine/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11756-emacs-context-engine/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11756-emacs-context-engine/context.mappings.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |

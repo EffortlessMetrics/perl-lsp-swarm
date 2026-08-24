@@ -1,0 +1,116 @@
+{
+  "schema": "emacs_train_specs.v1",
+  "schema_version": 1,
+  "programme": {
+    "parent_programme_issue": 7979,
+    "controller_issue": 8706,
+    "durable_architecture_issue": 11716,
+    "stable_train_issue": 10918,
+    "governing_issue": 11717,
+    "engine_issue": 11751,
+    "method_authority": "#3983",
+    "consumed_manifest": ".spec/10918-emacs-train-graph/train.manifest.json"
+  },
+  "records": [
+    {
+      "node_id": "RELY",
+      "issue": 11766,
+      "train_role": "specification",
+      "disposition": "SPEC_COMPILED",
+      "disposition_provenance": "manifest",
+      "compiled_spec": ".spec/10894-editor-host-reliability",
+      "authority_after": "The shared host-run reliability projection exists at .spec/10894-editor-host-reliability and owns generic mechanics.",
+      "spec_owner": "RELY"
+    },
+    {
+      "node_id": "RUNCONF",
+      "issue": 8734,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The Emacs runner is proven conformant to the adopted generic host-run contract.",
+      "spec_owner": "RUNCONF"
+    },
+    {
+      "node_id": "SUBJ_CORE",
+      "issue": 11744,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The subject manifest, resolver and cache exist and bind bundled Eglot subject identity.",
+      "spec_owner": "SUBJ_CORE"
+    },
+    {
+      "node_id": "SUBJ_E",
+      "issue": 11745,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "Released and pinned upstream-source Eglot rows exist through the resolver semantics.",
+      "spec_owner": "SUBJ_E"
+    },
+    {
+      "node_id": "SUBJ_L",
+      "issue": 11746,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "Released and pinned upstream-source lsp-mode rows exist through the resolver semantics.",
+      "spec_owner": "SUBJ_L"
+    },
+    {
+      "node_id": "SUBJ_FAN",
+      "issue": 8755,
+      "train_role": "fan_in",
+      "disposition": "FAN_IN_OR_CERTIFICATION_SPEC",
+      "disposition_provenance": "manifest",
+      "authority_after": "Subject materialization is a reference fan-in over the decomposed subject lane.",
+      "spec_owner": "SUBJ_FAN"
+    },
+    {
+      "node_id": "OBS",
+      "issue": 11360,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "A typed host-native observation vocabulary exists with conjunction validation per exact run.",
+      "spec_owner": "OBS"
+    },
+    {
+      "node_id": "PROD",
+      "issue": 11361,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "One observation-to-receipt producer exists targeting the shared receipt schema.",
+      "spec_owner": "PROD"
+    },
+    {
+      "node_id": "JOURNEYS",
+      "issue": 11768,
+      "train_role": "stable_contract",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "A versioned checked emacs_host_journeys.v1 catalog governs journey, cohort and cell identities.",
+      "spec_owner": "JOURNEYS"
+    },
+    {
+      "node_id": "ADP_E",
+      "issue": 8776,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The checked Eglot adapter captures selected client and process facts through the shared observation vocabulary.",
+      "spec_owner": "ADP_E"
+    },
+    {
+      "node_id": "ADP_L",
+      "issue": 8795,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The checked lsp-mode adapter captures selected client and server-choice facts through the shared observation vocabulary.",
+      "spec_owner": "ADP_L"
+    }
+  ]
+}
