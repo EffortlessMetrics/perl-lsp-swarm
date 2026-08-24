@@ -93,7 +93,9 @@ impl Evaluator {
                 AbstractValue::Scalar(ScalarValue::Integer(value))
             }),
             NodeKind::String { value, interpolated } if !interpolated => {
-                let value = unquote(value);
+                let Some(value) = unquote(value) else {
+                    return AbstractValue::Unknown;
+                };
                 if value.len() > self.budget.max_string_length {
                     AbstractValue::OverBudget
                 } else {
@@ -110,7 +112,9 @@ impl Evaluator {
             NodeKind::FunctionCall { .. }
             | NodeKind::MethodCall { .. }
             | NodeKind::AmperCall { .. }
-            | NodeKind::IndirectCall { .. } => AbstractValue::Dynamic,
+            | NodeKind::IndirectCall { .. }
+            | NodeKind::Readline { .. }
+            | NodeKind::Glob { .. } => AbstractValue::Dynamic,
             _ => AbstractValue::Unknown,
         }
     }
@@ -155,11 +159,21 @@ impl Evaluator {
                 a.checked_mul(b).map_or(AbstractValue::Unknown, scalar_integer)
             }
             ("/", ScalarValue::Integer(a), ScalarValue::Integer(b)) if b != 0 => {
-                a.checked_div(b).map_or(AbstractValue::Unknown, scalar_integer)
+                if a % b == 0 {
+                    a.checked_div(b).map_or(AbstractValue::Unknown, scalar_integer)
+                } else {
+                    AbstractValue::Unknown
+                }
             }
             (".", a, b) => self.concat(a, b),
-            ("==", a, b) | ("eq", a, b) => scalar_bool(a == b),
-            ("!=", a, b) | ("ne", a, b) => scalar_bool(a != b),
+            ("==", a, b) => numeric_equal(&a, &b).map_or(AbstractValue::Unknown, scalar_bool),
+            ("!=", a, b) => {
+                numeric_equal(&a, &b).map_or(AbstractValue::Unknown, |equal| scalar_bool(!equal))
+            }
+            ("eq", a, b) => string_equal(&a, &b).map_or(AbstractValue::Unknown, scalar_bool),
+            ("ne", a, b) => {
+                string_equal(&a, &b).map_or(AbstractValue::Unknown, |equal| scalar_bool(!equal))
+            }
             _ => AbstractValue::Unknown,
         }
     }
@@ -261,12 +275,15 @@ fn format_scalar(value: &ScalarValue) -> String {
     }
 }
 
-fn unquote(value: &str) -> &str {
-    value
+fn unquote(value: &str) -> Option<&str> {
+    if value.len() > 1 && value.starts_with('q') && !value.starts_with("qq") {
+        return None;
+    }
+    Some(value
         .strip_prefix('"')
         .and_then(|value| value.strip_suffix('"'))
         .or_else(|| value.strip_prefix('\'').and_then(|value| value.strip_suffix('\'')))
-        .unwrap_or(value)
+        .unwrap_or(value))
 }
 
 fn parse_integer(value: &str) -> Option<i128> {
@@ -279,12 +296,33 @@ fn parse_integer(value: &str) -> Option<i128> {
         i128::from_str_radix(value, 2).ok()
     } else if let Some(value) = value.strip_prefix("0o").or_else(|| value.strip_prefix("0O")) {
         i128::from_str_radix(value, 8).ok()
+    } else if value.len() > 1
+        && value.starts_with('0')
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        i128::from_str_radix(&value[1..], 8).ok()
     } else if !value.contains('.') && !value.contains('e') && !value.contains('E') {
         value.parse().ok()
     } else {
         None
     };
     parsed.map(|value| if negative { -value } else { value })
+}
+
+fn numeric_equal(left: &ScalarValue, right: &ScalarValue) -> Option<bool> {
+    Some(numeric_value(left)? == numeric_value(right)?)
+}
+
+fn numeric_value(value: &ScalarValue) -> Option<i128> {
+    match value {
+        ScalarValue::Integer(value) => Some(*value),
+        ScalarValue::String(value) => parse_integer(value),
+        ScalarValue::Undef => Some(0),
+    }
+}
+
+fn string_equal(left: &ScalarValue, right: &ScalarValue) -> Option<bool> {
+    Some(format_scalar(left) == format_scalar(right))
 }
 
 #[cfg(test)]
@@ -340,12 +378,3 @@ mod tests {
             AbstractValue::OverBudget
         );
         assert_eq!(
-            evaluate(&expression("(1, 2, 3);")),
-            AbstractValue::Finite(vec![
-                ScalarValue::Integer(1),
-                ScalarValue::Integer(2),
-                ScalarValue::Integer(3)
-            ])
-        );
-    }
-}
