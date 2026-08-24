@@ -1,4 +1,4 @@
-use perl_module::resolution::uri::{ModuleUriResolution, resolve_module_uri};
+use perl_module::{ModuleUriResolution, resolve_module_uri};
 use std::time::Duration;
 
 #[test]
