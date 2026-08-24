@@ -443,7 +443,7 @@ pub fn validate_save_catalog(catalog: &CellCatalog, ledger: &ScenarioLedger) -> 
             cell.observation_class
         );
         ensure!(
-            cell.scenario_owners.iter().any(|owner| owner == &cell.observation_class),
+            cell.scenario_owners.contains(&cell.observation_class),
             "cell {} observation class {} must be one of its own scenario owners",
             cell.cell_id,
             cell.observation_class
