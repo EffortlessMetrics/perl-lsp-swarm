@@ -105,8 +105,7 @@ fn token_span(position: usize, source: &str) -> Option<TokenSpan> {
     };
 
     if name_start >= end
-        || (!bytes[name_start].is_ascii_alphanumeric()
-            && bytes[name_start] != b'_')
+        || (!bytes[name_start].is_ascii_alphanumeric() && bytes[name_start] != b'_')
     {
         return None;
     }
