@@ -1416,6 +1416,42 @@ class GateShardTests(unittest.TestCase):
         self.assertEqual(1, status)
         self.assertEqual("instrument_failure", summary["gates"][0]["result"])
 
+    def test_cache_restored_foreign_receipts_are_swept_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            receipts = root / "receipts"
+            receipts.mkdir()
+            (receipts / "foreign_other_sha.json").write_text(
+                json.dumps(receipt_payload("alpha", "pass", sha="b" * 40)),
+                encoding="utf-8",
+            )
+            (receipts / "leftover.log").write_text(
+                "restored from an unrelated SHA\n", encoding="utf-8"
+            )
+            nested = receipts / "nested"
+            nested.mkdir()
+            nested_file = nested / "keep.txt"
+            nested_file.write_text("not shard-owned output\n", encoding="utf-8")
+            status, summary, _, _ = run_direct(
+                root,
+                {"alpha": {"status": "pass", "exit": 0}},
+                ["alpha"],
+            )
+            survivors = sorted(entry.name for entry in receipts.iterdir())
+            fresh_receipt = json.loads(
+                (receipts / "alpha.json").read_text(encoding="utf-8")
+            )
+            nested_file_survived = nested_file.exists()
+        self.assertEqual(0, status)
+        self.assertEqual("success", summary["gates"][0]["result"])
+        self.assertEqual(["alpha.json", "nested"], survivors)
+        self.assertEqual(SUBJECT, fresh_receipt["metadata"]["git_sha"])
+        self.assertTrue(nested_file_survived)
+        self.assertNotIn(
+            str(receipts / "foreign_other_sha.json"),
+            [row["receipt_path"] for row in summary["gates"]],
+        )
+
     @unittest.skipUnless(
         os.name != "nt" and hasattr(os, "killpg"),
         "POSIX process-group integration test",
