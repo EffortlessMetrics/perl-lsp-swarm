@@ -104,6 +104,11 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
 - Uploads the `ripr-pr-evidence` artifact with required-artifact semantics.
 - Appends `target/ripr/pr/summary.md` and
   `target/receipts/quality/quality-gate-ripr.md` to the GitHub step summary.
+- Queues newer PR heads behind an active RIPR run. RIPR is evidence production,
+  so normal synchronization must not terminate the current analysis and turn
+  the resulting no-verdict into a false required-check failure. A lane that is
+  still externally or manually cancelled remains blocking because it produced
+  no proof.
 
 The evaluated `HEAD` in CI is a merge-test ref. It is not silently presented as
 the contributor's PR head: PR runs pass both identities to `xtask`, while
