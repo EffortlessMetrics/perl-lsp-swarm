@@ -475,10 +475,24 @@ fn evaluate_compatibility(
     deduplicate(&mut not_proven);
     deduplicate(&mut partial);
     if !mismatch.is_empty() {
-        return (BinaryCompatibilityState::Mismatch, mismatch, limitations);
+        // Return the full reason union: mismatch governs the state, but any
+        // co-occurring not_proven or partial reasons must also surface so the
+        // client receives a complete repair set rather than only the
+        // highest-precedence symptom.  State remains single-valued. (#10184)
+        let mut reasons = mismatch;
+        reasons.extend_from_slice(&not_proven);
+        reasons.extend_from_slice(&partial);
+        deduplicate(&mut reasons);
+        return (BinaryCompatibilityState::Mismatch, reasons, limitations);
     }
     if !not_proven.is_empty() {
-        return (BinaryCompatibilityState::NotProven, not_proven, limitations);
+        // State is single-valued (not_proven takes precedence over partial),
+        // but all partial reasons must also surface so the client sees the full
+        // outstanding gap set rather than only the not_proven symptoms. (#10184)
+        let mut reasons = not_proven;
+        reasons.extend_from_slice(&partial);
+        deduplicate(&mut reasons);
+        return (BinaryCompatibilityState::NotProven, reasons, limitations);
     }
     if !partial.is_empty() {
         return (BinaryCompatibilityState::CompatiblePartial, partial, limitations);
@@ -1078,6 +1092,65 @@ mod tests {
         let response = state.respond(request());
         assert_eq!(response.compatibility, BinaryCompatibilityState::Mismatch);
         assert!(response.reasons.contains(&BinaryCompatibilityReason::ArtifactRoleMismatch));
+    }
+
+    // --- Discriminating tests for reason-union behaviour (#10184) ---
+    //
+    // Before the fix, `evaluate_compatibility` returned exactly one bucket of
+    // reasons (mismatch *or* not_proven *or* partial), silently discarding every
+    // reason from lower-precedence buckets.  The two tests below are the minimal
+    // discriminating fixtures that prove the union contract is honoured.
+
+    #[test]
+    fn mismatch_state_includes_co_occurring_not_proven_reasons() {
+        // ProductRepositoryMismatch lands in the mismatch bucket;
+        // ProductIdentityVersionUnsupported lands in the not_proven bucket.
+        // With the union fix both surface; before the fix not_proven was silently
+        // discarded whenever the mismatch bucket was non-empty.
+        let mut state = state();
+        state.server.product.public_repository = "Other/project".to_owned();
+        state.server.compatibility.expected_product_identity_version = 99;
+        let response = state.respond(request());
+        assert_eq!(
+            response.compatibility,
+            BinaryCompatibilityState::Mismatch,
+            "mismatch state must take precedence over co-occurring not_proven"
+        );
+        assert!(
+            response.reasons.contains(&BinaryCompatibilityReason::ProductRepositoryMismatch),
+            "mismatch reason must be present in the union"
+        );
+        assert!(
+            response
+                .reasons
+                .contains(&BinaryCompatibilityReason::ProductIdentityVersionUnsupported),
+            "co-occurring not_proven reasons must surface alongside the mismatch state"
+        );
+    }
+
+    #[test]
+    fn not_proven_state_includes_co_occurring_partial_reasons() {
+        // An unsafe target value is sanitised to None, producing PayloadNotRedacted
+        // (not_proven bucket).  Removing the DAP packet produces DapIdentityAbsent
+        // (partial bucket).  With the union fix both surface; before the fix the
+        // partial reason was silently discarded whenever not_proven was non-empty.
+        let mut state = state();
+        state.server.build.target = Some("/home/user/private-target".to_owned());
+        state.dap = None;
+        let response = state.respond(request());
+        assert_eq!(
+            response.compatibility,
+            BinaryCompatibilityState::NotProven,
+            "not_proven state must take precedence over co-occurring partial"
+        );
+        assert!(
+            response.reasons.contains(&BinaryCompatibilityReason::PayloadNotRedacted),
+            "not_proven reason must be present in the union"
+        );
+        assert!(
+            response.reasons.contains(&BinaryCompatibilityReason::DapIdentityAbsent),
+            "co-occurring partial reason must surface alongside the not_proven state"
+        );
     }
 
     #[test]
