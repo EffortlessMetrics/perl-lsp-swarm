@@ -43,9 +43,17 @@ use std::fmt::Write as _;
 /// commit attempt (version V1).
 ///
 /// A stale/superseded ticket produces a typed rejection or typed
-/// non-application variant -- never silent success. Missing or
-/// instrument-failed evidence maps to [`ParseEffectCommitOutcomeV1::NotProven`],
-/// never to a commit/no-op/clear.
+/// non-application variant -- never silent success. Evidence problems are
+/// split by cause, never collapsed into a commit/no-op/clear:
+///
+/// - *absent* evidence (currentness could not be observed at all) maps to
+///   [`ParseEffectCommitOutcomeV1::NotProven`] -- nothing may be claimed;
+/// - *unreliable* evidence (an instrument/schema participating in the commit
+///   failed mid-commit) maps to the distinct
+///   [`ParseEffectCommitOutcomeV1::InstrumentOrSchemaFailure`] so downstream
+///   policy can distinguish "could not look" from "looked, reading untrustworthy".
+///
+/// Neither variant is a commit, a non-application, or a clear.
 ///
 /// Consumers land with the focused children (#11675, #11674, #11673); until
 /// those cuts land this type is intentionally unreferenced by production
@@ -752,7 +760,8 @@ static PARSE_EFFECT_SINKS_V1: &[ParseEffectSinkRowV1] = &[
         store: SinkStoreV1::WORKSPACE_READINESS_PUBLICATION,
         owns_mutation_sites: true,
         mutation_boundary: "workspace_progress::send_active_document_ready_notification + \
-            Coordinator::transition_to_ready inside the didOpen background task's Accepted arm",
+            Coordinator::transition_to_ready inside the didOpen background task's Accepted arm \
+            and the workspace-scan completion path",
         currentness_comparison: CurrentnessComparisonV1::HelperPrecheckThenCallback,
         terminal_policy: ClearReplacePolicyV1::publish_current_terminal(),
         focused_proof_filter: "parse_effect_sink",
@@ -822,8 +831,20 @@ static PARSE_EFFECT_SINKS_V1: &[ParseEffectSinkRowV1] = &[
 
 /// One registered production mutation call site. `needle` counts byte
 /// occurrences in `file` (repo-relative); `expected_count` is the ratchet --
-/// adding/removing a registered mutation site requires updating its row here,
-/// so "an effect exists in source but not the inventory" fails deterministically.
+/// adding/removing a registered mutation site requires updating its row here.
+///
+/// # Claim boundary (deliberately narrowed)
+///
+/// The per-file counts prove drift *at registered sites*; they cannot, by
+/// themselves, discover a brand-new mutation API with a novel name. The
+/// companion sweep test
+/// [`parse_effect_sink_call_site_ledger_covers_registered_needles`] closes the
+/// complementary direction for every needle registered here: any non-test
+/// runtime source file containing that needle must either carry its own ledger
+/// entry or appear in the explicit, individually-reasoned exemption table.
+/// Discovery of genuinely novel sink APIs therefore fails closed (unregistered
+/// occurrence of a known needle) or stays review-owned (new name), and is never
+/// silently accepted.
 #[cfg(test)]
 struct CallSiteLedgerEntry {
     file: &'static str,
@@ -949,6 +970,13 @@ const CALL_SITE_LEDGER: &[CallSiteLedgerEntry] = &[
         expected_count: 2,
         effect_id: "workspace-index.live-contribution-replacement",
     },
+    // Save-reconciliation live commit route.
+    CallSiteLedgerEntry {
+        file: "crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs",
+        needle: ".index_live_file(",
+        expected_count: 1,
+        effect_id: "workspace-index.live-contribution-replacement",
+    },
     // Readiness lifecycle + open-ready publication.
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/text_sync.rs",
@@ -986,6 +1014,72 @@ const CALL_SITE_LEDGER: &[CallSiteLedgerEntry] = &[
         needle: "let mut cache = self.semantic_tokens_cache.lock();",
         expected_count: 1,
         effect_id: "result-id.local-state",
+    },
+    // Async parse-worker accepted-snapshot publication route.
+    CallSiteLedgerEntry {
+        file: "crates/perl-lsp-rs/src/runtime/parse_worker.rs",
+        needle: ".publish_parsed_if_current(",
+        expected_count: 1,
+        effect_id: "parser-state.accepted-snapshot-publication",
+    },
+    // Workspace-task Coordinator lifecycle routes (async didOpen/scan paths).
+    CallSiteLedgerEntry {
+        file: "crates/perl-lsp-rs/src/runtime/workspace.rs",
+        needle: ".notify_parse_complete(",
+        expected_count: 7,
+        effect_id: "readiness.active-document-parse-lifecycle",
+    },
+    CallSiteLedgerEntry {
+        file: "crates/perl-lsp-rs/src/runtime/workspace.rs",
+        needle: ".notify_change(",
+        expected_count: 6,
+        effect_id: "readiness.active-document-parse-lifecycle",
+    },
+    CallSiteLedgerEntry {
+        file: "crates/perl-lsp-rs/src/runtime/workspace.rs",
+        needle: ".transition_to_ready(",
+        expected_count: 1,
+        effect_id: "readiness.open-ready-publication",
+    },
+    CallSiteLedgerEntry {
+        file: "crates/perl-lsp-rs/src/runtime/workspace.rs",
+        needle: "textDocument/publishDiagnostics",
+        expected_count: 1,
+        effect_id: "diagnostics.parser-outbound-publication",
+    },
+    // Coordinator module-level lifecycle routes. Counts include the two
+    // doc-comment examples per needle, which are byte-identical to the
+    // production statements and therefore load-bearing for this ratchet.
+    CallSiteLedgerEntry {
+        file: "crates/perl-lsp-rs/src/runtime/mod.rs",
+        needle: ".notify_parse_complete(",
+        expected_count: 3,
+        effect_id: "readiness.active-document-parse-lifecycle",
+    },
+    CallSiteLedgerEntry {
+        file: "crates/perl-lsp-rs/src/runtime/mod.rs",
+        needle: ".notify_change(",
+        expected_count: 3,
+        effect_id: "readiness.active-document-parse-lifecycle",
+    },
+    // didClose diagnostics-clear publication route.
+    CallSiteLedgerEntry {
+        file: "crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs",
+        needle: ".notify_change(",
+        expected_count: 1,
+        effect_id: "readiness.active-document-parse-lifecycle",
+    },
+    CallSiteLedgerEntry {
+        file: "crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs",
+        needle: ".notify_parse_complete(",
+        expected_count: 1,
+        effect_id: "readiness.active-document-parse-lifecycle",
+    },
+    CallSiteLedgerEntry {
+        file: "crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs",
+        needle: "textDocument/publishDiagnostics",
+        expected_count: 1,
+        effect_id: "diagnostics.parser-outbound-publication",
     },
 ];
 
@@ -1131,14 +1225,35 @@ mod parse_effect_sink_contract_tests {
     }
 
     /// Falsifier 9/10: stable unique sink/effect IDs; no two rows claim the
-    /// same irreversible mutation authority.
+    /// same irreversible mutation authority. The exact expected ID set pins
+    /// the full V1 denominator: removing or renaming a row fails here, not
+    /// just shrinking the count.
     #[test]
     fn parse_effect_sink_ids_unique_and_stable_format() {
         let rows = inventory();
-        assert!(
-            rows.len() >= 12,
-            "inventory must cover the required initial denominator, got {}",
-            rows.len()
+        let expected_ids: std::collections::BTreeSet<&str> = [
+            "diagnostics.parser-outbound-publication",
+            "diagnostics.didopen-guard-admission-publication",
+            "document-symbols.replace-or-clear",
+            "workspace-index.live-contribution-replacement",
+            "workspace-index.reader-capture-projection",
+            "semantic-project.contribution-publication",
+            "result-id.local-state",
+            "semantic-tokens.current-result-publication",
+            "parser-state.accepted-snapshot-publication",
+            "didopen-guard.minimal-document-admission",
+            "readiness.active-document-parse-lifecycle",
+            "readiness.open-ready-publication",
+            "evidence.parse-effect-observations",
+            "compat.legacy-generic-callback-helper",
+        ]
+        .into_iter()
+        .collect();
+        let actual_ids: std::collections::BTreeSet<&str> =
+            rows.iter().map(|row| row.effect_id).collect();
+        assert_eq!(
+            actual_ids, expected_ids,
+            "inventory must exactly cover the required V1 effect denominator"
         );
         let mut seen = std::collections::BTreeSet::new();
         for row in rows {
@@ -1291,13 +1406,29 @@ mod parse_effect_sink_contract_tests {
         }
     }
 
-    /// Every compatibility adapter names an exit owner and exists in source.
+    /// Every compatibility adapter names an exit owner and exists in source,
+    /// and exactly the V1 rows that still route through the legacy helper
+    /// declare one.
     #[test]
     fn parse_effect_sink_compat_adapters_have_exit_owner_in_source() {
-        let mut adapter_rows = 0;
+        let expected_adapter_rows: std::collections::BTreeSet<&str> = [
+            "diagnostics.parser-outbound-publication",
+            "document-symbols.replace-or-clear",
+            "workspace-index.live-contribution-replacement",
+            "readiness.active-document-parse-lifecycle",
+            "readiness.open-ready-publication",
+            "compat.legacy-generic-callback-helper",
+        ]
+        .into_iter()
+        .collect();
+        let mut adapter_rows: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for row in inventory() {
             if let Some(exit) = row.compatibility_adapter {
-                adapter_rows += 1;
+                assert!(
+                    adapter_rows.insert(row.effect_id),
+                    "duplicate adapter on `{}`",
+                    row.effect_id
+                );
                 assert!(
                     exit.exit_owner_issue.starts_with('#'),
                     "row `{}` adapter exit owner must be an issue",
@@ -1313,9 +1444,9 @@ mod parse_effect_sink_contract_tests {
                 );
             }
         }
-        assert!(
-            adapter_rows >= 4,
-            "legacy helper adapters must remain explicitly reported, got {adapter_rows}"
+        assert_eq!(
+            adapter_rows, expected_adapter_rows,
+            "compatibility-adapter denominator drifted from the V1 legacy-helper routes"
         );
     }
 
@@ -1380,6 +1511,124 @@ mod parse_effect_sink_contract_tests {
         }
     }
 
+    /// Files whose only occurrences of a registered needle are not governed
+    /// mutation sites. Each pair was individually verified against source when
+    /// this ledger was completed; a new occurrence in any of these files still
+    /// fails the per-file count ratchets above, and removing the exemption
+    /// without registering the route fails this sweep.
+    #[cfg(test)]
+    const NEEDLE_SWEEP_EXEMPTIONS: &[(&str, &str)] = &[
+        // Doc-comment mentions of the method name (module documentation).
+        ("crates/perl-lsp-rs/src/runtime/lifecycle/mod.rs", "textDocument/publishDiagnostics"),
+        // Doc-comment mention describing non-gated per-file publication.
+        ("crates/perl-lsp-rs/src/runtime/mod.rs", "textDocument/publishDiagnostics"),
+        // Occurrences inside the #[cfg(test)] module (RecordingSink assertions).
+        ("crates/perl-lsp-rs/src/runtime/outbound.rs", "textDocument/publishDiagnostics"),
+        // String literal asserted on by file_preflight's own self-scan test.
+        (
+            "crates/perl-lsp-rs/src/runtime/dispatch/workspace/file_preflight.rs",
+            ".notify_parse_complete(",
+        ),
+        // pub(super) definition site; invocation sites are registered instead.
+        ("crates/perl-lsp-rs/src/runtime/text_sync/document_state.rs", "minimal_state_from_rope("),
+        // Test-module helper invocations of the readiness transition.
+        ("crates/perl-lsp-rs/src/runtime/routing.rs", ".transition_to_ready("),
+        ("crates/perl-lsp-rs/src/runtime/readiness.rs", ".transition_to_ready("),
+        ("crates/perl-lsp-rs/src/runtime/language/completion.rs", ".transition_to_ready("),
+        ("crates/perl-lsp-rs/src/runtime/language/rename.rs", ".transition_to_ready("),
+        ("crates/perl-lsp-rs/src/runtime/language/misc.rs", ".transition_to_ready("),
+        (
+            "crates/perl-lsp-rs/src/runtime/language/hover/signature_help.rs",
+            ".transition_to_ready(",
+        ),
+        // Test-module Coordinator notification helper.
+        ("crates/perl-lsp-rs/src/runtime/routing.rs", ".notify_change("),
+    ];
+
+    #[cfg(test)]
+    fn is_test_source_file(path: &std::path::Path) -> bool {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        name == "test_api.rs" || name == "tests.rs" || name.ends_with("_tests.rs")
+    }
+
+    #[cfg(test)]
+    fn collect_runtime_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(_) => return,
+        };
+        let mut sorted: Vec<_> = entries.flatten().collect();
+        sorted.sort_by_key(std::fs::DirEntry::path);
+        for entry in sorted {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_runtime_rs_files(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// Completeness half of the ledger claim: every non-test runtime source
+    /// file that contains a registered needle must either register its own
+    /// (file, needle) ratchet or appear verbatim in the reasoned exemption
+    /// table. Together with `parse_effect_sink_call_site_ledger_matches_source`
+    /// this makes "a registered needle exists in production source but is not
+    /// inventoried" fail deterministically.
+    #[test]
+    fn parse_effect_sink_call_site_ledger_covers_registered_needles() {
+        let runtime_root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("runtime");
+        let mut files = Vec::new();
+        collect_runtime_rs_files(&runtime_root, &mut files);
+        assert!(
+            files.len() > 20,
+            "runtime source walk found only {} files; walk is broken",
+            files.len()
+        );
+        let contract_file = "crates/perl-lsp-rs/src/runtime/parse_effect_contract.rs";
+        let mut needles: Vec<&str> = CALL_SITE_LEDGER.iter().map(|entry| entry.needle).collect();
+        needles.sort_unstable();
+        needles.dedup();
+        for file in &files {
+            let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+            let repo_rel = match file.strip_prefix(&repo_root) {
+                Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
+                Err(_) => continue,
+            };
+            if repo_rel == contract_file || is_test_source_file(file) {
+                continue;
+            }
+            let content = std::fs::read_to_string(file)
+                .expect("ledger sweep must be able to read every walked runtime source file");
+            for needle in &needles {
+                if !content.contains(needle) {
+                    continue;
+                }
+                let registered = CALL_SITE_LEDGER
+                    .iter()
+                    .any(|entry| entry.file == repo_rel && entry.needle == *needle);
+                let exempt = NEEDLE_SWEEP_EXEMPTIONS.iter().any(|(exempt_file, exempt_needle)| {
+                    exempt_file == &repo_rel && exempt_needle == needle
+                });
+                assert!(
+                    registered || exempt,
+                    "unregistered production occurrence of needle {:?} in {} -- \
+                     register it against its parse_effect_sinks_v1 row or add a \
+                     reasoned exemption",
+                    needle,
+                    repo_rel
+                );
+            }
+        }
+        for (exempt_file, exempt_needle) in NEEDLE_SWEEP_EXEMPTIONS {
+            assert!(
+                needles.contains(exempt_needle),
+                "stale exemption for {exempt_file}:{exempt_needle} -- needle no longer registered"
+            );
+        }
+    }
+
     /// Generated projection is deterministic (second-run clean) and matches
     /// the committed golden packet.
     #[test]
@@ -1430,28 +1679,66 @@ mod parse_effect_sink_contract_tests {
         }
     }
 
+    /// The closed V1 outcome catalog. Adding a variant to
+    /// [`ParseEffectCommitOutcomeV1`] breaks compilation of
+    /// `assert_outcome_catalog_is_exhaustive` below until it is added here and
+    /// classified, so the vocabulary cannot grow without entering this proof.
+    #[cfg(test)]
+    const OUTCOME_VARIANTS_V1: &[ParseEffectCommitOutcomeV1] = &[
+        ParseEffectCommitOutcomeV1::CommittedCurrent,
+        ParseEffectCommitOutcomeV1::RejectedStaleTicket,
+        ParseEffectCommitOutcomeV1::RejectedWrongDocumentInstance,
+        ParseEffectCommitOutcomeV1::RejectedSourceProjectionOrConfiguration,
+        ParseEffectCommitOutcomeV1::RejectedSinkGenerationAdvanced,
+        ParseEffectCommitOutcomeV1::RejectedLifecycleState,
+        ParseEffectCommitOutcomeV1::SupersededBeforeMutation,
+        ParseEffectCommitOutcomeV1::NoEffectRequired,
+        ParseEffectCommitOutcomeV1::SafeClearCommitted,
+        ParseEffectCommitOutcomeV1::SinkUnavailable,
+        ParseEffectCommitOutcomeV1::ProductFailure,
+        ParseEffectCommitOutcomeV1::InstrumentOrSchemaFailure,
+        ParseEffectCommitOutcomeV1::NotProven,
+    ];
+
+    /// Compile-time forcing function: the match has no wildcard arm, so a new
+    /// enum variant fails to compile here before any test can run.
+    #[cfg(test)]
+    fn assert_outcome_catalog_is_exhaustive(outcome: ParseEffectCommitOutcomeV1) {
+        match outcome {
+            ParseEffectCommitOutcomeV1::CommittedCurrent => {}
+            ParseEffectCommitOutcomeV1::RejectedStaleTicket => {}
+            ParseEffectCommitOutcomeV1::RejectedWrongDocumentInstance => {}
+            ParseEffectCommitOutcomeV1::RejectedSourceProjectionOrConfiguration => {}
+            ParseEffectCommitOutcomeV1::RejectedSinkGenerationAdvanced => {}
+            ParseEffectCommitOutcomeV1::RejectedLifecycleState => {}
+            ParseEffectCommitOutcomeV1::SupersededBeforeMutation => {}
+            ParseEffectCommitOutcomeV1::NoEffectRequired => {}
+            ParseEffectCommitOutcomeV1::SafeClearCommitted => {}
+            ParseEffectCommitOutcomeV1::SinkUnavailable => {}
+            ParseEffectCommitOutcomeV1::ProductFailure => {}
+            ParseEffectCommitOutcomeV1::InstrumentOrSchemaFailure => {}
+            ParseEffectCommitOutcomeV1::NotProven => {}
+        }
+    }
+
     /// The outcome vocabulary stays closed and fully classified: every
     /// variant lands in exactly one evidence class, stale/superseded tickets
-    /// are typed non-applications (not silent success), and missing/
-    /// instrument-failed evidence is `NotProven`.
+    /// are typed non-applications (not silent success), absent evidence is
+    /// `NotProven`, and instrument/schema failure stays a distinct typed
+    /// outcome that is never conflated with either.
     #[test]
     fn parse_effect_sink_outcome_vocabulary_closed_partition() {
-        let all = [
-            ParseEffectCommitOutcomeV1::CommittedCurrent,
-            ParseEffectCommitOutcomeV1::RejectedStaleTicket,
-            ParseEffectCommitOutcomeV1::RejectedWrongDocumentInstance,
-            ParseEffectCommitOutcomeV1::RejectedSourceProjectionOrConfiguration,
-            ParseEffectCommitOutcomeV1::RejectedSinkGenerationAdvanced,
-            ParseEffectCommitOutcomeV1::RejectedLifecycleState,
-            ParseEffectCommitOutcomeV1::SupersededBeforeMutation,
-            ParseEffectCommitOutcomeV1::NoEffectRequired,
-            ParseEffectCommitOutcomeV1::SafeClearCommitted,
-            ParseEffectCommitOutcomeV1::SinkUnavailable,
-            ParseEffectCommitOutcomeV1::ProductFailure,
-            ParseEffectCommitOutcomeV1::InstrumentOrSchemaFailure,
-            ParseEffectCommitOutcomeV1::NotProven,
-        ];
-        for outcome in all {
+        assert_eq!(
+            OUTCOME_VARIANTS_V1.len(),
+            13,
+            "the V1 outcome vocabulary is closed at 13 variants; growing it is a \
+             contract change that must update this catalog and its classification"
+        );
+        let mut seen = Vec::new();
+        for outcome in OUTCOME_VARIANTS_V1.iter().copied() {
+            assert_outcome_catalog_is_exhaustive(outcome);
+            assert!(!seen.contains(&outcome), "{outcome:?} listed twice in catalog");
+            seen.push(outcome);
             let classes = [
                 outcome.is_committed(),
                 outcome.is_non_application(),

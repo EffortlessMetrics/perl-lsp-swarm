@@ -285,7 +285,7 @@ Checked static inventory generated from `crates/perl-lsp-rs/src/runtime/parse_ef
 - sink-local subject: $/perlLsp/activeDocumentReady envelope generation-tagged with the first accepted generation; IndexState Idle->Ready transition
 - store: workspace_readiness_publication
 - owns mutation sites: yes
-- mutation boundary: workspace_progress::send_active_document_ready_notification + Coordinator::transition_to_ready inside the didOpen background task's Accepted arm
+- mutation boundary: workspace_progress::send_active_document_ready_notification + Coordinator::transition_to_ready inside the didOpen background task's Accepted arm and the workspace-scan completion path
 - currentness comparison: helper precheck then callback (residual window admitted)
 - terminal/clear policy:
   - clean: publish
