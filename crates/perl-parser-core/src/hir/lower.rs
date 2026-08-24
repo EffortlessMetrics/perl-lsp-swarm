@@ -389,6 +389,9 @@ impl Lowerer {
                 self.visit_require_args(args, confidence);
             }
             NodeKind::FunctionCall { name, args } => {
+                if name == "push" {
+                    self.record_isa_push(args, node.location, confidence);
+                }
                 let form = if name == "->()" { CallForm::Coderef } else { CallForm::NamedFunction };
                 let arg_count = match form {
                     CallForm::NamedFunction => args.len(),
@@ -2161,6 +2164,86 @@ impl Lowerer {
                     StashProvenance::ExactAst,
                 );
             }
+            if contains_dynamic_package_name(node) {
+                self.record_dynamic_stash_boundary(
+                    Some(package),
+                    Some("ISA".to_string()),
+                    range,
+                    item_id,
+                    StashDynamicBoundaryKind::DynamicInheritance,
+                    "@ISA contains a parent name that is not statically known",
+                );
+            }
+        }
+    }
+
+    fn record_isa_push(
+        &mut self,
+        args: &[Node],
+        range: SourceLocation,
+        confidence: RecoveryConfidence,
+    ) {
+        let Some(target) = args.first() else { return };
+        if !is_isa_target(target) {
+            return;
+        }
+
+        let (package, symbol) = match &target.kind {
+            NodeKind::Variable { sigil, name } if sigil == "@" => {
+                package_and_symbol(name, self.package_context.as_deref())
+            }
+            _ => return,
+        };
+        if symbol != "ISA" {
+            return;
+        }
+        if let Some(binding_id) = self.resolve_visible_binding(self.current_scope(), "@", &symbol)
+        {
+            if self
+                .scope_graph
+                .bindings
+                .iter()
+                .find(|binding| binding.id == binding_id)
+                .is_some_and(|binding| {
+                    matches!(binding.storage, StorageClass::LexicalMy | StorageClass::LexicalState)
+                })
+            {
+                return;
+            }
+        }
+        for argument in args.iter().skip(1) {
+            for parent in static_package_names_from_node(argument) {
+                self.record_inheritance_edge(
+                    package.clone(),
+                    parent,
+                    range,
+                    None,
+                    InheritanceSource::IsaPush,
+                    StashProvenance::ExactAst,
+                );
+            }
+            if contains_dynamic_package_name(argument) {
+                let boundary_item = self.push_item(
+                    argument,
+                    Some(argument.location),
+                    confidence,
+                    HirKind::DynamicBoundary(DynamicBoundary {
+                        kind: DynamicBoundaryKind::DynamicStashMutation,
+                        reason: "@ISA push contains a parent name that is not statically known"
+                            .to_string(),
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+                self.record_dynamic_stash_boundary(
+                    Some(package.clone()),
+                    Some("ISA".to_string()),
+                    range,
+                    Some(boundary_item),
+                    StashDynamicBoundaryKind::DynamicInheritance,
+                    "@ISA push contains a parent name that is not statically known",
+                );
+            }
         }
     }
 
@@ -2759,11 +2842,24 @@ fn static_package_names_from_node(node: &Node) -> Vec<String> {
         NodeKind::ArrayLiteral { elements } => {
             elements.iter().flat_map(static_package_names_from_node).collect()
         }
-        NodeKind::String { value, .. } | NodeKind::Identifier { name: value } => {
+        NodeKind::String { value, interpolated: false } | NodeKind::Identifier { name: value } => {
             static_names_from_arg(value)
         }
         _ => Vec::new(),
     }
+}
+
+fn contains_dynamic_package_name(node: &Node) -> bool {
+    match &node.kind {
+        NodeKind::ArrayLiteral { elements } => elements.iter().any(contains_dynamic_package_name),
+        NodeKind::String { interpolated, .. } => *interpolated,
+        NodeKind::Identifier { .. } => false,
+        _ => true,
+    }
+}
+
+fn is_isa_target(node: &Node) -> bool {
+    matches!(&node.kind, NodeKind::Variable { sigil, name } if sigil == "@" && name == "ISA")
 }
 
 fn variable_decl_bindings(node: &Node) -> (Vec<VariableBinding>, bool) {
@@ -4144,5 +4240,79 @@ mod goto_lowering_tests {
             )),
             "goto must lower to a ControlTransfer HIR item of kind Goto"
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod isa_lowering_tests {
+    use super::*;
+    use crate::parser::Parser;
+    use perl_tdd_support::must;
+
+    fn lower(source: &str) -> HirFile {
+        let mut parser = Parser::new(source);
+        lower_ast(&must(parser.parse()))
+    }
+
+    #[test]
+    fn static_push_isa_produces_inheritance_edge() {
+        let file = lower("package Child; push @ISA, 'Base'; 1;");
+        assert_eq!(file.stash_graph.inheritance_edges.len(), 1);
+        let edge = &file.stash_graph.inheritance_edges[0];
+        assert_eq!(edge.from_package, "Child");
+        assert_eq!(edge.to_package, "Base");
+        assert_eq!(edge.source, InheritanceSource::IsaPush);
+        assert_eq!(edge.provenance, StashProvenance::ExactAst);
+    }
+
+    #[test]
+    fn mixed_push_isa_preserves_static_edge_and_dynamic_boundary() {
+        let file = lower("package Child; push @ISA, 'Base', $computed; 1;");
+        assert!(file.stash_graph.inheritance_edges.iter().any(|edge| {
+            edge.to_package == "Base" && edge.source == InheritanceSource::IsaPush
+        }));
+        assert!(file.stash_graph.dynamic_boundaries.iter().any(|boundary| {
+            boundary.kind == StashDynamicBoundaryKind::DynamicInheritance
+                && boundary.package.as_deref() == Some("Child")
+                && boundary.symbol.as_deref() == Some("ISA")
+                && boundary.provenance == StashProvenance::DynamicBoundary
+                && boundary.confidence == StashConfidence::Low
+        }));
+    }
+
+    #[test]
+    fn computed_isa_assignment_produces_dynamic_boundary_without_fake_parent() {
+        let file = lower("package Child; @ISA = @computed; 1;");
+        assert!(file.stash_graph.inheritance_edges.is_empty());
+        assert!(file.stash_graph.dynamic_boundaries.iter().any(|boundary| {
+            boundary.kind == StashDynamicBoundaryKind::DynamicInheritance
+                && boundary.package.as_deref() == Some("Child")
+        }));
+        assert!(!file.stash_graph.packages.iter().any(|package| package.package == "__DYNAMIC__"));
+    }
+
+    #[test]
+    fn interpolated_push_isa_is_dynamic() {
+        let file = lower("package Child; push @ISA, \"Base::$suffix\"; 1;");
+        assert!(file.stash_graph.inheritance_edges.is_empty());
+        assert!(file.stash_graph.dynamic_boundaries.iter().any(|boundary| {
+            boundary.kind == StashDynamicBoundaryKind::DynamicInheritance
+        }));
+    }
+
+    #[test]
+    fn qualified_push_isa_targets_declared_package() {
+        let file = lower("package Other; push @Child::ISA, 'Base'; 1;");
+        let edge = file.stash_graph.inheritance_edges.first().expect("expected inheritance edge");
+        assert_eq!(edge.from_package, "Child");
+        assert_eq!(edge.to_package, "Base");
+    }
+
+    #[test]
+    fn lexical_isa_is_not_treated_as_stash_inheritance() {
+        let file = lower("package Child; my @ISA; push @ISA, 'Base'; 1;");
+        assert!(file.stash_graph.inheritance_edges.is_empty());
+        assert!(file.stash_graph.dynamic_boundaries.is_empty());
     }
 }
