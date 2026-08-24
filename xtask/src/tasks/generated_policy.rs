@@ -210,7 +210,7 @@ pub fn run(root: &Path, mode: GeneratedPolicyMode, output: Option<PathBuf>) -> R
             if !files.iter().any(|path| entry_matches(entry, path)) {
                 errors.push(format!("{} matches no tracked file", entry.id));
             }
-            if entry.review_after < "2026-08-24" {
+            if entry.review_after.as_str() < "2026-08-24" {
                 errors.push(format!("{} has a stale review_after", entry.id));
             }
         }
