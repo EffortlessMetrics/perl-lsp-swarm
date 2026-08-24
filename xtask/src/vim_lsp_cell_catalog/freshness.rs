@@ -101,11 +101,11 @@ const REQUIRED_DIMENSIONS: &[&str] =
 const GENERATION_PREFIX: &str = "generation.";
 
 const SUBJECT_CONFIG_FIXTURES: &[&str] =
-    &["vim-vim-lsp-subject.v1", "vim-vim-lsp-configuration.v1"];
+    &["vim-vim-lsp-configuration.v1", "vim-vim-lsp-subject.v1"];
 const SUBJECT_SURFACE_FIXTURES: &[&str] =
-    &["vim-vim-lsp-subject.v1", "vim-vim-lsp-public-surface.v1"];
+    &["vim-vim-lsp-public-surface.v1", "vim-vim-lsp-subject.v1"];
 const ALL_THREE_FIXTURES: &[&str] =
-    &["vim-vim-lsp-subject.v1", "vim-vim-lsp-configuration.v1", "vim-vim-lsp-public-surface.v1"];
+    &["vim-vim-lsp-configuration.v1", "vim-vim-lsp-public-surface.v1", "vim-vim-lsp-subject.v1"];
 
 const ROUTE_DIMENSIONS: &[&str] = &[
     "client.pinned_commit",
@@ -214,18 +214,20 @@ fn build(spec: CellSpec<'_>, subject: CellSubject) -> CellRegistration {
 /// BDD scenario ledger; when it lands, this derivation is superseded by a
 /// reviewed re-bind, never by a local edit of scenario rows.
 pub fn freshness_action_ledger() -> ScenarioLedger {
+    let mut scenarios: Vec<Scenario> = ACTIONS
+        .iter()
+        .filter(|action| action.family == ActionFamily::Freshness)
+        .map(|action| Scenario { id: action.action_id.to_string(), class: ScenarioClass::Baseline })
+        .collect();
+    // Deterministic aggregation: the derived ledger is sorted by scenario ID
+    // so a future reorder of the compiled vocabulary cannot change the
+    // ledger's serialized shape.
+    scenarios.sort_by(|left, right| left.id.cmp(&right.id));
     ScenarioLedger {
         ledger_id: FRESHNESS_LEDGER_ID.to_string(),
         owning_authority: "#11380 specialized action vocabulary (PR #12204), freshness family; supersedes pending: #11376 owns the BDD scenario ledger, #11378 the fixture/expectation cells"
             .to_string(),
-        scenarios: ACTIONS
-            .iter()
-            .filter(|action| action.family == ActionFamily::Freshness)
-            .map(|action| Scenario {
-                id: action.action_id.to_string(),
-                class: ScenarioClass::Baseline,
-            })
-            .collect(),
+        scenarios,
     }
 }
 
