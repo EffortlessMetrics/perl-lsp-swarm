@@ -34,31 +34,31 @@ use tasks::workflow_trigger_lint::WorkflowTriggerLintFormat;
 use tasks::worktree_allocator::AgentWorktreeCommand;
 use tasks::{
     active_goal_manifest, agent_capability_policy, agent_flow, agent_implementation_packet,
-    agent_lease, agent_receipt, aggregate_receipts, badges, bench, benchmarks, build, build_timing,
-    bump_version, change_set, check, check_agent_context, check_lint_policy, check_test_wiring,
-    check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_contract, ci_doctor,
-    ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route, ci_scope,
-    clean, command_evidence, compare, corpus_audit, count_ratchet, cpan_corpus, dead_code,
-    debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc, doc_claims,
-    e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features, finalize_check,
-    fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files,
-    github, github_preflight, github_review, goals, hardening, hook_checks, ignored_tests,
-    incremental_proof, inject_sha_assets, inline_completion_quality, inline_completion_smoke,
-    install_surface_check, integration_proof, intent_diff_gate, issue_plan, layer_check,
-    lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate,
-    metrics, module_train, module_train_live, native_critic, native_format, native_product_surface,
-    native_tooling, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner, parse_rust,
-    parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness, perl_kwalitee,
-    populate_book, pre_push_plan, prep_crates_io_launch, protocol_type_substrate_matrix,
-    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
-    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, receipts, release, release_artifact_check, release_evidence,
-    release_notes, release_turnkey, repo_hygiene, ripr_evidence, seam_diff,
-    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
-    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
-    srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
-    sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract, unwired_scan,
-    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    agent_lease, agent_receipt, agent_review_packet, aggregate_receipts, badges, bench, benchmarks,
+    build, build_timing, bump_version, change_set, check, check_agent_context, check_lint_policy,
+    check_test_wiring, check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_contract,
+    ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route,
+    ci_scope, clean, command_evidence, compare, corpus_audit, count_ratchet, cpan_corpus,
+    dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc,
+    doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features,
+    finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates,
+    generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
+    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
+    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
+    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
+    merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
+    native_format, native_product_surface, native_tooling, oracle_fixture_manifest,
+    oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
+    parser_ratchet, perl_core_harness, perl_kwalitee, populate_book, pre_push_plan,
+    prep_crates_io_launch, protocol_type_substrate_matrix, provider_confidence_matrix,
+    provider_promotion_ledger, publication_facts, publish, publish_closure, publish_manifest_check,
+    publish_receipts, quality_baseline, quality_gate, queue_health, queue_snapshot, receipts,
+    release, release_artifact_check, release_evidence, release_notes, release_turnkey,
+    repo_hygiene, ripr_evidence, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
+    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
+    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
+    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
+    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
     validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
@@ -184,6 +184,33 @@ enum Commands {
         /// adapter or the fake backend.
         #[arg(long)]
         file: PathBuf,
+    },
+
+    /// Validate the shared adversarial review-packet, review-finding, and
+    /// advisory closure-projection contracts (#10881): the closed schemas,
+    /// the programme-neutral fixtures, the fail-closed negative controls,
+    /// the canonical-semantics control, and the deterministic golden
+    /// projections. `--update-golden` rewrites the golden vectors.
+    #[command(name = "check-agent-review-packet")]
+    CheckAgentReviewPacket {
+        /// Rewrite the golden projection vectors (explicit writer action;
+        /// never live review state).
+        #[arg(long)]
+        update_golden: bool,
+    },
+
+    /// Render one projection of a caller-supplied review document (packet,
+    /// finding, or closure projection) to stdout (#10881). Fails closed when
+    /// the document violates the contract. Document instances are
+    /// runtime-local outputs: this command never writes repository files.
+    #[command(name = "render-review-packet")]
+    RenderAgentReviewPacket {
+        /// Projection to render.
+        #[arg(long, value_enum, default_value = "markdown")]
+        format: agent_review_packet::ReviewProjection,
+
+        /// Path to the caller-supplied review document.
+        input: std::path::PathBuf,
     },
 
     /// Run differential oracle comparison (PackageSubTable vertical slice).
@@ -2510,6 +2537,18 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
+
+    /// Check tracked generated artifacts against policy/generated-allowlist.toml.
+    #[command(name = "check-generated")]
+    CheckGenerated {
+        /// Enforcement mode.
+        #[arg(long, value_enum, default_value = "advisory")]
+        mode: tasks::generated_policy::GeneratedPolicyMode,
+
+        /// Override the default JSON receipt path.
+        #[arg(long)]
+        json: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
@@ -4430,6 +4469,21 @@ fn run_cli(cli: Cli) -> Result<()> {
             println!("validated {validated} specialized vim/vim-lsp observations");
             Ok(())
         }
+        Commands::CheckAgentReviewPacket { update_golden } => {
+            agent_review_packet::run(update_golden)
+        }
+        Commands::RenderAgentReviewPacket { format, input } => {
+            let text = std::fs::read_to_string(&input).map_err(|error| {
+                eyre!("failed to read review document {}: {error}", input.display())
+            })?;
+            let doc: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+                eyre!("failed to parse review document {}: {error}", input.display())
+            })?;
+            let rendered = agent_review_packet::render_to_string(&doc, format)?;
+            println!("{rendered}");
+
+            Ok(())
+        }
         Commands::CheckOracleCompare => oracle_runner::run(),
         Commands::CheckSemanticTokenClasses => semantic_token_classes::run(),
         Commands::CheckLsp318Claims => lsp_318_claims::run(),
@@ -5823,6 +5877,10 @@ fn run_cli(cli: Cli) -> Result<()> {
                     root_override,
                 },
             )
+        }
+        Commands::CheckGenerated { mode, json } => {
+            let root = utils::project_root()?;
+            tasks::generated_policy::run(&root, mode, json)
         }
         Commands::FreshnessCheck {
             base,

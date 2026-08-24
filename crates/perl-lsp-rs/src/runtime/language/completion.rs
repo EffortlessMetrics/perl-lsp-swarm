@@ -26,7 +26,7 @@ use crate::{
 use perl_lexer::LSP_RUNTIME_COMPLETION_KEYWORDS;
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_lsp_rs_core::providers::completion::completion_shadow::completion_visibility_shadow;
-use perl_module::resolution::{IncRoot, IncRootKind};
+use perl_module::{IncRoot, IncRootKind};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -3925,7 +3925,7 @@ mod tests {
     #[test]
     fn test_module_completion_roots_match_effective_inc_context_for_workspace_doc()
     -> Result<(), Box<dyn std::error::Error>> {
-        use perl_module::resolution::IncRootKind;
+        use perl_module::IncRootKind;
         use tempfile::TempDir;
         use url::Url;
 

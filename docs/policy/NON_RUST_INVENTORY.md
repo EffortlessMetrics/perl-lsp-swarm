@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11533 |
-| Rust-family files | 3509 |
-| Non-Rust files | 8024 |
-| Allowlisted | 5751 |
-| Unclassified | 2273 |
+| Total tracked files | 11645 |
+| Rust-family files | 3515 |
+| Non-Rust files | 8130 |
+| Allowlisted | 5805 |
+| Unclassified | 2325 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 404 |
-| documentation | 2663 |
+| config | 407 |
+| documentation | 2664 |
 | generated | 2 |
 | production | 317 |
-| test | 1886 |
+| test | 1936 |
 | tooling | 479 |
-| unclassified | 2273 |
+| unclassified | 2325 |
 
 ## Unclassified files
 
@@ -215,6 +215,57 @@
 | `distribution/test-release.sh` | `sh` |
 | `distribution/windows/update-manifests.ps1` | `ps1` |
 | `distribution/winget/perl-lsp.yaml` | `yaml` |
+| `fixtures/clippy_repair_falsifiers/cases/A01-file-wide-suppression-carveout.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/A02-dead-code-baseline-absorption.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/A03-cfg-test-attr-general-carveout.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/A04-exact-lint-group-substitution.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/A05-command-missing-docs-reintroduction.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/A06-required-target-omission.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/A07-required-feature-profile-reduction.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/A08-platform-substitution-linux-for-hosted.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/A09-zero-work-or-malformed-as-success.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/A10-candidate-refresh-baseline-absorption.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/B11-same-total-finding-swap.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/B12-accepted-finding-copy-to-other-path.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/B13-consumed-finding-identity-reintroduction.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/B14-suppression-displacement-count-equal.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/B15-stale-cross-toolchain-receipt.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/B16-open-world-item-as-closed-cleanup.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/C17-ok-erasure-of-result.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/C18-let-underscore-must-use-discard.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/C19-uncontracted-underscore-binding.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/C20-log-only-error-consumption.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/C21-panic-assertion-flow-substitution.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/C22-redaction-weakening-for-cause-retention.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/C23-renamed-error-variable-still-ignored.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/D24-unchecked-byte-slicing-swap.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/D25-get-unwrap-indexing-substitution.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/D26-clamp-default-range-semantics-swap.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/D27-ascii-only-unicode-evidence.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/D28-numeric-helper-semantics-drift.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/D29-atomic-mutex-substitution-unproved.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/D30-await-structure-change-unproofed.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/D31-unsafe-boundary-widening-unowned.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/E32-parameter-bag-without-owner.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/E33-type-alias-only-hiding.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/E34-trampoline-ordering-split.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/E35-ownership-theater-clone-wrapper.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/E36-invariant-free-accessor.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/E37-api-shape-change-as-compliance.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/E38-generated-output-edited-generator-stale.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/F39-lib-only-helper-deletion.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/F40-default-feature-import-deletion.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/F41-auto-suggestion-reexport-deletion.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/F42-unbounded-clippy-fix-scope.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/F43-machine-applicable-crossing-authorities.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/F44-malformed-suggestion-auto-application.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/G45-restating-documentation.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/G46-invented-guarantee-documentation.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/G47-test-proof-weakening-for-green.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/G48-cargo-feature-surface-compliance-change.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/G49-dependency-upgrade-as-duplicate-fix.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/cases/G50-private-evidence-for-product-package.json` | `json` |
+| `fixtures/clippy_repair_falsifiers/manifest.v1.json` | `json` |
 | `fixtures/debug-peer/hello_request.json` | `json` |
 | `fixtures/debug-peer/hello_response.json` | `json` |
 | `fixtures/debug-peer/set_breakpoints_request.json` | `json` |
@@ -1954,6 +2005,7 @@
 | `ripr/pr/pr.diff` | `diff` |
 | `ripr/pr/repo-exposure.json` | `json` |
 | `schemas/agent_context.v1.schema.json` | `json` |
+| `schemas/clippy_repair_falsifiers.v1.schema.json` | `json` |
 | `schemas/compiler_compatibility.v1.schema.json` | `json` |
 | `schemas/diagnostic_explanation.v1.schema.json` | `json` |
 | `schemas/documentation-standards.schema.yml` | `yml` |
@@ -3020,6 +3072,7 @@
 | `.spec/11627-module-train-live/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11627-module-train-live/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11627-module-train-live/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11649-clippy-repair-falsifier-corpus/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -5781,6 +5834,56 @@
 | `fixtures/agent_implementation_packet/invalid/unconditional_profile_with_decision.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/live_observed_candidate.v1.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/shuffled/bounded_leaf_offline_shuffled.v1.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_review_packet/challenger_service_marker.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/closure_open_finding.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/closure_service_marker_eligible.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/consumer_issue_controller_t07_shape.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/finding_stale_marker_resolved.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/challenger_service_marker.compact.txt` | test | `non-rust-agent-review-packet-golden-text` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/challenger_service_marker.machine.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/challenger_service_marker.markdown.md` | test | `non-rust-agent-review-packet-golden-markdown` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/closure_open_finding.compact.txt` | test | `non-rust-agent-review-packet-golden-text` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/closure_open_finding.machine.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/closure_open_finding.markdown.md` | test | `non-rust-agent-review-packet-golden-markdown` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/closure_service_marker_eligible.compact.txt` | test | `non-rust-agent-review-packet-golden-text` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/closure_service_marker_eligible.machine.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/closure_service_marker_eligible.markdown.md` | test | `non-rust-agent-review-packet-golden-markdown` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/consumer_issue_controller_t07_shape.compact.txt` | test | `non-rust-agent-review-packet-golden-text` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/consumer_issue_controller_t07_shape.machine.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/consumer_issue_controller_t07_shape.markdown.md` | test | `non-rust-agent-review-packet-golden-markdown` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/finding_stale_marker_resolved.compact.txt` | test | `non-rust-agent-review-packet-golden-text` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/finding_stale_marker_resolved.machine.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/golden/finding_stale_marker_resolved.markdown.md` | test | `non-rust-agent-review-packet-golden-markdown` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/builder_contract_changed.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/circular_expectation.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/claim_widening.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/compatibility_projection_unowned.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/control_not_load_bearing.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/defect_resolution_prose_only.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/eligible_with_open_finding.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/expected_errors.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/external_stage_inferred.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/force_cleanup_as_success.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/generic_challenge.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/instrument_failure_resolved.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/merge_authority_claimed.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/missing_diff_identity.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/missing_evidence_identity.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/missing_negative_control.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/missing_required_input.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/missing_required_lens.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/missing_subject_binding.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/mutable_review_state.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/prose_resolution.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/required_role_skipped.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/sole_builder_review.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/stale_generated_output.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/stale_head_binding.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/undispositioned_old_path.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/unjustified_lens_skip.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/unverified_obligation.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/invalid/weak_discriminator.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/agent_review_packet/shuffled/challenger_service_marker_shuffled.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
 | `fixtures/debug-peer/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `fixtures/debug-peer/perl/minimal_ptkdb_peer.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `fixtures/train_edge_contract/external_stages.v1.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
@@ -5924,6 +6027,8 @@
 | `ripr/pr/repo-exposure.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `rust-analyzer.toml` | tooling | `non-rust-rust-analyzer-toml` | developer-experience |
 | `schemas/agent_implementation_packet.v1.schema.json` | config | `non-rust-agent-implementation-packet-schema` | tooling/agent-packet |
+| `schemas/agent_review_finding.v1.schema.json` | config | `non-rust-agent-review-finding-schema` | tooling/agent-review |
+| `schemas/agent_review_packet.v1.schema.json` | config | `non-rust-agent-review-packet-schema` | tooling/agent-review |
 | `schemas/binary_identity_protocol.v1.schema.json` | config | `non-rust-binary-identity-schema` | identity |
 | `schemas/install_identity_verification.v1.schema.json` | documentation | `non-rust-install-identity-verification-schema` | release/ci |
 | `schemas/perl_builtin_semantics.v1.schema.json` | config | `non-rust-compiler-builtin-semantics-schema` | compiler |
@@ -5938,6 +6043,7 @@
 | `schemas/perl_core_harness_target_topology_drift.v1.schema.json` | config | `non-rust-core-harness-target-topology-drift-schema` | compiler |
 | `schemas/publication_runtime_identity.v1.schema.json` | config | `non-rust-publication-runtime-identity-schema` | release/ci |
 | `schemas/release_topology.v1.schema.json` | config | `non-rust-release-topology-schema` | release/ci |
+| `schemas/stage_closure_projection.v1.schema.json` | config | `non-rust-stage-closure-projection-schema` | tooling/agent-review |
 | `schemas/train_edge_contract.v1.schema.json` | config | `non-rust-train-edge-contract-schema` | tooling/train-graph |
 | `schemas/vsix_candidate_payload.v1.schema.json` | config | `non-rust-vsix-candidate-payload-schema` | release/ci |
 | `scripts/.ignored-baseline` | tooling | `non-rust-ci-scripts-tree` | release/ci |

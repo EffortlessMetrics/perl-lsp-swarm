@@ -30,8 +30,8 @@ use perl_lsp_rs_core::config::{
     ExternalIncludePathAuthority, UnauthorizedExternalIncludePathSource,
     WorkspaceConfigUpdateContext,
 };
-use perl_module::path::file_path_to_module_name;
-use perl_module::rename::plan_module_rename_edits;
+use perl_module::file_path_to_module_name;
+use perl_module::plan_module_rename_edits;
 #[cfg(feature = "workspace")]
 use perl_parser::workspace_index::{
     DegradationReason, EarlyExitReason, IndexState, ResourceKind, SymbolKind,
@@ -1185,9 +1185,8 @@ impl LspServer {
                                     &sym.qualified_name,
                                 )
                             {
-                                resolved["containerName"] = json!(
-                                    perl_module::path::normalize_package_separator(container)
-                                );
+                                resolved["containerName"] =
+                                    json!(perl_module::normalize_package_separator(container));
                             }
 
                             return Ok(Some(json!(resolved)));

@@ -523,7 +523,9 @@ fn crates_from_files(
 // ---------------------------------------------------------------------------
 
 /// Build a reverse-dependency map: package_name → set of packages that depend on it.
-fn build_reverse_dep_map(metadata: &serde_json::Value) -> BTreeMap<String, BTreeSet<String>> {
+pub(crate) fn build_reverse_dep_map(
+    metadata: &serde_json::Value,
+) -> BTreeMap<String, BTreeSet<String>> {
     let mut rev_deps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     let nodes = match metadata.pointer("/resolve/nodes").and_then(|n| n.as_array()) {
@@ -569,7 +571,7 @@ fn build_reverse_dep_map(metadata: &serde_json::Value) -> BTreeMap<String, BTree
 
 /// Compute the full reverse-dependency closure for a set of changed crate names.
 /// Returns only workspace-internal crates (those present in packages).
-fn reverse_dep_closure(
+pub(crate) fn reverse_dep_closure(
     changed: &BTreeSet<String>,
     rev_deps: &BTreeMap<String, BTreeSet<String>>,
     all_package_names: &BTreeSet<String>,
