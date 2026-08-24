@@ -87,6 +87,17 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
   lives on the upstream receipts: `ripr_pr.receipt_head_sha` is the PR head,
   `head` is the evaluated merge-test SHA, and `review_guidance.changed_production_files`
   records the production scope used for the required-vs-advisory decision.
+- Attributes diff-scoped findings through the real workspace dependency graph
+  rather than the analyzer's caller expansion (#11690). Counted and named seams
+  must sit in a changed workspace package or one of its transitive dependents,
+  derived from `cargo metadata` resolve edges; archived sources under
+  `archive/**` and non-dependent crates drop out of the per-PR count. The
+  packet records this as `attribution.basis =
+  changed_plus_workspace_dependents` with `graph_source = cargo_metadata` plus
+  a per-run status. Fail-open rules keep the gate honest: shared workspace
+  inputs (root `Cargo.toml`, `Cargo.lock`, `.cargo/**`) and unreadable metadata
+  exclude nothing, and paths that cannot be tied to the repository stay
+  counted, so the gate never under-attributes a genuinely reachable gap.
 - Applies the documented suppression policy to diff-scoped PR evidence as well
   as repo-wide RIPR+ receipts. Suppressed paths remain visible in receipts, but
   they do not count as new blocking gaps.
