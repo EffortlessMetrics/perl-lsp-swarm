@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11418 |
-| Rust-family files | 3483 |
-| Non-Rust files | 7935 |
-| Allowlisted | 5662 |
+| Total tracked files | 11440 |
+| Rust-family files | 3484 |
+| Non-Rust files | 7956 |
+| Allowlisted | 5683 |
 | Unclassified | 2273 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 402 |
-| documentation | 2646 |
+| config | 403 |
+| documentation | 2649 |
 | generated | 2 |
-| production | 309 |
-| test | 1830 |
-| tooling | 473 |
+| production | 312 |
+| test | 1843 |
+| tooling | 474 |
 | unclassified | 2273 |
 
 ## Unclassified files
@@ -2985,6 +2985,10 @@
 | `.spec/10817-client-configuration-observations/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10817-client-configuration-observations/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10817-client-configuration-observations/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10858-train-edge-contract/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10858-train-edge-contract/adaptations.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10858-train-edge-contract/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10858-train-edge-contract/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -5723,6 +5727,19 @@
 | `features.toml` | config | `non-rust-features-toml` | lsp/features |
 | `fixtures/debug-peer/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `fixtures/debug-peer/perl/minimal_ptkdb_peer.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/train_edge_contract/external_stages.v1.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
+| `fixtures/train_edge_contract/invalid/expected_errors.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
+| `fixtures/train_edge_contract/invalid/external_stage_satisfied_internally.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
+| `fixtures/train_edge_contract/invalid/fan_in_from_github_state.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
+| `fixtures/train_edge_contract/invalid/missing_reason_class.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
+| `fixtures/train_edge_contract/invalid/mutable_github_state.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
+| `fixtures/train_edge_contract/invalid/optional_edge_in_required_set.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
+| `fixtures/train_edge_contract/invalid/sidecar_in_core_spine.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
+| `fixtures/train_edge_contract/invalid/two_active_conditional_alternatives.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
+| `fixtures/train_edge_contract/invalid/unknown_edge_kind.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
+| `fixtures/train_edge_contract/invalid/unknown_selecting_authority.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
+| `fixtures/train_edge_contract/neovim_examples.v1.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
+| `fixtures/train_edge_contract/shuffled/neovim_examples_shuffled.v1.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
 | `flake.lock` | config | `non-rust-flake-lock` | release/ci |
 | `flake.nix` | tooling | `non-rust-flake-nix` | release/ci |
 | `fuzz/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
@@ -5864,6 +5881,7 @@
 | `schemas/perl_core_harness_target_topology_drift.v1.schema.json` | config | `non-rust-core-harness-target-topology-drift-schema` | compiler |
 | `schemas/publication_runtime_identity.v1.schema.json` | config | `non-rust-publication-runtime-identity-schema` | release/ci |
 | `schemas/release_topology.v1.schema.json` | config | `non-rust-release-topology-schema` | release/ci |
+| `schemas/train_edge_contract.v1.schema.json` | config | `non-rust-train-edge-contract-schema` | tooling/train-graph |
 | `schemas/vsix_candidate_payload.v1.schema.json` | config | `non-rust-vsix-candidate-payload-schema` | release/ci |
 | `scripts/.ignored-baseline` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/DEPRECATED_RELEASE_SCRIPTS.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -7729,6 +7747,7 @@
 | `vscode-extension/snippets/launch.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/snippets/perl.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/accessibilityInventory.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/activationOwner.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/activationTransaction.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/activeDocumentReadiness.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/binaryIdentityCommand.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -7794,6 +7813,8 @@
 | `vscode-extension/src/supportPacket.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/__mocks__/vscode.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/accessibilityInventory.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/activationOwner.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/activationOwnership.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/activationStartup.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/activationTransaction.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/activationTransactionFaultMatrix.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
