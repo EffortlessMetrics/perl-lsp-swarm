@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11408 |
-| Rust-family files | 3478 |
-| Non-Rust files | 7930 |
-| Allowlisted | 5657 |
+| Total tracked files | 11414 |
+| Rust-family files | 3482 |
+| Non-Rust files | 7932 |
+| Allowlisted | 5659 |
 | Unclassified | 2273 |
 
 ## Non-Rust files by category
@@ -17,10 +17,10 @@
 | Category | Count |
 |---|---|
 | config | 402 |
-| documentation | 2644 |
+| documentation | 2645 |
 | generated | 2 |
 | production | 309 |
-| test | 1829 |
+| test | 1830 |
 | tooling | 471 |
 | unclassified | 2273 |
 
@@ -3344,14 +3344,16 @@
 | `book/src/user-guides/lsp-features.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `book/src/user-guides/troubleshooting.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `book/src/user-guides/workspace-navigation.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `clients/lite-xl/tests/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `clients/lite-xl/tests/diagnostics_currentness_test.lua` | test | `non-rust-litexl-diagnostics-currentness-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/harness.lua` | test | `non-rust-litexl-journey-harness` | editor/lite-xl |
 | `clients/lite-xl/tests/init_configuration_items_test.lua` | test | `non-rust-litexl-init-configuration-items-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_document_session_test.lua` | test | `non-rust-litexl-init-session-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_request_currentness_test.lua` | test | `non-rust-litexl-init-request-currentness-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/journey_session_test.lua` | test | `non-rust-litexl-journey-session-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/json_decode_test.lua` | test | `non-rust-litexl-json-decode-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_frame_test.lua` | test | `non-rust-litexl-server-frame-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_logging_test.lua` | test | `non-rust-litexl-server-logging-tests` | editor/lite-xl |
-| `clients/lite-xl/tests/util_file_uri_test.lua` | test | `non-rust-litexl-file-uri-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_show_document_test.lua` | test | `non-rust-litexl-show-document-tests` | editor/lite-xl |
 | `clients/lite-xl/upstream/diagnostics.lua` | production | `non-rust-litexl-diagnostics-store` | editor/lite-xl |
 | `clients/lite-xl/upstream/init.lua` | production | `non-rust-litexl-init-plugin` | editor/lite-xl |
