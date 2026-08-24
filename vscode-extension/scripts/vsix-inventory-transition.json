@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 7856,
-  "reason": "#7856 adds the harness-gated packaged activation-failure seam to activate() (out/extension.js 1516689->1519372 archive-measured on top of the #11983 package.json withdrawal) and the packaged cleanup/retry journey plus its changelog entry (changelog.md 22224->23221 after the vsce markdown processor). No file added, removed, or loosened; total recomputed ->1695683.",
-  "base_baseline_file_sha256": "a4f9360c51a5d263c45628c1b4ec2da9e6861a7a4d8912aa55e7e66e57dbc6b5",
-  "candidate_baseline_file_sha256": "4a662d41a6f80249245b526e89b6b706d1b847195c16231fe0d303cbd44a5011",
-  "base_inventory_sha256": "d70d8236a4363008fab2965595c2add0b79a5161c705017283141a44d9fe1521",
-  "candidate_inventory_sha256": "3087c97c983e74fbc5d814d8739e985dbacc26a54e7ad32c43f1e3f9dae7c19e"
+  "owner_issue": 7845,
+  "reason": "#7845 routes the process-exit crash handler, the watchdog timeout path, and the automatic-restart budget in extension.ts through the landed CrashRecoveryArbiter (out/extension.js 1519372->1527850 archive-measured on the current-source Linux smoke). No file added, removed, or loosened; total recomputed ->1704161.",
+  "base_baseline_file_sha256": "4a662d41a6f80249245b526e89b6b706d1b847195c16231fe0d303cbd44a5011",
+  "candidate_baseline_file_sha256": "604921556caa0f029bb950d6751f284591fb914c4e73222869a1fd2cc9e0a724",
+  "base_inventory_sha256": "3087c97c983e74fbc5d814d8739e985dbacc26a54e7ad32c43f1e3f9dae7c19e",
+  "candidate_inventory_sha256": "991b93d3539165fe545285d7ca7097f076a295c163cebb22c12fb85d4cef133a"
 }
