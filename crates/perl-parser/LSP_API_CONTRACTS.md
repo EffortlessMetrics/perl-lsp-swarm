@@ -28,11 +28,8 @@ These contracts are enforced by tests in `tests/lsp_api_contracts.rs`.
       "willSaveWaitUntil": false
     },
     "completionProvider": {
-      "triggerCharacters": ["$", "@", "%", "->"]  // EXACT set required
-      // MUST NOT include "-" or ">" as separate triggers
-    },
-    "hoverProvider": true,
-    "definitionProvider": true,
+    // Range and on-type formatting are withdrawn from live routes and are
+    // therefore absent from advertised capabilities.
     "referencesProvider": true,
     "documentSymbolProvider": true,
     "workspaceSymbolProvider": true,
