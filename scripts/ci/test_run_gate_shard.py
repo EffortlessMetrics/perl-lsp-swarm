@@ -252,6 +252,7 @@ def run_direct(
     gates: list[str],
     *,
     dependencies: dict[str, list[str]] | None = None,
+    clean_restored_receipts: bool = False,
 ) -> tuple[int, dict[str, object], list[str], list[dict[str, object]]]:
     policy = write_policy(root, dependencies or {gate: [] for gate in gates})
     receipt_schema = write_receipt_schema(root)
@@ -266,6 +267,7 @@ def run_direct(
         gates=gates,
         dependency_rules=rules,
         receipt_contract=contract,
+        clean_restored_receipts=clean_restored_receipts,
     )
     invoked: list[str] = []
     options: list[dict[str, object]] = []
@@ -1678,6 +1680,109 @@ class GateShardTests(unittest.TestCase):
             extract_gate_shard_runner_step(
                 "jobs:\n  other:\n    steps:\n      - name: meta\n        run: echo meta\n"
             )
+
+
+class RestoredReceiptCleanupTests(unittest.TestCase):
+    """Cache-restored receipt state from unrelated SHAs must not leak into
+    this run's gate-receipt artifact (#12085)."""
+
+    @staticmethod
+    def _seed_foreign_state(root: Path) -> None:
+        receipts = root / "receipts"
+        shards = receipts / "shards"
+        summaries = receipts / "shard-summaries"
+        logs = receipts / "logs"
+        artifacts = receipts / "artifacts"
+        for directory in (shards, summaries, logs, artifacts):
+            directory.mkdir(parents=True, exist_ok=True)
+        (shards / "alpha.json").write_text('{"foreign": true}', encoding="utf-8")
+        # A summary for a shard that never runs in this invocation.
+        (summaries / "other-shard.json").write_text(
+            '{"subject": "0000000000000000000000000000000000000000"}',
+            encoding="utf-8",
+        )
+        (logs / "stale.log").write_text("foreign log", encoding="utf-8")
+        (artifacts / "stale.bin").write_bytes(b"\x00\x01")
+        # A stale shard summary at this run's exact summary path.
+        (summaries / "meta.json").write_text('{"stale": true}', encoding="utf-8")
+
+    def test_clean_flag_purges_foreign_state_before_gates_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed_foreign_state(root)
+            status, summary, invoked, _ = run_direct(
+                Path(tmp),
+                {"alpha": {"status": "pass", "exit": 0}},
+                ["alpha"],
+                clean_restored_receipts=True,
+            )
+            self.assertEqual(0, status)
+            self.assertEqual(["alpha"], invoked)
+            receipts = root / "receipts"
+            # Every cache-restored artifact is gone...
+            self.assertFalse((receipts / "logs" / "stale.log").exists())
+            self.assertFalse((receipts / "artifacts" / "stale.bin").exists())
+            self.assertFalse((receipts / "shards" / "alpha.json").exists())
+            self.assertFalse((receipts / "shard-summaries" / "other-shard.json").exists())
+            self.assertFalse((receipts / "shard-summaries" / "meta.json").exists())
+            # ...and only this run's outputs remain: the fresh summary at
+            # this run's summary path plus the gate's freshly written,
+            # subject-stamped receipt.
+            self.assertTrue((root / "summary.json").exists())
+            fresh_receipt = json.loads(
+                (receipts / "alpha.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(SUBJECT, fresh_receipt["metadata"]["git_sha"])
+            self.assertEqual(
+                ["success"], [row["result"] for row in summary["gates"]]
+            )
+
+    def test_without_flag_foreign_sibling_summaries_persist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed_foreign_state(root)
+            status, _, _, _ = run_direct(
+                Path(tmp),
+                {"alpha": {"status": "pass", "exit": 0}},
+                ["alpha"],
+            )
+            self.assertEqual(0, status)
+            receipts = root / "receipts"
+            # Opt-in flag: without it the runner keeps pre-existing state so
+            # callers relying on resume-style reuse are unaffected.
+            self.assertTrue((receipts / "logs" / "stale.log").exists())
+            self.assertTrue(
+                (receipts / "shard-summaries" / "other-shard.json").exists()
+            )
+
+    def test_cleanup_refuses_symlinked_receipt_dir(self) -> None:
+        if os.name == "nt":
+            self.skipTest("directory symlinks require elevated Windows privileges")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "keep.txt").write_text("survivor", encoding="utf-8")
+            (root / "receipts").symlink_to(outside, target_is_directory=True)
+            policy = write_policy(root, {"alpha": []})
+            receipt_schema = write_receipt_schema(root)
+            rules = shard.load_execution_policy(policy, ["alpha"])
+            contract = shard.load_receipt_contract(receipt_schema)
+            runner = shard.ShardRunner(
+                xtask=Path("target/debug/xtask"),
+                gate_policy=policy,
+                receipt_dir=root / "receipts" / "shards",
+                summary_path=root / "receipts" / "shard-summaries" / "meta.json",
+                subject_sha=SUBJECT,
+                gates=["alpha"],
+                dependency_rules=rules,
+                receipt_contract=contract,
+                clean_restored_receipts=True,
+            )
+            with self.assertRaises(ValueError):
+                runner.run()
+            # Fail-closed means fail-closed: nothing behind the link was touched.
+            self.assertTrue((outside / "keep.txt").exists())
 
 
 if __name__ == "__main__":
