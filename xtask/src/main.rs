@@ -45,7 +45,7 @@ use tasks::{
     inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
     issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
     merge_ready, methodology_gate, metrics, native_critic, native_format, native_product_surface,
-    native_tooling, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner, parse_rust,
+    compiler_performance_receipt, native_tooling, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner, parse_rust,
     parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness, perl_kwalitee,
     populate_book, pre_push_plan, prep_crates_io_launch, protocol_type_substrate_matrix,
     provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
@@ -138,6 +138,9 @@ enum Commands {
 
     /// Validate differential real-Perl oracle receipt schema.
     CheckOracleReceiptSchema,
+
+    /// Validate compiler performance receipt schema and vocabulary.
+    CheckCompilerPerformanceReceipt,
 
     /// Run differential oracle comparison (PackageSubTable vertical slice).
     ///
@@ -4097,6 +4100,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
+        Commands::CheckCompilerPerformanceReceipt => compiler_performance_receipt::run(),
         Commands::CheckOracleCompare => oracle_runner::run(),
         Commands::CheckSemanticTokenClasses => semantic_token_classes::run(),
         Commands::CheckLsp318Claims => lsp_318_claims::run(),
