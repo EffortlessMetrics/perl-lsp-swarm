@@ -106,14 +106,17 @@ impl PerlLexer<'_> {
     }
 
     fn unterminated_regex_error(&mut self, start: usize) -> Token {
-        // The scan already consumed through EOF (or a stuck decode). Cover that
-        // span so callers do not see a silent hole before EOF.
+        // Same line-bounded recovery as unterminated strings (#5090): keep later
+        // statements lexable instead of swallowing the rest of the file.
+        // Inputs without a newline (including `/\0`) still cover through EOF.
+        let end = self.line_bounded_unclosed_end(start);
+        self.position = end;
         self.mode = LexerMode::ExpectTerm;
         Token {
             token_type: TokenType::Error(Arc::from("unterminated regex")),
-            text: Arc::from(&self.input[start..self.position]),
+            text: Arc::from(&self.input[start..end]),
             start,
-            end: self.position,
+            end,
         }
     }
 }

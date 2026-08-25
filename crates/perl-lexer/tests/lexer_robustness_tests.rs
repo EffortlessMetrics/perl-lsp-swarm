@@ -156,6 +156,28 @@ fn division_after_number_with_nul_still_emits_eof() {
     assert_eq!(tokens.last().map(|token| &token.token_type), Some(&TokenType::EOF));
 }
 
+/// Parser-stack fixture: a broken `/…` must not swallow the next line (#12504).
+/// Same line-bounded recovery as unterminated strings (#5090).
+#[test]
+fn unterminated_regex_is_line_bounded_so_followup_statement_lexes() {
+    let input = "if ($text =~ /abc) { print 1; }\nmy $ok = 1;";
+    assert_terminates_with_valid_spans(input);
+    let tokens = PerlLexer::new(input).collect_tokens();
+    let slash_at = input.find('/').expect("fixture contains `/`");
+    let newline_at = input.find('\n').expect("fixture contains a newline");
+    let recovery = tokens
+        .iter()
+        .find(|token| token.start == slash_at && token.token_type.is_recovery_token())
+        .unwrap_or_else(|| panic!("expected unterminated-regex recovery; tokens={tokens:?}"));
+    assert_eq!(recovery.end, newline_at);
+    assert_eq!(recovery.text.as_ref(), &input[slash_at..newline_at]);
+    assert!(
+        tokens.iter().any(|token| token.start > newline_at && token.text.as_ref().contains("ok")),
+        "follow-up `my $ok` must still be tokenized; tokens={tokens:?}"
+    );
+    assert_eq!(tokens.last().map(|token| &token.token_type), Some(&TokenType::EOF));
+}
+
 fn assert_terminates_with_valid_spans(input: &str) {
     let mut lexer = PerlLexer::new(input);
     let max_tokens = input.len().saturating_mul(2).saturating_add(100);

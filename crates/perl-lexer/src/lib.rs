@@ -3101,15 +3101,22 @@ impl<'a> PerlLexer<'a> {
     }
 
     #[inline]
+    pub(crate) fn line_bounded_unclosed_end(&self, start: usize) -> usize {
+        let Some(remaining) = self.input.get(start..) else {
+            return self.input.len();
+        };
+        match remaining.find('\n') {
+            Some(nl_offset) => start.saturating_add(nl_offset),
+            None => self.input.len(),
+        }
+    }
+
+    #[inline]
     fn unterminated_string_error(&mut self, start: usize) -> Token {
         // Line-bounded recovery: consume to end of line (or EOF if no newline).
         // This allows subsequent declarations to be lexed after an unterminated
         // string on the same line, instead of losing the entire rest of the file. (#5090)
-        let remaining = &self.input[start..];
-        let end = match remaining.find('\n') {
-            Some(nl_offset) => start + nl_offset, // include the newline in the error token
-            None => self.input.len(),             // single-line file or last line
-        };
+        let end = self.line_bounded_unclosed_end(start);
         self.position = end;
 
         Token {
