@@ -21,6 +21,7 @@ lua clients/lite-xl/tests/init_document_session_test.lua  # init.lua sessions/ve
 lua clients/lite-xl/tests/init_request_currentness_test.lua # init.lua request admission
 lua clients/lite-xl/tests/init_configuration_items_test.lua # init.lua configuration items
 lua clients/lite-xl/tests/init_show_document_outcome_test.lua # init.lua showDocument outcomes
+lua clients/lite-xl/tests/init_completion_resolve_test.lua # init.lua completion resolve pre-apply
 lua clients/lite-xl/tests/diagnostics_currentness_test.lua  # diagnostics.lua publications
 ```
 
