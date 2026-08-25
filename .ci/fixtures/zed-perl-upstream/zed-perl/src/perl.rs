@@ -282,6 +282,71 @@ struct PerllspCommandSettings {
     env: Vec<(String, String)>,
 }
 
+/// Typed executable-selection routes for the managed product (#11041).
+///
+/// Variant meanings mirror the host-receipt `resolution_route` vocabulary
+/// (`explicit_path` / `worktree_path` / `managed_download`) so every support
+/// and evidence surface keeps the three cells separate. Authority is carried
+/// by the route classification alone: a route variant deliberately holds no
+/// path or digest fields, because canonical binary identity (#10340) proves
+/// what was selected and can never prove that the selecting source was
+/// authorized.
+///
+/// The extension API exposes no receipt channel, so variants are contract
+/// vocabulary rather than runtime-constructed values; host receipts record
+/// which cell fired.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutionRoute {
+    /// `lsp.perllsp.binary.path`. Current Zed consumes this setting above this
+    /// extension and gates it on its own worktree-trust boundary; the value
+    /// never needs extension execution. This extension refuses duplicate
+    /// grants: merged settings expose no provenance, so no client-side label
+    /// can prove user or machine authority.
+    ExplicitOverride,
+    /// `worktree.which("perllsp")`: the Zed-defined worktree shell
+    /// environment. direnv/shell hooks may alter resolution, so this cell
+    /// stays visibly distinct from managed release identity and is never
+    /// presented as release-backed evidence.
+    WorktreePathDiscovery,
+    /// The digest-bound canonical public release artifact (#10340/#10530,
+    /// offline startup #11308).
+    ManagedArtifact,
+}
+
+/// Fail-closed refusal for an unclassifiable execution source (#11041).
+///
+/// Names the policy, why provenance cannot be proven against the current
+/// extension API, the host-owned trusted mechanism, and every remaining
+/// authorized alternative. It deliberately never echoes the refused value:
+/// project-controlled input must not reach durable logs through this error.
+const EXECUTION_SOURCE_REFUSAL: &str = concat!(
+    "refusing `lsp.perllsp.binary.path`: merged Zed settings carry no provenance, ",
+    "so this extension cannot prove who authorized this executable (#11041); ",
+    "current Zed launches settings-binary overrides itself behind its worktree trust prompt, ",
+    "so no extension-side grant is needed; to run a local build through this extension instead, ",
+    "put it on the worktree PATH or enable the digest-bound managed download"
+);
+
+/// The single fail-closed execution-source gate for the managed product
+/// (#11041). Every `perllsp` launch consumes this decision BEFORE any binary
+/// lookup, command construction, download, or process start.
+///
+/// Merged `LspSettings` expose no provenance, so a non-empty
+/// `lsp.perllsp.binary.path` observed here cannot prove user or machine
+/// authority and is refused rather than silently executed. Unknown provenance
+/// never defaults to trusted, and project/resource precedence can never widen
+/// execution authority.
+fn authorize_execution_source(explicit_override: Option<&str>) -> Result<(), String> {
+    match explicit_override {
+        Some(path) if path.trim().is_empty() => {
+            Err("lsp.perllsp.binary.path must not be empty".to_string())
+        }
+        Some(_) => Err(EXECUTION_SOURCE_REFUSAL.to_string()),
+        None => Ok(()),
+    }
+}
+
 struct PerlExtension {
     did_find_server: bool,
     perl_lsp_path: Option<String>,
@@ -467,14 +532,12 @@ impl PerlExtension {
         language_server_id: &LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
+        // Classify the execution source BEFORE any binary lookup, command
+        // construction, download, or process start (#11041). An unproven
+        // merged override is refused here and can never reach resolution.
         let command_settings = perllsp_command_settings(worktree)?;
-        let command = match command_settings.path.as_deref() {
-            Some(path) if path.trim().is_empty() => {
-                return Err("lsp.perllsp.binary.path must not be empty".to_string());
-            }
-            Some(path) => path.to_string(),
-            None => self.perllsp_binary(language_server_id, worktree)?,
-        };
+        authorize_execution_source(command_settings.path.as_deref())?;
+        let command = self.perllsp_binary(language_server_id, worktree)?;
         let args = normalize_perllsp_args(command_settings.arguments)?;
 
         Ok(zed::Command { command, args, env: command_settings.env })
@@ -1387,6 +1450,81 @@ mod tests {
         ] {
             assert_ne!(state, UpdateState::NotRequested);
         }
+    }
+
+    // ---- execution-source authority (#11041) ----
+
+    #[test]
+    fn merged_explicit_overrides_fail_closed_before_any_lookup() -> Result<(), String> {
+        for path in [
+            "/usr/local/bin/perllsp",
+            "C:\\tools\\perllsp.exe",
+            "./target/debug/perllsp",
+            "~/bin/perllsp",
+            "perllsp-attacker-build",
+        ] {
+            let error = authorize_execution_source(Some(path))
+                .err()
+                .ok_or_else(|| format!("override `{path}` must not execute"))?;
+            assert!(error.contains("#11041"), "refusal must name its policy for `{path}`: {error}");
+            assert!(
+                error.contains("worktree PATH") && error.contains("managed download"),
+                "refusal must name every remaining authorized route: {error}"
+            );
+            // Project-controlled input must not be echoed into durable logs.
+            assert!(!error.contains(path), "refusal leaked the refused value");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_provenance_never_defaults_to_trusted() {
+        // The gate has no input shape that yields an unclassified grant:
+        // absent override authorizes only the two bounded cells downstream,
+        // and any present value is refused outright.
+        assert!(authorize_execution_source(None).is_ok());
+        let arbitrary = "\u{0}weird\u{7f}";
+        assert!(authorize_execution_source(Some(arbitrary)).is_err());
+    }
+
+    #[test]
+    fn empty_override_keeps_the_typed_rejection() {
+        for empty in ["", "   ", "\t"] {
+            assert_eq!(
+                authorize_execution_source(Some(empty)).err().as_deref(),
+                Some("lsp.perllsp.binary.path must not be empty"),
+            );
+        }
+    }
+
+    #[test]
+    fn execution_routes_map_to_distinct_receipt_cells() {
+        fn receipt_cell(route: ExecutionRoute) -> &'static str {
+            match route {
+                ExecutionRoute::ExplicitOverride => "explicit_path",
+                ExecutionRoute::WorktreePathDiscovery => "worktree_path",
+                ExecutionRoute::ManagedArtifact => "managed_download",
+            }
+        }
+        let cells = [
+            receipt_cell(ExecutionRoute::ExplicitOverride),
+            receipt_cell(ExecutionRoute::WorktreePathDiscovery),
+            receipt_cell(ExecutionRoute::ManagedArtifact),
+        ];
+        let mut unique = cells.to_vec();
+        unique.dedup();
+        assert_eq!(unique.len(), cells.len(), "route cells must stay separate");
+        // Public support claims can only ever ride the release-identity cell.
+        assert_eq!(receipt_cell(ExecutionRoute::ManagedArtifact), "managed_download");
+    }
+
+    #[test]
+    fn exact_identity_never_upgrades_unauthorized_selection() {
+        // Canonical binary identity proves what was selected, never that the
+        // selecting source was authorized: even an exactly-named absolute
+        // path gains nothing from merged settings (#10340 vs #11041).
+        assert!(authorize_execution_source(Some("/exact/perllsp")).is_err());
+        assert!(authorize_execution_source(Some("sha256:perllsp")).is_err());
     }
 
     #[test]
