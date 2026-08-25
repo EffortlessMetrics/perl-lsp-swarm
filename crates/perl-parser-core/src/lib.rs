@@ -92,6 +92,8 @@ pub mod pir;
 pub mod syntax;
 /// Token stream and trivia utilities for the parser.
 pub mod tokens;
+/// Bounded, non-executing evaluation of source expressions.
+pub mod value_analysis;
 
 /// Index into the diagnostics array in [`ParseOutput`] (from `ast_v2`).
 pub use ast_v2::{DiagnosticId, MissingKind};

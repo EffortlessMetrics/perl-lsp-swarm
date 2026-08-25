@@ -19,6 +19,7 @@ const DISCOVERY_DECLARATION_LIMITATION: &str =
 const DIRECT_FALLBACK_LIMITATION: &str = "direct_fallback_missing_upstream_selection_context";
 const ALTERNATE_RUNNER_LIMITATION: &str = "alternate_runner_requires_membership_parity_evidence";
 
+#[cfg(test)]
 pub(crate) fn build_runner_plan(
     matrix: &UpstreamTargetMatrix,
     target_id: &str,

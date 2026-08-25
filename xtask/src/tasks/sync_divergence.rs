@@ -15,25 +15,76 @@ const CLASSIFICATIONS: [&str; 5] = [
     "release_lineage_only",
 ];
 
+const LEDGER_SCHEMA_VERSION: u32 = 2;
+const RECEIPT_SCHEMA_VERSION: u32 = 2;
+
 /// Arguments for the sync-divergence preflight.
 pub struct CheckConfig {
-    /// Common source/target base used for the git cherry comparison.
-    pub base: String,
-    /// Active swarm source ref.
+    /// Exact swarm source ref; resolved as the patch-equivalence upstream.
     pub source: String,
-    /// Release-repo target ref, normally the first parent of the sync merge.
+    /// Completed reconciliation boundary ref; resolved as the exclusive history floor.
+    pub boundary: String,
+    /// Release-repo target ref (normally the release repository head).
     pub target: String,
     /// Machine-readable reconciliation ledger.
     pub ledger: PathBuf,
     /// Output source-sync receipt JSON.
     pub receipt: PathBuf,
+    /// Repository to run against; defaults to the process working directory.
+    pub working_directory: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+struct Subjects {
+    source: SubjectState,
+    boundary: SubjectState,
+    target: SubjectState,
+}
+
+#[derive(Debug)]
+struct SubjectState {
+    input: String,
+    commit: Option<String>,
+}
+
+impl Subjects {
+    fn from_config(config: &CheckConfig) -> Self {
+        let state = |input: &String| SubjectState { input: input.clone(), commit: None };
+        Self {
+            source: state(&config.source),
+            boundary: state(&config.boundary),
+            target: state(&config.target),
+        }
+    }
+}
+
+impl From<&Subjects> for ReceiptSubjects {
+    fn from(subjects: &Subjects) -> Self {
+        let state = |subject: &SubjectState, role: &'static str| ReceiptSubject {
+            role,
+            input: subject.input.clone(),
+            commit: subject.commit.clone(),
+        };
+        Self {
+            source: state(&subjects.source, "patch_equivalence_upstream"),
+            boundary: state(&subjects.boundary, "history_limit"),
+            target: state(&subjects.target, "release_head"),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ResolvedShas {
+    source: String,
+    boundary: String,
+    target: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct Ledger {
     schema_version: u32,
-    base: String,
     source: String,
+    boundary: String,
     target: String,
     entries: Vec<LedgerEntry>,
 }
@@ -49,15 +100,28 @@ struct LedgerEntry {
 #[derive(Debug, Serialize)]
 struct Receipt {
     schema_version: u32,
-    base: String,
-    source: String,
-    target: String,
+    subjects: ReceiptSubjects,
     ledger: String,
     target_unique_commits: Vec<ReceiptCommit>,
     excluded_merge_commits: Vec<String>,
+    excluded_merge_ancestry: Vec<ExcludedMerge>,
     excluded_release_lineage_commits: Vec<String>,
     accepted_commits: Vec<String>,
     errors: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReceiptSubjects {
+    source: ReceiptSubject,
+    boundary: ReceiptSubject,
+    target: ReceiptSubject,
+}
+
+#[derive(Debug, Serialize)]
+struct ReceiptSubject {
+    role: &'static str,
+    input: String,
+    commit: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -67,31 +131,60 @@ struct ReceiptCommit {
     classification: String,
 }
 
+#[derive(Debug, Serialize)]
+struct ExcludedMerge {
+    commit: String,
+    subject: String,
+    parents: Vec<String>,
+}
+
 #[derive(Debug)]
 struct CherryCommit {
     commit: String,
     subject: String,
-    is_merge: bool,
+    parents: Vec<String>,
+}
+
+impl CherryCommit {
+    fn is_merge(&self) -> bool {
+        self.parents.len() > 1
+    }
 }
 
 /// Run the preflight and write a receipt even when validation fails.
 pub fn check(config: CheckConfig) -> Result<()> {
+    let directory = config.working_directory.as_deref();
+    let mut subjects = Subjects::from_config(&config);
+
+    let shas = match resolve_subjects(&mut subjects, directory) {
+        Ok(shas) => shas,
+        Err(error) => return fail_with_receipt(&config, &subjects, error),
+    };
+    if let Err(error) = ensure_boundary_bounds_target(&shas, directory) {
+        return fail_with_receipt(&config, &subjects, error);
+    }
+    if let Err(error) = ensure_source_not_contained_in_target(&shas, directory) {
+        return fail_with_receipt(&config, &subjects, error);
+    }
+
     let ledger = match load_ledger(&config.ledger) {
         Ok(ledger) => ledger,
-        Err(error) => return fail_with_receipt(&config, error),
+        Err(error) => return fail_with_receipt(&config, &subjects, error),
     };
-    if let Err(error) = validate_ledger_identity(&ledger, &config) {
-        return fail_with_receipt(&config, error);
+    if let Err(error) = validate_ledger_identity(&ledger, &shas) {
+        return fail_with_receipt(&config, &subjects, error);
     }
-    if let Err(error) = validate_source_ref(&config.source) {
-        return fail_with_receipt(&config, error);
-    }
-    let target_unique = match target_unique_commits(&config.base, &config.target) {
+
+    let target_unique = match comparison_population(&shas, directory) {
         Ok(commits) => commits,
-        Err(error) => return fail_with_receipt(&config, error),
+        Err(error) => return fail_with_receipt(&config, &subjects, error),
+    };
+    let excluded_merges = match excluded_merge_ancestry(&shas, directory) {
+        Ok(merges) => merges,
+        Err(error) => return fail_with_receipt(&config, &subjects, error),
     };
 
-    let (receipt, errors) = reconcile(&config, &ledger, &target_unique);
+    let (receipt, errors) = reconcile(&config, &ledger, &target_unique, excluded_merges, &subjects);
     write_receipt(&config.receipt, &receipt)?;
 
     if errors.is_empty() {
@@ -113,6 +206,8 @@ fn reconcile(
     config: &CheckConfig,
     ledger: &Ledger,
     target_unique: &[CherryCommit],
+    excluded_merges: Vec<ExcludedMerge>,
+    subjects: &Subjects,
 ) -> (Receipt, Vec<String>) {
     let mut errors = Vec::new();
     let mut entries = BTreeMap::new();
@@ -123,15 +218,19 @@ fn reconcile(
             entries.insert(entry.commit.as_str(), entry);
         }
     }
+
+    let mut ordered = BTreeMap::new();
+    for commit in target_unique {
+        ordered.insert(commit.commit.as_str(), commit);
+    }
+
     let mut seen = BTreeSet::new();
     let mut receipt_commits = Vec::new();
-    let mut excluded_merge_commits = Vec::new();
     let mut excluded_release_lineage_commits = Vec::new();
     let mut accepted_commits = Vec::new();
 
-    for commit in target_unique {
-        if commit.is_merge {
-            excluded_merge_commits.push(commit.commit.clone());
+    for commit in ordered.values() {
+        if commit.is_merge() {
             continue;
         }
 
@@ -183,14 +282,15 @@ fn reconcile(
         }
     }
 
+    let excluded_merge_commits =
+        excluded_merges.iter().map(|merge| merge.commit.clone()).collect::<Vec<_>>();
     let receipt = Receipt {
-        schema_version: 1,
-        base: config.base.clone(),
-        source: config.source.clone(),
-        target: config.target.clone(),
+        schema_version: RECEIPT_SCHEMA_VERSION,
+        subjects: ReceiptSubjects::from(subjects),
         ledger: config.ledger.display().to_string(),
         target_unique_commits: receipt_commits,
         excluded_merge_commits,
+        excluded_merge_ancestry: excluded_merges,
         excluded_release_lineage_commits,
         accepted_commits,
         errors: errors.clone(),
@@ -205,95 +305,239 @@ fn has_evidence(entry: &LedgerEntry) -> bool {
 fn load_ledger(path: &Path) -> Result<Ledger> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("reading reconciliation ledger {}", path.display()))?;
-    let ledger = serde_json::from_str(&content)
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .with_context(|| format!("parsing reconciliation ledger {}", path.display()))?;
+    let Some(version) = value.get("schema_version").and_then(serde_json::Value::as_u64) else {
+        return Err(eyre!(
+            "reconciliation ledger {} has no numeric schema_version",
+            path.display()
+        ));
+    };
+    if version != u64::from(LEDGER_SCHEMA_VERSION) {
+        return Err(eyre!(
+            "unsupported reconciliation ledger schema version {}; version {LEDGER_SCHEMA_VERSION} requires exact source, boundary, and target object ids",
+            version
+        ));
+    }
+    let ledger: Ledger = serde_json::from_value(value)
         .with_context(|| format!("parsing reconciliation ledger {}", path.display()))?;
     Ok(ledger)
 }
 
-fn validate_ledger_identity(ledger: &Ledger, config: &CheckConfig) -> Result<()> {
-    if ledger.schema_version != 1 {
+fn validate_ledger_identity(ledger: &Ledger, shas: &ResolvedShas) -> Result<()> {
+    if ledger.schema_version != LEDGER_SCHEMA_VERSION {
         return Err(eyre!(
-            "unsupported reconciliation ledger schema version {}",
+            "unsupported reconciliation ledger schema version {}; version {LEDGER_SCHEMA_VERSION} requires exact source, boundary, and target object ids",
             ledger.schema_version
         ));
     }
-    if ledger.base != config.base
-        || ledger.source != config.source
-        || ledger.target != config.target
+    if ledger.source != shas.source
+        || ledger.boundary != shas.boundary
+        || ledger.target != shas.target
     {
         return Err(eyre!(
-            "reconciliation ledger refs do not match --base, --source, and --target"
+            "reconciliation ledger identity does not match the resolved subjects: \
+             expected source={} boundary={} target={}",
+            shas.source,
+            shas.boundary,
+            shas.target
         ));
     }
     Ok(())
 }
 
-fn validate_source_ref(source: &str) -> Result<()> {
-    resolve_commit_ref("source", source)?;
-    Ok(())
+/// Resolve every subject independently so a failure receipt records each
+/// subject's actual outcome; a receipt must never record `commit: null` for a
+/// subject whose resolution was never attempted.
+fn resolve_subjects(subjects: &mut Subjects, directory: Option<&Path>) -> Result<ResolvedShas> {
+    let mut attempt = |label: &str, state: &mut SubjectState| -> Result<String> {
+        let resolved = resolve_subject(label, state, directory)?;
+        state.commit = Some(resolved.clone());
+        Ok(resolved)
+    };
+    let source = attempt("source", &mut subjects.source);
+    let boundary = attempt("boundary", &mut subjects.boundary);
+    let target = attempt("target", &mut subjects.target);
+
+    let mut errors = Vec::new();
+    let source = record_outcome(source, &mut errors);
+    let boundary = record_outcome(boundary, &mut errors);
+    let target = record_outcome(target, &mut errors);
+
+    match (source, boundary, target) {
+        (Some(source), Some(boundary), Some(target)) => {
+            Ok(ResolvedShas { source, boundary, target })
+        }
+        _ => Err(eyre!(errors.join("; "))),
+    }
 }
 
-fn target_unique_commits(base: &str, target: &str) -> Result<Vec<CherryCommit>> {
-    target_unique_commits_in(base, target, None)
+fn record_outcome(outcome: Result<String>, errors: &mut Vec<String>) -> Option<String> {
+    outcome.map_err(|error| errors.push(format!("{error:#}"))).ok()
 }
 
-fn target_unique_commits_in(
-    base: &str,
-    target: &str,
+fn resolve_subject(label: &str, state: &SubjectState, directory: Option<&Path>) -> Result<String> {
+    validate_subject_syntax(label, &state.input)?;
+    let peeled = format!("{}^{{commit}}", state.input);
+    match git_output_in(
+        ["rev-parse", "--verify", "--quiet", "--end-of-options", &peeled],
+        directory,
+    ) {
+        Ok(output) => {
+            let resolved = output.trim().to_string();
+            if resolved.is_empty() {
+                return Err(unresolved_subject(label, state, directory));
+            }
+            // Quiet mode suppresses git's refname-ambiguity warning, so a
+            // branch+tag name collision would silently resolve by internal
+            // precedence. A loud re-probe fails closed on that case.
+            let loud_stderr = git_stderr_in(["rev-parse", "--end-of-options", &peeled], directory)
+                .unwrap_or_default();
+            if loud_stderr.contains("is ambiguous") {
+                return Err(eyre!(
+                    "{label} ref `{}` was ambiguous; pass a full 40-hex object id or an unambiguous ref name",
+                    state.input
+                ));
+            }
+            Ok(resolved)
+        }
+        Err(_) => Err(unresolved_subject(label, state, directory)),
+    }
+}
+
+fn unresolved_subject(label: &str, state: &SubjectState, directory: Option<&Path>) -> Report {
+    let peeled = format!("{}^{{commit}}", state.input);
+    let stderr = git_stderr_in(["rev-parse", "--verify", "--end-of-options", &peeled], directory)
+        .unwrap_or_default();
+    if stderr.contains("ambiguous") {
+        return eyre!(
+            "{label} ref `{}` was ambiguous; pass a full 40-hex object id or an unambiguous ref name",
+            state.input
+        );
+    }
+    eyre!("{label} ref `{}` did not resolve to a commit", state.input)
+}
+
+fn ensure_boundary_bounds_target(shas: &ResolvedShas, directory: Option<&Path>) -> Result<()> {
+    match git_status_in(["merge-base", "--is-ancestor", &shas.boundary, &shas.target], directory)? {
+        0 => Ok(()),
+        1 => Err(eyre!(
+            "reversed subjects: boundary {} is not an ancestor of target {}; the completed reconciliation boundary must bound the target history",
+            shas.boundary,
+            shas.target
+        )),
+        code => Err(eyre!("git merge-base --is-ancestor exited with status {code}")),
+    }
+}
+
+/// Fail closed when the swarm source is already contained in the target: the
+/// subjects are reversed (swarm passed as the target) or reconciliation is
+/// already complete, and either way there is no honest target-unique set.
+fn ensure_source_not_contained_in_target(
+    shas: &ResolvedShas,
+    directory: Option<&Path>,
+) -> Result<()> {
+    match git_status_in(["merge-base", "--is-ancestor", &shas.source, &shas.target], directory)? {
+        0 => Err(eyre!(
+            "reversed subjects: source {} is already contained in target {}; the swarm source must not be reachable from the release head (swarm may have been passed as the target)",
+            shas.source,
+            shas.target
+        )),
+        1 => Ok(()),
+        code => Err(eyre!("git merge-base --is-ancestor exited with status {code}")),
+    }
+}
+
+fn comparison_population(
+    shas: &ResolvedShas,
     directory: Option<&Path>,
 ) -> Result<Vec<CherryCommit>> {
-    let base = resolve_commit_ref_in("base", base, directory)?;
-    let target = resolve_commit_ref_in("target", target, directory)?;
-    let output = git_output_in(["cherry", &base, &target, &base], directory)?;
-    let mut commits = Vec::new();
+    let output = git_output_in(["cherry", &shas.source, &shas.target, &shas.boundary], directory)?;
+    let mut commits = BTreeMap::new();
     for commit in parse_cherry_plus_lines(&output) {
         let commit = commit.to_string();
         let subject =
             git_output_in(["show", "-s", "--format=%s", &commit], directory)?.trim().to_string();
-        let parents = git_output_in(["rev-list", "--parents", "-n", "1", &commit], directory)?
-            .split_whitespace()
-            .count();
-        commits.push(CherryCommit { commit, subject, is_merge: parents > 2 });
+        let parents = parse_parent_shas(&git_output_in(
+            ["rev-list", "--parents", "-n", "1", &commit],
+            directory,
+        )?);
+        commits.insert(commit.clone(), CherryCommit { commit, subject, parents });
     }
-    Ok(commits)
+    Ok(commits.into_values().collect())
+}
+
+fn excluded_merge_ancestry(
+    shas: &ResolvedShas,
+    directory: Option<&Path>,
+) -> Result<Vec<ExcludedMerge>> {
+    let range = format!("{}..{}", shas.boundary, shas.target);
+    let output =
+        git_output_in(["rev-list", "--topo-order", "--merges", "--parents", &range], directory)?;
+    let mut merges = BTreeMap::new();
+    for line in output.lines() {
+        let mut tokens = line.split_whitespace();
+        let Some(commit) = tokens.next() else { continue };
+        let parents: Vec<String> = tokens.map(str::to_string).collect();
+        if parents.len() < 2 {
+            continue;
+        }
+        let subject =
+            git_output_in(["show", "-s", "--format=%s", commit], directory)?.trim().to_string();
+        merges.insert(
+            commit.to_string(),
+            ExcludedMerge { commit: commit.to_string(), subject, parents },
+        );
+    }
+    Ok(merges.into_values().collect())
 }
 
 fn parse_cherry_plus_lines(output: &str) -> Vec<&str> {
     output.lines().filter_map(|line| line.strip_prefix("+ ").map(str::trim)).collect()
 }
 
+fn parse_parent_shas(rev_list_line: &str) -> Vec<String> {
+    rev_list_line.split_whitespace().skip(1).map(str::to_string).collect()
+}
+
 fn normalize_subject(subject: &str) -> String {
     subject.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn resolve_commit_ref(label: &str, reference: &str) -> Result<String> {
-    resolve_commit_ref_in(label, reference, None)
-}
-
-fn resolve_commit_ref_in(label: &str, reference: &str, directory: Option<&Path>) -> Result<String> {
-    let commit_ref = format!("{reference}^{{commit}}");
-    let resolved = git_output_in(
-        ["rev-parse", "--verify", "--quiet", "--end-of-options", &commit_ref],
-        directory,
-    )?
-    .trim()
-    .to_string();
-    if resolved.is_empty() {
-        return Err(eyre!("{label} ref `{reference}` resolved to an empty commit"));
+fn validate_subject_syntax(label: &str, reference: &str) -> Result<()> {
+    if reference.is_empty() || reference.trim().is_empty() {
+        return Err(eyre!("{label} subject was missing; pass a resolvable commit-ish"));
     }
-    Ok(resolved)
+    if reference.trim() != reference {
+        return Err(eyre!("{label} subject `{reference}` was malformed by surrounding whitespace"));
+    }
+    if reference.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(eyre!(
+            "{label} subject `{reference}` was malformed by embedded whitespace or control characters"
+        ));
+    }
+    if reference.starts_with('-') {
+        return Err(eyre!(
+            "{label} subject `{reference}` was malformed; refs must not start with '-'"
+        ));
+    }
+    if reference.contains("..") {
+        return Err(eyre!(
+            "{label} subject `{reference}` was malformed; range expressions are not single commits"
+        ));
+    }
+    Ok(())
 }
 
-fn fail_with_receipt(config: &CheckConfig, error: Report) -> Result<()> {
+fn fail_with_receipt(config: &CheckConfig, subjects: &Subjects, error: Report) -> Result<()> {
     let message = format!("{error:#}");
     let receipt = Receipt {
-        schema_version: 1,
-        base: config.base.clone(),
-        source: config.source.clone(),
-        target: config.target.clone(),
+        schema_version: RECEIPT_SCHEMA_VERSION,
+        subjects: ReceiptSubjects::from(subjects),
         ledger: config.ledger.display().to_string(),
         target_unique_commits: Vec::new(),
         excluded_merge_commits: Vec::new(),
+        excluded_merge_ancestry: Vec::new(),
         excluded_release_lineage_commits: Vec::new(),
         accepted_commits: Vec::new(),
         errors: vec![message.clone()],
@@ -319,6 +563,26 @@ fn git_output_in<const N: usize>(args: [&str; N], directory: Option<&Path>) -> R
     String::from_utf8(output.stdout).context("git output was not valid UTF-8")
 }
 
+fn git_stderr_in<const N: usize>(args: [&str; N], directory: Option<&Path>) -> Result<String> {
+    let mut command = Command::new("git");
+    command.args(args);
+    if let Some(directory) = directory {
+        command.current_dir(directory);
+    }
+    let output = command.output().context("running git for sync-divergence preflight")?;
+    Ok(String::from_utf8_lossy(&output.stderr).to_string())
+}
+
+fn git_status_in<const N: usize>(args: [&str; N], directory: Option<&Path>) -> Result<i32> {
+    let mut command = Command::new("git");
+    command.args(args);
+    if let Some(directory) = directory {
+        command.current_dir(directory);
+    }
+    let output = command.output().context("running git for sync-divergence preflight")?;
+    Ok(output.status.code().unwrap_or(-1))
+}
+
 fn write_receipt(path: &Path, receipt: &Receipt) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -342,70 +606,533 @@ mod tests {
     }
 
     #[test]
-    fn early_failures_write_a_receipt() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let ledger = directory.path().join("missing.json");
-        let receipt = directory.path().join("receipt.json");
-        let error = check(CheckConfig {
-            base: "HEAD".to_string(),
-            source: "HEAD".to_string(),
-            target: "HEAD".to_string(),
-            ledger,
-            receipt: receipt.clone(),
-        });
-        assert!(error.is_err());
+    fn parent_shas_skip_the_commit_itself() {
+        assert_eq!(parse_parent_shas("abc123 def456 789aaa"), vec!["def456", "789aaa"]);
+    }
 
-        let content = fs::read_to_string(receipt)?;
-        let receipt: serde_json::Value = serde_json::from_str(&content)?;
+    #[test]
+    fn two_parents_mark_a_merge() {
+        let merge = CherryCommit {
+            commit: "m".into(),
+            subject: "merge".into(),
+            parents: vec!["a".into(), "b".into()],
+        };
+        let regular =
+            CherryCommit { commit: "r".into(), subject: "row".into(), parents: vec!["a".into()] };
+        assert!(merge.is_merge());
+        assert!(!regular.is_merge());
+    }
+
+    #[test]
+    fn malformed_subjects_fail_closed() -> Result<()> {
+        for input in ["", "   ", " HEAD", "HEAD ", "a..b", "-rfw", "two words"] {
+            assert!(
+                validate_subject_syntax("source", input).is_err(),
+                "`{input}` must fail syntax validation"
+            );
+        }
+        validate_subject_syntax("source", "refs/heads/main")?;
+        validate_subject_syntax("source", "0123456789abcdef0123456789abcdef01234567")?;
+        Ok(())
+    }
+
+    #[test]
+    fn unresolved_refs_report_missing_not_ambiguous() -> Result<()> {
+        let directory = init_fixture_repo()?;
+        let state = SubjectState { input: "refs/heads/nope-7968".to_string(), commit: None };
+        let error = match resolve_subject("source", &state, Some(directory.path())) {
+            Err(error) => error,
+            Ok(resolved) => return Err(eyre!("a missing ref must not resolve to {resolved}")),
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("did not resolve to a commit"), "{message}");
+        assert!(!message.contains("ambiguous"), "{message}");
+        Ok(())
+    }
+
+    /// An abbreviated object id matching multiple objects fails closed as
+    /// ambiguous rather than resolving to an arbitrary commit.
+    #[test]
+    fn ambiguous_subjects_fail_closed() -> Result<()> {
+        let directory = init_fixture_repo()?;
+        let prefix = find_ambiguous_prefix(directory.path())?;
+        let state = SubjectState { input: prefix.clone(), commit: None };
+        let error = match resolve_subject("source", &state, Some(directory.path())) {
+            Err(error) => error,
+            Ok(resolved) => {
+                return Err(eyre!("ambiguous prefix `{prefix}` resolved to {resolved}"));
+            }
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("ambiguous"), "{message}");
+        Ok(())
+    }
+
+    /// Quiet `rev-parse --verify` resolves a branch+tag name collision by
+    /// internal precedence while suppressing git's ambiguity warning; the
+    /// loud re-probe must fail closed instead of picking an arbitrary side.
+    #[test]
+    fn ambiguous_refnames_fail_closed_instead_of_silent_precedence() -> Result<()> {
+        let directory = init_fixture_repo()?;
+        let path = directory.path();
+        commit_file(path, "a.txt", "a\n", "base")?;
+        run_git_fixture(path, &["branch", "dup-7968"])?;
+        commit_file(path, "b.txt", "b\n", "second")?;
+        run_git_fixture(path, &["tag", "dup-7968"])?;
+
+        let state = SubjectState { input: "dup-7968".to_string(), commit: None };
+        let error = match resolve_subject("source", &state, Some(path)) {
+            Err(error) => error,
+            Ok(resolved) => {
+                return Err(eyre!("an ambiguous refname must not silently resolve to {resolved}"));
+            }
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("ambiguous"), "{message}");
+        Ok(())
+    }
+
+    fn find_ambiguous_prefix(path: &Path) -> Result<String> {
+        use std::io::Write;
+        let mut seen = std::collections::HashMap::new();
+        for index in 0..100_000u32 {
+            let mut child = Command::new("git")
+                .current_dir(path)
+                .args(["hash-object", "-w", "--stdin"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .context("spawning git hash-object")?;
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(format!("blob-{index}\n").as_bytes())?;
+            }
+            let output = child.wait_with_output()?;
+            if !output.status.success() {
+                return Err(eyre!("git hash-object failed in fixture"));
+            }
+            let sha = String::from_utf8(output.stdout)
+                .map_err(|error| eyre!("hash-object output was not UTF-8: {error}"))?;
+            let sha = sha.trim().to_string();
+            let prefix = sha[..4].to_string();
+            match seen.get(&prefix) {
+                Some(other) if *other != sha => return Ok(prefix),
+                Some(_) => {}
+                None => {
+                    seen.insert(prefix, sha);
+                }
+            }
+        }
+        Err(eyre!("no ambiguous prefix found in fixture"))
+    }
+
+    /// Swarm passed as the target (source/target swapped) fails closed even
+    /// though the boundary legitimately bounds both histories.
+    #[test]
+    fn swarm_passed_as_target_fails_closed() -> Result<()> {
+        let directory = init_fixture_repo()?;
+        let path = directory.path();
+        commit_file(path, "ctx.txt", "shared\n", "base")?;
+        let boundary = rev_parse(path, "main")?;
+        commit_file(path, "r.txt", "r\n", "release work")?;
+        let release_tip = rev_parse(path, "main")?;
+        run_git_fixture(path, &["checkout", "--quiet", "-b", "swarm", &release_tip])?;
+        commit_file(path, "s.txt", "s\n", "swarm work")?;
+        let swarm_tip = rev_parse(path, "swarm")?;
+
+        let swapped = resolved(release_tip.clone(), boundary.clone(), swarm_tip.clone());
+        let error = match ensure_source_not_contained_in_target(&swapped, Some(path)) {
+            Err(error) => error,
+            Ok(()) => return Err(eyre!("swarm passed as the target must fail closed")),
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("reversed subjects"), "{message}");
+
+        // The honest direction (swarm source, release target) passes the guard.
+        let honest = resolved(swarm_tip, boundary, release_tip);
+        ensure_source_not_contained_in_target(&honest, Some(path))?;
+        Ok(())
+    }
+
+    /// The swarm-as-target swap fails the whole preflight end to end and the
+    /// failure is recorded in the receipt, not just in the guard helper.
+    #[test]
+    fn swarm_passed_as_target_fails_the_preflight_with_a_receipt() -> Result<()> {
+        let directory = init_fixture_repo()?;
+        let path = directory.path();
+        commit_file(path, "ctx.txt", "shared\n", "base")?;
+        let boundary = rev_parse(path, "main")?;
+        commit_file(path, "r.txt", "r\n", "release work")?;
+        let release_tip = rev_parse(path, "main")?;
+        run_git_fixture(path, &["checkout", "--quiet", "-b", "swarm", &release_tip])?;
+        commit_file(path, "s.txt", "s\n", "swarm work")?;
+        let swarm_tip = rev_parse(path, "swarm")?;
+
+        let config = CheckConfig {
+            source: release_tip.clone(),
+            boundary: boundary.clone(),
+            target: swarm_tip.clone(),
+            ledger: path.join("ledger.json"),
+            receipt: path.join("receipt.json"),
+            working_directory: Some(path.to_path_buf()),
+        };
+        let error = match check(config) {
+            Err(error) => error,
+            Ok(()) => return Err(eyre!("swarm passed as the target must fail the preflight")),
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("reversed subjects"), "{message}");
+        let receipt: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path.join("receipt.json"))?)?;
+        assert_eq!(receipt["subjects"]["source"]["commit"], release_tip.as_str());
+        assert_eq!(receipt["subjects"]["target"]["commit"], swarm_tip.as_str());
         assert_eq!(receipt["target_unique_commits"].as_array().map(Vec::len), Some(0));
         assert_eq!(receipt["errors"].as_array().map(Vec::len), Some(1));
         Ok(())
     }
 
     #[test]
-    fn valid_refs_write_a_success_receipt() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let ledger = directory.path().join("ledger.json");
-        let receipt = directory.path().join("receipt.json");
-        fs::write(
-            &ledger,
-            r#"{
-  "schema_version": 1,
-  "base": "HEAD",
-  "source": "HEAD",
-  "target": "HEAD",
-  "entries": []
-}"#,
-        )?;
+    fn classifications_are_explicit() {
+        assert!(CLASSIFICATIONS.contains(&"port_to_swarm"));
+        assert!(CLASSIFICATIONS.contains(&"release_lineage_only"));
+        assert!(!CLASSIFICATIONS.contains(&"unclassified"));
+    }
 
-        check(CheckConfig {
-            base: "HEAD".to_string(),
-            source: "HEAD".to_string(),
-            target: "HEAD".to_string(),
-            ledger,
-            receipt: receipt.clone(),
-        })?;
+    #[test]
+    fn subject_comparison_normalizes_whitespace() {
+        assert_eq!(
+            normalize_subject("fix:   preserve  the subject"),
+            normalize_subject("fix: preserve the subject")
+        );
+    }
 
-        let content = fs::read_to_string(receipt)?;
-        let receipt: serde_json::Value = serde_json::from_str(&content)?;
-        assert_eq!(receipt["target_unique_commits"].as_array().map(Vec::len), Some(0));
-        assert_eq!(receipt["errors"].as_array().map(Vec::len), Some(0));
+    /// A release patch already represented in swarm is suppressed while the
+    /// exact source drives patch equivalence and the boundary only floors history.
+    #[test]
+    fn represented_release_patches_are_not_target_unique() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let shas =
+            resolved(fixture.swarm_tip.clone(), fixture.base.clone(), fixture.release_tip.clone());
+        let rows = comparison_population(&shas, Some(fixture.directory.path()))?;
+        let commits: Vec<&str> = rows.iter().map(|row| row.commit.as_str()).collect();
+        let mut expected = vec![fixture.floor_tip.clone(), fixture.release_tip.clone()];
+        expected.sort();
+        assert_eq!(commits, expected, "the cherry-picked patch must be suppressed");
+        assert!(!commits.contains(&fixture.picked.as_str()));
+        assert!(rows.iter().all(|row| !row.is_merge()));
+        Ok(())
+    }
+
+    /// The boundary excludes older history regardless of patch equivalence;
+    /// the source still suppresses represented patches inside the window.
+    #[test]
+    fn boundary_limits_history_independent_of_equivalence() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let shas = resolved(
+            fixture.swarm_tip.clone(),
+            fixture.floor_tip.clone(),
+            fixture.release_tip.clone(),
+        );
+        let rows = comparison_population(&shas, Some(fixture.directory.path()))?;
+        let commits: Vec<&str> = rows.iter().map(|row| row.commit.as_str()).collect();
+        assert_eq!(commits, vec![fixture.release_tip.as_str()]);
         Ok(())
     }
 
     #[test]
-    fn reconciliation_rejects_ambiguous_rows_and_skips_merges() -> Result<()> {
+    fn merge_ancestry_is_enumerated_with_parents_and_respects_the_floor() -> Result<()> {
+        let directory = init_fixture_repo()?;
+        let path = directory.path();
+        commit_file(path, "a.txt", "a\n", "base")?;
+        let base = rev_parse(path, "main")?;
+        run_git_fixture(path, &["checkout", "--quiet", "-b", "feature"])?;
+        commit_file(path, "f.txt", "f\n", "feature")?;
+        let feature = rev_parse(path, "feature")?;
+        run_git_fixture(path, &["checkout", "--quiet", "main"])?;
+        commit_file(path, "s.txt", "s\n", "side")?;
+        let side = rev_parse(path, "main")?;
+        run_git_fixture(path, &["merge", "--quiet", "--no-ff", "-m", "merge feature", "feature"])?;
+        let merge = rev_parse(path, "main")?;
+
+        let shas = resolved(base.clone(), base.clone(), merge.clone());
+        let merges = excluded_merge_ancestry(&shas, Some(path))?;
+        assert_eq!(merges.len(), 1);
+        assert_eq!(merges[0].commit, merge);
+        assert_eq!(merges[0].parents, vec![side, feature]);
+        assert_eq!(merges[0].subject, "merge feature");
+
+        let floored = resolved(base.clone(), merge.clone(), merge.clone());
+        assert!(excluded_merge_ancestry(&floored, Some(path))?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn success_receipt_records_resolved_identity() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "classification": "port_to_swarm", "evidence": ["evidence r0"]}},
+    {{"commit": "{}", "subject": "release r2", "classification": "release_lineage_only", "evidence": ["evidence r2"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture.floor_tip,
+                fixture.release_tip
+            ),
+        )?;
         let config = CheckConfig {
-            base: "base".to_string(),
+            source: fixture.swarm_tip.clone(),
+            boundary: fixture.base.clone(),
+            target: fixture.release_tip.clone(),
+            ledger: path.join("ledger.json"),
+            receipt: path.join("receipt.json"),
+            working_directory: Some(path.to_path_buf()),
+        };
+        check(config)?;
+        let receipt: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path.join("receipt.json"))?)?;
+        assert_eq!(receipt["schema_version"], RECEIPT_SCHEMA_VERSION);
+        assert_eq!(receipt["subjects"]["source"]["commit"], fixture.swarm_tip.as_str());
+        assert_eq!(
+            receipt["subjects"]["source"]["role"].as_str(),
+            Some("patch_equivalence_upstream")
+        );
+        assert_eq!(receipt["subjects"]["boundary"]["commit"], fixture.base.as_str());
+        assert_eq!(receipt["subjects"]["boundary"]["role"].as_str(), Some("history_limit"));
+        assert_eq!(receipt["subjects"]["target"]["commit"], fixture.release_tip.as_str());
+        assert_eq!(receipt["subjects"]["target"]["role"].as_str(), Some("release_head"));
+        assert_eq!(receipt["target_unique_commits"].as_array().map(Vec::len), Some(2));
+        assert_eq!(receipt["accepted_commits"].as_array().map(Vec::len), Some(1));
+        assert_eq!(receipt["excluded_release_lineage_commits"].as_array().map(Vec::len), Some(1));
+        assert_eq!(receipt["excluded_merge_commits"].as_array().map(Vec::len), Some(0));
+        assert_eq!(receipt["errors"].as_array().map(Vec::len), Some(0));
+        Ok(())
+    }
+
+    fn diverged_ledger_json(fixture: &DivergedFixture) -> String {
+        format!(
+            r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "classification": "port_to_swarm", "evidence": ["evidence r0"]}},
+    {{"commit": "{}", "subject": "release r2", "classification": "release_lineage_only", "evidence": ["evidence r2"]}}
+  ]
+}}"#,
+            fixture.swarm_tip,
+            fixture.base,
+            fixture.release_tip,
+            fixture.floor_tip,
+            fixture.release_tip
+        )
+    }
+
+    /// Receipts are byte-deterministic across runs against the same repository.
+    #[test]
+    fn receipts_are_byte_deterministic_across_runs() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(path.join("ledger.json"), diverged_ledger_json(&fixture))?;
+        let config = |receipt: &str| CheckConfig {
+            source: fixture.swarm_tip.clone(),
+            boundary: fixture.base.clone(),
+            target: fixture.release_tip.clone(),
+            ledger: path.join("ledger.json"),
+            receipt: path.join(receipt),
+            working_directory: Some(path.to_path_buf()),
+        };
+        check(config("receipt-1.json"))?;
+        check(config("receipt-2.json"))?;
+        assert_eq!(fs::read(path.join("receipt-1.json"))?, fs::read(path.join("receipt-2.json"))?);
+        Ok(())
+    }
+
+    #[test]
+    fn reversed_subjects_fail_closed_with_a_receipt() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        let config = CheckConfig {
+            source: fixture.swarm_tip.clone(),
+            boundary: fixture.swarm_tip.clone(),
+            target: fixture.release_tip.clone(),
+            ledger: path.join("ledger.json"),
+            receipt: path.join("receipt.json"),
+            working_directory: Some(path.to_path_buf()),
+        };
+        let error = match check(config) {
+            Err(error) => error,
+            Ok(()) => return Err(eyre!("reversed subjects must fail closed")),
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("reversed subjects"), "{message}");
+        let receipt: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path.join("receipt.json"))?)?;
+        assert_eq!(receipt["subjects"]["source"]["commit"], fixture.swarm_tip.as_str());
+        assert_eq!(receipt["subjects"]["boundary"]["commit"], fixture.swarm_tip.as_str());
+        assert_eq!(receipt["subjects"]["target"]["commit"], fixture.release_tip.as_str());
+        assert_eq!(receipt["target_unique_commits"].as_array().map(Vec::len), Some(0));
+        assert_eq!(receipt["errors"].as_array().map(Vec::len), Some(1));
+        Ok(())
+    }
+
+    #[test]
+    fn missing_subject_fails_closed_before_ledger_load() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        let config = CheckConfig {
+            source: "refs/heads/nope-7968".to_string(),
+            boundary: fixture.base.clone(),
+            target: fixture.release_tip.clone(),
+            ledger: path.join("missing.json"),
+            receipt: path.join("receipt.json"),
+            working_directory: Some(path.to_path_buf()),
+        };
+        assert!(check(config).is_err());
+        let receipt: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path.join("receipt.json"))?)?;
+        // Every subject is resolved independently: the failed source records
+        // null, while the valid boundary and target record their resolved
+        // immutable commits rather than a never-attempted null.
+        assert_eq!(receipt["subjects"]["source"]["commit"], serde_json::Value::Null);
+        assert_eq!(receipt["subjects"]["boundary"]["commit"], fixture.base.as_str());
+        assert_eq!(receipt["subjects"]["target"]["commit"], fixture.release_tip.as_str());
+        assert_eq!(receipt["subjects"]["target"]["input"], fixture.release_tip.as_str());
+        assert_eq!(receipt["errors"].as_array().map(Vec::len), Some(1));
+        Ok(())
+    }
+
+    /// Multiple invalid subjects are all reported, and the one valid subject
+    /// still records its resolved commit.
+    #[test]
+    fn every_subject_resolution_is_attempted_and_recorded() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        let config = CheckConfig {
+            source: "refs/heads/nope-source-7968".to_string(),
+            boundary: "refs/heads/nope-boundary-7968".to_string(),
+            target: fixture.release_tip.clone(),
+            ledger: path.join("missing.json"),
+            receipt: path.join("receipt.json"),
+            working_directory: Some(path.to_path_buf()),
+        };
+        let error = match check(config) {
+            Err(error) => error,
+            Ok(()) => return Err(eyre!("invalid subjects must fail closed")),
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("nope-source-7968"), "{message}");
+        assert!(message.contains("nope-boundary-7968"), "{message}");
+        let receipt: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path.join("receipt.json"))?)?;
+        assert_eq!(receipt["subjects"]["source"]["commit"], serde_json::Value::Null);
+        assert_eq!(receipt["subjects"]["boundary"]["commit"], serde_json::Value::Null);
+        assert_eq!(receipt["subjects"]["target"]["commit"], fixture.release_tip.as_str());
+        Ok(())
+    }
+
+    #[test]
+    fn v1_ledgers_fail_closed_on_schema_version() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            r#"{"schema_version":1,"base":"x","source":"y","target":"z","entries":[]}"#,
+        )?;
+        let config = CheckConfig {
+            source: fixture.swarm_tip.clone(),
+            boundary: fixture.base.clone(),
+            target: fixture.release_tip.clone(),
+            ledger: path.join("ledger.json"),
+            receipt: path.join("receipt.json"),
+            working_directory: Some(path.to_path_buf()),
+        };
+        let error = match check(config) {
+            Err(error) => error,
+            Ok(()) => return Err(eyre!("a v1 ledger must fail closed")),
+        };
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("unsupported reconciliation ledger schema version 1"),
+            "{message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ledger_identity_must_match_resolved_shas() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{"schema_version":2,"source":"{}","boundary":"{}","target":"{}","entries":[]}}"#,
+                fixture.swarm_tip, "0123456789abcdef0123456789abcdef01234567", fixture.release_tip
+            ),
+        )?;
+        let config = CheckConfig {
+            source: fixture.swarm_tip.clone(),
+            boundary: fixture.base.clone(),
+            target: fixture.release_tip.clone(),
+            ledger: path.join("ledger.json"),
+            receipt: path.join("receipt.json"),
+            working_directory: Some(path.to_path_buf()),
+        };
+        let error = match check(config) {
+            Err(error) => error,
+            Ok(()) => return Err(eyre!("an identity mismatch must fail closed")),
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("does not match the resolved subjects"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn early_failures_write_a_v2_receipt() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let receipt_path = directory.path().join("receipt.json");
+        let config = CheckConfig {
+            source: "HEAD".to_string(),
+            boundary: "HEAD".to_string(),
+            target: "HEAD".to_string(),
+            ledger: directory.path().join("missing.json"),
+            receipt: receipt_path.clone(),
+            working_directory: None,
+        };
+        assert!(check(config).is_err());
+        let content = fs::read_to_string(receipt_path)?;
+        let receipt: serde_json::Value = serde_json::from_str(&content)?;
+        assert_eq!(receipt["schema_version"], RECEIPT_SCHEMA_VERSION);
+        assert_eq!(receipt["subjects"]["target"]["input"], "HEAD");
+        assert_eq!(receipt["target_unique_commits"].as_array().map(Vec::len), Some(0));
+        assert_eq!(receipt["errors"].as_array().map(Vec::len), Some(1));
+        Ok(())
+    }
+
+    #[test]
+    fn reconciliation_rejects_duplicate_rows_and_skips_merges() -> Result<()> {
+        let config = CheckConfig {
             source: "source".to_string(),
+            boundary: "boundary".to_string(),
             target: "target".to_string(),
             ledger: PathBuf::from("ledger.json"),
             receipt: PathBuf::from("receipt.json"),
+            working_directory: None,
         };
         let ledger = Ledger {
-            schema_version: 1,
-            base: config.base.clone(),
+            schema_version: LEDGER_SCHEMA_VERSION,
             source: config.source.clone(),
+            boundary: config.boundary.clone(),
             target: config.target.clone(),
             entries: vec![
                 LedgerEntry {
@@ -426,18 +1153,30 @@ mod tests {
             CherryCommit {
                 commit: "abc".to_string(),
                 subject: "subject".to_string(),
-                is_merge: false,
+                parents: vec!["parent".to_string()],
             },
             CherryCommit {
-                commit: "merge".to_string(),
+                commit: "zzz".to_string(),
                 subject: "merge subject".to_string(),
-                is_merge: true,
+                parents: vec!["first".to_string(), "second".to_string()],
             },
         ];
+        let excluded_merges = vec![ExcludedMerge {
+            commit: "zzz".to_string(),
+            subject: "merge subject".to_string(),
+            parents: vec!["first".to_string(), "second".to_string()],
+        }];
+        let mut subjects = Subjects::from_config(&config);
+        subjects.source.commit = Some("source-sha".to_string());
+        subjects.boundary.commit = Some("boundary-sha".to_string());
+        subjects.target.commit = Some("target-sha".to_string());
 
-        let (receipt, errors) = reconcile(&config, &ledger, &target_unique);
+        let (receipt, errors) =
+            reconcile(&config, &ledger, &target_unique, excluded_merges, &subjects);
         assert_eq!(receipt.target_unique_commits.len(), 1);
-        assert_eq!(receipt.excluded_merge_commits, vec!["merge"]);
+        assert_eq!(receipt.excluded_merge_commits, vec!["zzz"]);
+        assert_eq!(receipt.excluded_merge_ancestry.len(), 1);
+        assert_eq!(receipt.subjects.source.commit.as_deref(), Some("source-sha"));
         assert!(receipt.accepted_commits.is_empty());
         assert!(errors.iter().any(|error| error.contains("appears more than once")));
         assert!(errors.iter().any(|error| error.contains("invalid classification")));
@@ -446,54 +1185,73 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn target_unique_commits_reads_a_real_git_cherry_plus_line() -> Result<()> {
+    struct DivergedFixture {
+        directory: tempfile::TempDir,
+        base: String,
+        swarm_tip: String,
+        floor_tip: String,
+        picked: String,
+        release_tip: String,
+    }
+
+    fn init_fixture_repo() -> Result<tempfile::TempDir> {
         let directory = tempfile::tempdir()?;
-        run_git_fixture(directory.path(), &["init", "--quiet"])?;
+        run_git_fixture(directory.path(), &["init", "--quiet", "--initial-branch=main"])?;
         run_git_fixture(directory.path(), &["config", "user.email", "test@example.com"])?;
         run_git_fixture(directory.path(), &["config", "user.name", "sync-test"])?;
-        fs::write(directory.path().join("file.txt"), "base\n")?;
-        run_git_fixture(directory.path(), &["add", "file.txt"])?;
-        run_git_fixture(directory.path(), &["commit", "--quiet", "-m", "base"])?;
-        fs::write(directory.path().join("file.txt"), "target\n")?;
-        run_git_fixture(directory.path(), &["commit", "--quiet", "-am", "target"])?;
+        Ok(directory)
+    }
 
-        let commits = target_unique_commits_in("HEAD~1", "HEAD", Some(directory.path()))?;
-        assert_eq!(commits.len(), 1);
-        assert!(!commits[0].is_merge);
-        assert!(!commits[0].subject.is_empty());
-        Ok(())
+    fn diverged_fixture() -> Result<DivergedFixture> {
+        let directory = init_fixture_repo()?;
+        let path = directory.path();
+
+        commit_file(path, "ctx.txt", "shared\n", "base")?;
+        let base = rev_parse(path, "main")?;
+
+        run_git_fixture(path, &["checkout", "--quiet", "-b", "swarm"])?;
+        commit_file(path, "p.txt", "p\n", "swarm adds p")?;
+        commit_file(path, "q.txt", "q\n", "swarm adds q")?;
+        let swarm_tip = rev_parse(path, "swarm")?;
+
+        run_git_fixture(path, &["checkout", "--quiet", "main"])?;
+        commit_file(path, "r0.txt", "r0\n", "release r0")?;
+        let floor_tip = rev_parse(path, "main")?;
+        run_git_fixture(path, &["cherry-pick", "swarm~1"])?;
+        let picked = rev_parse(path, "main")?;
+        commit_file(path, "r2.txt", "r2\n", "release r2")?;
+        let release_tip = rev_parse(path, "main")?;
+
+        Ok(DivergedFixture { directory, base, swarm_tip, floor_tip, picked, release_tip })
+    }
+
+    fn resolved(source: String, boundary: String, target: String) -> ResolvedShas {
+        ResolvedShas { source, boundary, target }
     }
 
     fn run_git_fixture(directory: &Path, args: &[&str]) -> Result<()> {
-        let output = Command::new("git").current_dir(directory).args(args).output()?;
+        let mut command = Command::new("git");
+        command.current_dir(directory).args(args);
+        let output = command.output()?;
         if output.status.success() {
             return Ok(());
         }
         Err(eyre!("git fixture command failed: {}", String::from_utf8_lossy(&output.stderr).trim()))
     }
 
-    #[test]
-    fn source_ref_must_resolve() -> Result<()> {
-        let error = validate_source_ref("refs/heads/does-not-exist-for-sync-divergence");
-        assert!(error.is_err());
-        Ok(())
+    fn commit_file(directory: &Path, name: &str, content: &str, message: &str) -> Result<()> {
+        fs::write(directory.join(name), content)?;
+        run_git_fixture(directory, &["add", name])?;
+        run_git_fixture(directory, &["commit", "--quiet", "-m", message])
     }
 
-    #[test]
-    fn subject_comparison_normalizes_whitespace() -> Result<()> {
-        assert_eq!(
-            normalize_subject("fix:   preserve  the subject"),
-            normalize_subject("fix: preserve the subject")
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn classifications_are_explicit() -> Result<()> {
-        assert!(CLASSIFICATIONS.contains(&"port_to_swarm"));
-        assert!(CLASSIFICATIONS.contains(&"release_lineage_only"));
-        assert!(!CLASSIFICATIONS.contains(&"unclassified"));
-        Ok(())
+    fn rev_parse(directory: &Path, reference: &str) -> Result<String> {
+        let mut command = Command::new("git");
+        command.current_dir(directory).args(["rev-parse", reference]);
+        let output = command.output()?;
+        if !output.status.success() {
+            return Err(eyre!("fixture rev-parse `{reference}` failed"));
+        }
+        Ok(String::from_utf8(output.stdout)?.trim().to_string())
     }
 }

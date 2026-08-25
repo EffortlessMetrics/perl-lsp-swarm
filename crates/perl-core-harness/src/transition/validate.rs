@@ -1,11 +1,14 @@
 //! Canonical structural validation for transition evidence.
 //!
 //! Raw deserialized [`RunReport`] / V2 baseline values are not classification
-//! subjects until these invariants hold. Incomplete harness runs
-//! (`harness_status != Some(0)`) stay outside [`ValidatedRunReport`] and are
-//! handled as `NotProven` by the classifier.
+//! subjects until these invariants hold. Terminal admission runs first: only
+//! observations whose typed terminal process outcome is scoreable (#6884) —
+//! a clean exit or a recognized runner/mode status — reach structural and
+//! count validation. Everything else stays outside [`ValidatedRunReport`]
+//! and is handled as `NotProven` by the classifier.
 
 use crate::transition::model::AcceptedBaseline;
+use crate::transition::terminal::TerminalProcessOutcome;
 use perl_core_harness_types::{
     COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaselineV2, ObservedSemanticBoundary,
     RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunnerStatus,
@@ -53,9 +56,10 @@ impl ValidatedCompileBaselineV2 {
 
 /// Validate a current run report for definitive transition classification.
 ///
-/// Requires a complete successful harness execution (`harness_status == Some(0)`)
-/// plus path uniqueness, per-file assertion bounds, summary/file-result
-/// reconciliation, and honest semantic-boundary identity.
+/// Requires a terminally scoreable observation (#6884 typed admission: clean
+/// exit or recognized runner/mode status) plus path uniqueness, per-file
+/// assertion bounds, summary/file-result reconciliation, and honest
+/// semantic-boundary identity. Terminal validity precedes every count check.
 pub fn validate_run_report(
     report: &RunReport,
 ) -> Result<ValidatedRunReport, EvidenceValidationError> {
@@ -65,10 +69,17 @@ pub fn validate_run_report(
             report.schema_version
         )));
     }
-    if report.harness_status != Some(0) {
+    let terminal = TerminalProcessOutcome::from_harness_status(
+        report.harness_status,
+        report.runner,
+        report.mode,
+    );
+    if !terminal.is_scoreable() {
         return Err(EvidenceValidationError::new(format!(
-            "current harness_status {:?} is not a complete successful run",
-            report.harness_status
+            "current harness_status {:?} fails terminal admission ({}): {}",
+            report.harness_status,
+            terminal.label(),
+            terminal.not_proven_reason()
         )));
     }
     if let Some(path) = first_whitespace_contaminated_path(&report.file_results) {
@@ -679,6 +690,51 @@ mod ripr_inventory_call_observers {
         report.summary.files_failed = 1;
         report.summary.tap_assertions_passed = 0;
         report.failures = vec![failure("base/0.t", "parse_recovery")];
+        assert!(validate_run_report(&report).is_ok());
+    }
+
+    /// First #6884 falsifier (historical shape): a runner terminal of 255 with
+    /// all-green file/assertion counts must stay outside validation; counts
+    /// can never override terminal invalidity.
+    #[test]
+    fn status_255_with_all_pass_counts_fails_terminal_admission() {
+        let mut report = clean_report();
+        report.harness_status = Some(255);
+        let err = validate_run_report(&report).expect_err("255 all-pass must not validate");
+        assert!(err.reason.contains("harness_status"), "unexpected reason: {}", err.reason);
+        assert!(err.reason.contains("nonzero_exit"), "unexpected reason: {}", err.reason);
+        assert!(err.reason.contains("255"), "reason must carry the observed code");
+        assert!(err.reason.contains("counts cannot override"), "unexpected reason: {}", err.reason);
+    }
+
+    #[test]
+    fn missing_terminal_identity_names_instrument_failure() {
+        let mut report = clean_report();
+        report.harness_status = None;
+        let err = validate_run_report(&report).expect_err("missing status must not validate");
+        assert!(err.reason.contains("instrument_failure"), "unexpected reason: {}", err.reason);
+    }
+
+    #[test]
+    fn terminal_admission_precedes_count_reconciliation() {
+        // Even a structurally broken summary must be reported as a terminal
+        // admission failure first when the process outcome is invalid.
+        let mut report = clean_report();
+        report.harness_status = None;
+        report.summary.files_passed = 9;
+        report.summary.files_total = 1;
+        let err = validate_run_report(&report).expect_err("invalid terminal must fail first");
+        assert!(err.reason.contains("instrument_failure"), "unexpected reason: {}", err.reason);
+    }
+
+    /// Opposite-direction control: execute-mode reports carrying the upstream
+    /// scheduler's recognized nonzero completion (#3451) must pass validation
+    /// instead of being permanently misclassified by zero-only defensive code.
+    #[test]
+    fn recognized_execute_nonzero_status_is_terminally_admissible() {
+        let mut report = clean_report();
+        report.mode = HarnessMode::Execute;
+        report.harness_status = Some(1);
         assert!(validate_run_report(&report).is_ok());
     }
 

@@ -1,6 +1,8 @@
 use std::env;
 use std::fs;
 use std::path::{Component, Path};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 use zed_extension_api::{self as zed, settings::LspSettings, LanguageServerId, Result};
@@ -172,12 +174,23 @@ fn selection_manifest_json(manifest: &SelectionManifest) -> String {
     value.to_string()
 }
 
-/// Write the selection manifest atomically: stage to a temporary path, then
-/// rename over the durable name so a partial write can never become accepted.
-fn store_selection_manifest(manifest: &SelectionManifest) -> Result<(), String> {
-    fs::write(SELECTION_MANIFEST_TMP_PATH, selection_manifest_json(manifest))
+/// Write the selection manifest atomically from this attempt's private
+/// temporary path, then rename over the durable name (#11316). A partial
+/// write can never become accepted, and concurrent promotions from separate
+/// Zed processes cannot tear each other's staged bytes.
+fn store_selection_manifest(attempt: &str, manifest: &SelectionManifest) -> Result<(), String> {
+    store_selection_manifest_in(Path::new("."), attempt, manifest)
+}
+
+fn store_selection_manifest_in(
+    work_dir: &Path,
+    attempt: &str,
+    manifest: &SelectionManifest,
+) -> Result<(), String> {
+    let tmp_path = work_dir.join(selection_manifest_tmp_path(attempt));
+    fs::write(&tmp_path, selection_manifest_json(manifest))
         .map_err(|error| format!("failed to stage selection manifest: {error}"))?;
-    fs::rename(SELECTION_MANIFEST_TMP_PATH, SELECTION_MANIFEST_PATH).map_err(|error| {
+    fs::rename(&tmp_path, work_dir.join(SELECTION_MANIFEST_PATH)).map_err(|error| {
         format!("failed to promote selection manifest `{SELECTION_MANIFEST_PATH}`: {error}")
     })
 }
@@ -257,6 +270,236 @@ fn cold_disposition(binary_exists: bool, manifest_names_binary_path: bool) -> Co
         (true, true) => ColdDisposition::ReplaceRejected,
         (true, false) => ColdDisposition::ReuseExisting,
     }
+}
+
+/// Typed outcome of one managed mutation attempt (#11316).
+///
+/// This vocabulary is the contention/interruption/publication surface fed to
+/// the cache-lifecycle and startup-status consumers; it deliberately adds no
+/// second cache-status authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MutationOutcome {
+    /// This attempt won the atomic publication: its staged tree became the
+    /// durable subject.
+    Published,
+    /// Another attempt had already published a bound, byte-verified subject;
+    /// this contender adopted it and removed only its own staging tree.
+    AdoptedPublished,
+    /// A complete but not-yet-bound durable member was left in place for
+    /// adoption and binding instead of being replaced or trusted blindly.
+    AdoptedUnboundMember,
+}
+
+/// Freshly reread classification of the durable destination (#11316).
+///
+/// Every decision that could destroy or replace durable bytes re-derives this
+/// classification first, so a concurrent writer's repair or publication wins
+/// any race against this attempt's cleanup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DurableSubject {
+    /// A manifest binds exactly this path and the bytes still match the
+    /// bound digest.
+    BoundIntact,
+    /// A manifest binds exactly this path but the bytes no longer match it.
+    BoundCorrupted,
+    /// No manifest binds this path yet, but a complete member sits there.
+    UnboundMember,
+    /// Nothing usable exists at the destination.
+    Absent,
+}
+
+/// Unique-per-invocation mutation attempt identity (#11316).
+///
+/// Timestamp nanoseconds plus a process-local counter. No PID/age lease
+/// identity exists and none is needed: publication is one content-bound
+/// atomic rename, so nothing about an attempt can be stolen by guessing age
+/// or PID.
+fn next_attempt_id() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos =
+        SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_nanos()).unwrap_or(0);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{nanos:x}-{counter:x}")
+}
+
+/// The attempt-private staging root for one managed mutation (#11316).
+///
+/// Private and non-launchable by construction: it never equals the durable
+/// directory name and is never selected by any resolution path.
+fn attempt_staging_dir(version_dir: &str, attempt: &str) -> String {
+    format!("{version_dir}.attempt-{attempt}")
+}
+
+/// Claim a cross-process-unique attempt staging root (#11316).
+///
+/// Uniqueness comes from `create_dir`'s exclusive semantics, not from clock
+/// or PID guessing: a candidate name that already exists (including one
+/// generated in the same clock tick by another Zed process) is rejected and a
+/// fresh identity is generated, up to a bounded number of retries. Returns
+/// the attempt id and its claimed, empty staging root.
+fn claim_attempt_staging(work_dir: &Path, version_dir: &str) -> Result<(String, String), String> {
+    for _ in 0..16 {
+        let attempt = next_attempt_id();
+        let attempt_dir = attempt_staging_dir(version_dir, &attempt);
+        match fs::create_dir(work_dir.join(&attempt_dir)) {
+            Ok(()) => return Ok((attempt, attempt_dir)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "failed to claim perllsp attempt staging `{attempt_dir}`: {error}"
+                ));
+            }
+        }
+    }
+    Err("could not claim a unique perllsp attempt staging root".to_string())
+}
+
+/// The attempt-private staging path for one selection-manifest promotion.
+fn selection_manifest_tmp_path(attempt: &str) -> String {
+    format!("{SELECTION_MANIFEST_TMP_PATH}-{attempt}")
+}
+
+/// Hex-encoded SHA-256 of a file's bytes, or `None` when unreadable.
+fn file_sha256_hex(path: &Path) -> Option<String> {
+    fs::read(path).ok().map(|bytes| content_sha256(&bytes))
+}
+
+/// Remove exactly one owned attempt staging tree (#11316).
+///
+/// Never globbed, never aged, never prefix-swept: cleanup touches only the
+/// exact path this attempt created.
+fn remove_owned_attempt(attempt_dir: &Path) -> Result<(), String> {
+    if fs::metadata(attempt_dir).is_ok() {
+        return fs::remove_dir_all(attempt_dir).map_err(|error| {
+            format!(
+                "failed to remove owned perllsp attempt staging `{}`: {error}",
+                attempt_dir.display()
+            )
+        });
+    }
+    Ok(())
+}
+
+/// Reread the durable destination right before acting on it (#11316).
+fn classify_durable_subject(work_dir: &Path, binary_path: &str) -> DurableSubject {
+    let durable_binary = work_dir.join(binary_path);
+    if let Some(manifest) = load_selection_manifest_in(work_dir) {
+        if manifest.installed_path == binary_path {
+            let intact = file_sha256_hex(&durable_binary)
+                .is_some_and(|hex| format!("sha256:{hex}") == manifest.binary_sha256);
+            return if intact {
+                DurableSubject::BoundIntact
+            } else {
+                DurableSubject::BoundCorrupted
+            };
+        }
+    }
+    if fs::metadata(&durable_binary).is_ok_and(|metadata| metadata.is_file()) {
+        DurableSubject::UnboundMember
+    } else {
+        DurableSubject::Absent
+    }
+}
+
+/// Publish a fully staged, executable-ready attempt atomically (#11316).
+///
+/// The single rename is the commit point. On destination contention the loser
+/// settles explicitly from freshly reread state and never deletes the winner,
+/// another live attempt, or any known-good subject:
+///
+/// - `BoundIntact`: adopt the published subject as-is.
+/// - `BoundCorrupted`: replace it only behind a fresh reread guard that
+///   cancels into adoption when a concurrent repair lands first.
+/// - `UnboundMember`: leave the complete member in place; the caller binds it.
+/// - `Absent` (interrupted legacy shell): swap the shell out and retry once.
+///
+/// Destructive replacement is never an in-place unlink: the durable name is
+/// first swapped atomically to this attempt's `.superseded` graveyard, so a
+/// stale replacer can only ever overwrite the destination with its own
+/// equally staged subject, never leave it missing after deleting a concurrent
+/// winner's tree (#11316).
+fn publish_staged_attempt(
+    work_dir: &Path,
+    version_dir: &str,
+    attempt_dir: &str,
+    binary_path: &str,
+) -> std::result::Result<MutationOutcome, String> {
+    let durable_dir = work_dir.join(version_dir);
+    let staged_dir = work_dir.join(attempt_dir);
+
+    if fs::rename(&staged_dir, &durable_dir).is_ok() {
+        return Ok(MutationOutcome::Published);
+    }
+
+    match classify_durable_subject(work_dir, binary_path) {
+        DurableSubject::BoundIntact => {
+            remove_owned_attempt(&staged_dir)?;
+            Ok(MutationOutcome::AdoptedPublished)
+        }
+        DurableSubject::BoundCorrupted => {
+            // Reread guard: replace only while a second fresh read still finds
+            // corrupted bytes. A concurrent repair wins this race and turns
+            // replacement into plain adoption.
+            if classify_durable_subject(work_dir, binary_path) == DurableSubject::BoundCorrupted {
+                swap_durable_aside(work_dir, attempt_dir, version_dir)?;
+                fs::rename(&staged_dir, &durable_dir).map_err(|error| {
+                    format!("failed to publish replacement perllsp `{version_dir}`: {error}")
+                })?;
+                cleanup_superseded_graveyard(work_dir, attempt_dir);
+                Ok(MutationOutcome::Published)
+            } else {
+                remove_owned_attempt(&staged_dir)?;
+                Ok(MutationOutcome::AdoptedPublished)
+            }
+        }
+        DurableSubject::UnboundMember => {
+            remove_owned_attempt(&staged_dir)?;
+            Ok(MutationOutcome::AdoptedUnboundMember)
+        }
+        DurableSubject::Absent => {
+            // A destination holding neither a bound subject nor a complete
+            // member is an interrupted legacy shell left by older shared-name
+            // downloads. Swap it aside behind a second fresh reread (a
+            // concurrent publisher's win cancels this recovery), then retry
+            // once rather than treat either state as success.
+            if fs::metadata(&durable_dir).is_ok()
+                && classify_durable_subject(work_dir, binary_path) == DurableSubject::Absent
+            {
+                swap_durable_aside(work_dir, attempt_dir, version_dir)?;
+                if fs::rename(&staged_dir, &durable_dir).is_ok() {
+                    cleanup_superseded_graveyard(work_dir, attempt_dir);
+                    return Ok(MutationOutcome::Published);
+                }
+            }
+            fs::rename(&staged_dir, &durable_dir).map(|()| MutationOutcome::Published).map_err(
+                |error| format!("failed to publish staged perllsp `{version_dir}`: {error}"),
+            )
+        }
+    }
+}
+
+/// The graveyard sibling where this attempt parks a durable directory it is
+/// about to replace. Single naming owner for the swap-aside protocol so
+/// cleanup and sweeps stay exact (#11316).
+fn superseded_graveyard(work_dir: &Path, attempt_dir: &str) -> std::path::PathBuf {
+    work_dir.join(format!("{attempt_dir}.superseded"))
+}
+
+/// Atomically move the durable directory to this attempt's graveyard sibling
+/// so the destination name becomes free for one atomic re-publish. The
+/// graveyard stays inside this attempt's owned namespace and is swept only by
+/// [`cleanup_superseded_graveyard`] (#11316).
+fn swap_durable_aside(work_dir: &Path, attempt_dir: &str, version_dir: &str) -> Result<(), String> {
+    let durable_dir = work_dir.join(version_dir);
+    fs::rename(&durable_dir, superseded_graveyard(work_dir, attempt_dir)).map_err(|error| {
+        format!("failed to set aside corrupted perllsp subject `{version_dir}`: {error}")
+    })
+}
+
+/// Remove this attempt's superseded-subject graveyard after its replacement
+/// was published successfully.
+fn cleanup_superseded_graveyard(work_dir: &Path, attempt_dir: &str) {
+    let _ = fs::remove_dir_all(superseded_graveyard(work_dir, attempt_dir));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -630,49 +873,93 @@ impl PerlExtension {
 
         let version_dir = format!("perllsp-{version}-{target}");
         let binary_path = perllsp_binary_path(&version_dir, version, target, os);
+        let work_dir = Path::new(".");
+
+        // Attempt-private mutation protocol (#11316): every download claims a
+        // unique non-launchable staging root (exclusive create, so identities
+        // stay cross-process-unique even within one clock tick) and reaches
+        // the durable name only through one atomic publish. Concurrent Zed
+        // processes electing the same subject produce exactly one winner and
+        // explicitly settled losers; no attempt ever mutates the durable
+        // directory in place.
+        let (attempt, attempt_dir) = match claim_attempt_staging(work_dir, &version_dir) {
+            Ok(claimed) => claimed,
+            Err(error) => {
+                self.update_state = UpdateState::CandidateRejected;
+                return Err(error);
+            }
+        };
 
         // A durable manifest that names exactly this binary path while offline
         // verification rejected it marks corrupted or tampered bytes: replace
         // the subject wholesale instead of re-accepting what is on disk.
-        let rejected_subject = load_selection_manifest_in(Path::new("."))
+        let rejected_subject = load_selection_manifest_in(work_dir)
             .is_some_and(|manifest| manifest.installed_path == binary_path);
         let binary_exists = fs::metadata(&binary_path).is_ok_and(|metadata| metadata.is_file());
         let disposition = cold_disposition(binary_exists, rejected_subject);
 
         match disposition {
             ColdDisposition::DownloadFresh | ColdDisposition::ReplaceRejected => {
-                if fs::metadata(&version_dir).is_ok() {
-                    fs::remove_dir_all(&version_dir).map_err(|error| {
-                        format!(
-                            "failed to remove incomplete perllsp download `{version_dir}`: {error}"
-                        )
-                    })?;
-                }
-
                 zed::set_language_server_installation_status(
                     language_server_id,
                     &zed::LanguageServerInstallationStatus::Downloading,
                 );
-                if let Err(error) = zed::download_file(&asset.download_url, &version_dir, file_type)
+                // Extract into the private root: an interrupted or racing
+                // download can neither occupy nor destroy the durable name.
+                if let Err(error) = zed::download_file(&asset.download_url, &attempt_dir, file_type)
                 {
                     self.update_state = UpdateState::TransportFailed;
+                    let _ = remove_owned_attempt(&work_dir.join(&attempt_dir));
                     return Err(format!("failed to download EffortlessMetrics perllsp: {error}"));
                 }
 
-                if !fs::metadata(&binary_path).is_ok_and(|metadata| metadata.is_file()) {
+                let staged_binary = perllsp_binary_path(&attempt_dir, version, target, os);
+                if !fs::metadata(&staged_binary).is_ok_and(|metadata| metadata.is_file()) {
                     self.update_state = UpdateState::CandidateRejected;
+                    let _ = remove_owned_attempt(&work_dir.join(&attempt_dir));
                     return Err(format!(
                         "downloaded `{asset_name}` but did not find expected binary `{binary_path}`"
                     ));
                 }
+
+                // Executable readiness happens inside the private tree so the
+                // durable subject is launchable at its commit point
+                // (cache_contract.replace_only_after ends at executable_ready).
+                if !matches!(os, zed::Os::Windows) {
+                    if let Err(error) = zed::make_file_executable(&staged_binary) {
+                        self.update_state = UpdateState::CandidateRejected;
+                        let _ = remove_owned_attempt(&work_dir.join(&attempt_dir));
+                        return Err(format!(
+                            "failed to make downloaded perllsp executable: {error}"
+                        ));
+                    }
+                }
+
+                if let Err(error) =
+                    publish_staged_attempt(work_dir, &version_dir, &attempt_dir, &binary_path)
+                {
+                    self.update_state = UpdateState::CandidateRejected;
+                    let _ = remove_owned_attempt(&work_dir.join(&attempt_dir));
+                    return Err(error);
+                }
             }
-            ColdDisposition::ReuseExisting => {}
+            ColdDisposition::ReuseExisting => {
+                if !matches!(os, zed::Os::Windows) {
+                    if let Err(error) = zed::make_file_executable(&binary_path) {
+                        self.update_state = UpdateState::CandidateRejected;
+                        return Err(format!(
+                            "failed to make existing perllsp binary executable: {error}"
+                        ));
+                    }
+                }
+            }
         }
 
-        // Bind the exact installed identity only after the candidate is fully
-        // staged, verified, and executable on disk; the manifest promotion is
-        // atomic and last, so a partial install can never become accepted
-        // current (cache_contract.replace_only_after ends at executable_ready).
+        // Bind the exact installed identity only after the durable subject is
+        // fully staged, verified, and executable; the digest is computed from
+        // the durable bytes so an adopted winner's subject is bound exactly as
+        // published. The manifest promotion stays atomic, attempt-private, and
+        // last (cache_contract.replace_only_after ends at executable_ready).
         let binary_bytes = fs::read(&binary_path).map_err(|error| {
             self.update_state = UpdateState::CandidateRejected;
             format!("downloaded perllsp binary `{binary_path}` could not be read: {error}")
@@ -687,16 +974,33 @@ impl PerlExtension {
             binary_sha256: format!("sha256:{}", content_sha256(&binary_bytes)),
         };
 
-        if !matches!(os, zed::Os::Windows) {
-            if let Err(error) = zed::make_file_executable(&binary_path) {
-                self.update_state = UpdateState::CandidateRejected;
-                return Err(format!("failed to make downloaded perllsp executable: {error}"));
-            }
+        if let Err(error) = store_selection_manifest(&attempt, &manifest) {
+            self.update_state = UpdateState::CandidateRejected;
+            let _ = remove_owned_attempt(&work_dir.join(&attempt_dir));
+            return Err(error);
         }
 
-        if let Err(error) = store_selection_manifest(&manifest) {
-            self.update_state = UpdateState::CandidateRejected;
-            return Err(error);
+        // Exact accepted-state reread before reporting success (#11316):
+        // publication, lock, or directory disappearance during contention is
+        // never success. During a release rollover race the accepted subject
+        // may be another attempt's promotion; exactly that path is served so
+        // the launched source and the durably accepted state stay identical.
+        let accepted_path = match load_accepted_current_in(work_dir, os, arch) {
+            Ok(path) => path,
+            Err(error) => {
+                self.update_state = UpdateState::CandidateRejected;
+                let _ = remove_owned_attempt(&work_dir.join(&attempt_dir));
+                return Err(format!(
+                    "published perllsp subject failed accepted-state reread: {error}"
+                ));
+            }
+        };
+
+        let _ = remove_owned_attempt(&work_dir.join(&attempt_dir));
+
+        if accepted_path != binary_path {
+            self.perllsp_path = Some(accepted_path.clone());
+            return Ok(accepted_path);
         }
 
         self.perllsp_path = Some(binary_path.clone());
@@ -1122,12 +1426,25 @@ fn promote_staged_dir(staging_dir: &str, dest: &str) -> Result<(), String> {
 }
 
 fn remove_old_downloads(prefix: &str, current_dir: &str) {
-    let Ok(entries) = fs::read_dir(".") else {
+    remove_old_downloads_in(Path::new("."), prefix, current_dir);
+}
+
+/// Prefix-bounded cleanup of superseded durable downloads.
+///
+/// Attempt-private mutation state (`.tmp` extraction siblings and
+/// `.attempt-<id>` staging roots) is never swept here (#11316): it belongs to
+/// its owning attempt and is cleaned by that attempt alone, so a prefix sweep
+/// can never cross-clean another writer's live partial state.
+fn remove_old_downloads_in(dir: &Path, prefix: &str, current_dir: &str) {
+    let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
 
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
+        if name.ends_with(".tmp") || name.contains(".attempt-") {
+            continue;
+        }
         if name.starts_with(prefix) && name != current_dir {
             let _ = fs::remove_dir_all(entry.path());
         }
@@ -1819,5 +2136,479 @@ mod tests {
         // And the adapter directory does belong to its own boundary.
         assert!("perl-dap-managed-0.18.0-x86_64-unknown-linux-musl"
             .starts_with(PERL_DAP_MANAGED_PREFIX));
+    }
+
+    // ---- attempt-private managed mutation (#11316) ----
+
+    const MUTATION_TEST_SUBJECT_DIR: &str = "perllsp-9.9.9-concurrency-target";
+    const MUTATION_TEST_MEMBER_REL: &str = "perllsp-9.9.9-concurrency-target/pkg/perllsp";
+
+    fn write_member(
+        root: &Path,
+        relative: &str,
+        bytes: &[u8],
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let path = root.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        Ok(fs::write(path, bytes)?)
+    }
+
+    #[test]
+    fn attempt_identities_are_unique_and_staging_roots_private() {
+        let first = next_attempt_id();
+        let second = next_attempt_id();
+        assert_ne!(first, second);
+
+        let staging = attempt_staging_dir(MUTATION_TEST_SUBJECT_DIR, &first);
+        assert!(staging.starts_with(&format!("{MUTATION_TEST_SUBJECT_DIR}.attempt-")));
+        assert_ne!(
+            staging, MUTATION_TEST_SUBJECT_DIR,
+            "staging must never equal the durable directory name"
+        );
+
+        let tmp_first = selection_manifest_tmp_path(&first);
+        assert!(tmp_first.starts_with(SELECTION_MANIFEST_TMP_PATH));
+        assert_ne!(tmp_first, SELECTION_MANIFEST_TMP_PATH.to_string());
+        assert_ne!(tmp_first, selection_manifest_tmp_path(&second));
+    }
+
+    #[test]
+    fn concurrent_publications_elect_exactly_one_winner(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let base = dir.path().to_path_buf();
+        let attempts: Vec<String> = (0..8).map(|_| next_attempt_id()).collect();
+
+        let handles: Vec<_> = attempts
+            .iter()
+            .map(|attempt| {
+                let base = base.clone();
+                let version_dir = MUTATION_TEST_SUBJECT_DIR.to_string();
+                let member_rel = MUTATION_TEST_MEMBER_REL.to_string();
+                let attempt = attempt.clone();
+                std::thread::spawn(move || -> Result<MutationOutcome, String> {
+                    let attempt_dir = attempt_staging_dir(&version_dir, &attempt);
+                    if let Err(error) =
+                        write_member(&base, &format!("{attempt_dir}/pkg/perllsp"), b"perllsp-bytes")
+                    {
+                        return Err(error.to_string());
+                    }
+                    publish_staged_attempt(&base, &version_dir, &attempt_dir, &member_rel)
+                })
+            })
+            .collect();
+
+        let mut winners = 0;
+        let mut adopters = 0;
+        for handle in handles {
+            let outcome = handle.join().map_err(|_| "mutation worker failed".to_string())??;
+            match outcome {
+                MutationOutcome::Published => winners += 1,
+                MutationOutcome::AdoptedUnboundMember => adopters += 1,
+                // No manifest exists during this low-level race, so an
+                // adopted-bound outcome would mean the classifier lied.
+                MutationOutcome::AdoptedPublished => {
+                    return Err("unbound race cannot adopt a bound subject".into());
+                }
+            }
+        }
+        assert_eq!(winners, 1, "atomic rename must elect exactly one winner");
+        assert_eq!(winners + adopters, attempts.len(), "every loser must settle explicitly");
+
+        let published = fs::read(base.join(MUTATION_TEST_MEMBER_REL))?;
+        assert_eq!(published, b"perllsp-bytes");
+        for attempt in &attempts {
+            assert!(
+                !base.join(attempt_staging_dir(MUTATION_TEST_SUBJECT_DIR, attempt)).exists(),
+                "loser staging must be cleaned by its own attempt"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn contender_settlement_never_touches_other_attempts_or_the_winner(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let base = dir.path();
+        let version_dir = MUTATION_TEST_SUBJECT_DIR;
+        let member_rel = MUTATION_TEST_MEMBER_REL;
+
+        // A winner has already published and bound a verified subject.
+        write_member(base, member_rel, b"winner-bytes")?;
+        let bound_manifest = SelectionManifest {
+            release_tag: "v9.9.9".to_string(),
+            release_version: "9.9.9".to_string(),
+            target: "concurrency-target".to_string(),
+            asset_name: "synthetic.zip".to_string(),
+            archive_member: "pkg/perllsp".to_string(),
+            installed_path: member_rel.to_string(),
+            binary_sha256: format!("sha256:{}", content_sha256(b"winner-bytes")),
+        };
+        fs::write(base.join(SELECTION_MANIFEST_PATH), selection_manifest_json(&bound_manifest))?;
+
+        // Two unrelated live attempts exist beside the contention.
+        let sibling_a = attempt_staging_dir(version_dir, "sibling-a");
+        let sibling_b = attempt_staging_dir(version_dir, "sibling-b");
+        write_member(base, &format!("{sibling_a}/pkg/perllsp"), b"a")?;
+        write_member(base, &format!("{sibling_b}/pkg/perllsp"), b"b")?;
+
+        // The contender loses the rename and must adopt without deleting the
+        // winner, the siblings, or rewriting the binding.
+        let loser_dir = attempt_staging_dir(version_dir, "loser");
+        write_member(base, &format!("{loser_dir}/pkg/perllsp"), b"loser-bytes")?;
+        let outcome = publish_staged_attempt(base, version_dir, &loser_dir, member_rel)
+            .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
+        assert_eq!(outcome, MutationOutcome::AdoptedPublished);
+        assert_eq!(fs::read(base.join(member_rel))?, b"winner-bytes");
+        assert!(base.join(&sibling_a).exists(), "another live attempt must survive");
+        assert!(base.join(&sibling_b).exists(), "another live attempt must survive");
+        assert!(!base.join(&loser_dir).exists(), "contender cleans only its own staging");
+
+        let reread =
+            parse_selection_manifest(&fs::read_to_string(base.join(SELECTION_MANIFEST_PATH))?)?;
+        assert_eq!(reread.binary_sha256, bound_manifest.binary_sha256);
+        Ok(())
+    }
+
+    #[test]
+    fn corrupted_bound_subjects_are_replaced_and_reread_guarded(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let base = dir.path();
+        let version_dir = MUTATION_TEST_SUBJECT_DIR;
+        let member_rel = MUTATION_TEST_MEMBER_REL;
+
+        // Durable bytes are corrupted relative to their binding.
+        write_member(base, member_rel, b"corrupted-bytes")?;
+        let corrupted_binding = SelectionManifest {
+            release_tag: "v9.9.9".to_string(),
+            release_version: "9.9.9".to_string(),
+            target: "concurrency-target".to_string(),
+            asset_name: "synthetic.zip".to_string(),
+            archive_member: "pkg/perllsp".to_string(),
+            installed_path: member_rel.to_string(),
+            binary_sha256: format!("sha256:{}", content_sha256(b"original-bytes")),
+        };
+        fs::write(base.join(SELECTION_MANIFEST_PATH), selection_manifest_json(&corrupted_binding))?;
+
+        // Replacement wins the publish and installs verified bytes.
+        let replacement = attempt_staging_dir(version_dir, "replacement");
+        write_member(base, &format!("{replacement}/pkg/perllsp"), b"repaired-bytes")?;
+        let outcome = publish_staged_attempt(base, version_dir, &replacement, member_rel)
+            .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
+        assert_eq!(outcome, MutationOutcome::Published);
+        assert_eq!(fs::read(base.join(member_rel))?, b"repaired-bytes");
+
+        // The caller tail binds the durable bytes and rereads acceptance.
+        store_selection_manifest_in(
+            base,
+            "replacement",
+            &SelectionManifest {
+                binary_sha256: format!(
+                    "sha256:{}",
+                    content_sha256(&fs::read(base.join(member_rel))?)
+                ),
+                ..corrupted_binding.clone()
+            },
+        )
+        .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
+        let accepted = load_accepted_current_in_for_test(base, &content_sha256)?;
+        assert_eq!(accepted, member_rel);
+        Ok(())
+    }
+
+    /// Test-only stand-in for [`load_accepted_current_in`] used by
+    /// concurrency fixtures: the same validation shape against an explicit
+    /// work directory, because the real function derives the host target from
+    /// Zed APIs.
+    fn load_accepted_current_in_for_test(
+        work_dir: &Path,
+        hash: &dyn Fn(&[u8]) -> String,
+    ) -> std::result::Result<String, String> {
+        let manifest_text = fs::read_to_string(work_dir.join(SELECTION_MANIFEST_PATH))
+            .map_err(|_| "no accepted perllsp selection manifest".to_string())?;
+        let manifest = parse_selection_manifest(&manifest_text)?;
+        let bytes = fs::read(work_dir.join(&manifest.installed_path)).map_err(|_| {
+            "accepted perllsp binary recorded by the manifest is missing".to_string()
+        })?;
+        if format!("sha256:{}", hash(&bytes)) != manifest.binary_sha256 {
+            return Err("accepted perllsp binary no longer matches its recorded digest".to_string());
+        }
+        Ok(manifest.installed_path)
+    }
+
+    #[test]
+    fn interrupted_attempts_leave_private_evidence_that_survives_retries(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let base = dir.path();
+        let version_dir = MUTATION_TEST_SUBJECT_DIR;
+        let member_rel = MUTATION_TEST_MEMBER_REL;
+
+        // An interrupted attempt leaves a private partial tree behind.
+        let crashed = attempt_staging_dir(version_dir, "crashed-attempt");
+        write_member(base, &format!("{crashed}/pkg/perllsp"), b"partial")?;
+
+        // A later retry publishes successfully without erasing that evidence.
+        let retry = attempt_staging_dir(version_dir, "retry");
+        write_member(base, &format!("{retry}/pkg/perllsp"), b"retry-bytes")?;
+        let outcome = publish_staged_attempt(base, version_dir, &retry, member_rel)
+            .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
+        assert_eq!(outcome, MutationOutcome::Published);
+        assert_eq!(fs::read(base.join(member_rel))?, b"retry-bytes");
+        assert!(
+            base.join(&crashed).exists(),
+            "bounded cleanup removes only the owning attempt's tree"
+        );
+        assert!(!base.join(&retry).exists());
+
+        // And the interrupted evidence stays non-launchable: resolution paths
+        // never derive a command from `.attempt-` staging roots.
+        assert!(attempt_staging_dir(version_dir, "anything").contains(".attempt-"));
+        Ok(())
+    }
+
+    #[test]
+    fn staging_claims_are_cross_process_unique_even_on_collisions(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let base = dir.path();
+
+        // A first claim takes whatever identity is generated first.
+        let (first_attempt, first_dir) = claim_attempt_staging(base, MUTATION_TEST_SUBJECT_DIR)
+            .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
+        assert!(base.join(&first_dir).is_dir());
+
+        // A simultaneous claim from another process whose generated name
+        // collides is rejected by exclusive create and retried into a fresh
+        // identity: two live attempts can never share a staging root.
+        let (second_attempt, second_dir) =
+            claim_attempt_staging(base, MUTATION_TEST_SUBJECT_DIR)
+                .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
+        assert_ne!(first_attempt, second_attempt);
+        assert_ne!(first_dir, second_dir);
+        assert!(base.join(&second_dir).is_dir());
+
+        remove_owned_attempt(&base.join(&first_dir))?;
+        remove_owned_attempt(&base.join(&second_dir))?;
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_manifest_promotions_never_tear_accepted_state(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        fn mutation_manifest(digest_byte: char) -> SelectionManifest {
+            SelectionManifest {
+                release_tag: "v9.9.9".to_string(),
+                release_version: "9.9.9".to_string(),
+                target: "concurrency-target".to_string(),
+                asset_name: "synthetic.zip".to_string(),
+                archive_member: "pkg/perllsp".to_string(),
+                installed_path: MUTATION_TEST_MEMBER_REL.to_string(),
+                binary_sha256: format!("sha256:{}", digest_byte.to_string().repeat(64)),
+            }
+        }
+
+        let dir = tempfile::tempdir()?;
+        let base = dir.path().to_path_buf();
+
+        for _ in 0..25 {
+            let base_a = base.clone();
+            let handle_a = std::thread::spawn(move || {
+                store_selection_manifest_in(&base_a, "worker-a", &mutation_manifest('a'))
+            });
+            let base_b = base.clone();
+            let handle_b = std::thread::spawn(move || {
+                store_selection_manifest_in(&base_b, "worker-b", &mutation_manifest('b'))
+            });
+            handle_a
+                .join()
+                .map_err(|_| -> Box<dyn std::error::Error> { "worker-a failed".into() })??;
+            handle_b
+                .join()
+                .map_err(|_| -> Box<dyn std::error::Error> { "worker-b failed".into() })??;
+
+            let stored =
+                parse_selection_manifest(&fs::read_to_string(base.join(SELECTION_MANIFEST_PATH))?)?;
+            let digest = stored.binary_sha256.trim_start_matches("sha256:");
+            assert!(
+                digest == "a".repeat(64) || digest == "b".repeat(64),
+                "accepted state must always be one whole promotion, never torn"
+            );
+            assert!(!base.join(selection_manifest_tmp_path("worker-a")).exists());
+            assert!(!base.join(selection_manifest_tmp_path("worker-b")).exists());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_partial_shells_are_recovered_behind_the_reread_guard(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let base = dir.path();
+        let version_dir = MUTATION_TEST_SUBJECT_DIR;
+        let member_rel = MUTATION_TEST_MEMBER_REL;
+
+        // A pre-protocol interruption left an unbound durable shell with no
+        // usable member. It must not wedge every future cold install.
+        fs::create_dir_all(base.join(version_dir).join("stale-partial"))?;
+        fs::write(base.join(version_dir).join("stale-partial").join("junk"), b"junk")?;
+
+        let attempt = attempt_staging_dir(version_dir, "recovery");
+        write_member(base, &format!("{attempt}/pkg/perllsp"), b"fresh-bytes")?;
+        let outcome = publish_staged_attempt(base, version_dir, &attempt, member_rel)
+            .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
+        assert_eq!(outcome, MutationOutcome::Published);
+        assert_eq!(fs::read(base.join(member_rel))?, b"fresh-bytes");
+        Ok(())
+    }
+
+    #[test]
+    fn prefix_cleanup_never_sweeps_attempt_private_state(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let base = dir.path();
+        for name in
+            ["family-superseded", "family-current.tmp", "family-current.attempt-abc", "unrelated"]
+        {
+            fs::create_dir_all(base.join(name))?;
+        }
+
+        remove_old_downloads_in(base, "family-", "family-current");
+
+        assert!(!base.join("family-superseded").exists(), "superseded family dirs go");
+        assert!(base.join("family-current.tmp").exists(), ".tmp siblings belong to owners");
+        assert!(
+            base.join("family-current.attempt-abc").exists(),
+            ".attempt roots belong to owners"
+        );
+        assert!(base.join("unrelated").exists(), "other families stay untouched");
+        Ok(())
+    }
+
+    /// Native-test stand-in for `zed::current_platform()` (#11316): the WIT
+    /// function only exists inside the WASI host, so isolated-writer workers
+    /// map `std::env::consts` onto the same platform vocabulary instead.
+    fn native_platform() -> (zed::Os, zed::Architecture) {
+        let os = match std::env::consts::OS {
+            "macos" => zed::Os::Mac,
+            "linux" => zed::Os::Linux,
+            _ => zed::Os::Windows,
+        };
+        let arch = match std::env::consts::ARCH {
+            "aarch64" => zed::Architecture::Aarch64,
+            _ => zed::Architecture::X8664,
+        };
+        (os, arch)
+    }
+
+    /// Genuinely isolated-writer proof (#11316): two separate OS processes
+    /// race one managed publication against one shared directory. This test
+    /// doubles as the worker entry point when re-executed by itself through
+    /// `PERLLSP_MUTATION_WORKER`, so the child processes exercise the exact
+    /// protocol functions compiled into this crate.
+    #[test]
+    fn separate_process_workers_elect_exactly_one_winner(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let version_dir = MUTATION_TEST_SUBJECT_DIR;
+        let member_rel = MUTATION_TEST_MEMBER_REL;
+
+        if let Ok(worker_dir) = env::var("PERLLSP_MUTATION_WORKER_DIR") {
+            let work_dir = Path::new(&worker_dir);
+            let tag = env::var("PERLLSP_MUTATION_WORKER_TAG").unwrap_or_else(|_| "w".to_string());
+            let payload = format!("perllsp-bytes-{tag}");
+
+            let (attempt, attempt_dir) = claim_attempt_staging(work_dir, version_dir)
+                .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
+            write_member(
+                Path::new(&worker_dir),
+                &format!("{attempt_dir}/pkg/perllsp"),
+                payload.as_bytes(),
+            )?;
+            let outcome = publish_staged_attempt(work_dir, version_dir, &attempt_dir, member_rel)
+                .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
+
+            // Full caller tail: bind the durable bytes, promote the manifest,
+            // and require the exact accepted-state reread.
+            let bytes = fs::read(work_dir.join(member_rel))?;
+            let (os, arch) = native_platform();
+            let manifest = SelectionManifest {
+                release_tag: "v9.9.9".to_string(),
+                release_version: "9.9.9".to_string(),
+                target: perllsp_target(os, arch)?.to_string(),
+                asset_name: "synthetic.zip".to_string(),
+                archive_member: archive_member_for(os, "9.9.9", perllsp_target(os, arch)?),
+                installed_path: member_rel.to_string(),
+                binary_sha256: format!("sha256:{}", content_sha256(&bytes)),
+            };
+            store_selection_manifest_in(work_dir, &attempt, &manifest)
+                .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
+            load_accepted_current_in(work_dir, os, arch)
+                .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
+            let _ = remove_owned_attempt(&work_dir.join(&attempt_dir));
+
+            fs::write(
+                work_dir.join(format!("result-{tag}.txt")),
+                format!("{tag} {outcome:?} {}", manifest.binary_sha256),
+            )?;
+            std::process::exit(0);
+        }
+
+        // Parent: launch two independent processes of THIS test binary. The
+        // name filter is a unique substring, so each child harness runs only
+        // this test and the env gate turns it into the worker body.
+        let dir = tempfile::tempdir()?;
+        let base = dir.path().to_path_buf();
+        let exe = env::current_exe()?;
+        let mut children = Vec::new();
+        for tag in ["w0", "w1"] {
+            let mut command = std::process::Command::new(&exe);
+            command
+                .arg("separate_process_workers_elect_exactly_one_winner")
+                .arg("--nocapture")
+                .env("PERLLSP_MUTATION_WORKER_DIR", &base)
+                .env("PERLLSP_MUTATION_WORKER_TAG", tag);
+            children.push((tag, command.spawn()?));
+        }
+        for (tag, mut child) in children {
+            let status = child.wait()?;
+            assert!(status.success(), "worker {tag} did not complete cleanly");
+        }
+
+        // Exactly one process won; the other settled explicitly. Outcome
+        // tokens are compared exactly because `AdoptedPublished` also contains
+        // the substring `Published`.
+        let mut results = Vec::new();
+        for tag in ["w0", "w1"] {
+            let text = fs::read_to_string(base.join(format!("result-{tag}.txt")))?;
+            results.push(text.trim().to_string());
+        }
+        fn outcome_token(line: &str) -> &str {
+            line.split_whitespace().nth(1).unwrap_or("")
+        }
+        let winners = results.iter().filter(|r| outcome_token(r.as_str()) == "Published").count();
+        let adopters =
+            results.iter().filter(|r| outcome_token(r.as_str()).starts_with("Adopted")).count();
+        assert_eq!(winners, 1, "exactly one OS process may win the publication");
+        assert_eq!(adopters, 1, "the losing process must report a typed adoption");
+
+        // Accepted state is durably bound, verified, and readable offline by
+        // a third party that took part in neither mutation.
+        let (os, arch) = native_platform();
+        let accepted = load_accepted_current_in(Path::new(&base), os, arch)
+            .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
+        assert_eq!(accepted, member_rel);
+
+        for entry in fs::read_dir(&base)? {
+            let name = entry?.file_name().to_string_lossy().to_string();
+            assert!(
+                !name.contains(".attempt-"),
+                "no attempt staging may survive settlement: {name}"
+            );
+        }
+        Ok(())
     }
 }

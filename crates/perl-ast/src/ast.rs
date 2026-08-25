@@ -14,13 +14,18 @@
 //! - **Complete**: Supplies context for completion, hover, and signature help
 //! - **Analyze**: Feeds semantic analysis, diagnostics, and refactoring
 //!
-//! # Performance Characteristics
+//! # Performance and ownership
 //!
 //! AST structures are optimized for large codebases with:
 //! - Memory-efficient node representation using `Box<Node>` for recursive structures
 //! - Fast pattern matching via enum variants for common Perl constructs
 //! - Location tracking for precise error reporting in large files
-//! - Cheap cloning for parallel analysis tasks
+//!
+//! Ownership stays recursively owned (`Box`, `Vec`, optional children). [`Node`]
+//! destruction is iterative and depth-independent. [`Clone`], [`PartialEq`],
+//! and [`Debug`] are iterative; overflow is proven on a 50,000-node chain with
+//! a 256 KiB worker. [`Debug`] is a bounded human projection, not machine
+//! identity. See [`Node`] for the depth-safety contract.
 //!
 //! # Usage Examples
 //!
@@ -107,10 +112,11 @@ pub use perl_position_tracking::SourceLocation;
 pub use perl_token::{Token, TokenKind};
 use std::cell::Cell;
 use std::fmt;
+#[cfg(test)]
 use std::ops::ControlFlow;
 use strum::VariantNames as _;
 
-/// Maximum AST traversal depth for recursive operations.
+/// Maximum AST traversal depth for recursive *read* operations.
 ///
 /// Guards [`Node::to_sexp`], [`Node::count_nodes`], and
 /// [`Node::find_deepest_containing_offset`] against stack-overflow panics on
@@ -120,6 +126,12 @@ use strum::VariantNames as _;
 /// Chosen at 512: typical Perl code nests fewer than 100 levels deep;
 /// 512 provides a comfortable safety margin while staying well within
 /// Rust's default 8 MB stack.
+///
+/// This constant does **not** bound destruction, clone, equality, or debug
+/// formatting. [`Node`]'s [`Drop`], [`Clone`], [`PartialEq`], and [`Debug`]
+/// implementations are iterative and do not consult this limit. [`Debug`] uses
+/// its own conservative budgets (`NODE_DEBUG_MAX_*`). See [`Node`] for the
+/// full depth-safety disposition.
 pub const MAX_AST_DEPTH: usize = 512;
 
 thread_local! {
@@ -187,7 +199,11 @@ macro_rules! define_field_ids {
         impl FieldId {
             $(pub const $constant: Self = Self($name);)+
 
-            /// All field identifiers emitted by [`Node::for_each_child_with_field`].
+/// All field identifiers named by the structural registry.
+            ///
+            /// Order is the public compatibility inventory. Set membership is
+            /// the unique [`crate::kind_schema::NODE_KIND_STRUCTURAL_REGISTRY`]
+            /// fields; unused or missing names fail the parity checker.
             pub const ALL: &'static [Self] = &[$(Self::$constant),+];
 
             /// Return the canonical external name for this field.
@@ -261,12 +277,52 @@ define_field_ids! {
 /// - **Complete**: Provides contextual information for completion and hover
 /// - **Analyze**: Drives semantic analysis and diagnostics
 ///
-/// # Memory Optimization
+/// # Memory and ownership
 ///
 /// The structure is designed for efficient memory usage during large-scale parsing:
 /// - `SourceLocation` uses compact position encoding for large files
 /// - `NodeKind` enum variants minimize memory overhead for common constructs
-/// - Clone operations are optimized for shared analysis workflows
+/// - Child relationships stay recursively owned (`Box<Node>`, `Vec<Node>`,
+///   optional children, pair/clause records). Public node geometry is unchanged
+///   from that model; destruction, clone, equality, and debug formatting, not
+///   representation, are iterative.
+///
+/// # Depth safety
+///
+/// - **[`Drop`]**: iterative. Children are detached through
+///   [`Node::for_each_child_mut`] into a heap work stack before each node's
+///   remaining fields are released. A 50,000-node chain on a 256 KiB worker
+///   completes without overflowing the thread stack. Construct/destroy
+///   equality is proven at 10,000-node cycle depth, not on the overflow
+///   fixture.
+/// - **[`Clone`]**: iterative. Canonical child fields are cloned on an
+///   explicit heap stack and each parent is rebuilt only after its children
+///   exist. A 50,000-node chain on a 256 KiB worker completes without
+///   overflowing the thread stack. This is a full owned duplication, not a
+///   cheap share.
+/// - **[`PartialEq`]**: iterative exact structural equality. Canonical child
+///   fields are compared on an explicit heap stack. A 50,000-node chain on a
+///   256 KiB worker completes without overflowing the thread stack. This is
+///   the current `==` proposition (location, variant, every non-child
+///   payload, optional/repeated cardinality, child order). It is not
+///   S-expression, fingerprint, or source-text equality.
+/// - **[`Debug`]**: iterative bounded human projection. Kind, range, a
+///   selected payload summary, and a bounded child projection are rendered
+///   on an explicit heap stack. Depth, width, node, payload, and byte
+///   budgets are fixed conservative internals
+///   ([`NODE_DEBUG_MAX_DEPTH`], [`NODE_DEBUG_MAX_CHILDREN`],
+///   [`NODE_DEBUG_MAX_NODES`], [`NODE_DEBUG_MAX_PAYLOAD_CHARS`],
+///   [`NODE_DEBUG_MAX_BYTES`]). Truncation is marked with
+///   [`NODE_DEBUG_TRUNCATION_MARKER`]. A 50,000-node chain on a 256 KiB
+///   worker completes without overflowing the thread stack, and the
+///   rendering stays at or under the byte bound. This is not machine
+///   identity, equality, serialization, or a durable metric oracle.
+///   Callers that need configured complete or truncated state use the
+///   typed renderer tracked by issue 8832.
+///
+/// Whole-tree reads such as [`Node::count_nodes`] stay separately depth-guarded
+/// and may truncate; that is not a destruction, clone, equality, or debug
+/// concern.
 ///
 /// # Examples
 ///
@@ -301,7 +357,9 @@ define_field_ids! {
 /// let ast = parser.parse()?;
 /// println!("AST: {}", ast.to_sexp());
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+///
+/// [`Clone`], [`PartialEq`], and [`Debug`] are iterative. See the
+/// depth-safety table above.
 #[non_exhaustive]
 pub struct Node {
     /// The specific type and semantic content of this AST node
@@ -337,6 +395,10 @@ impl Node {
     /// [`Drop`], so consumers that previously destructured an owned `Node`
     /// call this instead. The returned kind is the original payload; the
     /// dropped shell retains only a childless placeholder.
+    ///
+    /// The returned [`NodeKind`] still owns every former child. Dropping that
+    /// payload remains stack-safe: each owned [`Node`] runs the same iterative
+    /// [`Drop`] implementation.
     pub fn into_parts(mut self) -> (NodeKind, SourceLocation) {
         let kind = std::mem::replace(&mut self.kind, NodeKind::MissingExpression);
         (kind, self.location)
@@ -1032,601 +1094,6 @@ impl Node {
         }
     }
 
-    /// Call a function on every direct child node of this node.
-    ///
-    /// This enables depth-first traversal for operations like heredoc content attachment.
-    /// The closure receives a mutable reference to each child node.
-    #[inline]
-    pub fn for_each_child_mut<F: FnMut(&mut Node)>(&mut self, mut f: F) {
-        match &mut self.kind {
-            NodeKind::Tie { variable, package, args } => {
-                f(variable);
-                f(package);
-                for arg in args {
-                    f(arg);
-                }
-            }
-            NodeKind::Untie { variable } => f(variable),
-
-            // Root program node
-            NodeKind::Program { statements } => {
-                for stmt in statements {
-                    f(stmt);
-                }
-            }
-
-            // Statement wrappers
-            NodeKind::ExpressionStatement { expression } => f(expression),
-
-            // Variable declarations
-            NodeKind::VariableDeclaration { variable, initializer, .. } => {
-                f(variable);
-                if let Some(init) = initializer {
-                    f(init);
-                }
-            }
-            NodeKind::VariableListDeclaration { variables, initializer, .. } => {
-                for var in variables {
-                    f(var);
-                }
-                if let Some(init) = initializer {
-                    f(init);
-                }
-            }
-            NodeKind::NestedVariableList { items } => {
-                for item in items {
-                    f(item);
-                }
-            }
-            NodeKind::VariableWithAttributes { variable, .. } => f(variable),
-
-            // Binary operations
-            NodeKind::Binary { left, right, .. } => {
-                f(left);
-                f(right);
-            }
-            NodeKind::ArraySlice { target, indices } => {
-                f(target);
-                f(indices);
-            }
-            NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => {
-                f(target);
-                f(keys);
-            }
-            NodeKind::ChainedComparison { operands, .. } => {
-                for operand in operands {
-                    f(operand);
-                }
-            }
-            NodeKind::Ternary { condition, then_expr, else_expr } => {
-                f(condition);
-                f(then_expr);
-                f(else_expr);
-            }
-            NodeKind::Unary { operand, .. } => f(operand),
-            NodeKind::Assignment { lhs, rhs, .. } => {
-                f(lhs);
-                f(rhs);
-            }
-
-            // Control flow
-            NodeKind::Block { statements } => {
-                for stmt in statements {
-                    f(stmt);
-                }
-            }
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
-                f(condition);
-                f(then_branch);
-                for (elsif_cond, elsif_body) in elsif_branches {
-                    f(elsif_cond);
-                    f(elsif_body);
-                }
-                if let Some(else_body) = else_branch {
-                    f(else_body);
-                }
-            }
-            NodeKind::While { condition, body, continue_block, .. } => {
-                f(condition);
-                f(body);
-                if let Some(cont) = continue_block {
-                    f(cont);
-                }
-            }
-            NodeKind::For { init, condition, update, body, continue_block, .. } => {
-                if let Some(i) = init {
-                    f(i);
-                }
-                if let Some(c) = condition {
-                    f(c);
-                }
-                if let Some(u) = update {
-                    f(u);
-                }
-                f(body);
-                if let Some(cont) = continue_block {
-                    f(cont);
-                }
-            }
-            NodeKind::Foreach { variable, list, body, continue_block } => {
-                f(variable);
-                f(list);
-                f(body);
-                if let Some(cb) = continue_block {
-                    f(cb);
-                }
-            }
-            NodeKind::Given { expr, body } => {
-                f(expr);
-                f(body);
-            }
-            NodeKind::When { condition, body } => {
-                f(condition);
-                f(body);
-            }
-            NodeKind::Default { body } => f(body),
-            NodeKind::StatementModifier { statement, condition, .. } => {
-                f(statement);
-                f(condition);
-            }
-            NodeKind::LabeledStatement { statement, .. } => f(statement),
-
-            // Eval and Do blocks
-            NodeKind::Eval { block } => f(block),
-            NodeKind::Do { block } => f(block),
-            NodeKind::Defer { block } => f(block),
-            NodeKind::Try { body, catch_blocks, finally_block } => {
-                f(body);
-                for (_, catch_body) in catch_blocks {
-                    f(catch_body);
-                }
-                if let Some(finally) = finally_block {
-                    f(finally);
-                }
-            }
-
-            // Function calls
-            NodeKind::FunctionCall { args, .. } | NodeKind::AmperCall { args, .. } => {
-                for arg in args {
-                    f(arg);
-                }
-            }
-            NodeKind::MethodCall { object, args, .. } => {
-                f(object);
-                for arg in args {
-                    f(arg);
-                }
-            }
-            NodeKind::IndirectCall { object, args, .. } => {
-                f(object);
-                for arg in args {
-                    f(arg);
-                }
-            }
-
-            // Functions
-            NodeKind::Subroutine { prototype, signature, body, .. } => {
-                if let Some(proto) = prototype {
-                    f(proto);
-                }
-                if let Some(sig) = signature {
-                    f(sig);
-                }
-                f(body);
-            }
-            NodeKind::Method { signature, body, .. } => {
-                if let Some(sig) = signature {
-                    f(sig);
-                }
-                f(body);
-            }
-            NodeKind::Return { value } => {
-                if let Some(v) = value {
-                    f(v);
-                }
-            }
-            NodeKind::Goto { target, .. } => f(target),
-            NodeKind::Signature { parameters } => {
-                for param in parameters {
-                    f(param);
-                }
-            }
-            NodeKind::MandatoryParameter { variable } => f(variable),
-            NodeKind::OptionalParameter { variable, default_value } => {
-                f(variable);
-                f(default_value);
-            }
-            NodeKind::SlurpyParameter { variable } => f(variable),
-            NodeKind::NamedParameter { variable, default_value, .. } => {
-                f(variable);
-                if let Some(default) = default_value {
-                    f(default);
-                }
-            }
-
-            // Pattern matching
-            NodeKind::Match { expr, .. } => f(expr),
-            NodeKind::Substitution { expr, .. } => f(expr),
-            NodeKind::Transliteration { expr, .. } => f(expr),
-
-            // Containers
-            NodeKind::ArrayLiteral { elements } => {
-                for elem in elements {
-                    f(elem);
-                }
-            }
-            NodeKind::HashLiteral { pairs } => {
-                for (key, value) in pairs {
-                    f(key);
-                    f(value);
-                }
-            }
-
-            // Package system
-            NodeKind::Package { block, .. } => {
-                if let Some(b) = block {
-                    f(b);
-                }
-            }
-            NodeKind::PhaseBlock { block, .. } => f(block),
-            NodeKind::Class { body, .. } => f(body),
-
-            // Error node might have a partial valid tree
-            NodeKind::Error { partial, .. } => {
-                if let Some(node) = partial {
-                    f(node);
-                }
-            }
-
-            // Leaf nodes (no children to traverse)
-            NodeKind::Variable { .. }
-            | NodeKind::Identifier { .. }
-            | NodeKind::Number { .. }
-            | NodeKind::String { .. }
-            | NodeKind::VString { .. }
-            | NodeKind::Heredoc { .. }
-            | NodeKind::Regex { .. }
-            | NodeKind::Readline { .. }
-            | NodeKind::Glob { .. }
-            | NodeKind::Typeglob { .. }
-            | NodeKind::Diamond
-            | NodeKind::Ellipsis
-            | NodeKind::Undef
-            | NodeKind::Use { .. }
-            | NodeKind::No { .. }
-            | NodeKind::Prototype { .. }
-            | NodeKind::DataSection { .. }
-            | NodeKind::Format { .. }
-            | NodeKind::LoopControl { .. }
-            | NodeKind::MissingExpression
-            | NodeKind::MissingStatement
-            | NodeKind::MissingIdentifier
-            | NodeKind::MissingBlock
-            | NodeKind::UnknownRest => {}
-        }
-    }
-
-    /// Visit direct children with short-circuiting and preserve their structural fields.
-    ///
-    /// `None` identifies an intentionally unnamed child. Repeated children in
-    /// list-like fields use the same [`FieldId`] for each element.
-    #[inline]
-    pub fn try_for_each_child_with_field<'a, F, B>(&'a self, f: F) -> ControlFlow<B>
-    where
-        F: FnMut(Option<FieldId>, &'a Node) -> ControlFlow<B>,
-    {
-        self.try_for_each_child_with_field_observed(|_, _| {}, f)
-    }
-
-    /// Visit direct children with short-circuiting while observing each source pull.
-    ///
-    /// The observer runs inside child enumeration, immediately before the child
-    /// is passed to `f`. This makes early-break behavior measurable without
-    /// materializing an intermediate child collection.
-    #[inline]
-    pub fn try_for_each_child_with_field_observed<'a, P, F, B>(
-        &'a self,
-        mut observe_pull: P,
-        mut f: F,
-    ) -> ControlFlow<B>
-    where
-        P: FnMut(Option<FieldId>, &'a Node),
-        F: FnMut(Option<FieldId>, &'a Node) -> ControlFlow<B>,
-    {
-        macro_rules! emit {
-            ($field:expr, $child:expr) => {{
-                observe_pull(Some($field), $child);
-                if let ControlFlow::Break(b) = f(Some($field), $child) {
-                    return ControlFlow::Break(b);
-                }
-            }};
-        }
-
-        match &self.kind {
-            NodeKind::Tie { variable, package, args } => {
-                emit!(FieldId::VARIABLE, variable);
-                emit!(FieldId::PACKAGE, package);
-                for arg in args {
-                    emit!(FieldId::ARGS, arg);
-                }
-            }
-            NodeKind::Untie { variable } => emit!(FieldId::VARIABLE, variable),
-
-            // Root program node
-            NodeKind::Program { statements } => {
-                for stmt in statements {
-                    emit!(FieldId::STATEMENTS, stmt);
-                }
-            }
-
-            // Statement wrappers
-            NodeKind::ExpressionStatement { expression } => emit!(FieldId::EXPRESSION, expression),
-
-            // Variable declarations
-            NodeKind::VariableDeclaration { variable, initializer, .. } => {
-                emit!(FieldId::VARIABLE, variable);
-                if let Some(init) = initializer {
-                    emit!(FieldId::INITIALIZER, init);
-                }
-            }
-            NodeKind::VariableListDeclaration { variables, initializer, .. } => {
-                for var in variables {
-                    emit!(FieldId::VARIABLE, var);
-                }
-                if let Some(init) = initializer {
-                    emit!(FieldId::INITIALIZER, init);
-                }
-            }
-            NodeKind::NestedVariableList { items } => {
-                for item in items {
-                    emit!(FieldId::ITEMS, item);
-                }
-            }
-            NodeKind::VariableWithAttributes { variable, .. } => emit!(FieldId::VARIABLE, variable),
-
-            // Binary operations
-            NodeKind::Binary { left, right, .. } => {
-                emit!(FieldId::LEFT, left);
-                emit!(FieldId::RIGHT, right);
-            }
-            NodeKind::ArraySlice { target, indices } => {
-                emit!(FieldId::TARGET, target);
-                emit!(FieldId::ELEMENTS, indices);
-            }
-            NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => {
-                emit!(FieldId::TARGET, target);
-                emit!(FieldId::KEY, keys);
-            }
-            NodeKind::ChainedComparison { operands, .. } => {
-                for operand in operands {
-                    emit!(FieldId::ELEMENTS, operand);
-                }
-            }
-            NodeKind::Ternary { condition, then_expr, else_expr } => {
-                emit!(FieldId::CONDITION, condition);
-                emit!(FieldId::THEN_EXPR, then_expr);
-                emit!(FieldId::ELSE_EXPR, else_expr);
-            }
-            NodeKind::Unary { operand, .. } => emit!(FieldId::OPERAND, operand),
-            NodeKind::Assignment { lhs, rhs, .. } => {
-                emit!(FieldId::LHS, lhs);
-                emit!(FieldId::RHS, rhs);
-            }
-
-            // Control flow
-            NodeKind::Block { statements } => {
-                for stmt in statements {
-                    emit!(FieldId::STATEMENTS, stmt);
-                }
-            }
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
-                emit!(FieldId::CONDITION, condition);
-                emit!(FieldId::THEN_BRANCH, then_branch);
-                for (elsif_cond, elsif_body) in elsif_branches {
-                    emit!(FieldId::CONDITION, elsif_cond);
-                    emit!(FieldId::BODY, elsif_body);
-                }
-                if let Some(else_body) = else_branch {
-                    emit!(FieldId::ELSE_BRANCH, else_body);
-                }
-            }
-            NodeKind::While { condition, body, continue_block, .. } => {
-                emit!(FieldId::CONDITION, condition);
-                emit!(FieldId::BODY, body);
-                if let Some(cont) = continue_block {
-                    emit!(FieldId::CONTINUE_BLOCK, cont);
-                }
-            }
-            NodeKind::For { init, condition, update, body, continue_block, .. } => {
-                if let Some(i) = init {
-                    emit!(FieldId::INIT, i);
-                }
-                if let Some(c) = condition {
-                    emit!(FieldId::CONDITION, c);
-                }
-                if let Some(u) = update {
-                    emit!(FieldId::UPDATE, u);
-                }
-                emit!(FieldId::BODY, body);
-                if let Some(cont) = continue_block {
-                    emit!(FieldId::CONTINUE_BLOCK, cont);
-                }
-            }
-            NodeKind::Foreach { variable, list, body, continue_block } => {
-                emit!(FieldId::VARIABLE, variable);
-                emit!(FieldId::LIST, list);
-                emit!(FieldId::BODY, body);
-                if let Some(cb) = continue_block {
-                    emit!(FieldId::CONTINUE_BLOCK, cb);
-                }
-            }
-            NodeKind::Given { expr, body } => {
-                emit!(FieldId::EXPR, expr);
-                emit!(FieldId::BODY, body);
-            }
-            NodeKind::When { condition, body } => {
-                emit!(FieldId::CONDITION, condition);
-                emit!(FieldId::BODY, body);
-            }
-            NodeKind::Default { body } => emit!(FieldId::BODY, body),
-            NodeKind::StatementModifier { statement, condition, .. } => {
-                emit!(FieldId::STATEMENT, statement);
-                emit!(FieldId::CONDITION, condition);
-            }
-            NodeKind::LabeledStatement { statement, .. } => emit!(FieldId::STATEMENT, statement),
-
-            // Eval and Do blocks
-            NodeKind::Eval { block } => emit!(FieldId::BLOCK, block),
-            NodeKind::Do { block } => emit!(FieldId::BLOCK, block),
-            NodeKind::Defer { block } => emit!(FieldId::BLOCK, block),
-            NodeKind::Try { body, catch_blocks, finally_block } => {
-                emit!(FieldId::BODY, body);
-                for (_, catch_body) in catch_blocks {
-                    emit!(FieldId::CATCH, catch_body);
-                }
-                if let Some(finally) = finally_block {
-                    emit!(FieldId::FINALLY, finally);
-                }
-            }
-
-            // Function calls
-            NodeKind::FunctionCall { args, .. } | NodeKind::AmperCall { args, .. } => {
-                for arg in args {
-                    emit!(FieldId::ARGS, arg);
-                }
-            }
-            NodeKind::MethodCall { object, args, .. } => {
-                emit!(FieldId::OBJECT, object);
-                for arg in args {
-                    emit!(FieldId::ARGS, arg);
-                }
-            }
-            NodeKind::IndirectCall { object, args, .. } => {
-                emit!(FieldId::OBJECT, object);
-                for arg in args {
-                    emit!(FieldId::ARGS, arg);
-                }
-            }
-
-            // Functions
-            NodeKind::Subroutine { prototype, signature, body, .. } => {
-                if let Some(proto) = prototype {
-                    emit!(FieldId::PROTOTYPE, proto);
-                }
-                if let Some(sig) = signature {
-                    emit!(FieldId::SIGNATURE, sig);
-                }
-                emit!(FieldId::BODY, body);
-            }
-            NodeKind::Method { signature, body, .. } => {
-                if let Some(sig) = signature {
-                    emit!(FieldId::SIGNATURE, sig);
-                }
-                emit!(FieldId::BODY, body);
-            }
-            NodeKind::Return { value } => {
-                if let Some(v) = value {
-                    emit!(FieldId::VALUE, v);
-                }
-            }
-            NodeKind::Goto { target, .. } => emit!(FieldId::TARGET, target),
-            NodeKind::Signature { parameters } => {
-                for param in parameters {
-                    emit!(FieldId::PARAMETERS, param);
-                }
-            }
-            NodeKind::MandatoryParameter { variable } => emit!(FieldId::VARIABLE, variable),
-            NodeKind::OptionalParameter { variable, default_value } => {
-                emit!(FieldId::VARIABLE, variable);
-                emit!(FieldId::DEFAULT_VALUE, default_value);
-            }
-            NodeKind::SlurpyParameter { variable } => emit!(FieldId::VARIABLE, variable),
-            NodeKind::NamedParameter { variable, default_value, .. } => {
-                emit!(FieldId::VARIABLE, variable);
-                if let Some(default) = default_value {
-                    emit!(FieldId::DEFAULT_VALUE, default);
-                }
-            }
-
-            // Pattern matching
-            NodeKind::Match { expr, .. } => emit!(FieldId::EXPR, expr),
-            NodeKind::Substitution { expr, .. } => emit!(FieldId::EXPR, expr),
-            NodeKind::Transliteration { expr, .. } => emit!(FieldId::EXPR, expr),
-
-            // Containers
-            NodeKind::ArrayLiteral { elements } => {
-                for elem in elements {
-                    emit!(FieldId::ELEMENTS, elem);
-                }
-            }
-            NodeKind::HashLiteral { pairs } => {
-                for (key, value) in pairs {
-                    emit!(FieldId::KEY, key);
-                    emit!(FieldId::VALUE, value);
-                }
-            }
-
-            // Package system
-            NodeKind::Package { block, .. } => {
-                if let Some(b) = block {
-                    emit!(FieldId::BLOCK, b);
-                }
-            }
-            NodeKind::PhaseBlock { block, .. } => emit!(FieldId::BLOCK, block),
-            NodeKind::Class { body, .. } => emit!(FieldId::BODY, body),
-
-            // Error node might have a partial valid tree
-            NodeKind::Error { partial, .. } => {
-                if let Some(node) = partial {
-                    emit!(FieldId::PARTIAL, node);
-                }
-            }
-
-            // Leaf nodes (no children to traverse)
-            NodeKind::Variable { .. }
-            | NodeKind::Identifier { .. }
-            | NodeKind::Number { .. }
-            | NodeKind::String { .. }
-            | NodeKind::VString { .. }
-            | NodeKind::Heredoc { .. }
-            | NodeKind::Regex { .. }
-            | NodeKind::Readline { .. }
-            | NodeKind::Glob { .. }
-            | NodeKind::Typeglob { .. }
-            | NodeKind::Diamond
-            | NodeKind::Ellipsis
-            | NodeKind::Undef
-            | NodeKind::Use { .. }
-            | NodeKind::No { .. }
-            | NodeKind::Prototype { .. }
-            | NodeKind::DataSection { .. }
-            | NodeKind::Format { .. }
-            | NodeKind::LoopControl { .. }
-            | NodeKind::MissingExpression
-            | NodeKind::MissingStatement
-            | NodeKind::MissingIdentifier
-            | NodeKind::MissingBlock
-            | NodeKind::UnknownRest => {}
-        }
-
-        ControlFlow::Continue(())
-    }
-
-    /// Call a function on every direct child, preserving its structural field.
-    #[inline]
-    pub fn for_each_child_with_field<'a, F: FnMut(Option<FieldId>, &'a Node)>(&'a self, mut f: F) {
-        let _ = self.try_for_each_child_with_field(|field, child| {
-            f(field, child);
-            ControlFlow::<()>::Continue(())
-        });
-    }
-
-    /// Call a function on every direct child without field metadata.
-    #[inline]
-    pub fn for_each_child<'a, F: FnMut(&'a Node)>(&'a self, mut f: F) {
-        self.for_each_child_with_field(|_, child| f(child));
-    }
-
     /// Count the total number of nodes in this subtree (inclusive).
     ///
     /// # Examples
@@ -1871,6 +1338,15 @@ impl Drop for Node {
     }
 }
 
+mod node_clone;
+mod node_debug;
+mod node_eq;
+
+pub use node_debug::{
+    NODE_DEBUG_MAX_BYTES, NODE_DEBUG_MAX_CHILDREN, NODE_DEBUG_MAX_DEPTH, NODE_DEBUG_MAX_NODES,
+    NODE_DEBUG_MAX_PAYLOAD_CHARS, NODE_DEBUG_TRUNCATION_MARKER,
+};
+
 #[cfg(test)]
 mod drop_audit {
     use std::cell::Cell;
@@ -1945,9 +1421,18 @@ mod drop_audit {
 /// The enum design optimizes for large codebases:
 /// - Box pointers minimize stack usage for recursive structures
 /// - Vector storage enables efficient bulk operations on child nodes
-/// - Clone operations optimized for concurrent analysis workflows
+/// - [`Node`] clone duplicates the owned tree iteratively; [`NodeKind`] clone
+///   still goes through [`Node::clone`] for child slots
 /// - Pattern matching performance tuned for common Perl constructs
-#[derive(Debug, Clone, PartialEq, strum::VariantNames)]
+///
+/// Dropping a [`NodeKind`] that still owns [`Node`] children is stack-safe
+/// because each child uses [`Node`]'s iterative [`Drop`]. Derived [`Clone`]
+/// on this enum goes through those same iterative [`Node::clone`] child slots.
+/// Derived [`PartialEq`] likewise compares child slots through iterative
+/// [`Node::eq`]. [`Debug`] is non-recursive: it shows the kind name and a
+/// bounded payload summary without dumping child trees. Tree projection is
+/// owned by [`Node`]'s bounded [`Debug`].
+#[derive(Clone, PartialEq, strum::VariantNames)]
 #[non_exhaustive]
 pub enum NodeKind {
     /// Top-level program containing all statements in an Perl script
@@ -4004,6 +3489,33 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn every_variant_clone_preserves_equality_and_kind_clone() {
+        for fixture in crate::invariant_policy::node_kind_fixtures() {
+            let kind_name = fixture.sample.kind.kind_name().to_string();
+            let cloned = fixture.sample.clone();
+            assert_eq!(
+                fixture.sample, cloned,
+                "{kind_name}: Node::clone must preserve public equality"
+            );
+            let cloned_kind = fixture.sample.kind.clone();
+            assert_eq!(
+                fixture.sample.kind, cloned_kind,
+                "{kind_name}: NodeKind::clone must preserve public equality"
+            );
+            let mut mutated = cloned;
+            mutated.location.end = mutated.location.end.saturating_add(17);
+            assert_ne!(
+                fixture.sample.location, mutated.location,
+                "{kind_name}: cloned location must be independent"
+            );
+            assert_eq!(
+                fixture.sample.location.end, 0,
+                "{kind_name}: mutating the clone must not change the original location"
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4206,7 +3718,8 @@ mod depth_guard_tests {
 }
 
 // ---------------------------------------------------------------------------
-// Iterative deep-tree destruction regression tests (#8836)
+// Iterative deep-tree destruction (#8836), clone (#8837), equality (#8839),
+// and debug (#8840)
 // ---------------------------------------------------------------------------
 //
 // `Node` owns its descendants through boxed, optional, repeated, pair-record,
@@ -4215,16 +3728,74 @@ mod depth_guard_tests {
 // fields are dropped, so destructor stack depth no longer grows with tree
 // depth.
 //
-// The small-stack harness (256 KiB worker threads) discriminates the naive
-// recursive drop glue from the iterative drain: destroying a 50 000-node chain
-// recursively needs multiple megabytes of frames and aborts the process, while
-// the iterative drain runs in constant stack space. A mutation that omits one
-// registered child field from `for_each_child_mut`, or that drops a detached
-// child recursively, overflows these same tests.
+// Clone is likewise iterative: it walks those same canonical child fields,
+// clones payloads through a one-level `NodeKind` shell, and rebuilds each
+// parent only after cloned children are available. Derived `Clone` glue would
+// recurse through `Node`/`NodeKind` and overflow the small-stack harness.
+//
+// Equality is the third operation on that seam: a custom `PartialEq` compares
+// location and derived `NodeKind` payload/shape behind an operation-scoped
+// child skip, then walks `for_each_child` on a heap stack of pairs. Starting
+// `Node::eq` with unguarded `self.kind == other.kind` re-enters derived
+// `NodeKind::eq` and overflows the same 50,000-node 256 KiB harness.
+//
+// Debug is the fourth: a custom `Debug` sketches kind, range, a bounded
+// payload summary, and a bounded child projection on a heap stack. Derived
+// recursive `Debug` glue would format the 50,000-node chain by descending
+// `Node`/`NodeKind` on the thread stack and abort the process. The same
+// harness also proves the rendering stays under [`NODE_DEBUG_MAX_BYTES`] and
+// that truncation is visible. Debug bytes are not structural identity:
+// two chains that differ only at the hidden leaf compare unequal by `==`
+// while their Debug strings match.
+//
+// The small-stack harness (256 KiB worker threads) discriminates naive
+// recursive drop/clone/eq/debug glue from the iterative paths: a 50 000-node
+// chain recursively needs multiple megabytes of frames and aborts the process.
+// `into_parts` returns the original `NodeKind` payload, so dropping that
+// extracted kind must stay stack-safe as well. Direct `NodeKind` equality
+// stays derived: child slots route through iterative `Node::eq`. `NodeKind`
+// `Debug` does not dump children. A mutation that restores recursive drop
+// glue, omits one registered child field from `for_each_child_mut`, drops a
+// detached child recursively, clones through `self.kind.clone()` before
+// detaching children, compares `Node` by unguarded `self.kind == other.kind`,
+// or restores derived recursive `Debug` overflows or fails these same tests.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod deep_tree_destruction_tests {
+    use super::node_clone::{CloneObserver, clone_node};
+    use super::node_debug::{DebugObserver, render_node};
+    use super::node_eq::{EqObserver, nodes_eq};
     use super::*;
+
+    /// Operation-local clone work recorded by [`clone_node`].
+    ///
+    /// Counts are the clone operations actually performed for one call, not the
+    /// depth-bounded [`Node::count_nodes`] population of the result. Lives next
+    /// to the tests that read it so field construction is not a production seam.
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    struct CloneWork {
+        nodes_entered: u64,
+        nodes_rebuilt: u64,
+        child_edges: u64,
+        max_explicit_stack_depth: usize,
+    }
+
+    impl CloneObserver for CloneWork {
+        fn on_enter(&mut self, child_count: usize) {
+            self.nodes_entered = self.nodes_entered.saturating_add(1);
+            self.child_edges = self.child_edges.saturating_add(child_count as u64);
+        }
+
+        fn on_rebuild(&mut self) {
+            self.nodes_rebuilt = self.nodes_rebuilt.saturating_add(1);
+        }
+
+        fn on_stack_depth(&mut self, depth: usize) {
+            if depth > self.max_explicit_stack_depth {
+                self.max_explicit_stack_depth = depth;
+            }
+        }
+    }
 
     const SMALL_STACK_BYTES: usize = 256 * 1024;
     const DEEP_DEPTH: usize = 50_000;
@@ -4321,6 +3892,19 @@ mod deep_tree_destruction_tests {
         )
     }
 
+    fn wrap_if_else(inner: Node) -> Node {
+        Node::new(
+            NodeKind::If {
+                condition: Box::new(number_leaf("c")),
+                then_branch: Box::new(number_leaf("t")),
+                elsif_branches: Vec::new(),
+                else_branch: Some(Box::new(inner)),
+                keyword: None,
+            },
+            loc(),
+        )
+    }
+
     fn all_family_wrappers() -> Vec<(&'static str, fn(Node) -> Node)> {
         vec![
             ("boxed", wrap_boxed),
@@ -4338,6 +3922,33 @@ mod deep_tree_destruction_tests {
         run_on_small_stack(|| {
             drop(chain_of(DEEP_DEPTH, wrap_boxed));
         })
+    }
+
+    #[test]
+    fn into_parts_payload_destroys_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let deep = chain_of(DEEP_DEPTH, wrap_boxed);
+            let (kind, _) = deep.into_parts();
+            drop(kind);
+        })
+    }
+
+    #[test]
+    fn into_parts_payload_releases_every_node() {
+        let _ = drop_audit::take_counts();
+        let deep = chain_of(DEEP_CYCLE_DEPTH, wrap_boxed);
+        let (kind, _) = deep.into_parts();
+        drop(kind);
+        let (constructed, destroyed) = drop_audit::take_counts();
+        assert_eq!(
+            constructed, destroyed,
+            "into_parts payload drop constructed {constructed} nodes but destroyed {destroyed}"
+        );
+        assert!(
+            destroyed >= (DEEP_CYCLE_DEPTH + 1) as u64,
+            "into_parts payload drop destroyed only {destroyed} of at least {} nodes",
+            DEEP_CYCLE_DEPTH + 1
+        );
     }
 
     #[test]
@@ -4480,5 +4091,1089 @@ mod deep_tree_destruction_tests {
             "mutable child traversal must reach every child in the broad control fixture"
         );
         Ok(())
+    }
+
+    fn clone_and_count(node: &Node) -> (Node, CloneWork) {
+        let mut work = CloneWork {
+            nodes_entered: 0,
+            nodes_rebuilt: 0,
+            child_edges: 0,
+            max_explicit_stack_depth: 0,
+        };
+        let cloned = clone_node(node, &mut work);
+        (cloned, work)
+    }
+
+    /// Iterative structure check for clone reconstruction.
+    ///
+    /// Public [`PartialEq`] is now iterative, so deep clone tests also use
+    /// `assert_eq!`. This helper still names kind/location/cardinality/number
+    /// fields explicitly so a clone-only reconstruction bug is not hidden
+    /// behind a single boolean.
+    fn assert_iterative_shape_eq(left: &Node, right: &Node) {
+        let mut stack = vec![(left, right)];
+        while let Some((left, right)) = stack.pop() {
+            assert_eq!(left.kind.kind_name(), right.kind.kind_name(), "cloned kind diverged");
+            assert_eq!(left.location, right.location, "cloned location diverged");
+            if let (
+                NodeKind::Number { value: left_value },
+                NodeKind::Number { value: right_value },
+            ) = (&left.kind, &right.kind)
+            {
+                assert_eq!(left_value, right_value, "cloned number payload diverged");
+            }
+            let mut left_children = Vec::new();
+            left.for_each_child(|child| left_children.push(child));
+            let mut right_children = Vec::new();
+            right.for_each_child(|child| right_children.push(child));
+            assert_eq!(
+                left_children.len(),
+                right_children.len(),
+                "cloned child cardinality diverged"
+            );
+            for (left_child, right_child) in left_children.into_iter().zip(right_children).rev() {
+                stack.push((left_child, right_child));
+            }
+        }
+    }
+
+    fn assert_boxed_chain_eq(original: &Node, cloned: &Node, depth: usize) {
+        let mut left = original;
+        let mut right = cloned;
+        for layer in 0..depth {
+            match (&left.kind, &right.kind) {
+                (
+                    NodeKind::ExpressionStatement { expression: left_inner },
+                    NodeKind::ExpressionStatement { expression: right_inner },
+                ) => {
+                    assert_eq!(
+                        left.location, right.location,
+                        "boxed wrapper location diverged at layer {layer}"
+                    );
+                    left = left_inner;
+                    right = right_inner;
+                }
+                (left_kind, right_kind) => {
+                    assert_eq!(
+                        left_kind.kind_name(),
+                        "ExpressionStatement",
+                        "boxed chain left kind at layer {layer}"
+                    );
+                    assert_eq!(
+                        right_kind.kind_name(),
+                        "ExpressionStatement",
+                        "boxed chain right kind at layer {layer}"
+                    );
+                }
+            }
+        }
+        match (&left.kind, &right.kind) {
+            (NodeKind::Number { value: left_value }, NodeKind::Number { value: right_value }) => {
+                assert_eq!(left.location, right.location, "boxed leaf locations");
+                assert_eq!(left_value, right_value, "boxed leaf values");
+            }
+            (left_kind, right_kind) => {
+                assert_eq!(left_kind.kind_name(), "Number", "boxed chain left leaf");
+                assert_eq!(right_kind.kind_name(), "Number", "boxed chain right leaf");
+            }
+        }
+    }
+
+    fn spine_child_index(family: &str) -> usize {
+        assert!(
+            matches!(
+                family,
+                "boxed"
+                    | "repeated"
+                    | "recovery"
+                    | "optional_boxed"
+                    | "pair_record"
+                    | "try_catch_pair_and_finally"
+                    | "clause_pair"
+            ),
+            "unknown family {family}"
+        );
+        match family {
+            "optional_boxed" | "pair_record" | "try_catch_pair_and_finally" => 1,
+            "clause_pair" => 3,
+            _ => 0,
+        }
+    }
+
+    fn assert_family_chain_eq(family: &str, original: &Node, cloned: &Node, depth: usize) {
+        let mut left = original;
+        let mut right = cloned;
+        let spine = spine_child_index(family);
+        for layer in 0..depth {
+            assert_eq!(
+                left.kind.kind_name(),
+                right.kind.kind_name(),
+                "{family} kind diverged at layer {layer}"
+            );
+            assert_eq!(
+                left.location, right.location,
+                "{family} location diverged at layer {layer}"
+            );
+            match family {
+                "optional_boxed" => match (&left.kind, &right.kind) {
+                    (
+                        NodeKind::VariableDeclaration {
+                            declarator: left_decl,
+                            attributes: left_attrs,
+                            ..
+                        },
+                        NodeKind::VariableDeclaration {
+                            declarator: right_decl,
+                            attributes: right_attrs,
+                            ..
+                        },
+                    ) => {
+                        assert_eq!(left_decl, right_decl, "{family} declarator at layer {layer}");
+                        assert_eq!(left_attrs, right_attrs, "{family} attributes at layer {layer}");
+                    }
+                    (left_kind, _) => {
+                        assert_eq!(
+                            left_kind.kind_name(),
+                            "VariableDeclaration",
+                            "{family} at layer {layer}"
+                        );
+                    }
+                },
+                "clause_pair" => match (&left.kind, &right.kind) {
+                    (
+                        NodeKind::If { keyword: left_kw, .. },
+                        NodeKind::If { keyword: right_kw, .. },
+                    ) => {
+                        assert_eq!(left_kw, right_kw, "{family} keyword at layer {layer}");
+                    }
+                    (left_kind, _) => {
+                        assert_eq!(left_kind.kind_name(), "If", "{family} at layer {layer}");
+                    }
+                },
+                "try_catch_pair_and_finally" => match (&left.kind, &right.kind) {
+                    (
+                        NodeKind::Try { catch_blocks: left_catches, .. },
+                        NodeKind::Try { catch_blocks: right_catches, .. },
+                    ) => {
+                        assert_eq!(
+                            left_catches.len(),
+                            right_catches.len(),
+                            "{family} catch count at layer {layer}"
+                        );
+                        let left_binding =
+                            left_catches.first().and_then(|(binding, _)| binding.as_ref());
+                        let right_binding =
+                            right_catches.first().and_then(|(binding, _)| binding.as_ref());
+                        assert_eq!(
+                            left_binding, right_binding,
+                            "{family} catch binding at layer {layer}"
+                        );
+                    }
+                    (left_kind, _) => {
+                        assert_eq!(left_kind.kind_name(), "Try", "{family} at layer {layer}");
+                    }
+                },
+                "recovery" => match (&left.kind, &right.kind) {
+                    (
+                        NodeKind::Error {
+                            message: left_message,
+                            expected: left_expected,
+                            found: left_found,
+                            ..
+                        },
+                        NodeKind::Error {
+                            message: right_message,
+                            expected: right_expected,
+                            found: right_found,
+                            ..
+                        },
+                    ) => {
+                        assert_eq!(
+                            left_message, right_message,
+                            "{family} message at layer {layer}"
+                        );
+                        assert_eq!(
+                            left_expected, right_expected,
+                            "{family} expected tokens at layer {layer}"
+                        );
+                        assert_eq!(
+                            left_found, right_found,
+                            "{family} found token at layer {layer}"
+                        );
+                    }
+                    (left_kind, _) => {
+                        assert_eq!(left_kind.kind_name(), "Error", "{family} at layer {layer}");
+                    }
+                },
+                _ => {}
+            }
+
+            let mut left_children = Vec::new();
+            left.for_each_child(|child| left_children.push(child));
+            let mut right_children = Vec::new();
+            right.for_each_child(|child| right_children.push(child));
+            assert_eq!(
+                left_children.len(),
+                right_children.len(),
+                "{family} child count diverged at layer {layer}"
+            );
+            assert!(
+                spine < left_children.len(),
+                "{family} spine index {spine} out of range at layer {layer}"
+            );
+            for (index, (left_child, right_child)) in
+                left_children.iter().zip(right_children.iter()).enumerate()
+            {
+                if index == spine {
+                    continue;
+                }
+                assert_eq!(
+                    *left_child, *right_child,
+                    "{family} non-spine child {index} diverged at layer {layer}"
+                );
+            }
+            left = left_children[spine];
+            right = right_children[spine];
+        }
+        assert_eq!(left, right, "{family} leaf diverged");
+    }
+
+    #[test]
+    fn deep_boxed_chain_clones_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let original = chain_of(DEEP_DEPTH, wrap_boxed);
+            let cloned = original.clone();
+            let (counted, work) = clone_and_count(&original);
+            assert_eq!(work.nodes_entered, (DEEP_DEPTH + 1) as u64);
+            assert_eq!(work.nodes_rebuilt, (DEEP_DEPTH + 1) as u64);
+            assert_eq!(work.child_edges, DEEP_DEPTH as u64);
+            assert!(
+                work.max_explicit_stack_depth >= DEEP_DEPTH,
+                "explicit clone stack must grow with chain depth, got {}",
+                work.max_explicit_stack_depth
+            );
+            let bounded_population = cloned.count_nodes() as u64;
+            assert!(
+                bounded_population < work.nodes_rebuilt,
+                "work must record performed clone operations ({}) rather than depth-bounded population ({bounded_population})",
+                work.nodes_rebuilt
+            );
+            assert_boxed_chain_eq(&original, &cloned, DEEP_DEPTH);
+            assert_boxed_chain_eq(&original, &counted, DEEP_DEPTH);
+            drop(counted);
+            drop(cloned);
+            drop(original);
+        })
+    }
+
+    #[test]
+    fn deep_boxed_chain_kind_clones_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let original = chain_of(DEEP_DEPTH, wrap_boxed);
+            let cloned_kind = original.kind.clone();
+            let cloned = Node::new(cloned_kind, original.location);
+            assert_boxed_chain_eq(&original, &cloned, DEEP_DEPTH);
+            drop(cloned);
+            drop(original);
+        })
+    }
+
+    #[test]
+    fn cloned_deep_tree_is_independent() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let original = chain_of(DEEP_DEPTH, wrap_boxed);
+            let mut cloned = original.clone();
+            let mut cursor = &mut cloned;
+            for _ in 0..DEEP_DEPTH {
+                let kind_name = cursor.kind.kind_name();
+                let NodeKind::ExpressionStatement { expression } = &mut cursor.kind else {
+                    assert_eq!(kind_name, "ExpressionStatement");
+                    return;
+                };
+                cursor = expression;
+            }
+            let leaf_name = cursor.kind.kind_name();
+            let NodeKind::Number { value } = &mut cursor.kind else {
+                assert_eq!(leaf_name, "Number");
+                return;
+            };
+            value.push_str("-cloned");
+
+            let mut original_cursor = &original;
+            for _ in 0..DEEP_DEPTH {
+                let kind_name = original_cursor.kind.kind_name();
+                let NodeKind::ExpressionStatement { expression } = &original_cursor.kind else {
+                    assert_eq!(kind_name, "ExpressionStatement");
+                    return;
+                };
+                original_cursor = expression;
+            }
+            match &original_cursor.kind {
+                NodeKind::Number { value } => {
+                    assert_eq!(value, "1", "mutating the clone must not change the original leaf");
+                }
+                other => {
+                    assert_eq!(other.kind_name(), "Number");
+                }
+            }
+            drop(cloned);
+            drop(original);
+        })
+    }
+
+    #[test]
+    fn deep_chains_through_every_child_family_clone_on_small_stack() -> Result<(), String> {
+        for (name, wrap) in all_family_wrappers() {
+            run_on_small_stack(move || {
+                let original = chain_of(FAMILY_DEPTH, wrap);
+                let cloned = original.clone();
+                let (counted, work) = clone_and_count(&original);
+                let children_per_layer = original.child_count() as u64;
+                let expected_nodes =
+                    (FAMILY_DEPTH as u64).saturating_mul(children_per_layer).saturating_add(1);
+                let expected_edges = (FAMILY_DEPTH as u64).saturating_mul(children_per_layer);
+                assert_eq!(work.nodes_entered, expected_nodes, "family {name}: entered nodes");
+                assert_eq!(work.nodes_rebuilt, expected_nodes, "family {name}: rebuilt nodes");
+                assert_eq!(work.child_edges, expected_edges, "family {name}: child edges");
+                assert_family_chain_eq(name, &original, &cloned, FAMILY_DEPTH);
+                assert_family_chain_eq(name, &original, &counted, FAMILY_DEPTH);
+                drop(counted);
+                drop(cloned);
+                drop(original);
+            })
+            .map_err(|error| format!("family {name}: {error}"))?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn child_shapes_clone_with_exact_structure() {
+        for (name, wrap) in all_family_wrappers() {
+            let original = chain_of(3, wrap);
+            let cloned = original.clone();
+            assert_eq!(
+                original, cloned,
+                "{name} shallow family clone must preserve public equality"
+            );
+        }
+
+        let loc = loc();
+        let first = Node::new(
+            NodeKind::Number { value: "same".to_string() },
+            SourceLocation { start: 0, end: 1 },
+        );
+        let second = Node::new(
+            NodeKind::Number { value: "same".to_string() },
+            SourceLocation { start: 4, end: 5 },
+        );
+        let array = Node::new(NodeKind::ArrayLiteral { elements: vec![first, second] }, loc);
+        let cloned_array = array.clone();
+        match (&array.kind, &cloned_array.kind) {
+            (
+                NodeKind::ArrayLiteral { elements: original_elements },
+                NodeKind::ArrayLiteral { elements: cloned_elements },
+            ) => {
+                assert_eq!(original_elements.len(), 2);
+                assert_eq!(cloned_elements.len(), 2);
+                assert_eq!(cloned_elements[0].location.start, 0);
+                assert_eq!(cloned_elements[1].location.start, 4);
+                assert_ne!(
+                    cloned_elements[0].location, cloned_elements[1].location,
+                    "equal-looking repeated children must keep source order"
+                );
+            }
+            (left_kind, _) => {
+                assert_eq!(left_kind.kind_name(), "ArrayLiteral");
+            }
+        }
+
+        let present = wrap_optional_boxed(number_leaf("init"));
+        let absent = Node::new(
+            NodeKind::VariableDeclaration {
+                declarator: "my".to_string(),
+                variable: Box::new(number_leaf("v")),
+                attributes: Vec::new(),
+                initializer: None,
+            },
+            loc,
+        );
+        assert_eq!(present.clone(), present);
+        assert_eq!(absent.clone(), absent);
+        assert_ne!(present, absent, "optional child presence is part of clone equality");
+
+        let empty = Node::new(NodeKind::Program { statements: vec![] }, loc);
+        let one = wrap_repeated(number_leaf("1"));
+        let many = Node::new(
+            NodeKind::Program {
+                statements: vec![number_leaf("1"), number_leaf("2"), number_leaf("3")],
+            },
+            loc,
+        );
+        assert_eq!(empty.clone(), empty);
+        assert_eq!(one.clone(), one);
+        assert_eq!(many.clone(), many);
+        let cloned_many = many.clone();
+        match &cloned_many.kind {
+            NodeKind::Program { statements } => {
+                assert_eq!(statements[0].kind.kind_name(), "Number");
+                match (&statements[0].kind, &statements[2].kind) {
+                    (NodeKind::Number { value: first }, NodeKind::Number { value: last }) => {
+                        assert_eq!(first, "1");
+                        assert_eq!(last, "3");
+                    }
+                    (left_kind, _) => {
+                        assert_eq!(left_kind.kind_name(), "Number");
+                    }
+                }
+            }
+            other => {
+                assert_eq!(other.kind_name(), "Program");
+            }
+        }
+    }
+
+    #[test]
+    fn clone_work_is_operation_local_and_concurrent() -> Result<(), String> {
+        let tree = broad_multi_family_tree(3);
+        let (_, expected) = clone_and_count(&tree);
+
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| clone_and_count(&tree));
+            let second = scope.spawn(|| clone_and_count(&tree));
+            let (first_clone, first_work) =
+                first.join().map_err(|_| "first clone thread aborted".to_string())?;
+            let (second_clone, second_work) =
+                second.join().map_err(|_| "second clone thread aborted".to_string())?;
+            assert_eq!(first_work, expected);
+            assert_eq!(second_work, expected);
+            assert_eq!(first_clone, tree);
+            assert_eq!(second_clone, tree);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn observer_panic_during_clone_is_stack_safe_and_leaves_original() -> Result<(), String> {
+        struct PanicAfter {
+            inner: CloneWork,
+            remaining_rebuilds: u64,
+        }
+
+        impl CloneObserver for PanicAfter {
+            fn on_enter(&mut self, child_count: usize) {
+                self.inner.on_enter(child_count);
+            }
+
+            fn on_rebuild(&mut self) {
+                self.inner.on_rebuild();
+                self.remaining_rebuilds = self.remaining_rebuilds.saturating_sub(1);
+                if self.remaining_rebuilds == 0 {
+                    std::panic::resume_unwind(Box::new("clone observer panic"));
+                }
+            }
+
+            fn on_stack_depth(&mut self, depth: usize) {
+                self.inner.on_stack_depth(depth);
+            }
+        }
+
+        run_on_small_stack(|| {
+            let original = chain_of(DEEP_DEPTH, wrap_boxed);
+            let mut observer = PanicAfter { inner: CloneWork::default(), remaining_rebuilds: 8 };
+            let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _cloned = clone_node(&original, &mut observer);
+            }));
+            assert!(panicked.is_err(), "observer panic must unwind");
+            let (cloned, work) = clone_and_count(&original);
+            assert_eq!(work.nodes_rebuilt, (DEEP_DEPTH + 1) as u64);
+            assert_boxed_chain_eq(&original, &cloned, DEEP_DEPTH);
+            drop(cloned);
+            drop(original);
+        })
+    }
+
+    #[test]
+    fn nested_payload_clone_is_independent() {
+        let original = wrap_try(number_leaf("caught"));
+        let mut cloned = original.clone();
+        match &mut cloned.kind {
+            NodeKind::Try { catch_blocks, finally_block, .. } => {
+                if let Some((binding, _)) = catch_blocks.first_mut()
+                    && let Some((name, _)) = binding.as_mut()
+                {
+                    name.push_str("-mutated");
+                }
+                if let Some(finally) = finally_block.as_mut()
+                    && let NodeKind::Number { value } = &mut finally.kind
+                {
+                    value.push_str("-mutated");
+                }
+            }
+            other => {
+                assert_eq!(other.kind_name(), "Try");
+            }
+        }
+        match &original.kind {
+            NodeKind::Try { catch_blocks, finally_block, .. } => {
+                let name = catch_blocks
+                    .first()
+                    .and_then(|(binding, _)| binding.as_ref())
+                    .map(|(name, _)| name.as_str());
+                assert_eq!(name, Some("error"));
+                match finally_block.as_ref().map(|node| &node.kind) {
+                    Some(NodeKind::Number { value }) => assert_eq!(value, "finally"),
+                    other => {
+                        assert!(
+                            matches!(other, Some(NodeKind::Number { .. })),
+                            "expected Number finally, got {other:?}"
+                        );
+                    }
+                }
+            }
+            other => {
+                assert_eq!(other.kind_name(), "Try");
+            }
+        }
+    }
+
+    #[test]
+    fn deep_mixed_family_chain_clones_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let wraps = all_family_wrappers();
+            let mut node = number_leaf("1");
+            for depth in 0..MIXED_DEPTH {
+                let (_, wrap) = wraps[depth % wraps.len()];
+                node = wrap(node);
+            }
+            let original = node;
+            let cloned = original.clone();
+            let (counted, work) = clone_and_count(&original);
+            assert!(
+                work.nodes_rebuilt > MAX_AST_DEPTH as u64,
+                "mixed clone work must exceed the depth-bounded population counter"
+            );
+            assert_iterative_shape_eq(&original, &cloned);
+            assert_iterative_shape_eq(&original, &counted);
+            assert_eq!(original, cloned);
+            assert_eq!(original, counted);
+            drop(counted);
+            drop(cloned);
+            drop(original);
+        })
+    }
+
+    #[test]
+    fn wide_repeated_children_clone_preserves_order_and_work() {
+        const WIDTH: usize = 128;
+        let elements: Vec<Node> = (0..WIDTH)
+            .map(|index| {
+                Node::new(
+                    NodeKind::Number { value: index.to_string() },
+                    SourceLocation { start: index, end: index + 1 },
+                )
+            })
+            .collect();
+        let original = Node::new(NodeKind::Program { statements: elements }, loc());
+        let cloned = original.clone();
+        let (counted, work) = clone_and_count(&original);
+        assert_eq!(work.nodes_entered, (WIDTH + 1) as u64);
+        assert_eq!(work.nodes_rebuilt, (WIDTH + 1) as u64);
+        assert_eq!(work.child_edges, WIDTH as u64);
+        assert!(
+            work.max_explicit_stack_depth >= WIDTH,
+            "wide clone stack must hold every child frame, got {}",
+            work.max_explicit_stack_depth
+        );
+        assert_eq!(original, cloned);
+        assert_eq!(original, counted);
+        match &cloned.kind {
+            NodeKind::Program { statements } => {
+                assert_eq!(statements.len(), WIDTH);
+                match &statements[0].kind {
+                    NodeKind::Number { value } => assert_eq!(value, "0"),
+                    other => assert_eq!(other.kind_name(), "Number"),
+                }
+                match &statements[WIDTH - 1].kind {
+                    NodeKind::Number { value } => assert_eq!(value, &(WIDTH - 1).to_string()),
+                    other => assert_eq!(other.kind_name(), "Number"),
+                }
+                assert_eq!(statements[1].location.start, 1);
+                assert_ne!(
+                    statements[0].kind.kind_name(),
+                    "Ellipsis",
+                    "install must replace shell placeholders"
+                );
+            }
+            other => assert_eq!(other.kind_name(), "Program"),
+        }
+    }
+
+    #[test]
+    fn leaf_and_ellipsis_clone_is_not_a_placeholder() {
+        let leaf = number_leaf("7");
+        let (cloned_leaf, leaf_work) = clone_and_count(&leaf);
+        assert_eq!(leaf_work.nodes_entered, 1);
+        assert_eq!(leaf_work.nodes_rebuilt, 1);
+        assert_eq!(leaf_work.child_edges, 0);
+        assert_eq!(leaf, cloned_leaf);
+
+        let ellipsis = Node::new(NodeKind::Ellipsis, SourceLocation { start: 10, end: 13 });
+        let cloned_ellipsis = ellipsis.clone();
+        assert_eq!(ellipsis, cloned_ellipsis);
+        assert_eq!(cloned_ellipsis.location.start, 10);
+        assert_eq!(cloned_ellipsis.kind.kind_name(), "Ellipsis");
+
+        let _ = ellipsis.clone();
+        assert_eq!(
+            number_leaf("1").clone(),
+            number_leaf("1"),
+            "payload-shell flag must not leak into a later public clone"
+        );
+    }
+
+    #[test]
+    fn sibling_and_else_branch_clone_edges() {
+        let original = Node::new(
+            NodeKind::Program {
+                statements: vec![number_leaf("a"), number_leaf("b"), number_leaf("c")],
+            },
+            loc(),
+        );
+        let mut cloned = original.clone();
+        match &mut cloned.kind {
+            NodeKind::Program { statements } => match &mut statements[1].kind {
+                NodeKind::Number { value } => value.push_str("-mut"),
+                other => assert_eq!(other.kind_name(), "Number"),
+            },
+            other => assert_eq!(other.kind_name(), "Program"),
+        }
+        match &original.kind {
+            NodeKind::Program { statements } => match &statements[1].kind {
+                NodeKind::Number { value } => assert_eq!(value, "b"),
+                other => assert_eq!(other.kind_name(), "Number"),
+            },
+            other => assert_eq!(other.kind_name(), "Program"),
+        }
+
+        let with_else = wrap_if_else(number_leaf("e"));
+        let without_else = Node::new(
+            NodeKind::If {
+                condition: Box::new(number_leaf("c")),
+                then_branch: Box::new(number_leaf("t")),
+                elsif_branches: Vec::new(),
+                else_branch: None,
+                keyword: None,
+            },
+            loc(),
+        );
+        assert_eq!(with_else.clone(), with_else);
+        assert_eq!(without_else.clone(), without_else);
+        assert_ne!(with_else, without_else);
+        assert_eq!(with_else.child_count(), 3);
+        assert_eq!(without_else.child_count(), 2);
+        let (cloned_else, else_work) = clone_and_count(&with_else);
+        assert_eq!(else_work.child_edges, 3);
+        assert_eq!(cloned_else, with_else);
+    }
+
+    #[test]
+    fn cloned_tree_releases_every_node() {
+        let _ = drop_audit::take_counts();
+        let original = chain_of(DEEP_CYCLE_DEPTH, wrap_boxed);
+        let cloned = original.clone();
+        drop(cloned);
+        drop(original);
+        let (constructed, destroyed) = drop_audit::take_counts();
+        assert_eq!(
+            constructed, destroyed,
+            "clone+drop constructed {constructed} nodes but destroyed {destroyed}"
+        );
+        assert!(
+            destroyed >= (DEEP_CYCLE_DEPTH + 1) as u64,
+            "clone+drop destroyed only {destroyed} of at least {} original nodes",
+            DEEP_CYCLE_DEPTH + 1
+        );
+    }
+
+    #[test]
+    fn pair_and_clause_lists_clone_preserve_order() {
+        let numbered = |value: &str, start: usize| {
+            Node::new(
+                NodeKind::Number { value: value.to_string() },
+                SourceLocation { start, end: start + 1 },
+            )
+        };
+        let hash = Node::new(
+            NodeKind::HashLiteral {
+                pairs: vec![
+                    (numbered("k0", 0), numbered("v0", 1)),
+                    (numbered("k1", 2), numbered("v1", 3)),
+                ],
+            },
+            loc(),
+        );
+        let cloned_hash = hash.clone();
+        match &cloned_hash.kind {
+            NodeKind::HashLiteral { pairs } => {
+                assert_eq!(pairs.len(), 2);
+                match (&pairs[0].0.kind, &pairs[0].1.kind) {
+                    (NodeKind::Number { value: key }, NodeKind::Number { value }) => {
+                        assert_eq!(key, "k0");
+                        assert_eq!(value, "v0");
+                    }
+                    (left, _) => assert_eq!(left.kind_name(), "Number"),
+                }
+                match (&pairs[1].0.kind, &pairs[1].1.kind) {
+                    (NodeKind::Number { value: key }, NodeKind::Number { value }) => {
+                        assert_eq!(key, "k1");
+                        assert_eq!(value, "v1");
+                    }
+                    (left, _) => assert_eq!(left.kind_name(), "Number"),
+                }
+            }
+            other => assert_eq!(other.kind_name(), "HashLiteral"),
+        }
+        assert_eq!(hash, cloned_hash);
+        let (_, hash_work) = clone_and_count(&hash);
+        assert_eq!(hash_work.nodes_entered, 5);
+        assert_eq!(hash_work.nodes_rebuilt, 5);
+        assert_eq!(hash_work.child_edges, 4);
+
+        let two_elsif = Node::new(
+            NodeKind::If {
+                condition: Box::new(number_leaf("c")),
+                then_branch: Box::new(number_leaf("t")),
+                elsif_branches: vec![
+                    (Box::new(number_leaf("e0")), Box::new(number_leaf("b0"))),
+                    (Box::new(number_leaf("e1")), Box::new(number_leaf("b1"))),
+                ],
+                else_branch: None,
+                keyword: None,
+            },
+            loc(),
+        );
+        let cloned_if = two_elsif.clone();
+        match &cloned_if.kind {
+            NodeKind::If { elsif_branches, .. } => {
+                assert_eq!(elsif_branches.len(), 2);
+                match &elsif_branches[0].0.kind {
+                    NodeKind::Number { value } => assert_eq!(value, "e0"),
+                    other => assert_eq!(other.kind_name(), "Number"),
+                }
+                match &elsif_branches[1].0.kind {
+                    NodeKind::Number { value } => assert_eq!(value, "e1"),
+                    other => assert_eq!(other.kind_name(), "Number"),
+                }
+            }
+            other => assert_eq!(other.kind_name(), "If"),
+        }
+        assert_eq!(two_elsif, cloned_if);
+        let (_, if_work) = clone_and_count(&two_elsif);
+        assert_eq!(if_work.child_edges, 6);
+        assert_eq!(if_work.nodes_rebuilt, 7);
+    }
+
+    struct EqWork {
+        nodes_entered: u64,
+        max_explicit_stack_depth: usize,
+    }
+
+    impl EqObserver for EqWork {
+        fn on_enter(&mut self) {
+            self.nodes_entered = self.nodes_entered.saturating_add(1);
+        }
+
+        fn on_stack_depth(&mut self, depth: usize) {
+            if depth > self.max_explicit_stack_depth {
+                self.max_explicit_stack_depth = depth;
+            }
+        }
+    }
+
+    fn compare_and_count(left: &Node, right: &Node) -> (bool, EqWork) {
+        let mut work = EqWork { nodes_entered: 0, max_explicit_stack_depth: 0 };
+        let equal = nodes_eq(left, right, &mut work);
+        (equal, work)
+    }
+
+    fn chain_of_value(depth: usize, wrap: fn(Node) -> Node, value: &str) -> Node {
+        let mut node = number_leaf(value);
+        for _ in 0..depth {
+            node = wrap(node);
+        }
+        node
+    }
+
+    #[test]
+    fn deep_boxed_chain_equals_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let left = chain_of(DEEP_DEPTH, wrap_boxed);
+            let right = chain_of(DEEP_DEPTH, wrap_boxed);
+            let (equal, work) = compare_and_count(&left, &right);
+            assert!(equal, "independent equal 50k chains must compare equal");
+            assert_eq!(left, right);
+            assert_eq!(work.nodes_entered, (DEEP_DEPTH + 1) as u64);
+            assert!(
+                work.max_explicit_stack_depth >= 1,
+                "equal compare must use the explicit stack"
+            );
+            drop(right);
+            drop(left);
+        })
+    }
+
+    #[test]
+    fn deep_boxed_chain_deepest_leaf_differs_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let left = chain_of(DEEP_DEPTH, wrap_boxed);
+            let right = chain_of_value(DEEP_DEPTH, wrap_boxed, "1-neq");
+            let (equal, work) = compare_and_count(&left, &right);
+            assert!(!equal, "deepest leaf payload must be material");
+            assert_ne!(left, right);
+            assert_eq!(
+                work.nodes_entered,
+                (DEEP_DEPTH + 1) as u64,
+                "leaf mismatch must still visit every ancestor exactly once"
+            );
+            drop(right);
+            drop(left);
+        })
+    }
+
+    #[test]
+    fn deep_boxed_chain_kind_equals_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let left = chain_of(DEEP_DEPTH, wrap_boxed);
+            let right = chain_of(DEEP_DEPTH, wrap_boxed);
+            assert_eq!(left.kind, right.kind, "derived NodeKind eq must route through Node::eq");
+            let cloned_kind = left.kind.clone();
+            assert_eq!(cloned_kind, right.kind);
+            drop(cloned_kind);
+            drop(right);
+            drop(left);
+        })
+    }
+
+    #[test]
+    fn deep_boxed_chain_kind_differs_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let left = chain_of(DEEP_DEPTH, wrap_boxed);
+            let right = chain_of_value(DEEP_DEPTH, wrap_boxed, "1-neq");
+            assert_ne!(
+                left.kind, right.kind,
+                "derived NodeKind inequality must route through iterative Node::eq"
+            );
+            drop(right);
+            drop(left);
+        })
+    }
+
+    #[test]
+    fn deep_root_location_mismatch_does_not_walk_the_chain() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let left = chain_of(DEEP_DEPTH, wrap_boxed);
+            let mut right = chain_of(DEEP_DEPTH, wrap_boxed);
+            right.location = SourceLocation { start: 9, end: 10 };
+            let (equal, work) = compare_and_count(&left, &right);
+            assert!(!equal);
+            assert_eq!(work.nodes_entered, 1, "root mismatch must not visit descendants");
+            assert_ne!(left, right);
+            drop(right);
+            drop(left);
+        })
+    }
+
+    #[test]
+    fn deep_chains_through_every_child_family_compare_on_small_stack() -> Result<(), String> {
+        for (name, wrap) in all_family_wrappers() {
+            run_on_small_stack(move || {
+                let left = chain_of(FAMILY_DEPTH, wrap);
+                let right = chain_of(FAMILY_DEPTH, wrap);
+                assert_eq!(left, right, "family {name}: equal chains");
+                assert_eq!(left.kind, right.kind, "family {name}: NodeKind eq");
+                let cloned = left.clone();
+                assert_eq!(left, cloned, "family {name}: clone then eq");
+                drop(cloned);
+                drop(right);
+                drop(left);
+            })
+            .map_err(|error| format!("family {name}: equal: {error}"))?;
+            run_on_small_stack(move || {
+                let left = chain_of(FAMILY_DEPTH, wrap);
+                let right = chain_of_value(FAMILY_DEPTH, wrap, "1-neq");
+                assert_ne!(left, right, "family {name}: deepest leaf must be material");
+                assert_ne!(left.kind, right.kind, "family {name}: NodeKind leaf must be material");
+                drop(right);
+                drop(left);
+            })
+            .map_err(|error| format!("family {name}: unequal: {error}"))?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn deep_mixed_family_chain_compares_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let wraps = all_family_wrappers();
+            let mut left = number_leaf("1");
+            let mut right = number_leaf("1");
+            for depth in 0..MIXED_DEPTH {
+                let (_, wrap) = wraps[depth % wraps.len()];
+                left = wrap(left);
+                right = wrap(right);
+            }
+            assert_eq!(left, right);
+            let cloned = left.clone();
+            assert_eq!(left, cloned);
+            drop(cloned);
+            drop(right);
+            drop(left);
+        })?;
+        run_on_small_stack(|| {
+            let wraps = all_family_wrappers();
+            let mut left = number_leaf("1");
+            let mut right = number_leaf("1-neq");
+            for depth in 0..MIXED_DEPTH {
+                let (_, wrap) = wraps[depth % wraps.len()];
+                left = wrap(left);
+                right = wrap(right);
+            }
+            assert_ne!(left, right, "mixed-family deepest leaf must be material");
+            drop(right);
+            drop(left);
+        })
+    }
+
+    #[test]
+    fn into_parts_kind_equals_original_kind_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let original = chain_of(DEEP_DEPTH, wrap_boxed);
+            let expected_kind = original.kind.clone();
+            let (kind, _) = original.into_parts();
+            assert_eq!(kind, expected_kind);
+            drop(kind);
+            drop(expected_kind);
+        })
+    }
+
+    struct DebugWork {
+        nodes_entered: u64,
+        max_explicit_stack_depth: usize,
+    }
+
+    impl DebugObserver for DebugWork {
+        fn on_enter(&mut self) {
+            self.nodes_entered = self.nodes_entered.saturating_add(1);
+        }
+
+        fn on_stack_depth(&mut self, depth: usize) {
+            if depth > self.max_explicit_stack_depth {
+                self.max_explicit_stack_depth = depth;
+            }
+        }
+    }
+
+    fn debug_and_count(node: &Node) -> (String, DebugWork) {
+        let mut work = DebugWork { nodes_entered: 0, max_explicit_stack_depth: 0 };
+        let rendered = render_node(node, &mut work);
+        (rendered, work)
+    }
+
+    #[test]
+    fn deep_boxed_chain_debug_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let node = chain_of(DEEP_DEPTH, wrap_boxed);
+            let (rendered, work) = debug_and_count(&node);
+            assert!(rendered.contains("ExpressionStatement"), "rendered = {rendered:?}");
+            assert!(
+                rendered.contains(NODE_DEBUG_TRUNCATION_MARKER),
+                "truncation must be visible: {rendered:?}"
+            );
+            assert!(
+                rendered.len() <= NODE_DEBUG_MAX_BYTES,
+                "debug len {} exceeds bound {}",
+                rendered.len(),
+                NODE_DEBUG_MAX_BYTES
+            );
+            assert!(!rendered.contains("location: SourceLocation"), "rendered = {rendered:?}");
+            assert!(work.nodes_entered > 0);
+            assert!(work.nodes_entered <= NODE_DEBUG_MAX_NODES as u64);
+            assert!(work.max_explicit_stack_depth >= 1, "debug must use the explicit stack");
+            drop(node);
+        })
+    }
+
+    #[test]
+    fn deep_boxed_chain_debug_is_not_identity_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let left = chain_of(DEEP_DEPTH, wrap_boxed);
+            let right = chain_of_value(DEEP_DEPTH, wrap_boxed, "1-neq");
+            assert_ne!(left, right, "PartialEq must still see the hidden leaf");
+            let left_dbg = format!("{left:?}");
+            let right_dbg = format!("{right:?}");
+            assert_eq!(left_dbg, right_dbg, "truncated Debug must not be an equality oracle");
+            assert!(left_dbg.contains(NODE_DEBUG_TRUNCATION_MARKER), "left = {left_dbg:?}");
+            assert!(left_dbg.len() <= NODE_DEBUG_MAX_BYTES);
+            let kind_dbg = format!("{:?}", left.kind);
+            assert!(
+                !kind_dbg.contains("ExpressionStatement @"),
+                "NodeKind Debug must not dump the child tree: {kind_dbg:?}"
+            );
+            assert!(kind_dbg.len() <= NODE_DEBUG_MAX_BYTES, "kind debug len={}", kind_dbg.len());
+            drop(right);
+            drop(left);
+        })
+    }
+
+    #[test]
+    fn deep_chains_through_every_child_family_debug_on_small_stack() -> Result<(), String> {
+        for (name, wrap) in all_family_wrappers() {
+            run_on_small_stack(move || {
+                let node = chain_of(FAMILY_DEPTH, wrap);
+                let rendered = format!("{node:?}");
+                assert!(
+                    rendered.contains(NODE_DEBUG_TRUNCATION_MARKER),
+                    "family {name}: truncation missing: {rendered:?}"
+                );
+                assert!(
+                    rendered.len() <= NODE_DEBUG_MAX_BYTES,
+                    "family {name}: debug len {}",
+                    rendered.len()
+                );
+                drop(node);
+            })
+            .map_err(|error| format!("family {name}: {error}"))?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn deep_mixed_family_chain_debug_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let wraps = all_family_wrappers();
+            let mut node = number_leaf("1");
+            for depth in 0..MIXED_DEPTH {
+                let (_, wrap) = wraps[depth % wraps.len()];
+                node = wrap(node);
+            }
+            let rendered = format!("{node:?}");
+            assert!(rendered.contains(NODE_DEBUG_TRUNCATION_MARKER), "rendered = {rendered:?}");
+            assert!(rendered.len() <= NODE_DEBUG_MAX_BYTES, "len={}", rendered.len());
+            drop(node);
+        })
+    }
+
+    #[test]
+    fn wide_program_debug_stays_bounded_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let statements: Vec<Node> = (0..10_000).map(|i| number_leaf(&i.to_string())).collect();
+            let node = Node::new(NodeKind::Program { statements }, loc());
+            let rendered = format!("{node:?}");
+            assert!(rendered.contains("Program"), "rendered = {rendered:?}");
+            assert!(rendered.contains("... +"), "rendered = {rendered:?}");
+            assert!(rendered.contains(NODE_DEBUG_TRUNCATION_MARKER), "rendered = {rendered:?}");
+            assert!(rendered.len() <= NODE_DEBUG_MAX_BYTES, "len={}", rendered.len());
+            drop(node);
+        })
     }
 }
