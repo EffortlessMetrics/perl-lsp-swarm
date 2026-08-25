@@ -9132,6 +9132,7 @@ mod tests {
             tests: vec!["base/if.t".into()],
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            diagnostic_probes: true,
         })?;
 
         let report: RunReport = serde_json::from_str(&fs::read_to_string(output)?)?;
