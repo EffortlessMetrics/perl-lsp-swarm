@@ -85,7 +85,12 @@ fn last_unmatched_open_brace(source: &str) -> Option<usize> {
     stack.pop()
 }
 
-fn scope_depth(symbol_table: &SymbolTable, scope_id: ScopeId) -> usize {
+/// Depth of `scope_id` measured in parent hops from the root scope.
+///
+/// The root (or an unknown id) sits at depth 0. Used by scope-distance
+/// ranking and by lexical-visibility identity selection (#8941) to order
+/// same-name bindings by declaring-scope nesting.
+pub(crate) fn scope_depth(symbol_table: &SymbolTable, scope_id: ScopeId) -> usize {
     let mut depth = 0usize;
     let mut current = scope_id;
 

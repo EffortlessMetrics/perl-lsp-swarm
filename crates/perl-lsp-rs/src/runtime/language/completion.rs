@@ -1014,6 +1014,22 @@ impl LspServer {
                         continue;
                     }
 
+                    // Same-document lexicals are owned by cursor-visibility
+                    // admission (#8941): the core provider paths already emitted
+                    // every cursor-visible same-document variable matching this
+                    // prefix, so anything reaching this fallback was rejected
+                    // before candidate construction (sibling/child/ended scope,
+                    // future declaration). Re-admitting it here would encode an
+                    // invisible lexical as a low-priority workspace candidate,
+                    // which admission forbids at any rank.
+                    let is_same_document_lexical_variable =
+                        matches!(symbol.kind, crate::workspace_index::SymbolKind::Variable(_))
+                            && !is_cross_file_variable
+                            && symbol.is_lexical;
+                    if is_same_document_lexical_variable {
+                        continue;
+                    }
+
                     // Strategy A: module-kind symbols in `use Module` / `require Module`
                     // context — filter by position-aware @INC reachability so that
                     // `no lib` cancellations are honoured (fixes #8537).
