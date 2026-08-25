@@ -77,21 +77,21 @@ impl Drop for PayloadEqGuard {
 /// Derived [`NodeKind`] equality still compares `Vec` lengths and `Option`
 /// presence. Child `Node` values return `true` under the payload-shell flag
 /// so this call cannot re-enter iterative [`Node::eq`] on the thread stack.
+/// Same-variant wide nodes still visit each child *slot* during that derived
+/// walk (the shell skips content, not cardinality), so a first-child mismatch
+/// is O(width) in the payload shell. Avoiding that visit requires generated
+/// payload slots (#8424), not a third handwritten child-field table.
 fn payload_kind_eq(left: &NodeKind, right: &NodeKind) -> bool {
     let _guard = PayloadEqGuard::enter();
     left == right
-}
-
-fn collect_children(node: &Node) -> Vec<&Node> {
-    let mut children = Vec::new();
-    node.for_each_child(|child| children.push(child));
-    children
 }
 
 /// Iterative exact structural equality used by [`PartialEq`] and tests.
 pub(super) fn nodes_eq<O: EqObserver>(left: &Node, right: &Node, observer: &mut O) -> bool {
     let mut work = vec![(left, right)];
     observer.on_stack_depth(work.len());
+    let mut left_scratch = Vec::new();
+    let mut right_scratch = Vec::new();
 
     while let Some((left, right)) = work.pop() {
         observer.on_enter();
@@ -101,15 +101,17 @@ pub(super) fn nodes_eq<O: EqObserver>(left: &Node, right: &Node, observer: &mut 
         if !payload_kind_eq(&left.kind, &right.kind) {
             return false;
         }
-        let left_children = collect_children(left);
-        let right_children = collect_children(right);
-        if left_children.len() != right_children.len() {
+        left_scratch.clear();
+        right_scratch.clear();
+        left.for_each_child(|child| left_scratch.push(child));
+        right.for_each_child(|child| right_scratch.push(child));
+        if left_scratch.len() != right_scratch.len() {
             return false;
         }
         // Reverse so the first canonical child is compared next (short-circuit
         // visits the prefix in source order).
-        for (left_child, right_child) in left_children.into_iter().zip(right_children).rev() {
-            work.push((left_child, right_child));
+        for (left_child, right_child) in left_scratch.iter().zip(right_scratch.iter()).rev() {
+            work.push((*left_child, *right_child));
         }
         observer.on_stack_depth(work.len());
     }
@@ -714,6 +716,18 @@ mod tests {
             assert!(EQ_PAYLOAD_SHELL.with(Cell::get));
         }
         assert!(!EQ_PAYLOAD_SHELL.with(Cell::get));
+    }
+
+    #[test]
+    fn payload_shell_guard_restores_flag_after_panic() {
+        assert!(!EQ_PAYLOAD_SHELL.with(Cell::get));
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = PayloadEqGuard::enter();
+            assert!(EQ_PAYLOAD_SHELL.with(Cell::get));
+            panic!("payload-shell unwind");
+        }));
+        assert!(panicked.is_err());
+        assert!(!EQ_PAYLOAD_SHELL.with(Cell::get), "Drop must restore the flag on unwind");
     }
 
     #[test]

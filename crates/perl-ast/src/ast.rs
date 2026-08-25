@@ -5522,6 +5522,20 @@ mod deep_tree_destruction_tests {
     }
 
     #[test]
+    fn deep_boxed_chain_kind_differs_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let left = chain_of(DEEP_DEPTH, wrap_boxed);
+            let right = chain_of_value(DEEP_DEPTH, wrap_boxed, "1-neq");
+            assert_ne!(
+                left.kind, right.kind,
+                "derived NodeKind inequality must route through iterative Node::eq"
+            );
+            drop(right);
+            drop(left);
+        })
+    }
+
+    #[test]
     fn deep_root_location_mismatch_does_not_walk_the_chain() -> Result<(), String> {
         run_on_small_stack(|| {
             let left = chain_of(DEEP_DEPTH, wrap_boxed);
@@ -5550,7 +5564,19 @@ mod deep_tree_destruction_tests {
                 drop(right);
                 drop(left);
             })
-            .map_err(|error| format!("family {name}: {error}"))?;
+            .map_err(|error| format!("family {name}: equal: {error}"))?;
+            run_on_small_stack(move || {
+                let left = chain_of(FAMILY_DEPTH, wrap);
+                let right = chain_of_value(FAMILY_DEPTH, wrap, "1-neq");
+                assert_ne!(left, right, "family {name}: deepest leaf must be material");
+                assert_ne!(
+                    left.kind, right.kind,
+                    "family {name}: NodeKind leaf must be material"
+                );
+                drop(right);
+                drop(left);
+            })
+            .map_err(|error| format!("family {name}: unequal: {error}"))?;
         }
         Ok(())
     }
@@ -5570,6 +5596,19 @@ mod deep_tree_destruction_tests {
             let cloned = left.clone();
             assert_eq!(left, cloned);
             drop(cloned);
+            drop(right);
+            drop(left);
+        })?;
+        run_on_small_stack(|| {
+            let wraps = all_family_wrappers();
+            let mut left = number_leaf("1");
+            let mut right = number_leaf("1-neq");
+            for depth in 0..MIXED_DEPTH {
+                let (_, wrap) = wraps[depth % wraps.len()];
+                left = wrap(left);
+                right = wrap(right);
+            }
+            assert_ne!(left, right, "mixed-family deepest leaf must be material");
             drop(right);
             drop(left);
         })
