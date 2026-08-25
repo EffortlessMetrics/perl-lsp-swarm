@@ -1001,19 +1001,30 @@ fn verify_transition_record(
 
     // Route binding covers every candidate the transition names or
     // transitions between: the prior/next selections plus the candidates the
-    // transition record itself names, resolved through the catalog. A
+    // transition record itself names. Every named identity must resolve in
+    // the verified catalog — a well-formed digest the catalog does not carry
+    // is rejected fail-closed instead of skipping the route check — so a
     // publish/verify transition without selection records still binds its
-    // subject's route instead of leaving the check vacuously true.
+    // subject's route and can never verify against an unknown identity.
     let mut route_witnesses: Vec<&CandidateManifest> =
         [prior, next].into_iter().flatten().collect();
     for candidate_id in
         [&transition.candidate_id, &transition.prior_current_candidate_id].into_iter().flatten()
     {
-        if let Some(candidate) =
-            packet.candidates.iter().find(|candidate| &candidate.candidate_id == candidate_id)
-        {
-            route_witnesses.push(candidate);
-        }
+        let candidate = packet
+            .candidates
+            .iter()
+            .find(|candidate| &candidate.candidate_id == candidate_id)
+            .ok_or_else(|| {
+                ContractError::new(
+                    ReasonCode::CurrentNamesMissingCandidate,
+                    format!(
+                        "transition names candidate {} which is absent from the verified catalog",
+                        head(candidate_id)
+                    ),
+                )
+            })?;
+        route_witnesses.push(candidate);
     }
     let route_binding =
         route_witnesses.iter().all(|candidate| candidate.route_mode == transition.route_mode);
@@ -1458,6 +1469,33 @@ mod tests {
         Ok(())
     }
 
+    /// Serialize a JSON document with every object's key order reversed at
+    /// the text level, so canonicalization can be challenged with a real
+    /// permutation of the same document.
+    fn reversed_order_json(value: &Value) -> String {
+        match value {
+            Value::Object(map) => {
+                let members: Vec<String> = map
+                    .iter()
+                    .rev()
+                    .map(|(key, item)| {
+                        format!(
+                            "{}:{}",
+                            serde_json::to_string(key).unwrap_or_default(),
+                            reversed_order_json(item)
+                        )
+                    })
+                    .collect();
+                format!("{{{}}}", members.join(","))
+            }
+            Value::Array(items) => {
+                let items: Vec<String> = items.iter().map(reversed_order_json).collect();
+                format!("[{}]", items.join(","))
+            }
+            other => serde_json::to_string(other).unwrap_or_else(|_| "null".to_string()),
+        }
+    }
+
     #[test]
     fn canonical_serialization_is_deterministic() -> Result<()> {
         for name in ["01_complete_archive_pair.json", "07_ab_selection_committed.json"] {
@@ -1466,6 +1504,15 @@ mod tests {
             ensure!(
                 canonical_json(&first) == canonical_json(&second),
                 "canonical serialization of {name} is not byte-stable"
+            );
+            // Permutation discrimination: the same document with every
+            // object's key order reversed must canonicalize to identical
+            // bytes, so an insertion-ordered implementation fails here
+            // instead of passing by comparing like-ordered inputs.
+            let permuted: Value = serde_json::from_str(&reversed_order_json(&first))?;
+            ensure!(
+                canonical_json(&first) == canonical_json(&permuted),
+                "canonical serialization of {name} depends on input key order"
             );
         }
         Ok(())
@@ -1633,6 +1680,13 @@ mod tests {
         let first = canonical_json(&serialized);
         let reparsed: Value = serde_json::from_str(&first)?;
         ensure!(first == canonical_json(&reparsed), "canonical bytes drifted on regeneration");
+        // Same permutation discrimination as the determinism test: reversed
+        // key order must not change the canonical bytes of the envelope.
+        let permuted: Value = serde_json::from_str(&reversed_order_json(&serialized))?;
+        ensure!(
+            first == canonical_json(&permuted),
+            "canonical bytes of the verified envelope depend on key order"
+        );
         Ok(())
     }
 
@@ -1800,6 +1854,25 @@ mod tests {
             "08(mutated-outcome)",
             verify_document(&tampered).map(|_| "accept"),
             "transition_disposition_conflict",
+        )?;
+        Ok(())
+    }
+
+    /// Every candidate identity a transition names must resolve in the
+    /// verified catalog: a well-formed 64-hex digest the catalog does not
+    /// carry is rejected fail-closed instead of verifying against an
+    /// unknown identity (candidate_verified has no other membership check).
+    #[test]
+    fn transition_names_must_resolve_in_the_verified_catalog() -> Result<()> {
+        let mut value: Value =
+            serde_json::from_str(&fixture_text("05_published_unselected.json")?)?;
+        value["transition"]["disposition"] = Value::String("candidate_verified".into());
+        value["transition"]["candidate_id"] = Value::String("e".repeat(64));
+        let tampered = serde_json::to_string(&value)?;
+        expect_rejected(
+            "05(mutated-absent)",
+            verify_document(&tampered).map(|_| "accept"),
+            "current_names_missing_candidate",
         )?;
         Ok(())
     }
