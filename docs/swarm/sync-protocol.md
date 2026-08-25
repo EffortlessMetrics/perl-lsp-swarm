@@ -166,9 +166,11 @@ Subject roles are strict and independent:
 - `--target` is the release repository head being judged.
 
 All three subjects must resolve to existing commits, must be unambiguous,
-syntactically single commit-ish values, and the boundary must be an ancestor
-of the target; otherwise the command fails closed and records the failure in
-the receipt.
+syntactically single commit-ish values, the boundary must be an ancestor
+of the target, and the source must not already be contained in the target
+(which means the subjects are reversed — swarm passed as the target — or
+reconciliation is already complete); otherwise the command fails closed and
+records the failure in the receipt.
 
 The check excludes merge commits from the target-unique row population and
 records their ancestry (subject and parents) in the receipt's
@@ -193,9 +195,11 @@ Git and passes the resolved SHAs directly: the resolved source is
 boundary its limit, keeping patch equivalence driven by the exact swarm commit
 and the comparison bounded below by the reconciliation boundary.
 
-Ledger and receipt schema version 2 records each subject as its input ref plus
-the resolved full object id; the ledger identity fields must equal the
-resolved source, boundary, and target object ids exactly.
+Ledger and receipt schema version 2 records each subject as its role
+(`patch_equivalence_upstream`, `history_limit`, `release_head`), its input
+ref, and the resolved full object id; the receipt is byte-deterministic
+across runs against the same repository, and the ledger identity fields must
+equal the resolved source, boundary, and target object ids exactly.
 `release_lineage_only` is an explicit exclusion, not an implicit escape hatch.
 Missing rows, unclassified rows, invalid classifications, missing evidence, or
 ledger rows that are not target-unique non-merge commits fail the command. The

@@ -60,14 +60,15 @@ impl Subjects {
 
 impl From<&Subjects> for ReceiptSubjects {
     fn from(subjects: &Subjects) -> Self {
-        let state = |subject: &SubjectState| ReceiptSubject {
+        let state = |subject: &SubjectState, role: &'static str| ReceiptSubject {
+            role,
             input: subject.input.clone(),
             commit: subject.commit.clone(),
         };
         Self {
-            source: state(&subjects.source),
-            boundary: state(&subjects.boundary),
-            target: state(&subjects.target),
+            source: state(&subjects.source, "patch_equivalence_upstream"),
+            boundary: state(&subjects.boundary, "history_limit"),
+            target: state(&subjects.target, "release_head"),
         }
     }
 }
@@ -118,6 +119,7 @@ struct ReceiptSubjects {
 
 #[derive(Debug, Serialize)]
 struct ReceiptSubject {
+    role: &'static str,
     input: String,
     commit: Option<String>,
 }
@@ -159,6 +161,9 @@ pub fn check(config: CheckConfig) -> Result<()> {
         Err(error) => return fail_with_receipt(&config, &subjects, error),
     };
     if let Err(error) = ensure_boundary_bounds_target(&shas, directory) {
+        return fail_with_receipt(&config, &subjects, error);
+    }
+    if let Err(error) = ensure_source_not_contained_in_target(&shas, directory) {
         return fail_with_receipt(&config, &subjects, error);
     }
 
@@ -394,6 +399,24 @@ fn ensure_boundary_bounds_target(shas: &ResolvedShas, directory: Option<&Path>) 
     }
 }
 
+/// Fail closed when the swarm source is already contained in the target: the
+/// subjects are reversed (swarm passed as the target) or reconciliation is
+/// already complete, and either way there is no honest target-unique set.
+fn ensure_source_not_contained_in_target(
+    shas: &ResolvedShas,
+    directory: Option<&Path>,
+) -> Result<()> {
+    match git_status_in(["merge-base", "--is-ancestor", &shas.source, &shas.target], directory)? {
+        0 => Err(eyre!(
+            "reversed subjects: source {} is already contained in target {}; the swarm source must not be reachable from the release head (swarm may have been passed as the target)",
+            shas.source,
+            shas.target
+        )),
+        1 => Ok(()),
+        code => Err(eyre!("git merge-base --is-ancestor exited with status {code}")),
+    }
+}
+
 fn comparison_population(
     shas: &ResolvedShas,
     directory: Option<&Path>,
@@ -596,6 +619,122 @@ mod tests {
         Ok(())
     }
 
+    /// An abbreviated object id matching multiple objects fails closed as
+    /// ambiguous rather than resolving to an arbitrary commit.
+    #[test]
+    fn ambiguous_subjects_fail_closed() -> Result<()> {
+        let directory = init_fixture_repo()?;
+        let prefix = find_ambiguous_prefix(directory.path())?;
+        let state = SubjectState { input: prefix.clone(), commit: None };
+        let error = match resolve_subject("source", &state, Some(directory.path())) {
+            Err(error) => error,
+            Ok(resolved) => {
+                return Err(eyre!("ambiguous prefix `{prefix}` resolved to {resolved}"));
+            }
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("ambiguous"), "{message}");
+        Ok(())
+    }
+
+    fn find_ambiguous_prefix(path: &Path) -> Result<String> {
+        use std::io::Write;
+        let mut seen = std::collections::HashMap::new();
+        for index in 0..100_000u32 {
+            let mut child = Command::new("git")
+                .current_dir(path)
+                .args(["hash-object", "-w", "--stdin"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .context("spawning git hash-object")?;
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(format!("blob-{index}\n").as_bytes())?;
+            }
+            let output = child.wait_with_output()?;
+            if !output.status.success() {
+                return Err(eyre!("git hash-object failed in fixture"));
+            }
+            let sha = String::from_utf8(output.stdout)
+                .map_err(|error| eyre!("hash-object output was not UTF-8: {error}"))?;
+            let sha = sha.trim().to_string();
+            let prefix = sha[..4].to_string();
+            match seen.get(&prefix) {
+                Some(other) if *other != sha => return Ok(prefix),
+                Some(_) => {}
+                None => {
+                    seen.insert(prefix, sha);
+                }
+            }
+        }
+        Err(eyre!("no ambiguous prefix found in fixture"))
+    }
+
+    /// Swarm passed as the target (source/target swapped) fails closed even
+    /// though the boundary legitimately bounds both histories.
+    #[test]
+    fn swarm_passed_as_target_fails_closed() -> Result<()> {
+        let directory = init_fixture_repo()?;
+        let path = directory.path();
+        commit_file(path, "ctx.txt", "shared\n", "base")?;
+        let boundary = rev_parse(path, "main")?;
+        commit_file(path, "r.txt", "r\n", "release work")?;
+        let release_tip = rev_parse(path, "main")?;
+        run_git_fixture(path, &["checkout", "--quiet", "-b", "swarm", &release_tip])?;
+        commit_file(path, "s.txt", "s\n", "swarm work")?;
+        let swarm_tip = rev_parse(path, "swarm")?;
+
+        let swapped = resolved(release_tip.clone(), boundary.clone(), swarm_tip.clone());
+        let error = match ensure_source_not_contained_in_target(&swapped, Some(path)) {
+            Err(error) => error,
+            Ok(()) => return Err(eyre!("swarm passed as the target must fail closed")),
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("reversed subjects"), "{message}");
+
+        // The honest direction (swarm source, release target) passes the guard.
+        let honest = resolved(swarm_tip, boundary, release_tip);
+        ensure_source_not_contained_in_target(&honest, Some(path))?;
+        Ok(())
+    }
+
+    /// The swarm-as-target swap fails the whole preflight end to end and the
+    /// failure is recorded in the receipt, not just in the guard helper.
+    #[test]
+    fn swarm_passed_as_target_fails_the_preflight_with_a_receipt() -> Result<()> {
+        let directory = init_fixture_repo()?;
+        let path = directory.path();
+        commit_file(path, "ctx.txt", "shared\n", "base")?;
+        let boundary = rev_parse(path, "main")?;
+        commit_file(path, "r.txt", "r\n", "release work")?;
+        let release_tip = rev_parse(path, "main")?;
+        run_git_fixture(path, &["checkout", "--quiet", "-b", "swarm", &release_tip])?;
+        commit_file(path, "s.txt", "s\n", "swarm work")?;
+        let swarm_tip = rev_parse(path, "swarm")?;
+
+        let config = CheckConfig {
+            source: release_tip.clone(),
+            boundary: boundary.clone(),
+            target: swarm_tip.clone(),
+            ledger: path.join("ledger.json"),
+            receipt: path.join("receipt.json"),
+            working_directory: Some(path.to_path_buf()),
+        };
+        let error = match check(config) {
+            Err(error) => error,
+            Ok(()) => return Err(eyre!("swarm passed as the target must fail the preflight")),
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("reversed subjects"), "{message}");
+        let receipt: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path.join("receipt.json"))?)?;
+        assert_eq!(receipt["subjects"]["source"]["commit"], release_tip.as_str());
+        assert_eq!(receipt["subjects"]["target"]["commit"], swarm_tip.as_str());
+        assert_eq!(receipt["target_unique_commits"].as_array().map(Vec::len), Some(0));
+        assert_eq!(receipt["errors"].as_array().map(Vec::len), Some(1));
+        Ok(())
+    }
+
     #[test]
     fn classifications_are_explicit() {
         assert!(CLASSIFICATIONS.contains(&"port_to_swarm"));
@@ -708,13 +847,59 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(path.join("receipt.json"))?)?;
         assert_eq!(receipt["schema_version"], RECEIPT_SCHEMA_VERSION);
         assert_eq!(receipt["subjects"]["source"]["commit"], fixture.swarm_tip.as_str());
+        assert_eq!(
+            receipt["subjects"]["source"]["role"].as_str(),
+            Some("patch_equivalence_upstream")
+        );
         assert_eq!(receipt["subjects"]["boundary"]["commit"], fixture.base.as_str());
+        assert_eq!(receipt["subjects"]["boundary"]["role"].as_str(), Some("history_limit"));
         assert_eq!(receipt["subjects"]["target"]["commit"], fixture.release_tip.as_str());
+        assert_eq!(receipt["subjects"]["target"]["role"].as_str(), Some("release_head"));
         assert_eq!(receipt["target_unique_commits"].as_array().map(Vec::len), Some(2));
         assert_eq!(receipt["accepted_commits"].as_array().map(Vec::len), Some(1));
         assert_eq!(receipt["excluded_release_lineage_commits"].as_array().map(Vec::len), Some(1));
         assert_eq!(receipt["excluded_merge_commits"].as_array().map(Vec::len), Some(0));
         assert_eq!(receipt["errors"].as_array().map(Vec::len), Some(0));
+        Ok(())
+    }
+
+    fn diverged_ledger_json(fixture: &DivergedFixture) -> String {
+        format!(
+            r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "classification": "port_to_swarm", "evidence": ["evidence r0"]}},
+    {{"commit": "{}", "subject": "release r2", "classification": "release_lineage_only", "evidence": ["evidence r2"]}}
+  ]
+}}"#,
+            fixture.swarm_tip,
+            fixture.base,
+            fixture.release_tip,
+            fixture.floor_tip,
+            fixture.release_tip
+        )
+    }
+
+    /// Receipts are byte-deterministic across runs against the same repository.
+    #[test]
+    fn receipts_are_byte_deterministic_across_runs() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(path.join("ledger.json"), diverged_ledger_json(&fixture))?;
+        let config = |receipt: &str| CheckConfig {
+            source: fixture.swarm_tip.clone(),
+            boundary: fixture.base.clone(),
+            target: fixture.release_tip.clone(),
+            ledger: path.join("ledger.json"),
+            receipt: path.join(receipt),
+            working_directory: Some(path.to_path_buf()),
+        };
+        check(config("receipt-1.json"))?;
+        check(config("receipt-2.json"))?;
+        assert_eq!(fs::read(path.join("receipt-1.json"))?, fs::read(path.join("receipt-2.json"))?);
         Ok(())
     }
 
