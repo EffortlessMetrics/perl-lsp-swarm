@@ -321,14 +321,8 @@ impl ProfileExpansion {
     pub fn format_explanation(&self) -> String {
         let mut lines = vec![
             format!("{AUTHORITY_NAME} schema={}", self.schema_version),
-            format!(
-                "profile={} resolution={}",
-                self.requested_profile, self.resolution
-            ),
-            format!(
-                "included_native_tiers={}",
-                self.included_native_tiers.join(",")
-            ),
+            format!("profile={} resolution={}", self.requested_profile, self.resolution),
+            format!("included_native_tiers={}", self.included_native_tiers.join(",")),
         ];
         if !self.excluded_native_tiers.is_empty() {
             lines.push(format!(
@@ -341,12 +335,13 @@ impl ProfileExpansion {
             ));
         }
         if let Some(filter) = &self.gate_filter {
-            lines.push(format!(
-                "gate_filter={} ({})",
-                filter.gate_id, filter.reason
-            ));
+            lines.push(format!("gate_filter={} ({})", filter.gate_id, filter.reason));
         }
-        lines.push(format!("denominator({})={}", self.denominator.len(), self.denominator.join(",")));
+        lines.push(format!(
+            "denominator({})={}",
+            self.denominator.len(),
+            self.denominator.join(",")
+        ));
         if !self.excluded_gate_ids.is_empty() {
             lines.push(format!(
                 "excluded_gates={}",
@@ -380,7 +375,11 @@ impl ProfileExpansion {
 /// Expand the requested profile over the accepted policy into the governed
 /// denominator. Pure: same semantic inputs produce the same fingerprint in
 /// any source order.
-pub fn expand(policy: &GatePolicy, profile: RequestedProfile, gate_filter: Option<&str>) -> ProfileExpansion {
+pub fn expand(
+    policy: &GatePolicy,
+    profile: RequestedProfile,
+    gate_filter: Option<&str>,
+) -> ProfileExpansion {
     let policy_tiers: Vec<String> = policy.tiers.keys().cloned().collect();
     let included_tiers = profile.included_native_tiers(&policy_tiers);
     let excluded_native_tiers = profile.excluded_native_tiers(&policy_tiers);
@@ -410,15 +409,13 @@ pub fn expand(policy: &GatePolicy, profile: RequestedProfile, gate_filter: Optio
     // never silently treated as an implicit member or non-member.
     for gate in &policy.gates {
         if !policy.tiers.contains_key(&gate.tier) {
-            unknown_identities.push(format!("gate {} has undeclared tier {:?}", gate.name, gate.tier));
+            unknown_identities
+                .push(format!("gate {} has undeclared tier {:?}", gate.name, gate.tier));
         }
     }
     if !unknown_identities.is_empty() {
         resolution = ExpansionResolution::Invalid;
-        detail = Some(format!(
-            "unknown tier identities: {}",
-            unknown_identities.join("; ")
-        ));
+        detail = Some(format!("unknown tier identities: {}", unknown_identities.join("; ")));
     }
 
     // Single pass over the policy: a gate is in the denominator exactly when
@@ -452,10 +449,8 @@ pub fn expand(policy: &GatePolicy, profile: RequestedProfile, gate_filter: Optio
         match gate_tiers.get(filter.gate_id.as_str()) {
             None => {
                 resolution = ExpansionResolution::Invalid;
-                detail = Some(format!(
-                    "explicit gate filter names unknown gate {:?}",
-                    filter.gate_id
-                ));
+                detail =
+                    Some(format!("explicit gate filter names unknown gate {:?}", filter.gate_id));
             }
             Some(tier) => {
                 if !denominator.contains(&filter.gate_id) {
@@ -626,7 +621,7 @@ fn hex(bytes: &[u8]) -> String {
 mod route_profile_spec {
     use super::*;
     use crate::tasks::gates::{
-        GateDefinition, GatePolicy, GatePlanningConfig, GatePlanningRole, GateRunnerConfig,
+        GateDefinition, GatePlanningConfig, GatePlanningRole, GatePolicy, GateRunnerConfig,
         GlobalSettings, OutputFormat, TierDefinition,
     };
     use std::collections::HashMap;
@@ -746,11 +741,8 @@ mod route_profile_spec {
         let expansion = expand(&full_policy(), RequestedProfile::Nightly, None);
         assert!(!expansion.denominator.contains(&"staged_tree_identity".to_string()));
         assert!(!expansion.denominator.contains(&"release_history".to_string()));
-        let excluded_tiers: Vec<&str> = expansion
-            .excluded_native_tiers
-            .iter()
-            .map(|excluded| excluded.tier.as_str())
-            .collect();
+        let excluded_tiers: Vec<&str> =
+            expansion.excluded_native_tiers.iter().map(|excluded| excluded.tier.as_str()).collect();
         assert!(excluded_tiers.contains(&"commit"));
         assert!(excluded_tiers.contains(&"release"));
     }
@@ -776,14 +768,15 @@ mod route_profile_spec {
         // Control 5: a later policy tier is automatically included by `all`
         // and otherwise admitted only through an explicit profile rule.
         let mut policy = full_policy();
-        policy
-            .tiers
-            .insert("canary".to_string(), TierDefinition {
+        policy.tiers.insert(
+            "canary".to_string(),
+            TierDefinition {
                 description: "canary".to_string(),
                 target_duration_seconds: 60,
                 enforcement: "none".to_string(),
                 trigger: Vec::new(),
-            });
+            },
+        );
         policy.gates.push(gate("canary_probe", "canary", false));
 
         let all = expand(&policy, RequestedProfile::All, None);
@@ -815,7 +808,9 @@ mod route_profile_spec {
         // what that implementation would actually produce so the typed
         // expansion's rows stay the authority.
         let policy = full_policy();
-        for profile in [RequestedProfile::All, RequestedProfile::MergeGate, RequestedProfile::Nightly] {
+        for profile in
+            [RequestedProfile::All, RequestedProfile::MergeGate, RequestedProfile::Nightly]
+        {
             let equality_denominator: Vec<&str> = policy
                 .gates
                 .iter()
@@ -852,15 +847,31 @@ mod route_profile_spec {
     fn non_active_lifecycle_rows_remain_in_the_denominator() {
         // Control 7: a skipped/quarantined/retired/blocked policy row cannot
         // disappear from the denominator (#10176 changes outcome, not
-        // membership).
-        for profile in [RequestedProfile::MergeGate, RequestedProfile::Nightly, RequestedProfile::All] {
+        // membership) — for every profile whose expansion includes its tier.
+        for profile in
+            [RequestedProfile::MergeGate, RequestedProfile::Nightly, RequestedProfile::All]
+        {
             let expansion = expand(&full_policy(), profile, None);
             assert!(
                 expansion.denominator.contains(&"security_audit".to_string()),
-                "quarantined gate must remain in the {profile} denominator"
+                "quarantined merge_gate row must remain in the {profile} denominator"
             );
-            assert!(expansion.denominator.contains(&"mutation".to_string()));
         }
+        for profile in [RequestedProfile::Nightly, RequestedProfile::All] {
+            let expansion = expand(&full_policy(), profile, None);
+            assert!(
+                expansion.denominator.contains(&"mutation".to_string()),
+                "quarantined nightly row must remain in the {profile} denominator"
+            );
+        }
+        // The same quarantined nightly row stays OUTSIDE merge_gate's
+        // denominator: lifecycle cannot widen the profile either, and the
+        // exclusion is accounted (control 8).
+        let merge_gate = expand(&full_policy(), RequestedProfile::MergeGate, None);
+        assert!(!merge_gate.denominator.contains(&"mutation".to_string()));
+        assert!(merge_gate.excluded_gate_ids.iter().any(|excluded| excluded.gate_id == "mutation"
+            && excluded.reason
+                == ExclusionReason::OutsideProfileTier { tier: "nightly".to_string() }));
     }
 
     #[test]
@@ -895,8 +906,7 @@ mod route_profile_spec {
 
     #[test]
     fn gate_filter_narrows_the_expanded_profile_without_redefining_membership() {
-        let expansion =
-            expand(&full_policy(), RequestedProfile::MergeGate, Some("policy_checks"));
+        let expansion = expand(&full_policy(), RequestedProfile::MergeGate, Some("policy_checks"));
         assert_eq!(expansion.denominator, vec!["policy_checks".to_string()]);
         let filter = expansion.gate_filter.as_ref().unwrap();
         assert_eq!(filter.gate_id, "policy_checks");
@@ -936,10 +946,7 @@ mod route_profile_spec {
         policy.gates.push(gate("orphan_tier", "ghost_tier", false));
         let expansion = expand(&policy, RequestedProfile::All, None);
         assert_eq!(expansion.resolution, ExpansionResolution::Invalid);
-        assert!(expansion
-            .unknown_identities
-            .iter()
-            .any(|unknown| unknown.contains("orphan_tier")));
+        assert!(expansion.unknown_identities.iter().any(|unknown| unknown.contains("orphan_tier")));
     }
 
     #[test]
@@ -989,8 +996,7 @@ mod route_profile_spec {
             },
         )
         .unwrap();
-        let display_names: BTreeSet<&str> =
-            display.iter().map(|gate| gate.name.as_str()).collect();
+        let display_names: BTreeSet<&str> = display.iter().map(|gate| gate.name.as_str()).collect();
         assert!(display_names.contains("staged_tree_identity"));
         assert!(display_names.contains("release_history"));
 
@@ -1020,10 +1026,7 @@ mod route_profile_spec {
             expand(&moved, RequestedProfile::Commit, None).semantic_fingerprint,
         );
         // Policy digest has the same order-independence / movement property.
-        assert_eq!(
-            policy_digest(&full_policy()),
-            policy_digest(&reordered),
-        );
+        assert_eq!(policy_digest(&full_policy()), policy_digest(&reordered),);
         assert_ne!(policy_digest(&full_policy()), policy_digest(&moved));
     }
 
@@ -1038,6 +1041,23 @@ mod route_profile_spec {
         // And the narrowed single-gate identity differs from its own profile.
         let narrowed = expand(&full_policy(), RequestedProfile::MergeGate, Some("policy_checks"));
         assert!(!narrowed.same_profile_identity(&merge_gate));
+    }
+
+    #[test]
+    fn removing_one_inherited_gate_changes_the_denominator_identity() {
+        // Handoff falsifier 5: a plan/result produced without one inherited
+        // gate cannot validate against the complete expansion.
+        let complete = expand(&full_policy(), RequestedProfile::MergeGate, None);
+        let mut pruned = full_policy();
+        pruned.gates.retain(|gate| gate.name != "fmt_check");
+        let pruned = expand(&pruned, RequestedProfile::MergeGate, None);
+        assert_ne!(
+            complete.semantic_fingerprint, pruned.semantic_fingerprint,
+            "removing an inherited pr_fast gate must move the denominator identity"
+        );
+        assert!(!complete.same_profile_identity(&pruned));
+        assert!(complete.denominator.contains(&"fmt_check".to_string()));
+        assert!(!pruned.denominator.contains(&"fmt_check".to_string()));
     }
 
     #[test]
@@ -1073,27 +1093,26 @@ mod route_profile_spec {
         // rows stay out.
         assert!(expansion.denominator.contains(&"security_audit".to_string()));
         assert!(expansion.denominator.contains(&"mutation".to_string()));
-        assert!(!expansion
-            .denominator
-            .iter()
-            .any(|gate| policy_tier_of(&root, gate).as_deref() == Some("commit")));
-        assert!(!expansion
-            .denominator
-            .iter()
-            .any(|gate| policy_tier_of(&root, gate).as_deref() == Some("release")));
+        assert!(
+            !expansion
+                .denominator
+                .iter()
+                .any(|gate| policy_tier_of(&root, gate).as_deref() == Some("commit"))
+        );
+        assert!(
+            !expansion
+                .denominator
+                .iter()
+                .any(|gate| policy_tier_of(&root, gate).as_deref() == Some("release"))
+        );
         assert_eq!(expansion.policy_schema_version, 1);
         assert!(expansion.policy_source_path.contains("gate-policy.yaml"));
     }
 
     fn policy_tier_of(root: &std::path::Path, gate_id: &str) -> Option<String> {
-        let policy = crate::tasks::gates::load_policy_for_inspection(
-            &root.join(".ci/gate-policy.yaml"),
-        )
-        .unwrap();
-        policy
-            .gates
-            .iter()
-            .find(|gate| gate.name == gate_id)
-            .map(|gate| gate.tier.clone())
+        let policy =
+            crate::tasks::gates::load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))
+                .unwrap();
+        policy.gates.iter().find(|gate| gate.name == gate_id).map(|gate| gate.tier.clone())
     }
 }

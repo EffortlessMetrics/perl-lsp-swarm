@@ -687,11 +687,8 @@ pub fn run(config: GateRunnerConfig) -> Result<()> {
     // `--list`, this never executes a gate.
     if config.explain_denominator {
         let profile = route_profile::RequestedProfile::from_gate_tier(&config.tier);
-        let expansion = route_profile::expand_from_root(
-            &root,
-            profile,
-            config.gate_filter.as_deref(),
-        )?;
+        let expansion =
+            route_profile::expand_from_root(&root, profile, config.gate_filter.as_deref())?;
         println!("{}", expansion.format_explanation());
         return Ok(());
     }
@@ -861,13 +858,13 @@ fn selects_commit_tier_gate(policy: &GatePolicy, config: &GateRunnerConfig) -> R
 /// tier). `--tier nightly` is *not* one of these paths — `NIGHTLY_EXTRA_TIERS`
 /// is `merge_gate` + `nightly` only, deliberately excluding `commit` — see
 /// [`selects_commit_tier_gate`], the single source of truth this function
-/// defers to. `--list` is exempt: it never executes a gate. `None` means the
-/// run may proceed.
+/// defers to. `--list` and `--explain-denominator` are exempt: neither ever
+/// executes a gate. `None` means the run may proceed.
 fn staged_guard_violation(
     policy: &GatePolicy,
     config: &GateRunnerConfig,
 ) -> Result<Option<String>> {
-    if config.staged || config.list_only {
+    if config.staged || config.list_only || config.explain_denominator {
         return Ok(None);
     }
     if !selects_commit_tier_gate(policy, config)? {
@@ -3520,6 +3517,22 @@ mod tests {
         let config = GateRunnerConfig {
             tier: GateTier::Commit,
             list_only: true,
+            ..GateRunnerConfig::default()
+        };
+
+        assert!(staged_guard_violation(&policy, &config)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn staged_guard_violation_none_in_explain_denominator_mode() -> color_eyre::eyre::Result<()> {
+        // `--explain-denominator` is as read-only as `--list`: it prints the
+        // `ci_route_profile.v1` expansion (#10178) and never executes a gate,
+        // so even `--tier all` must not demand `--staged` from it.
+        let policy = policy_with_commit_and_pr_fast_gates();
+        let config = GateRunnerConfig {
+            tier: GateTier::All,
+            explain_denominator: true,
             ..GateRunnerConfig::default()
         };
 
