@@ -18,6 +18,7 @@ use perl_dap::{
     AttachConfiguration, DapConfig, DapMessage, DapMode, DapServer, DapSocketBindError,
     DebugAdapter, LaunchConfiguration,
 };
+use perl_tdd_support::must_err;
 use serde_json::json;
 use std::collections::HashMap;
 use std::io::{self, Write};
@@ -349,6 +350,7 @@ fn test_evaluate_arguments_round_trip() -> Result<(), Box<dyn std::error::Error>
         frame_id: Some(0),
         context: Some("hover".to_string()),
         allow_side_effects: Some(false),
+        format: None,
     };
 
     let json = serde_json::to_string(&args)?;
@@ -830,7 +832,7 @@ fn native_socket_preserves_bind_error_identity() -> Result<(), Box<dyn std::erro
         DapConfig { log_level: "info".to_string(), mode: DapMode::Native, workspace_root: None };
     let mut server = DapServer::new(config)?;
 
-    let error = server.run_socket(port).expect_err("occupied port must fail before accept");
+    let error = must_err(server.run_socket(port));
     let marker = error
         .downcast_ref::<DapSocketBindError>()
         .ok_or_else(|| io::Error::other("missing DAP bind marker"))?;
@@ -1309,6 +1311,7 @@ fn test_set_variable_arguments_round_trip() -> Result<(), Box<dyn std::error::Er
         variables_reference: 100,
         name: "$x".to_string(),
         value: "42".to_string(),
+        format: None,
     };
 
     let json = serde_json::to_string(&args)?;
@@ -1326,6 +1329,7 @@ fn test_set_expression_arguments_round_trip() -> Result<(), Box<dyn std::error::
         expression: "$hash{key}".to_string(),
         value: "\"new value\"".to_string(),
         frame_id: Some(0),
+        format: None,
     };
 
     let json = serde_json::to_string(&args)?;

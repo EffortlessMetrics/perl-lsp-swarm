@@ -19,6 +19,14 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
 
     assert!(workflow.contains("pull_request:"), "ripr.yml must run from pull_request events");
     assert!(
+        workflow.contains("cancel-in-progress: false"),
+        "RIPR evidence runs must queue newer heads instead of cancelling active analysis"
+    );
+    assert!(
+        !workflow.contains("cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}"),
+        "RIPR must not turn normal PR synchronization into a cancelled no-verdict"
+    );
+    assert!(
         workflow.contains("types: [opened, synchronize, reopened, ready_for_review]"),
         "ripr.yml must rerun when a draft PR becomes ready for review because the job skips draft PRs"
     );

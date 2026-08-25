@@ -488,6 +488,7 @@ pub(super) fn map_source_range(range: RegexRange, source_start: usize) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_test_must::must_some_with;
 
     fn complete_status() -> PatternControlAnalysisStatus {
         PatternControlAnalysisStatus {
@@ -503,12 +504,16 @@ mod tests {
 
     #[test]
     fn source_mapping_offsets_a_body_relative_range() {
-        let mapped = map_source_range(RegexRange { start: 2, end: 5 }, 10)
-            .expect("range within usize bounds");
+        let mapped = must_some_with(
+            map_source_range(RegexRange { start: 2, end: 5 }, 10),
+            "range within usize bounds",
+        );
         assert_eq!((mapped.start, mapped.end), (12, 15));
         // A zero offset is the identity, not a special case.
-        let identity =
-            map_source_range(RegexRange { start: 2, end: 5 }, 0).expect("identity mapping");
+        let identity = must_some_with(
+            map_source_range(RegexRange { start: 2, end: 5 }, 0),
+            "identity mapping",
+        );
         assert_eq!((identity.start, identity.end), (2, 5));
     }
 

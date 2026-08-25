@@ -25,8 +25,13 @@ tests, or tracked for compliance in one place but not another.
 Feature governance solves this with two core principles:
 
 1. **Single source of truth.** `features.toml` at the workspace root declares
-   every feature once. Build scripts compile this into Rust constants at build
-   time, so the runtime catalog is always derived from the same file.
+   every feature once, including its earned-claim maturity and evidence
+   ownership (#7029). Build scripts compile this into Rust constants at build
+   time, so the runtime catalog is always derived from the same file. The
+   crate-local `crates/*/features_sot.toml` files are deterministic generated
+   byte projections of the root authority (`cargo xtask features regen-vendored`);
+   they are never edited by hand, and drift fails `features invariants` and the
+   `vendored_projection_drift` test.
 
 2. **Separation of concerns within the core crate.** Catalog parsing and
    build-time rendering live in `feature_catalog.rs` and the inlined
@@ -72,15 +77,29 @@ Every feature is declared as a `[[feature]]` entry with these fields:
 | `id` | Canonical identifier (e.g. `lsp.completion`, `dap.core`) |
 | `spec` | LSP/DAP spec version where the feature was introduced |
 | `area` | Functional grouping: `text_document`, `workspace`, `window`, `notebook`, `debug`, `protocol` |
-| `maturity` | Lifecycle stage: `planned`, `experimental`, `preview`, `ga`, `production` |
-| `advertised` | Whether the server announces this capability to clients |
+| `policy_class` | Minimum-evidence class used for promotion decisions (`request_response`, `server_request`, `document_sync`, `workspace`, `cancellation_progress`, `editor_dependent`, `protocol_lifecycle`, `debug_adapter`, `experimental_extension`) |
+| `maturity` | Earned-claim state (#7029): `proven`, `preview`, `planned`, `unsupported`, `not_proven`. Independent of advertisement; `proven` requires qualifying evidence plus complete ownership metadata, validated fail-closed |
+| `advertised` | Whether the server announces this capability to clients (runtime fact; planned/unsupported rows can never advertise) |
+| `direction` | Wire direction: `client_to_server`, `server_to_client`, `bidirectional` — recorded as `missing` when unverified |
+| `capability_gate` | Capability field gating the feature, or `none`; recorded as `missing` when unverified |
+| `registration` | Advertisement/registration route: `static_capabilities`, `dynamic_registration`, `client_capability_gated` |
+| `implementation_owner` | Source path owning the implementation; literal `missing` when unverified |
+| `state_owner` | Owner of retained cross-request state; literal `missing` when unverified |
 | `counts_in_coverage` | Historical declaration grouping selector; not behavior evidence |
-| `tests` | Paths to test files exercising the feature |
+| `tests` | Paths historically associated with the feature; presence alone is not evidence (#7029) |
+| `evidence` | Classified citations (`{ class, id }`). Qualifying classes per `[evidence_policy]` may promote a row; non-qualifying classes in `[evidence_classes]` never can |
+| `limitations` | Known claim/implementation limits |
+| `claim_boundary` | Explicit non-claims statement; required for `proven` rows |
 | `description` | Human-readable summary |
 
 The `[meta]` section records the catalog version and target LSP spec version.
 It must not carry a computed compliance percentage; aggregate declaration
-counts are navigation context only (#6731).
+counts are navigation context only (#6731). The `[evidence_policy]` and
+`[evidence_classes]` tables own the minimum-evidence rules by feature class:
+a row holds `proven` only when its citations include a qualifying class for
+its policy class AND every ownership field is populated. Rows that cannot
+meet that bar record `not_proven` and are promoted later, one PR at a time,
+as runtime work earns it (#7029).
 
 ## Module Responsibilities
 
@@ -241,16 +260,21 @@ will track whether the feature has associated test coverage.
 
 ### Step 7: Promote maturity
 
-When the feature is stable, update `features.toml`:
+When the feature has qualifying behavior evidence and complete ownership
+metadata, update `features.toml` (#7029):
 
 ```toml
-maturity = "ga"
-advertised = true
+maturity = "proven"
+evidence = [{ class = "integration_test", id = "crates/perl-lsp-rs/tests/your_wire_test.rs" }]
+claim_boundary = "What this row still does not claim."
 ```
 
-Then enable it in the `production()` and `ga_lock()` `BuildFlags` constructors.
-Update maturity and advertising declarations only; no computed compliance
-percentage is generated from them.
+`proven` requires the evidence entry, `direction`, `capability_gate`,
+`registration`, `implementation_owner`, `state_owner`, and `claim_boundary`;
+validation fails otherwise. Advertisement (`advertised = true`) is a separate
+runtime decision made with the capability work — it never promotes a claim by
+itself. No computed compliance percentage is generated from any of these
+declarations.
 
 ## Dependency Graph
 

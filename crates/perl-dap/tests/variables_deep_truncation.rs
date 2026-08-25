@@ -1,5 +1,9 @@
 // Minimal test to reproduce deep nesting, large arrays, and cyclic reference behavior
 // Run with: cargo test --test test_deep_truncation -- --nocapture
+#![expect(
+    clippy::print_stdout,
+    reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
+)]
 mod common;
 
 #[cfg(test)]

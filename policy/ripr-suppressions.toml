@@ -1213,8 +1213,7 @@ created = "2026-06-15"
 review_after = "2026-07-15"
 expires = "2026-09-30"
 
-# ======================================================================
-# -----------------------------------------------------------------------------
+# ===============================================================# -----------------------------------------------------------------------------
 # Coverage measure/route decoupling (PR #1482 / #1470): ripr#1429-class
 # predicate-infection-untraceable seams in two xtask coverage decision points.
 #
@@ -2740,3 +2739,141 @@ created = "2026-08-23"
 review_after = "2026-09-23"
 expires = "2026-11-23"
 removal_criteria = "EffortlessMetrics/ripr#1429 connects diff-scoped analysis to tests/ harnesses and sibling cfg(test) modules; then delete this entry and rerun the enforce-new-ripr gate expecting the existing focused proof to clear the seams without it. Remove or narrow it immediately if a receipt reports any class outside no_static_path / reachable_unrevealed / weakly_gripped in these files, if the listed oracles stop covering a reported seam, or if target-contract validation drift makes the two guarded arms reachable through read_matrix; those conditions are automatic do-not-merge unless a separate evidence-backed review justifies the disposition."
+
+# -----------------------------------------------------------------------------
+# Reachability operation contract (#11553, PR #12049): declaration-line
+# probes on private-field contract types. Campaign-root ruling of
+# 2026-08-24 accepted the reviewed-suppression option after the lane's
+# decisive falsification: the external seam proof constructs
+# ReachabilityOperationOutcome::ProductFailure { stage, cause, work_receipt }
+# literally and asserts on it, yet the probe on that exact work_receipt
+# field remains no_static_path (run 32670894487) — direct literal
+# construction does not resolve the probe class. Precedent: same-class
+# entries above (const_data_no_static_path, target-matrix, #1962), all
+# tracking EffortlessMetrics/ripr#1429.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-reachability-contract-declarations"
+kind = "declaration_line_no_static_path"
+paths = ["crates/perl-semantic-facts/src/reachability_operation/**"]
+classification = ["no_static_path"]
+owner = "reachability-contract-lane"
+issue = "#11553"
+reason = "PR #12049 (#11553) adds the reachability operation contract as private-field types with canonical constructors (unforgeable receipts/outcomes are the issue's own evidence law), and ripr 0.9.x reports 52 no_static_path probes on their declaration lines — field_construction on private struct fields (ReachabilityWorkReceipt, ReachabilityOperationOutcome payloads, ReachabilityCompleteResultRef, ReachabilityExecutionProfile, tracker state), call_deletion on enum payload declarations, and return_value on the tracker-only from_parts parameter list — all reach:no 'No static test path'. The falsification is decisive: the external seam proof constructs ReachabilityOperationOutcome::ProductFailure { stage, cause, work_receipt } literally and asserts on it, yet the probe on that exact work_receipt field stays no_static_path (run 32670894487), and the passing precedent (#6772) resolved only pub-primitive-typed fields constructed by struct literal in tests. Every executable seam of the contract is asserted by 27 inline falsifiers plus 6 external-consumer seam-proof tests (subject-to-publication walk, all terminal classes, fail-closed budget/profile/work-honesty validation, partial-vs-empty separation, serialization determinism). Remove when EffortlessMetrics/ripr#1429 resolves declaration-line probes for private non-primitive-typed fields via constructor-call paths, or when a reviewed alternative lands."
+created = "2026-08-24"
+review_after = "2026-09-24"
+expires = "2026-10-24"
+removal_criteria = "EffortlessMetrics/ripr#1429 fixed upstream so declaration-line probes resolve through constructor-call paths, OR a reviewed design decision lands an alternative (pub-field DTO redesign was explicitly rejected by the 2026-08-24 campaign ruling because forgeable receipts defeat #11553's evidence law), then delete this entry and rerun the enforce-new-ripr gate. HONEST SCOPE NOTE: the matcher is path-scoped and classification-qualified as enforced by ripr 0.9.x on this head (the 52 no_static_path findings were suppressed while the module's reachable_unrevealed side_effect findings were not); a future blocking class in this module is NOT masked by this entry and must be dispositioned separately."
+
+# -----------------------------------------------------------------------------
+# Workspace reachability composition harness (#11553, PR #12049): the
+# ripr-suppress-seam-proof-tests entry names probe families
+# (call_deletion/return_value/error_path) rather than the classification
+# ripr 0.9.x actually reports for `?`-operator plumbing in these harnesses
+# (reachable_unrevealed), so this lane's harness `)?` seams fall through.
+# Lane-scoped to this one file; remove together with the parent
+# reachability-contract entry when ripr#1428/#1429 land.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-reachability-workspace-harness-error-paths"
+kind = "test_receipt_surface"
+paths = ["crates/perl-workspace/tests/ripr_seam_proof_reachability_operation_contract.rs"]
+classification = ["reachable_unrevealed"]
+owner = "reachability-contract-lane"
+issue = "#11553"
+reason = "The four reachable_unrevealed findings in this file are error_path probes on `)?` plumbing lines of the ripr_seam_proof_* harness itself, the exact class ripr-suppress-seam-proof-tests describes; that entry lists probe-family names where ripr 0.9.x reports the reachable_unrevealed classification, so this file-scoped companion closes the gap for this lane only. Remove when EffortlessMetrics/ripr#1428 is fixed or the parent reachability-contract entry is removed."
+created = "2026-08-24"
+review_after = "2026-09-24"
+expires = "2026-10-24"
+removal_criteria = "ripr#1428 fixed upstream, OR ripr-suppress-seam-proof-tests corrected to match the classification ripr reports, then delete this companion entry."
+# module-train C02 offline projection tests (#11626): executable proof
+# fixtures for the offline status/frontier slice, not production behavior.
+# Mirrors the #8305 receipt-harness precedent: RIPR's diff-scoped tracer
+# cannot connect test-helper plumbing (`?` propagation, helper returns,
+# fixture mutation arms) inside a newly added test module to the assertions
+# that drive it, and reports them as new seams in the test file itself.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-11626-module-train-frontier-tests"
+kind = "test_receipt_surface"
+paths = ["xtask/src/tasks/module_train_tests.rs"]
+classification = ["call_deletion", "error_path", "match_arm", "return_value", "side_effect", "predicate"]
+owner = "module-train-c02"
+issue = "#11626"
+reason = "PR #12055 (issue #11626) adds the C02 offline module-train projection with its focused test module. RIPR 0.10.0 reports 76 reachable_unrevealed seams inside xtask/src/tasks/module_train_tests.rs itself (call_deletion/return_value on helper `Ok(())` returns and `?` propagation, match arms in fixture helpers, error paths of the temp-dir fixtures). These are test-harness plumbing in a test-only file, the same class as the #8305 and seam-proof-test precedents; the proof the module delivers is the 29-test discriminating suite (digest pin, fail-closed mutations, frontier known answers, landing-by-data discriminators, determinism) executed by cargo test -p xtask and PR Smoke. The production module keeps its own seams visible to RIPR under its own narrower entry. Remove when EffortlessMetrics/ripr#1428 stops flagging newly added test files as production seams."
+created = "2026-08-23"
+review_after = "2026-09-23"
+expires = "2026-10-31"
+removal_criteria = "ripr#1428 lands (test-harness plumbing distinguished from production seams) or the test module is restructured so RIPR traces its helpers; then delete this entry and expect the existing suite to clear without it."
+
+# -----------------------------------------------------------------------------
+# module-train C02 production module (#11626): success-return and defensive
+# expression seams that green tests execute but per-expression static
+# exposure cannot connect to an assertion.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-11626-module-train-success-path-seams"
+kind = "call_presence_static_tracing_limit"
+paths = ["xtask/src/tasks/module_train.rs"]
+classification = ["reachable_unrevealed"]
+owner = "module-train-c02"
+issue = "#11626"
+reason = "PR #12055 (issue #11626) adds the offline module-train projection. After the review round added direct discriminating assertions (manifest_sections_reveal_identity_values pins every top-level section identity; render_binding_reveals_both_worktree_states pins both dirty branches; non_edge_import_cannot_carry_a_dependency_edge and load_errors_name_their_exact_cause pin the remaining reachable error arms), the enforce-new-ripr residue on this file is the analyzer-shape set: `Ok(())` success returns of validate/canonical-walk/render functions that every green test executes through `?` without a per-expression value assertion, the visit_acyclic recursion edge, the load_manifest_from strict-schema `?` unreachable behind the digest pin (a schema-invalid manifest cannot match the pinned digest, so only the pin error is observable), and the `_ =>` bail arms in the dependency-class match and colour match that earlier closed-set validation makes unreachable for schema-valid input. The genuinely reachable holes RIPR did find (the never-asserted dirty render branch, the unasserted section identities, the untested load error paths) were fixed with real tests, not suppressed. Keep this entry narrow: classification records reachable_unrevealed only (the matcher is path-scoped; see the dispatch.rs scope note) and it must be removed when ripr can trace success-path returns to their executing tests or when targeted mutation replaces this advisory path."
+created = "2026-08-23"
+review_after = "2026-09-23"
+expires = "2026-10-31"
+removal_criteria = "ripr#1429-class tracing connects success returns to executing tests, OR the module's proof moves to targeted mutation, OR a new reachable_unrevealed seam appears that a real focused test could cover (then fix by test instead of extending this entry)."
+
+# -----------------------------------------------------------------------------
+# ValueFormat exact public stdio proof harness (#9590, PR #12221): the
+# framed-stdio session driver is a test-only receipt surface. RIPR 0.10.x
+# reports 42 reachable_unrevealed error_path seams on the `)?` plumbing of
+# its helpers (request/expect_success/expect_failure/recv_until/
+# wait_event/close_stdin_and_wait_exit), the same class the #8305
+# receipt-harness, seam-proof-tests, and #11626 test-module precedents
+# describe: per-expression static exposure cannot connect harness plumbing
+# between assertions to the assertions that drive it, and reports the seams
+# inside the newly added test file itself.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-9590-valueformat-stdio-proof-harness"
+kind = "test_receipt_surface"
+paths = ["crates/perl-dap/tests/dap_value_format_stdio_proof.rs"]
+classification = ["reachable_unrevealed"]
+owner = "valueformat-stdio-proof-lane"
+issue = "#9590"
+reason = "PR #12221 (issue #9590) adds the exact public stdio proof harness for the ValueFormat family. RIPR's 42 findings in this file are error_path probes on `)?` plumbing lines of the harness itself (request/response correlation, backlog event waits, bounded recv, teardown after stdin close) plus the fail-closed Err arms of row-by-name/identity/canary assertion helpers. Every one of those helpers is executed to completion by the 29-row matrix the file exists to run (cargo test -p perl-dap --test dap_value_format_stdio_proof): expect_failure's fail-closed control is exercised for real by the four unsupported-option families and the policy-rejected evaluate row, recv_until's correlation drives all 34 framed requests, and the teardown path runs disconnect -> terminated -> stdin close -> adapter exit on every green run. Asserting each intermediate Err arm separately would require fault-injection scaffolding duplicating the harness around code that has no production caller. The falsification for the class is recorded by the seam-proof precedents (ripr#1428 reports reachable_unrevealed for harness `?` plumbing regardless of the assertions that execute it). The production change of this PR (variables.rs) keeps its own seams fully visible to RIPR under no entry."
+created = "2026-08-24"
+review_after = "2026-09-24"
+expires = "2026-10-24"
+removal_criteria = "ripr#1428 lands (test-harness plumbing distinguished from production seams) or RIPR traces the harness helpers to their executing matrix rows, then delete this entry and expect the 29-row suite to clear without it. A new reachable_unrevealed seam that a real focused test could cover must be fixed by test, not by extending this entry."
+
+# -----------------------------------------------------------------------------
+# #12121 semantic-identity contract: two ripr#1429-class constructor seams in
+# one new contract module. (A) SemanticContributionId::new's private
+# `family_ordinal` field — RIPR cannot trace the u32 literal through the
+# private constructor into the fingerprint fold, even though
+# contribution_id_binds_family_and_ordinal asserts the ordinal changes the
+# fingerprint (7 vs 8) and empty-field rejection covers the guard. (B)
+# SemanticSubjectGeneration::mix_subject_fields' private `fp` accumulator
+# parameter — RIPR cannot trace the SemanticIdentityFingerprint builder chain
+# (new/field/discriminant/finish, all by-value) to the 21 semantic_identity
+# fixtures that assert fingerprint distinctness, determinism under input-order
+# permutation, and separator-content non-collision. Suppression is narrow
+# (two files of the new semantic_identity module, one PR #12255). Remove when
+# ripr#1429 is fixed upstream or targeted mutation is scheduled per #1289.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-12121-semantic-identity-constructor-seams"
+kind = "predicate_infection_untraceable"
+paths = [
+  "crates/perl-semantic-facts/src/semantic_identity/contribution.rs",
+  "crates/perl-semantic-facts/src/semantic_identity/scope.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "Two ripr#1429-class seams in PR #12255 semantic_identity module: SemanticContributionId::new's private family_ordinal field and mix_subject_fields' private fingerprint accumulator parameter. RIPR cannot statically trace either through private constructors/by-value builder chains to the covering tests, which assert ordinal-sensitive and order-permutation-stable fingerprints plus separator-content non-collision across 21 inline unit tests. Suppression is narrow (two files of one new contract module, one PR #12255). Remove when ripr#1429 is fixed upstream or targeted mutation is scheduled per #1289."
+created = "2026-08-24"
+review_after = "2026-09-23"
+expires = "2026-10-24"

@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "G49-dependency-upgrade-as-duplicate-fix",
+  "family": "documentation_cargo_test_proof_theater",
+  "purpose": "Fixing duplicate dependency versions by incompatible upgrades without package/downstream proof.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "tokio bumped 1.52 -> 2.0",
+      "duplicate-version report"
+    ],
+    "content": "# Cargo.toml: tokio bumped 1.52 -> 2.0 to silence duplicate-version report\ntokio = \"2.0\"\n",
+    "sha256": "371b9d3db29006b6992a49522d5c6a9150e59d92870e4e51d5208ebc21b6cb2b"
+  },
+  "rejecting_authority": {
+    "status": "bound",
+    "authority_kind": "file_contract",
+    "reference": "file:deny.toml#"
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "incompatible_dependency_upgrade"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "version = \"1.52.3\"",
+      "rt-multi-thread"
+    ],
+    "note": "Duplicates converge within compatible ranges.",
+    "content": "tokio = { version = \"1.52.3\", features = [\"net\", \"rt-multi-thread\", \"macros\", \"io-util\", \"sync\", \"time\"] }\n",
+    "sha256": "d534324bf0265880f5dee00b3743976118d18c8d5416d934ce777e201332fd10"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "deny.toml encodes bans/bounds; MSRV coherence enforced by check-lint-policy/toolchain normalization."
+}

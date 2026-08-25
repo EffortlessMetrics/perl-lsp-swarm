@@ -51,7 +51,7 @@
 //! ```
 
 use super::import_optimizer::ImportOptimizer;
-use perl_module::path::module_name_to_path;
+use perl_module::module_name_to_path;
 use perl_workspace::workspace_index::{
     SymKind, SymbolKey, WorkspaceIndex, fs_path_to_uri, normalize_var, uri_to_fs_path,
 };

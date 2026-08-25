@@ -6,9 +6,9 @@ use super::{
     DapEvent, DapMessage, DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
     Instant, Mutex, Read, RestartArguments, ResumeMode, Source, StackFrame, Stdio, SyncSender,
     TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState, Value, Write,
-    ansi_escape_re, catalog_has_feature, context_re, dispatch_event, emit_event_safe, error_re,
-    exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
-    thread, warning_re,
+    ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, dispatch_event,
+    emit_event_safe, error_re, exception_re, json, lock_or_recover, module_path_to_name, prompt_re,
+    security, stack_frame_re, thread, warning_re,
 };
 #[cfg(unix)]
 use nix::sys::signal::{self, Signal};
@@ -741,6 +741,11 @@ impl DebugAdapter {
             let mut current_func = String::new();
             let mut current_line = 0;
             let mut _debugger_ready = false;
+            // Most recent `error_re` message line (`<text> at FILE line N`). An
+            // uncaught die arrives as that message line followed by the bare
+            // perl5db-handler suffix line; the suffix is the detection signal,
+            // but the message line is the text `exceptionInfo` should serve.
+            let mut last_error_message = String::new();
             // In-flight logpoint value query, if any. A logpoint hit queues a framed
             // `p` query for the scalars its template mentions; the replies stream back
             // through this same loop and are folded into the message here (#5045).
@@ -899,8 +904,33 @@ impl DebugAdapter {
                             break; // Exit the loop if client is gone
                         }
 
+                        // perl5db prints this fixed line when the debuggee
+                        // program ends — on normal exit AND on an uncaught die —
+                        // and then idles at a prompt instead of exiting, so
+                        // without this the client never observes `terminated`
+                        // for a completed run. Emit the terminal event at the
+                        // real program end. Session state intentionally stays
+                        // intact so cached frames remain answerable; process
+                        // cleanup remains with disconnect/watchdog (#9081).
+                        if analysis_text.starts_with("Debugged program terminated") {
+                            if let Some(ref sender) = sender {
+                                emit_terminated_event(
+                                    sender,
+                                    &seq,
+                                    &termination_state,
+                                    Some(session_generation),
+                                    Some(json!({ "reason": "debuggee_exit" })),
+                                );
+                            }
+                            continue;
+                        }
+
                         // Enhanced context information parsing with multiple patterns
                         let mut context_updated = false;
+                        // Whether THIS line is the perl5db die/warn-handler suffix
+                        // (` at FILE line N.`) — the stream signal that the
+                        // debugger's `__DIE__` handler observed an uncaught `die`.
+                        let mut matched_die_suffix = false;
 
                         // Try main context pattern
                         if let Some(re) = context_re()
@@ -950,6 +980,7 @@ impl DebugAdapter {
                                 current_line = line_num.as_str().parse::<i32>().unwrap_or(0);
                             }
                             context_updated = true;
+                            last_error_message = analysis_text.clone();
 
                             // Send error event to client
                             if let Some(ref sender) = sender {
@@ -965,24 +996,65 @@ impl DebugAdapter {
                             }
                         }
 
+                        // perl5db's `__DIE__` handler reports an uncaught `die` as
+                        // the message line followed by a bare ` at FILE line N.`
+                        // suffix line — including for `die "msg\n"`, whose own text
+                        // carries no suffix. A `print` of byte-identical text never
+                        // fires the handler, and a `die` caught by `eval` propagates
+                        // silently, so this line is the honest stream signal that an
+                        // uncaught die reached the debugger. `warn` fires the
+                        // sibling `__WARN__` handler with an indistinguishable
+                        // suffix line; that warn/die ambiguity is inherent to the
+                        // perl5db stream and stays with the residual #9081 warn
+                        // claim. The suffix carries the authoritative die location,
+                        // so attribute file/line from it.
+                        if !context_updated
+                            && let Some(re) = die_suffix_re()
+                            && let Some(caps) = re.captures(&analysis_text)
+                        {
+                            if let Some(file) = caps.name("file") {
+                                current_file = file.as_str().to_string();
+                            }
+                            if let Some(line_num) = caps.name("line") {
+                                current_line = line_num.as_str().parse::<i32>().unwrap_or(0);
+                            }
+                            context_updated = true;
+                            matched_die_suffix = true;
+                        }
+
                         if context_updated {
                             let break_on_die =
                                 exception_break_on_die.lock().map(|guard| *guard).unwrap_or(false);
                             let break_on_warn =
                                 exception_break_on_warn.lock().map(|guard| *guard).unwrap_or(false);
-                            let is_exception_line =
-                                exception_re().is_some_and(|re| re.is_match(&analysis_text));
+                            // Detection must not key on words inside the user's
+                            // die message (`exception_re` trigger words are kept
+                            // for compatibility); an ordinary uncaught `die` is
+                            // attributed from the perl5db handler suffix line.
+                            let is_exception_line = exception_re()
+                                .is_some_and(|re| re.is_match(&analysis_text))
+                                || matched_die_suffix;
                             let is_warning_line =
                                 warning_re().is_some_and(|re| re.is_match(&analysis_text));
                             let exception_match = break_on_die && is_exception_line;
                             let warning_match =
                                 break_on_warn && is_warning_line && !is_exception_line;
 
-                            // Store exception message for exceptionInfo request
+                            // Store exception message for exceptionInfo request.
+                            // When the handler suffix line is the detection
+                            // signal, its own text (`at FILE line N.`) is
+                            // content-free — serve the remembered die message
+                            // line instead.
                             if (exception_match || warning_match)
                                 && let Ok(mut guard) = last_exception_message.lock()
                             {
-                                *guard = Some(analysis_text.clone());
+                                let message =
+                                    if matched_die_suffix && !last_error_message.is_empty() {
+                                        last_error_message.clone()
+                                    } else {
+                                        analysis_text.clone()
+                                    };
+                                *guard = Some(message);
                             }
 
                             let mut should_emit_stopped = false;
@@ -1429,9 +1501,15 @@ impl DebugAdapter {
                 tracing::error!("Debuggee watchdog: failed to kill hung debuggee process");
             }
 
-            // Deliver the reserved timeout reason after kill. Blocking send is OK:
-            // the debuggee is already dead; the emitted flag was set at reserve time.
-            if let Some(ref sender) = sender {
+            // Deliver the reserved timeout reason after kill, but only if the
+            // session generation has not been closed or replaced since the
+            // reservation was claimed (before the kill): a stale timeout event
+            // must not leak into a newer client conversation (#12092 review).
+            // Blocking send is OK: the debuggee is already dead; the emitted
+            // flag was set at reserve time.
+            if let Some(ref sender) = sender
+                && terminated_delivery_is_current(&termination_state, Some(session_generation))
+            {
                 let _ = emit_event_safe(
                     sender,
                     &seq,
@@ -1938,6 +2016,7 @@ impl DebugAdapter {
             emit_terminated_event(sender, &self.seq, &self.termination_state, None, None);
         }
         self.clear_active_session_state();
+        self.close_terminal_session_generation();
 
         DapMessage::Response {
             seq,
@@ -1972,6 +2051,7 @@ impl DebugAdapter {
             );
         }
         self.clear_active_session_state();
+        self.close_terminal_session_generation();
 
         DapMessage::Response {
             seq,
@@ -2244,6 +2324,30 @@ fn reserve_terminated_event(
     true
 }
 
+/// Whether a terminal emission reserved under `expected_generation` may still be
+/// delivered: the session generation must not have been closed or replaced since
+/// the reservation was claimed.
+///
+/// A reservation can be held across slow work before its send (the debuggee
+/// watchdog reserves before killing the process and delivers after), so a client
+/// terminal request or a replacement launch can advance the generation while the
+/// send is still outstanding. Delivering that stale send would leak an old
+/// session's `terminated` event into a newer client conversation (e.g. a client
+/// reading it as the replacement session terminating), so delivery must
+/// revalidate and retire it (#12092 review).
+///
+/// `None` (the synchronous client `terminate`/`disconnect` path) is always
+/// current: reservation, send, and generation close run sequentially on the
+/// caller's thread, so nothing can interleave.
+fn terminated_delivery_is_current(
+    termination_state: &Mutex<TerminationState>,
+    expected_generation: Option<u64>,
+) -> bool {
+    let Some(expected) = expected_generation else { return true };
+    let state = lock_or_recover(termination_state, "debug_adapter.termination_state");
+    state.generation == expected
+}
+
 /// Emit interpolated logpoint text on the debug console.
 fn emit_logpoint_messages(
     sender: Option<&SyncSender<DapMessage>>,
@@ -2276,6 +2380,12 @@ fn emit_terminated_event(
     if !reserve_terminated_event(termination_state, expected_generation) {
         return false;
     }
+    if !terminated_delivery_is_current(termination_state, expected_generation) {
+        // The generation was closed or replaced between reservation and
+        // delivery; retire the stale send rather than leak an old session's
+        // terminal event into a newer client conversation (#12092 review).
+        return false;
+    }
     emit_event_safe(sender, seq, "terminated", body)
 }
 
@@ -2284,6 +2394,7 @@ mod tests {
     use super::{
         DebugAdapter, DebugState, current_stopped_frame_id, detect_perl_info,
         emit_terminated_event, format_perl_spawn_error, is_valid_perl_interpreter,
+        reserve_terminated_event, terminated_delivery_is_current,
     };
     use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
@@ -2473,6 +2584,67 @@ mod tests {
             return Err("current session failed to emit termination".to_string());
         }
         Ok(())
+    }
+
+    #[test]
+    fn reserved_termination_retired_when_generation_advances_before_delivery() -> Result<(), String>
+    {
+        let (sender, receiver) = sync_channel(64);
+        let seq = Arc::new(Mutex::new(0));
+        let termination_state =
+            Arc::new(Mutex::new(super::TerminationState { generation: 3, emitted: false }));
+
+        // Watchdog-style early reservation: the debuggee watchdog reserves
+        // before killing the process and delivers only after, so a client
+        // terminal request (or replacement launch) can advance the generation
+        // while this send is still outstanding.
+        if !reserve_terminated_event(&termination_state, Some(3)) {
+            return Err("watchdog-style reservation under the current generation failed".into());
+        }
+
+        // The generation advances while the reserved send is in flight
+        // (`close_terminal_session_generation` / replacement launch shape).
+        {
+            let mut state = termination_state
+                .lock()
+                .map_err(|_| "termination state lock poisoned".to_string())?;
+            state.generation = 4;
+            state.emitted = false;
+        }
+
+        // The stale delivery is retired, not sent.
+        if terminated_delivery_is_current(&termination_state, Some(3)) {
+            return Err("stale delivery reported current after generation advanced".into());
+        }
+
+        // A delivery under the now-current generation is still acknowledged.
+        if !emit_terminated_event(
+            &sender,
+            &seq,
+            &termination_state,
+            Some(4),
+            Some(serde_json::json!({"reason": "current_generation"})),
+        ) {
+            return Err("current-generation emission was suppressed".into());
+        }
+
+        // Exactly one event reached the channel: the current generation's.
+        match receiver.try_recv() {
+            Ok(super::DapMessage::Event { event, body, .. }) => {
+                if event != "terminated"
+                    || body.as_ref().and_then(|v| v.get("reason")).and_then(|v| v.as_str())
+                        != Some("current_generation")
+                {
+                    return Err(format!("unexpected termination event: {event}, {body:?}"));
+                }
+            }
+            other => return Err(format!("expected termination event, got {other:?}")),
+        }
+        match receiver.try_recv() {
+            Err(TryRecvError::Empty) => Ok(()),
+            Err(error) => Err(format!("termination channel error: {error}")),
+            Ok(other) => Err(format!("stale reservation leaked a duplicate event: {other:?}")),
+        }
     }
 
     #[test]

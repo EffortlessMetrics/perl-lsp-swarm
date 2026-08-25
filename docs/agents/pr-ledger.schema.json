@@ -68,18 +68,47 @@
     },
     "close_proof": {
       "type": "object",
-      "description": "Required when classification is 'close-superseded'. Contains the git merge-base reachability output proving the superseding commit is in main ancestry.",
-      "required": ["command", "output", "verified_date"],
+      "description": "Required when classification is 'close-superseded'. Contains the landing_proof.v1 receipt proving the superseding commit is in main ancestry, plus a reference to separate semantic completion evidence. Landing ancestry alone never authorizes the close — see CLOSE_PROOF_POLICY.md (Three Distinct Proof Layers).",
+      "required": ["command", "receipt", "semantic_completion_evidence", "verified_date"],
       "properties": {
         "command": {
           "type": "string",
-          "description": "The exact command run: git merge-base --is-ancestor <sha> origin/main && echo ANCESTOR || echo NOT ANCESTOR",
+          "description": "The exact command run: cargo xtask landing-proof --commit <sha> --canonical-main origin/main --format json",
           "minLength": 1
         },
-        "output": {
+        "receipt": {
+          "type": "object",
+          "description": "The landing_proof.v1 receipt produced by the command, as a structured object. commit_reachable must be true and semantic_completion is always 'not_evaluated' — the receipt is evidence, not close authorization.",
+          "required": ["schema_version", "commit_reachable", "commit", "canonical_main", "semantic_completion"],
+          "properties": {
+            "schema_version": {
+              "const": "landing_proof.v1"
+            },
+            "commit_reachable": {
+              "const": true
+            },
+            "commit": {
+              "type": "string",
+              "minLength": 7
+            },
+            "canonical_main": {
+              "type": "string",
+              "minLength": 1
+            },
+            "content_survives": {
+              "type": "boolean",
+              "description": "Present only when --substance-grep was passed."
+            },
+            "semantic_completion": {
+              "const": "not_evaluated"
+            }
+          },
+          "additionalProperties": false
+        },
+        "semantic_completion_evidence": {
           "type": "string",
-          "description": "Verbatim stdout of the command. Must be 'ANCESTOR' for a valid close.",
-          "enum": ["ANCESTOR", "NOT ANCESTOR"]
+          "description": "Reference to the separate semantic completion evidence (semantic-close layer) required for the close. Landing and content-survival proof never substitute for this.",
+          "minLength": 1
         },
         "verified_date": {
           "type": "string",
@@ -131,8 +160,15 @@
       "required_action": "close with proof comment",
       "validation": "gh pr view 999 --json state | jq .state",
       "close_proof": {
-        "command": "git merge-base --is-ancestor abc1234 origin/main && echo ANCESTOR || echo NOT ANCESTOR",
-        "output": "ANCESTOR",
+        "command": "cargo xtask landing-proof --commit abc1234 --canonical-main origin/main --format json",
+        "receipt": {
+          "schema_version": "landing_proof.v1",
+          "commit_reachable": true,
+          "commit": "abc1234",
+          "canonical_main": "origin/main",
+          "semantic_completion": "not_evaluated"
+        },
+        "semantic_completion_evidence": "semantic-close packet #1100-row-evidence (see CLOSE_PROOF_POLICY.md Three Distinct Proof Layers)",
         "verified_date": "2026-06-07"
       },
       "sync_direction": "none"

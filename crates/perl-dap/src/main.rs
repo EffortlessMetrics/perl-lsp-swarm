@@ -456,7 +456,6 @@ mod tests {
         describe_editor_bind_error, describe_native_socket_error, editor_port_in_use_message,
         resolve_socket_port, suggested_alternative_ports, windows_shell_quote,
     };
-    use anyhow::Context as _;
     use clap::{CommandFactory, Parser};
     use perl_lsp_rs_core::product_identity::{
         BinaryIdentityPacketV1, BinaryRole, IdentityOutputFormat, requested_identity_output,
