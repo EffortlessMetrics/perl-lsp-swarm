@@ -75,6 +75,14 @@ pub fn extract_pod(source: &str) -> PodDoc {
     let mut doc = PodDoc::default();
     let mut current_section: Option<Section> = None;
     let mut body = String::new();
+    // Whether body holds content accumulated before any `=head` was seen
+    // (=over/=item lists land here) — such a flush must retain the content
+    // under a synthetic Synopsis rather than dropping it (#2488).
+    let mut leading_list = false;
+    // Any `=head` seen yet — distinguishes genuinely leading content from
+    // content under an unsupported heading (whose current_section is also
+    // None but which must never synthesize or clobber a Synopsis).
+    let mut saw_any_head = false;
     let mut in_pod = false;
     let mut in_over = false;
 
@@ -92,7 +100,7 @@ pub fn extract_pod(source: &str) -> PodDoc {
 
         // =cut ends POD
         if matches!(pod_command(line), Some("cut")) {
-            flush_section(&mut doc, &current_section, &body, in_over);
+            flush_section(&mut doc, &current_section, &body, leading_list || in_over);
             current_section = None;
             body.clear();
             in_pod = false;
@@ -125,8 +133,10 @@ pub fn extract_pod(source: &str) -> PodDoc {
         // New head1 section
         if matches!(pod_command(line), Some("head1")) {
             let heading = pod_command_arg(line, "=head1").trim();
-            flush_section(&mut doc, &current_section, &body, false);
+            flush_section(&mut doc, &current_section, &body, leading_list);
             body.clear();
+            saw_any_head = true;
+            leading_list = false;
             if let Some(section) = match heading {
                 "NAME" => Some(Section::Name),
                 "SYNOPSIS" => Some(Section::Synopsis),
@@ -147,8 +157,10 @@ pub fn extract_pod(source: &str) -> PodDoc {
         // New head2 section — treated as method documentation
         if matches!(pod_command(line), Some("head2")) {
             let heading = strip_pod_formatting(pod_command_arg(line, "=head2").trim());
-            flush_section(&mut doc, &current_section, &body, false);
+            flush_section(&mut doc, &current_section, &body, leading_list);
             body.clear();
+            saw_any_head = true;
+            leading_list = false;
             current_section = Some(Section::Method(heading));
             continue;
         }
@@ -160,9 +172,11 @@ pub fn extract_pod(source: &str) -> PodDoc {
             pod_command(line),
             Some("head3") | Some("head4") | Some("head5") | Some("head6")
         ) {
-            flush_section(&mut doc, &current_section, &body, false);
+            flush_section(&mut doc, &current_section, &body, leading_list);
             current_section = None;
             body.clear();
+            saw_any_head = true;
+            leading_list = false;
             continue;
         }
 
@@ -178,6 +192,9 @@ pub fn extract_pod(source: &str) -> PodDoc {
         // any =head section exists (#2488: these form an implicit "SYNOPSIS" or
         // "DESCRIPTION" block in many CPAN modules).
         if (!body.is_empty() || !line.is_empty()) && (current_section.is_some() || in_over) {
+            if current_section.is_none() && !saw_any_head {
+                leading_list = true;
+            }
             if !body.is_empty() {
                 body.push('\n');
             }
@@ -186,7 +203,7 @@ pub fn extract_pod(source: &str) -> PodDoc {
     }
 
     // Flush any remaining section (POD can end at EOF without =cut)
-    flush_section(&mut doc, &current_section, &body, in_over);
+    flush_section(&mut doc, &current_section, &body, leading_list || in_over);
 
     doc
 }
@@ -267,10 +284,16 @@ enum Section {
 /// * `doc` - The `PodDoc` to store extracted content into
 /// * `section` - The section type being flushed
 /// * `body` - Accumulated raw text for the section
-/// * `_in_over` - Whether inside an `=over`/`=back` block (unused, for future expansion)
-fn flush_section(doc: &mut PodDoc, section: &Option<Section>, body: &str, _in_over: bool) {
+/// * `in_over` - Whether inside an `=over`/`=back` block; leading list content
+///   flushed before any `=head` exists is stored under a synthetic Synopsis
+///   section rather than discarded (#2488)
+fn flush_section(doc: &mut PodDoc, section: &Option<Section>, body: &str, in_over: bool) {
     let section = match section {
         Some(s) => s,
+        // A `=over`/`=item` list before the first `=head` forms an implicit
+        // synopsis block in many CPAN modules — keep it instead of dropping
+        // the accumulated body on the floor (#2488).
+        None if in_over => &Section::Synopsis,
         None => return,
     };
 
@@ -822,4 +845,26 @@ mod tests {
 
         assert_eq!(escape_markdown_link_text(text), r"back\\slash \[label\] (target)");
     }
+}
+
+// ── #2488: leading =over lists before the first =head ──────────────────
+
+#[test]
+fn leading_over_list_before_any_head_lands_in_synopsis() {
+    // A `=over/=item` list before any `=head` is an implicit synopsis
+    // block (common in CPAN modules); it must be kept, not discarded.
+    let text = "=pod\n\n=over 4\n\n=item *\n\nFirst leading point\n\n=item *\n\nSecond leading point\n\n=back\n\n=head1 DESCRIPTION\n\nBody text.\n\n=cut\n";
+    let doc = extract_pod(text);
+    assert!(doc.synopsis.is_some(), "leading list must be retained");
+    assert!(doc.synopsis.as_ref().is_some_and(|s| s.contains("First leading point")));
+    assert!(doc.synopsis.as_ref().is_some_and(|s| s.contains("Second leading point")));
+}
+
+#[test]
+fn leading_content_without_over_is_still_dropped() {
+    // Bare prose before any `=head` (no =over context) keeps the historic
+    // behavior: no section context means nothing is stored.
+    let text = "=pod\n\nStray prose with no section context.\n\n=head1 DESCRIPTION\n\nBody text.\n\n=cut\n";
+    let doc = extract_pod(text);
+    assert!(doc.synopsis.is_none(), "synopsis should stay empty: {:?}", doc.synopsis);
 }
