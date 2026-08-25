@@ -382,7 +382,7 @@ fn add_extension_proof(
                 push_step(
                     selected,
                     "extension_checked_build",
-                    "cd vscode-extension && npm run typecheck:all && npm run compile",
+                    "cd vscode-extension && npm run build",
                     "bundle/package changes require a checked production bundle",
                 );
                 push_step(
@@ -757,10 +757,7 @@ mod tests {
     #[test]
     fn bundle_change_selects_checked_build_and_package_contracts() {
         let plan = plan_for(vec!["vscode-extension/rolldown.config.mjs"], "code", Vec::new());
-        assert!(has_command(
-            &plan,
-            "cd vscode-extension && npm run typecheck:all && npm run compile"
-        ));
+        assert!(has_command(&plan, "cd vscode-extension && npm run build"));
         assert!(has_command(&plan, "cd vscode-extension && npm run check:package-inventory"));
         assert!(defers_command(&plan, "cd vscode-extension && npm run verify:marketplace"));
     }

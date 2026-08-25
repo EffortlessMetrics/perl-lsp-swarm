@@ -5,7 +5,7 @@
 //! - `resolve_module_uri`: URI-based resolution with open docs, workspaces, @INC
 //! - `ModuleUriResolution`: enum variant construction and trait behaviour
 
-use perl_module::resolution::{ModuleUriResolution, resolve_module_path, resolve_module_uri};
+use perl_module::{ModuleUriResolution, resolve_module_path, resolve_module_uri};
 use std::path::PathBuf;
 use std::time::Duration;
 

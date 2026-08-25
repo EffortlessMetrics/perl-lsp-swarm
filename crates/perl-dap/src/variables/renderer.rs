@@ -4,6 +4,7 @@
 //! implementation for converting Perl values into DAP-compatible variable representations.
 
 use crate::value::PerlValue;
+use crate::value_format::ValueFormatPolicy;
 use serde::{Deserialize, Serialize};
 
 /// A rendered variable for the DAP protocol.
@@ -193,13 +194,70 @@ pub struct PerlVariableRenderer {
     max_array_preview: usize,
     /// Maximum hash pairs to show in preview
     max_hash_preview: usize,
+    /// Typed presentation policy for numeric leaves (#9588). Default
+    /// `Decimal` renders byte-identically to the pre-policy renderer.
+    policy: ValueFormatPolicy,
 }
 
 impl PerlVariableRenderer {
     /// Creates a new Perl variable renderer with default settings.
     #[must_use]
     pub fn new() -> Self {
-        Self { max_string_length: 100, max_array_preview: 3, max_hash_preview: 3 }
+        Self {
+            max_string_length: 100,
+            max_array_preview: 3,
+            max_hash_preview: 3,
+            policy: ValueFormatPolicy::Decimal,
+        }
+    }
+
+    /// Sets the typed presentation policy applied to every numeric leaf this
+    /// renderer produces, including previews inside containers and reference
+    /// chains (#9588).
+    #[must_use]
+    pub fn with_policy(mut self, policy: ValueFormatPolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Renders the display string for a typed value under this renderer's
+    /// presentation policy.
+    ///
+    /// This is the single render point behind DAP `ValueFormat` projection
+    /// (`value_format::ValueFormatPolicy::project_display`): the display is
+    /// computed from typed facts only, never by reparsing a previous display
+    /// string.
+    #[must_use]
+    pub fn render_display(&self, value: &PerlValue) -> String {
+        self.format_value(value)
+    }
+
+    /// Names plus typed values of an expandable value's children, using exactly
+    /// the traversal `render_children` renders from (#9588 typed-fact retention
+    /// for response-time `ValueFormat` projection).
+    #[must_use]
+    pub fn child_entries(
+        &self,
+        value: &PerlValue,
+        start: usize,
+        count: usize,
+    ) -> Vec<(String, PerlValue)> {
+        match value {
+            PerlValue::Array(elements) => elements
+                .iter()
+                .enumerate()
+                .skip(start)
+                .take(count)
+                .map(|(i, v)| (format!("[{}]", i), v.clone()))
+                .collect(),
+            PerlValue::Hash(pairs) => {
+                pairs.iter().skip(start).take(count).map(|(k, v)| (k.clone(), v.clone())).collect()
+            }
+            PerlValue::Reference(inner) => vec![("$_".to_string(), (**inner).clone())],
+            PerlValue::Object { value: inner, .. } => self.child_entries(inner, start, count),
+            PerlValue::Tied { value: Some(inner), .. } => self.child_entries(inner, start, count),
+            _ => vec![],
+        }
     }
 
     /// Sets the maximum string length before truncation.
@@ -357,7 +415,7 @@ impl PerlVariableRenderer {
             PerlValue::Undef => "undef".to_string(),
             PerlValue::Scalar(s) => self.format_string(s),
             PerlValue::Number(n) => n.to_string(),
-            PerlValue::Integer(i) => i.to_string(),
+            PerlValue::Integer(i) => self.policy.render_integer(*i),
             PerlValue::Array(elements) => format!("ARRAY({})", elements.len()),
             PerlValue::Hash(pairs) => format!("HASH({})", pairs.len()),
             PerlValue::Reference(inner) => {
@@ -390,7 +448,7 @@ impl PerlVariableRenderer {
             PerlValue::Undef => "undef".to_string(),
             PerlValue::Scalar(s) => self.format_string(s),
             PerlValue::Number(n) => n.to_string(),
-            PerlValue::Integer(i) => i.to_string(),
+            PerlValue::Integer(i) => self.policy.render_integer(*i),
             PerlValue::Array(elements) => self.format_array_preview(elements),
             PerlValue::Hash(pairs) => self.format_hash_preview(pairs),
             PerlValue::Reference(inner) => {
@@ -500,24 +558,10 @@ impl VariableRenderer for PerlVariableRenderer {
         start: usize,
         count: usize,
     ) -> Vec<RenderedVariable> {
-        match value {
-            PerlValue::Array(elements) => elements
-                .iter()
-                .enumerate()
-                .skip(start)
-                .take(count)
-                .map(|(i, v)| self.render(&format!("[{}]", i), v))
-                .collect(),
-            PerlValue::Hash(pairs) => {
-                pairs.iter().skip(start).take(count).map(|(k, v)| self.render(k, v)).collect()
-            }
-            PerlValue::Reference(inner) => {
-                vec![self.render("$_", inner)]
-            }
-            PerlValue::Object { value: inner, .. } => self.render_children(inner, start, count),
-            PerlValue::Tied { value: Some(inner), .. } => self.render_children(inner, start, count),
-            _ => vec![],
-        }
+        self.child_entries(value, start, count)
+            .into_iter()
+            .map(|(name, child)| self.render(&name, &child))
+            .collect()
     }
 }
 

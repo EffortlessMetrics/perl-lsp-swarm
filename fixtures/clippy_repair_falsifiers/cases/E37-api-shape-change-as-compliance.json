@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "case_id": "E37-api-shape-change-as-compliance",
+  "family": "structural_ownership_theater",
+  "purpose": "Changing public API/schema/config/feature shapes solely for lint/threshold compliance breaks consumers silently.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "perl-lsp-rs",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "=>  fn parse_entry",
+      "silences missing-docs"
+    ],
+    "content": "// pub fn parse_entry(...) -> Entry  =>  fn parse_entry(...) -> Entry\n// silences missing-docs/private-interactions pressure by hiding the API\n",
+    "sha256": "d0adb0490ab526e44970ad6dd6fe683ea1e11558d2cb54ce2ae54ba7a2f1437c"
+  },
+  "rejecting_authority": {
+    "status": "bound",
+    "authority_kind": "file_contract",
+    "reference": "file:.cargo-semver-checks.toml#"
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "api_shape_compliance_change"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "just semver-check-package perl-lsp-rs"
+    ],
+    "note": "Public surface verified against baseline.",
+    "content": "just semver-check-package perl-lsp-rs\n",
+    "sha256": "7bb540da8534fe7a92096c30535090c50699cdf019fce55d1b2f5a61744e5c8f"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "cargo-semver-checks wired via justfile/nightly; config pinned in .cargo-semver-checks.toml."
+}

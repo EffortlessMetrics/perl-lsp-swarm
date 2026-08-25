@@ -219,6 +219,20 @@ fn test_subst_comment_gap_before_paired_pattern_delimiter() {
     assert_clean_parse(source);
 }
 
+/// Module::Build::Platform::Unix::_detildefy uses a comment and newline gap
+/// between the paired pattern and replacement delimiters. Keep the extracted
+/// CPAN shape here so the corpus bucket remains tied to the real source rather
+/// than only to a smaller synthetic delimiter example.
+#[test]
+fn test_module_build_platform_unix_detildefy_substitution() {
+    let source = r#"$value =~ s[^~([^/]+)?(?=/|$)]   # tilde with optional username
+  [$1 ?
+   (eval{(getpwnam $1)[7]} || "~$1") :
+   ($ENV{HOME} || eval{(getpwuid $>)[7]} || glob("~"))
+  ]ex;"#;
+    assert_clean_parse(source);
+}
+
 /// Upstream Perl `t/base/lex.t` also exercises quote-like operators where a
 /// line comment separates the operator from the first delimiter.
 #[test]

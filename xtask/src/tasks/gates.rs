@@ -2092,10 +2092,10 @@ fn run_single_gate(
     }
 }
 
-struct ShellExecutionResult {
-    stdout: String,
-    exit_code: i32,
-    timed_out: bool,
+pub(crate) struct ShellExecutionResult {
+    pub(crate) stdout: String,
+    pub(crate) exit_code: i32,
+    pub(crate) timed_out: bool,
 }
 
 /// Run a gate command, retrying only when an attempt is killed by the
@@ -2187,10 +2187,29 @@ fn append_retry_trailer(
 
 const MAX_GATE_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
 
-fn run_shell_command_with_timeout(
+/// Run one shell command under the watchdog, truncating-and-reading the log.
+///
+/// `pub(crate)` so the `lsp_smoke` atomic child harness (#8063) reuses the
+/// exact per-child timeout semantics the gate runner enforces (GNU `timeout`
+/// wrapping plus the Rust watchdog backstop) instead of a second, drifting
+/// implementation.
+pub(crate) fn run_shell_command_with_timeout(
     command: &str,
     log_path: &Path,
     timeout_secs: u64,
+) -> Result<ShellExecutionResult> {
+    run_shell_command_with_timeout_in(command, log_path, timeout_secs, None)
+}
+
+/// [`run_shell_command_with_timeout`] with an optional working directory for
+/// the spawned shell (#8063): behavior children execute the prebuilt test
+/// binary from the package directory cargo would have used, so direct
+/// execution stays environment-equivalent to `cargo test`.
+pub(crate) fn run_shell_command_with_timeout_in(
+    command: &str,
+    log_path: &Path,
+    timeout_secs: u64,
+    current_dir: Option<&Path>,
 ) -> Result<ShellExecutionResult> {
     let log_file = fs::File::create(log_path)
         .with_context(|| format!("Failed to create log file: {}", log_path.display()))?;
@@ -2198,7 +2217,11 @@ fn run_shell_command_with_timeout(
         .try_clone()
         .with_context(|| format!("Failed to clone log file handle: {}", log_path.display()))?;
 
-    let mut child = shell_command_process(command, timeout_secs)
+    let mut process = shell_command_process(command, timeout_secs);
+    if let Some(dir) = current_dir {
+        process.current_dir(dir);
+    }
+    let mut child = process
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_file_err))
         .spawn()
@@ -2343,8 +2366,11 @@ fn shell_command_watchdog_timeout(timeout_secs: u64) -> Duration {
 }
 
 #[cfg(not(windows))]
+const SHELL_WATCHDOG_GRACE_SECONDS: u64 = 75;
+
+#[cfg(not(windows))]
 fn shell_command_watchdog_timeout(timeout_secs: u64) -> Duration {
-    Duration::from_secs(timeout_secs.saturating_add(75))
+    Duration::from_secs(timeout_secs.saturating_add(SHELL_WATCHDOG_GRACE_SECONDS))
 }
 
 fn run_internal_xtask_gate(
@@ -3152,7 +3178,8 @@ mod tests {
         log_reaches_test_execution, output_diff, parse_first_failure, parse_test_execution_reached,
         parse_test_metrics, plan_gates, read_gate_output, run_gate_plan, run_internal_commit_check,
         run_internal_xtask_gate, run_shell_command_with_timeout, run_single_gate,
-        selects_commit_tier_gate, staged_guard_violation, static_gate_plan, write_receipt,
+        selects_commit_tier_gate, shell_command_watchdog_timeout, staged_guard_violation,
+        static_gate_plan, write_receipt,
     };
     use crate::tasks::ci_scope::{
         ArchWidener, DirectCrate, HeavyLaneEntry, LaneDecisions, LaneEntry, PlatformOverrides,
@@ -3295,6 +3322,23 @@ mod tests {
         assert_eq!(GatePlanningRole::RustPackageScoped.to_string(), "rust_package_scoped");
         assert_eq!(GatePlanningRole::Static.to_string(), "static");
         Ok(())
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn watchdog_timeout_includes_process_cleanup_grace() {
+        assert_eq!(
+            shell_command_watchdog_timeout(720),
+            std::time::Duration::from_secs(795),
+            "the Linux watchdog's 75-second TERM/KILL grace must be included in \
+             the Rust backstop after the declared execution window"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn watchdog_timeout_has_no_unix_cleanup_grace() {
+        assert_eq!(shell_command_watchdog_timeout(720), std::time::Duration::from_secs(720));
     }
 
     #[test]

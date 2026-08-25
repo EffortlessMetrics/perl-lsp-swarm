@@ -1,4 +1,4 @@
-use perl_module::import::resolve_known_export_tag;
+use perl_module::resolve_known_export_tag;
 use std::collections::HashSet;
 
 pub(super) fn collect_import_symbols(

@@ -1,0 +1,43 @@
+{
+  "schema": "train_edge_contract.v1",
+  "schema_version": 1,
+  "contract_id": "invalid-external-stage-satisfied-internally",
+  "programme": { "name": "invalid-examples" },
+  "external_subjects": [
+    { "id": "ext_marketplace", "kind": "extension marketplace listing" }
+  ],
+  "propositions": [
+    {
+      "id": "P_public_release",
+      "claim_ceiling": "Release only.",
+      "external_subject": "ext_marketplace"
+    }
+  ],
+  "edges": [
+    {
+      "source": "P_public_release",
+      "kind": "external_checkpoint",
+      "target": "ext_marketplace",
+      "stage": "released_public_availability",
+      "provenance": "external stage must not be satisfied by internal state"
+    }
+  ],
+  "claim_profiles": [
+    {
+      "id": "invalid_profile",
+      "version": 1,
+      "required": ["P_public_release"],
+      "allowed_terminal_limitation_states": ["not_proven"],
+      "claim_ceiling": "Invalid example only."
+    }
+  ],
+  "projection": {
+    "external_stage_states": [
+      {
+        "subject": "ext_marketplace",
+        "stage_reached": "released_public_availability",
+        "satisfied_by": "internal_merged_pr"
+      }
+    ]
+  }
+}

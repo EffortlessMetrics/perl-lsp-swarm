@@ -8,29 +8,35 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Feature maturity state.
+/// Feature maturity state (#7029 earned-claim vocabulary).
 #[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
 pub enum Maturity {
-    Experimental,
+    #[serde(rename = "proven", alias = "ga", alias = "production")]
+    Proven,
+    #[serde(rename = "preview", alias = "experimental")]
     Preview,
-    Ga,
+    #[serde(rename = "planned")]
     Planned,
-    Production,
+    #[serde(rename = "unsupported")]
+    Unsupported,
+    #[serde(rename = "not_proven")]
+    NotProven,
 }
 
 impl Maturity {
-    pub const fn is_advertised(self) -> bool {
-        matches!(self, Self::Ga | Self::Production)
+    /// Advertisement is gated by the per-row flag; planned/unsupported can
+    /// never advertise even when mis-flagged (#7029).
+    pub const fn may_advertise(self) -> bool {
+        !matches!(self, Self::Planned | Self::Unsupported)
     }
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Experimental => "experimental",
+            Self::Proven => "proven",
             Self::Preview => "preview",
-            Self::Ga => "ga",
             Self::Planned => "planned",
-            Self::Production => "production",
+            Self::Unsupported => "unsupported",
+            Self::NotProven => "not_proven",
         }
     }
 }
@@ -76,7 +82,7 @@ impl Catalog {
         let mut ids = self
             .feature
             .iter()
-            .filter(|f| f.advertised && f.maturity.is_advertised())
+            .filter(|f| f.advertised && f.maturity.may_advertise())
             .map(|f| f.id.as_str())
             .collect::<Vec<_>>();
         ids.sort_unstable();
@@ -99,7 +105,7 @@ impl Catalog {
             .iter()
             .filter(|feature| {
                 feature.advertised
-                    && feature.maturity.is_advertised()
+                    && feature.maturity.may_advertise()
                     && feature.counts_in_coverage
             })
             .count()
@@ -121,7 +127,7 @@ impl Catalog {
     pub fn advertised_trackable_count(&self) -> usize {
         self.feature
             .iter()
-            .filter(|feature| feature.advertised && feature.maturity.is_advertised())
+            .filter(|feature| feature.advertised && feature.maturity.may_advertise())
             .count()
     }
 
