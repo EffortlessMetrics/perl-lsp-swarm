@@ -27,7 +27,7 @@ impl LspServer {
             let Some(files) =
                 params.as_ref().and_then(|value| value.get("files")).and_then(Value::as_array)
             else {
-                return Ok(Some(empty_workspace_edit()));
+                Ok(Some(empty_workspace_edit()))
             };
 
             let mut planned_workspace_texts: BTreeMap<String, (String, String)> = BTreeMap::new();
