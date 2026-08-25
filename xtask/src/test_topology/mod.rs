@@ -27,6 +27,7 @@ pub mod validation;
 use std::path::Path;
 
 use anyhow::Context;
+use anyhow::bail;
 
 pub use discovery::{Cohort, DiscoveredTarget, discover_from_metadata, discover_live};
 pub use model::{
@@ -100,6 +101,7 @@ pub fn run_check(root: &Path) -> anyhow::Result<String> {
     let discovered =
         discover_live(root).context("discovering live cohort subjects for the topology check")?;
     ensure_current(&committed, &discovered)?;
+    ensure_markdown_projection(root, &committed)?;
     Ok(format!(
         "test-topology check passed: {} committed row(s) match live discovery for cohort {}",
         committed.rows.len(),
@@ -119,6 +121,29 @@ fn load_committed_inventory(root: &Path) -> anyhow::Result<TestTopologyInventory
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("reading committed inventory {}", path.display()))?;
     inventory_from_json(&text).with_context(|| format!("validating {}", path.display()))
+}
+
+/// Verifies the committed Markdown projection is a canonical re-render of the
+/// committed JSON inventory, so readers never consume a stale, truncated, or
+/// hand-edited human view after `check` reports success.
+fn ensure_markdown_projection(
+    root: &Path,
+    inventory: &TestTopologyInventoryV1,
+) -> anyhow::Result<()> {
+    let path = root.join(OUTPUT_MD);
+    let committed =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let expected = render_markdown(inventory);
+    if committed != expected {
+        bail!(
+            "stale Markdown projection at {}: the committed file no longer matches the \
+             canonical re-render of the JSON inventory; run `cargo xtask test-topology \
+             inventory --cohort {}` to regenerate it",
+            OUTPUT_MD,
+            inventory.cohort
+        );
+    }
+    Ok(())
 }
 
 fn write_artifact(root: &Path, relative: &str, contents: &str) -> anyhow::Result<()> {
@@ -160,5 +185,40 @@ mod tests {
             "unexpected error: {error:#}"
         );
         Ok(())
+    }
+
+    /// The Markdown projection is verified against a canonical re-render, so
+    /// stale, truncated, or hand-edited artifacts fail the check loudly
+    /// instead of silently passing while the JSON stays current.
+    #[test]
+    fn stale_or_edited_markdown_projection_fails_the_check() -> anyhow::Result<()> {
+        let root = std::env::temp_dir()
+            .join(format!("test-topology-md-projection-{}", std::process::id()));
+        std::fs::create_dir_all(&root)?;
+        let result = (|| -> anyhow::Result<()> {
+            std::fs::create_dir_all(root.join("docs").join("policy"))?;
+            let inventory = TestTopologyInventoryV1::new(
+                "compiler-critical",
+                "cargo xtask test-topology inventory --cohort compiler-critical",
+                &["#8437".to_string()],
+                Vec::new(),
+            )?;
+            std::fs::write(root.join(OUTPUT_JSON), render_json(&inventory)?)?;
+            std::fs::write(root.join(OUTPUT_MD), render_markdown(&inventory))?;
+            ensure_markdown_projection(&root, &inventory)?;
+
+            let truncated = "AUTO-GENERATED\n\nrows: (hand-truncated)\n";
+            std::fs::write(root.join(OUTPUT_MD), truncated)?;
+            let error = ensure_markdown_projection(&root, &inventory).err().ok_or_else(|| {
+                anyhow::anyhow!("tampered Markdown projection must fail the check")
+            })?;
+            assert!(
+                format!("{error:#}").contains("stale Markdown projection"),
+                "unexpected error: {error:#}"
+            );
+            Ok(())
+        })();
+        let _ = std::fs::remove_dir_all(&root);
+        result
     }
 }

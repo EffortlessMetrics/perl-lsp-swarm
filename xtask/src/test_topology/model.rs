@@ -414,14 +414,26 @@ impl TestTopologyRowV1 {
         if self.subject_fingerprint.is_empty() {
             bail!("row {} must carry a subject fingerprint", self.target_id);
         }
+        for reference in &self.feature_subject.authority_refs {
+            if !FEATURE_AUTHORITIES.contains(&reference.as_str()) {
+                bail!(
+                    "row {} carries invented feature authority reference {}; rows may only \
+                     reference the #3790/#8121 authorities {:?}",
+                    self.target_id,
+                    reference,
+                    FEATURE_AUTHORITIES
+                );
+            }
+        }
         Ok(())
     }
 
     /// Computes the subject fingerprint over the canonical Cargo-observable
-    /// facts (identity, paths, kind, harness, doctest, feature subject, work
-    /// floor, compile obligation). Proof roles, controllers, and profiles are
-    /// judgment surfaces compared explicitly by the checker and intentionally
-    /// excluded from the fingerprint.
+    /// facts (identity, paths, kind, harness, doctest, feature subject
+    /// including its #3790/#8121 authority references, work floor, compile
+    /// obligation). Proof roles, controllers, and profiles are judgment
+    /// surfaces compared explicitly by the checker and intentionally excluded
+    /// from the fingerprint.
     pub fn compute_fingerprint(&self) -> String {
         let mut canonical = String::new();
         canonical.push_str("id=");
@@ -459,6 +471,9 @@ impl TestTopologyRowV1 {
         canonical.push('\n');
         canonical.push_str("forbidden=");
         canonical.push_str(&self.feature_subject.forbidden_under.join(","));
+        canonical.push('\n');
+        canonical.push_str("authorities=");
+        canonical.push_str(&self.feature_subject.authority_refs.join(","));
         canonical.push('\n');
         canonical.push_str("work_floor=");
         canonical.push_str(&self.minimum_nonzero_work.to_string());

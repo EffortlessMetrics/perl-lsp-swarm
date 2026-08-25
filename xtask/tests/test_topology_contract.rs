@@ -743,6 +743,86 @@ fn unknown_variant_fixture(field: &str, value: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Falsifier 9b: invented authority references survive deserialization.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_topology_invented_authority_reference_rejected_after_deserialization() -> anyhow::Result<()>
+{
+    // A committed row whose authority reference was replaced by an invented
+    // nonempty value must fail inventory validation even though serde skips
+    // the checked constructor: the checker re-validates every deserialized
+    // row against the #3790/#8121 authority set.
+    let tampered = r##"{
+        "schema_id": "test_topology_inventory.v1",
+        "schema_version": 1,
+        "cohort": "compiler-critical",
+        "generated_by": "fixture",
+        "regenerate_command": "fixture",
+        "feature_authorities": ["#3790", "#8121"],
+        "controllers": ["#8437"],
+        "rows": [{
+            "target_id": "perl-workspace/memory_profile/integration-test",
+            "package_id": "perl-workspace",
+            "cargo_target_name": "memory_profile",
+            "path": "crates/perl-workspace/tests/memory_profile.rs",
+            "target_kind": "integration_test",
+            "harness": true,
+            "feature_subject": {"required": ["workspace_memory_profile"], "default_profile_state": "feature_gated", "forbidden_under": [], "authority_refs": ["#9999-invented"]},
+            "proof_role": "infrastructure",
+            "controller_refs": ["#8437"],
+            "candidate_profiles": ["pr_focused"],
+            "minimum_nonzero_work": 1,
+            "canonical_source_identity": {"manifest_path": "c", "source_path": "s"},
+            "compile_obligation": "explicit_feature_build_required",
+            "execution_claim": {},
+            "review_condition": "r",
+            "retirement_condition": "r",
+            "subject_fingerprint": "x"
+        }]
+    }"##;
+    let error = expect_failure(
+        inventory_from_json(tampered).map(|_| ()),
+        "invented per-row authority references must be rejected after deserialization",
+    )?;
+    assert!(format!("{error:#}").contains("#9999-invented"), "unexpected error: {error:#}");
+    Ok(())
+}
+
+#[test]
+fn test_topology_authority_references_move_the_subject_fingerprint() -> anyhow::Result<()> {
+    let base = r##"{
+        "target_id": "pkg/t/library",
+        "package_id": "pkg",
+        "cargo_target_name": "t",
+        "path": "crates/pkg/src/lib.rs",
+        "target_kind": "library",
+        "harness": true,
+        "doctest": true,
+        "feature_subject": {"required": [], "default_profile_state": "included_by_default", "forbidden_under": [], "authority_refs": ["PLACEHOLDER"]},
+        "proof_role": "infrastructure",
+        "controller_refs": ["#8437"],
+        "candidate_profiles": ["pr_focused"],
+        "minimum_nonzero_work": 1,
+        "canonical_source_identity": {"manifest_path": "c", "source_path": "s"},
+        "compile_obligation": "included_in_check_all_targets",
+        "execution_claim": {},
+        "review_condition": "r",
+        "retirement_condition": "r",
+        "subject_fingerprint": "x"
+    }"##;
+    let mut row_a: TestTopologyRowV1 = serde_json::from_str(&base.replace("PLACEHOLDER", "#3790"))?;
+    let mut row_b: TestTopologyRowV1 = serde_json::from_str(&base.replace("PLACEHOLDER", "#8121"))?;
+    assert_ne!(
+        row_a.compute_fingerprint(),
+        row_b.compute_fingerprint(),
+        "authority references are semantic subject facts; changing them must move the \
+         fingerprint so corrupted boundaries cannot hide behind a stable identity"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Happy paths.
 // ---------------------------------------------------------------------------
 

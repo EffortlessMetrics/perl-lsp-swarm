@@ -9,17 +9,17 @@ Existence of a target proves nothing about passing; compile obligations and exec
 
 | Metric | Count |
 |---|---|
-| Governed subjects | 815 |
+| Governed subjects | 816 |
 | Package `perl-core-harness` | 13 |
 | Package `perl-core-harness-types` | 1 |
 | Package `perl-core-test-runner` | 2 |
 | Package `perl-lsp-rs` | 277 |
 | Package `perl-lsp-rs-core` | 90 |
 | Package `perl-parser-core` | 338 |
-| Package `perl-semantic-analyzer` | 49 |
+| Package `perl-semantic-analyzer` | 50 |
 | Package `perl-workspace` | 43 |
 | Package `xtask` | 2 |
-| Proof role `compiler_semantics` | 502 |
+| Proof role `compiler_semantics` | 503 |
 | Proof role `currentness` | 5 |
 | Proof role `infrastructure` | 18 |
 | Proof role `provider_read` | 269 |
@@ -759,6 +759,7 @@ Existence of a target proves nothing about passing; compile obligations and exec
 | `perl-semantic-analyzer/chomp_chop_implicit_topic_tests/integration-test` | integration-test | true | - | - | IncludedByDefault | compiler_semantics | #8437 #12078 | pr_focused | IncludedInCheckAllTargets | crates/perl-semantic-analyzer/tests/chomp_chop_implicit_topic_tests.rs |
 | `perl-semantic-analyzer/class_method_scope_tests/integration-test` | integration-test | true | - | - | IncludedByDefault | compiler_semantics | #8437 #12078 | pr_focused | IncludedInCheckAllTargets | crates/perl-semantic-analyzer/tests/class_method_scope_tests.rs |
 | `perl-semantic-analyzer/comprehensive_unit_tests/integration-test` | integration-test | true | - | - | IncludedByDefault | compiler_semantics | #8437 #12078 | pr_focused | IncludedInCheckAllTargets | crates/perl-semantic-analyzer/tests/comprehensive_unit_tests.rs |
+| `perl-semantic-analyzer/dancer2_hook_facts/integration-test` | integration-test | true | - | - | IncludedByDefault | compiler_semantics | #8437 #12078 | pr_focused | IncludedInCheckAllTargets | crates/perl-semantic-analyzer/tests/dancer2_hook_facts.rs |
 | `perl-semantic-analyzer/dancer2_registry_activation/integration-test` | integration-test | true | - | - | IncludedByDefault | compiler_semantics | #8437 #12078 | pr_focused | IncludedInCheckAllTargets | crates/perl-semantic-analyzer/tests/dancer2_registry_activation.rs |
 | `perl-semantic-analyzer/dancer2_route_facts/integration-test` | integration-test | true | - | - | IncludedByDefault | compiler_semantics | #8437 #12078 | pr_focused | IncludedInCheckAllTargets | crates/perl-semantic-analyzer/tests/dancer2_route_facts.rs |
 | `perl-semantic-analyzer/die_warn_exception_context_tests/integration-test` | integration-test | true | - | - | IncludedByDefault | compiler_semantics | #8437 #12078 | pr_focused | IncludedInCheckAllTargets | crates/perl-semantic-analyzer/tests/die_warn_exception_context_tests.rs |
