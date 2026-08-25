@@ -337,12 +337,13 @@ def validate_rust_small_fmt_contract(workflow_text: str) -> None:
 
     for job_id in RUST_SMALL_LANE_JOBS:
         body = jobs[job_id]
-        active = "\n".join(active_code_lines(body))
-        if FMT_COMMAND not in active:
+        active_lines = active_code_lines(body)
+        if not any(line.strip().strip("'\"") == FMT_COMMAND for line in active_lines):
             raise AssertionError(
                 f"{job_id} must run workspace-wide {FMT_COMMAND!r}; "
                 "commenting it out or deleting it is a silent revert of #12320"
             )
+        active = "\n".join(active_lines)
         if "git diff --name-only" in active:
             raise AssertionError(
                 f"{job_id} reintroduced changed-file narrowing around rustfmt"
@@ -362,8 +363,11 @@ def validate_rust_small_fmt_contract(workflow_text: str) -> None:
     result_job = jobs.get(RUST_SMALL_RESULT_JOB)
     if not isinstance(result_job, str):
         raise AssertionError("Perl LSP Rust Small Result job is missing")
-    result_active = "\n".join(active_code_lines(result_job))
-    if "python3 -m unittest" not in result_active:
+    result_active_lines = active_code_lines(result_job)
+    result_active = "\n".join(result_active_lines)
+    if not any(
+        line.strip().startswith("python3 -m unittest") for line in result_active_lines
+    ):
         raise AssertionError(
             "Perl LSP Rust Small Result must invoke the rustfmt prevention tests"
         )
@@ -404,6 +408,18 @@ class RustSmallRequiredFmtTests(unittest.TestCase):
     def test_checked_in_rust_small_fmt_contract_holds(self) -> None:
         validate_rust_small_fmt_contract(self.workflow_text)
 
+    def test_echo_decoy_fmt_command_fails_closed(self) -> None:
+        broken = self.workflow_text.replace(
+            FMT_COMMAND, f'echo "{FMT_COMMAND}"', 1
+        )
+        with self.assertRaisesRegex(AssertionError, "silent revert of #12320"):
+            validate_rust_small_fmt_contract(broken)
+
+    def test_fmt_command_with_or_true_fails_closed(self) -> None:
+        broken = self.workflow_text.replace(FMT_COMMAND, f"{FMT_COMMAND} || true", 1)
+        with self.assertRaisesRegex(AssertionError, "silent revert of #12320"):
+            validate_rust_small_fmt_contract(broken)
+
     def test_commenting_out_one_lane_fmt_fails_closed(self) -> None:
         broken = self.workflow_text.replace(FMT_COMMAND, f"# {FMT_COMMAND}", 1)
         with self.assertRaisesRegex(AssertionError, "silent revert of #12320"):
@@ -420,7 +436,16 @@ class RustSmallRequiredFmtTests(unittest.TestCase):
             "cargo fmt --all -- --check --files $(git diff --name-only origin/main)",
             1,
         )
-        with self.assertRaisesRegex(AssertionError, "changed-file narrowing|--files"):
+        with self.assertRaisesRegex(AssertionError, "changed-file narrowing|--files|silent revert"):
+            validate_rust_small_fmt_contract(broken)
+
+    def test_echo_decoy_unittest_invocation_fails_closed(self) -> None:
+        broken = self.workflow_text.replace(
+            "python3 -m unittest", 'echo "python3 -m unittest"', 1
+        )
+        with self.assertRaisesRegex(
+            AssertionError, "must invoke the rustfmt prevention tests"
+        ):
             validate_rust_small_fmt_contract(broken)
 
     def test_removing_result_job_test_invocation_fails_closed(self) -> None:
