@@ -991,16 +991,22 @@ pub fn run_owned_process(
     plan: &VimHostRunPlan,
     layout: &HermeticVimLayout,
 ) -> Result<ProcessObservation> {
-    // The needle binds the exact candidate: full executable path on platforms
-    // whose probe reports full command lines, file name where only the image
-    // name is observable.
-    let needle = plan
-        .paths
-        .candidate_executable
-        .file_name()
-        .and_then(OsStr::to_str)
-        .unwrap_or("perllsp")
-        .to_string();
+    // The needle binds the exact candidate. On platforms whose probe reports
+    // full command lines (`ps -eo pid=,args=`) the Vim-normalized absolute
+    // executable path is used, so an unrelated `perllsp` — a decoy on PATH or
+    // a concurrent host run from another checkout — can never be attributed
+    // to this run. On Windows `tasklist` exposes only the image name, so the
+    // file name is the narrowest observable needle there.
+    let needle = if cfg!(windows) {
+        plan.paths
+            .candidate_executable
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or("perllsp")
+            .to_string()
+    } else {
+        vim_path(&plan.paths.candidate_executable).to_string_lossy().into_owned()
+    };
     let probe_before = probe_process_table();
     let before_lines = match &probe_before {
         Some(Ok(text)) => {

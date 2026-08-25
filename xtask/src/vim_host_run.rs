@@ -219,29 +219,6 @@ pub fn materialize_harness_fixture(root: &Path) -> Result<PathBuf> {
 // Identity probes
 // ---------------------------------------------------------------------------
 
-fn first_output_line(command: &mut Command, label: &str) -> Result<String> {
-    let output = command
-        .stdin(Stdio::null())
-        .output()
-        .with_context(|| format!("running {label} identity probe"))?;
-    ensure!(
-        output.status.success(),
-        "{label} identity probe failed with status {}: {}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-            .lines()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or("")
-            .chars()
-            .take(300)
-            .collect::<String>()
-    );
-    let text = String::from_utf8_lossy(&output.stdout);
-    let line = text.lines().next().unwrap_or_default().trim().to_string();
-    ensure!(!line.is_empty(), "{label} identity probe produced no version line");
-    Ok(line)
-}
-
 fn full_output(command: &mut Command, label: &str) -> Result<String> {
     let output =
         command.stdin(Stdio::null()).output().with_context(|| format!("running {label} probe"))?;
@@ -285,27 +262,44 @@ pub fn verify_vim_features(version_output: &str) -> Result<()> {
     Ok(())
 }
 
-/// Extract a standalone 40-hex commit-like token from a version line, if it
-/// carries one, to cross-check the candidate's self-reported build revision
-/// against the repository commit (same law as the Emacs runner).
-pub fn extract_commit_like_token(line: &str) -> Option<String> {
-    let bytes = line.as_bytes();
-    let mut start = 0;
-    while start < bytes.len() {
-        if bytes[start].is_ascii_hexdigit() {
-            let mut end = start;
-            while end < bytes.len() && bytes[end].is_ascii_hexdigit() {
-                end += 1;
-            }
-            if end - start == 40 {
-                return Some(line[start..end].to_ascii_lowercase());
-            }
-            start = end;
-        } else {
-            start += 1;
+/// Bind the candidate executable's self-reported build revision to the
+/// repository commit. `perllsp --version` prints its embedded identity on a
+/// later line (`Git commit: <short sha>` for a git-checkout build, `Git tag:`
+/// or `Git revision:` for other build kinds), so the whole `--version` output
+/// is probed and the `Git commit:` token is prefix-matched against the full
+/// repository commit. The `exact_source_local` stage requires a
+/// commit-identified candidate: a tag- or revision-identified binary, or one
+/// whose embedded commit disagrees with the repository, is refused before
+/// launch — a stale binary in the target directory can never silently stand
+/// in for the current source.
+pub fn bind_candidate_build_revision(version_output: &str, commit: &str) -> Result<()> {
+    let commit_line = version_output
+        .lines()
+        .find(|line| line.starts_with("Git commit:"))
+        .map(|line| line["Git commit:".len()..].trim());
+    let Some(token) = commit_line.and_then(|value| value.split_whitespace().next()) else {
+        for label in ["Git tag:", "Git revision:"] {
+            ensure!(
+                !version_output.lines().any(|line| line.starts_with(label)),
+                "candidate identifies its build with `{label}` instead of a commit; the \
+                 exact_source_local stage requires a commit-identified candidate build"
+            );
         }
-    }
-    None
+        bail!(
+            "candidate --version output carries no Git commit identity; the exact_source_local \
+             stage requires a candidate built inside the checked-out source"
+        );
+    };
+    ensure!(
+        token.len() >= 7 && token.len() <= 40 && token.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "candidate build revision {token} is not a hex commit identity"
+    );
+    ensure!(
+        commit.starts_with(&token.to_ascii_lowercase()),
+        "candidate reports build revision {token} but the repository is at {commit}; a stale \
+         candidate executable cannot stand in for the current source"
+    );
+    Ok(())
 }
 
 fn current_platform() -> Result<PlatformIdentity> {
@@ -420,8 +414,12 @@ pub fn host_run(repo_root: &Path, run: &VimHostRunInputs) -> Result<HostRunOutco
 
     // Identity probes.
     let commit = candidate_commit_identity(repo_root)?;
+    let candidate_version_output =
+        full_output(Command::new(&run.candidate_executable).arg("--version"), "candidate")?;
     let candidate_version =
-        first_output_line(Command::new(&run.candidate_executable).arg("--version"), "candidate")?;
+        candidate_version_output.lines().next().unwrap_or_default().trim().to_string();
+    ensure!(!candidate_version.is_empty(), "candidate identity probe produced no version line");
+    bind_candidate_build_revision(&candidate_version_output, &commit)?;
     let identity_packet = full_output(
         Command::new(&run.candidate_executable).arg("--identity-json"),
         "candidate identity packet",
@@ -432,12 +430,6 @@ pub fn host_run(repo_root: &Path, run: &VimHostRunInputs) -> Result<HostRunOutco
     let vim_version = vim_version_output.lines().next().unwrap_or_default().trim().to_string();
     ensure!(!vim_version.is_empty(), "Vim identity probe produced no version line");
     verify_vim_features(&vim_version_output)?;
-    if let Some(reported) = extract_commit_like_token(&candidate_version) {
-        ensure!(
-            reported == commit,
-            "candidate reports build revision {reported} but the repository is at {commit}"
-        );
-    }
 
     fs::create_dir_all(&run.out_root)
         .with_context(|| format!("creating output root {}", run.out_root.display()))?;
@@ -662,6 +654,10 @@ pub fn evaluate_observation(
     let attach_identity_observed = wire.saw_initialize && wire.saw_initialized;
     let driver_failed =
         observation.events.iter().any(|event| event.kind == DriverEventKind::DriverFailed);
+    // An observed survivor in the after-probe is deterministic leak evidence:
+    // even an orderly exit-0 run that leaked the candidate is a failure, not
+    // a not-proven.
+    let leaked = observation.cleanup == CleanupResult::Fail;
     let result = if observation.passed_process_boundary()
         && registration_digest_match
         && attach_identity_observed
@@ -670,6 +666,7 @@ pub fn evaluate_observation(
         ObservationResult::Pass
     } else if driver_failed
         || observation.timed_out
+        || leaked
         || observation.status_code.is_some_and(|code| code != 0)
     {
         ObservationResult::Fail
@@ -678,7 +675,7 @@ pub fn evaluate_observation(
     };
     let failure_class = if driver_failed {
         Some(FailureClass::HostClient)
-    } else if observation.cleanup == CleanupResult::Fail {
+    } else if leaked {
         Some(FailureClass::Cleanup)
     } else if observation.timed_out {
         Some(FailureClass::Instrument)

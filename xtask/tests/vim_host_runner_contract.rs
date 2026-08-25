@@ -34,8 +34,9 @@ use xtask::editor_client_compat::{
     canonical_expectation_set_digest, fixture_digest,
 };
 use xtask::vim_host_run::{
-    evaluate_observation, load_activation_root_manifest, load_configuration_manifest,
-    materialize_harness_fixture, validate_identity_packet, verify_vim_features,
+    bind_candidate_build_revision, evaluate_observation, load_activation_root_manifest,
+    load_configuration_manifest, materialize_harness_fixture, validate_identity_packet,
+    verify_vim_features,
 };
 
 fn repo_root() -> PathBuf {
@@ -598,6 +599,88 @@ fn identity_packet_must_be_the_canonical_server_packet() -> Result<()> {
         "a non-server role must be refused"
     );
     ensure!(validate_identity_packet("not json").is_err(), "malformed packet must be refused");
+    Ok(())
+}
+
+#[test]
+fn candidate_build_revision_binds_the_executable_to_the_repository() -> Result<()> {
+    let commit = "4a7559123d6a251ed99737adab103a8dbbe4e419";
+    // The real output shape: the embedded identity rides a later line as a
+    // short commit sha, and only the first line is the version string.
+    ensure!(
+        bind_candidate_build_revision("perllsp 0.17.0\nGit commit: 4a7559123\n", commit).is_ok(),
+        "a short embedded commit that prefixes the repository commit binds"
+    );
+    ensure!(
+        bind_candidate_build_revision(
+            "perllsp 0.17.0\nGit commit: 4a7559123d6a251ed99737adab103a8dbbe4e419\n",
+            commit
+        )
+        .is_ok(),
+        "a full embedded commit that equals the repository commit binds"
+    );
+    ensure!(
+        bind_candidate_build_revision("perllsp 0.17.0\nGit commit: deadbee\n", commit).is_err(),
+        "a stale executable whose embedded commit disagrees must be refused"
+    );
+    ensure!(
+        bind_candidate_build_revision("perllsp 0.17.0\nGit tag: v0.18.0\n", commit).is_err(),
+        "a tag-identified build cannot serve the exact_source_local stage"
+    );
+    ensure!(
+        bind_candidate_build_revision("perllsp 0.17.0\nGit revision: tarball\n", commit).is_err(),
+        "a revision-identified build cannot serve the exact_source_local stage"
+    );
+    ensure!(
+        bind_candidate_build_revision("perllsp 0.17.0\n", commit).is_err(),
+        "a version output with no commit identity must be refused"
+    );
+    ensure!(
+        bind_candidate_build_revision("perllsp 0.17.0\nGit commit: xyz\n", commit).is_err(),
+        "a non-hex revision token must be refused"
+    );
+    Ok(())
+}
+
+#[test]
+fn observed_cleanup_leak_with_orderly_exit_is_a_failure() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let plan = scratch_plan(dir.path(), 60_000)?;
+    let digest = plan.identity.candidate_artifact_sha256.clone();
+    let events = complete_events_with_digest(&digest);
+    // Exit 0, complete journey, wire attach identity — but the deterministic
+    // after-probe observed a surviving candidate process: a leak is a
+    // failure, never a not-proven.
+    let observation = observation_with(Some(0), false, CleanupResult::Fail, events);
+    let wire = WireEvidence {
+        saw_initialize: true,
+        saw_initialized: true,
+        client_capabilities: Some(serde_json::json!({})),
+        ..WireEvidence::default()
+    };
+    let judgment = evaluate_observation(&plan, &observation, &wire)?;
+    ensure!(judgment.result == ObservationResult::Fail, "an observed leak must fail the run");
+    ensure!(
+        judgment.failure_class == Some(xtask::editor_client_compat::FailureClass::Cleanup),
+        "the leak must carry the cleanup failure class"
+    );
+    Ok(())
+}
+
+#[test]
+fn exact_path_needle_does_not_attribute_foreign_perllsp_processes() -> Result<()> {
+    let before = parse_process_snapshot("10 /unrelated/checkout/perllsp --stdio\n20 vim -es")?;
+    let after = parse_process_snapshot(
+        "10 /unrelated/checkout/perllsp --stdio\n31 /exact/run/perllsp --stdio",
+    )?;
+    ensure!(
+        surviving_processes(&before, &after, "/exact/run/perllsp").len() == 1,
+        "the run's own candidate is still detected"
+    );
+    ensure!(
+        surviving_processes(&before, &after, "/other/checkout/perllsp").is_empty(),
+        "a foreign perllsp from another checkout is never attributed to this run"
+    );
     Ok(())
 }
 
