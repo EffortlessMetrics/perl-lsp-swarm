@@ -1558,16 +1558,23 @@ mod tests {
     // Falsifier 6: source-locked debt can be typed as general semantic support.
     #[test]
     fn falsifier_06_source_locked_debt_cannot_be_typed_as_general_support() -> Result<()> {
-        let mut row = baseline_row();
-        row.disposition = RowDisposition::unsupported("tracked debt, not supported")?;
-        row.ceiling = ClaimCeiling::BoundedPublicClaim;
-        let mut profile = shape_fixtures::compiler_local_lexical_v1()?;
-        profile.rows[0] = row;
-        assert_invalid(
-            &profile,
-            "cannot claim more than observed evidence",
-            "an unsupported row must not claim bounded public support",
-        );
+        for disposition in [
+            RowDisposition::unsupported("tracked debt, not supported")?,
+            RowDisposition::not_applicable("not applicable to this subject")?,
+        ] {
+            for ceiling in [ClaimCeiling::AcceptedCompatibility, ClaimCeiling::BoundedPublicClaim] {
+                let mut row = baseline_row();
+                row.disposition = disposition.clone();
+                row.ceiling = ceiling;
+                let mut profile = shape_fixtures::compiler_local_lexical_v1()?;
+                profile.rows[0] = row;
+                assert_invalid(
+                    &profile,
+                    "cannot claim more than observed evidence",
+                    "a non-applicable row must not claim an elevated ceiling",
+                );
+            }
+        }
 
         let mut strengthened = shape_fixtures::compiler_local_lexical_v1()?;
         strengthened.rows[0].ceiling = ClaimCeiling::BoundedPublicClaim;
@@ -1751,7 +1758,9 @@ mod tests {
         let production = production.to_lowercase();
         let tokens: BTreeSet<&str> =
             production.split(|character: char| !character.is_ascii_alphanumeric()).collect();
-        for forbidden in ["score", "percent", "weight", "readiness", "f32", "f64", "ratio"] {
+        for forbidden in
+            ["score", "percent", "percentage", "weight", "readiness", "f32", "f64", "ratio"]
+        {
             assert!(
                 !tokens.contains(forbidden),
                 "the production model must not introduce an aggregate figure ({forbidden})"
