@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 152647)
-Total output lines: 14636
-
 //! Workspace-wide symbol index for fast cross-file lookups in Perl LSP.
 //!
 //! This module provides efficient indexing of symbols across an entire Perl workspace,
@@ -5845,7 +5842,3312 @@ impl IndexVisitor {
                 }
             }
 
-            NodeKind::No { m…32647 tokens truncated…_expected_generation()
+            NodeKind::No { module, .. } => {
+                let module_name = normalize_dependency_module_name(module);
+                file_index.dependencies.insert(module_name);
+            }
+
+            NodeKind::Class { name, .. } => {
+                self.current_package = Some(name.clone());
+            }
+
+            NodeKind::Method { body, signature, .. } => {
+                // Visit params
+                if let Some(sig) = signature {
+                    if let NodeKind::Signature { parameters } = &sig.kind {
+                        for param in parameters {
+                            self.visit_node(param, file_index);
+                        }
+                    }
+                }
+
+                // Visit body
+                self.visit_node(body, file_index);
+            }
+
+            NodeKind::String { value, interpolated } => {
+                if *interpolated {
+                    let range = self.node_to_range(node);
+                    self.record_interpolated_variable_references(value, range, file_index);
+                }
+            }
+
+            NodeKind::Heredoc { content, interpolated, .. } => {
+                if *interpolated {
+                    let range = self.node_to_range(node);
+                    self.record_interpolated_variable_references(content, range, file_index);
+                }
+            }
+
+            // Handle special assignments (++ and --)
+            NodeKind::Unary { op, operand } if op == "++" || op == "--" => {
+                // Pre/post increment/decrement are both read and write
+                if let NodeKind::Variable { sigil, name } = &operand.kind {
+                    let var_name = format!("{}{}", sigil, name);
+
+                    // It's both a read and a write
+                    file_index.references.entry(var_name.clone()).or_default().push(
+                        SymbolReference {
+                            uri: self.uri.clone(),
+                            range: self.node_to_range(operand),
+                            kind: ReferenceKind::Read,
+                            package: None,
+                        },
+                    );
+
+                    file_index.references.entry(var_name).or_default().push(SymbolReference {
+                        uri: self.uri.clone(),
+                        range: self.node_to_range(operand),
+                        kind: ReferenceKind::Write,
+                        package: None,
+                    });
+                }
+            }
+
+            _ => {
+                // For other node types, just visit children
+                self.visit_children(node, file_index);
+            }
+        }
+    }
+
+    fn visit_children(&mut self, node: &Node, file_index: &mut FileIndex) {
+        // Generic visitor for unhandled node types - visit all nested nodes
+        match &node.kind {
+            NodeKind::Program { statements } => {
+                for stmt in statements {
+                    self.visit_node(stmt, file_index);
+                }
+            }
+            NodeKind::ExpressionStatement { expression } => {
+                self.visit_node(expression, file_index);
+            }
+            // Expression nodes
+            NodeKind::Unary { operand, .. } => {
+                self.visit_node(operand, file_index);
+            }
+            NodeKind::Binary { left, right, .. } => {
+                self.visit_node(left, file_index);
+                self.visit_node(right, file_index);
+            }
+            NodeKind::Ternary { condition, then_expr, else_expr } => {
+                self.visit_node(condition, file_index);
+                self.visit_node(then_expr, file_index);
+                self.visit_node(else_expr, file_index);
+            }
+            NodeKind::ArrayLiteral { elements } => {
+                for elem in elements {
+                    self.visit_node(elem, file_index);
+                }
+            }
+            NodeKind::HashLiteral { pairs } => {
+                for (key, value) in pairs {
+                    self.visit_node(key, file_index);
+                    self.visit_node(value, file_index);
+                }
+            }
+            NodeKind::Return { value } => {
+                if let Some(val) = value {
+                    self.visit_node(val, file_index);
+                }
+            }
+            NodeKind::Eval { block } | NodeKind::Do { block } | NodeKind::Defer { block } => {
+                self.visit_node(block, file_index);
+            }
+            NodeKind::Try { body, catch_blocks, finally_block } => {
+                self.visit_node(body, file_index);
+                for (_, block) in catch_blocks {
+                    self.visit_node(block, file_index);
+                }
+                if let Some(finally) = finally_block {
+                    self.visit_node(finally, file_index);
+                }
+            }
+            NodeKind::Given { expr, body } => {
+                self.visit_node(expr, file_index);
+                self.visit_node(body, file_index);
+            }
+            NodeKind::When { condition, body } => {
+                self.visit_node(condition, file_index);
+                self.visit_node(body, file_index);
+            }
+            NodeKind::Default { body } => {
+                self.visit_node(body, file_index);
+            }
+            NodeKind::StatementModifier { statement, condition, .. } => {
+                self.visit_node(statement, file_index);
+                self.visit_node(condition, file_index);
+            }
+            NodeKind::VariableWithAttributes { variable, .. } => {
+                self.visit_node(variable, file_index);
+            }
+            NodeKind::LabeledStatement { statement, .. } => {
+                self.visit_node(statement, file_index);
+            }
+            NodeKind::NestedVariableList { items } => {
+                // Recurse into items so nested-declared variables are indexed.
+                for item in items {
+                    self.visit_node(item, file_index);
+                }
+            }
+            _ => {
+                // For other node types, no children to visit
+            }
+        }
+    }
+
+    fn node_to_range(&mut self, node: &Node) -> Range {
+        // LineIndex.range returns line numbers and UTF-16 code unit columns
+        let ((start_line, start_col), (end_line, end_col)) =
+            self.document.line_index.range(node.location.start, node.location.end);
+        // Use byte offsets from node.location directly
+        Range {
+            start: Position { byte: node.location.start, line: start_line, column: start_col },
+            end: Position { byte: node.location.end, line: end_line, column: end_col },
+        }
+    }
+
+    /// **Production reference walk (perl-lsp-swarm#1711-B cutover).**
+    /// Unified reference walk: produces BOTH the legacy [`FileIndex`]
+    /// reference/dependency projection AND the canonical `Vec<SymbolRef>`
+    /// projection (the input `symbol_refs_to_semantic_facts` expects) from
+    /// ONE recursive descent -- replacing what production used to run as
+    /// TWO separate full-AST walks (`IndexVisitor::visit` +
+    /// `extract_symbol_refs`). Declaration
+    /// extraction is UNCHANGED and NOT unified here (`project_symbol_declarations`
+    /// still calls `extract_symbol_decls(ast, Some("main"))` exactly as
+    /// `visit()` does today) -- see the #1711 feasibility comment, item 3,
+    /// a separable follow-up.
+    ///
+    /// Uses [`Node::for_each_child`] as its recursion fallback (the
+    /// complete, compiler-exhaustive dispatcher) instead of
+    /// `IndexVisitor::visit_children`'s hand-maintained allowlist. This
+    /// closes several PRE-EXISTING legacy coverage gaps, empirically
+    /// verified against current `origin/main` and characterized in
+    /// `docs/reference/1711-B-coverage-delta.md`: block-form
+    /// `package Foo { ... }` / `class Foo { ... }` bodies are never walked
+    /// for references by `IndexVisitor::visit_node` today (only their
+    /// declarations are seen, via the separate `extract_symbol_decls` walk);
+    /// `Typeglob`, `Tie`, `Goto` coderef targets, regex-bind expressions
+    /// (`Match`/`Substitution`/`Transliteration`), `IndirectCall` arguments,
+    /// `Subroutine` signature default-value expressions, and non-`Variable`
+    /// assignment/increment targets are also unreached by legacy today (that
+    /// coverage gain is intentional and shipped by the 1711-B cutover -- see
+    /// `assert_unified_legacy_is_superset` in `extraction_bundle_shadow_compare`
+    /// below). Called by production via `FileExtractionBundle::build_unified`.
+    fn visit_unified(
+        &mut self,
+        node: &Node,
+        file_index: &mut FileIndex,
+        symbol_refs: &mut Vec<perl_symbol::surface::r#ref::SymbolRef>,
+    ) {
+        self.project_symbol_declarations(node, file_index);
+        self.walk_unified(node, file_index, symbol_refs);
+    }
+
+    /// Emit this node's own canonical [`SymbolRef`] (if any) without
+    /// recursing into its children -- the caller controls recursion order
+    /// (needed so `Assignment`/increment targets that legacy already
+    /// special-cases don't ALSO get a second, generic recursion pass that
+    /// would double-count the legacy side).
+    fn emit_canonical_ref(
+        node: &Node,
+        symbol_refs: &mut Vec<perl_symbol::surface::r#ref::SymbolRef>,
+    ) {
+        if let Some(symbol_ref) = canonical_ref_for_node(node) {
+            symbol_refs.push(symbol_ref);
+        }
+    }
+
+    fn walk_unified(
+        &mut self,
+        node: &Node,
+        file_index: &mut FileIndex,
+        symbol_refs: &mut Vec<perl_symbol::surface::r#ref::SymbolRef>,
+    ) {
+        match &node.kind {
+            NodeKind::Package { name, block, .. } => {
+                self.current_package = Some(name.clone());
+                // NEW COVERAGE: `IndexVisitor::visit_node` never recurses
+                // into `block` for references today (only
+                // `project_symbol_declarations`/`extract_symbol_decls` sees
+                // it, for declarations). Recursing here closes that gap --
+                // see `docs/reference/1711-B-coverage-delta.md` case 1.
+                if let Some(b) = block {
+                    self.walk_unified(b, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::Class { name, body, .. } => {
+                self.current_package = Some(name.clone());
+                // NEW COVERAGE: same gap as `Package` above, for Perl
+                // 5.38+ `class Foo { ... }` bodies -- see coverage-delta
+                // case 2.
+                self.walk_unified(body, file_index, symbol_refs);
+            }
+
+            NodeKind::Subroutine { body, prototype, signature, .. } => {
+                // NEW COVERAGE: legacy's `visit_node` only visits `body`,
+                // never `prototype`/`signature` -- a signature's
+                // default-value expressions (`sub greet($name =
+                // default_name())`) are invisible today. `Method` (below)
+                // already visits `signature` correctly; `Subroutine` did
+                // not -- see coverage-delta case 8.
+                if let Some(proto) = prototype {
+                    self.walk_unified(proto, file_index, symbol_refs);
+                }
+                if let Some(sig) = signature {
+                    self.walk_unified(sig, file_index, symbol_refs);
+                }
+                self.walk_unified(body, file_index, symbol_refs);
+            }
+
+            NodeKind::Method { body, signature, .. } => {
+                if let Some(sig) = signature {
+                    if let NodeKind::Signature { parameters } = &sig.kind {
+                        for param in parameters {
+                            self.walk_unified(param, file_index, symbol_refs);
+                        }
+                    }
+                }
+                self.walk_unified(body, file_index, symbol_refs);
+            }
+
+            // Signature parameter nodes bind a DECLARATION-site variable --
+            // must NOT be walked as a reference. Mirrors
+            // `extract_symbol_refs`'s explicit skip exactly (ref.rs: "the
+            // bound variable is a declaration, not a ref"). Without this
+            // arm, the generic `Node::for_each_child` fallback below would
+            // visit `variable` too (it has no such declaration/reference
+            // distinction), incorrectly emitting a plain `Read`/`SymbolRef`
+            // for e.g. a signature's `$name` binding.
+            //
+            // `NamedParameter` is grouped here (TOTAL skip, including its
+            // `default_value`) to mirror `ref.rs:80-84` EXACTLY --
+            // `extract_symbol_refs` groups `NamedParameter` with
+            // `MandatoryParameter`/`SlurpyParameter` as a Phase-1
+            // intentional exclusion (see `ref.rs`'s module doc, lines
+            // 15-17: "Optional parameter *default values* are still walked
+            // because they are expressions" -- explicitly NOT named-param
+            // defaults). Only `OptionalParameter` gets its default walked.
+            // An earlier draft of this arm walked `NamedParameter`'s
+            // `default_value` too, which made the unified traversal's
+            // CANONICAL projection produce an extra `SymbolRef` production
+            // `extract_symbol_refs` never produces for a named-param
+            // default (e.g. `method bar(:$beta = calc_default())`) --
+            // caught by an independent correctness review, since no
+            // corpus/real-project/edge-case fixture exercised
+            // `NamedParameter` at the time. See
+            // `docs/reference/1711-B-coverage-delta.md` and the
+            // `coverage_delta_named_parameter_default_is_not_a_new_case`
+            // test below, which locks in that this is NOT a
+            // coverage-delta case (legacy's pre-unification behavior for
+            // `NamedParameter` was ALSO a total skip -- `NamedParameter`
+            // was never in `visit_node`/`visit_children`'s coverage
+            // either -- so nothing changes for legacy here, and canonical
+            // must stay byte-identical).
+            NodeKind::MandatoryParameter { .. }
+            | NodeKind::SlurpyParameter { .. }
+            | NodeKind::NamedParameter { .. } => {
+                // Nothing to walk: the bound variable is a declaration,
+                // and (for `NamedParameter`) its default value is also
+                // intentionally excluded, matching canonical exactly.
+            }
+            NodeKind::OptionalParameter { default_value, .. } => {
+                // Only the default-value expression may reference other
+                // symbols (it's evaluated in the caller's scope) -- the
+                // bound variable itself is skipped, matching ref.rs.
+                self.walk_unified(default_value, file_index, symbol_refs);
+            }
+
+            NodeKind::VariableDeclaration { variable, initializer, .. } => {
+                // `our @ISA = qw(Base1 Base2)` — register inheritance dependencies.
+                if let (NodeKind::Variable { sigil, name }, Some(init)) =
+                    (&variable.kind, initializer.as_deref())
+                {
+                    if sigil == "@" && name == "ISA" {
+                        for module_name in
+                            extract_module_names_from_call_args(std::slice::from_ref(init))
+                        {
+                            file_index
+                                .dependencies
+                                .insert(normalize_dependency_module_name(&module_name));
+                        }
+                    }
+                }
+                if let Some(init) = initializer {
+                    self.walk_unified(init, file_index, symbol_refs);
+                }
+            }
+            NodeKind::VariableListDeclaration { initializer, .. } => {
+                if let Some(init) = initializer {
+                    self.walk_unified(init, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::Variable { sigil, name } => {
+                let var_name = format!("{sigil}{name}");
+                file_index.references.entry(var_name).or_default().push(SymbolReference {
+                    uri: self.uri.clone(),
+                    range: self.node_to_range(node),
+                    kind: ReferenceKind::Read,
+                    package: None,
+                });
+                Self::emit_canonical_ref(node, symbol_refs);
+            }
+
+            NodeKind::Typeglob { .. } => {
+                // NEW COVERAGE: legacy has no `Typeglob` arm at all today
+                // (`*foo`, `*alias = ...` aliasing references are silently
+                // dropped) -- see coverage-delta case 3. Canonical already
+                // handled this (dynamic `*{$expr}` forms are filtered by
+                // `canonical_ref_for_node`, matching `extract_symbol_refs`).
+                if let Some(symbol_ref) = canonical_ref_for_node(node) {
+                    // Project a legacy-shaped entry too, using the same
+                    // sigil+bare-name key convention as the `Variable` arm
+                    // above, so the unified traversal's two output shapes
+                    // stay internally consistent.
+                    let var_name = format!("*{}", symbol_ref.name);
+                    file_index.references.entry(var_name).or_default().push(SymbolReference {
+                        uri: self.uri.clone(),
+                        range: self.node_to_range(node),
+                        kind: ReferenceKind::Usage,
+                        package: None,
+                    });
+                    symbol_refs.push(symbol_ref);
+                }
+            }
+
+            NodeKind::FunctionCall { name, args, .. } | NodeKind::AmperCall { name, args, .. } => {
+                let func_name = name.clone();
+                let location = self.node_to_range(node);
+
+                let (pkg, bare_name) = if let Some(idx) = func_name.rfind("::") {
+                    (&func_name[..idx], &func_name[idx + 2..])
+                } else {
+                    (self.current_package.as_deref().unwrap_or("main"), func_name.as_str())
+                };
+                let qualified = format!("{pkg}::{bare_name}");
+
+                file_index.references.entry(bare_name.to_string()).or_default().push(
+                    SymbolReference {
+                        uri: self.uri.clone(),
+                        range: location,
+                        kind: ReferenceKind::Usage,
+                        package: Some(pkg.to_string()),
+                    },
+                );
+                file_index.references.entry(qualified).or_default().push(SymbolReference {
+                    uri: self.uri.clone(),
+                    range: location,
+                    kind: ReferenceKind::Usage,
+                    package: None,
+                });
+
+                if name == "extends" || name == "with" {
+                    for module_name in extract_module_names_from_call_args(args) {
+                        file_index
+                            .dependencies
+                            .insert(normalize_dependency_module_name(&module_name));
+                    }
+                } else if name == "require"
+                    && let Some(module_name) = extract_module_name_from_require_args(args)
+                {
+                    file_index.dependencies.insert(normalize_dependency_module_name(&module_name));
+                } else if name == "push" {
+                    // `push @ISA, 'Base'` — register inheritance dependencies.
+                    if let Some(first) = args.first() {
+                        if matches!(&first.kind, NodeKind::Variable { sigil, name } if sigil == "@" && name == "ISA")
+                        {
+                            for module_name in extract_module_names_from_call_args(&args[1..]) {
+                                file_index
+                                    .dependencies
+                                    .insert(normalize_dependency_module_name(&module_name));
+                            }
+                        }
+                    }
+                }
+
+                Self::emit_canonical_ref(node, symbol_refs);
+
+                for arg in args {
+                    self.walk_unified(arg, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::Use { module, args, .. } => {
+                let module_name = normalize_dependency_module_name(module);
+                file_index.dependencies.insert(module_name.clone());
+                if module == "parent" || module == "base" {
+                    for name in extract_module_names_from_use_args(args) {
+                        file_index.dependencies.insert(normalize_dependency_module_name(&name));
+                    }
+                }
+                file_index.references.entry(module_name).or_default().push(SymbolReference {
+                    uri: self.uri.clone(),
+                    range: self.node_to_range(node),
+                    kind: ReferenceKind::Import,
+                    package: None,
+                });
+                // No canonical equivalent and no recursion into `args` --
+                // matches BOTH legacy's current behavior and
+                // `Node::for_each_child`'s (`Use` is a declared leaf there).
+            }
+
+            NodeKind::Assignment { lhs, rhs, op } => {
+                let is_compound = op != "=";
+                if let NodeKind::Variable { sigil, name } = &lhs.kind {
+                    // `@ISA = (...)` — bare assignment registers inheritance dependencies.
+                    if !is_compound && sigil == "@" && name == "ISA" {
+                        for module_name in
+                            extract_module_names_from_call_args(std::slice::from_ref(rhs))
+                        {
+                            file_index
+                                .dependencies
+                                .insert(normalize_dependency_module_name(&module_name));
+                        }
+                    }
+
+                    let var_name = format!("{sigil}{name}");
+                    if is_compound {
+                        file_index.references.entry(var_name.clone()).or_default().push(
+                            SymbolReference {
+                                uri: self.uri.clone(),
+                                range: self.node_to_range(lhs),
+                                kind: ReferenceKind::Read,
+                                package: None,
+                            },
+                        );
+                    }
+                    file_index.references.entry(var_name).or_default().push(SymbolReference {
+                        uri: self.uri.clone(),
+                        range: self.node_to_range(lhs),
+                        kind: ReferenceKind::Write,
+                        package: None,
+                    });
+                    // Canonical (today, via generic recursion + the
+                    // `Variable` arm) classifies an assignment target as a
+                    // plain `Read` occurrence -- emit that directly here
+                    // instead of ALSO generically recursing into `lhs`
+                    // (which would double-count the legacy side above).
+                    Self::emit_canonical_ref(lhs, symbol_refs);
+                } else {
+                    // NEW COVERAGE: legacy's current `Assignment` arm does
+                    // NOTHING for a non-`Variable` lhs (e.g. `$h{compute_key()}
+                    // = 1`) -- no recursion, so nested references inside an
+                    // indexed/complex assignment target are invisible today.
+                    // Canonical already reaches this via generic recursion.
+                    // See coverage-delta case 9.
+                    self.walk_unified(lhs, file_index, symbol_refs);
+                }
+                self.walk_unified(rhs, file_index, symbol_refs);
+            }
+
+            NodeKind::Block { statements } => {
+                for stmt in statements {
+                    self.walk_unified(stmt, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
+                self.walk_unified(condition, file_index, symbol_refs);
+                self.walk_unified(then_branch, file_index, symbol_refs);
+                for (cond, branch) in elsif_branches {
+                    self.walk_unified(cond, file_index, symbol_refs);
+                    self.walk_unified(branch, file_index, symbol_refs);
+                }
+                if let Some(else_br) = else_branch {
+                    self.walk_unified(else_br, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::While { condition, body, continue_block, .. } => {
+                self.walk_unified(condition, file_index, symbol_refs);
+                self.walk_unified(body, file_index, symbol_refs);
+                if let Some(cont) = continue_block {
+                    self.walk_unified(cont, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::For { init, condition, update, body, continue_block } => {
+                if let Some(i) = init {
+                    self.walk_unified(i, file_index, symbol_refs);
+                }
+                if let Some(c) = condition {
+                    self.walk_unified(c, file_index, symbol_refs);
+                }
+                if let Some(u) = update {
+                    self.walk_unified(u, file_index, symbol_refs);
+                }
+                self.walk_unified(body, file_index, symbol_refs);
+                if let Some(cont) = continue_block {
+                    self.walk_unified(cont, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::Foreach { variable, list, body, continue_block } => {
+                if let Some(cb) = continue_block {
+                    self.walk_unified(cb, file_index, symbol_refs);
+                }
+                if let NodeKind::Variable { sigil, name } = &variable.kind {
+                    let var_name = format!("{sigil}{name}");
+                    file_index.references.entry(var_name).or_default().push(SymbolReference {
+                        uri: self.uri.clone(),
+                        range: self.node_to_range(variable),
+                        kind: ReferenceKind::Write,
+                        package: None,
+                    });
+                }
+                // Matches legacy's EXISTING (quirky but unchanged) behavior:
+                // `variable` is recursed into unconditionally after the
+                // write-classification above, so a `Variable` loop target
+                // gets BOTH a `Write` entry (from this arm) and a `Read`
+                // entry (from the generic `Variable` arm below) today --
+                // preserved here for parity, not introduced by unification.
+                self.walk_unified(variable, file_index, symbol_refs);
+                self.walk_unified(list, file_index, symbol_refs);
+                self.walk_unified(body, file_index, symbol_refs);
+            }
+
+            NodeKind::MethodCall { object, method, args } => {
+                let qualified_method = if let NodeKind::Identifier { name } = &object.kind {
+                    Some(format!("{name}::{method}"))
+                } else {
+                    None
+                };
+
+                // Emit the canonical ref BEFORE recursing into `object` --
+                // this position must NOT move. `perl_symbol::surface::ref::walk`'s
+                // own `MethodCall` arm also pushes its `SymbolRef` before
+                // recursing into `object` (own-ref-before-child DFS order),
+                // so keeping `emit_canonical_ref` here preserves the
+                // byte-for-byte canonical parity `assert_unified_canonical_parity`
+                // enforces -- for a chained `$x->foo()->foo()`, the OUTER
+                // call's `SymbolRef` precedes the INNER call's in
+                // `symbol_refs`, matching production exactly.
+                Self::emit_canonical_ref(node, symbol_refs);
+
+                // Recurse into `object` BEFORE recording this call's own
+                // LEGACY `FileIndex` reference below -- mirrors
+                // `IndexVisitor::visit_node`'s legacy `MethodCall` arm order
+                // exactly (child-before-own-ref; see that arm a few hundred
+                // lines above, which visits `object` first and only then
+                // pushes its own reference). Without this, a chained
+                // same-named call like `$x->foo()->foo()` would invert the
+                // intra-key `file_index.references["foo"]` Vec order
+                // relative to legacy (no reference lost -- counts still
+                // match -- but the order silently changed). See
+                // `parity_method_call_chained_same_name_reference_order`,
+                // which locks this order with an exact Vec equality
+                // assertion against legacy's own output.
+                self.walk_unified(object, file_index, symbol_refs);
+
+                let location = self.node_to_range(node);
+                if let Some(qualified_method) = qualified_method.as_ref() {
+                    file_index.references.entry(qualified_method.clone()).or_default().push(
+                        SymbolReference {
+                            uri: self.uri.clone(),
+                            range: location,
+                            kind: ReferenceKind::Usage,
+                            package: None,
+                        },
+                    );
+                }
+                file_index.references.entry(method.clone()).or_default().push(SymbolReference {
+                    uri: self.uri.clone(),
+                    range: location,
+                    kind: ReferenceKind::MethodCall,
+                    package: None,
+                });
+
+                if method == "import"
+                    && let NodeKind::Identifier { name: module_name } = &object.kind
+                {
+                    for symbol in extract_manual_import_symbols(args) {
+                        file_index.references.entry(symbol).or_default().push(SymbolReference {
+                            uri: self.uri.clone(),
+                            range: self.node_to_range(node),
+                            kind: ReferenceKind::Import,
+                            package: None,
+                        });
+                    }
+                    file_index.dependencies.insert(normalize_dependency_module_name(module_name));
+                }
+
+                for arg in args {
+                    self.walk_unified(arg, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::No { module, .. } => {
+                let module_name = normalize_dependency_module_name(module);
+                file_index.dependencies.insert(module_name);
+            }
+
+            NodeKind::String { value, interpolated } => {
+                if *interpolated {
+                    let range = self.node_to_range(node);
+                    self.record_interpolated_variable_references(value, range, file_index);
+                }
+            }
+
+            NodeKind::Heredoc { content, interpolated, .. } => {
+                if *interpolated {
+                    let range = self.node_to_range(node);
+                    self.record_interpolated_variable_references(content, range, file_index);
+                }
+            }
+
+            NodeKind::Unary { op, operand } if op == "++" || op == "--" => {
+                if let NodeKind::Variable { sigil, name } = &operand.kind {
+                    let var_name = format!("{sigil}{name}");
+                    file_index.references.entry(var_name.clone()).or_default().push(
+                        SymbolReference {
+                            uri: self.uri.clone(),
+                            range: self.node_to_range(operand),
+                            kind: ReferenceKind::Read,
+                            package: None,
+                        },
+                    );
+                    file_index.references.entry(var_name).or_default().push(SymbolReference {
+                        uri: self.uri.clone(),
+                        range: self.node_to_range(operand),
+                        kind: ReferenceKind::Write,
+                        package: None,
+                    });
+                    // Mirrors the `Assignment` arm above: canonical (today,
+                    // via generic recursion) classifies an increment target
+                    // as a plain `Read` -- emit directly, no double recurse.
+                    Self::emit_canonical_ref(operand, symbol_refs);
+                } else {
+                    // NEW COVERAGE: legacy's current `++`/`--` arm does
+                    // NOTHING for a non-`Variable` operand (e.g.
+                    // `$h{compute_key()}++`) -- see coverage-delta case 9
+                    // (same class as the `Assignment` gap above).
+                    self.walk_unified(operand, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::Goto { target, .. } => {
+                // NEW COVERAGE: legacy has no `Goto` arm at all today --
+                // `goto &handler` / `goto LABEL` coderef targets are
+                // invisible. See coverage-delta case 4.
+                if let Some(symbol_ref) =
+                    canonical_coderef_target_ref(target, (node.location.start, node.location.end))
+                {
+                    let var_name = format!("&{}", symbol_ref.name);
+                    file_index.references.entry(var_name).or_default().push(SymbolReference {
+                        uri: self.uri.clone(),
+                        range: self.node_to_range(node),
+                        kind: ReferenceKind::Usage,
+                        package: None,
+                    });
+                    symbol_refs.push(symbol_ref);
+                } else {
+                    self.walk_unified(target, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::Unary { op, operand } if op == "\\" => {
+                // Unlike `Goto` (which legacy never handles at all today),
+                // legacy's CURRENT `visit_node` already has default behavior
+                // here: general `Unary` falls through to `visit_children`'s
+                // arm, which ALWAYS recurses into `operand` unconditionally,
+                // regardless of shape. That must be preserved exactly even
+                // when `operand` is coderef-target-shaped for CANONICAL
+                // purposes (e.g. `\&attr` parses as a zero-arg synthetic
+                // `FunctionCall`, and legacy's generic recursion into it
+                // hits the ordinary `FunctionCall` arm -- dual
+                // bare+qualified `Usage` entries, the SAME thing legacy has
+                // always produced for it).
+                match canonical_coderef_target_ref(
+                    operand,
+                    (node.location.start, node.location.end),
+                ) {
+                    Some(symbol_ref) => {
+                        symbol_refs.push(symbol_ref);
+                        // `operand` is guaranteed (by
+                        // `canonical_coderef_target_ref`'s own match) to be
+                        // either a bare `&name` `Variable` or a zero-arg
+                        // synthetic `FunctionCall` -- both leaves, nothing
+                        // to recurse into. Replicate legacy's per-kind
+                        // classification directly (NOT a second canonical
+                        // emission via `walk_unified`, which would
+                        // double-count against the `symbol_ref` just
+                        // pushed above).
+                        match &operand.kind {
+                            NodeKind::Variable { sigil, name } => {
+                                let var_name = format!("{sigil}{name}");
+                                file_index.references.entry(var_name).or_default().push(
+                                    SymbolReference {
+                                        uri: self.uri.clone(),
+                                        range: self.node_to_range(operand),
+                                        kind: ReferenceKind::Read,
+                                        package: None,
+                                    },
+                                );
+                            }
+                            NodeKind::FunctionCall { name, .. }
+                            | NodeKind::AmperCall { name, .. } => {
+                                let location = self.node_to_range(operand);
+                                let (pkg, bare_name) = if let Some(idx) = name.rfind("::") {
+                                    (&name[..idx], &name[idx + 2..])
+                                } else {
+                                    (
+                                        self.current_package.as_deref().unwrap_or("main"),
+                                        name.as_str(),
+                                    )
+                                };
+                                let qualified = format!("{pkg}::{bare_name}");
+                                file_index
+                                    .references
+                                    .entry(bare_name.to_string())
+                                    .or_default()
+                                    .push(SymbolReference {
+                                        uri: self.uri.clone(),
+                                        range: location,
+                                        kind: ReferenceKind::Usage,
+                                        package: Some(pkg.to_string()),
+                                    });
+                                file_index.references.entry(qualified).or_default().push(
+                                    SymbolReference {
+                                        uri: self.uri.clone(),
+                                        range: location,
+                                        kind: ReferenceKind::Usage,
+                                        package: None,
+                                    },
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                    None => {
+                        // Not coderef-target-shaped -- BOTH today's
+                        // canonical (`push_coderef_target` returned false,
+                        // so it recurses) and today's legacy (which always
+                        // recurses here) want ordinary full recursion.
+                        self.walk_unified(operand, file_index, symbol_refs);
+                    }
+                }
+            }
+
+            // Everything else: no legacy-specific classification, and
+            // recurse via `Node::for_each_child` -- the complete,
+            // compiler-exhaustive dispatcher (replaces
+            // `IndexVisitor::visit_children`'s hand-maintained allowlist).
+            // This is what closes the remaining coverage-delta cases
+            // (`Tie`/`Untie`, `Match`/`Substitution`/`Transliteration`
+            // regex-bind expressions, `IndirectCall`, and anything else
+            // legacy's allowlist silently stopped at) for free.
+            _ => {
+                node.for_each_child(|child| self.walk_unified(child, file_index, symbol_refs));
+            }
+        }
+    }
+}
+
+/// **Production (1711-B cutover).** Canonical [`SymbolRef`] classification for
+/// a single node, duplicated from `perl_symbol::surface::ref`'s private
+/// `walk` match arms for `Variable`/`Typeglob`/`FunctionCall`/`MethodCall`
+/// (the node kinds `IndexVisitor::walk_unified` also classifies for the
+/// legacy projection). Byte-for-byte parity with `extract_symbol_refs`'s
+/// own output is mechanically enforced by
+/// `extraction_bundle_shadow_compare`'s canonical-side parity tests -- any
+/// drift between this copy and `perl-symbol`'s private walker fails a test
+/// immediately, not silently. Returns `None` for node kinds this function
+/// does not classify, for a dynamic typeglob (`*{$expr}`), or for a parser
+/// sentinel `FunctionCall` name (`"->()"`, `"&{}"`, `"field"`).
+fn canonical_ref_for_node(node: &Node) -> Option<perl_symbol::surface::r#ref::SymbolRef> {
+    use perl_symbol::surface::r#ref::{SymbolRef, SymbolRefKind};
+
+    match &node.kind {
+        NodeKind::Variable { sigil, name } => {
+            let kind = match sigil.as_str() {
+                "&" => SymbolRefKind::CoderefReference,
+                "*" => SymbolRefKind::TypeglobReference,
+                "$" | "$#" => SymbolRefKind::Variable(VarKind::Scalar),
+                "@" => SymbolRefKind::Variable(VarKind::Array),
+                "%" => SymbolRefKind::Variable(VarKind::Hash),
+                _ => return None,
+            };
+            let (package_qualifier, bare_name, qualified_name) = split_qualified_name_dup(name);
+            Some(SymbolRef {
+                kind,
+                name: bare_name,
+                qualified_name,
+                sigil: Some(sigil.clone()),
+                package_qualifier,
+                full_span: (node.location.start, node.location.end),
+                anchor_span: Some((node.location.start, node.location.end)),
+            })
+        }
+        NodeKind::Typeglob { name } => {
+            if name.starts_with('{') {
+                return None;
+            }
+            let (package_qualifier, bare_name, qualified_name) = split_qualified_name_dup(name);
+            Some(SymbolRef {
+                kind: SymbolRefKind::TypeglobReference,
+                name: bare_name,
+                qualified_name,
+                sigil: Some("*".to_string()),
+                package_qualifier,
+                full_span: (node.location.start, node.location.end),
+                anchor_span: Some((node.location.start, node.location.end)),
+            })
+        }
+        NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
+            if matches!(&node.kind, NodeKind::FunctionCall { .. })
+                && matches!(name.as_str(), "->()" | "&{}" | "field")
+            {
+                return None;
+            }
+            let (package_qualifier, bare_name, qualified_name) = split_qualified_name_dup(name);
+            Some(SymbolRef {
+                kind: SymbolRefKind::SubroutineCall,
+                name: bare_name,
+                qualified_name,
+                sigil: None,
+                package_qualifier,
+                full_span: (node.location.start, node.location.end),
+                anchor_span: Some((node.location.start, node.location.end)),
+            })
+        }
+        NodeKind::MethodCall { object, method, .. } => {
+            let (package_qualifier, qualified_name, kind) = if let NodeKind::Identifier { name } =
+                &object.kind
+            {
+                (Some(name.clone()), format!("{name}::{method}"), SymbolRefKind::StaticMethodCall)
+            } else {
+                (None, method.clone(), SymbolRefKind::MethodCall)
+            };
+            Some(SymbolRef {
+                kind,
+                name: method.clone(),
+                qualified_name,
+                sigil: None,
+                package_qualifier,
+                full_span: (node.location.start, node.location.end),
+                anchor_span: None,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// **Production (1711-B cutover).** Coderef-target classification for
+/// `Goto`/backslash-`Unary` nodes, duplicated from
+/// `perl_symbol::surface::ref`'s private `coderef_target_name`/
+/// `push_coderef_target`. See [`canonical_ref_for_node`]'s doc comment for
+/// the parity-enforcement rationale.
+fn canonical_coderef_target_ref(
+    node: &Node,
+    full_span: (usize, usize),
+) -> Option<perl_symbol::surface::r#ref::SymbolRef> {
+    use perl_symbol::surface::r#ref::{SymbolRef, SymbolRefKind};
+
+    let name = match &node.kind {
+        NodeKind::Variable { sigil, name } if sigil == "&" => name.as_str(),
+        NodeKind::FunctionCall { name, args }
+            if args.is_empty()
+                && node.location.end.saturating_sub(node.location.start) == name.len() + 1 =>
+        {
+            name.as_str()
+        }
+        NodeKind::AmperCall { name, args }
+            if args.is_empty() && !name.is_empty() && !name.starts_with(['$', '@', '%']) =>
+        {
+            name.as_str()
+        }
+        _ => return None,
+    };
+    let (package_qualifier, bare_name, qualified_name) = split_qualified_name_dup(name);
+    Some(SymbolRef {
+        kind: SymbolRefKind::CoderefReference,
+        name: bare_name,
+        qualified_name,
+        sigil: Some("&".to_string()),
+        package_qualifier,
+        full_span,
+        anchor_span: Some((node.location.start, node.location.end)),
+    })
+}
+
+/// **Production (1711-B cutover).** Duplicated from
+/// `perl_symbol::surface::ref::split_qualified_name` (private to that
+/// crate). See [`canonical_ref_for_node`]'s doc comment for the
+/// parity-enforcement rationale.
+fn split_qualified_name_dup(name: &str) -> (Option<String>, String, String) {
+    if let Some((package, bare)) = name.rsplit_once("::")
+        && !package.is_empty()
+        && !bare.is_empty()
+    {
+        return (Some(package.to_owned()), bare.to_owned(), name.to_owned());
+    }
+    (None, name.to_owned(), name.to_owned())
+}
+
+fn symbol_decl_name(kind: &SymbolKind, name: &str) -> String {
+    match kind {
+        SymbolKind::Variable(VarKind::Scalar) => format!("${name}"),
+        SymbolKind::Variable(VarKind::Array) => format!("@{name}"),
+        SymbolKind::Variable(VarKind::Hash) => format!("%{name}"),
+        _ => name.to_string(),
+    }
+}
+
+fn split_qualified_symbol_name(canonical_name: &str) -> Option<(&str, &str)> {
+    let (container, bare_name) = canonical_name.rsplit_once("::")?;
+    if container.is_empty() || bare_name.is_empty() {
+        return None;
+    }
+    Some((container, bare_name))
+}
+
+fn is_framework_generated_member_entity(entity: &EntityFact) -> bool {
+    entity.provenance == Provenance::FrameworkSynthesis && entity.confidence == Confidence::Medium
+}
+
+fn sort_workspace_symbols(symbols: &mut [WorkspaceSymbol]) {
+    symbols.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.uri.cmp(&right.uri))
+            .then_with(|| left.range.start.line.cmp(&right.range.start.line))
+            .then_with(|| left.range.start.column.cmp(&right.range.start.column))
+            .then_with(|| left.range.end.line.cmp(&right.range.end.line))
+            .then_with(|| left.range.end.column.cmp(&right.range.end.column))
+    });
+}
+
+/// Extract bare module names from the argument list of a `use parent` / `use base` statement.
+///
+/// The `args` field of `NodeKind::Use` stores raw argument strings as the parser captured them.
+/// For `use parent 'Foo::Bar'` this is `["'Foo::Bar'"]`.
+/// For `use parent qw(Foo::Bar Other::Base)` this is `["qw(Foo::Bar Other::Base)"]`.
+/// For `use parent -norequire, 'Foo::Bar'` this is `["-norequire", "'Foo::Bar'"]`.
+///
+/// Returns the module names with surrounding quotes/qw wrappers stripped.
+/// Tokens starting with `-` or not matching `[\w::']+` are silently skipped.
+fn extract_module_names_from_use_args(args: &[String]) -> Vec<String> {
+    use std::collections::HashSet;
+
+    fn normalize_module_name(token: &str) -> Option<&str> {
+        let stripped = token.trim_matches(|c: char| {
+            matches!(c, '\'' | '"' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';')
+        });
+
+        if stripped.is_empty() || stripped.starts_with('-') {
+            return None;
+        }
+
+        stripped
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == ':' || c == '\'')
+            .then_some(stripped)
+    }
+
+    let joined = args.join(" ");
+
+    let (qw_words, remainder) = extract_qw_words(&joined);
+    let mut modules = Vec::new();
+    let mut seen = HashSet::new();
+    for word in qw_words {
+        if let Some(candidate) = normalize_module_name(&word) {
+            let canonical = canonicalize_perl_module_name(candidate);
+            if seen.insert(canonical.clone()) {
+                modules.push(canonical);
+            }
+        }
+    }
+
+    for token in remainder.split_whitespace().flat_map(|t| t.split(',')) {
+        if let Some(candidate) = normalize_module_name(token) {
+            let canonical = canonicalize_perl_module_name(candidate);
+            if seen.insert(canonical.clone()) {
+                modules.push(canonical);
+            }
+        }
+    }
+
+    modules
+}
+
+fn extract_module_names_from_call_args(args: &[Node]) -> Vec<String> {
+    fn collect_from_node(node: &Node, out: &mut Vec<String>) {
+        match &node.kind {
+            NodeKind::String { value, .. } => {
+                out.extend(extract_module_names_from_use_args(std::slice::from_ref(value)));
+            }
+            NodeKind::Identifier { name } => {
+                out.extend(extract_module_names_from_use_args(std::slice::from_ref(name)));
+            }
+            NodeKind::ArrayLiteral { elements } => {
+                for element in elements {
+                    collect_from_node(element, out);
+                }
+            }
+            NodeKind::FunctionCall { name, args, .. } if name == "qw" => {
+                for arg in args {
+                    collect_from_node(arg, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut modules = Vec::new();
+    for arg in args {
+        collect_from_node(arg, &mut modules);
+    }
+    modules
+}
+
+fn canonicalize_perl_module_name(name: &str) -> String {
+    // Perl supports the legacy `'` package separator (e.g. Foo'Bar).
+    // Canonicalize to `::` so lookups and dependency matching share one key shape.
+    name.replace('\'', "::")
+}
+
+fn legacy_perl_module_name(name: &str) -> String {
+    name.replace("::", "'")
+}
+
+/// Normalize a module name for dependency storage and lookup.
+/// Converts legacy `'` separators to `::` so stored keys are canonical.
+fn normalize_dependency_module_name(module_name: &str) -> String {
+    canonicalize_perl_module_name(module_name)
+}
+
+fn extract_qw_words(input: &str) -> (Vec<String>, String) {
+    let chars: Vec<char> = input.chars().collect();
+    let mut i = 0;
+    let mut words = Vec::new();
+    let mut remainder = String::new();
+
+    while i < chars.len() {
+        if chars[i] == 'q'
+            && i + 1 < chars.len()
+            && chars[i + 1] == 'w'
+            && (i == 0 || !chars[i - 1].is_alphanumeric())
+        {
+            let mut j = i + 2;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if j >= chars.len() {
+                remainder.push(chars[i]);
+                i += 1;
+                continue;
+            }
+
+            let open = chars[j];
+            let (close, is_paired_delimiter) = match open {
+                '(' => (')', true),
+                '[' => (']', true),
+                '{' => ('}', true),
+                '<' => ('>', true),
+                _ => (open, false),
+            };
+            if open.is_alphanumeric() || open == '_' || open == '\'' || open == '"' {
+                remainder.push(chars[i]);
+                i += 1;
+                continue;
+            }
+
+            let mut k = j + 1;
+            if is_paired_delimiter {
+                let mut depth = 1usize;
+                while k < chars.len() && depth > 0 {
+                    if chars[k] == open {
+                        depth += 1;
+                    } else if chars[k] == close {
+                        depth -= 1;
+                    }
+                    k += 1;
+                }
+                if depth != 0 {
+                    remainder.extend(chars[i..].iter());
+                    break;
+                }
+                k -= 1;
+            } else {
+                while k < chars.len() && chars[k] != close {
+                    k += 1;
+                }
+                if k >= chars.len() {
+                    remainder.extend(chars[i..].iter());
+                    break;
+                }
+            }
+
+            let content: String = chars[j + 1..k].iter().collect();
+            for word in content.split_whitespace() {
+                if !word.is_empty() {
+                    words.push(word.to_string());
+                }
+            }
+            i = k + 1;
+            continue;
+        }
+
+        remainder.push(chars[i]);
+        i += 1;
+    }
+
+    (words, remainder)
+}
+
+fn extract_module_name_from_require_args(args: &[Node]) -> Option<String> {
+    let first = args.first()?;
+    match &first.kind {
+        NodeKind::Identifier { name } => Some(name.clone()),
+        NodeKind::String { value, .. } => {
+            let cleaned = value.trim_matches('\'').trim_matches('"').trim();
+            if cleaned.is_empty() {
+                return None;
+            }
+            Some(cleaned.trim_end_matches(".pm").replace('/', "::"))
+        }
+        _ => None,
+    }
+}
+
+fn extract_manual_import_symbols(args: &[Node]) -> Vec<String> {
+    fn push_if_bareword(out: &mut Vec<String>, token: &str) {
+        let bare = token.trim().trim_matches('"').trim_matches('\'').trim();
+        if bare.is_empty() || bare == "," {
+            return;
+        }
+        let is_bareword = bare.bytes().all(|ch| ch.is_ascii_alphanumeric() || ch == b'_')
+            && bare.as_bytes().first().is_some_and(|ch| ch.is_ascii_alphabetic() || *ch == b'_');
+        if is_bareword {
+            out.push(bare.to_string());
+        }
+    }
+
+    let mut symbols = Vec::new();
+    for arg in args {
+        match &arg.kind {
+            NodeKind::String { value, .. } => push_if_bareword(&mut symbols, value),
+            NodeKind::Identifier { name } => {
+                if name.starts_with("qw") {
+                    let content = name
+                        .trim_start_matches("qw")
+                        .trim_start_matches(|c: char| "([{/<|!".contains(c))
+                        .trim_end_matches(|c: char| ")]}/|!>".contains(c));
+                    for token in content.split_whitespace() {
+                        push_if_bareword(&mut symbols, token);
+                    }
+                } else {
+                    push_if_bareword(&mut symbols, name);
+                }
+            }
+            NodeKind::ArrayLiteral { elements } => {
+                for element in elements {
+                    if let NodeKind::String { value, .. } = &element.kind {
+                        push_if_bareword(&mut symbols, value);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    symbols.sort();
+    symbols.dedup();
+    symbols
+}
+
+/// Extract constant names from the `args` field of a `use constant` `NodeKind::Use` node.
+///
+/// The parser serialises `use constant` args in two distinct forms:
+///
+/// **Scalar form** — `use constant FOO => 42;`
+///   → args: `["FOO", "42"]`  (the `=>` is consumed by the parser, not stored)
+///   → The first arg is the constant name; remaining args are the value.
+///
+/// **Hash form** — `use constant { FOO => 1, BAR => 2 };`
+///   → args: `["{", "FOO", "=>", "1", ",", "BAR", "=>", "2", "}"]`
+///   → Identifiers immediately followed by `=>` are constant names.
+///
+/// **qw form** — `use constant qw(FOO BAR);`
+///   → args: `["qw(FOO BAR)"]`
+///   → Words inside the qw list are constant names.
+///
+/// Returns a deduplicated list of bare constant names (e.g. `["FOO", "BAR"]`).
+#[cfg(test)]
+fn extract_constant_names_from_use_args(args: &[String]) -> Vec<String> {
+    use std::collections::HashSet;
+
+    fn push_unique(names: &mut Vec<String>, seen: &mut HashSet<String>, candidate: &str) {
+        if seen.insert(candidate.to_string()) {
+            names.push(candidate.to_string());
+        }
+    }
+
+    fn normalize_constant_name(token: &str) -> Option<&str> {
+        let stripped = token.trim_matches(|c: char| {
+            matches!(c, '\'' | '"' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';')
+        });
+
+        if stripped.is_empty() || stripped.starts_with('-') {
+            return None;
+        }
+
+        stripped.chars().all(|c| c.is_alphanumeric() || c == '_').then_some(stripped)
+    }
+
+    let mut names = Vec::new();
+    let mut seen = HashSet::new();
+
+    // Scalar form (most common): args = ["FOO", <value...>]
+    // The first arg is a plain identifier with no `=>` in args at all.
+    // Hash form starts with `{`; qw form starts with `qw`.
+    let first = match args.first() {
+        Some(f) => f.as_str(),
+        None => return names,
+    };
+
+    // qw form: single arg starting with "qw"
+    if first.starts_with("qw") {
+        let (qw_words, remainder) = extract_qw_words(first);
+        if remainder.trim().is_empty() {
+            for word in qw_words {
+                if let Some(candidate) = normalize_constant_name(&word) {
+                    push_unique(&mut names, &mut seen, candidate);
+                }
+            }
+            return names;
+        }
+
+        // Fallback for odd tokenisation: tolerate `qw` followed by spacing before the opener.
+        let content = first.trim_start_matches("qw").trim_start();
+        let content = content
+            .trim_start_matches(|c: char| "([{/<|!".contains(c))
+            .trim_end_matches(|c: char| ")]}/|!>".contains(c));
+        for word in content.split_whitespace() {
+            if let Some(candidate) = normalize_constant_name(word) {
+                push_unique(&mut names, &mut seen, candidate);
+            }
+        }
+        return names;
+    }
+
+    // Hash form: args start with "{", "+{", or "+" followed by "{"
+    let starts_hash_form = first == "{"
+        || first == "+{"
+        || (first == "+" && args.get(1).map(String::as_str) == Some("{"));
+    if starts_hash_form {
+        let mut skipped_leading_plus = false;
+        let mut iter = args.iter().peekable();
+        while let Some(arg) = iter.next() {
+            // Some parser/tokenizer variants can emit "+{" as a single token for
+            // `use constant +{ ... }`. Treat it as structural punctuation.
+            if arg == "+{" {
+                skipped_leading_plus = true;
+                continue;
+            }
+            if arg == "+" && !skipped_leading_plus {
+                skipped_leading_plus = true;
+                continue;
+            }
+            if arg == "{" || arg == "}" || arg == "," || arg == "=>" {
+                continue;
+            }
+            if let Some(candidate) = normalize_constant_name(arg)
+                && iter.peek().map(|s| s.as_str()) == Some("=>")
+            {
+                push_unique(&mut names, &mut seen, candidate);
+            }
+        }
+        return names;
+    }
+
+    // Scalar form: first arg is the constant name (if it is a plain identifier)
+    // Remaining args are the value and are skipped.
+    if let Some(candidate) = normalize_constant_name(first) {
+        push_unique(&mut names, &mut seen, candidate);
+    }
+
+    names
+}
+
+impl Default for WorkspaceIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// LSP adapter for converting internal Location types to LSP types
+#[cfg(all(feature = "workspace", feature = "lsp-compat"))]
+/// LSP adapter utilities for Navigate/Analyze workflows.
+pub mod lsp_adapter {
+    use super::Location as IxLocation;
+    use lsp_types::Location as LspLocation;
+    // lsp_types uses Uri, not Url
+    type LspUrl = lsp_types::Uri;
+
+    /// Convert an internal location to an LSP Location for Navigate workflows.
+    ///
+    /// # Arguments
+    ///
+    /// * `ix` - Internal index location with URI and range information.
+    ///
+    /// # Returns
+    ///
+    /// `Some(LspLocation)` when conversion succeeds, or `None` if URI parsing fails.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use perl_parser::workspace_index::{Location as IxLocation, lsp_adapter::to_lsp_location};
+    /// use lsp_types::Range;
+    ///
+    /// let ix_loc = IxLocation { uri: "file:///path.pl".to_string(), range: Range::default() };
+    /// let _ = to_lsp_location(&ix_loc);
+    /// ```
+    pub fn to_lsp_location(ix: &IxLocation) -> Option<LspLocation> {
+        parse_url(&ix.uri).map(|uri| {
+            let start =
+                lsp_types::Position { line: ix.range.start.line, character: ix.range.start.column };
+            let end =
+                lsp_types::Position { line: ix.range.end.line, character: ix.range.end.column };
+            let range = lsp_types::Range { start, end };
+            LspLocation { uri, range }
+        })
+    }
+
+    /// Convert multiple index locations to LSP Locations for Navigate/Analyze workflows.
+    ///
+    /// # Arguments
+    ///
+    /// * `all` - Iterator of internal index locations to convert.
+    ///
+    /// # Returns
+    ///
+    /// Vector of successfully converted LSP locations, with invalid entries filtered out.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use perl_parser::workspace_index::{Location as IxLocation, lsp_adapter::to_lsp_locations};
+    /// use lsp_types::Range;
+    ///
+    /// let locations = vec![IxLocation { uri: "file:///script1.pl".to_string(), range: Range::default() }];
+    /// let lsp_locations = to_lsp_locations(locations);
+    /// assert_eq!(lsp_locations.len(), 1);
+    /// ```
+    pub fn to_lsp_locations(all: impl IntoIterator<Item = IxLocation>) -> Vec<LspLocation> {
+        all.into_iter().filter_map(|ix| to_lsp_location(&ix)).collect()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn parse_url(s: &str) -> Option<LspUrl> {
+        // lsp_types::Uri uses FromStr, not TryFrom
+        use std::str::FromStr;
+
+        // Try parsing as URI first
+        LspUrl::from_str(s).ok().or_else(|| {
+            // Try as a file path if URI parsing fails
+            std::path::Path::new(s).canonicalize().ok().and_then(|p| {
+                // Use proper URI construction with percent-encoding
+                crate::workspace_index::fs_path_to_uri(&p)
+                    .ok()
+                    .and_then(|uri_string| LspUrl::from_str(&uri_string).ok())
+            })
+        })
+    }
+
+    /// Parse a string as a URL (wasm32 version - no filesystem fallback)
+    #[cfg(target_arch = "wasm32")]
+    fn parse_url(s: &str) -> Option<LspUrl> {
+        use std::str::FromStr;
+        LspUrl::from_str(s).ok()
+    }
+}
+
+/// Test-only instrumentation for measuring `didChange` re-extraction
+/// work-shape (perl-lsp-swarm#1711 / PR 1711-A).
+///
+/// Every function here is compiled ONLY under `#[cfg(test)]` -- there is no
+/// production build in which this module, or any call into it, exists. This
+/// is a **measurement receipt vehicle**, not a runtime feature: it changes
+/// no extraction/propagation behavior, only records how much work the
+/// EXISTING `index_file_with_generation` path already does, per call site,
+/// on the calling thread.
+///
+/// A thread-local (not a global static) is used because
+/// `index_file_with_generation` runs synchronously on the caller's thread
+/// whenever there is no Tokio runtime installed -- exactly how every
+/// measurement test in `reindex_workshape_measurement` (below) invokes it.
+/// `cargo test` runs tests in parallel on separate OS threads, so a
+/// thread-local avoids cross-test interference without needing a mutex or
+/// serial-test annotation.
+#[cfg(test)]
+pub(crate) mod reindex_metrics {
+    use std::cell::RefCell;
+    use std::time::Duration;
+
+    /// Work-shape counters/timers captured for a single
+    /// `index_file_with_generation` call.
+    #[derive(Debug, Default, Clone, Copy)]
+    pub(crate) struct ReindexWorkMetrics {
+        pub visit_calls: u32,
+        pub visit_time: Duration,
+        pub decl_extract_calls: u32,
+        pub decl_extract_time: Duration,
+        pub ref_extract_calls: u32,
+        pub ref_extract_time: Duration,
+        pub eval_sub_calls: u32,
+        pub eval_sub_time: Duration,
+        pub generated_member_calls: u32,
+        pub generated_member_time: Duration,
+        pub import_extract_calls: u32,
+        pub import_extract_time: Duration,
+        pub use_lib_extract_calls: u32,
+        pub use_lib_extract_time: Duration,
+        /// THIS URI's own `FileIndex::symbols` contribution -- the count of
+        /// entries passed through the legacy symbol-table removal routine
+        /// on this call. NOT necessarily the number of entries removed from
+        /// the global qualified/bare-name map (dual-indexing may write each
+        /// contributed symbol under up to two global keys), and NOT a
+        /// whole-workspace rebuild -- only this one file's contribution.
+        pub legacy_symbols_removed: usize,
+        /// Same file-scoped contribution, on the re-add side of this call.
+        pub legacy_symbols_added: usize,
+        /// THIS URI's contribution passed through the search-index removal
+        /// routine (same file-scoped caveat as `legacy_symbols_removed`).
+        pub legacy_search_removed: usize,
+        pub legacy_search_added: usize,
+        /// THIS URI's own global-reference-index contribution (not the
+        /// whole workspace-wide reference cache) passed through the
+        /// removal routine on this call.
+        pub global_refs_removed: usize,
+        pub global_refs_added: usize,
+        /// `true` when this call took the whole-file content-hash
+        /// short-circuit (cheapest possible outcome -- no re-extraction at
+        /// all).
+        pub content_hash_short_circuit: bool,
+        /// `true` when this call was rejected by the pre-parse high-water
+        /// monotonic-generation guard.
+        pub stale_generation_rejected_pre_parse: bool,
+        /// `true` when this call was rejected by the post-parse monotonic
+        /// generation guard.
+        pub stale_generation_rejected_post_parse: bool,
+        /// `true` when this call's generation was genuinely committed.
+        pub generation_accepted: bool,
+    }
+
+    thread_local! {
+        static CURRENT: RefCell<Option<ReindexWorkMetrics>> = const { RefCell::new(None) };
+    }
+
+    /// Begin recording on the calling thread. Any prior unread recording on
+    /// this thread is discarded.
+    pub(crate) fn start() {
+        CURRENT.with(|c| *c.borrow_mut() = Some(ReindexWorkMetrics::default()));
+    }
+
+    /// Stop recording and return whatever was captured since the last
+    /// `start()` on this thread (a zeroed value if `start()` was never
+    /// called).
+    pub(crate) fn take() -> ReindexWorkMetrics {
+        CURRENT.with(|c| c.borrow_mut().take().unwrap_or_default())
+    }
+
+    fn record(f: impl FnOnce(&mut ReindexWorkMetrics)) {
+        CURRENT.with(|c| {
+            if let Some(m) = c.borrow_mut().as_mut() {
+                f(m);
+            }
+        });
+    }
+
+    pub(crate) fn record_visit(d: Duration) {
+        record(|m| {
+            m.visit_calls += 1;
+            m.visit_time += d;
+        });
+    }
+    pub(crate) fn record_decl_extract(d: Duration) {
+        record(|m| {
+            m.decl_extract_calls += 1;
+            m.decl_extract_time += d;
+        });
+    }
+    pub(crate) fn record_ref_extract(d: Duration) {
+        record(|m| {
+            m.ref_extract_calls += 1;
+            m.ref_extract_time += d;
+        });
+    }
+    pub(crate) fn record_eval_sub(d: Duration) {
+        record(|m| {
+            m.eval_sub_calls += 1;
+            m.eval_sub_time += d;
+        });
+    }
+    pub(crate) fn record_generated_member(d: Duration) {
+        record(|m| {
+            m.generated_member_calls += 1;
+            m.generated_member_time += d;
+        });
+    }
+    pub(crate) fn record_import_extract(d: Duration) {
+        record(|m| {
+            m.import_extract_calls += 1;
+            m.import_extract_time += d;
+        });
+    }
+    pub(crate) fn record_use_lib_extract(d: Duration) {
+        record(|m| {
+            m.use_lib_extract_calls += 1;
+            m.use_lib_extract_time += d;
+        });
+    }
+    pub(crate) fn record_legacy_symbols_removed(n: usize) {
+        record(|m| m.legacy_symbols_removed += n);
+    }
+    pub(crate) fn record_legacy_search_removed(n: usize) {
+        record(|m| m.legacy_search_removed += n);
+    }
+    pub(crate) fn record_global_refs_removed(n: usize) {
+        record(|m| m.global_refs_removed += n);
+    }
+    pub(crate) fn record_legacy_symbols_added(n: usize) {
+        record(|m| m.legacy_symbols_added += n);
+    }
+    pub(crate) fn record_legacy_search_added(n: usize) {
+        record(|m| m.legacy_search_added += n);
+    }
+    pub(crate) fn record_global_refs_added(n: usize) {
+        record(|m| m.global_refs_added += n);
+    }
+    pub(crate) fn record_content_hash_short_circuit() {
+        record(|m| m.content_hash_short_circuit = true);
+    }
+    pub(crate) fn record_stale_rejected_pre_parse() {
+        record(|m| m.stale_generation_rejected_pre_parse = true);
+    }
+    pub(crate) fn record_stale_rejected_post_parse() {
+        record(|m| m.stale_generation_rejected_post_parse = true);
+    }
+    pub(crate) fn record_generation_accepted() {
+        record(|m| m.generation_accepted = true);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use perl_tdd_support::{must, must_some};
+
+    #[test]
+    fn test_use_constant_indexed_as_constant_symbol() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/My/Config.pm";
+        let code = r#"package My::Config;
+use constant PI => 3.14159;
+use constant {
+    MAX_RETRIES => 3,
+    TIMEOUT     => 30,
+};
+1;
+"#;
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let symbols = index.file_symbols(uri);
+        assert!(
+            symbols.iter().any(|s| s.name == "PI" && s.kind == SymbolKind::Constant),
+            "PI should be indexed as a Constant symbol; got: {:?}",
+            symbols.iter().map(|s| (&s.name, &s.kind)).collect::<Vec<_>>()
+        );
+        assert!(
+            symbols.iter().any(|s| s.name == "MAX_RETRIES" && s.kind == SymbolKind::Constant),
+            "MAX_RETRIES should be indexed"
+        );
+        assert!(
+            symbols.iter().any(|s| s.name == "TIMEOUT" && s.kind == SymbolKind::Constant),
+            "TIMEOUT should be indexed"
+        );
+
+        // Qualified lookup should also work
+        let def = index.find_definition("My::Config::PI");
+        assert!(def.is_some(), "find_definition('My::Config::PI') should succeed");
+    }
+
+    #[test]
+    fn test_extract_constant_names_deduplicates_qw_form() {
+        let names = extract_constant_names_from_use_args(&["qw(FOO BAR FOO)".to_string()]);
+        assert_eq!(names, vec!["FOO", "BAR"]);
+    }
+
+    #[test]
+    fn test_extract_constant_names_accepts_quoted_scalar_form() {
+        let names = extract_constant_names_from_use_args(&[
+            "'HTTP_OK'".to_string(),
+            "=>".to_string(),
+            "200".to_string(),
+        ]);
+        assert_eq!(names, vec!["HTTP_OK"]);
+    }
+
+    /// Companion to `search_source_symbols_one_char_query_matches_prefix_only`.
+    ///
+    /// `handle_workspace_symbols_v2` concatenates `search_source_symbols` and
+    /// `search_generated_workspace_symbols` into one `workspace/symbol`
+    /// response, so narrowing only the former would leave the #5335 blowup
+    /// intact for every framework-generated member.
+    #[test]
+    fn search_generated_workspace_symbols_one_char_query_matches_prefix_only() {
+        let index = WorkspaceIndex::new();
+        let code = r#"package Generated::Pilot;
+use Moo;
+has display_name => (is => 'rw');
+1;
+"#;
+        let uri = must(url::Url::parse("file:///lib/Generated/Pilot.pm"));
+        must(index.index_file(uri, code.to_string()));
+
+        let count = |query: &str| index.search_generated_workspace_symbols(query, None).len();
+
+        // Sanity: the generated member is discoverable at all.
+        assert_eq!(count("display_name"), 1, "generated member must be indexed");
+
+        // Prefix match on the bare name survives.
+        assert_eq!(count("d"), 1, "one-char prefix match must still find 'display_name'");
+
+        // 'n' occurs inside "display_name" but starts neither the bare name nor
+        // the qualified name. Before #5335 the substring test admitted it.
+        assert_eq!(count("n"), 0, "one-char query must not substring-match 'display_name'");
+
+        // Longer queries keep substring matching on both bare and qualified name.
+        assert_eq!(count("name"), 1, "multi-char substring match must be unaffected");
+        assert_eq!(count("pilot"), 1, "multi-char qualified-name substring match must survive");
+    }
+
+    #[test]
+    fn search_symbols_returns_labeled_generated_framework_members()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/Generated/Pilot.pm";
+        let code = r#"package Generated::Pilot;
+use Moo;
+has display_name => (is => 'rw');
+1;
+"#;
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let source_symbols = index.search_source_symbols("display_name", None);
+        assert!(
+            source_symbols.is_empty(),
+            "generated framework members must not enter the exact source-symbol slice"
+        );
+        let trimmed_source_symbols = index.search_source_symbols("  display_name  ", None);
+        assert!(
+            trimmed_source_symbols.is_empty(),
+            "trimmed generated framework member queries must not enter the exact source-symbol slice"
+        );
+
+        let generated_symbols = index.search_generated_workspace_symbols("display_name", None);
+        assert_eq!(generated_symbols.len(), 1);
+        let trimmed_generated_symbols =
+            index.search_generated_workspace_symbols("  display_name  ", None);
+        assert_eq!(trimmed_generated_symbols.len(), 1);
+        assert_eq!(trimmed_generated_symbols[0].name, "display_name [generated/framework]");
+        assert!(index.search_generated_workspace_symbols("   ", None).is_empty());
+        let symbol = &generated_symbols[0];
+        assert_eq!(symbol.name, "display_name [generated/framework]");
+        assert_eq!(symbol.kind, SymbolKind::Method);
+        assert_eq!(symbol.qualified_name.as_deref(), Some("Generated::Pilot::display_name"));
+        assert_eq!(
+            symbol.container_name.as_deref(),
+            Some("Generated::Pilot [generated/framework]")
+        );
+        assert!(!symbol.has_body);
+        assert_eq!(symbol.uri, uri);
+        assert!(
+            symbol.range.end.byte > symbol.range.start.byte,
+            "generated symbol must be anchored to the source framework declaration"
+        );
+
+        let live_symbols = index.search_symbols("display_name");
+        assert!(
+            live_symbols.is_empty(),
+            "general workspace index search must stay source-backed; generated pilot symbols are opt-in"
+        );
+
+        {
+            let mut shards = index.fact_shards.write();
+            let shard = shards.values_mut().next().ok_or("missing generated-member shard")?;
+            let entity = shard
+                .entities
+                .iter_mut()
+                .find(|entity| entity.canonical_name == "Generated::Pilot::display_name")
+                .ok_or("missing generated member entity")?;
+            entity.provenance = Provenance::ExactAst;
+        }
+        let non_framework_symbols = index.search_generated_workspace_symbols("display_name", None);
+        assert!(
+            non_framework_symbols.is_empty(),
+            "generated workspace-symbol pilot must require framework-synthesis provenance"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn has_symbols_true_for_fact_shard_only_index() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///lib/Generated/FactOnly.pm"));
+        must(
+            index.index_file(
+                uri,
+                r#"package Generated::FactOnly;
+use Moo;
+has status => (is => 'rw');
+1;
+"#
+                .to_string(),
+            ),
+        );
+
+        assert!(index.has_symbols(), "fact-shard-only indexes must still be treated as populated");
+        Ok(())
+    }
+
+    #[test]
+    fn package_members_include_generated_framework_members()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///lib/Generated/PackageMembers.pm"));
+        must(
+            index.index_file(
+                uri,
+                r#"package Generated::PackageMembers;
+use Moo;
+has status => (is => 'rw', predicate => 1);
+1;
+"#
+                .to_string(),
+            ),
+        );
+
+        let members = index.get_generated_package_members("Generated::PackageMembers");
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(names.contains(&"status"), "generated reader must be exposed: {names:?}");
+        assert!(names.contains(&"has_status"), "generated predicate must be exposed: {names:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn search_symbols_returns_labeled_predicate_generated_members()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/Generated/PredicatePilot.pm";
+        let code = r#"package Generated::PredicatePilot;
+use Moo;
+has status => (is => 'rw', predicate => 1);
+1;
+"#;
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let source_symbols = index.search_source_symbols("has_status", None);
+        assert!(
+            source_symbols.is_empty(),
+            "predicate generated members must not enter the exact source-symbol slice"
+        );
+
+        let generated_symbols = index.search_generated_workspace_symbols("has_status", None);
+        assert_eq!(generated_symbols.len(), 1);
+        let symbol = &generated_symbols[0];
+        assert_eq!(symbol.name, "has_status [generated/framework]");
+        assert_eq!(symbol.kind, SymbolKind::Method);
+        assert_eq!(symbol.qualified_name.as_deref(), Some("Generated::PredicatePilot::has_status"));
+        assert_eq!(
+            symbol.container_name.as_deref(),
+            Some("Generated::PredicatePilot [generated/framework]")
+        );
+        assert!(!symbol.has_body);
+        assert_eq!(symbol.uri, uri);
+        assert!(
+            symbol.range.end.byte > symbol.range.start.byte,
+            "predicate generated symbol must be anchored to the source framework declaration"
+        );
+
+        let live_symbols = index.search_symbols("has_status");
+        assert!(
+            live_symbols.is_empty(),
+            "general workspace index search must stay source-backed for predicate generated members"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_extract_constant_names_accepts_quoted_hash_form() {
+        let names = extract_constant_names_from_use_args(&[
+            "{".to_string(),
+            "'FOO'".to_string(),
+            "=>".to_string(),
+            "1".to_string(),
+            ",".to_string(),
+            "\"BAR\"".to_string(),
+            "=>".to_string(),
+            "2".to_string(),
+            "}".to_string(),
+        ]);
+        assert_eq!(names, vec!["FOO", "BAR"]);
+    }
+
+    #[test]
+    fn test_extract_constant_names_accepts_plus_hash_form_split_tokens() {
+        let names = extract_constant_names_from_use_args(&[
+            "+".to_string(),
+            "{".to_string(),
+            "FOO".to_string(),
+            "=>".to_string(),
+            "1".to_string(),
+            ",".to_string(),
+            "BAR".to_string(),
+            "=>".to_string(),
+            "2".to_string(),
+            "}".to_string(),
+        ]);
+        assert_eq!(names, vec!["FOO", "BAR"]);
+    }
+
+    #[test]
+    fn test_extract_constant_names_accepts_plus_hash_form_combined_token() {
+        let names = extract_constant_names_from_use_args(&[
+            "+{".to_string(),
+            "FOO".to_string(),
+            "=>".to_string(),
+            "1".to_string(),
+            ",".to_string(),
+            "BAR".to_string(),
+            "=>".to_string(),
+            "2".to_string(),
+            "}".to_string(),
+        ]);
+        assert_eq!(names, vec!["FOO", "BAR"]);
+    }
+    #[test]
+    fn test_use_constant_duplicate_names_indexed_once() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/My/DedupConfig.pm";
+        let code = r#"package My::DedupConfig;
+use constant {
+    RETRY_COUNT => 3,
+    RETRY_COUNT => 5,
+};
+1;
+"#;
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let symbols = index.file_symbols(uri);
+        let retry_count_symbols = symbols.iter().filter(|s| s.name == "RETRY_COUNT").count();
+        assert_eq!(
+            retry_count_symbols, 1,
+            "RETRY_COUNT should be indexed once even when repeated in use constant hash form"
+        );
+    }
+
+    #[test]
+    fn test_use_constant_plus_hash_form_indexes_keys() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/My/PlusHash.pm";
+        let code = r#"package My::PlusHash;
+use constant +{
+    FOO => 1,
+    BAR => 2,
+};
+1;
+"#;
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        assert!(index.find_definition("My::PlusHash::FOO").is_some());
+        assert!(index.find_definition("My::PlusHash::BAR").is_some());
+    }
+
+    #[test]
+    fn test_basic_indexing() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///test.pl";
+
+        let code = r#"
+package MyPackage;
+
+sub hello {
+    print "Hello";
+}
+
+my $var = 42;
+"#;
+
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        // Should have indexed the package and subroutine
+        let symbols = index.file_symbols(uri);
+        assert!(symbols.iter().any(|s| s.name == "MyPackage" && s.kind == SymbolKind::Package));
+        assert!(symbols.iter().any(|s| s.name == "hello" && s.kind == SymbolKind::Subroutine));
+        assert!(symbols.iter().any(|s| s.name == "$var" && s.kind.is_variable()));
+    }
+
+    #[test]
+    fn test_package_symbol_has_no_container_name() {
+        // Regression: project_symbol_declarations used to set container_name = Some("main")
+        // for top-level package declarations because the IndexVisitor starts with
+        // current_package = Some("main").  Package symbols are top-level declarations
+        // and must have container_name = None.
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/Foo.pm";
+        let code = "package Foo;\nsub bar { }\n";
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let symbols = index.file_symbols(uri);
+        let pkg_sym =
+            must_some(symbols.iter().find(|s| s.name == "Foo" && s.kind == SymbolKind::Package));
+        assert_eq!(
+            pkg_sym.container_name, None,
+            "Package symbol must not carry a container (was 'main')"
+        );
+    }
+
+    #[test]
+    fn test_file_packages_returns_only_package_symbol_names() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/OnlyPackages.pm";
+        let code = "package Foo;\nsub hello { 1 }\npackage Bar { sub greet { 2 } }\n";
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let mut package_names = index.file_packages(uri);
+        package_names.sort();
+        let mut expected_package_names: Vec<String> = index
+            .file_symbols(uri)
+            .into_iter()
+            .filter(|s| s.kind == SymbolKind::Package)
+            .map(|s| s.name)
+            .collect();
+        expected_package_names.sort();
+
+        assert_eq!(package_names, expected_package_names);
+        assert_eq!(package_names, vec!["Bar", "Foo"]);
+        assert!(!package_names.iter().any(|name| name == "hello"));
+        assert!(!package_names.iter().any(|name| name == "greet"));
+    }
+
+    #[test]
+    fn test_file_package_symbols_returns_exact_container_match() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/PackageMembers.pm";
+        let code = "package Foo;\nsub hello { 1 }\npackage Bar;\nsub greet { 2 }\n";
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let all_symbols = index.file_symbols(uri);
+        let package_name = "Bar";
+        let greet_symbol = must_some(all_symbols.iter().find(|s| s.name == "greet"));
+        let bar_package = must_some(
+            all_symbols.iter().find(|s| s.name == "Bar" && s.kind == SymbolKind::Package),
+        );
+        assert!(WorkspaceIndex::symbol_belongs_to_package(greet_symbol, package_name));
+        assert!(!WorkspaceIndex::symbol_belongs_to_package(greet_symbol, "Foo"));
+        assert!(!WorkspaceIndex::symbol_belongs_to_package(bar_package, package_name));
+
+        let mut expected_bar_names: Vec<String> = all_symbols
+            .iter()
+            .filter(|s| s.container_name.as_deref() == Some(package_name))
+            .map(|s| s.name.clone())
+            .collect();
+        expected_bar_names.sort();
+
+        let mut bar_names: Vec<String> =
+            index.file_package_symbols(uri, package_name).into_iter().map(|s| s.name).collect();
+        bar_names.sort();
+        assert_eq!(bar_names, expected_bar_names);
+        assert_eq!(bar_names, vec!["greet"]);
+
+        let mut foo_names: Vec<String> =
+            index.file_package_symbols(uri, "Foo").into_iter().map(|s| s.name).collect();
+        foo_names.sort();
+        assert_eq!(foo_names, vec!["hello"]);
+        assert!(index.file_package_symbols(uri, "Missing").is_empty());
+    }
+
+    #[test]
+    fn test_my_variable_has_no_qualified_name() {
+        // Regression: project_symbol_declarations used to set qualified_name = Some("Foo::x")
+        // for `my $x` inside `package Foo`, making `find_definition("Foo::x")` return the
+        // lexical variable.  `my` variables are not package-visible and must have
+        // qualified_name = None so qualified lookups don't match them.
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/Foo.pm";
+        let code = "package Foo;\nsub bar { my $x = 1; }\n";
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let symbols = index.file_symbols(uri);
+        let var_sym = must_some(symbols.iter().find(|s| s.name == "$x" && s.kind.is_variable()));
+        assert_eq!(var_sym.qualified_name, None, "my variable must not have a qualified_name");
+
+        // `find_definition("Foo::x")` must not accidentally resolve to a lexical variable.
+        assert!(
+            index.find_definition("Foo::x").is_none(),
+            "find_definition(\"Foo::x\") must not return a lexical my variable"
+        );
+    }
+
+    fn reference_kinds_for(
+        index: &WorkspaceIndex,
+        uri: &str,
+        symbol_name: &str,
+    ) -> Vec<ReferenceKind> {
+        let files = index.files.read();
+        let file = must_some(files.get(uri));
+        file.references
+            .get(symbol_name)
+            .map(|refs| refs.iter().map(|r| r.kind).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn test_reference_kinds_sub_definition_and_call_are_distinct() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///typed-refs-sub.pl";
+        let code = "package TypedRefs;
+sub foo { return 1; }
+foo();
+";
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let kinds = reference_kinds_for(&index, uri, "foo");
+        assert!(kinds.contains(&ReferenceKind::Definition));
+        assert!(kinds.contains(&ReferenceKind::Usage));
+    }
+
+    #[test]
+    fn test_reference_kinds_variable_read_and_write_are_distinct() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///typed-refs-var.pl";
+        let code = "my $value = 1;
+$value = 2;
+print $value;
+";
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let kinds = reference_kinds_for(&index, uri, "$value");
+        assert!(kinds.contains(&ReferenceKind::Definition));
+        assert!(kinds.contains(&ReferenceKind::Write));
+        assert!(kinds.contains(&ReferenceKind::Read));
+    }
+
+    #[test]
+    fn test_reference_kinds_import_parent_and_export_ok_are_currently_import_only() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///typed-refs-import-export.pm";
+        let code = "package Child;
+use parent 'Base';
+our @EXPORT_OK = qw(foo);
+1;
+";
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let parent_kinds = reference_kinds_for(&index, uri, "Base");
+        assert!(
+            parent_kinds.is_empty(),
+            "use parent inheritance edges are currently not stored as typed references"
+        );
+
+        let export_symbol_kinds = reference_kinds_for(&index, uri, "foo");
+        assert!(
+            export_symbol_kinds.is_empty(),
+            "EXPORT_OK entries are currently not represented as reference edges"
+        );
+    }
+
+    #[test]
+    fn test_reference_kinds_dynamic_and_meta_edges_are_not_typed_yet() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///typed-refs-dynamic.pl";
+        let code = r#"package TypedRefs;
+sub foo { 1 }
+&foo;
+my $code = \&foo;
+goto &foo;
+*alias = \&foo;
+eval "foo()";
+with 'RoleName';
+has 'name' => (is => 'ro');
+1;
+"#;
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let foo_kinds = reference_kinds_for(&index, uri, "foo");
+        assert!(
+            foo_kinds
+                .iter()
+                .all(|kind| matches!(kind, ReferenceKind::Definition | ReferenceKind::Usage)),
+            r"dynamic call forms (&foo, \&foo, goto &foo) are currently flattened to Usage"
+        );
+
+        assert!(
+            reference_kinds_for(&index, uri, "RoleName").is_empty(),
+            "role composition edges (`with 'RoleName'`) are not indexed as typed references yet"
+        );
+    }
+
+    #[test]
+    fn test_find_references() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///test.pl";
+
+        let code = r#"
+sub test {
+    my $x = 1;
+    $x = 2;
+    print $x;
+}
+"#;
+
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let refs = index.find_references("$x");
+        assert!(refs.len() >= 2); // Definition + at least one usage
+    }
+
+    #[test]
+    fn test_find_references_bare_name_includes_qualified_calls() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///refs.pl";
+        let code = r#"
+package RefDemo;
+sub helper {
+    return 1;
+}
+
+helper();
+RefDemo::helper();
+"#;
+
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let bare_refs = index.find_references("helper");
+        let qualified_refs = index.find_references("RefDemo::helper");
+
+        assert!(
+            bare_refs.len() >= qualified_refs.len(),
+            "bare-name reference lookup should include qualified calls"
+        );
+    }
+
+    #[test]
+    fn test_find_references_qualified_excludes_cross_package_bare() {
+        let index = WorkspaceIndex::new();
+        let uri_a = "file:///PkgA.pm";
+        let uri_b = "file:///PkgB.pm";
+        let code_a = r#"
+package PkgA;
+sub foo { return 1; }
+PkgA::foo();
+"#;
+        let code_b = r#"
+package PkgB;
+sub other { foo(); return 1; }
+"#;
+
+        must(index.index_file(must(url::Url::parse(uri_a)), code_a.to_string()));
+        must(index.index_file(must(url::Url::parse(uri_b)), code_b.to_string()));
+
+        let refs = index.find_references("PkgA::foo");
+        assert!(
+            !refs.iter().any(|location| location.uri == uri_b),
+            "bare foo() in PkgB must not appear in PkgA::foo references"
+        );
+        assert!(!refs.is_empty(), "PkgA::foo references must include same-package sites");
+    }
+
+    #[test]
+    fn test_find_refs_qualified_retains_inherited_method_dispatch() {
+        let index = WorkspaceIndex::new();
+        let base_uri = "file:///Base.pm";
+        let child_uri = "file:///Child.pm";
+        let unrelated_uri = "file:///UnrelatedReceiver.pm";
+        let base = r#"
+package Base;
+sub shared { return 1; }
+"#;
+        let child = r#"
+package Child;
+use parent 'Base';
+sub run {
+    my ($self) = @_;
+    return $self->shared;
+}
+"#;
+        let unrelated_receiver = r#"
+package Base;
+sub call_on_other {
+    my ($other) = @_;
+    return $other->shared;
+}
+"#;
+
+        must(index.index_file(must(url::Url::parse(base_uri)), base.to_string()));
+        must(index.index_file(must(url::Url::parse(child_uri)), child.to_string()));
+        must(
+            index.index_file(must(url::Url::parse(unrelated_uri)), unrelated_receiver.to_string()),
+        );
+
+        let key = SymbolKey {
+            pkg: Arc::from("Base"),
+            name: Arc::from("shared"),
+            sigil: None,
+            kind: SymKind::Sub,
+        };
+        let refs = index.find_refs(&key);
+
+        assert!(
+            refs.iter().any(|location| location.uri == child_uri),
+            "qualified method lookup must retain inherited arrow dispatch; got {refs:?}"
+        );
+        assert!(
+            !refs.iter().any(|location| location.uri == unrelated_uri),
+            "qualified method lookup must not retain an arbitrary receiver; got {refs:?}"
+        );
+    }
+
+    #[test]
+    fn test_find_references_qualified_includes_same_package_bare() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///PkgA.pm";
+        let code = r#"
+package PkgA;
+sub foo { return 1; }
+foo();
+PkgA::foo();
+"#;
+
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let refs = index.find_references("PkgA::foo");
+        let usage_sites = refs.iter().filter(|location| location.uri == uri).count();
+        assert!(usage_sites >= 2, "same-package bare and qualified calls must both be returned");
+    }
+
+    #[test]
+    fn test_count_usages_qualified_excludes_cross_package_bare() {
+        let index = WorkspaceIndex::new();
+        let uri_a = "file:///PkgA.pm";
+        let uri_b = "file:///PkgB.pm";
+        let code_a = r#"
+package PkgA;
+sub foo { return 1; }
+PkgA::foo();
+"#;
+        let code_b = r#"
+package PkgB;
+sub other { foo(); return 1; }
+"#;
+
+        must(index.index_file(must(url::Url::parse(uri_a)), code_a.to_string()));
+        must(index.index_file(must(url::Url::parse(uri_b)), code_b.to_string()));
+
+        assert_eq!(
+            index.count_usages("PkgA::foo"),
+            1,
+            "cross-package bare foo() must not inflate PkgA::foo usage count"
+        );
+    }
+
+    #[test]
+    fn test_count_usages_bare_name_includes_qualified_calls() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///usage.pl";
+        let code = r#"
+package UsageDemo;
+sub helper {
+    return 1;
+}
+
+helper();
+UsageDemo::helper();
+"#;
+
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let bare_usage_count = index.count_usages("helper");
+        let qualified_usage_count = index.count_usages("UsageDemo::helper");
+
+        assert!(
+            bare_usage_count >= qualified_usage_count,
+            "bare-name usage count should include qualified call sites"
+        );
+    }
+
+    #[test]
+    fn test_dependencies() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///test.pl";
+
+        let code = r#"
+use strict;
+use warnings;
+use Data::Dumper;
+"#;
+
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let deps = index.file_dependencies(uri);
+        assert!(deps.contains("strict"));
+        assert!(deps.contains("warnings"));
+        assert!(deps.contains("Data::Dumper"));
+    }
+
+    #[test]
+    fn test_uri_to_fs_path_basic() {
+        // Test basic file:// URI conversion
+        if let Some(path) = uri_to_fs_path("file:///tmp/test.pl") {
+            assert_eq!(path, std::path::PathBuf::from("/tmp/test.pl"));
+        }
+
+        // Test with invalid URI
+        assert!(uri_to_fs_path("not-a-uri").is_none());
+
+        // Test with non-file scheme
+        assert!(uri_to_fs_path("http://example.com").is_none());
+    }
+
+    #[test]
+    fn test_uri_to_fs_path_with_spaces() {
+        // Test with percent-encoded spaces
+        if let Some(path) = uri_to_fs_path("file:///tmp/path%20with%20spaces/test.pl") {
+            assert_eq!(path, std::path::PathBuf::from("/tmp/path with spaces/test.pl"));
+        }
+
+        // Test with multiple spaces and special characters
+        if let Some(path) = uri_to_fs_path("file:///tmp/My%20Documents/test%20file.pl") {
+            assert_eq!(path, std::path::PathBuf::from("/tmp/My Documents/test file.pl"));
+        }
+    }
+
+    #[test]
+    fn test_uri_to_fs_path_with_unicode() {
+        // Test with Unicode characters (percent-encoded)
+        if let Some(path) = uri_to_fs_path("file:///tmp/caf%C3%A9/test.pl") {
+            assert_eq!(path, std::path::PathBuf::from("/tmp/café/test.pl"));
+        }
+
+        // Test with Unicode emoji (percent-encoded)
+        if let Some(path) = uri_to_fs_path("file:///tmp/emoji%F0%9F%98%80/test.pl") {
+            assert_eq!(path, std::path::PathBuf::from("/tmp/emoji😀/test.pl"));
+        }
+    }
+
+    #[test]
+    fn test_fs_path_to_uri_basic() {
+        // Test basic path to URI conversion
+        let result = fs_path_to_uri("/tmp/test.pl");
+        assert!(result.is_ok());
+        let uri = must(result);
+        assert!(uri.starts_with("file://"));
+        assert!(uri.contains("/tmp/test.pl"));
+    }
+
+    #[test]
+    fn test_fs_path_to_uri_with_spaces() {
+        // Test path with spaces
+        let result = fs_path_to_uri("/tmp/path with spaces/test.pl");
+        assert!(result.is_ok());
+        let uri = must(result);
+        assert!(uri.starts_with("file://"));
+        // Should contain percent-encoded spaces
+        assert!(uri.contains("path%20with%20spaces"));
+    }
+
+    #[test]
+    fn test_fs_path_to_uri_with_unicode() {
+        // Test path with Unicode characters
+        let result = fs_path_to_uri("/tmp/café/test.pl");
+        assert!(result.is_ok());
+        let uri = must(result);
+        assert!(uri.starts_with("file://"));
+        // Should contain percent-encoded Unicode
+        assert!(uri.contains("caf%C3%A9"));
+    }
+
+    #[test]
+    fn test_normalize_uri_file_schemes() {
+        // Test normalization of valid file URIs
+        let uri = WorkspaceIndex::normalize_uri("file:///tmp/test.pl");
+        assert_eq!(uri, "file:///tmp/test.pl");
+
+        // Test normalization of URIs with spaces
+        let uri = WorkspaceIndex::normalize_uri("file:///tmp/path%20with%20spaces/test.pl");
+        assert_eq!(uri, "file:///tmp/path%20with%20spaces/test.pl");
+    }
+
+    #[test]
+    fn test_normalize_uri_absolute_paths() {
+        // Test normalization of absolute paths (convert to file:// URI)
+        let uri = WorkspaceIndex::normalize_uri("/tmp/test.pl");
+        assert!(uri.starts_with("file://"));
+        assert!(uri.contains("/tmp/test.pl"));
+    }
+
+    #[test]
+    fn test_normalize_uri_special_schemes() {
+        // Test that special schemes like untitled: are preserved
+        let uri = WorkspaceIndex::normalize_uri("untitled:Untitled-1");
+        assert_eq!(uri, "untitled:Untitled-1");
+    }
+
+    #[test]
+    fn test_roundtrip_conversion() {
+        // Test that URI -> path -> URI conversion preserves the URI
+        let original_uri = "file:///tmp/path%20with%20spaces/caf%C3%A9.pl";
+
+        if let Some(path) = uri_to_fs_path(original_uri) {
+            if let Ok(converted_uri) = fs_path_to_uri(&path) {
+                // Should be able to round-trip back to an equivalent URI
+                assert!(converted_uri.starts_with("file://"));
+
+                // The path component should decode correctly
+                if let Some(roundtrip_path) = uri_to_fs_path(&converted_uri) {
+                    #[cfg(windows)]
+                    if let Ok(rootless) = path.strip_prefix(std::path::Path::new(r"\")) {
+                        assert!(roundtrip_path.ends_with(rootless));
+                    } else {
+                        assert_eq!(path, roundtrip_path);
+                    }
+
+                    #[cfg(not(windows))]
+                    assert_eq!(path, roundtrip_path);
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_windows_paths() {
+        // Test Windows-style paths
+        let result = fs_path_to_uri(r"C:\Users\test\Documents\script.pl");
+        assert!(result.is_ok());
+        let uri = must(result);
+        assert!(uri.starts_with("file://"));
+
+        // Test Windows path with spaces
+        let result = fs_path_to_uri(r"C:\Program Files\My App\script.pl");
+        assert!(result.is_ok());
+        let uri = must(result);
+        assert!(uri.starts_with("file://"));
+        assert!(uri.contains("Program%20Files"));
+    }
+
+    // ========================================================================
+    // IndexCoordinator Tests
+    // ========================================================================
+
+    #[test]
+    fn test_coordinator_initial_state() {
+        let coordinator = IndexCoordinator::new();
+        assert!(matches!(
+            coordinator.state(),
+            IndexState::Building { phase: IndexPhase::Idle, .. }
+        ));
+    }
+
+    #[test]
+    fn test_transition_to_scanning_phase() {
+        let coordinator = IndexCoordinator::new();
+        coordinator.transition_to_scanning();
+
+        let state = coordinator.state();
+        assert!(
+            matches!(state, IndexState::Building { phase: IndexPhase::Scanning, .. }),
+            "Expected Building state after scanning, got: {:?}",
+            state
+        );
+    }
+
+    #[test]
+    fn test_transition_to_indexing_phase() {
+        let coordinator = IndexCoordinator::new();
+        coordinator.transition_to_scanning();
+        coordinator.update_scan_progress(3);
+        coordinator.transition_to_indexing(3);
+
+        let state = coordinator.state();
+        assert!(
+            matches!(
+                state,
+                IndexState::Building { phase: IndexPhase::Indexing, total_count: 3, .. }
+            ),
+            "Expected Building state after indexing with total_count 3, got: {:?}",
+            state
+        );
+    }
+
+    #[test]
+    fn test_transition_to_ready() {
+        let coordinator = IndexCoordinator::new();
+        coordinator.transition_to_ready(100, 5000);
+
+        let state = coordinator.state();
+        if let IndexState::Ready { file_count, symbol_count, .. } = state {
+            assert_eq!(file_count, 100);
+            assert_eq!(symbol_count, 5000);
+        } else {
+            unreachable!("Expected Ready state, got: {:?}", state);
+        }
+    }
+
+    #[test]
+    fn test_parse_storm_degradation() {
+        let coordinator = IndexCoordinator::new();
+        coordinator.transition_to_ready(100, 5000);
+
+        // Trigger parse storm
+        for _ in 0..15 {
+            coordinator.notify_change("file.pm");
+        }
+
+        let state = coordinator.state();
+        assert!(
+            matches!(state, IndexState::Degraded { .. }),
+            "Expected Degraded state, got: {:?}",
+            state
+        );
+        if let IndexState::Degraded { reason, .. } = state {
+            assert!(matches!(reason, DegradationReason::ParseStorm { .. }));
+        }
+    }
+
+    #[test]
+    fn test_recovery_from_parse_storm() {
+        let coordinator = IndexCoordinator::new();
+        coordinator.transition_to_ready(100, 5000);
+
+        // Trigger parse storm
+        for _ in 0..15 {
+            coordinator.notify_change("file.pm");
+        }
+
+        // Complete all parses
+        for _ in 0..15 {
+            coordinator.notify_parse_complete("file.pm");
+        }
+
+        // Should recover to Building state
+        assert!(matches!(coordinator.state(), IndexState::Building { .. }));
+    }
+
+    #[test]
+    fn test_query_dispatch_ready() {
+        let coordinator = IndexCoordinator::new();
+        coordinator.transition_to_ready(100, 5000);
+
+        let result = coordinator.query(|_index| "full_query", |_index| "partial_query");
+
+        assert_eq!(result, "full_query");
+    }
+
+    #[test]
+    fn test_query_dispatch_degraded() {
+        let coordinator = IndexCoordinator::new();
+        // Building state should use partial query
+
+        let result = coordinator.query(|_index| "full_query", |_index| "partial_query");
+
+        assert_eq!(result, "partial_query");
+    }
+
+    #[test]
+    fn test_metrics_pending_count() {
+        let coordinator = IndexCoordinator::new();
+
+        coordinator.notify_change("file1.pm");
+        coordinator.notify_change("file2.pm");
+
+        assert_eq!(coordinator.metrics.pending_count(), 2);
+
+        coordinator.notify_parse_complete("file1.pm");
+        assert_eq!(coordinator.metrics.pending_count(), 1);
+    }
+
+    #[test]
+    fn test_instrumentation_records_transitions() {
+        let coordinator = IndexCoordinator::new();
+        coordinator.transition_to_ready(10, 100);
+
+        let snapshot = coordinator.instrumentation_snapshot();
+        let transition =
+            IndexStateTransition { from: IndexStateKind::Building, to: IndexStateKind::Ready };
+        let count = snapshot.state_transition_counts.get(&transition).copied().unwrap_or(0);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_instrumentation_records_early_exit() {
+        let coordinator = IndexCoordinator::new();
+        coordinator.record_early_exit(EarlyExitReason::InitialTimeBudget, 25, 1, 10);
+
+        let snapshot = coordinator.instrumentation_snapshot();
+        let count = snapshot
+            .early_exit_counts
+            .get(&EarlyExitReason::InitialTimeBudget)
+            .copied()
+            .unwrap_or(0);
+        assert_eq!(count, 1);
+        assert!(snapshot.last_early_exit.is_some());
+    }
+
+    #[test]
+    fn test_custom_limits() {
+        let limits = IndexResourceLimits {
+            max_files: 5000,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 100_000,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+
+        let coordinator = IndexCoordinator::with_limits(limits.clone());
+        assert_eq!(coordinator.limits.max_files, 5000);
+        assert_eq!(coordinator.limits.max_total_symbols, 100_000);
+    }
+
+    #[test]
+    fn test_degradation_preserves_symbol_count() {
+        let coordinator = IndexCoordinator::new();
+        coordinator.transition_to_ready(100, 5000);
+
+        coordinator.transition_to_degraded(DegradationReason::IoError {
+            message: "Test error".to_string(),
+        });
+
+        let state = coordinator.state();
+        assert!(
+            matches!(state, IndexState::Degraded { .. }),
+            "Expected Degraded state, got: {:?}",
+            state
+        );
+        if let IndexState::Degraded { available_symbols, .. } = state {
+            assert_eq!(available_symbols, 5000);
+        }
+    }
+
+    #[test]
+    fn test_index_access() {
+        let coordinator = IndexCoordinator::new();
+        let index = coordinator.index();
+
+        // Should have access to underlying WorkspaceIndex
+        assert!(index.all_symbols().is_empty());
+    }
+
+    #[test]
+    fn test_resource_limit_enforcement_max_files() {
+        let limits = IndexResourceLimits {
+            max_files: 5,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 50_000,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+
+        let coordinator = IndexCoordinator::with_limits(limits);
+        coordinator.transition_to_ready(5, 5);
+
+        // Simulate an over-limit legacy index so the retrospective checker
+        // remains covered even though new admissions are now rejected.
+        {
+            let mut files = coordinator.index().files.write();
+            for i in 0..6 {
+                files.insert(format!("file:///legacy{}.pl", i), FileIndex::default());
+            }
+        }
+
+        // Enforce limits
+        coordinator.enforce_limits();
+
+        let state = coordinator.state();
+        assert!(
+            matches!(
+                state,
+                IndexState::Degraded {
+                    reason: DegradationReason::ResourceLimit { kind: ResourceKind::MaxFiles },
+                    ..
+                }
+            ),
+            "Expected Degraded state with ResourceLimit(MaxFiles), got: {:?}",
+            state
+        );
+    }
+
+    #[test]
+    fn test_index_file_rejects_new_files_at_max_files() {
+        let limits = IndexResourceLimits {
+            max_files: 2,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 50_000,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+        let coordinator = IndexCoordinator::with_limits(limits);
+
+        for i in 0..2 {
+            let uri = must(url::Url::parse(&format!("file:///bounded{}.pl", i)));
+            must(coordinator.index().index_file(uri, "sub bounded { }".to_string()));
+        }
+
+        let uri = must(url::Url::parse("file:///bounded-rejected.pl"));
+        let result = coordinator.index().index_file(uri.clone(), "sub rejected { }".to_string());
+
+        assert!(result.is_err(), "indexing beyond max_files must be rejected");
+        assert_eq!(coordinator.index().files.read().len(), 2);
+        assert!(!coordinator.index().document_store.is_open(uri.as_str()));
+        assert!(matches!(
+            coordinator.state(),
+            IndexState::Degraded {
+                reason: DegradationReason::ResourceLimit { kind: ResourceKind::MaxFiles },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_index_file_allows_existing_file_update_at_max_files() {
+        let limits = IndexResourceLimits {
+            max_files: 1,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 50_000,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+        let coordinator = IndexCoordinator::with_limits(limits);
+        let uri = must(url::Url::parse("file:///bounded-update.pl"));
+
+        must(coordinator.index().index_file(uri.clone(), "sub before { }".to_string()));
+        must(coordinator.index().index_file(uri.clone(), "sub after { }".to_string()));
+
+        let symbols = coordinator.index().file_symbols(uri.as_str());
+        assert!(symbols.iter().any(|symbol| symbol.name == "after"));
+        assert!(!symbols.iter().any(|symbol| symbol.name == "before"));
+        assert!(!matches!(coordinator.state(), IndexState::Degraded { .. }));
+    }
+
+    #[test]
+    fn test_index_file_rejects_new_symbols_at_max_total_symbols() {
+        let limits = IndexResourceLimits {
+            max_files: 10,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 2,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+        let coordinator = IndexCoordinator::with_limits(limits);
+
+        for i in 0..2 {
+            let uri = must(url::Url::parse(&format!("file:///symbols{}.pl", i)));
+            let source = format!("sub symbol{} {{ }}", i);
+            must(coordinator.index().index_file(uri, source));
+        }
+
+        let uri = must(url::Url::parse("file:///symbols-rejected.pl"));
+        let result = coordinator.index().index_file(uri.clone(), "sub rejected { }".to_string());
+
+        assert!(result.is_err(), "indexing beyond max_total_symbols must be rejected");
+        assert_eq!(coordinator.index().files.read().len(), 2);
+        assert!(!coordinator.index().document_store.is_open(uri.as_str()));
+        assert!(matches!(
+            coordinator.state(),
+            IndexState::Degraded {
+                reason: DegradationReason::ResourceLimit { kind: ResourceKind::MaxSymbols },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_index_file_restores_existing_document_after_symbol_rejection() {
+        let limits = IndexResourceLimits {
+            max_files: 10,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 1,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+        let coordinator = IndexCoordinator::with_limits(limits);
+        let uri = must(url::Url::parse("file:///symbols-existing.pl"));
+        let original = "sub retained { }".to_string();
+
+        must(coordinator.index().index_file(uri.clone(), original.clone()));
+        let result = coordinator
+            .index()
+            .index_file(uri.clone(), "sub retained { }\nsub rejected { }".to_string());
+
+        assert!(result.is_err(), "an update beyond max_total_symbols must be rejected");
+        assert_eq!(coordinator.index().files.read().len(), 1);
+        assert_eq!(coordinator.index().document_store.get_text(uri.as_str()), Some(original));
+        let symbols = coordinator.index().file_symbols(uri.as_str());
+        assert!(symbols.iter().any(|symbol| symbol.name == "retained"));
+        assert!(!symbols.iter().any(|symbol| symbol.name == "rejected"));
+        assert!(matches!(
+            coordinator.state(),
+            IndexState::Degraded {
+                reason: DegradationReason::ResourceLimit { kind: ResourceKind::MaxSymbols },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_rejected_document_restore_does_not_overwrite_newer_document() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///restore-race.pl";
+        index.document_store.open(uri.to_string(), 1, "original".to_string());
+        let previous = index.document_store.get(uri);
+
+        index.document_store.open(uri.to_string(), 1, "rejected".to_string());
+        index.document_store.open(uri.to_string(), 1, "newer accepted".to_string());
+        index.restore_document(uri, "rejected", previous.as_ref());
+
+        assert_eq!(index.document_store.get_text(uri), Some("newer accepted".to_string()));
+    }
+
+    #[test]
+    fn test_batch_indexing_rejects_new_files_at_max_files() {
+        let limits = IndexResourceLimits {
+            max_files: 1,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 50_000,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+        let coordinator = IndexCoordinator::with_limits(limits);
+        let first = must(url::Url::parse("file:///batch-first.pl"));
+        let second = must(url::Url::parse("file:///batch-second.pl"));
+
+        let errors = coordinator.index().index_files_batch(vec![
+            (first, "sub first { }".to_string()),
+            (second.clone(), "sub second { }".to_string()),
+        ]);
+
+        assert_eq!(errors.len(), 1, "the second batch entry must be rejected");
+        assert_eq!(coordinator.index().file_count(), 1);
+        assert_eq!(coordinator.index().document_store.count(), 1);
+        assert!(!coordinator.index().document_store.is_open(second.as_str()));
+        assert!(matches!(
+            coordinator.state(),
+            IndexState::Degraded {
+                reason: DegradationReason::ResourceLimit { kind: ResourceKind::MaxFiles },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_batch_indexing_rejects_new_symbols_at_max_total_symbols() {
+        let limits = IndexResourceLimits {
+            max_files: 10,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 1,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+        let coordinator = IndexCoordinator::with_limits(limits);
+        let first = must(url::Url::parse("file:///batch-symbol-first.pl"));
+        let second = must(url::Url::parse("file:///batch-symbol-second.pl"));
+
+        let errors = coordinator.index().index_files_batch(vec![
+            (first, "sub first { }".to_string()),
+            (second.clone(), "sub second { }".to_string()),
+        ]);
+
+        assert_eq!(errors.len(), 1, "the second batch entry must be rejected");
+        assert_eq!(coordinator.index().file_count(), 1);
+        assert_eq!(coordinator.index().symbol_count(), 1);
+        assert!(!coordinator.index().document_store.is_open(second.as_str()));
+        assert!(matches!(
+            coordinator.state(),
+            IndexState::Degraded {
+                reason: DegradationReason::ResourceLimit { kind: ResourceKind::MaxSymbols },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_resource_limit_enforcement_max_symbols() {
+        let limits = IndexResourceLimits {
+            max_files: 100,
+            max_symbols_per_file: 10,
+            max_total_symbols: 50, // Very low limit for testing
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+
+        let coordinator = IndexCoordinator::with_limits(limits);
+        coordinator.transition_to_ready(0, 0);
+
+        // Simulate an over-limit legacy index so the retrospective checker
+        // remains covered even though new admissions are now rejected.
+        let source_index = WorkspaceIndex::new();
+        let source =
+            (0..51).map(|i| format!("sub legacy_{} {{ }}", i)).collect::<Vec<_>>().join("\n");
+        let uri = must(url::Url::parse("file:///legacy-symbols.pl"));
+        must(source_index.index_file(uri, source));
+        let legacy_file = must_some(source_index.files.read().values().next().cloned());
+        coordinator
+            .index()
+            .files
+            .write()
+            .insert("file:///legacy-symbols.pl".to_string(), legacy_file);
+
+        // Enforce limits
+        coordinator.enforce_limits();
+
+        let state = coordinator.state();
+        assert!(
+            matches!(
+                state,
+                IndexState::Degraded {
+                    reason: DegradationReason::ResourceLimit { kind: ResourceKind::MaxSymbols },
+                    ..
+                }
+            ),
+            "Expected Degraded state with ResourceLimit(MaxSymbols), got: {:?}",
+            state
+        );
+    }
+
+    #[test]
+    fn test_check_limits_prefers_file_count_over_symbol_count() {
+        // Retrospective priority: when legacy over-limit state exceeds BOTH
+        // `max_files` and `max_total_symbols`, the file-count limit must be
+        // reported first. New admissions never reach this state — they are
+        // rejected eagerly (see `test_index_file_rejects_new_files_at_max_files`)
+        // — so the over-limit index is simulated directly, as in the sibling
+        // retrospective tests.
+        let limits = IndexResourceLimits {
+            max_files: 1,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 1,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+
+        let coordinator = IndexCoordinator::with_limits(limits);
+
+        // Two files with one symbol each exceed both budgets
+        // (2 files > 1, 2 symbols > 1). Constructed directly (not via the
+        // `index_file` compatibility surface) so the #11301 ledger's
+        // compatibility-call baseline stays untouched.
+        let legacy_file = FileIndex {
+            source_uri: "file:///legacy-priority.pl".to_string(),
+            symbols: vec![WorkspaceSymbol {
+                name: "legacy_priority".to_string(),
+                kind: SymbolKind::Subroutine,
+                uri: "file:///legacy-priority.pl".to_string(),
+                range: Range {
+                    start: Position { byte: 0, line: 1, column: 1 },
+                    end: Position { byte: 9, line: 1, column: 10 },
+                },
+                qualified_name: None,
+                documentation: None,
+                container_name: None,
+                has_body: true,
+                workspace_folder_uri: None,
+                is_lexical: false,
+            }],
+            ..FileIndex::default()
+        };
+        {
+            let mut files = coordinator.index().files.write();
+            files.insert("file:///legacy-priority-a.pl".to_string(), legacy_file.clone());
+            files.insert("file:///legacy-priority-b.pl".to_string(), legacy_file);
+        }
+
+        let reason = coordinator.check_limits();
+        assert!(
+            matches!(
+                reason,
+                Some(DegradationReason::ResourceLimit { kind: ResourceKind::MaxFiles })
+            ),
+            "Expected MaxFiles when both limits are exceeded, got: {reason:?}"
+        );
+    }
+
+    #[test]
+    fn test_check_limits_returns_none_within_bounds() {
+        let coordinator = IndexCoordinator::new();
+        coordinator.transition_to_ready(0, 0);
+
+        // Index a few files well within default limits
+        for i in 0..5 {
+            let uri_str = format!("file:///test{}.pl", i);
+            let uri = must(url::Url::parse(&uri_str));
+            let code = "sub test { }";
+            must(coordinator.index().index_file(uri, code.to_string()));
+        }
+
+        // Should not trigger degradation
+        let limit_check = coordinator.check_limits();
+        assert!(limit_check.is_none(), "check_limits should return None when within bounds");
+
+        // State should still be Ready
+        assert!(
+            matches!(coordinator.state(), IndexState::Ready { .. }),
+            "State should remain Ready when within limits"
+        );
+    }
+
+    #[test]
+    fn test_enforce_limits_called_on_transition_to_ready() {
+        let limits = IndexResourceLimits {
+            max_files: 3,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 50_000,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+
+        let coordinator = IndexCoordinator::with_limits(limits);
+
+        // Simulate an over-limit legacy index before transitioning to ready.
+        {
+            let mut files = coordinator.index().files.write();
+            for i in 0..4 {
+                files.insert(format!("file:///legacy-ready{}.pl", i), FileIndex::default());
+            }
+        }
+
+        // Transition to ready - should automatically enforce limits.
+        coordinator.transition_to_ready(4, 0);
+
+        let state = coordinator.state();
+        assert!(
+            matches!(
+                state,
+                IndexState::Degraded {
+                    reason: DegradationReason::ResourceLimit { kind: ResourceKind::MaxFiles },
+                    ..
+                }
+            ),
+            "Expected Degraded state after transition_to_ready with exceeded limits, got: {:?}",
+            state
+        );
+    }
+
+    #[test]
+    fn test_state_transition_guard_ready_to_ready() {
+        // Test that Ready → Ready is allowed (metrics update)
+        let coordinator = IndexCoordinator::new();
+        coordinator.transition_to_ready(100, 5000);
+
+        // Transition to Ready again with different metrics
+        coordinator.transition_to_ready(150, 7500);
+
+        let state = coordinator.state();
+        assert!(
+            matches!(state, IndexState::Ready { file_count: 150, symbol_count: 7500, .. }),
+            "Expected Ready state with updated metrics, got: {:?}",
+            state
+        );
+    }
+
+    #[test]
+    fn test_state_transition_guard_building_to_building() {
+        // Test that Building → Building is allowed (progress update)
+        let coordinator = IndexCoordinator::new();
+
+        // Initial building state
+        coordinator.transition_to_building(100);
+
+        let state = coordinator.state();
+        assert!(
+            matches!(state, IndexState::Building { indexed_count: 0, total_count: 100, .. }),
+            "Expected Building state, got: {:?}",
+            state
+        );
+
+        // Update total count
+        coordinator.transition_to_building(200);
+
+        let state = coordinator.state();
+        assert!(
+            matches!(state, IndexState::Building { indexed_count: 0, total_count: 200, .. }),
+            "Expected Building state, got: {:?}",
+            state
+        );
+    }
+
+    #[test]
+    fn test_state_transition_ready_to_building() {
+        // Test that Ready → Building is allowed (re-scan)
+        let coordinator = IndexCoordinator::new();
+        coordinator.transition_to_ready(100, 5000);
+
+        // Trigger re-scan
+        coordinator.transition_to_building(150);
+
+        let state = coordinator.state();
+        assert!(
+            matches!(state, IndexState::Building { indexed_count: 0, total_count: 150, .. }),
+            "Expected Building state after re-scan, got: {:?}",
+            state
+        );
+    }
+
+    #[test]
+    fn test_state_transition_degraded_to_building() {
+        // Test that Degraded → Building is allowed (recovery)
+        let coordinator = IndexCoordinator::new();
+        coordinator.transition_to_degraded(DegradationReason::IoError {
+            message: "Test error".to_string(),
+        });
+
+        // Attempt recovery
+        coordinator.transition_to_building(100);
+
+        let state = coordinator.state();
+        assert!(
+            matches!(state, IndexState::Building { indexed_count: 0, total_count: 100, .. }),
+            "Expected Building state after recovery, got: {:?}",
+            state
+        );
+    }
+
+    #[test]
+    fn test_update_building_progress() {
+        let coordinator = IndexCoordinator::new();
+        coordinator.transition_to_building(100);
+
+        // Update progress
+        coordinator.update_building_progress(50);
+
+        let state = coordinator.state();
+        assert!(
+            matches!(state, IndexState::Building { indexed_count: 50, total_count: 100, .. }),
+            "Expected Building state with updated progress, got: {:?}",
+            state
+        );
+
+        // Update progress again
+        coordinator.update_building_progress(100);
+
+        let state = coordinator.state();
+        assert!(
+            matches!(state, IndexState::Building { indexed_count: 100, total_count: 100, .. }),
+            "Expected Building state with completed progress, got: {:?}",
+            state
+        );
+    }
+
+    #[test]
+    fn test_scan_timeout_detection() {
+        // Test that scan timeout triggers degradation
+        let limits = IndexResourceLimits {
+            max_scan_duration_ms: 0, // Immediate timeout for testing
+            ..Default::default()
+        };
+
+        let coordinator = IndexCoordinator::with_limits(limits);
+        coordinator.transition_to_building(100);
+
+        // Small sleep to ensure elapsed time > 0
+        std::thread::sleep(std::time::Duration::from_millis(1));
+
+        // Update progress should detect timeout
+        coordinator.update_building_progress(10);
+
+        let state = coordinator.state();
+        assert!(
+            matches!(
+                state,
+                IndexState::Degraded { reason: DegradationReason::ScanTimeout { .. }, .. }
+            ),
+            "Expected Degraded state with ScanTimeout, got: {:?}",
+            state
+        );
+    }
+
+    #[test]
+    fn test_scan_timeout_does_not_trigger_within_limit() {
+        // Test that scan doesn't timeout within the limit
+        let limits = IndexResourceLimits {
+            max_scan_duration_ms: 10_000, // 10 seconds - should not trigger
+            ..Default::default()
+        };
+
+        let coordinator = IndexCoordinator::with_limits(limits);
+        coordinator.transition_to_building(100);
+
+        // Update progress immediately (well within limit)
+        coordinator.update_building_progress(50);
+
+        let state = coordinator.state();
+        assert!(
+            matches!(state, IndexState::Building { indexed_count: 50, .. }),
+            "Expected Building state (no timeout), got: {:?}",
+            state
+        );
+    }
+
+    #[test]
+    fn test_early_exit_optimization_unchanged_content() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///test.pl"));
+        let code = r#"
+package MyPackage;
+
+sub hello {
+    print "Hello";
+}
+"#;
+
+        // First indexing should parse and index
+        must(index.index_file(uri.clone(), code.to_string()));
+        let symbols1 = index.file_symbols(uri.as_str());
+        assert!(symbols1.iter().any(|s| s.name == "MyPackage" && s.kind == SymbolKind::Package));
+        assert!(symbols1.iter().any(|s| s.name == "hello" && s.kind == SymbolKind::Subroutine));
+
+        // Second indexing with same content should early-exit
+        // We can verify this by checking that the index still works correctly
+        must(index.index_file(uri.clone(), code.to_string()));
+        let symbols2 = index.file_symbols(uri.as_str());
+        assert_eq!(symbols1.len(), symbols2.len());
+        assert!(symbols2.iter().any(|s| s.name == "MyPackage" && s.kind == SymbolKind::Package));
+        assert!(symbols2.iter().any(|s| s.name == "hello" && s.kind == SymbolKind::Subroutine));
+    }
+
+    #[test]
+    fn test_index_file_generation_updates_on_same_content_reindex() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///generation.pl"));
+        let code = "package Generation;\nsub stable { 1 }\n1;\n";
+
+        must(index.index_file_with_generation(uri.clone(), code.to_string(), 1));
+        assert_eq!(index.indexed_generation(uri.as_str()), Some(1));
+        assert!(!index.is_index_generation_stale(uri.as_str(), 1));
+        assert!(index.is_index_generation_stale(uri.as_str(), 2));
+
+        must(index.index_file_with_generation(uri.clone(), code.to_string(), 2));
+        assert_eq!(index.indexed_generation(uri.as_str()), Some(2));
+        assert!(!index.is_index_generation_stale(uri.as_str(), 2));
+    }
+
+    #[test]
+    fn is_index_generation_stale_boundary_discriminator_indexed_generation_less_than_expected_generation()
      {
         let index = WorkspaceIndex::new();
         let uri = must(url::Url::parse("file:///generation-boundary.pl"));
