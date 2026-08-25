@@ -8659,7 +8659,7 @@ mod tests {
         let runner = write_fake_execute_runner(temp.path())?;
         let output = temp.path().join("execute-report.json");
 
-        let Err(err) = run_mode(RunConfig {
+        run_mode(RunConfig {
             perl_tree,
             host_perl: PathBuf::from("/bin/sh"),
             runner: HarnessRunner::Test,
