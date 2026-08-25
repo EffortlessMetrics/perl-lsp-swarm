@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -94,6 +95,22 @@ def _sha(value: Any, name: str) -> None:
     )
 
 
+def _landed_sha_is_ancestor(repository_root: Path, landed_sha: str, observation_sha: str, name: str) -> None:
+    """Fail closed unless git proves the landing commit precedes the observation."""
+
+    if not repository_root.is_dir():
+        raise ValueError(f"{name} ancestry cannot be proven without the repository checkout")
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", landed_sha, observation_sha],
+        cwd=repository_root,
+        capture_output=True,
+    )
+    _require(
+        result.returncode == 0,
+        f"{name} is not an ancestor of observation_sha; already_included must represent included tree state, not a candidate head",
+    )
+
+
 def _number_entries(value: Any, name: str) -> list[dict[str, Any]]:
     _require(isinstance(value, list), f"{name} must be a list")
     for index, entry in enumerate(value):
@@ -108,7 +125,7 @@ def _number_entries(value: Any, name: str) -> list[dict[str, Any]]:
     return value
 
 
-def validate_intake(receipt: Any) -> None:
+def validate_intake(receipt: Any, repository_root: Path | None = None) -> None:
     """Raise ``ValueError`` unless the RC intake receipt holds together."""
 
     data = _object(receipt, "receipt")
@@ -141,6 +158,10 @@ def validate_intake(receipt: Any) -> None:
     _require(len(numbers) == len(set(numbers)), "observed_numbers must be unique")
     _require(QUERY_LIMIT > observed_count, "query_limit must leave headroom above observed_open_count")
     _require(snapshot.get("set_equality") is True, "queue_snapshot.set_equality must be true")
+    _require(
+        observed_count == receipt_count == len(numbers),
+        "observed_open_count, receipt_count, and len(observed_numbers) must agree",
+    )
 
     already = data.get("already_included")
     _require(isinstance(already, list), "already_included must be a list")
@@ -153,6 +174,13 @@ def validate_intake(receipt: Any) -> None:
         _sha(entry_object.get("landed_sha"), f"already_included[{index}].landed_sha")
         note = entry_object.get("note")
         _require(isinstance(note, str) and note, f"already_included[{index}].note must be a non-empty string")
+        if repository_root is not None:
+            _landed_sha_is_ancestor(
+                repository_root,
+                entry["landed_sha"],
+                data["observation_sha"],
+                f"already_included[{index}].landed_sha",
+            )
     _require(len(already_numbers) == len(set(already_numbers)), "already_included.numbers must be unique")
 
     included = _number_entries(data.get("included_prs"), "included_prs")
@@ -176,22 +204,32 @@ def validate_intake(receipt: Any) -> None:
     irrelevant = _number_entries(data.get("not_release_relevant"), "not_release_relevant")
     unproven = _number_entries(data.get("not_proven"), "not_proven")
 
-    buckets: dict[str, set[int]] = {
-        "included_prs": {entry["number"] for entry in included},
-        "required_blockers": set(blocker_numbers),
-        "excluded_post_rc": {entry["number"] for entry in excluded},
-        "superseded_for_release": {entry["number"] for entry in superseded},
-        "not_release_relevant": {entry["number"] for entry in irrelevant},
-        "not_proven": {entry["number"] for entry in unproven},
+    buckets: dict[str, list[int]] = {
+        "included_prs": [entry["number"] for entry in included],
+        "required_blockers": list(blocker_numbers),
+        "excluded_post_rc": [entry["number"] for entry in excluded],
+        "superseded_for_release": [entry["number"] for entry in superseded],
+        "not_release_relevant": [entry["number"] for entry in irrelevant],
+        "not_proven": [entry["number"] for entry in unproven],
     }
 
     observed_set = set(numbers)
     covered: set[int] = set()
     for name, members in buckets.items():
-        overlap = covered & members
+        _require(
+            len(members) == len(set(members)),
+            f"{name} contains a duplicate row; every PR receives exactly one disposition",
+        )
+        member_set = set(members)
+        overlap = covered & member_set
         _require(not overlap, f"{name} overlaps an earlier disposition for PRs {sorted(overlap)}")
-        covered |= members
-    missing = observed_set - covered - set(already_numbers)
+        covered |= member_set
+    already_set = set(already_numbers)
+    _require(
+        covered.isdisjoint(already_set),
+        f"already_included must stay disjoint from the observed open queue: {sorted(covered & already_set)}",
+    )
+    missing = observed_set - covered
     _require(not missing, f"observed release-affecting queue omitted from every disposition: {sorted(missing)}")
     extra = covered - observed_set
     _require(not extra, f"dispositions reference PRs outside the observed open queue: {sorted(extra)}")
@@ -222,11 +260,18 @@ def canonical_bytes(receipt: Any) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--receipt", type=Path, default=Path("docs/releases/v0.18.0-rc.1-intake.json"))
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="repository root used to prove already_included ancestry; defaults to the receipt's parent directory",
+    )
     args = parser.parse_args(argv)
     try:
         text = args.receipt.read_text(encoding="utf-8")
         receipt = json.loads(text)
-        validate_intake(receipt)
+        root = args.root if args.root is not None else args.receipt.parent.parent
+        validate_intake(receipt, repository_root=root)
         _require(text == canonical_bytes(receipt), "receipt bytes are not canonical; identical inputs must generate identical bytes")
     except (OSError, json.JSONDecodeError, ValueError) as error:
         print(f"rc intake validation failed: {error}", file=sys.stderr)

@@ -25,10 +25,10 @@ class RcIntakeValidationTests(unittest.TestCase):
 
     def assert_invalid(self, receipt: dict, message: str) -> None:
         with self.assertRaisesRegex(ValueError, message):
-            MODULE.validate_intake(receipt)
+            MODULE.validate_intake(receipt, repository_root=ROOT)
 
     def test_current_intake_receipt_passes(self) -> None:
-        MODULE.validate_intake(self.receipt)
+        MODULE.validate_intake(self.receipt, repository_root=ROOT)
         self.assertEqual(MODULE.main([]), 0)
 
     def test_rejects_release_affecting_pr_omitted_from_every_disposition(self) -> None:
@@ -45,6 +45,59 @@ class RcIntakeValidationTests(unittest.TestCase):
             {"number": entry["number"], "reason": "duplicate placement must fail"}
         )
         self.assert_invalid(receipt, "overlaps an earlier disposition")
+
+    def test_rejects_duplicate_row_within_one_disposition(self) -> None:
+        receipt = copy.deepcopy(self.receipt)
+        entry = copy.deepcopy(receipt["excluded_post_rc"][0])
+        entry["reason"] = "duplicate row within the same disposition"
+        receipt["excluded_post_rc"].append(entry)
+        self.assert_invalid(receipt, "contains a duplicate row")
+
+    def test_rejects_open_pr_moved_into_already_included(self) -> None:
+        receipt = copy.deepcopy(self.receipt)
+        moved = next(
+            entry
+            for entry in receipt["excluded_post_rc"]
+            if entry["number"] == 12290
+        )
+        receipt["excluded_post_rc"] = [
+            entry for entry in receipt["excluded_post_rc"] if entry["number"] != 12290
+        ]
+        receipt["already_included"].append(
+            {
+                "number": moved["number"],
+                "landed_sha": "cc1f8438796ec78a2f731f71df6573851e3f0a71",
+                "note": "an observed-open PR cannot already be landed",
+            }
+        )
+        self.assert_invalid(receipt, "omitted from every disposition")
+
+    def test_rejects_open_pr_listed_as_both_open_and_already_included(self) -> None:
+        receipt = copy.deepcopy(self.receipt)
+        receipt["already_included"].append(
+            {
+                "number": 12290,
+                "landed_sha": "cc1f8438796ec78a2f731f71df6573851e3f0a71",
+                "note": "still-open #12290 cannot simultaneously be landed tree state",
+            }
+        )
+        self.assert_invalid(receipt, "disjoint from the observed open queue")
+
+    def test_rejects_count_drift_when_queue_entry_is_dropped(self) -> None:
+        receipt = copy.deepcopy(self.receipt)
+        dropped = 12320
+        receipt["not_release_relevant"] = [
+            entry for entry in receipt["not_release_relevant"] if entry["number"] != dropped
+        ]
+        receipt["queue_snapshot"]["observed_numbers"] = [
+            number for number in receipt["queue_snapshot"]["observed_numbers"] if number != dropped
+        ]
+        self.assert_invalid(receipt, "must agree")
+
+    def test_rejects_landed_sha_that_is_not_an_observation_ancestor(self) -> None:
+        receipt = copy.deepcopy(self.receipt)
+        receipt["already_included"][0]["landed_sha"] = "b" * 40
+        self.assert_invalid(receipt, "not an ancestor of observation_sha")
 
     def test_rejects_disposition_outside_observed_queue(self) -> None:
         receipt = copy.deepcopy(self.receipt)
