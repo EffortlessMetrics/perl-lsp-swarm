@@ -173,11 +173,11 @@ fn mapped_node_entry(node_id: &str, with_test: bool) -> Value {
         "node_id": node_id,
         "status": "mapped",
         "components": [{
-            "component_id": "fixture.adapter",
+            "component_id": format!("fixture.adapter.{node_id}"),
             "role": "production",
             "kind": "rust_source",
-            "path": "src/adapter.rs",
-            "symbol": "compose_fixture",
+            "path": format!("src/{}.rs", node_id.to_lowercase()),
+            "symbol": format!("compose_fixture_{node_id}"),
             "symbol_kind": "rust_item",
             "client_family": null,
             "notes": null
@@ -189,7 +189,7 @@ fn mapped_node_entry(node_id: &str, with_test: bool) -> Value {
         },
         "generated": [],
         "read_set": ["AGENTS.md"],
-        "write_set": ["src/adapter.rs"],
+        "write_set": [format!("src/{}.rs", node_id.to_lowercase())],
         "not_authority": [],
         "specs": [],
         "write_set_note": null,
@@ -244,7 +244,16 @@ fn load_fixture_inputs(
             }
         ]}),
     )?;
-    write_text(root, "src/adapter.rs", "pub fn compose_fixture() {}\n")?;
+    for node_id in
+        manifest_nodes.iter().filter_map(|node| node.get("node_id")).filter_map(Value::as_str)
+    {
+        let lower = node_id.to_lowercase();
+        write_text(
+            root,
+            &format!("src/{lower}.rs"),
+            &format!("pub fn compose_fixture_{node_id}() {{}}\n"),
+        )?;
+    }
     write_text(root, "tests/adapter_contract.rs", "#[test] fn fixture_packet_law() {}\n")?;
     write_json(root, MAPPING_RELATIVE_PATH, &make_mapping(mapping_nodes))?;
     write_json(root, SPECS_LEDGER_RELATIVE_PATH, &specs_ledger(ledger_records))?;
@@ -301,19 +310,27 @@ fn complete_node_renders_shared_contract_packet_deterministically() -> Result<()
 // ---------------------------------------------------------------------------
 
 #[test]
-fn missing_spec_disposition_refuses_with_exact_reason() -> Result<()> {
+fn missing_spec_disposition_fails_the_load_with_the_exact_node() -> Result<()> {
     let root = fixture_tree("no-spec")?;
-    let inputs = load_fixture_inputs(
+    let failure = match load_fixture_inputs(
         &root,
         &[make_node("SUB", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT")],
         &[mapped_node_entry("SUB", true)],
         &[], // no E02 record for SUB
-    )?;
-    let refusal = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", None)
-        .expect_err("a missing checked disposition must refuse");
-    assert_eq!(refusal.code, "MISSING_SPEC_DISPOSITION");
-    assert!(refusal.detail.contains(SPECS_LEDGER_RELATIVE_PATH));
-    assert!(refusal.detail.contains("SUB"));
+    ) {
+        Err(failure) => failure,
+        Ok(inputs) => {
+            match compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", None) {
+                // Defense-in-depth: a hand-constructed ledger hole still refuses
+                // with the typed per-node reason instead of prose.
+                Err(refusal) => panic!("unexpected typed refusal path: {}", refusal.line()),
+                Ok(_) => panic!("a missing checked disposition must never compose a packet"),
+            }
+        }
+    };
+    let rendered = format!("{failure:#}");
+    assert!(rendered.contains(SPECS_LEDGER_RELATIVE_PATH), "{rendered}");
+    assert!(rendered.contains("does not cover manifest node SUB (#9001)"), "{rendered}");
     Ok(())
 }
 
@@ -398,6 +415,10 @@ fn maintainer_profile_is_not_permitted_for_ordinary_coding_nodes() -> Result<()>
 // Review packet: independent challenge surface, supplied facts only.
 // ---------------------------------------------------------------------------
 
+fn fixture_head() -> String {
+    fixture_git().0
+}
+
 fn complete_controls() -> BTreeMap<String, BTreeMap<String, Value>> {
     let criteria = [
         "exists",
@@ -440,7 +461,7 @@ fn review_packet_requires_supplied_candidate_identity_and_controls() -> Result<(
 
     let partial = ReviewFacts {
         base: "base0".into(),
-        head: "head0".into(),
+        head: fixture_head(),
         diff: "sha256:dd".into(),
         controls: BTreeMap::new(),
     };
@@ -450,7 +471,7 @@ fn review_packet_requires_supplied_candidate_identity_and_controls() -> Result<(
 
     let uncovered = ReviewFacts {
         base: "base0".into(),
-        head: "head0".into(),
+        head: fixture_head(),
         diff: "sha256:dd".into(),
         controls: {
             let mut controls = complete_controls();
@@ -476,7 +497,7 @@ fn review_packet_refuses_unestablished_control_evidence() -> Result<()> {
         .insert("exists".to_string(), json!({"status": "not_established", "evidence": "gap"}));
     let facts = ReviewFacts {
         base: "base0".into(),
-        head: "head0".into(),
+        head: fixture_head(),
         diff: "sha256:dd".into(),
         controls,
     };
@@ -493,7 +514,7 @@ fn review_packet_renders_shared_review_contract_deterministically() -> Result<()
     let inputs = default_fixture(&root)?;
     let facts = ReviewFacts {
         base: "base0".into(),
-        head: "head0".into(),
+        head: fixture_head(),
         diff: "sha256:dd".into(),
         controls: complete_controls(),
     };
@@ -541,6 +562,124 @@ fn reconcile_refuses_without_supplied_candidates_and_blocks_with_them() -> Resul
     assert_eq!(doc["frontier"]["decision"], "blocked");
     assert_eq!(doc["frontier"]["blocking_edges"][0]["edge"], "PR #8800 (tooling/sub-claim)");
     render_builder_packet(&doc, PacketProjection::Machine)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Review-finding regressions.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn spec_only_hard_dependency_does_not_count_as_landed() -> Result<()> {
+    let root = fixture_tree("spec-dep")?;
+    // DEP holds only ISSUE_PLAN_SUFFICIENT (specability, not landing) and
+    // has a full exact-tree context; SUB hard-depends on it.
+    let mut dep = make_node("DEP", 9101, "implementation", "ISSUE_PLAN_SUFFICIENT");
+    dep["train_role"] = json!("stable_contract");
+    dep["successors"] = json!(["SUB"]);
+    let mut sub = make_node("SUB", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT");
+    sub["dependencies"] = json!([{"target": "DEP", "class": "hard", "provenance": "fixture"}]);
+    let inputs = load_fixture_inputs(
+        &root,
+        &[sub, dep],
+        &[mapped_node_entry("SUB", true), unmapped_node_entry("DEP")],
+        &[
+            disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT"),
+            disposition_record("DEP", 9101, "ISSUE_PLAN_SUFFICIENT"),
+        ],
+    )?;
+    let refusal = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", None)
+        .expect_err("a spec-only disposition on a hard dependency must not count as landed");
+    assert_eq!(refusal.code, "HARD_DEPENDENCY_NOT_CURRENT");
+    assert!(refusal.detail.contains("specability"), "detail: {}", refusal.detail);
+    Ok(())
+}
+
+#[test]
+fn landed_contract_hard_dependency_admits_the_packet() -> Result<()> {
+    let root = fixture_tree("landed-dep")?;
+    let mut dep = make_node("DEP", 9101, "implementation", "EXISTING_CONTRACT_SUFFICIENT");
+    dep["train_role"] = json!("stable_contract");
+    dep["successors"] = json!(["SUB"]);
+    let mut sub = make_node("SUB", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT");
+    sub["dependencies"] = json!([{"target": "DEP", "class": "hard", "provenance": "fixture"}]);
+    let inputs = load_fixture_inputs(
+        &root,
+        &[sub, dep],
+        &[mapped_node_entry("SUB", true), mapped_node_entry("DEP", true)],
+        &[
+            disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT"),
+            disposition_record("DEP", 9101, "EXISTING_CONTRACT_SUFFICIENT"),
+        ],
+    )?;
+    let doc = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", None)
+        .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    assert_eq!(doc["frontier"]["decision"], "ready");
+    Ok(())
+}
+
+#[test]
+fn duplicate_or_mismatched_ledger_records_fail_the_load() -> Result<()> {
+    let root = fixture_tree("dup-ledger")?;
+    let mut inputs = load_fixture_inputs(
+        &root,
+        &[make_node("SUB", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT")],
+        &[mapped_node_entry("SUB", true)],
+        &[disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT")],
+    )?;
+    // A second, stale record for the same node must not be silently trusted.
+    inputs.specs.records.push(inputs.specs.records[0].clone());
+    let ledger_bytes = serde_json::to_vec(&inputs.specs)?;
+    write_json(
+        &root,
+        SPECS_LEDGER_RELATIVE_PATH,
+        &serde_json::from_slice::<Value>(&ledger_bytes)?,
+    )?;
+    let engine = load_inputs_with_git(&root, Some(fixture_git()))?;
+    let failure = match complete_adapter_inputs(&root, engine) {
+        Err(failure) => failure,
+        Ok(_) => panic!("duplicate E02 records must fail the adapter load"),
+    };
+    assert!(format!("{failure:#}").contains("duplicate records"));
+    Ok(())
+}
+
+#[test]
+fn review_head_must_bind_the_observed_checkout() -> Result<()> {
+    let root = fixture_tree("head-mismatch")?;
+    let inputs = default_fixture(&root)?;
+    let facts = ReviewFacts {
+        base: "base0".into(),
+        head: "deadbeef".to_string(),
+        diff: "sha256:dd".into(),
+        controls: complete_controls(),
+    };
+    let refusal = compose_review_packet(&root, &inputs, "SUB", &facts)
+        .expect_err("a head from another tree must refuse");
+    assert_eq!(refusal.code, "HEAD_TREE_MISMATCH");
+    Ok(())
+}
+
+#[test]
+fn eligibility_refusals_are_distinct_from_instrument_failures() -> Result<()> {
+    for code in [
+        "MISSING_SPEC_DISPOSITION",
+        "PROFILE_NOT_PERMITTED",
+        "SPEC_DISPOSITION_NOT_BUILDER",
+        "CONTEXT_MAPPING_GAP",
+        "HARD_DEPENDENCY_NOT_CURRENT",
+        "NO_WRITE_SURFACE",
+    ] {
+        assert!(is_eligibility_refusal(code), "{code} must be a typed eligibility refusal");
+    }
+    for code in [
+        "SHARED_CONTRACT_VALIDATION_FAILED",
+        "NODE_RESOLUTION_FAILED",
+        "CONTEXT_RESOLUTION_FAILED",
+        "BUILDER_PACKET_INVALID",
+    ] {
+        assert!(!is_eligibility_refusal(code), "{code} is an instrument failure, not eligibility");
+    }
     Ok(())
 }
 

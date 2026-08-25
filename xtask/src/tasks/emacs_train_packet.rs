@@ -169,6 +169,50 @@ pub(crate) fn complete_adapter_inputs(root: &Path, engine: EngineInputs) -> Resu
         ledger_path.display(),
         specs.schema
     );
+    ensure!(
+        specs.schema_version == 1,
+        "E02 ledger {} declares schema_version {}, expected 1",
+        ledger_path.display(),
+        specs.schema_version
+    );
+    // Structural E02 laws the adapter depends on when trusting a record to
+    // select a profile: no duplicate node records, every record matches a
+    // manifest node's issue, and the ledger covers the manifest denominator.
+    // (Full canonical-byte law enforcement stays owned by the E02 checker.)
+    let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for record in &specs.records {
+        ensure!(
+            seen.insert(record.node_id.as_str()),
+            "E02 ledger {} carries duplicate records for node {}",
+            ledger_path.display(),
+            record.node_id
+        );
+        let node = engine.manifest.nodes.iter().find(|node| node.node_id == record.node_id);
+        let node = node.ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "E02 ledger {} carries a record for node {} which is not in the manifest",
+                ledger_path.display(),
+                record.node_id
+            )
+        })?;
+        ensure!(
+            node.issue == record.issue,
+            "E02 ledger {} record for node {} declares issue {} but the manifest declares {}",
+            ledger_path.display(),
+            record.node_id,
+            record.issue,
+            node.issue
+        );
+    }
+    for node in &engine.manifest.nodes {
+        ensure!(
+            specs.records.iter().any(|record| record.node_id == node.node_id),
+            "E02 ledger {} does not cover manifest node {} (#{}); the denominator is incomplete",
+            ledger_path.display(),
+            node.node_id,
+            node.issue
+        );
+    }
     Ok(AdapterInputs { engine, specs, specs_digest: digest })
 }
 
@@ -405,7 +449,7 @@ pub fn compose_builder_packet(
 
     // Frontier: hard dependencies must be current on the offline spec plane;
     // external hard targets are honestly unverifiable offline.
-    let blocking_edges = hard_dependency_blockers(inputs, node);
+    let blocking_edges = hard_dependency_blockers(root, inputs, node);
     if is_coding && !blocking_edges.is_empty() {
         let edges = blocking_edges
             .iter()
@@ -634,9 +678,17 @@ fn resolve_train_node<'a>(inputs: &'a AdapterInputs, subject: &str) -> Result<&'
     }
 }
 
-/// Offline hard-dependency currency: node targets must hold a non-blocking
-/// checked disposition; external targets are honestly unverifiable offline.
-fn hard_dependency_blockers(inputs: &AdapterInputs, node: &TrainNode) -> Vec<(String, String)> {
+/// Offline hard-dependency currency. A checked disposition alone establishes
+/// specability, not landing: only a disposition that declares an already
+/// landed contract consumed unchanged (`EXISTING_CONTRACT_SUFFICIENT`) or a
+/// full exact-tree context packet for the dependency (its declared surfaces
+/// verified on the observed tree by the E04 engine) is offline landing
+/// evidence. External targets are honestly unverifiable offline.
+fn hard_dependency_blockers(
+    root: &Path,
+    inputs: &AdapterInputs,
+    node: &TrainNode,
+) -> Vec<(String, String)> {
     let mut blockers = Vec::new();
     for dependency in &node.dependencies {
         if dependency.class != "hard" {
@@ -646,34 +698,52 @@ fn hard_dependency_blockers(inputs: &AdapterInputs, node: &TrainNode) -> Vec<(St
         let target_node = inputs.engine.manifest.nodes.iter().find(|candidate| {
             candidate.node_id.eq_ignore_ascii_case(target) || candidate.issue.to_string() == target
         });
-        match target_node {
-            Some(target_node) => {
-                let disposition = inputs
-                    .specs
-                    .records
-                    .iter()
-                    .find(|record| record.node_id == target_node.node_id)
-                    .map(|record| record.disposition.to_string());
-                match disposition {
-                    Some(disposition) if !BLOCKING_DISPOSITIONS.contains(&disposition.as_str()) => {
-                    }
-                    Some(disposition) => blockers.push((
-                        dependency.target.clone(),
-                        format!(
-                            "checked spec disposition {disposition} does not establish currentness"
-                        ),
-                    )),
-                    None => blockers.push((
-                        dependency.target.clone(),
-                        "no E02 checked disposition record for the dependency node".to_string(),
-                    )),
-                }
-            }
-            None => blockers.push((
+        let Some(target_node) = target_node else {
+            blockers.push((
                 dependency.target.clone(),
-                "external hard dependency: landing currency is not observable offline \
-                 (#10923/#10930 unlanded); supply a live observation"
+                "external hard dependency: landing currency is not observable offline                  (#10923/#10930 unlanded); supply a live observation"
                     .to_string(),
+            ));
+            continue;
+        };
+        let disposition = inputs
+            .specs
+            .records
+            .iter()
+            .find(|record| record.node_id == target_node.node_id)
+            .map(|record| record.disposition.to_string());
+        let Some(disposition) = disposition else {
+            blockers.push((
+                dependency.target.clone(),
+                "no E02 checked disposition record for the dependency node".to_string(),
+            ));
+            continue;
+        };
+        if BLOCKING_DISPOSITIONS.contains(&disposition.as_str()) {
+            blockers.push((
+                dependency.target.clone(),
+                format!("checked spec disposition {disposition} does not establish currentness"),
+            ));
+            continue;
+        }
+        if disposition == "EXISTING_CONTRACT_SUFFICIENT" {
+            // Declared landed contract consumed unchanged: landing evidence.
+            continue;
+        }
+        match resolve_spec(root, &inputs.engine, &target_node.node_id) {
+            Ok(resolution) if !resolution.is_gap() => {
+                // Full exact-tree context: the dependency's declared surfaces
+                // exist on the observed tree.
+            }
+            Ok(_) => blockers.push((
+                dependency.target.clone(),
+                format!(
+                    "checked spec disposition {disposition} establishes specability, not landing; the E04 exact-tree context carries a typed blocker for the dependency; offline landing currency needs #10923/#10930"
+                ),
+            )),
+            Err(error) => blockers.push((
+                dependency.target.clone(),
+                format!("resolving the dependency's exact-tree context failed: {error:#}"),
             )),
         }
     }
@@ -1016,6 +1086,20 @@ pub fn compose_review_packet(
                 .to_string(),
         ));
     }
+    if facts.head.trim() != context.binding.git_commit {
+        return Err(Refusal::new(
+            &node.node_id,
+            PROFILE,
+            "HEAD_TREE_MISMATCH",
+            format!(
+                "the supplied candidate head {} is not the observed checkout {}; the offline \
+                 adapter composes evidence from the exact tree it runs on — run it from the \
+                 candidate checkout so context, obligations and review evidence bind one tree",
+                facts.head.trim(),
+                context.binding.git_commit
+            ),
+        ));
+    }
     if facts.controls.is_empty() {
         return Err(Refusal::new(
             &node.node_id,
@@ -1088,7 +1172,7 @@ pub fn compose_review_packet(
                 "name": "perl-lsp-swarm",
                 "base": facts.base,
                 "head": facts.head,
-                "tree": context.binding.git_commit,
+                "tree": context.binding.git_tree,
                 "diff": facts.diff,
             },
             "programme": {
@@ -1124,8 +1208,15 @@ pub fn compose_review_packet(
                         ),
                     },
                     {
-                        "kind": "focused_test_receipt",
-                        "identity": format!("{}@{}", node.proof.focused, context.binding.git_commit),
+                        // Real computed evidence, never a synthesized test
+                        // run: the exact-tree context binding this review was
+                        // composed against.
+                        "kind": "exact_tree_context_receipt",
+                        "identity": format!(
+                            "emacs_node_context.v1 input sha256:{}@{}",
+                            short(&context.binding.input_digest, 12),
+                            context.binding.git_tree
+                        ),
                     },
                 ],
                 "migrated_seams": [],
@@ -1518,6 +1609,20 @@ pub fn compose_reconcile_packet(
 // Denominator check.
 // ---------------------------------------------------------------------------
 
+/// Refusal codes that express typed packet-eligibility blockers rather
+/// than instrument or shared-contract failures.
+fn is_eligibility_refusal(code: &str) -> bool {
+    matches!(
+        code,
+        "MISSING_SPEC_DISPOSITION"
+            | "PROFILE_NOT_PERMITTED"
+            | "SPEC_DISPOSITION_NOT_BUILDER"
+            | "CONTEXT_MAPPING_GAP"
+            | "HARD_DEPENDENCY_NOT_CURRENT"
+            | "NO_WRITE_SURFACE"
+    )
+}
+
 fn run_packets_check(root: &Path) -> Result<()> {
     let inputs = load_adapter_inputs(root)?;
     let mut rendered = 0usize;
@@ -1556,7 +1661,18 @@ fn run_packets_check(root: &Path) -> Result<()> {
                     node_rendered = true;
                 }
                 Err(refusal) => {
-                    refusal_lines.push(refusal.line());
+                    if is_eligibility_refusal(refusal.code) {
+                        refusal_lines.push(refusal.line());
+                    } else {
+                        // Instrument/shared-contract failures are not typed
+                        // eligibility refusals; a green denominator must
+                        // never hide them.
+                        bail!(
+                            "packet denominator instrument failure ({}): {}",
+                            refusal.code,
+                            refusal.line()
+                        );
+                    }
                 }
             }
         }
