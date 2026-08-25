@@ -845,4 +845,48 @@ mod tests {
         assert_eq!(first.probes.len(), 0);
         Ok(())
     }
+
+    #[test]
+    fn settle_fails_closed_on_duplicate_expected_rows() -> Result<()> {
+        let duplicated = vec![
+            DiscoveredTest { path: "base/ok.t".into(), root: "base".into() },
+            DiscoveredTest { path: "base/ok.t".into(), root: "base".into() },
+        ];
+        let Err(err) = UpstreamObservationSet::settle(
+            HarnessRunner::Test,
+            HarnessMode::Parse,
+            HarnessProfile::Base,
+            &duplicated,
+            &[record(1)],
+            Some(0),
+        ) else {
+            bail!("duplicate normalized discovery rows must fail closed");
+        };
+        assert!(
+            err.to_string().contains("duplicate discovered test path"),
+            "discriminating duplicate-discovery error required: {err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn settle_fails_closed_on_malformed_upstream_row_paths() -> Result<()> {
+        let mut malformed = record(1);
+        malformed.path = "not-a-normalized-test.txt".into();
+        let Err(err) = UpstreamObservationSet::settle(
+            HarnessRunner::Test,
+            HarnessMode::Parse,
+            HarnessProfile::Base,
+            &discovered(),
+            &[malformed],
+            Some(0),
+        ) else {
+            bail!("an upstream row whose path does not normalize must fail closed");
+        };
+        assert!(
+            err.to_string().contains("did not normalize"),
+            "discriminating normalization error required: {err}"
+        );
+        Ok(())
+    }
 }
