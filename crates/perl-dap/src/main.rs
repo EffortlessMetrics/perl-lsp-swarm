@@ -21,7 +21,7 @@ use perl_dap::backend::{
 use perl_dap::model::{DebugSessionPacket, DebugSource};
 use perl_dap::ptkdb_bootstrap::render_ptkdbrc;
 use perl_dap::session_plan::DebugSessionPlanBuilder;
-use perl_dap::{DapConfig, DapMode, DapServer, DapSocketBindError};
+use perl_dap::{DapConfig, DapMode, DapServer};
 use perl_lsp_rs_core::product_identity::{
     BinaryIdentityPacketV1, IdentityOutputFormat, requested_identity_output,
 };
@@ -81,9 +81,10 @@ fn suggested_alternative_ports(port: u16) -> (u16, u16) {
 
 /// An editor-facing listener: how to name it, and how to re-launch it.
 struct EditorListener {
-    /// Names which listener failed, because `perl-dap` opens an editor-facing
-    /// socket from three different paths and a user with more than one
-    /// configured cannot otherwise tell which port to change.
+    /// Names which listener failed, because `perl-dap` still opens an
+    /// editor-facing socket from the two `#10566` external-peer wrapper paths
+    /// and a user with more than one configured cannot otherwise tell which
+    /// port to change. Native `--socket` is retired and never binds.
     role: &'static str,
     /// The mode-selecting arguments that produced this listener.
     ///
@@ -97,11 +98,6 @@ struct EditorListener {
 }
 
 impl EditorListener {
-    /// The native adapter's `--socket` transport — the default socket path.
-    fn native_socket() -> Self {
-        Self { role: "DAP socket transport", mode_args: "--socket".to_owned() }
-    }
-
     /// The editor side of the `--external-peer HOST:PORT` session.
     fn peer_bridge(peer_addr: &str) -> Self {
         Self {
@@ -170,16 +166,24 @@ fn bind_editor_listener(
         .map_err(|error| describe_editor_bind_error(port, listener, &error))
 }
 
-/// Preserve the distinction between a native socket bind failure and a later
-/// accepted-session failure while giving bind failures the same user-facing
-/// context as the external-peer paths.
-fn describe_native_socket_error(port: u16, error: anyhow::Error) -> anyhow::Error {
-    match (error.downcast_ref::<DapSocketBindError>(), error.downcast_ref::<std::io::Error>()) {
-        (Some(_), Some(source)) => {
-            describe_editor_bind_error(port, &EditorListener::native_socket(), source)
-        }
-        _ => error,
-    }
+/// Native `--socket`/`--port` no longer binds an editor listener (#10565).
+///
+/// The flags remain parsed because `#10566` still uses them as an optional
+/// wrapper around `--external-peer` / `--external-peer-listen`. Native use
+/// must fail before bind with a stdio migration; silently ignoring the flag
+/// would leave a client waiting on a port while this process read stdin.
+fn native_editor_socket_retired() -> anyhow::Error {
+    anyhow::anyhow!(
+        "native perl-dap editor TCP (--socket / --port) has been retired.\n\
+         The adapter no longer binds an editor-facing listener.\n\
+         \n\
+         Use parent-owned stdio instead:\n\
+         \n\
+         \x20 perl-dap --stdio\n\
+         \n\
+         --socket remains only as a deprecated wrapper around --external-peer / \
+         --external-peer-listen editor I/O; it is not a native run mode."
+    )
 }
 
 /// How long to wait for the external peer handshake / a session poll tick.
@@ -409,11 +413,17 @@ fn main() -> anyhow::Result<()> {
     }
 
     init_logging(&args.log_level);
-    log_server_startup("perl-dap", env!("CARGO_PKG_VERSION"), args.transport.mode(), None, None);
 
     // External-peer session: drive an explicitly selected debugger engine over
     // the peer protocol while the editor speaks DAP. The native default is unchanged.
     if let Some(peer_addr) = args.external_peer.as_deref() {
+        log_server_startup(
+            "perl-dap",
+            env!("CARGO_PKG_VERSION"),
+            args.transport.mode(),
+            None,
+            None,
+        );
         return match resolve_socket_port(&args.transport) {
             Some(port) => run_external_peer_bridge(port, peer_addr),
             None => run_external_peer_bridge_stdio(peer_addr),
@@ -423,8 +433,23 @@ fn main() -> anyhow::Result<()> {
     // External-peer LISTEN mode (mirror): bind and wait for the peer to connect
     // back. The native default remains unchanged.
     if let Some(spec) = args.external_peer_listen.as_deref() {
+        log_server_startup(
+            "perl-dap",
+            env!("CARGO_PKG_VERSION"),
+            args.transport.mode(),
+            None,
+            None,
+        );
         return run_external_peer_listen(spec, resolve_socket_port(&args.transport));
     }
+
+    // Native `--socket`/`--port` fail before bind and before any "server starting"
+    // log that would claim a listener exists.
+    if resolve_socket_port(&args.transport).is_some() {
+        return Err(native_editor_socket_retired());
+    }
+
+    log_server_startup("perl-dap", env!("CARGO_PKG_VERSION"), args.transport.mode(), None, None);
 
     // The shipped binary always runs the native adapter. External
     // implementations may be compared in repository-only conformance tooling,
@@ -433,15 +458,6 @@ fn main() -> anyhow::Result<()> {
         DapConfig { log_level: args.log_level, mode: DapMode::Native, workspace_root: None };
 
     let mut server = DapServer::new(config)?;
-
-    if let Some(port) = resolve_socket_port(&args.transport) {
-        tracing::info!("Starting DAP server on port {}", port);
-        // `run_socket` marks the bind operation before accepting a client, so
-        // every bind failure can be contextualized without relabelling later
-        // session I/O failures.
-        server.run_socket(port).map_err(|error| describe_native_socket_error(port, error))?;
-        return Ok(());
-    }
 
     tracing::info!("Starting DAP server on stdio");
     server.run()?;
@@ -452,9 +468,9 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Args, DEFAULT_DAP_PORT, DapSocketBindError, EditorListener, bind_editor_listener,
-        describe_editor_bind_error, describe_native_socket_error, editor_port_in_use_message,
-        resolve_socket_port, suggested_alternative_ports, windows_shell_quote,
+        Args, DEFAULT_DAP_PORT, EditorListener, bind_editor_listener, describe_editor_bind_error,
+        editor_port_in_use_message, native_editor_socket_retired, resolve_socket_port,
+        suggested_alternative_ports, windows_shell_quote,
     };
     use clap::{CommandFactory, Parser};
     use perl_lsp_rs_core::product_identity::{
@@ -467,14 +483,15 @@ mod tests {
         let occupied = std::net::TcpListener::bind(("127.0.0.1", 0))?;
         let port = occupied.local_addr()?.port();
 
-        let Err(error) = bind_editor_listener(port, &EditorListener::native_socket()) else {
+        let Err(error) = bind_editor_listener(port, &EditorListener::peer_bridge("127.0.0.1:5000"))
+        else {
             return Err("binding an already-bound port must fail".into());
         };
         let rendered = error.to_string();
 
         assert!(rendered.contains(&port.to_string()), "must name the port: {rendered}");
-        assert!(rendered.contains("DAP socket transport"));
-        assert!(rendered.contains("perl-dap --socket --port"));
+        assert!(rendered.contains("editor-facing peer listener"));
+        assert!(rendered.contains("perl-dap --external-peer 127.0.0.1:5000 --socket --port"));
         assert!(!rendered.contains("perllsp"));
         assert!(!rendered.contains("os error"));
         Ok(())
@@ -487,9 +504,6 @@ mod tests {
 
         let listen = editor_port_in_use_message(9000, &EditorListener::peer_listen("127.0.0.1"));
         assert!(listen.contains("perl-dap --external-peer-listen 127.0.0.1 --socket --port 9001"));
-
-        let native = editor_port_in_use_message(9000, &EditorListener::native_socket());
-        assert!(!native.contains("--external-peer"));
     }
 
     #[test]
@@ -513,27 +527,24 @@ mod tests {
     #[test]
     fn other_bind_failures_still_name_the_port() {
         let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
-        let rendered = describe_editor_bind_error(13_603, &EditorListener::native_socket(), &error)
-            .to_string();
+        let rendered = describe_editor_bind_error(
+            13_603,
+            &EditorListener::peer_bridge("127.0.0.1:5000"),
+            &error,
+        )
+        .to_string();
         assert!(rendered.contains("13603"));
-        assert!(rendered.contains("DAP socket transport"));
+        assert!(rendered.contains("editor-facing peer listener"));
         assert!(!rendered.contains("already in use"));
     }
 
     #[test]
-    fn native_bind_failures_are_contextualized_without_touching_session_errors() {
-        let bind_error = anyhow::Error::new(DapSocketBindError { port: 13_603 })
-            .context(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
-        let rendered = describe_native_socket_error(13_603, bind_error).to_string();
-        assert!(rendered.contains("13603"));
-        assert!(rendered.contains("DAP socket transport"));
-        assert!(!rendered.contains("os error"));
-
-        let session_error = anyhow::anyhow!("accepted-session failure");
-        assert_eq!(
-            describe_native_socket_error(13_603, session_error).to_string(),
-            "accepted-session failure"
-        );
+    fn native_socket_flags_fail_with_stdio_migration_before_any_bind() {
+        let rendered = native_editor_socket_retired().to_string();
+        assert!(rendered.contains("perl-dap --stdio"));
+        assert!(rendered.contains("--socket"));
+        assert!(!rendered.contains("already in use"));
+        assert!(!rendered.contains("127.0.0.1"));
     }
 
     #[test]
@@ -550,10 +561,18 @@ mod tests {
 
     #[test]
     fn suggested_ports_differ_from_the_failed_one() {
-        let message =
-            editor_port_in_use_message(DEFAULT_DAP_PORT, &EditorListener::native_socket());
-        assert!(message.contains(&format!("perl-dap --socket --port {}", DEFAULT_DAP_PORT + 1)));
-        assert!(message.contains(&format!("perl-dap --socket --port {}", DEFAULT_DAP_PORT + 10)));
+        let message = editor_port_in_use_message(
+            DEFAULT_DAP_PORT,
+            &EditorListener::peer_bridge("127.0.0.1:5000"),
+        );
+        assert!(message.contains(&format!(
+            "perl-dap --external-peer 127.0.0.1:5000 --socket --port {}",
+            DEFAULT_DAP_PORT + 1
+        )));
+        assert!(message.contains(&format!(
+            "perl-dap --external-peer 127.0.0.1:5000 --socket --port {}",
+            DEFAULT_DAP_PORT + 10
+        )));
     }
 
     #[test]

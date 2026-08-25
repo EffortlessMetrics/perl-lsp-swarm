@@ -13,6 +13,7 @@ from dap_editor_transport_schema import (
 )
 
 BIND_RE = re.compile(r"TcpListener::bind")
+RUN_SOCKET_RE = re.compile(r"(?:pub(?:\([^)]+\))?\s+)?fn run_socket\b")
 CFG_TEST_MOD_RE = re.compile(r"#\[cfg\(test\)\]\s*mod\s+\w+\s*\{")
 SOCKET_FLAG_RE = re.compile(r"pub socket:\s*bool")
 PORT_FLAG_RE = re.compile(r"pub port:\s*Option<u16>")
@@ -33,6 +34,8 @@ DEBUG_ADAPTER_SERVER_RE = re.compile(r"DebugAdapterServer")
 PRODUCTION_SRC_ROOT = Path("crates/perl-dap/src")
 TRANSPORT_ARGS_PATH = Path("crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs")
 PERL_DAP_MAIN = Path("crates/perl-dap/src/main.rs")
+NATIVE_EDITOR_TRANSPORT = Path("crates/perl-dap/src/debug_adapter/transport.rs")
+NATIVE_EDITOR_LIFECYCLE = Path("crates/perl-dap/src/server/lifecycle.rs")
 
 
 def production_source(text: str) -> str:
@@ -114,6 +117,35 @@ def scan_bind_sites(root: Path, inventory: Mapping[str, Any]) -> list[str]:
                 f"but bind_sites claims {claimed_count}"
             )
 
+    return errors
+
+
+def scan_retired_native_editor_listener(root: Path, inventory: Mapping[str, Any]) -> list[str]:
+    """Reject a returned native editor TCP listener after #10565."""
+    errors: list[str] = []
+    for site in inventory.get("bind_sites", []):
+        if not isinstance(site, dict):
+            continue
+        ident = site.get("id")
+        if site.get("transport_id") == "native-editor-tcp" or ident == "native-editor-socket":
+            errors.append(
+                f"native editor TCP bind site {ident!r} returned after #10565 retirement"
+            )
+
+    for relative in (NATIVE_EDITOR_TRANSPORT, NATIVE_EDITOR_LIFECYCLE):
+        try:
+            text = production_source(_read_text(root, str(relative)))
+        except TransportInventoryError as exc:
+            errors.append(str(exc))
+            continue
+        if relative == NATIVE_EDITOR_TRANSPORT and BIND_RE.search(text):
+            errors.append(
+                f"{relative.as_posix()} production source regained a native editor TcpListener::bind"
+            )
+        if RUN_SOCKET_RE.search(text):
+            errors.append(
+                f"{relative.as_posix()} production source regained native editor run_socket admission"
+            )
     return errors
 
 
