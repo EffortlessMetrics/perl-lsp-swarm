@@ -709,6 +709,66 @@ require "Foo/Bar.pm";
     Ok(())
 }
 
+/// A traversal-shaped literal path (`require "../../Escape.pm"`) is not a
+/// module name: it must stay a typed non-resolution and never feed the
+/// resolver's filesystem probes (external @INC roots join mapped relative
+/// paths without traversal validation).
+#[test]
+fn go_to_definition_on_literal_require_traversal_path_stays_non_resolution() -> TestResult {
+    let mut harness = LspHarness::new();
+    let workspace = TempWorkspace::new()?;
+
+    workspace.write(
+        "lib/Foo/Bar.pm",
+        r#"package Foo::Bar;
+use strict;
+use warnings;
+
+sub helper {
+    return 1;
+}
+
+1;
+"#,
+    )?;
+
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+
+    let module_uri = workspace.uri("lib/Foo/Bar.pm");
+    let module_content = std::fs::read_to_string(workspace.dir.path().join("lib/Foo/Bar.pm"))
+        .map_err(|e| format!("failed to read module: {e}"))?;
+    harness.open(&module_uri, &module_content)?;
+
+    let caller = r#"#!/usr/bin/perl
+use strict;
+use warnings;
+
+require "../../Escape.pm";
+"#;
+    let caller_uri = workspace.uri("app.pl");
+    harness.open(&caller_uri, caller)?;
+    harness.barrier();
+
+    let (line, character) = find_line_char(caller, "Escape.pm")?;
+    let result = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": caller_uri},
+            "position": {"line": line, "character": character}
+        }),
+    )?;
+
+    let locations = result.as_array().ok_or(
+        "expected a typed (array) non-resolution result for a traversal-shaped require path",
+    )?;
+    assert!(
+        locations.is_empty(),
+        "traversal-shaped literal require path must stay a typed non-resolution, got: {locations:?}"
+    );
+
+    Ok(())
+}
+
 /// Dynamic `require $var` is a documented boundary: goto-def must never guess
 /// the module file, even when a same-named module exists in the workspace.
 #[test]

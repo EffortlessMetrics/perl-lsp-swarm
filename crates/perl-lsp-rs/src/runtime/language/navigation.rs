@@ -505,8 +505,12 @@ fn literal_require_path_module_at_offset(text: &str, offset: usize) -> Option<St
     let module_name = head.token_as_module_name();
     // `token_as_module_name` leaves non-`.pm` file paths (and therefore
     // non-module tokens) unchanged; those are not module names and must not
-    // enter module resolution.
-    if module_name == head.token {
+    // enter module resolution. Guard with `is_lookup_safe_module_name` as
+    // well: quoted paths are the only way this arm can receive dot/traversal-
+    // shaped text (e.g. `require "../../x.pm"`), and unsafe values must not
+    // reach the resolver's filesystem existence checks (external @INC roots
+    // join the mapped relative path without traversal validation).
+    if module_name == head.token || !perl_module::is_lookup_safe_module_name(&module_name) {
         return None;
     }
 
