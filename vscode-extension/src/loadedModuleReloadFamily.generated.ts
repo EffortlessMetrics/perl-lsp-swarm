@@ -185,9 +185,7 @@ export function classifyReloadTerminal(body: {
     case 'refused':
       return possiblyApplied ? 'unknown_fail_closed' : 'refused_clean_failure';
     case 'failed_before_mutation':
-      return possiblyApplied
-        ? 'unknown_fail_closed'
-        : 'failed_before_mutation_clean_failure';
+      return possiblyApplied ? 'unknown_fail_closed' : 'failed_before_mutation_clean_failure';
     case 'indeterminate_possibly_applied':
       return 'possibly_applied';
     default:
@@ -203,7 +201,10 @@ export interface ClientFamilyDeclaration {
 
 export type FamilyNegotiationOutcome =
   | { negotiated: true; version: number }
-  | { negotiated: false; reason: 'family_absent' | 'family_name_mismatch' | 'no_overlapping_version' };
+  | {
+      negotiated: false;
+      reason: 'family_absent' | 'family_name_mismatch' | 'no_overlapping_version';
+    };
 
 /**
  * Negotiate the family against this projection's known version, selecting

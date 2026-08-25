@@ -147,9 +147,7 @@ describe('loadedModuleReloadFamily generated projection', () => {
   });
 
   test('fails closed on unknown mandatory variants and contradictory bodies', () => {
-    const probe = vectors.find(
-      (vector) => vector.response_probe !== undefined,
-    ) as VectorFixture;
+    const probe = vectors.find((vector) => vector.response_probe !== undefined) as VectorFixture;
     expect(probe).toBeDefined();
     expect(probe.response_probe?.kind).not.toBe('reloaded');
     expect(classifyReloadTerminal(probe.response_probe as { kind: string })).toBe(
@@ -168,12 +166,14 @@ describe('loadedModuleReloadFamily generated projection', () => {
   });
 
   test('negotiates exactly as the registry rules require', () => {
-    expect(
-      negotiateLoadedModuleReloadFamily(null),
-    ).toEqual({ negotiated: false, reason: 'family_absent' });
-    expect(
-      negotiateLoadedModuleReloadFamily({ family: 'modules', versions: [1] }),
-    ).toEqual({ negotiated: false, reason: 'family_name_mismatch' });
+    expect(negotiateLoadedModuleReloadFamily(null)).toEqual({
+      negotiated: false,
+      reason: 'family_absent',
+    });
+    expect(negotiateLoadedModuleReloadFamily({ family: 'modules', versions: [1] })).toEqual({
+      negotiated: false,
+      reason: 'family_name_mismatch',
+    });
     expect(
       negotiateLoadedModuleReloadFamily({
         family: LOADED_MODULE_RELOAD_FAMILY,
@@ -214,9 +214,7 @@ describe('loadedModuleReloadFamily generated projection', () => {
       (vector) => vector.expect.code === 'identity_too_large',
     ) as VectorFixture;
     const identity = oversized.request?.subject as { moduleIdentity: string };
-    expect(identity.moduleIdentity.length).toBeGreaterThan(
-      RELOAD_FAMILY_BOUNDS.maxIdentityChars,
-    );
+    expect(identity.moduleIdentity.length).toBeGreaterThan(RELOAD_FAMILY_BOUNDS.maxIdentityChars);
 
     const clamped = vectors.find(
       (vector) => vector.expect.reasons_count !== undefined,
