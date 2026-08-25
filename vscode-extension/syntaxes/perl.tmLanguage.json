@@ -236,8 +236,16 @@
         "operators": {
             "patterns": [
                 {
+                    "name": "keyword.operator.arrow.perl",
+                    "match": "->"
+                },
+                {
+                    "name": "keyword.operator.fat-comma.perl",
+                    "match": "=>"
+                },
+                {
                     "name": "keyword.operator.comparison.perl",
-                    "match": "(==|!=|<=>|<=|>=|(?<!<)<(?![=A-Za-z_])|(?<!>)>(?![=])|\\b(eq|ne|cmp|le|ge|lt|gt)\\b|~~)"
+                    "match": "(==|!=|<=>|<=|>=|(?<!<)<(?![=])|(?<!>)>(?![=])|\\b(eq|ne|cmp|le|ge|lt|gt)\\b|~~)"
                 },
                 {
                     "name": "keyword.operator.assignment.perl",
@@ -259,14 +267,6 @@
                     "name": "keyword.operator.bitwise.perl",
                     "match": "(&|\\||\\^|~|<<|>>)"
                 },
-                {
-                    "name": "keyword.operator.arrow.perl",
-                    "match": "->"
-                },
-                {
-                    "name": "keyword.operator.fat-comma.perl",
-                    "match": "=>"
-                }
             ]
         },
         "functions": {
