@@ -69,6 +69,16 @@ pub fn build_observed_discovery_receipt(
 
     let entry = find_target(matrix, &input.subject.target_id)?;
     let (selectors, script_forms) = effective_selection(matrix, entry)?;
+    // Single source of truth: the subject must carry this matrix's own
+    // fingerprint, exactly as validation re-binds it later.
+    let matrix_fingerprint = matrix.fingerprint()?;
+    if input.subject.matrix_fingerprint != matrix_fingerprint {
+        return Err(format!(
+            "subject matrix fingerprint {} does not match the pinned matrix authority \
+             {matrix_fingerprint}",
+            input.subject.matrix_fingerprint
+        ));
+    }
 
     // Subject-relation checks performed during every strict construction:
     // capture-identity pairing (above), runner-artifact binding, and target
@@ -288,7 +298,11 @@ fn validate_artifact_path(path: &str) -> Result<(), String> {
 }
 
 fn looks_absolute(value: &str) -> bool {
-    value.starts_with('/') || value.starts_with('\\') || value.as_bytes().get(1) == Some(&b':')
+    let bytes = value.as_bytes();
+    value.starts_with('/')
+        || value.starts_with('\\')
+        || (bytes.first().is_some_and(|byte| byte.is_ascii_alphabetic())
+            && bytes.get(1) == Some(&b':'))
 }
 
 fn validate_target_id(target_id: &str) -> Result<(), String> {
@@ -313,8 +327,8 @@ fn validate_reference(
         return Err(format!("{label} must be {min_len}-{max_len} characters"));
     }
     if lowercase_hex {
-        if !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(format!("{label} must be hexadecimal"));
+        if !value.bytes().all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')) {
+            return Err(format!("{label} must be lower-case hexadecimal"));
         }
         return Ok(());
     }

@@ -36,7 +36,7 @@
       "additionalProperties": false,
       "required": ["repository_commit", "perl_ref", "prepared_tree_identity", "host_perl_identity", "matrix_fingerprint", "target_id", "target_contract_digest", "variant_target_id", "instrumentation_id"],
       "properties": {
-        "repository_commit": {"type": "string", "pattern": "^[0-9a-fA-F]{40,64}$"},
+        "repository_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
         "perl_ref": {"type": "string", "minLength": 1, "maxLength": 128},
         "prepared_tree_identity": {"type": "string", "minLength": 1, "maxLength": 128},
         "host_perl_identity": {"type": "string", "minLength": 1, "maxLength": 128},
@@ -52,7 +52,7 @@
       "additionalProperties": false,
       "required": ["runner", "runner_artifact", "argv", "working_directory", "environment"],
       "properties": {
-        "runner": {"enum": ["test", "harness", "direct_fallback"]},
+        "runner": {"enum": ["test", "harness"]},
         "runner_artifact": {"$ref": "#/$defs/artifact"},
         "argv": {"type": "array", "items": {"type": "string", "minLength": 1}},
         "working_directory": {"type": "string", "minLength": 1},
@@ -88,12 +88,10 @@
     },
     "completion": {
       "oneOf": [
+        {"type": "string", "enum": ["cancelled", "instrument_failed", "unknown"]},
         {"type": "object", "additionalProperties": false, "required": ["exit_status"], "properties": {"exit_status": {"type": "object", "additionalProperties": false, "required": ["code"], "properties": {"code": {"type": "integer"}}}}},
         {"type": "object", "additionalProperties": false, "required": ["signalled"], "properties": {"signalled": {"type": "object", "additionalProperties": false, "required": ["signal"], "properties": {"signal": {"type": "integer", "minimum": 0}}}}},
-        {"type": "object", "additionalProperties": false, "required": ["cancelled"], "properties": {"cancelled": {"type": "object", "additionalProperties": false}}},
-        {"type": "object", "additionalProperties": false, "required": ["timed_out"], "properties": {"timed_out": {"type": "object", "additionalProperties": false, "required": ["deadline_millis"], "properties": {"deadline_millis": {"type": "integer", "minimum": 0}}}}},
-        {"type": "object", "additionalProperties": false, "required": ["instrument_failed"], "properties": {"instrument_failed": {"type": "object", "additionalProperties": false}}},
-        {"type": "object", "additionalProperties": false, "required": ["unknown"], "properties": {"unknown": {"type": "object", "additionalProperties": false}}}
+        {"type": "object", "additionalProperties": false, "required": ["timed_out"], "properties": {"timed_out": {"type": "object", "additionalProperties": false, "required": ["deadline_millis"], "properties": {"deadline_millis": {"type": "integer", "minimum": 0}}}}}
       ]
     },
     "raw_stream_envelope": {
@@ -108,8 +106,8 @@
     },
     "stream_decode_outcome": {
       "oneOf": [
-        {"type": "object", "additionalProperties": false, "required": ["complete"], "properties": {"complete": {"type": "object", "additionalProperties": false}}},
-        {"type": "object", "additionalProperties": false, "required": ["malformed"], "properties": {"malformed": {"type": "object", "additionalProperties": false, "required": ["reason"], "properties": {"reason": {"type": "string", "minLength": 1}}}}}
+        {"type": "object", "additionalProperties": false, "required": ["outcome"], "properties": {"outcome": {"const": "complete"}}},
+        {"type": "object", "additionalProperties": false, "required": ["outcome", "reason"], "properties": {"outcome": {"const": "malformed"}, "reason": {"type": "string", "minLength": 1}}}
       ]
     },
     "row": {

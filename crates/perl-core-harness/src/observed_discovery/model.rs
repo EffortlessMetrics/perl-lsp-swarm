@@ -457,10 +457,11 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 }
 
 pub(crate) fn hex_encode(bytes: &[u8]) -> String {
+    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        out.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
-        out.push(char::from_digit(u32::from(byte & 0x0f), 16).unwrap_or('0'));
+        out.push(HEX_DIGITS[usize::from(byte >> 4)] as char);
+        out.push(HEX_DIGITS[usize::from(byte & 0x0f)] as char);
     }
     out
 }

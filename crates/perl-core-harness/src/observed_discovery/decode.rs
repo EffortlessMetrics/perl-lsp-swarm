@@ -6,13 +6,13 @@
 //! one current runner-plan normalizer under an explicit discovery frame. It
 //! never sorts, deduplicates, repairs, or touches the filesystem.
 
-use crate::model::{ManifestPopulation, TargetScriptForm, TargetSelector};
-use crate::normalize::normalize_source_item;
+use crate::model::{TargetScriptForm, TargetSelector};
+use crate::normalize::{matches_any_selector, normalize_source_item, source_form_allowed};
 use crate::observed_discovery::model::{
     DecoderWork, DiscoveryObservationState, LineFraming, MAX_DECODED_ROWS, MemberDisposition,
     ObservedDiscoveryRow, ProcessCompletion, StreamDecodeOutcome,
 };
-use crate::runner_model::{DiscoveryFrame, RunnerSourceItem, SourceForm};
+use crate::runner_model::{DiscoveryFrame, RunnerSourceItem};
 use std::collections::BTreeMap;
 
 /// Result of strictly decoding one raw stdout stream.
@@ -138,13 +138,13 @@ fn classify_row(
             };
         }
     };
-    if !script_forms.iter().any(|form| source_form_compatible(normalized.source_form, form)) {
+    if !source_form_allowed(normalized.source_form, script_forms) {
         return RowClassification {
             disposition: MemberDisposition::UnsupportedSourceForm,
             normalized: Some(normalized),
         };
     }
-    if !row_in_selection(&normalized.canonical_path, selectors) {
+    if !matches_any_selector(&normalized.canonical_path, selectors) {
         return RowClassification {
             disposition: MemberDisposition::OutsideTargetSelection,
             normalized: Some(normalized),
@@ -155,57 +155,6 @@ fn classify_row(
 
 fn is_forbidden_control(character: char) -> bool {
     character.is_control()
-}
-
-/// Selector matching with the runner-plan builder's semantics, mirrored here
-/// because the plan matcher lives in modules included into separate units.
-pub(crate) fn row_in_selection(path: &str, selectors: &[TargetSelector]) -> bool {
-    selectors.iter().any(|selector| selector_matches(selector, path))
-}
-
-fn selector_matches(selector: &TargetSelector, path: &str) -> bool {
-    match selector {
-        TargetSelector::RecursiveRoot { path: root } => path.starts_with(&format!("t/{root}/")),
-        TargetSelector::NonRecursiveGlob { pattern } => {
-            path.strip_prefix("t/").is_some_and(|relative| glob_matches(pattern, relative))
-        }
-        TargetSelector::ExactFile { path: exact } => path == format!("t/{exact}"),
-        TargetSelector::ExternalGlob { pattern } => {
-            pattern.strip_prefix("../").is_some_and(|relative| glob_matches(relative, path))
-        }
-        TargetSelector::ManifestPopulation { component } => match component {
-            ManifestPopulation::RootLib => path.starts_with("lib/"),
-            ManifestPopulation::CoreRootLib => path
-                .strip_prefix("lib/")
-                .and_then(|rest| rest.as_bytes().first().copied())
-                .is_some_and(|byte| byte.is_ascii_lowercase()),
-            ManifestPopulation::Dist => path.starts_with("dist/"),
-            ManifestPopulation::Ext => path.starts_with("ext/"),
-            ManifestPopulation::Cpan => path.starts_with("cpan/"),
-        },
-    }
-}
-
-fn glob_matches(pattern: &str, candidate: &str) -> bool {
-    let Some((prefix, suffix)) = pattern.split_once('*') else {
-        return pattern == candidate;
-    };
-    if suffix.contains('*') || !candidate.starts_with(prefix) || !candidate.ends_with(suffix) {
-        return false;
-    }
-    let wildcard_start = prefix.len();
-    let wildcard_end = candidate.len().saturating_sub(suffix.len());
-    wildcard_start <= wildcard_end && !candidate[wildcard_start..wildcard_end].contains('/')
-}
-
-fn source_form_compatible(source_form: SourceForm, allowed: &TargetScriptForm) -> bool {
-    matches!(
-        (source_form, allowed),
-        (SourceForm::DotT, TargetScriptForm::DotT)
-            | (SourceForm::TestPl, TargetScriptForm::TestPl)
-            | (SourceForm::DotT, TargetScriptForm::GeneratedPerl)
-            | (SourceForm::TestPl, TargetScriptForm::GeneratedPerl)
-    )
 }
 
 /// Derive per-row work counters from a decode result.

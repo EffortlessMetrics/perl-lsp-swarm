@@ -18,6 +18,7 @@ use crate::observed_discovery::model::{
     SUBJECT_VALIDATIONS_PER_CONSTRUCTION, UPSTREAM_DISCOVERY_SCHEMA_VERSION,
     UpstreamDiscoveryReceiptV1,
 };
+use crate::runner_model::RunnerKind;
 
 /// Full acceptance validation: structural integrity plus raw-byte row
 /// reconstruction plus matrix re-binding.
@@ -107,6 +108,15 @@ pub fn validate_receipt_subject_binding(
         ));
     }
     let payload = &receipt.payload;
+    // The admitted-route law binds every receipt path, not only construction:
+    // a deserialized receipt recording any other runner route fails closed
+    // here before artifact binding can launder it.
+    if !matches!(payload.invocation.runner, RunnerKind::Test | RunnerKind::Harness) {
+        return Err(format!(
+            "runner {:?} is not an admitted upstream discovery route",
+            payload.invocation.runner
+        ));
+    }
     validate_payload_fields(payload)?;
     let recomputed = discovery_payload_digest(payload)?;
     if recomputed != receipt.payload_digest {
