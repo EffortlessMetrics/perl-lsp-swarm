@@ -2126,7 +2126,7 @@ fn run_shell_command_with_retries(
     let total_attempts = 1u32 + retry_count;
     let mut attempt = 1u32;
     let mut timeouts_seen = 0u32;
-    let mut attempt_evidence = Vec::with_capacity(total_attempts as usize);
+    let mut attempt_evidence = Vec::new();
     loop {
         let mut execution = run_shell_command_with_timeout(command, log_path, timeout_secs)?;
         let test_execution_reached = log_reaches_test_execution(command, log_path)
@@ -5065,7 +5065,10 @@ gates:
         assert!(trailer.contains("attempt 1/2: test_execution_reached=no"));
         assert!(trailer.contains("attempt 2/2: test_execution_reached=yes"));
         assert!(trailer.contains("attempt 2/2: passed after earlier watchdog timeout(s)"));
-        assert_eq!(fs::read_to_string(log_path)?, trailer);
+        assert_eq!(
+            fs::read_to_string(log_path)?,
+            format!("test result: ok\\n{trailer}")
+        );
         Ok(())
     }
 
