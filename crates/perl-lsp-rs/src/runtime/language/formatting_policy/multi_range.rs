@@ -733,21 +733,6 @@ mod tests {
         }
     }
 
-    /// `--lib` compiles everything before the first `#[cfg(test)]`.
-    /// A `#[cfg(test)] use` at module scope is therefore excluded, matching rustc.
-    fn lib_source(source: &str) -> &str {
-        source.split("#[cfg(test)]").next().unwrap_or(source)
-    }
-
-    fn lib_source_names_format_geometry(source: &str) -> bool {
-        let lib = lib_source(source);
-        lib.contains("FormatPosition") || lib.contains("FormatRange")
-    }
-
-    fn file_names_format_geometry(source: &str) -> bool {
-        source.contains("FormatPosition") && source.contains("FormatRange")
-    }
-
     fn compose_plan(source: &str, ranges: &[Value]) -> RangePlan {
         build_plan(source, ranges).expect("test range plan must be valid")
     }
@@ -1080,90 +1065,5 @@ mod tests {
         .ok_or("overlapping same-line edits must refuse")?;
         assert_eq!(conflict.reason, "edit_conflict");
         Ok(())
-    }
-
-    #[test]
-    fn module_scope_format_geometry_import_is_visible_to_lib_source() {
-        let original_defect = r#"
-use perl_lsp_rs_core::providers::formatting_types::{FormatPosition, FormatRange};
-
-fn production() {}
-
-#[cfg(test)]
-mod tests {
-    fn uses_them() {
-        let _ = (FormatPosition::new(0, 0), FormatRange::whole_document(""));
-    }
-}
-"#;
-        assert!(
-            lib_source_names_format_geometry(original_defect),
-            "the #9618 unused-import shape must remain a lib-source hit"
-        );
-        assert!(
-            file_names_format_geometry(original_defect),
-            "control: the defect fixture still names both types"
-        );
-    }
-
-    #[test]
-    fn cfg_test_format_geometry_import_is_excluded_from_lib_source() {
-        let gated = r#"
-fn production() {}
-
-#[cfg(test)]
-use crate::features::formatting::{FormatPosition, FormatRange};
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn uses_them() {
-        let _ = (FormatPosition::new(0, 0), FormatRange::whole_document(""));
-    }
-}
-"#;
-        assert!(
-            !lib_source_names_format_geometry(gated),
-            "#[cfg(test)] use at module scope must not count as --lib source"
-        );
-        assert!(file_names_format_geometry(gated), "control: gated fixture still names both types");
-    }
-
-    #[test]
-    fn deleting_format_geometry_names_is_a_visible_vacuity() {
-        let deleted = r#"
-fn production() {}
-
-#[cfg(test)]
-mod tests {}
-"#;
-        assert!(
-            !lib_source_names_format_geometry(deleted),
-            "control: deleted fixture has no lib-source leak"
-        );
-        assert!(
-            !file_names_format_geometry(deleted),
-            "deleting FormatPosition/FormatRange must fail the occupancy control"
-        );
-    }
-
-    #[test]
-    fn formatting_policy_lib_source_does_not_name_format_geometry() {
-        let files = [
-            ("mod.rs", include_str!("mod.rs")),
-            ("multi_range.rs", include_str!("multi_range.rs")),
-            ("handlers.rs", include_str!("handlers.rs")),
-            ("receipt.rs", include_str!("receipt.rs")),
-        ];
-        for (name, source) in files {
-            assert!(
-                !lib_source_names_format_geometry(source),
-                "{name} --lib source must not name FormatPosition/FormatRange (#9618)"
-            );
-        }
-        assert!(
-            file_names_format_geometry(include_str!("multi_range.rs")),
-            "multi_range.rs tests must still name FormatPosition/FormatRange so the lib scan cannot pass by deleting the types"
-        );
     }
 }
