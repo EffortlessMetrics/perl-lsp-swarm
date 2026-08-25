@@ -51,10 +51,10 @@ pub(super) fn validate(plan: &CiRoutePlanV1) -> Result<(), String> {
         if !seen.insert(row.gate_id.as_str()) {
             return Err(format!("duplicate gate identity {:?}", row.gate_id));
         }
-        if let Some(previous) = previous {
-            if previous > row.gate_id.as_str() {
-                return Err("route-plan rows are not in canonical order".to_string());
-            }
+        if let Some(previous) = previous
+            && previous > row.gate_id.as_str()
+        {
+            return Err("route-plan rows are not in canonical order".to_string());
         }
         previous = Some(row.gate_id.as_str());
         validate_row(row)?;
@@ -81,7 +81,7 @@ fn semantic_fingerprint(plan: &CiRoutePlanV1) -> Result<String, String> {
         rows: &plan.rows,
     };
     let bytes = serde_json::to_vec(&semantic).map_err(|error| error.to_string())?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    Ok(Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 fn summarize(rows: &[RoutePlanRow]) -> Result<RoutePlanSummary, String> {
