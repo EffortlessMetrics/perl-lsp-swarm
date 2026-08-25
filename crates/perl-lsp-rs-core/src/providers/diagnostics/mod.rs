@@ -55,7 +55,8 @@ mod walker;
 pub use diagnostics::{DiagnosticsProvider, build_parse_error_hint};
 pub use heredoc_antipatterns::detect_heredoc_antipatterns;
 pub use internal_types::{
-    Diagnostic, DiagnosticTag, RelatedInformation, take_critic_overlap_observations,
+    Diagnostic, DiagnosticTag, RelatedInformation, critic_overlap_observations,
+    take_critic_overlap_observations,
 };
 pub use parse_errors::{parse_error_code, parse_error_severity};
 pub use perl_diagnostics::codes::DiagnosticSeverity;

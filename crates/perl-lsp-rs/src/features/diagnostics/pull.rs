@@ -728,7 +728,9 @@ impl PullDiagnosticsProvider {
         core_diagnostics: &mut Vec<InternalDiagnostic>,
         critic_rows: &mut Vec<LspDiagnostic>,
     ) {
-        use perl_lsp_rs_core::providers::diagnostics::take_critic_overlap_observations;
+        use perl_lsp_rs_core::providers::diagnostics::{
+            critic_overlap_observations, take_critic_overlap_observations,
+        };
         use perl_lsp_rs_core::tooling::perl_critic::{
             NativeCriticService, NativeCriticSubject, RunGate,
         };
@@ -737,24 +739,27 @@ impl PullDiagnosticsProvider {
         // observation surrender their ordinary diagnostic here (#11918): the
         // logical row comes out of the same normalization inside the service,
         // merged with the native alias and carrying both contributor
-        // identities.
-        let overlap_observations = take_critic_overlap_observations(core_diagnostics);
+        // identities. Read non-destructively first (#9062): carriers are
+        // surrendered only after a publishable normalized replacement exists,
+        // so an unpublishable run retains every independent core row.
+        let overlap_observations = critic_overlap_observations(core_diagnostics);
 
-        let run = NativeCriticService::analyze(NativeCriticSubject {
-            label: &uri.to_string(),
+        let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
+            &uri.to_string(),
             source_identity,
             ast,
-            source: content,
-            accepted_state: context.accepted_critic_state.clone(),
+            content,
+            context.accepted_critic_state.clone(),
             overlap_observations,
-            cancellation: RunGate::open(),
-            currentness: RunGate::open(),
-        });
+            RunGate::open(),
+            RunGate::open(),
+        ));
 
         if !run.is_publishable() {
             return;
         }
-        for finding in &run.findings {
+        take_critic_overlap_observations(core_diagnostics);
+        for finding in run.findings() {
             critic_rows.push(self.normalized_finding_to_lsp_diagnostic(uri, content, finding));
         }
     }

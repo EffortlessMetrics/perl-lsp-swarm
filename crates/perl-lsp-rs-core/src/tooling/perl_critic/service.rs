@@ -30,6 +30,7 @@ use super::{
     native_finding_candidates, normalize_with_native_policy,
 };
 use crate::config::EffectiveCriticState;
+use perl_source_identity::ContentDigest;
 
 /// Gate consulted at deterministic barrier points of one run.
 ///
@@ -63,32 +64,74 @@ impl<'a> RunGate<'a> {
 
 /// One immutable accepted analysis subject (#9062).
 ///
-/// Every field is an owned or borrowed value captured before `analyze`
-/// begins; the service copies no mutable server configuration during the
-/// run and holds no lock while rules evaluate. The accepted state binds the
-/// complete policy (profile, threshold, filters, owning root) from the #8253
-/// authority, so contradictory roots naturally evaluate their own configs.
+/// Construction is sealed behind [`NativeCriticSubject::accepted`]: the
+/// service owns the accepted-snapshot shape, so a caller cannot assemble a
+/// subject that skips the content binding or the gate wiring. Every field is
+/// an owned or borrowed value captured before `analyze` begins; the service
+/// copies no mutable server configuration during the run and holds no lock
+/// while rules evaluate. The accepted state binds the complete policy
+/// (profile, threshold, filters, owning root) from the #8253 authority, so
+/// contradictory roots naturally evaluate their own configs.
 pub struct NativeCriticSubject<'a> {
     /// Accounting label for rejected-producer logs (typically the URI).
-    pub label: &'a str,
+    label: &'a str,
     /// Exact logical source identity and generation of the analyzed text.
-    pub source_identity: CriticSourceIdentity,
+    source_identity: CriticSourceIdentity,
     /// Accepted parser/document analysis snapshot.
-    pub ast: &'a Node,
+    ast: &'a Node,
     /// Accepted source text the findings' ranges refer to.
-    pub source: &'a str,
+    source: &'a str,
+    /// Content digest of the exact accepted source bytes. Binds the text this
+    /// run actually consumed into the published result: two runs claiming the
+    /// same logical identity over different text carry different digests. The
+    /// logical-identity/generation semantics stay owned by the
+    /// source_identity.v1 contract (perl-source-identity), which is the
+    /// authority for upgrading to full AST↔content revision binding.
+    source_digest: ContentDigest,
     /// Complete accepted critic state from the #8253 authority.
-    pub accepted_state: EffectiveCriticState,
+    accepted_state: EffectiveCriticState,
     /// Producer-declared overlap observations (#11918) emitted by core lint
     /// emitters over this exact source generation. Empty when the caller has
     /// none (for example an action-only fresh analysis).
-    pub overlap_observations: Vec<BuiltInCriticObservation>,
+    overlap_observations: Vec<BuiltInCriticObservation>,
     /// Gate consulted before evaluation; a closed gate yields a cancelled run
     /// that performed no rule work.
-    pub cancellation: RunGate<'a>,
+    cancellation: RunGate<'a>,
     /// Gate consulted after evaluation and before the run may publish; a
     /// closed gate yields a stale run no consumer may treat as current.
-    pub currentness: RunGate<'a>,
+    currentness: RunGate<'a>,
+}
+
+impl<'a> NativeCriticSubject<'a> {
+    /// Check and accept one immutable snapshot as an analysis subject (#9062).
+    ///
+    /// This is the only construction path. It binds the exact source bytes
+    /// into the subject through a SHA-256 content digest at acceptance time,
+    /// so every run published from this subject is traceable to the text it
+    /// actually evaluated — not merely to a caller-declared logical identity.
+    #[must_use]
+    pub fn accepted(
+        label: &'a str,
+        source_identity: CriticSourceIdentity,
+        ast: &'a Node,
+        source: &'a str,
+        accepted_state: EffectiveCriticState,
+        overlap_observations: Vec<BuiltInCriticObservation>,
+        cancellation: RunGate<'a>,
+        currentness: RunGate<'a>,
+    ) -> Self {
+        Self {
+            label,
+            source_identity,
+            ast,
+            source,
+            source_digest: ContentDigest::of_bytes(source.as_bytes()),
+            accepted_state,
+            overlap_observations,
+            cancellation,
+            currentness,
+        }
+    }
 }
 
 impl std::fmt::Debug for NativeCriticSubject<'_> {
@@ -180,26 +223,83 @@ pub struct NativeCriticWorkReceipt {
 /// producer findings ride along solely as remediation carriers owned by the
 /// native contract (quick-fix edits/titles), never as an alternative finding
 /// set. Transport projection happens entirely downstream.
+///
+/// Construction is private to this module: a publishable
+/// [`NativeCriticRun`] can only originate from
+/// [`NativeCriticService::analyze`], which makes the service the sole
+/// production authority instead of a convention. Downstream crates consume
+/// runs through the read-only accessors.
 #[derive(Debug, Clone)]
 pub struct NativeCriticRun {
     /// Explicit completeness/currentness disposition.
-    pub completeness: NativeCriticRunCompleteness,
+    completeness: NativeCriticRunCompleteness,
     /// Deterministic identity of the accepted state that produced this run.
-    pub state_fingerprint: String,
+    state_fingerprint: String,
     /// Owning folder/root identity bound into the accepted state.
-    pub owning_root: Option<String>,
+    owning_root: Option<String>,
     /// Exact logical source identity and generation analyzed.
-    pub source_identity: CriticSourceIdentity,
+    source_identity: CriticSourceIdentity,
+    /// Content digest of the exact source bytes the run consumed.
+    source_digest: ContentDigest,
     /// Ordered normalized findings after canonical merge and policy.
-    pub findings: Vec<NormalizedCriticFinding>,
+    findings: Vec<NormalizedCriticFinding>,
     /// Raw producer findings of this run, in registry order. Remediation
     /// carriers only; consumers must not re-derive logical rows from them.
-    pub producer_findings: Vec<CriticFinding>,
+    producer_findings: Vec<CriticFinding>,
     /// Bounded work counters for this run.
-    pub work: NativeCriticWorkReceipt,
+    work: NativeCriticWorkReceipt,
 }
 
 impl NativeCriticRun {
+    /// Explicit completeness/currentness disposition of this run.
+    #[must_use]
+    pub fn completeness(&self) -> &NativeCriticRunCompleteness {
+        &self.completeness
+    }
+
+    /// Deterministic identity of the accepted state that produced this run.
+    #[must_use]
+    pub fn state_fingerprint(&self) -> &str {
+        &self.state_fingerprint
+    }
+
+    /// Owning folder/root identity bound into the accepted state.
+    #[must_use]
+    pub fn owning_root(&self) -> Option<&str> {
+        self.owning_root.as_deref()
+    }
+
+    /// Exact logical source identity and generation analyzed.
+    #[must_use]
+    pub const fn source_identity(&self) -> &CriticSourceIdentity {
+        &self.source_identity
+    }
+
+    /// Content digest of the exact source bytes this run consumed.
+    #[must_use]
+    pub const fn source_digest(&self) -> &ContentDigest {
+        &self.source_digest
+    }
+
+    /// Ordered normalized findings after canonical merge and policy.
+    #[must_use]
+    pub fn findings(&self) -> &[NormalizedCriticFinding] {
+        &self.findings
+    }
+
+    /// Raw producer findings of this run, in registry order. Remediation
+    /// carriers only; consumers must not re-derive logical rows from them.
+    #[must_use]
+    pub fn producer_findings(&self) -> &[CriticFinding] {
+        &self.producer_findings
+    }
+
+    /// Bounded work counters for this run.
+    #[must_use]
+    pub const fn work(&self) -> NativeCriticWorkReceipt {
+        self.work
+    }
+
     /// Whether this run may populate current result storage or caches.
     ///
     /// Superseded (stale), cancelled, not-ready, and instrument-failed runs
@@ -236,35 +336,48 @@ impl NativeCriticService {
         let state_fingerprint = subject.accepted_state.fingerprint();
         let owning_root = subject.accepted_state.owning_root().map(ToOwned::to_owned);
 
-        let EffectiveCriticState::Native(accepted) = subject.accepted_state else {
-            // Disabled is a deliberate configured contribution: no policy
-            // object exists, so no rule evaluation can run (#8253/#9062).
-            return NativeCriticRun {
-                completeness: NativeCriticRunCompleteness::Disabled,
-                state_fingerprint,
-                owning_root,
-                source_identity: subject.source_identity,
-                findings: Vec::new(),
-                producer_findings: Vec::new(),
-                work: NativeCriticWorkReceipt::default(),
-            };
-        };
-
+        // Gates govern every disposition, including Disabled: a run whose
+        // subject moved or was cancelled mid-flight is superseded regardless
+        // of how little work it would have performed, so a stale empty
+        // contribution can never clear newer current storage (#9062
+        // currentness law).
         if !subject.cancellation.holds() {
             return NativeCriticRun {
                 completeness: NativeCriticRunCompleteness::Cancelled,
                 state_fingerprint,
                 owning_root,
                 source_identity: subject.source_identity,
+                source_digest: subject.source_digest,
                 findings: Vec::new(),
                 producer_findings: Vec::new(),
                 work: NativeCriticWorkReceipt::default(),
             };
         }
 
-        // The accepted policy is the only parameter source. The external
-        // rc/profile/theme concepts stay out of the native subject entirely:
-        // no shipped rule reads them, and no executable state is representable.
+        let EffectiveCriticState::Native(accepted) = subject.accepted_state else {
+            // Disabled is a deliberate configured contribution: no policy
+            // object exists, so no rule evaluation can run (#8253/#9062).
+            // Currentness still governs publication: configuration that
+            // changed while this run was in flight makes the empty disabled
+            // contribution stale exactly like any evaluated run, so it can
+            // never clear newer current storage.
+            let completeness = if subject.currentness.holds() {
+                NativeCriticRunCompleteness::Disabled
+            } else {
+                NativeCriticRunCompleteness::Stale
+            };
+            return NativeCriticRun {
+                completeness,
+                state_fingerprint,
+                owning_root,
+                source_identity: subject.source_identity,
+                source_digest: subject.source_digest,
+                findings: Vec::new(),
+                producer_findings: Vec::new(),
+                work: NativeCriticWorkReceipt::default(),
+            };
+        };
+
         let critic_config = CriticConfig {
             severity: accepted.severity_threshold,
             profile: None,
@@ -320,6 +433,7 @@ impl NativeCriticService {
             state_fingerprint,
             owning_root,
             source_identity: subject.source_identity,
+            source_digest: subject.source_digest,
             findings,
             producer_findings: raw_findings,
             work,
@@ -357,16 +471,16 @@ mod tests {
         state: EffectiveCriticState,
         identity: CriticSourceIdentity,
     ) -> NativeCriticSubject<'a> {
-        NativeCriticSubject {
+        NativeCriticSubject::accepted(
             label,
-            source_identity: identity,
+            identity,
             ast,
             source,
-            accepted_state: state,
-            overlap_observations: Vec::new(),
-            cancellation: RunGate::open(),
-            currentness: RunGate::open(),
-        }
+            state,
+            Vec::new(),
+            RunGate::open(),
+            RunGate::open(),
+        )
     }
 
     #[test]
@@ -390,16 +504,58 @@ mod tests {
             critic_source_identity_for_uri("file:///a.pm", 7),
         ));
 
-        assert_eq!(first.completeness, NativeCriticRunCompleteness::Complete);
-        assert_eq!(first.findings, second.findings, "label is not a finding input");
-        assert_eq!(first.state_fingerprint, second.state_fingerprint);
+        assert_eq!(first.completeness(), &NativeCriticRunCompleteness::Complete);
+        assert_eq!(first.findings(), second.findings(), "label is not a finding input");
+        assert_eq!(first.state_fingerprint(), second.state_fingerprint());
         assert_eq!(
-            first.work.rules_evaluated, second.work.rules_evaluated,
+            first.work().rules_evaluated,
+            second.work().rules_evaluated,
             "both transports evaluate the same rule set for one subject"
         );
         assert!(
-            !first.findings.is_empty(),
+            !first.findings().is_empty(),
             "the strict probe source must produce at least one row"
+        );
+    }
+
+    #[test]
+    fn published_runs_bind_the_exact_source_content_digest() {
+        // The logical identity is identical for both subjects; only the text
+        // differs. A publishable run must remain traceable to the bytes it
+        // actually evaluated, so the digests must diverge even though no
+        // caller-declared field changed.
+        let identity = critic_source_identity_for_uri("file:///digest.pm", 5);
+        let ast_a = parse(STRICT_SOURCE);
+        let other_source = "my $other_unused = 2;\n";
+        let ast_b = parse(other_source);
+
+        let run_a = NativeCriticService::analyze(subject(
+            "file:///digest.pm",
+            &ast_a,
+            STRICT_SOURCE,
+            native_state(None),
+            identity.clone(),
+        ));
+        let run_b = NativeCriticService::analyze(subject(
+            "file:///digest.pm",
+            &ast_b,
+            other_source,
+            native_state(None),
+            identity,
+        ));
+        let run_a_again = NativeCriticService::analyze(subject(
+            "file:///digest.pm",
+            &ast_a,
+            STRICT_SOURCE,
+            native_state(None),
+            critic_source_identity_for_uri("file:///digest.pm", 5),
+        ));
+
+        assert_eq!(run_a.source_digest(), run_a_again.source_digest());
+        assert_ne!(
+            run_a.source_digest(),
+            run_b.source_digest(),
+            "same claimed identity over different content must not share a digest"
         );
     }
 
@@ -416,12 +572,61 @@ mod tests {
             critic_source_identity_for_uri("file:///disabled.pm", 3),
         ));
 
-        assert_eq!(run.completeness, NativeCriticRunCompleteness::Disabled);
+        assert_eq!(run.completeness(), &NativeCriticRunCompleteness::Disabled);
         assert!(run.is_publishable(), "disabled is the deliberate configured contribution");
-        assert_eq!(run.work.rules_evaluated, 0, "no rule may run while disabled");
-        assert!(run.findings.is_empty());
-        assert!(run.producer_findings.is_empty());
-        assert_eq!(run.owning_root, None);
+        assert_eq!(run.work().rules_evaluated, 0, "no rule may run while disabled");
+        assert!(run.findings().is_empty());
+        assert!(run.producer_findings().is_empty());
+        assert_eq!(run.owning_root(), None);
+    }
+
+    #[test]
+    fn stale_disabled_run_can_never_publish_over_newer_configuration() {
+        // Disabled → Native race falsifier (#9062): configuration moved while
+        // this run was in flight, so the empty disabled contribution is
+        // superseded exactly like any evaluated run.
+        let source = STRICT_SOURCE;
+        let ast = parse(source);
+        let closed = RunGate::new(&|| false);
+
+        let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
+            "file:///disabled-to-native.pm",
+            critic_source_identity_for_uri("file:///disabled-to-native.pm", 1),
+            &ast,
+            source,
+            EffectiveCriticState::Disabled,
+            Vec::new(),
+            RunGate::open(),
+            closed,
+        ));
+
+        assert_eq!(run.completeness(), &NativeCriticRunCompleteness::Stale);
+        assert!(
+            !run.is_publishable(),
+            "a stale disabled contribution can never clear newer current storage"
+        );
+    }
+
+    #[test]
+    fn cancelled_disabled_run_performs_no_rule_work_and_stays_unpublishable() {
+        let source = STRICT_SOURCE;
+        let ast = parse(source);
+        let closed = RunGate::new(&|| false);
+
+        let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
+            "file:///cancelled-disabled.pm",
+            critic_source_identity_for_uri("file:///cancelled-disabled.pm", 1),
+            &ast,
+            source,
+            EffectiveCriticState::Disabled,
+            Vec::new(),
+            closed,
+            RunGate::open(),
+        ));
+
+        assert_eq!(run.completeness(), &NativeCriticRunCompleteness::Cancelled);
+        assert!(!run.is_publishable());
+        assert_eq!(run.work().rules_evaluated, 0);
     }
 
     #[test]
@@ -451,11 +656,11 @@ mod tests {
         ));
 
         assert_ne!(strict.fingerprint(), lenient.fingerprint());
-        assert_ne!(run_a.state_fingerprint, run_b.state_fingerprint);
-        assert_eq!(run_a.owning_root.as_deref(), Some("root-a"));
-        assert_eq!(run_b.owning_root, None);
+        assert_ne!(run_a.state_fingerprint(), run_b.state_fingerprint());
+        assert_eq!(run_a.owning_root(), Some("root-a"));
+        assert_eq!(run_b.owning_root(), None);
         assert!(
-            run_b.findings.len() < run_a.findings.len(),
+            run_b.findings().len() < run_a.findings().len(),
             "root B's own threshold-5 policy must not be satisfied by root A's findings"
         );
     }
@@ -466,19 +671,22 @@ mod tests {
         let ast = parse(source);
 
         let closed = RunGate::new(&|| false);
-        let run = NativeCriticService::analyze(NativeCriticSubject {
-            label: "file:///moved.pm",
-            source_identity: critic_source_identity_for_uri("file:///moved.pm", 4),
-            ast: &ast,
+        let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
+            "file:///moved.pm",
+            critic_source_identity_for_uri("file:///moved.pm", 4),
+            &ast,
             source,
-            accepted_state: native_state(Some("root-a")),
-            overlap_observations: Vec::new(),
-            cancellation: RunGate::open(),
-            currentness: closed,
-        });
+            native_state(Some("root-a")),
+            Vec::new(),
+            RunGate::open(),
+            closed,
+        ));
 
-        assert!(!run.findings.is_empty(), "stale runs still carry their evaluated rows as values");
-        assert_eq!(run.completeness, NativeCriticRunCompleteness::Stale);
+        assert!(
+            !run.findings().is_empty(),
+            "stale runs still carry their evaluated rows as values"
+        );
+        assert_eq!(run.completeness(), &NativeCriticRunCompleteness::Stale);
         assert!(
             !run.is_publishable(),
             "a superseded run can never populate current result storage"
@@ -491,21 +699,21 @@ mod tests {
         let ast = parse(source);
 
         let closed = RunGate::new(&|| false);
-        let run = NativeCriticService::analyze(NativeCriticSubject {
-            label: "file:///cancelled.pm",
-            source_identity: critic_source_identity_for_uri("file:///cancelled.pm", 2),
-            ast: &ast,
+        let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
+            "file:///cancelled.pm",
+            critic_source_identity_for_uri("file:///cancelled.pm", 2),
+            &ast,
             source,
-            accepted_state: native_state(None),
-            overlap_observations: Vec::new(),
-            cancellation: closed,
-            currentness: RunGate::open(),
-        });
+            native_state(None),
+            Vec::new(),
+            closed,
+            RunGate::open(),
+        ));
 
-        assert_eq!(run.completeness, NativeCriticRunCompleteness::Cancelled);
+        assert_eq!(run.completeness(), &NativeCriticRunCompleteness::Cancelled);
         assert!(!run.is_publishable());
-        assert_eq!(run.work.rules_evaluated, 0);
-        assert!(run.producer_findings.is_empty());
+        assert_eq!(run.work().rules_evaluated, 0);
+        assert!(run.producer_findings().is_empty());
     }
 
     #[test]

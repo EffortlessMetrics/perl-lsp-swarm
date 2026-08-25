@@ -68,13 +68,115 @@ fn collect_rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Strip trailing test-only content so inline `#[cfg(test)]` modules do not
-/// count as production call sites. Only ever shrinks the scanned surface.
-fn production_portion(source: &str) -> &str {
-    match source.rfind("#[cfg(test)]") {
-        Some(index) => &source[..index],
-        None => source,
+/// Strip each `#[cfg(test)]`-gated item so inline test modules do not count
+/// as production call sites.
+///
+/// Only the gated items themselves are removed, never the remainder of the
+/// file: Rust permits production items after a test module, and a production
+/// composition pipeline placed there must stay visible to this gate. A
+/// `#[cfg(test)]` attribute followed by a brace-delimited item (`mod`,
+/// `fn`, `impl`, …) is stripped through its balanced closing brace; one
+/// attached to a semicolon-terminated item (`use`, extern crate) strips
+/// through that statement's `;`. Braces inside string/char literals are not
+/// tracked, so pathological literals can skew an item span; the failure
+/// direction is over-scanning (fail-closed), never silently shrinking the
+/// audited surface below the ungated file.
+fn production_portion(source: &str) -> String {
+    const ATTR: &str = "#[cfg(test)]";
+    let mut kept = String::with_capacity(source.len());
+    let mut rest = source;
+    while let Some(index) = rest.find(ATTR) {
+        kept.push_str(&rest[..index]);
+        let after = &rest[index + ATTR.len()..];
+        let bytes = after.as_bytes();
+        let mut cursor = 0;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        // First significant `{` or `;` decides whether the gated item is
+        // brace-delimited or statement-terminated.
+        while cursor < bytes.len() && bytes[cursor] != b'{' && bytes[cursor] != b';' {
+            cursor += 1;
+        }
+        if cursor >= bytes.len() {
+            rest = "";
+            break;
+        }
+        if bytes[cursor] == b';' {
+            rest = &after[cursor + 1..];
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut end = None;
+        for (offset, byte) in bytes[cursor..].iter().enumerate() {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(cursor + offset + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        match end {
+            Some(end) => rest = &after[end..],
+            None => {
+                // Unterminated item: conservatively drop nothing further.
+                rest = "";
+                break;
+            }
+        }
     }
+    kept.push_str(rest);
+    kept
+}
+
+#[test]
+fn test_only_items_are_stripped_but_later_production_stays_scanned() {
+    let source = concat!(
+        "fn ordinary() {}\n",
+        "#[cfg(test)]\nmod tests {\n",
+        "    fn hidden() { normalize_with_native_policy(unreachable()); }\n",
+        "}\n",
+        "#[cfg(test)]\nfn helper() { native_finding_candidates(x); }\n",
+        "// production composition placed after the test module (#9062 review)\n",
+        "fn pipeline_after_tests() { NativeCriticPolicy::new(a, b, c, d); }\n",
+    );
+
+    let production = production_portion(source);
+
+    assert!(
+        !production.contains("normalize_with_native_policy("),
+        "composition inside a test module stays excluded"
+    );
+    assert!(
+        !production.contains("native_finding_candidates("),
+        "multiple gated items are each stripped"
+    );
+    assert!(
+        production.contains("NativeCriticPolicy::new("),
+        "a production composition call after a test module must be visible to the gate"
+    );
+}
+
+#[test]
+fn gated_use_statements_strip_without_swallowing_following_items() {
+    let source = concat!(
+        "#[cfg(test)]\n",
+        "use super::CriticConfig;\n",
+        "fn production_fn() { .check_unfiltered(ctx); }\n",
+    );
+
+    let production = production_portion(source);
+
+    assert!(!production.contains("use super::CriticConfig"), "gated use strips");
+    assert!(
+        production.contains(".check_unfiltered("),
+        "production items after a gated statement stay scanned"
+    );
 }
 
 #[test]

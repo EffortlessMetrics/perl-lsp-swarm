@@ -2243,7 +2243,9 @@ impl LspServer {
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         diagnostics: &mut Vec<InternalDiagnostic>,
     ) {
-        use perl_lsp_rs_core::providers::diagnostics::take_critic_overlap_observations;
+        use perl_lsp_rs_core::providers::diagnostics::{
+            critic_overlap_observations, take_critic_overlap_observations,
+        };
         use perl_lsp_rs_core::tooling::perl_critic::{
             NativeCriticService, NativeCriticSubject, RunGate,
         };
@@ -2252,37 +2254,52 @@ impl LspServer {
         // accepted critic state through the #8253 authority in a single lock
         // scope and release the lock before any rule evaluation. No consumer
         // copies mutable configuration piecemeal anymore.
-        let accepted_state = { self.config.lock().effective_critic_state(None) };
+        //
+        // The subject's owning folder (#9062) binds the accepted state to the
+        // same root identity the pull path uses, so one document cannot carry
+        // different critic policy across transports in a multi-root workspace.
+        let root_key = self
+            .folder_for_doc_uri(subject)
+            .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
+            .or_else(|| self.root_path.lock().clone())
+            .map(|path| path.to_string_lossy().into_owned());
+        let accepted_state = { self.config.lock().effective_critic_state(root_key.as_deref()) };
         let expected_fingerprint = accepted_state.fingerprint();
         let config = std::sync::Arc::clone(&self.config);
         let config_is_current = move || {
-            config.lock().effective_critic_state(None).fingerprint() == expected_fingerprint
+            config.lock().effective_critic_state(root_key.as_deref()).fingerprint()
+                == expected_fingerprint
         };
 
         // Core lint emitters that declared a reviewed critic overlap
         // observation surrender their ordinary diagnostic here (#11918); the
         // logical row comes out of the same normalization inside the service,
         // merged with the native alias and carrying both contributor
-        // identities.
-        let overlap_observations = take_critic_overlap_observations(diagnostics);
+        // identities. The set is read non-destructively first: an
+        // unpublishable outcome (stale/cancelled) must retain every
+        // independent core row, so carriers are surrendered only after a
+        // publishable normalized replacement exists.
+        let overlap_observations = critic_overlap_observations(diagnostics);
 
-        let run = NativeCriticService::analyze(NativeCriticSubject {
-            label: subject,
+        let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
+            subject,
             source_identity,
             ast,
-            source: doc_text,
+            doc_text,
             accepted_state,
             overlap_observations,
-            cancellation: RunGate::open(),
-            currentness: RunGate::new(&config_is_current),
-        });
+            RunGate::open(),
+            RunGate::new(&config_is_current),
+        ));
 
         // A superseded run cannot populate current result storage (#9062):
-        // configuration moved underneath the analysis, so its rows are dropped.
+        // configuration moved underneath the analysis, so its rows are dropped
+        // and the untouched core diagnostics stay intact for this publication.
         if !run.is_publishable() {
             return;
         }
-        diagnostics.extend(run.findings.iter().map(normalized_critic_finding_to_diagnostic));
+        take_critic_overlap_observations(diagnostics);
+        diagnostics.extend(run.findings().iter().map(normalized_critic_finding_to_diagnostic));
     }
 
     /// Collect external perlcritic diagnostics if the feature is enabled.

@@ -580,6 +580,18 @@ impl LspServer {
             // #9068's). Running the legacy analyzer unconditionally (as before)
             // leaked the `Perl::Critic` brand onto the native product surface.
             //
+            // Resolve the owning folder key first (#9062): the same root
+            // identity governs capture and revalidation, so multi-root
+            // workspaces carry distinct critic policy and currentness through
+            // the action transport exactly like the pull path.
+            let root_key = self
+                .folder_for_doc_uri(uri)
+                .and_then(|folder| {
+                    folder.path.or_else(|| super::super::types::source_path_from_uri(&folder.uri))
+                })
+                .or_else(|| self.root_path.lock().clone())
+                .map(|path| path.to_string_lossy().into_owned());
+
             // Read the raw engine decision and derive the complete accepted
             // critic state (#8253) in ONE lock scope, then release the lock
             // before any rule evaluation (#9062): the native arm runs through
@@ -588,7 +600,7 @@ impl LspServer {
             // no consumer composes its own registry/policy pipeline.
             let (critic_engine, accepted_state) = {
                 let cfg = self.config.lock();
-                (cfg.critic_engine, cfg.effective_critic_state(None))
+                (cfg.critic_engine, cfg.effective_critic_state(root_key.as_deref()))
             };
             match critic_engine {
                 perl_lsp_rs_core::config::CriticEngine::Native => {
@@ -599,7 +611,7 @@ impl LspServer {
                     let expected_fingerprint = accepted_state.fingerprint();
                     let config = std::sync::Arc::clone(&self.config);
                     let config_is_current = move || {
-                        config.lock().effective_critic_state(None).fingerprint()
+                        config.lock().effective_critic_state(root_key.as_deref()).fingerprint()
                             == expected_fingerprint
                     };
                     let source_identity =
@@ -608,27 +620,27 @@ impl LspServer {
                             doc.current_generation(),
                         );
 
-                    let run = NativeCriticService::analyze(NativeCriticSubject {
-                        label: uri,
+                    let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
+                        uri,
                         source_identity,
                         ast,
-                        source: &doc.text,
-                        accepted_state: accepted_state.clone(),
-                        overlap_observations: Vec::new(),
-                        cancellation: RunGate::open(),
-                        currentness: RunGate::new(&config_is_current),
-                    });
+                        &doc.text,
+                        accepted_state.clone(),
+                        Vec::new(),
+                        RunGate::open(),
+                        RunGate::new(&config_is_current),
+                    ));
 
                     // A superseded run offers no actions this round; the next
                     // request re-snapshots current state (#9062). A disabled
                     // accepted state contributes none by configuration (#8253).
                     if run.is_publishable() {
-                        for normalized in &run.findings {
+                        for normalized in run.findings() {
                             // Normalization decides whether this logical finding
                             // is admitted. The raw producer is retained only for
                             // its existing safe edit and title; no raw finding
                             // can bypass alias-aware exclusion or suppression.
-                            let Some(finding) = run.producer_findings.iter().find(|finding| {
+                            let Some(finding) = run.producer_findings().iter().find(|finding| {
                                 finding.range == normalized.range()
                                     && normalized.contributors().iter().any(|contributor| {
                                         let identity = contributor.identity();
