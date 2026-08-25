@@ -839,10 +839,12 @@ gates:
     #     perllsp (3 expect_err replaced with typed let-else bail, 2 unused
     #     bindings dropped, 1 deferred-init binding), perl-regex (8 Option::expect
     #     in cfg(test) replaced with must_some_with via a new perl-test-must
-    #     dev-dependency). Also repaired two fresh main regressions inside the
-    #     existing cohort so the exact command stays green: perl-semantic-analyzer
-    #     too_many_arguments (#12334 follow-up) and perl-semantic-facts
-    #     explicit_auto_deref. Exact extended-cohort rerun PASS on this branch.
+    #     dev-dependency). The two fresh regressions inside the existing cohort
+    #     (perl-semantic-analyzer too_many_arguments from #12334,
+    #     perl-semantic-facts explicit_auto_deref) were repaired on main itself
+    #     (#12395, #12398), so this batch's duplicate fixes were dropped during
+    #     the merge with e40c2a386. Exact extended-cohort rerun PASS on this
+    #     branch.
     command: >-
       cargo clippy
       -p perl-token
