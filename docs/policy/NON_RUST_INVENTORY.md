@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11645 |
-| Rust-family files | 3515 |
-| Non-Rust files | 8130 |
-| Allowlisted | 5805 |
-| Unclassified | 2325 |
+| Total tracked files | 11649 |
+| Rust-family files | 3517 |
+| Non-Rust files | 8132 |
+| Allowlisted | 5850 |
+| Unclassified | 2282 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 407 |
+| config | 409 |
 | documentation | 2664 |
 | generated | 2 |
 | production | 317 |
-| test | 1936 |
-| tooling | 479 |
-| unclassified | 2325 |
+| test | 1939 |
+| tooling | 519 |
+| unclassified | 2282 |
 
 ## Unclassified files
 
@@ -80,50 +80,7 @@
 | `archive/crates/tree-sitter-perl-rs/src/tree_sitter/parser.h` | `h` |
 | `archive/crates/tree-sitter-perl-rs/src/tsp_unicode.h` | `h` |
 | `archive/crates/tree-sitter-perl-rs/test_output.sexp` | `sexp` |
-| `benchmarks/baselines/v0.10.0.json` | `json` |
-| `benchmarks/baselines/v0.9.0.json` | `json` |
-| `benchmarks/results/2026-01-22-ryzen9-9950x3d-parser.json` | `json` |
-| `benchmarks/scripts/alert.py` | `py` |
-| `benchmarks/scripts/compare.py` | `py` |
-| `benchmarks/scripts/compare.sh` | `sh` |
-| `benchmarks/scripts/extract-criterion.py` | `py` |
-| `benchmarks/scripts/format-results.py` | `py` |
-| `benchmarks/scripts/run-benchmarks.sh` | `sh` |
-| `benchmarks/scripts/test_alert_system.sh` | `sh` |
-| `benchmarks/scripts/test_benchmark_guards.py` | `py` |
-| `benchmarks/scripts/test_extract_criterion.py` | `py` |
-| `benchmarks/scripts/test_regression.py` | `py` |
 | `book/book.toml` | `toml` |
-| `ci/check_doc_hygiene.sh` | `sh` |
-| `ci/check_doc_paths.sh` | `sh` |
-| `ci/check_ignored.sh` | `sh` |
-| `ci/check_local.sh` | `sh` |
-| `ci/check_missing_docs.sh` | `sh` |
-| `ci/check_p0_locks.sh` | `sh` |
-| `ci/check_parse_errors.sh` | `sh` |
-| `ci/check_parser_matrix.sh` | `sh` |
-| `ci/check_todos.sh` | `sh` |
-| `ci/check_unsafe_prod.sh` | `sh` |
-| `ci/check_unwraps_modules.sh` | `sh` |
-| `ci/check_unwraps_prod.sh` | `sh` |
-| `ci/ignored_baseline.txt` | `txt` |
-| `ci/missing_docs_baseline.txt` | `txt` |
-| `ci/panic_prod_baseline.txt` | `txt` |
-| `ci/panic_test_identities.json` | `json` |
-| `ci/parse_errors_baseline.txt` | `txt` |
-| `ci/print_in_lib_baseline.txt` | `txt` |
-| `ci/quarantine-baseline.txt` | `txt` |
-| `ci/quick_check.sh` | `sh` |
-| `ci/regex_static_baseline.txt` | `txt` |
-| `ci/test_heredocs.sh` | `sh` |
-| `ci/test_quality_rebaseline_receipt.toml` | `toml` |
-| `ci/todo_baseline.txt` | `txt` |
-| `ci/todo_test_baseline.txt` | `txt` |
-| `ci/unsafe_prod_baseline.txt` | `txt` |
-| `ci/unwrap_lexer_baseline.txt` | `txt` |
-| `ci/unwrap_prod_baseline.txt` | `txt` |
-| `ci/unwrap_server_impl_baseline.txt` | `txt` |
-| `ci/xtask_wrapper.sh` | `sh` |
 | `contracts/actual_host_receipt.v1.schema.json` | `json` |
 | `crates/perl-corpus/concepts/incremental.toml` | `toml` |
 | `crates/perl-corpus/concepts/lexer.toml` | `toml` |
@@ -2866,6 +2823,8 @@
 | `.github/actions/setup-rust/action.yml` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/setup-vscode-toolchain/action.yml` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/upload-receipt/action.yml` | config | `non-rust-github-actions` | release/ci |
+| `.github/actions/upload-receipt/test_validate_paths.py` | config | `non-rust-github-actions` | release/ci |
+| `.github/actions/upload-receipt/validate_paths.py` | config | `non-rust-github-actions` | release/ci |
 | `.github/ci-config.yml` | config | `non-rust-github-policy` | release/ci |
 | `.github/copilot-instructions.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.github/dependabot.yml` | config | `non-rust-github-policy` | release/ci |
@@ -3348,7 +3307,20 @@
 | `badges/ripr-plus.json` | generated | `non-rust-generated-badge-endpoints` | release/ci |
 | `benchmarks/BENCHMARK_FRAMEWORK.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `benchmarks/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `benchmarks/baselines/v0.10.0.json` | test | `non-rust-benchmarks-baselines` | parser/perf |
+| `benchmarks/baselines/v0.9.0.json` | test | `non-rust-benchmarks-baselines` | parser/perf |
+| `benchmarks/results/2026-01-22-ryzen9-9950x3d-parser.json` | test | `non-rust-benchmarks-results` | parser/perf |
 | `benchmarks/results/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `benchmarks/scripts/alert.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
+| `benchmarks/scripts/compare.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
+| `benchmarks/scripts/compare.sh` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
+| `benchmarks/scripts/extract-criterion.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
+| `benchmarks/scripts/format-results.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
+| `benchmarks/scripts/run-benchmarks.sh` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
+| `benchmarks/scripts/test_alert_system.sh` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
+| `benchmarks/scripts/test_benchmark_guards.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
+| `benchmarks/scripts/test_extract_criterion.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
+| `benchmarks/scripts/test_regression.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `book/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 | `book/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `book/src/SUMMARY.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3414,6 +3386,36 @@
 | `book/src/user-guides/lsp-features.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `book/src/user-guides/troubleshooting.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `book/src/user-guides/workspace-navigation.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `ci/check_doc_hygiene.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/check_doc_paths.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/check_ignored.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/check_local.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/check_missing_docs.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/check_p0_locks.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/check_parse_errors.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/check_parser_matrix.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/check_todos.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/check_unsafe_prod.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/check_unwraps_modules.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/check_unwraps_prod.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/ignored_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/missing_docs_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/panic_prod_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/panic_test_identities.json` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/parse_errors_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/print_in_lib_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/quarantine-baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/quick_check.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/regex_static_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/test_heredocs.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/test_quality_rebaseline_receipt.toml` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/todo_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/todo_test_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/unsafe_prod_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/unwrap_lexer_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/unwrap_prod_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/unwrap_server_impl_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/xtask_wrapper.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
 | `clients/lite-xl/tests/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `clients/lite-xl/tests/diagnostic_position_test.lua` | test | `non-rust-litexl-diagnostic-position-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/diagnostics_currentness_test.lua` | test | `non-rust-litexl-diagnostics-currentness-tests` | editor/lite-xl |

@@ -3169,17 +3169,33 @@ review_after = "2026-11-22"
 expires = "2027-08-24"
 
 [[allow]]
-id = "non-rust-benchmarks-data"
-glob = "benchmarks/{baselines,results}/**"
+id = "non-rust-benchmarks-baselines"
+glob = "benchmarks/baselines/**"
 kind = "benchmark_data"
 language = "json"
 surface = "fixtures"
 classification = "test"
 owner = "parser/perf"
-reason = "Benchmark baseline and result JSON snapshots used by criterion comparison and regression detection."
+reason = "Benchmark baseline JSON snapshots used by criterion comparison and regression detection."
 covered_by = [
   "just benchmarks",
 ]
-broad_glob_reason = "Benchmark baselines and results accumulate per-version."
+broad_glob_reason = "Benchmark baselines accumulate per-version."
+created = "2026-08-24"
+review_after = "2027-02-20"
+
+[[allow]]
+id = "non-rust-benchmarks-results"
+glob = "benchmarks/results/**"
+kind = "benchmark_data"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "parser/perf"
+reason = "Benchmark result JSON snapshots used by criterion comparison and regression detection."
+covered_by = [
+  "just benchmarks",
+]
+broad_glob_reason = "Benchmark results accumulate per run."
 created = "2026-08-24"
 review_after = "2027-02-20"
