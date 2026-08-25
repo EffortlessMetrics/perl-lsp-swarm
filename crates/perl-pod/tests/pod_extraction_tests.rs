@@ -891,7 +891,7 @@ Directive::Clean - real docs
 }
 
 #[test]
-fn list_items_without_active_section_do_not_create_documentation() {
+fn list_items_without_active_section_do_not_create_method_documentation() {
     let source = r#"
 =over 4
 
@@ -906,7 +906,12 @@ This item is not under a named POD section.
 
     let doc = extract_pod(source);
 
-    assert!(doc.is_empty());
+    // Since #2488 the leading list is retained under the synthetic synopsis
+    // instead of being discarded when no =head section exists.
+    let synopsis = doc.synopsis.expect("leading list must be retained (#2488)");
+    assert!(synopsis.contains("ghost"), "synopsis: {synopsis}");
+    // Stray items still never become method documentation.
+    assert!(doc.methods.is_empty());
 }
 
 #[test]
