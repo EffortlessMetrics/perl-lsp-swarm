@@ -248,17 +248,29 @@ pub(super) fn did_open_params(method: &str, value: &Value) -> Result<(), SchemaE
     Ok(())
 }
 
-/// One LSP 3.17 `TextDocumentContentChangeEvent`: whole-document replace
-/// without `range`, or an incremental edit with optional deprecated
-/// `rangeLength`. Both variants are structurally valid; capability
+/// One LSP 3.17 `TextDocumentContentChangeEvent` union arm: an incremental
+/// edit carries required `range` plus optional deprecated `rangeLength`,
+/// while a whole-document replacement carries only `text`.
+/// `rangeLength` without `range` matches neither union arm; capability
 /// intersection stays a provider concern outside this validator.
 fn content_change_event(method: &str, path: &str, value: &Value) -> Result<(), SchemaError> {
     let object = expect_object(Some(method), path, value)?;
     if let Some(event_range) = object.get("range") {
         range(method, &format!("{path}.range"), Some(event_range))?;
-    }
-    if let Some(range_length) = object.get("rangeLength") {
-        expect_unsigned_integer(Some(method), &format!("{path}.rangeLength"), Some(range_length))?;
+        if let Some(range_length) = object.get("rangeLength") {
+            expect_unsigned_integer(
+                Some(method),
+                &format!("{path}.rangeLength"),
+                Some(range_length),
+            )?;
+        }
+    } else if let Some(range_length) = object.get("rangeLength") {
+        return Err(SchemaError::at_value(
+            Some(method),
+            format!("{path}.rangeLength"),
+            "absent on the whole-document change event (no range)",
+            range_length,
+        ));
     }
     expect_string(Some(method), &format!("{path}.text"), object.get("text")).map(|_| ())
 }

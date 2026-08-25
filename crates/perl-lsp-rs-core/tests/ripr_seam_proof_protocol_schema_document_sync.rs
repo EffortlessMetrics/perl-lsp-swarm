@@ -349,6 +349,26 @@ fn did_change_deprecated_range_length_keeps_exact_type() {
 }
 
 #[test]
+fn did_change_rejects_range_length_without_range_on_the_union() {
+    let orphan_range_length = json!({
+        "jsonrpc": "2.0",
+        "method": DID_CHANGE_METHOD,
+        "params": {
+            "textDocument": { "uri": "file:///workspace/main.pl", "version": 1 },
+            "contentChanges": [{
+                "rangeLength": 7,
+                "text": "package strict;"
+            }]
+        }
+    });
+    let error = validate(&orphan_range_length, Direction::ClientToServer, None).expect_err(
+        "TextDocumentContentChangeEvent is a union: rangeLength belongs only to the incremental arm that also carries range",
+    );
+    assert_eq!(error.method.as_deref(), Some(DID_CHANGE_METHOD));
+    assert_eq!(error.path, "$.params.contentChanges[0].rangeLength");
+}
+
+#[test]
 fn wrong_direction_and_response_classes_fail_closed() {
     let server_direction = did_open("file:///workspace/main.pl");
     let direction_error = validate(&server_direction, Direction::ServerToClient, None)
