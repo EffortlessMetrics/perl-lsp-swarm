@@ -498,6 +498,136 @@ pub mod recovery;
 
 use perl_ast::Node;
 
+/// The exact typed cause that stopped a parse operation early.
+///
+/// This type is the canonical terminal-state authority for [`ParseOutput`].
+/// It is distinct from the ordered `diagnostics` vector: diagnostics record
+/// parser observations (syntax recoveries, warnings, etc.); `ParseStopCause`
+/// records the unique terminal cause that ended the operation before it could
+/// complete or recover.
+///
+/// An operation that collects many recoverable syntax diagnostics before a
+/// later cancellation or budget exhaustion records those diagnostics in the
+/// `diagnostics` vector; the `ParseStopCause` records only the terminal cause.
+/// The diagnostic population never determines the stop cause — the cause is set
+/// at the exact parser branch that terminates the operation.
+///
+/// Completed operations (clean or recovered) have `stop_cause: None` on
+/// [`ParseOutput`].
+///
+/// # Invariant
+///
+/// `stop_cause.is_some() == terminated_early` on every [`ParseOutput`] produced
+/// by a public parser entry point. This invariant is enforced by the
+/// [`ParseOutput`] constructors; consumers that mutate fields directly are
+/// responsible for keeping them consistent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ParseStopCause {
+    /// Cooperative cancellation was triggered via an external cancellation token
+    /// before parsing could complete.
+    ///
+    /// The cancellation authority is an external `Arc<AtomicBool>`; no
+    /// operation-ID or named token is available from the parser itself.
+    Cancelled,
+
+    /// The parser's recursion depth exceeded the configured budget.
+    ///
+    /// When the budget authority supplies `limit` and `usage` values (as with
+    /// [`ParseError::NestingTooDeep`]), they are recorded here. For the
+    /// unit-variant [`ParseError::RecursionLimit`] path the values are `None`.
+    RecursionBudgetExhausted {
+        /// Configured recursion depth limit, if available from the budget authority.
+        limit: Option<usize>,
+        /// Recursion depth at exhaustion, if available from the budget authority.
+        usage: Option<usize>,
+    },
+
+    /// The nesting or structural depth limit was exceeded.
+    ///
+    /// Both `limit` and `usage` are recorded from [`ParseError::NestingTooDeep`].
+    NestingOrDepthBudgetExhausted {
+        /// Configured nesting depth limit.
+        limit: usize,
+        /// Nesting depth at exhaustion.
+        usage: usize,
+    },
+
+    /// A catastrophic, unrecoverable termination occurred that does not fall
+    /// into the above named terminal families.
+    ///
+    /// The associated [`ParseError`] is recorded in the `diagnostics` vector of
+    /// [`ParseOutput`] alongside this cause.
+    CatastrophicTermination,
+
+    /// A future or unknown typed terminal class (stable extension boundary).
+    ///
+    /// This variant is reserved for terminal paths that do not map to the current
+    /// named families. Callers receiving this variant must treat the parse as
+    /// non-current and must not infer a more specific cause from `diagnostics`.
+    FutureTypedTerminal,
+}
+
+impl ParseStopCause {
+    /// Derive the typed stop cause from the terminal [`ParseError`] returned
+    /// by the parser.
+    ///
+    /// This is the canonical conversion used by [`crate::Parser::parse_with_recovery`]
+    /// to record the cause at the branch that terminates parsing, rather than
+    /// reconstructing it later from the diagnostic vector.
+    ///
+    /// # Mapping
+    ///
+    /// | [`ParseError`] variant | [`ParseStopCause`] |
+    /// |---|---|
+    /// | `Cancelled` | `Cancelled` |
+    /// | `RecursionLimit` | `RecursionBudgetExhausted { limit: None, usage: None }` |
+    /// | `NestingTooDeep { depth, max_depth }` | `NestingOrDepthBudgetExhausted { limit: max_depth, usage: depth }` |
+    /// | Any other variant | `CatastrophicTermination` |
+    #[must_use]
+    pub fn from_parse_error(error: &ParseError) -> Self {
+        match error {
+            ParseError::Cancelled => Self::Cancelled,
+            ParseError::RecursionLimit => {
+                Self::RecursionBudgetExhausted { limit: None, usage: None }
+            }
+            ParseError::NestingTooDeep { depth, max_depth } => {
+                Self::NestingOrDepthBudgetExhausted { limit: *max_depth, usage: *depth }
+            }
+            _ => Self::CatastrophicTermination,
+        }
+    }
+
+    /// Whether this cause represents cooperative cancellation.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled)
+    }
+
+    /// Whether this cause represents a parser resource or budget limit being
+    /// exceeded (recursion depth, nesting depth, or a governed work budget).
+    #[must_use]
+    pub fn is_budget_exhaustion(&self) -> bool {
+        matches!(
+            self,
+            Self::RecursionBudgetExhausted { .. } | Self::NestingOrDepthBudgetExhausted { .. }
+        )
+    }
+
+    /// Returns the stable machine token for this cause, suitable for
+    /// receipt and log layers that must not depend on `Debug` formatting.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::RecursionBudgetExhausted { .. } => "recursion_budget_exhausted",
+            Self::NestingOrDepthBudgetExhausted { .. } => "nesting_or_depth_budget_exhausted",
+            Self::CatastrophicTermination => "catastrophic_termination",
+            Self::FutureTypedTerminal => "future_typed_terminal",
+        }
+    }
+}
+
 /// Structured output from parsing, combining AST with all diagnostics.
 ///
 /// This type replaces the simple `Result<Node, ParseError>` pattern to enable
@@ -523,6 +653,12 @@ use perl_ast::Node;
 /// // Budget tracking shows resource usage
 /// println!("Errors: {}", output.budget_usage.errors_emitted);
 /// ```
+///
+/// # Stop cause vs diagnostics
+///
+/// [`ParseOutput::stop_cause`] is the canonical authority for why parsing
+/// terminated early. Ordered `diagnostics` are parser observations collected
+/// during the operation and must not be used to reconstruct the stop cause.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ParseOutput {
@@ -538,8 +674,15 @@ pub struct ParseOutput {
     /// Useful for diagnosing pathological inputs.
     pub budget_usage: BudgetTracker,
 
-    /// Whether parsing completed normally or was terminated early
-    /// due to budget exhaustion.
+    /// Whether parsing completed normally or was terminated early.
+    ///
+    /// This field is a checked projection of [`ParseOutput::stop_cause`]:
+    /// `terminated_early == stop_cause.is_some()` on every [`ParseOutput`]
+    /// produced by a public parser entry point.
+    ///
+    /// Prefer reading [`ParseOutput::stop_cause`] when you need to distinguish
+    /// the exact terminal cause; use `terminated_early` only as a quick boolean
+    /// guard or for backward compatibility.
     pub terminated_early: bool,
 
     /// Number of recovery operations applied during this parse.
@@ -548,6 +691,20 @@ pub struct ParseOutput {
     /// LSP providers use this as a confidence signal: `0` means a clean parse,
     /// `> 0` means at least one synthetic repair was made.
     pub recovered_count: usize,
+
+    /// The exact typed cause that stopped parsing early, if any.
+    ///
+    /// `None` for completed (clean or recovered) parses; `Some(cause)` when
+    /// `parse()` returned an error and `terminated_early` is `true`.
+    ///
+    /// This field is set at the parser branch that terminates the operation.
+    /// It must not be inferred from `diagnostics` order, content, or severity.
+    ///
+    /// # Invariant
+    ///
+    /// `stop_cause.is_some() == terminated_early` on every [`ParseOutput`]
+    /// produced by a public parser entry point.
+    pub stop_cause: Option<ParseStopCause>,
 }
 
 /// Closeout classification for a parsed file.
@@ -656,6 +813,8 @@ pub(crate) fn count_blocking_non_recovered(diagnostics: &[ParseError]) -> usize 
 
 impl ParseOutput {
     /// Create a successful parse output with no errors.
+    ///
+    /// Sets `terminated_early = false` and `stop_cause = None`.
     pub fn success(ast: Node) -> Self {
         Self {
             ast,
@@ -663,34 +822,51 @@ impl ParseOutput {
             budget_usage: BudgetTracker::new(),
             terminated_early: false,
             recovered_count: 0,
+            stop_cause: None,
         }
     }
 
-    /// Create a parse output with errors.
+    /// Create a parse output with errors but no early-termination cause.
     ///
-    /// Note: This re-derives budget_usage from diagnostics count.
-    /// For accurate budget tracking, use `finish()` instead.
+    /// Use this for recovered parses that completed (possibly with errors) but
+    /// were not stopped by cancellation or budget exhaustion.
+    ///
+    /// Note: This re-derives `budget_usage` from the diagnostics count.
+    /// For accurate budget tracking, use [`ParseOutput::finish`] instead.
     pub fn with_errors(ast: Node, diagnostics: Vec<ParseError>) -> Self {
         let mut budget_usage = BudgetTracker::new();
         budget_usage.errors_emitted = diagnostics.len();
         let recovered_count =
             diagnostics.iter().filter(|e| matches!(e, ParseError::Recovered { .. })).count();
-        Self { ast, diagnostics, budget_usage, terminated_early: false, recovered_count }
+        Self {
+            ast,
+            diagnostics,
+            budget_usage,
+            terminated_early: false,
+            recovered_count,
+            stop_cause: None,
+        }
     }
 
-    /// Create a parse output with full budget tracking.
+    /// Create a parse output with full budget tracking and an optional stop cause.
     ///
-    /// This is the preferred constructor when the actual BudgetTracker
-    /// from parsing is available, as it preserves accurate metrics.
+    /// This is the preferred constructor when the actual `BudgetTracker` from
+    /// parsing is available, as it preserves accurate metrics.
+    ///
+    /// The `stop_cause` argument should be `Some(cause)` when `parse()` returned
+    /// `Err` and `None` for completed (clean or recovered) operations.
+    /// `terminated_early` is derived from `stop_cause.is_some()` to maintain the
+    /// documented invariant.
     pub fn finish(
         ast: Node,
         diagnostics: Vec<ParseError>,
         budget_usage: BudgetTracker,
-        terminated_early: bool,
+        stop_cause: Option<ParseStopCause>,
     ) -> Self {
         let recovered_count =
             diagnostics.iter().filter(|e| matches!(e, ParseError::Recovered { .. })).count();
-        Self { ast, diagnostics, budget_usage, terminated_early, recovered_count }
+        let terminated_early = stop_cause.is_some();
+        Self { ast, diagnostics, budget_usage, terminated_early, recovered_count, stop_cause }
     }
 
     /// Check if parse completed without any errors.
@@ -1168,14 +1344,21 @@ mod tests {
         tracker.recoveries_attempted = 3;
         tracker.max_depth_reached = 10;
 
-        let output = ParseOutput::finish(ast, errors, tracker, true);
+        let output = ParseOutput::finish(
+            ast,
+            errors,
+            tracker,
+            Some(ParseStopCause::CatastrophicTermination),
+        );
 
         // Verify all tracker values are preserved
         assert_eq!(output.budget_usage.errors_emitted, 5);
         assert_eq!(output.budget_usage.tokens_skipped, 42);
         assert_eq!(output.budget_usage.recoveries_attempted, 3);
         assert_eq!(output.budget_usage.max_depth_reached, 10);
+        // terminated_early is derived from stop_cause.is_some()
         assert!(output.terminated_early);
+        assert!(output.stop_cause.is_some());
         assert_eq!(output.error_count(), 1);
     }
 
@@ -1334,10 +1517,11 @@ mod tests {
             },
         ];
         let tracker = BudgetTracker::new();
-        let output = ParseOutput::finish(ast, errors, tracker, false);
+        let output = ParseOutput::finish(ast, errors, tracker, None);
 
         assert_eq!(output.recovered_count, 1);
         assert!(!output.terminated_early);
+        assert!(output.stop_cause.is_none());
     }
 
     #[test]

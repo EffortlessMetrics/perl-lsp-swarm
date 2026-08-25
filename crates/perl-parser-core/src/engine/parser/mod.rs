@@ -56,7 +56,10 @@
 
 use crate::{
     ast::{GotoTargetForm, Node, NodeKind, SourceLocation},
-    error::{BudgetTracker, ParseError, ParseOutput, ParseResult, RecoveryKind, RecoverySite},
+    error::{
+        BudgetTracker, ParseError, ParseOutput, ParseResult, ParseStopCause, RecoveryKind,
+        RecoverySite,
+    },
     heredoc_collector::{self, HeredocContent, PendingHeredoc, collect_at_declaration_offsets},
     quote_parser,
     token_stream::{Token, TokenKind, TokenStream},
@@ -485,29 +488,36 @@ impl<'a> Parser<'a> {
     /// assert!(!output.diagnostics.is_empty() || matches!(output.ast.kind, perl_parser_core::NodeKind::Program { .. }));
     /// ```
     pub fn parse_with_recovery(&mut self) -> ParseOutput {
-        let (ast, terminated_early) = match self.parse() {
-            Ok(node) => (node, false),
+        let (ast, stop_cause) = match self.parse() {
+            Ok(node) => (node, None),
             Err(e) => {
-                // If parse() returned Err, it was a non-recoverable error (e.g. recursion limit)
-                // Ensure it's recorded if not already
+                // If parse() returned Err, it was a non-recoverable error (e.g. cancellation,
+                // recursion limit, or nesting limit). Record the typed stop cause at this branch —
+                // the cause is not reconstructed from diagnostics later.
+                let cause = ParseStopCause::from_parse_error(&e);
+
+                // Ensure the terminal error is recorded in the diagnostic vector, but only
+                // once — `Cancelled` in particular can already be present from prior work.
                 if !self.errors.contains(&e) {
-                    self.errors.push(e.clone());
+                    self.errors.push(e);
                 }
 
-                // Return a dummy Program node with the error
+                // Return a partial Program node so consumers always receive a usable AST.
                 (
                     Node::new(
                         NodeKind::Program { statements: vec![] },
                         SourceLocation { start: 0, end: 0 },
                     ),
-                    true,
+                    Some(cause),
                 )
             }
         };
 
         let mut budget_usage = BudgetTracker::new();
         budget_usage.errors_emitted = self.errors.len();
-        ParseOutput::finish(ast, self.errors.clone(), budget_usage, terminated_early)
+        // terminated_early is derived from stop_cause inside finish() to preserve
+        // the ParseOutput invariant: terminated_early == stop_cause.is_some().
+        ParseOutput::finish(ast, self.errors.clone(), budget_usage, stop_cause)
     }
 }
 
