@@ -782,13 +782,8 @@ impl PullDiagnosticsProvider {
             code,
             code_description: None,
             source: Some("perl-lsp".to_string()),
-<<<<<<< HEAD
-            message: finding.message().to_string().into(),
-            related_information: None,
-=======
-            message,
+            message: message.into(),
             related_information,
->>>>>>> origin/main
             tags: None,
             data,
         }
