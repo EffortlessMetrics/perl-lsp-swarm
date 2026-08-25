@@ -70,7 +70,7 @@ function core_root_view.open_doc(_, doc)
     filename = doc.filename,
     doc = {
       lines = { "hello world" },
-      set_selection = function(self, line1, col1, line2, col2)
+      set_selection = function(_, line1, col1, line2, col2)
         selection_calls[#selection_calls + 1] =
           { line1 = line1, col1 = col1, line2 = line2, col2 = col2 }
       end,
