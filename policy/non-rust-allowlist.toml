@@ -1533,6 +1533,24 @@ covered_by = [
 created = "2026-08-14"
 review_after = "2026-11-14"
 
+# Loaded-module reload wire family (perl-lsp/loadedModuleReload v1)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-loaded-module-reload-family-schema"
+path = "schemas/loaded_module_reload_family.v1.schema.json"
+kind = "protocol_contract"
+language = "json"
+surface = "dap"
+classification = "config"
+owner = "identity"
+reason = "JSON Schema for the perl-lsp/loadedModuleReload v1 custom DAP family wire contract (#10138, frozen semantics #10097); schema parity is ratcheted by the reload_family seam tests."
+covered_by = [
+  "cargo test -p perl-dap reload_family --locked",
+]
+created = "2026-08-25"
+review_after = "2026-11-25"
+
 # Editor-intelligence gap-matrix fixture tree
 # =============================================================================
 
