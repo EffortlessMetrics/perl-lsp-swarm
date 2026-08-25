@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11698 |
-| Rust-family files | 3537 |
-| Non-Rust files | 8161 |
-| Allowlisted | 5836 |
+| Total tracked files | 11758 |
+| Rust-family files | 3546 |
+| Non-Rust files | 8212 |
+| Allowlisted | 5887 |
 | Unclassified | 2325 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 418 |
-| documentation | 2670 |
+| config | 419 |
+| documentation | 2676 |
 | generated | 2 |
 | production | 321 |
-| test | 1936 |
-| tooling | 489 |
+| test | 1938 |
+| tooling | 531 |
 | unclassified | 2325 |
 
 ## Unclassified files
@@ -2407,6 +2407,7 @@
 | `.changes/unreleased/product-11950-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12022-Removed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12024-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12085-Fixed-103000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12094-Fixed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12171-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -3035,6 +3036,47 @@
 | `.receipts/20260129/gate-format-20260129-130332.yaml` | config | `non-rust-receipts-tree` | release/ci |
 | `.receipts/20260129/gate-format-20260129-130355.yaml` | config | `non-rust-receipts-tree` | release/ci |
 | `.roo/rules/perl-lsp.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10097-loaded-module-reload-contract/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10097-loaded-module-reload-contract/adaptations.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10097-loaded-module-reload-contract/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10097-loaded-module-reload-contract/fixtures/classification/01_ordinary_source_backed_module.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/classification/02_active_frame_in_target.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/classification/03_same_package_two_include_roots.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/classification/04_dirty_editor_source.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/classification/05_module_outside_launch_authority.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/classification/06_xs_module.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/classification/07_source_filter_module.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/classification/08_generated_eval_source.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/classification/09_module_removed_after_loading.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/classification/10_process_session_replacement.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/classification/11_not_stopped.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/classification/12_not_loaded.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/classification/13_main_program.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/classification/14_unsupported_runtime.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/classification/15_basename_only_identity.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/negative_controls/expected_errors.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/negative_controls/nc01_basename_only_authorization.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/negative_controls/nc02_dirty_source_as_saved.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/negative_controls/nc03_compile_success_as_reload.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/negative_controls/nc04_active_frame_accepted.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/negative_controls/nc05a_xs_module_admitted.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/negative_controls/nc05b_source_filter_module_admitted.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/negative_controls/nc05c_generated_source_admitted.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/negative_controls/nc06_timeout_without_generation_advance.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/negative_controls/nc07_stale_identity_survives.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/negative_controls/nc08a_raw_path_accepted.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/negative_controls/nc08b_debugger_command_accepted.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/negative_controls/nc08c_perl_expression_accepted.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/negative_controls/nc09_standard_capability_invented.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/negative_controls/nc10_availability_as_authority.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/transactions/01_reloaded_commits_generation.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/transactions/02_indeterminate_timeout_advances.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/transactions/03_refusal_advances_nothing.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/transactions/04_pre_mutation_failure_advances_nothing.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/transactions/05_indeterminate_transport_loss.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/fixtures/transactions/06_reloaded_projected_at_terminal.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10097-loaded-module-reload-contract/schemas/loaded_module_reload.v1.schema.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/10136-test-runner-client-authority/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10136-test-runner-client-authority/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10136-test-runner-client-authority/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -4161,6 +4203,7 @@
 | `docs/adr/0043-module-provenance-detection.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/0044-octopus-cluster-orchestration.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/0045-noncurrent-frame-mutation-disposition.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/adr/0046-loaded-module-reload-semantics.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_001_AGENT_ARCHITECTURE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_002_API_DOCUMENTATION_INFRASTRUCTURE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_003_MISSING_DOCUMENTATION_INFRASTRUCTURE.md` | documentation | `non-rust-docs-tree` | docs |
@@ -4820,6 +4863,7 @@
 | `docs/policy/NON_RUST_LADDER.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/policy/NON_RUST_POLICY.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/policy/POLICY_ALLOWLISTS.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/policy/REVIEW_SURFACES.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/AGENTIC_DEV.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/AGENTIC_DEVELOPMENT.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/AGENTIC_SWARM_ERA.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6032,6 +6076,7 @@
 | `policy/release-channel-actuals.json` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/release-container-actuals.json` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/release-tag-provenance.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/review-surfaces.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ripr-suppressions.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/semantic-token-classes.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/trust-lanes.toml` | config | `non-rust-policy-ledgers` | release/ci |
@@ -6262,8 +6307,10 @@
 | `scripts/ci/test_validate_gate_lane_mapping.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_helix_fixture_drift.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_policy_checks_inventory.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_validate_review_surfaces.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_risk_packs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_trust_lanes.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_verify_gate_receipt_freshness.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_verify_homebrew_formula_digests.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_verify_rustfmt_receipt.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_workflow_security_ratchet.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6273,8 +6320,10 @@
 | `scripts/ci/validate_helix_fixture_drift.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_policy_checks_inventory.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_provider_fact_reads.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/validate_review_surfaces.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_risk_packs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_trust_lanes.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/verify_gate_receipt_freshness.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/verify_homebrew_formula_digests.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/verify_rustfmt_receipt.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/workflow_security_ratchet.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6534,6 +6583,7 @@
 | `test_corpus/basic_constructs.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/builtins_context_sensitive.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/caller_context_comprehensive.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `test_corpus/chained_comparison.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/class_method_production_enhanced.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/clean_class_method.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/clean_for_labeled.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -6603,6 +6653,7 @@
 | `test_corpus/heredoc_depth.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/indirect_call_production_enhanced.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/io_operations_comprehensive.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `test_corpus/key_value_slice_and_vstring.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/labeled_statement_comprehensive.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/legacy_encoding.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/legacy_syntax.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
