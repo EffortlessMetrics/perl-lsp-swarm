@@ -22,10 +22,10 @@
 //! - Location tracking for precise error reporting in large files
 //!
 //! Ownership stays recursively owned (`Box`, `Vec`, optional children). [`Node`]
-//! destruction is iterative and depth-independent. [`Clone`] is iterative;
-//! overflow is proven on a 50,000-node chain with a 256 KiB worker. Derived
-//! [`Debug`] and [`PartialEq`] remain recursive. See [`Node`] for the
-//! depth-safety contract.
+//! destruction is iterative and depth-independent. [`Clone`], [`PartialEq`],
+//! and [`Debug`] are iterative; overflow is proven on a 50,000-node chain with
+//! a 256 KiB worker. [`Debug`] is a bounded human projection, not machine
+//! identity. See [`Node`] for the depth-safety contract.
 //!
 //! # Usage Examples
 //!
@@ -126,12 +126,11 @@ use strum::VariantNames as _;
 /// 512 provides a comfortable safety margin while staying well within
 /// Rust's default 8 MB stack.
 ///
-/// This constant does **not** bound destruction or clone. [`Node`]'s [`Drop`]
-/// and [`Clone`] implementations are iterative and do not consult this limit.
-/// Derived [`Debug`] and [`PartialEq`] also ignore it: they remain recursive
-/// and are only a supported operation on trees whose nesting stays within
-/// ordinary parser-produced depth. See [`Node`] for the full depth-safety
-/// disposition.
+/// This constant does **not** bound destruction, clone, equality, or debug
+/// formatting. [`Node`]'s [`Drop`], [`Clone`], [`PartialEq`], and [`Debug`]
+/// implementations are iterative and do not consult this limit. [`Debug`] uses
+/// its own conservative budgets (`NODE_DEBUG_MAX_*`). See [`Node`] for the
+/// full depth-safety disposition.
 pub const MAX_AST_DEPTH: usize = 512;
 
 thread_local! {
@@ -280,7 +279,8 @@ define_field_ids! {
 /// - `NodeKind` enum variants minimize memory overhead for common constructs
 /// - Child relationships stay recursively owned (`Box<Node>`, `Vec<Node>`,
 ///   optional children, pair/clause records). Public node geometry is unchanged
-///   from that model; destruction and clone, not representation, are iterative.
+///   from that model; destruction, clone, equality, and debug formatting, not
+///   representation, are iterative.
 ///
 /// # Depth safety
 ///
@@ -295,20 +295,29 @@ define_field_ids! {
 ///   exist. A 50,000-node chain on a 256 KiB worker completes without
 ///   overflowing the thread stack. This is a full owned duplication, not a
 ///   cheap share.
-/// - **[`PartialEq`]**: derived recursive implementation. Supported for
-///   ordinary parser-produced trees whose nesting stays within
-///   [`MAX_AST_DEPTH`] and the parser's own recursion limit. Not stack-safe
-///   for adversarial or hand-built chains of destruction-test depth.
-///   Replacement:
-///   <https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8839>.
-/// - **[`Debug`]**: same derived-recursive precondition as [`PartialEq`], and
-///   additionally unbounded in output size. Replacement:
-///   <https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8840>.
+/// - **[`PartialEq`]**: iterative exact structural equality. Canonical child
+///   fields are compared on an explicit heap stack. A 50,000-node chain on a
+///   256 KiB worker completes without overflowing the thread stack. This is
+///   the current `==` proposition (location, variant, every non-child
+///   payload, optional/repeated cardinality, child order). It is not
+///   S-expression, fingerprint, or source-text equality.
+/// - **[`Debug`]**: iterative bounded human projection. Kind, range, a
+///   selected payload summary, and a bounded child projection are rendered
+///   on an explicit heap stack. Depth, width, node, payload, and byte
+///   budgets are fixed conservative internals
+///   ([`NODE_DEBUG_MAX_DEPTH`], [`NODE_DEBUG_MAX_CHILDREN`],
+///   [`NODE_DEBUG_MAX_NODES`], [`NODE_DEBUG_MAX_PAYLOAD_CHARS`],
+///   [`NODE_DEBUG_MAX_BYTES`]). Truncation is marked with
+///   [`NODE_DEBUG_TRUNCATION_MARKER`]. A 50,000-node chain on a 256 KiB
+///   worker completes without overflowing the thread stack, and the
+///   rendering stays at or under the byte bound. This is not machine
+///   identity, equality, serialization, or a durable metric oracle.
+///   Callers that need configured complete or truncated state use the
+///   typed renderer tracked by issue 8832.
 ///
-/// There is no runtime enforcement of the Debug/PartialEq precondition: a
-/// too-deep call overflows the stack rather than returning a typed error.
 /// Whole-tree reads such as [`Node::count_nodes`] stay separately depth-guarded
-/// and may truncate; that is not a destruction or clone concern.
+/// and may truncate; that is not a destruction, clone, equality, or debug
+/// concern.
 ///
 /// # Examples
 ///
@@ -344,9 +353,8 @@ define_field_ids! {
 /// println!("AST: {}", ast.to_sexp());
 /// ```
 ///
-/// [`Clone`] is iterative. Derived `Debug`/`PartialEq` stay recursive; see the
-/// depth-safety table above. Remaining replacements are issues 8839 and 8840.
-#[derive(Debug, PartialEq)]
+/// [`Clone`], [`PartialEq`], and [`Debug`] are iterative. See the
+/// depth-safety table above.
 #[non_exhaustive]
 pub struct Node {
     /// The specific type and semantic content of this AST node
@@ -1921,6 +1929,13 @@ impl Drop for Node {
 }
 
 mod node_clone;
+mod node_debug;
+mod node_eq;
+
+pub use node_debug::{
+    NODE_DEBUG_MAX_BYTES, NODE_DEBUG_MAX_CHILDREN, NODE_DEBUG_MAX_DEPTH, NODE_DEBUG_MAX_NODES,
+    NODE_DEBUG_MAX_PAYLOAD_CHARS, NODE_DEBUG_TRUNCATION_MARKER,
+};
 
 #[cfg(test)]
 mod drop_audit {
@@ -2003,9 +2018,11 @@ mod drop_audit {
 /// Dropping a [`NodeKind`] that still owns [`Node`] children is stack-safe
 /// because each child uses [`Node`]'s iterative [`Drop`]. Derived [`Clone`]
 /// on this enum goes through those same iterative [`Node::clone`] child slots.
-/// Derived [`Debug`] and [`PartialEq`] still recurse through children under
-/// the bounded-depth precondition documented on [`Node`].
-#[derive(Debug, Clone, PartialEq, strum::VariantNames)]
+/// Derived [`PartialEq`] likewise compares child slots through iterative
+/// [`Node::eq`]. [`Debug`] is non-recursive: it shows the kind name and a
+/// bounded payload summary without dumping child trees. Tree projection is
+/// owned by [`Node`]'s bounded [`Debug`].
+#[derive(Clone, PartialEq, strum::VariantNames)]
 #[non_exhaustive]
 pub enum NodeKind {
     /// Top-level program containing all statements in an Perl script
@@ -4291,7 +4308,8 @@ mod depth_guard_tests {
 }
 
 // ---------------------------------------------------------------------------
-// Iterative deep-tree destruction (#8836) and clone (#8837) regression tests
+// Iterative deep-tree destruction (#8836), clone (#8837), equality (#8839),
+// and debug (#8840)
 // ---------------------------------------------------------------------------
 //
 // `Node` owns its descendants through boxed, optional, repeated, pair-record,
@@ -4305,19 +4323,38 @@ mod depth_guard_tests {
 // parent only after cloned children are available. Derived `Clone` glue would
 // recurse through `Node`/`NodeKind` and overflow the small-stack harness.
 //
+// Equality is the third operation on that seam: a custom `PartialEq` compares
+// location and derived `NodeKind` payload/shape behind an operation-scoped
+// child skip, then walks `for_each_child` on a heap stack of pairs. Starting
+// `Node::eq` with unguarded `self.kind == other.kind` re-enters derived
+// `NodeKind::eq` and overflows the same 50,000-node 256 KiB harness.
+//
+// Debug is the fourth: a custom `Debug` sketches kind, range, a bounded
+// payload summary, and a bounded child projection on a heap stack. Derived
+// recursive `Debug` glue would format the 50,000-node chain by descending
+// `Node`/`NodeKind` on the thread stack and abort the process. The same
+// harness also proves the rendering stays under [`NODE_DEBUG_MAX_BYTES`] and
+// that truncation is visible. Debug bytes are not structural identity:
+// two chains that differ only at the hidden leaf compare unequal by `==`
+// while their Debug strings match.
+//
 // The small-stack harness (256 KiB worker threads) discriminates naive
-// recursive drop/clone glue from the iterative paths: a 50 000-node chain
-// recursively needs multiple megabytes of frames and aborts the process.
+// recursive drop/clone/eq/debug glue from the iterative paths: a 50 000-node
+// chain recursively needs multiple megabytes of frames and aborts the process.
 // `into_parts` returns the original `NodeKind` payload, so dropping that
-// extracted kind must stay stack-safe as well. A mutation that restores
-// recursive drop glue, omits one registered child field from
-// `for_each_child_mut`, drops a detached child recursively, clones through
-// `self.kind.clone()` before detaching children, or drops/reorders a cloned
-// child overflows or fails these same tests.
+// extracted kind must stay stack-safe as well. Direct `NodeKind` equality
+// stays derived: child slots route through iterative `Node::eq`. `NodeKind`
+// `Debug` does not dump children. A mutation that restores recursive drop
+// glue, omits one registered child field from `for_each_child_mut`, drops a
+// detached child recursively, clones through `self.kind.clone()` before
+// detaching children, compares `Node` by unguarded `self.kind == other.kind`,
+// or restores derived recursive `Debug` overflows or fails these same tests.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod deep_tree_destruction_tests {
     use super::node_clone::{CloneObserver, clone_node};
+    use super::node_debug::{DebugObserver, render_node};
+    use super::node_eq::{EqObserver, nodes_eq};
     use super::*;
 
     /// Operation-local clone work recorded by [`clone_node`].
@@ -4657,11 +4694,12 @@ mod deep_tree_destruction_tests {
         (cloned, work)
     }
 
-    /// Iterative structure check for trees too deep for derived [`PartialEq`].
+    /// Iterative structure check for clone reconstruction.
     ///
-    /// Compares kind name, location, child cardinality, and `Number` payloads.
-    /// Non-Number payload fidelity at adversarial depth is the derived
-    /// [`NodeKind`] clone; shallow fixtures use public [`PartialEq`].
+    /// Public [`PartialEq`] is now iterative, so deep clone tests also use
+    /// `assert_eq!`. This helper still names kind/location/cardinality/number
+    /// fields explicitly so a clone-only reconstruction bug is not hidden
+    /// behind a single boolean.
     fn assert_iterative_shape_eq(left: &Node, right: &Node) {
         let mut stack = vec![(left, right)];
         while let Some((left, right)) = stack.pop() {
@@ -5206,6 +5244,8 @@ mod deep_tree_destruction_tests {
             );
             assert_iterative_shape_eq(&original, &cloned);
             assert_iterative_shape_eq(&original, &counted);
+            assert_eq!(original, cloned);
+            assert_eq!(original, counted);
             drop(counted);
             drop(cloned);
             drop(original);
@@ -5421,5 +5461,309 @@ mod deep_tree_destruction_tests {
         let (_, if_work) = clone_and_count(&two_elsif);
         assert_eq!(if_work.child_edges, 6);
         assert_eq!(if_work.nodes_rebuilt, 7);
+    }
+
+    struct EqWork {
+        nodes_entered: u64,
+        max_explicit_stack_depth: usize,
+    }
+
+    impl EqObserver for EqWork {
+        fn on_enter(&mut self) {
+            self.nodes_entered = self.nodes_entered.saturating_add(1);
+        }
+
+        fn on_stack_depth(&mut self, depth: usize) {
+            if depth > self.max_explicit_stack_depth {
+                self.max_explicit_stack_depth = depth;
+            }
+        }
+    }
+
+    fn compare_and_count(left: &Node, right: &Node) -> (bool, EqWork) {
+        let mut work = EqWork { nodes_entered: 0, max_explicit_stack_depth: 0 };
+        let equal = nodes_eq(left, right, &mut work);
+        (equal, work)
+    }
+
+    fn chain_of_value(depth: usize, wrap: fn(Node) -> Node, value: &str) -> Node {
+        let mut node = number_leaf(value);
+        for _ in 0..depth {
+            node = wrap(node);
+        }
+        node
+    }
+
+    #[test]
+    fn deep_boxed_chain_equals_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let left = chain_of(DEEP_DEPTH, wrap_boxed);
+            let right = chain_of(DEEP_DEPTH, wrap_boxed);
+            let (equal, work) = compare_and_count(&left, &right);
+            assert!(equal, "independent equal 50k chains must compare equal");
+            assert_eq!(left, right);
+            assert_eq!(work.nodes_entered, (DEEP_DEPTH + 1) as u64);
+            assert!(
+                work.max_explicit_stack_depth >= 1,
+                "equal compare must use the explicit stack"
+            );
+            drop(right);
+            drop(left);
+        })
+    }
+
+    #[test]
+    fn deep_boxed_chain_deepest_leaf_differs_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let left = chain_of(DEEP_DEPTH, wrap_boxed);
+            let right = chain_of_value(DEEP_DEPTH, wrap_boxed, "1-neq");
+            let (equal, work) = compare_and_count(&left, &right);
+            assert!(!equal, "deepest leaf payload must be material");
+            assert_ne!(left, right);
+            assert_eq!(
+                work.nodes_entered,
+                (DEEP_DEPTH + 1) as u64,
+                "leaf mismatch must still visit every ancestor exactly once"
+            );
+            drop(right);
+            drop(left);
+        })
+    }
+
+    #[test]
+    fn deep_boxed_chain_kind_equals_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let left = chain_of(DEEP_DEPTH, wrap_boxed);
+            let right = chain_of(DEEP_DEPTH, wrap_boxed);
+            assert_eq!(left.kind, right.kind, "derived NodeKind eq must route through Node::eq");
+            let cloned_kind = left.kind.clone();
+            assert_eq!(cloned_kind, right.kind);
+            drop(cloned_kind);
+            drop(right);
+            drop(left);
+        })
+    }
+
+    #[test]
+    fn deep_boxed_chain_kind_differs_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let left = chain_of(DEEP_DEPTH, wrap_boxed);
+            let right = chain_of_value(DEEP_DEPTH, wrap_boxed, "1-neq");
+            assert_ne!(
+                left.kind, right.kind,
+                "derived NodeKind inequality must route through iterative Node::eq"
+            );
+            drop(right);
+            drop(left);
+        })
+    }
+
+    #[test]
+    fn deep_root_location_mismatch_does_not_walk_the_chain() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let left = chain_of(DEEP_DEPTH, wrap_boxed);
+            let mut right = chain_of(DEEP_DEPTH, wrap_boxed);
+            right.location = SourceLocation { start: 9, end: 10 };
+            let (equal, work) = compare_and_count(&left, &right);
+            assert!(!equal);
+            assert_eq!(work.nodes_entered, 1, "root mismatch must not visit descendants");
+            assert_ne!(left, right);
+            drop(right);
+            drop(left);
+        })
+    }
+
+    #[test]
+    fn deep_chains_through_every_child_family_compare_on_small_stack() -> Result<(), String> {
+        for (name, wrap) in all_family_wrappers() {
+            run_on_small_stack(move || {
+                let left = chain_of(FAMILY_DEPTH, wrap);
+                let right = chain_of(FAMILY_DEPTH, wrap);
+                assert_eq!(left, right, "family {name}: equal chains");
+                assert_eq!(left.kind, right.kind, "family {name}: NodeKind eq");
+                let cloned = left.clone();
+                assert_eq!(left, cloned, "family {name}: clone then eq");
+                drop(cloned);
+                drop(right);
+                drop(left);
+            })
+            .map_err(|error| format!("family {name}: equal: {error}"))?;
+            run_on_small_stack(move || {
+                let left = chain_of(FAMILY_DEPTH, wrap);
+                let right = chain_of_value(FAMILY_DEPTH, wrap, "1-neq");
+                assert_ne!(left, right, "family {name}: deepest leaf must be material");
+                assert_ne!(left.kind, right.kind, "family {name}: NodeKind leaf must be material");
+                drop(right);
+                drop(left);
+            })
+            .map_err(|error| format!("family {name}: unequal: {error}"))?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn deep_mixed_family_chain_compares_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let wraps = all_family_wrappers();
+            let mut left = number_leaf("1");
+            let mut right = number_leaf("1");
+            for depth in 0..MIXED_DEPTH {
+                let (_, wrap) = wraps[depth % wraps.len()];
+                left = wrap(left);
+                right = wrap(right);
+            }
+            assert_eq!(left, right);
+            let cloned = left.clone();
+            assert_eq!(left, cloned);
+            drop(cloned);
+            drop(right);
+            drop(left);
+        })?;
+        run_on_small_stack(|| {
+            let wraps = all_family_wrappers();
+            let mut left = number_leaf("1");
+            let mut right = number_leaf("1-neq");
+            for depth in 0..MIXED_DEPTH {
+                let (_, wrap) = wraps[depth % wraps.len()];
+                left = wrap(left);
+                right = wrap(right);
+            }
+            assert_ne!(left, right, "mixed-family deepest leaf must be material");
+            drop(right);
+            drop(left);
+        })
+    }
+
+    #[test]
+    fn into_parts_kind_equals_original_kind_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let original = chain_of(DEEP_DEPTH, wrap_boxed);
+            let expected_kind = original.kind.clone();
+            let (kind, _) = original.into_parts();
+            assert_eq!(kind, expected_kind);
+            drop(kind);
+            drop(expected_kind);
+        })
+    }
+
+    struct DebugWork {
+        nodes_entered: u64,
+        max_explicit_stack_depth: usize,
+    }
+
+    impl DebugObserver for DebugWork {
+        fn on_enter(&mut self) {
+            self.nodes_entered = self.nodes_entered.saturating_add(1);
+        }
+
+        fn on_stack_depth(&mut self, depth: usize) {
+            if depth > self.max_explicit_stack_depth {
+                self.max_explicit_stack_depth = depth;
+            }
+        }
+    }
+
+    fn debug_and_count(node: &Node) -> (String, DebugWork) {
+        let mut work = DebugWork { nodes_entered: 0, max_explicit_stack_depth: 0 };
+        let rendered = render_node(node, &mut work);
+        (rendered, work)
+    }
+
+    #[test]
+    fn deep_boxed_chain_debug_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let node = chain_of(DEEP_DEPTH, wrap_boxed);
+            let (rendered, work) = debug_and_count(&node);
+            assert!(rendered.contains("ExpressionStatement"), "rendered = {rendered:?}");
+            assert!(
+                rendered.contains(NODE_DEBUG_TRUNCATION_MARKER),
+                "truncation must be visible: {rendered:?}"
+            );
+            assert!(
+                rendered.len() <= NODE_DEBUG_MAX_BYTES,
+                "debug len {} exceeds bound {}",
+                rendered.len(),
+                NODE_DEBUG_MAX_BYTES
+            );
+            assert!(!rendered.contains("location: SourceLocation"), "rendered = {rendered:?}");
+            assert!(work.nodes_entered > 0);
+            assert!(work.nodes_entered <= NODE_DEBUG_MAX_NODES as u64);
+            assert!(work.max_explicit_stack_depth >= 1, "debug must use the explicit stack");
+            drop(node);
+        })
+    }
+
+    #[test]
+    fn deep_boxed_chain_debug_is_not_identity_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let left = chain_of(DEEP_DEPTH, wrap_boxed);
+            let right = chain_of_value(DEEP_DEPTH, wrap_boxed, "1-neq");
+            assert_ne!(left, right, "PartialEq must still see the hidden leaf");
+            let left_dbg = format!("{left:?}");
+            let right_dbg = format!("{right:?}");
+            assert_eq!(left_dbg, right_dbg, "truncated Debug must not be an equality oracle");
+            assert!(left_dbg.contains(NODE_DEBUG_TRUNCATION_MARKER), "left = {left_dbg:?}");
+            assert!(left_dbg.len() <= NODE_DEBUG_MAX_BYTES);
+            let kind_dbg = format!("{:?}", left.kind);
+            assert!(
+                !kind_dbg.contains("ExpressionStatement @"),
+                "NodeKind Debug must not dump the child tree: {kind_dbg:?}"
+            );
+            assert!(kind_dbg.len() <= NODE_DEBUG_MAX_BYTES, "kind debug len={}", kind_dbg.len());
+            drop(right);
+            drop(left);
+        })
+    }
+
+    #[test]
+    fn deep_chains_through_every_child_family_debug_on_small_stack() -> Result<(), String> {
+        for (name, wrap) in all_family_wrappers() {
+            run_on_small_stack(move || {
+                let node = chain_of(FAMILY_DEPTH, wrap);
+                let rendered = format!("{node:?}");
+                assert!(
+                    rendered.contains(NODE_DEBUG_TRUNCATION_MARKER),
+                    "family {name}: truncation missing: {rendered:?}"
+                );
+                assert!(
+                    rendered.len() <= NODE_DEBUG_MAX_BYTES,
+                    "family {name}: debug len {}",
+                    rendered.len()
+                );
+                drop(node);
+            })
+            .map_err(|error| format!("family {name}: {error}"))?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn deep_mixed_family_chain_debug_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let wraps = all_family_wrappers();
+            let mut node = number_leaf("1");
+            for depth in 0..MIXED_DEPTH {
+                let (_, wrap) = wraps[depth % wraps.len()];
+                node = wrap(node);
+            }
+            let rendered = format!("{node:?}");
+            assert!(rendered.contains(NODE_DEBUG_TRUNCATION_MARKER), "rendered = {rendered:?}");
+            assert!(rendered.len() <= NODE_DEBUG_MAX_BYTES, "len={}", rendered.len());
+            drop(node);
+        })
+    }
+
+    #[test]
+    fn wide_program_debug_stays_bounded_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let statements: Vec<Node> = (0..10_000).map(|i| number_leaf(&i.to_string())).collect();
+            let node = Node::new(NodeKind::Program { statements }, loc());
+            let rendered = format!("{node:?}");
+            assert!(rendered.contains("Program"), "rendered = {rendered:?}");
+            assert!(rendered.contains("... +"), "rendered = {rendered:?}");
+            assert!(rendered.contains(NODE_DEBUG_TRUNCATION_MARKER), "rendered = {rendered:?}");
+            assert!(rendered.len() <= NODE_DEBUG_MAX_BYTES, "len={}", rendered.len());
+            drop(node);
+        })
     }
 }

@@ -1,4 +1,7 @@
-#![allow(clippy::print_stdout)]
+#![expect(
+    clippy::print_stdout,
+    reason = "The runner-plan CLI prints exact one-line summaries; tracing is not the user-facing contract."
+)]
 
 //! Build and compare target-driven upstream runner discovery plans.
 
