@@ -3,7 +3,7 @@
 use perl_lsp_rs_core::providers::code_actions::{CodeAction, CodeActionsProvider};
 use perl_lsp_rs_core::providers::diagnostics::{Diagnostic, DiagnosticSeverity};
 use perl_parser::Parser;
-use perl_tdd_support::must;
+use perl_tdd_support::{must, must_some};
 
 fn diagnostic(source: &str, message: &str) -> Diagnostic {
     Diagnostic {
@@ -41,7 +41,7 @@ fn pl003_routes_to_a_bounded_closing_brace_fix() {
     let source = "sub greet {\n    print 'hello';\n";
     let actions = actions_for(source, "The file ended unexpectedly");
 
-    let action = must(actions.iter().find(|action| action.title.contains("closing brace")));
+    let action = must_some(actions.iter().find(|action| action.title.contains("closing brace")));
     assert_eq!(apply_first(source, action), format!("{source}\n}}"));
 }
 
@@ -50,7 +50,7 @@ fn pl003_inserts_the_brace_at_end_of_source() {
     let source = "if ($ok) { print 'yes'; }\nsub greet {";
     let actions = actions_for(source, "Unexpected end of input");
 
-    let action = must(actions.iter().find(|action| action.title.contains("closing brace")));
+    let action = must_some(actions.iter().find(|action| action.title.contains("closing brace")));
     let edit = &action.edit.changes[0];
     assert_eq!((edit.location.start, edit.location.end), (source.len(), source.len()));
     assert_eq!(edit.new_text, "\n}");
