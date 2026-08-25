@@ -148,9 +148,39 @@ pub fn write_proposal(
         "proposal path {} would overwrite a landed authority fixture",
         path.display()
     );
+    // Repository-local boundary, resolved: the canonicalized parent must sit
+    // inside the canonical repository root and outside the authority tree,
+    // so neither an absolute path elsewhere on the host nor a symlinked
+    // parent can redirect the write.
     if let Some(parent) = absolute.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating proposal parent {}", parent.display()))?;
+        let canonical_root = std::fs::canonicalize(repo_root)
+            .with_context(|| format!("canonicalizing repository root {}", repo_root.display()))?;
+        let canonical_parent = std::fs::canonicalize(parent)
+            .with_context(|| format!("canonicalizing proposal parent {}", parent.display()))?;
+        ensure!(
+            canonical_parent.starts_with(&canonical_root),
+            "proposal path {} resolves outside the repository; proposals are repository-local only",
+            path.display()
+        );
+        for component in canonical_parent.components() {
+            if let std::path::Component::Normal(value) = component {
+                ensure!(
+                    value != ".ci",
+                    "proposal path {} resolves into the retained authority tree; proposals are review-only",
+                    path.display()
+                );
+            }
+        }
+    }
+    // Refuse to follow an existing symlink at the write target.
+    if let Ok(metadata) = std::fs::symlink_metadata(&absolute) {
+        ensure!(
+            metadata.is_file(),
+            "proposal target {} exists and is not a regular file",
+            path.display()
+        );
     }
     let rendered =
         serde_json::to_string_pretty(artifact).context("serializing the refresh artifact")?;

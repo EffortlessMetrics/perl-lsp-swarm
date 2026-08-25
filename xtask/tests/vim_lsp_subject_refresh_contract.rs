@@ -105,11 +105,14 @@ fn unchanged_packet_from_manifest(manifest: &serde_json::Value) -> Result<Observ
     paths.dedup();
     let files = paths
         .into_iter()
-        .map(|path| ObservedFile {
-            commit: commit.clone(),
-            path,
-            present: true,
-            git_blob_sha1: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()),
+        .map(|path| {
+            let blob = pinned
+                .entry_files
+                .iter()
+                .find(|(entry, _)| *entry == path)
+                .map(|(_, blob)| blob.clone())
+                .unwrap_or_else(|| "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string());
+            ObservedFile { commit: commit.clone(), path, present: true, git_blob_sha1: Some(blob) }
         })
         .collect();
     Ok(ObservationPacket {
@@ -195,7 +198,9 @@ fn retained_packet_run_is_offline_and_leaves_landed_fixtures_byte_identical() ->
 
     let scratch = tempfile::tempdir()?;
     let packet_path = scratch.path().join("observation.json");
-    let proposal_path = scratch.path().join("proposal.json");
+    // The proposal boundary is repository-local: the artifact goes under the
+    // repository's ignored `target/` tree, never outside the repository.
+    let proposal_path = root.join("target").join("vim-lsp-subject-refresh-contract.json");
     std::fs::write(&packet_path, serde_json::to_string(&packet)?)?;
 
     let outcome = vim_lsp_subject_refresh::run(RefreshOptions {

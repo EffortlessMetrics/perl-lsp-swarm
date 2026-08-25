@@ -682,6 +682,49 @@ pub fn classify(packet: &ObservationPacket, pinned: &PinnedSubject) -> Result<Re
     }
 
     // --- terminal no-change / metadata-only combination ----------------------
+    // Byte identity of the consumed entry files: `metadata_only_non_semantic`
+    // is claimable only when the observed head carries the pinned bytes for
+    // every manifest entry file. Differing bytes are drift the probes did
+    // not classify, and must not ride along as "metadata".
+    let mut unproven_entry_files: Vec<String> = Vec::new();
+    if head_ok {
+        for (path, pinned_blob) in &pinned.entry_files {
+            let observed = packet.head_tree_probe.files.iter().find(|file| &file.path == path);
+            let matches = observed.is_some_and(|file| {
+                file.present && file.git_blob_sha1.as_deref() == Some(pinned_blob.as_str())
+            });
+            if !matches {
+                unproven_entry_files.push(path.clone());
+            }
+        }
+        if !unproven_entry_files.is_empty() && master_matches_pin == Some(false) {
+            classifier.fire(
+                DriftClass::NewUpstreamReleaseOrRefAvailable,
+                &[PROBE_HEAD, PROBE_PINNED],
+                format!(
+                    "{} manifest entry file(s) differ from the pinned bytes on the observed head; probed surfaces are intact but semantics beyond the probes are unproven — review the diff before any pin update",
+                    unproven_entry_files.len()
+                ),
+            );
+        } else if !unproven_entry_files.is_empty() {
+            // The refs claim the tracked ref is the pin, yet the head probe
+            // reports different bytes: contradictory observations.
+            classifier.fire(
+                DriftClass::UnknownOrConflictingAuthority,
+                &[PROBE_HEAD, PROBE_REFS],
+                "head probe reports entry bytes differing from the pinned bytes while the tracked ref equals the pin".to_string(),
+            );
+        } else {
+            classifier.positive(
+                PROBE_HEAD,
+                format!(
+                    "observed head carries the pinned bytes for all {} manifest entry files via {}",
+                    pinned.entry_files.len(),
+                    packet.head_tree_probe.method
+                ),
+            );
+        }
+    }
     let instrument_failed = classifier.has_class(DriftClass::InstrumentFailed);
     let unknown = classifier.has_class(DriftClass::UnknownOrConflictingAuthority);
     let semantic_drift = classifier.classes.iter().any(|entry| {
@@ -699,7 +742,7 @@ pub fn classify(packet: &ObservationPacket, pinned: &PinnedSubject) -> Result<Re
     let upstream_moved = master_matches_pin == Some(false)
         || newer_release_available == Some(true)
         || default_branch_moved;
-    if !instrument_failed && !unknown && !semantic_drift {
+    if !instrument_failed && !unknown && !semantic_drift && unproven_entry_files.is_empty() {
         if upstream_moved {
             classifier.fire(
                 DriftClass::MetadataOnlyNonSemantic,

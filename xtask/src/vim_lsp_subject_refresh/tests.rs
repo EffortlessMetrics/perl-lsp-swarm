@@ -106,11 +106,18 @@ fn unchanged_packet() -> ObservationPacket {
         commit: Some(PINNED_COMMIT.to_string()),
         files: probed_paths()
             .into_iter()
-            .map(|path| ObservedFile {
-                commit: commit.clone(),
-                path,
-                present: true,
-                git_blob_sha1: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()),
+            .map(|path| {
+                let blob = entry_files()
+                    .into_iter()
+                    .find(|(entry, _)| *entry == path)
+                    .map(|(_, blob)| blob)
+                    .unwrap_or_else(|| "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string());
+                ObservedFile {
+                    commit: commit.clone(),
+                    path,
+                    present: true,
+                    git_blob_sha1: Some(blob),
+                }
             })
             .collect(),
         floor: Some(FloorObservation {
@@ -671,6 +678,151 @@ fn multiple_missing_needles_of_one_surface_coalesce_into_one_class_entry() {
     crate::vim_lsp_subject_refresh::validate_artifact_boundedness(&artifact)
         .expect("all-needles-missing artifact stays bounded and unique per class");
     assert!(artifact.drift_classes.len() <= DriftClass::ALL.len());
+}
+
+#[test]
+fn unproven_byte_drift_on_a_moved_head_is_not_metadata_only() {
+    // Upstream moved and one consumed entry file's bytes differ beyond the
+    // probes: that is reviewable drift, never "metadata only".
+    let mut packet = unchanged_packet();
+    packet.refs_probe.master = Some(MOVED_MASTER.to_string());
+    packet.refs_probe.head = Some(MOVED_MASTER.to_string());
+    packet.head_tree_probe.commit = Some(MOVED_MASTER.to_string());
+    for file in &mut packet.head_tree_probe.files {
+        file.commit = MOVED_MASTER.to_string();
+        if file.path == "plugin/lsp.vim" {
+            file.git_blob_sha1 = Some("cccccccccccccccccccccccccccccccccccccccc".to_string());
+        }
+    }
+    let artifact = run(&packet);
+    let fired = classes(&artifact);
+    assert!(fired.contains(&DriftClass::NewUpstreamReleaseOrRefAvailable), "got {fired:?}");
+    assert!(
+        !fired.contains(&DriftClass::MetadataOnlyNonSemantic),
+        "byte drift beyond the probes must not ride along as metadata-only; got {fired:?}"
+    );
+    assert!(!fired.contains(&DriftClass::NoChange));
+    assert!(artifact.drift_classes.iter().any(|entry| entry.detail.contains("unproven")));
+    // Recommendation stays review-only: the pin still binds its own bytes.
+    assert!(artifact.recommended_disposition.contains(&"open_reviewed_pin_update".to_string()));
+}
+
+#[test]
+fn contradicting_head_bytes_under_the_pin_fail_closed() {
+    // refs say the tracked ref is the pin, yet the head probe reports
+    // different entry bytes: conflicting observations, never no_change.
+    let mut packet = unchanged_packet();
+    for file in &mut packet.head_tree_probe.files {
+        if file.path == "autoload/lsp.vim" {
+            file.git_blob_sha1 = Some("dddddddddddddddddddddddddddddddddddddddd".to_string());
+        }
+    }
+    let artifact = run(&packet);
+    let fired = classes(&artifact);
+    assert!(fired.contains(&DriftClass::UnknownOrConflictingAuthority), "got {fired:?}");
+    assert!(!fired.contains(&DriftClass::NoChange));
+}
+
+#[test]
+fn proposal_writer_refuses_paths_resolving_outside_the_repository() {
+    let artifact = run(&unchanged_packet());
+    let root = tempfile::tempdir().expect("tempdir");
+    let outside = std::env::temp_dir().join("vim-lsp-subject-refresh-escape.json");
+    let error = crate::vim_lsp_subject_refresh::write_proposal(root.path(), &outside, &artifact)
+        .expect_err("an absolute path outside the repository must be refused");
+    assert!(
+        error.to_string().contains("repository-local"),
+        "the refusal must name the boundary; got {error:#}"
+    );
+    let as_directory = root.path().join("target");
+    std::fs::create_dir_all(&as_directory).expect("mkdir target");
+    let error =
+        crate::vim_lsp_subject_refresh::write_proposal(root.path(), &as_directory, &artifact)
+            .expect_err("a directory target must be refused");
+    assert!(error.to_string().contains("regular file"), "got {error:#}");
+}
+
+#[test]
+fn bounded_git_runner_enforces_its_output_ceiling() {
+    // `git --version` emits more than 4 bytes: the ceiling must trip without
+    // buffering unbounded output, entirely offline.
+    let error = crate::vim_lsp_subject_refresh::observe::run_git_bounded(
+        None,
+        &["--version"],
+        4,
+        std::time::Duration::from_secs(60),
+    )
+    .expect_err("an oversized output must be rejected");
+    assert!(
+        error.to_string().contains("ceiling"),
+        "the error must name the ceiling; got {error:#}"
+    );
+    // A generous ceiling on the same command succeeds.
+    assert!(
+        crate::vim_lsp_subject_refresh::observe::run_git_bounded(
+            None,
+            &["--version"],
+            1024 * 1024,
+            std::time::Duration::from_secs(60),
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn oversized_blob_is_rejected_by_size_before_buffering() {
+    let scratch = tempfile::tempdir().expect("tempdir");
+    let cwd = scratch.path();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("spawning git");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+    git(&["init", "--quiet"]);
+    git(&[
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "--quiet",
+        "--allow-empty",
+        "-m",
+        "seed",
+    ]);
+    std::fs::write(cwd.join("small.txt"), b"small").expect("small file");
+    let big = vec![0u8; 3 * 1024 * 1024];
+    std::fs::write(cwd.join("big.bin"), &big).expect("big file");
+    git(&["add", "."]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "files"]);
+    let head = String::from_utf8(
+        std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(cwd)
+            .output()
+            .expect("rev-parse")
+            .stdout,
+    )
+    .expect("utf8 head");
+    let head = head.trim();
+    assert_eq!(
+        crate::vim_lsp_subject_refresh::observe::read_file_from_for_tests(cwd, head, "small.txt"),
+        Some("small".to_string())
+    );
+    assert_eq!(
+        crate::vim_lsp_subject_refresh::observe::read_file_from_for_tests(cwd, head, "big.bin"),
+        None,
+        "a 3 MiB blob must be rejected by the size pre-check"
+    );
 }
 
 #[test]

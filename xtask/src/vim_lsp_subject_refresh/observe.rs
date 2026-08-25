@@ -382,37 +382,115 @@ fn truncate(value: &str, cap: usize) -> String {
     }
 }
 
-fn run_git(cwd: Option<&Path>, args: impl IntoIterator<Item = impl AsRef<str>>) -> Result<String> {
-    let rendered: Vec<String> = args.into_iter().map(|arg| arg.as_ref().to_string()).collect();
+/// Run git with a hard wall-clock deadline and a stdout byte ceiling so a
+/// stalled remote or credential helper cannot hang `refresh --allow-network`
+/// and an oversized response cannot grow memory without limit.
+pub(crate) fn run_git_bounded(
+    cwd: Option<&Path>,
+    args: &[&str],
+    byte_cap: usize,
+    timeout: std::time::Duration,
+) -> Result<String> {
+    use std::io::Read;
+    use std::process::Stdio;
     let mut command = std::process::Command::new("git");
-    command.args(&rendered);
+    command.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
-    let output =
-        command.output().with_context(|| format!("spawning git {}", rendered.join(" ")))?;
+    let spawned = format!("git {}", args.join(" "));
+    let mut child = command.spawn().with_context(|| format!("spawning {spawned}"))?;
+    let deadline = std::time::Instant::now() + timeout;
+
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+    let mut stdout: Vec<u8> = Vec::new();
+    let mut stderr: Vec<u8> = Vec::new();
+    let status = std::thread::scope(|scope| -> anyhow::Result<std::process::ExitStatus> {
+        let stderr_reader = scope.spawn(|| {
+            let mut buffer = [0u8; 4096];
+            let mut collected: Vec<u8> = Vec::new();
+            if let Some(pipe) = stderr_pipe.as_mut() {
+                loop {
+                    match pipe.read(&mut buffer) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => {
+                            if collected.len() < 4096 {
+                                let take = read.min(4096 - collected.len());
+                                collected.extend_from_slice(&buffer[..take]);
+                            }
+                        }
+                    }
+                }
+            }
+            collected
+        });
+        if let Some(pipe) = stdout_pipe.as_mut() {
+            let mut buffer = [0u8; 64 * 1024];
+            loop {
+                match pipe.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => {
+                        stdout.extend_from_slice(&buffer[..read]);
+                        if stdout.len() > byte_cap {
+                            // Oversized output: kill first, report after.
+                            let _ = child.kill();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        // Watchdog: poll for exit and kill at the deadline so a stalled
+        // remote cannot block forever.
+        loop {
+            if let Some(status) = child.try_wait()? {
+                stderr = stderr_reader.join().unwrap_or_default();
+                return Ok(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                stderr = stderr_reader.join().unwrap_or_default();
+                let _ = child.wait();
+                bail!("git timed out after {} ms: {spawned}", timeout.as_millis());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    })
+    .with_context(|| format!("waiting for {spawned}"))?;
     ensure!(
-        output.status.success(),
-        "git {} failed: {}",
-        rendered.join(" "),
-        String::from_utf8_lossy(&output.stderr).trim()
+        stdout.len() <= byte_cap,
+        "git output exceeded the {}-byte ceiling: {spawned}",
+        byte_cap
     );
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    ensure!(
+        status.success(),
+        "git {} failed: {}",
+        spawned,
+        String::from_utf8_lossy(&stderr).trim()
+    );
+    Ok(String::from_utf8_lossy(&stdout).to_string())
+}
+
+/// Transport budget: every git invocation shares one bounded runner.
+const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(2);
+const GIT_STDOUT_CAP: usize = 8 * 1024 * 1024;
+
+fn run_git(cwd: Option<&Path>, args: impl IntoIterator<Item = impl AsRef<str>>) -> Result<String> {
+    let rendered: Vec<String> = args.into_iter().map(|arg| arg.as_ref().to_string()).collect();
+    let refs: Vec<&str> = rendered.iter().map(String::as_str).collect();
+    run_git_bounded(cwd, &refs, GIT_STDOUT_CAP, GIT_TIMEOUT)
+        .with_context(|| format!("bounded git {}", rendered.join(" ")))
 }
 
 fn git_output(cwd: &Path, args: impl IntoIterator<Item = impl AsRef<str>>) -> Result<String> {
     let rendered: Vec<String> = args.into_iter().map(|arg| arg.as_ref().to_string()).collect();
-    let mut command = std::process::Command::new("git");
-    command.args(&rendered).current_dir(cwd);
-    let output =
-        command.output().with_context(|| format!("spawning git {}", rendered.join(" ")))?;
-    ensure!(
-        output.status.success(),
-        "git {} failed: {}",
-        rendered.join(" "),
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let refs: Vec<&str> = rendered.iter().map(String::as_str).collect();
+    // Single-value lookups (rev-parse, cat-file) arrive newline-terminated:
+    // trim so callers compare exact shas and sizes.
+    run_git_bounded(Some(cwd), &refs, GIT_STDOUT_CAP, GIT_TIMEOUT)
+        .map(|value| value.trim().to_string())
+        .with_context(|| format!("bounded git {}", rendered.join(" ")))
 }
 
 /// Fetch one commit shallowly and return the resolved commit id.
@@ -422,14 +500,27 @@ fn fetch_commit(cwd: &Path, repository: &str, commit: &str) -> Result<String> {
 }
 
 /// Read one file out of a fetched commit, bounded to [`MAX_FILE_BYTES`].
+/// The size is queried (`cat-file -s`) before any content is buffered, so an
+/// oversized blob never materializes in memory.
 fn read_file_from(cwd: &Path, commit: &str, path: &str) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args(["cat-file", "-p", &format!("{commit}:{path}")])
-        .current_dir(cwd)
-        .output()
-        .ok()?;
-    if !output.status.success() || output.stdout.len() > MAX_FILE_BYTES {
+    read_file_from_inner(cwd, commit, path)
+}
+
+/// Test seam for the offline size-cap proof.
+#[cfg(test)]
+pub(crate) fn read_file_from_for_tests(cwd: &Path, commit: &str, path: &str) -> Option<String> {
+    read_file_from_inner(cwd, commit, path)
+}
+
+fn read_file_from_inner(cwd: &Path, commit: &str, path: &str) -> Option<String> {
+    let spec = format!("{commit}:{path}");
+    let size: u64 = git_output(cwd, ["cat-file", "-s", &spec]).ok()?.trim().parse().ok()?;
+    if size > u64::try_from(MAX_FILE_BYTES).ok()? {
         return None;
     }
-    String::from_utf8(output.stdout).ok()
+    let content = git_output(cwd, ["cat-file", "-p", &spec]).ok()?;
+    if content.len() > MAX_FILE_BYTES {
+        return None;
+    }
+    Some(content)
 }
