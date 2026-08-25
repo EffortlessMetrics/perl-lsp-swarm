@@ -2362,8 +2362,7 @@ impl WorkspaceIndex {
         // comment).
         let file_hir = perl_parser_core::hir::lower_ast(&ast);
         let package_edges = package_edges_from_stash_graph(&file_hir.stash_graph);
-        let inherited_method_aliases =
-            self.inherited_method_aliases(&package_edges);
+        let inherited_method_aliases = self.inherited_method_aliases(&package_edges);
         let mut bundle = FileExtractionBundle::build_unified(
             &ast,
             &uri_str,
@@ -3654,10 +3653,7 @@ impl WorkspaceIndex {
                     {
                         continue;
                     }
-                    aliases.insert(
-                        format!("{}::{}", edge.from_package, method_name),
-                        entity.id,
-                    );
+                    aliases.insert(format!("{}::{}", edge.from_package, method_name), entity.id);
                 }
             }
         }
@@ -10377,10 +10373,7 @@ Utils::process_data();
         let parent_uri = must(url::Url::parse("file:///test/workspace/identity-parent.pm"));
         let child_uri = must(url::Url::parse("file:///test/workspace/identity-child.pl"));
 
-        must(index.index_file(
-            parent_uri,
-            "package Parent;\nsub greet { 1 }\n1;\n".to_string(),
-        ));
+        must(index.index_file(parent_uri, "package Parent;\nsub greet { 1 }\n1;\n".to_string()));
         must(index.index_file(
             child_uri.clone(),
             "package Child;\nuse parent 'Parent';\nChild->greet();\n1;\n".to_string(),
