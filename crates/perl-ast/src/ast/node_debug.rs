@@ -112,7 +112,8 @@ pub(super) fn render_node<O: DebugObserver>(node: &Node, observer: &mut O) -> St
 fn sketch_node<O: DebugObserver>(root: &Node, observer: &mut O) -> Sketch {
     let mut stack = vec![open_frame(root, None, 0)];
     observer.on_stack_depth(stack.len());
-    let mut sketched = 0usize;
+    // Root is already on the stack; further pushes must stay inside the node budget.
+    let mut admitted = 1usize;
 
     loop {
         let child_job = stack.last().and_then(|frame| {
@@ -123,19 +124,21 @@ fn sketch_node<O: DebugObserver>(root: &Node, observer: &mut O) -> Sketch {
                 .map(|(field, node)| (field, node, frame.depth.saturating_add(1)))
         });
         if let Some((field, node, depth)) = child_job {
-            if let Some(frame) = stack.last_mut() {
-                frame.next_child = frame.next_child.saturating_add(1);
-            }
-            if sketched >= NODE_DEBUG_MAX_NODES {
+            if admitted >= NODE_DEBUG_MAX_NODES {
                 if let Some(frame) = stack.last_mut() {
-                    frame.omitted_children = frame.omitted_children.saturating_add(1);
+                    let remaining = frame.children.len().saturating_sub(frame.next_child);
+                    frame.omitted_children = frame.omitted_children.saturating_add(remaining);
                     frame.truncated = true;
                     frame.children.clear();
                     frame.next_child = 0;
                 }
                 continue;
             }
+            if let Some(frame) = stack.last_mut() {
+                frame.next_child = frame.next_child.saturating_add(1);
+            }
             stack.push(open_frame(node, field, depth));
+            admitted = admitted.saturating_add(1);
             observer.on_stack_depth(stack.len());
             continue;
         }
@@ -144,7 +147,6 @@ fn sketch_node<O: DebugObserver>(root: &Node, observer: &mut O) -> Sketch {
             break;
         };
         observer.on_enter();
-        sketched = sketched.saturating_add(1);
         observer.on_stack_depth(stack.len());
         let payload = payload_summary(&frame.node.kind);
         let truncated = frame.truncated || payload.truncated;
@@ -678,6 +680,62 @@ mod tests {
         assert!(work.max_explicit_stack_depth <= NODE_DEBUG_MAX_DEPTH + 2);
         assert!(rendered.contains(NODE_DEBUG_TRUNCATION_MARKER), "rendered = {rendered:?}");
         let _ = sketch_node(&node, &mut ());
+    }
+
+    fn bushy(depth: usize, width: usize) -> Node {
+        if depth == 0 {
+            return numbered("1", 0);
+        }
+        program((0..width).map(|_| bushy(depth.saturating_sub(1), width)).collect())
+    }
+
+    fn count_sketched(sketch: &super::Sketch) -> usize {
+        sketch
+            .children
+            .iter()
+            .fold(1usize, |total, child| total.saturating_add(count_sketched(&child.sketch)))
+    }
+
+    fn collect_omitted(sketch: &super::Sketch, out: &mut Vec<usize>) {
+        if sketch.omitted_children > 0 {
+            out.push(sketch.omitted_children);
+        }
+        for child in &sketch.children {
+            collect_omitted(&child.sketch, out);
+        }
+    }
+
+    #[test]
+    fn node_budget_counts_active_frames() {
+        let node = bushy(2, NODE_DEBUG_MAX_CHILDREN);
+        let mut work = Recording { nodes_entered: 0, max_explicit_stack_depth: 0 };
+        let sketch = sketch_node(&node, &mut work);
+        assert!(
+            work.nodes_entered <= NODE_DEBUG_MAX_NODES as u64,
+            "entered={}",
+            work.nodes_entered
+        );
+        assert!(
+            count_sketched(&sketch) <= NODE_DEBUG_MAX_NODES,
+            "sketched={}",
+            count_sketched(&sketch)
+        );
+        assert!(sketch.truncated, "bushy tree must exhaust the node budget");
+        let rendered = render_node(&node, &mut ());
+        assert!(rendered.contains(NODE_DEBUG_TRUNCATION_MARKER), "rendered = {rendered:?}");
+        assert!(rendered.len() <= NODE_DEBUG_MAX_BYTES, "len={}", rendered.len());
+    }
+
+    #[test]
+    fn node_budget_preserves_omitted_child_count() {
+        let node = bushy(2, NODE_DEBUG_MAX_CHILDREN);
+        let sketch = sketch_node(&node, &mut ());
+        let mut omitted = Vec::new();
+        collect_omitted(&sketch, &mut omitted);
+        assert!(
+            omitted.iter().any(|&count| count > 1),
+            "remaining unvisited siblings must be counted, omitted={omitted:?}"
+        );
     }
 
     #[test]

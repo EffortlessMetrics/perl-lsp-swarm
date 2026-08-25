@@ -16,9 +16,7 @@ fn parse_code(code: &str) -> Result<Node, perl_parser::ParseError> {
 /// Helper to find nodes of a specific kind in the AST
 fn find_nodes<'a>(node: &'a Node, kind_name: &str) -> Vec<&'a Node> {
     let mut results = Vec::new();
-    let formatted = format!("{:?}", node.kind);
-    let node_type = formatted.split('{').next().unwrap_or("").trim();
-    if node_type == kind_name {
+    if node.kind.kind_name() == kind_name {
         results.push(node);
     }
     let children = node.children();
