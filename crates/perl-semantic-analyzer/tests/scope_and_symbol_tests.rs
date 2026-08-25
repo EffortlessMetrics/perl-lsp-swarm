@@ -687,7 +687,7 @@ sub modify_it {
 
 #[test]
 fn scope_local_typeglob_alias_keeps_rhs_target_visible() -> Result<(), Box<dyn std::error::Error>> {
-    let issues = scope_issues_strict("use strict;\nour *TARGET;\nlocal *ALIAS = *TARGET;\n");
+    let issues = scope_issues_strict("use strict;\nlocal *ALIAS = *TARGET;\n");
 
     assert!(
         issues.iter().all(|issue| {

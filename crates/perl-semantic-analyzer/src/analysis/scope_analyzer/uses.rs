@@ -21,7 +21,7 @@ pub(super) fn handle_variable<'a>(
     ancestors: &[&'a Node],
     issues: &mut Vec<ScopeIssue>,
     context: &AnalysisContext<'a>,
-    strict_vars_mode: bool,
+    _strict_vars_mode: bool,
 ) -> bool {
     // Capture variables ($1, $2, ...) are built-in globals but require a preceding
     // regex match in scope to be meaningful. Check before the general builtin skip.
@@ -91,7 +91,7 @@ pub(super) fn handle_typeglob(
     if !sigil.is_empty() && !var_name.is_empty() && !var_name.contains("::") {
         analyzer.record_variable_use(
             scope,
-            strict_vars_mode,
+            false,
             context,
             issues,
             node,
