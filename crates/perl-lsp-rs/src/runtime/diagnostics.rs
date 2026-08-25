@@ -211,9 +211,6 @@ pub struct PullDiagnosticsOrchestrator {
     /// Cached CriticAnalyzer for external perlcritic
     #[cfg(not(target_arch = "wasm32"))]
     critic_analyzer: Mutex<Option<perl_lsp_rs_core::tooling::perl_critic::CriticAnalyzer>>,
-    /// Track warnings already emitted (deduplication)
-    #[cfg(not(target_arch = "wasm32"))]
-    warnings_sent: Mutex<std::collections::HashSet<String>>,
 }
 
 impl PullDiagnosticsOrchestrator {
@@ -222,8 +219,6 @@ impl PullDiagnosticsOrchestrator {
         Self {
             #[cfg(not(target_arch = "wasm32"))]
             critic_analyzer: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            warnings_sent: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -388,7 +383,8 @@ impl PullDiagnosticsOrchestrator {
         {
             self.emit_warning(
                 server,
-                "missing-binary".to_string(),
+                super::session_warning_dedup::SessionWarningCode::CriticMissingBinary,
+                None,
                 "Perl::Critic is enabled but `perlcritic` was not found on PATH. Install Perl::Critic (for example: `cpanm Perl::Critic`) or disable perl.perlcritic.enabled.",
             );
             return;
@@ -406,7 +402,8 @@ impl PullDiagnosticsOrchestrator {
             if resolved.is_none() {
                 self.emit_warning(
                     server,
-                    format!("missing-profile:{configured_profile}"),
+                    super::session_warning_dedup::SessionWarningCode::CriticMissingProfile,
+                    Some(configured_profile),
                     &format!(
                         "Perl::Critic profile path does not exist: {configured_profile}. Update perl.perlcritic.profile or create the profile file."
                     ),
@@ -504,7 +501,8 @@ impl PullDiagnosticsOrchestrator {
             Some(Err(e)) => {
                 self.emit_warning(
                     server,
-                    format!("execution-failed:{e}"),
+                    super::session_warning_dedup::SessionWarningCode::CriticExecutionFailed,
+                    Some(&e.to_string()),
                     &format!("Perl::Critic execution failed: {e}"),
                 );
                 tracing::warn!(uri, error = %e, "perlcritic failed");
@@ -524,24 +522,57 @@ impl PullDiagnosticsOrchestrator {
     ) {
     }
 
-    /// Emit a workspace-scoped warning (with deduplication).
+    /// Emit a workspace-scoped warning unless the same reviewed subject was
+    /// already emitted this session. Suppression identity lives in the
+    /// server's bounded session-warning dedup store (#9769), so the pull
+    /// path shares the same typed, hard-capped critic family as the push
+    /// path and retains no raw key strings of its own.
     #[cfg(not(target_arch = "wasm32"))]
-    fn emit_warning(&self, server: &LspServer, key: String, message: &str) {
-        let mut sent = self.warnings_sent.lock();
-        if sent.insert(key) {
+    fn emit_warning(
+        &self,
+        server: &LspServer,
+        code: super::session_warning_dedup::SessionWarningCode,
+        subject: Option<&str>,
+        message: &str,
+    ) {
+        let identity = match subject {
+            Some(subject) => super::session_warning_dedup::SessionWarningIdentity::fingerprinted(
+                code,
+                super::session_warning_dedup::SessionWarningSubjectTag::None,
+                subject,
+            ),
+            None => super::session_warning_dedup::SessionWarningIdentity::subjectless(code),
+        };
+        if !matches!(
+            server
+                .session_warning_dedup
+                .note(super::session_warning_dedup::SessionWarningFamily::Critic, identity),
+            super::session_warning_dedup::SessionWarningDecision::Suppress
+        ) {
             server.show_message_or_log(super::window::MessageType::Warning, message);
         }
     }
 
     /// No-op stub for WASM targets.
     #[cfg(target_arch = "wasm32")]
-    fn emit_warning(&self, _server: &LspServer, _key: String, _message: &str) {}
+    fn emit_warning(
+        &self,
+        _server: &LspServer,
+        _code: super::session_warning_dedup::SessionWarningCode,
+        _subject: Option<&str>,
+        _message: &str,
+    ) {
+    }
 
     /// Reset the orchestrator state (e.g., on configuration change).
+    ///
+    /// Warning-dedup state is not held here anymore: the didChangeConfiguration
+    /// critic transition clears the shared critic family (#9769) immediately
+    /// before calling this reset, keeping the analyzer and warning lifecycles
+    /// aligned.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn reset(&self) {
         *self.critic_analyzer.lock() = None;
-        self.warnings_sent.lock().clear();
     }
 
     /// No-op stub for WASM targets.
@@ -2385,7 +2416,8 @@ impl LspServer {
             || (!skip_check && !crate::execute_command::command_exists("perlcritic"))
         {
             self.emit_perlcritic_workspace_warning(
-                "missing-binary".to_string(),
+                super::session_warning_dedup::SessionWarningCode::CriticMissingBinary,
+                None,
                 "Perl::Critic is enabled but `perlcritic` was not found on PATH. Install Perl::Critic (for example: `cpanm Perl::Critic`) or disable perl.perlcritic.enabled.",
             );
             return;
@@ -2400,7 +2432,8 @@ impl LspServer {
             );
             if resolved.is_none() {
                 self.emit_perlcritic_workspace_warning(
-                    format!("missing-profile:{configured_profile}"),
+                    super::session_warning_dedup::SessionWarningCode::CriticMissingProfile,
+                    Some(configured_profile),
                     &format!(
                         "Perl::Critic profile path does not exist: {configured_profile}. Update perl.perlcritic.profile or create the profile file."
                     ),
@@ -2509,7 +2542,8 @@ impl LspServer {
             }
             Some(Err(e)) => {
                 self.emit_perlcritic_workspace_warning(
-                    format!("execution-failed:{e}"),
+                    super::session_warning_dedup::SessionWarningCode::CriticExecutionFailed,
+                    Some(&e.to_string()),
                     &format!("Perl::Critic execution failed: {e}"),
                 );
                 tracing::warn!(uri, error = %e, "perlcritic failed");
@@ -2528,10 +2562,30 @@ impl LspServer {
     ) {
     }
 
+    /// Show a workspace-scoped Perl::Critic warning unless the same reviewed
+    /// subject was already emitted this session (#9769). `subject` is the
+    /// client/environment-controlled identity (configured profile string,
+    /// execution error text); only its deterministic fingerprint is retained.
     #[cfg(not(target_arch = "wasm32"))]
-    fn emit_perlcritic_workspace_warning(&self, key: String, message: &str) {
-        let mut sent = self.critic_workspace_warnings_sent.lock();
-        if sent.insert(key) {
+    fn emit_perlcritic_workspace_warning(
+        &self,
+        code: super::session_warning_dedup::SessionWarningCode,
+        subject: Option<&str>,
+        message: &str,
+    ) {
+        let identity = match subject {
+            Some(subject) => super::session_warning_dedup::SessionWarningIdentity::fingerprinted(
+                code,
+                super::session_warning_dedup::SessionWarningSubjectTag::None,
+                subject,
+            ),
+            None => super::session_warning_dedup::SessionWarningIdentity::subjectless(code),
+        };
+        if !matches!(
+            self.session_warning_dedup
+                .note(super::session_warning_dedup::SessionWarningFamily::Critic, identity),
+            super::session_warning_dedup::SessionWarningDecision::Suppress
+        ) {
             self.show_message_or_log(super::window::MessageType::Warning, message);
         }
     }
