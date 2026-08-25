@@ -255,6 +255,8 @@ any '/multi' => sub { return 'multi' };
     );
 }
 
+// Dancer v1 keeps string-target references: upstream Dancer v1 allows an action to
+// be the name of a subroutine (#8910 containment keeps the families separate).
 #[test]
 fn dancer_route_target_string_adds_subroutine_reference() {
     let code = r#"
@@ -273,8 +275,10 @@ sub show_about {
     );
 }
 
+// Dancer2 route construction requires a CodeRef handler; a string target must not
+// become an exact subroutine reference or definition (#8910).
 #[test]
-fn dancer2_route_target_string_adds_subroutine_reference() {
+fn dancer2_route_target_string_does_not_add_subroutine_reference() {
     let code = r#"
 use Dancer2;
 
@@ -286,8 +290,64 @@ sub show_status {
 "#;
     let table = extract_symbols(code);
     assert!(
-        has_reference(&table, "show_status", SymbolKind::Subroutine),
-        "expected route target string `show_status` to be recorded as a Subroutine reference"
+        !has_reference(&table, "show_status", SymbolKind::Subroutine),
+        "Dancer2 string target `show_status` must NOT be recorded as a Subroutine reference"
+    );
+}
+
+// `Dancer2::Core` is not the DSL module and must not activate Dancer2 semantics (#8910).
+#[test]
+fn dancer2_core_use_does_not_activate_route_semantics() {
+    let code = r#"
+use Dancer2::Core;
+
+get '/x' => sub { 1 };
+"#;
+    let table = extract_symbols(code);
+    assert!(
+        !has_symbol(&table, "/x", SymbolKind::Subroutine),
+        "`use Dancer2::Core` must not activate Dancer2 route synthesis"
+    );
+}
+
+// A locally defined same-named sub keeps `get` ordinary Perl without activation.
+#[test]
+fn same_named_local_get_without_activation_is_ordinary_perl() {
+    let code = r#"
+sub get { return 'local' }
+
+get '/x' => sub { 1 };
+"#;
+    let table = extract_symbols(code);
+    assert!(
+        !has_symbol(&table, "/x", SymbolKind::Subroutine),
+        "same-named `get` without framework activation must stay ordinary Perl"
+    );
+    assert!(
+        has_symbol(&table, "get", SymbolKind::Subroutine),
+        "the local `sub get` itself should still be indexed"
+    );
+}
+
+// Activation is per-package: another package in the same file does not inherit it.
+#[test]
+fn dancer2_activation_does_not_leak_across_packages() {
+    let code = r#"
+package App;
+use Dancer2;
+get '/activated' => sub { 1 };
+
+package Other;
+get '/not_activated' => sub { 1 };
+"#;
+    let table = extract_symbols(code);
+    assert!(
+        has_symbol(&table, "/activated", SymbolKind::Subroutine),
+        "exact `use Dancer2` in `App` should still synthesize its route"
+    );
+    assert!(
+        !has_symbol(&table, "/not_activated", SymbolKind::Subroutine),
+        "package `Other` must not inherit Dancer2 activation"
     );
 }
 

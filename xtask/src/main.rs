@@ -34,21 +34,22 @@ use tasks::workflow_trigger_lint::WorkflowTriggerLintFormat;
 use tasks::worktree_allocator::AgentWorktreeCommand;
 use tasks::{
     active_goal_manifest, agent_capability_policy, agent_flow, agent_implementation_packet,
-    agent_lease, agent_receipt, aggregate_receipts, badges, bench, benchmarks, build, build_timing,
-    bump_version, change_set, check, check_agent_context, check_lint_policy, check_test_wiring,
-    check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_contract, ci_doctor,
-    ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route, ci_scope,
-    clean, command_evidence, compare, corpus_audit, count_ratchet, cpan_corpus, dead_code,
-    debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc, doc_claims,
-    e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features, finalize_check,
-    fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files,
-    github, github_preflight, github_review, goals, hardening, hook_checks, ignored_tests,
-    incremental_proof, inject_sha_assets, inline_completion_quality, inline_completion_smoke,
-    install_surface_check, integration_proof, intent_diff_gate, issue_plan, layer_check,
-    lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate,
-    metrics, module_train, native_critic, native_format, native_product_surface, native_tooling,
-    oracle_fixture_manifest, oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep,
-    parser_matrix, parser_ratchet, perl_core_harness, perl_kwalitee, populate_book, pre_push_plan,
+    agent_lease, agent_receipt, agent_review_packet, aggregate_receipts, badges, bench, benchmarks,
+    build, build_timing, bump_version, change_set, check, check_agent_context, check_lint_policy,
+    check_test_wiring, check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_contract,
+    ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route,
+    ci_scope, clean, command_evidence, compare, corpus_audit, count_ratchet, cpan_corpus,
+    dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc,
+    doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features,
+    finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates,
+    generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
+    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
+    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
+    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
+    merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
+    native_format, native_product_surface, native_tooling, oracle_fixture_manifest,
+    oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
+    parser_ratchet, perl_core_harness, perl_kwalitee, populate_book, pre_push_plan,
     prep_crates_io_launch, protocol_type_substrate_matrix, provider_confidence_matrix,
     provider_promotion_ledger, publication_facts, publish, publish_closure, publish_manifest_check,
     publish_receipts, quality_baseline, quality_gate, queue_health, queue_snapshot, receipts,
@@ -185,6 +186,33 @@ enum Commands {
         file: PathBuf,
     },
 
+    /// Validate the shared adversarial review-packet, review-finding, and
+    /// advisory closure-projection contracts (#10881): the closed schemas,
+    /// the programme-neutral fixtures, the fail-closed negative controls,
+    /// the canonical-semantics control, and the deterministic golden
+    /// projections. `--update-golden` rewrites the golden vectors.
+    #[command(name = "check-agent-review-packet")]
+    CheckAgentReviewPacket {
+        /// Rewrite the golden projection vectors (explicit writer action;
+        /// never live review state).
+        #[arg(long)]
+        update_golden: bool,
+    },
+
+    /// Render one projection of a caller-supplied review document (packet,
+    /// finding, or closure projection) to stdout (#10881). Fails closed when
+    /// the document violates the contract. Document instances are
+    /// runtime-local outputs: this command never writes repository files.
+    #[command(name = "render-review-packet")]
+    RenderAgentReviewPacket {
+        /// Projection to render.
+        #[arg(long, value_enum, default_value = "markdown")]
+        format: agent_review_packet::ReviewProjection,
+
+        /// Path to the caller-supplied review document.
+        input: std::path::PathBuf,
+    },
+
     /// Run differential oracle comparison (PackageSubTable vertical slice).
     ///
     /// Loads fixtures from the manifest, runs the PackageSubTable extractor
@@ -284,15 +312,17 @@ enum Commands {
         command: PrSubcommand,
     },
 
-    /// Verify merge-base ancestry proof before closing a PR.
+    /// Verify landing and content-survival proof without evaluating semantic completion.
     ///
-    /// Implements CLOSE_PROOF_POLICY.md Rule 1: runs
-    /// `git merge-base --is-ancestor <commit> <canonical-main>` and emits
-    /// a structured receipt.
+    /// Implements the landing-proof layer of CLOSE_PROOF_POLICY.md: runs
+    /// `git merge-base --is-ancestor <commit> <canonical-main>` and emits a
+    /// structured `landing_proof.v1` receipt. Landing ancestry never
+    /// authorizes an issue close; `semantic_completion` is always
+    /// `not_evaluated`.
     ///
-    /// Exit 0 = reachable (safe to close), exit 2 = not reachable (do not close),
+    /// Exit 0 = landing proof passes, exit 2 = commit is not reachable,
     /// exit 1 = error (git failed).
-    #[command(name = "pr-close-proof")]
+    #[command(name = "landing-proof")]
     PrCloseProof {
         /// Commit SHA to verify.
         #[arg(long)]
@@ -2509,6 +2539,18 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
+
+    /// Check tracked generated artifacts against policy/generated-allowlist.toml.
+    #[command(name = "check-generated")]
+    CheckGenerated {
+        /// Enforcement mode.
+        #[arg(long, value_enum, default_value = "advisory")]
+        mode: tasks::generated_policy::GeneratedPolicyMode,
+
+        /// Override the default JSON receipt path.
+        #[arg(long)]
+        json: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
@@ -3902,7 +3944,8 @@ enum EmacsIntegrationCommand {
     /// hermetic Emacs runner (#7778). Every exact input is digest-verified
     /// before launch; an unavailable host is a typed error, never a skip.
     HostRun {
-        /// Exact client subject id (see `xtask::emacs_host_run::known_subjects`).
+        /// Exact client subject id (see
+        /// `xtask::emacs_host_run::EmacsClientSubject::known_ids`).
         #[arg(long)]
         subject: String,
 
@@ -3914,11 +3957,18 @@ enum EmacsIntegrationCommand {
         #[arg(long)]
         candidate: PathBuf,
 
-        /// Absolute path of the bundled eglot.el inside the exact Emacs
-        /// installation. When omitted it is resolved inside the installation
-        /// root and ambiguity fails closed.
+        /// Absolute path of the exact client library file. For bundled
+        /// subjects it may be omitted and is resolved inside the Emacs
+        /// installation (ambiguity fails closed); released subjects require
+        /// it and never search the installation.
         #[arg(long)]
         client_source: Option<PathBuf>,
+
+        /// Absolute path of the exact released client package file. Required
+        /// for released subjects (package identity is part of the subject);
+        /// rejected for bundled subjects.
+        #[arg(long)]
+        client_package: Option<PathBuf>,
 
         /// Output directory for the hermetic layout, artifacts, and receipt.
         #[arg(long)]
@@ -4126,6 +4176,61 @@ enum ModuleTrainCommand {
         /// checkout); arbitrary-tree checkout is a recorded residual.
         #[arg(long, default_value = "HEAD")]
         tree: String,
+    },
+
+    /// Read-only live frontier over the checked train (#11627 C03): join
+    /// candidate/stack/worktree/check/review observation to the offline
+    /// projection and recommend one safe action per writer/conflict surface.
+    /// Only `refresh` (without `--from-fixture`) touches the network, strictly
+    /// through read-only observation commands; nothing mutates anything.
+    Live {
+        #[command(subcommand)]
+        command: ModuleTrainLiveCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModuleTrainLiveCommand {
+    /// Observe live Git/GitHub state and write the immutable
+    /// `module_train_live.v1` snapshot. The only networked subcommand;
+    /// `--from-fixture` normalizes a stored raw observation instead (offline,
+    /// deterministic, test path).
+    Refresh {
+        /// Snapshot output path.
+        #[arg(long)]
+        output: PathBuf,
+
+        /// Normalize this raw-observation fixture instead of observing live
+        /// state (offline; never touches the network).
+        #[arg(long)]
+        from_fixture: Option<PathBuf>,
+    },
+
+    /// Validate a snapshot offline: schema, semantic digest, vocabularies,
+    /// one-action-per-conflict-surface, and stored-action consistency.
+    Check {
+        /// Snapshot path.
+        #[arg(long)]
+        snapshot: PathBuf,
+    },
+
+    /// Project the safe live frontier from a validated snapshot.
+    Next {
+        /// Snapshot path.
+        #[arg(long)]
+        snapshot: PathBuf,
+    },
+
+    /// Compose one node's static packet with its live addendum: why this
+    /// action now, unavailable facts and their consequence, next bounded
+    /// action, closeout route.
+    Explain {
+        /// Node id (for example `C03`).
+        node: String,
+
+        /// Snapshot path.
+        #[arg(long)]
+        snapshot: PathBuf,
     },
 }
 
@@ -4366,6 +4471,21 @@ fn run_cli(cli: Cli) -> Result<()> {
             println!("validated {validated} specialized vim/vim-lsp observations");
             Ok(())
         }
+        Commands::CheckAgentReviewPacket { update_golden } => {
+            agent_review_packet::run(update_golden)
+        }
+        Commands::RenderAgentReviewPacket { format, input } => {
+            let text = std::fs::read_to_string(&input).map_err(|error| {
+                eyre!("failed to read review document {}: {error}", input.display())
+            })?;
+            let doc: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+                eyre!("failed to parse review document {}: {error}", input.display())
+            })?;
+            let rendered = agent_review_packet::render_to_string(&doc, format)?;
+            println!("{rendered}");
+
+            Ok(())
+        }
         Commands::CheckOracleCompare => oracle_runner::run(),
         Commands::CheckSemanticTokenClasses => semantic_token_classes::run(),
         Commands::CheckLsp318Claims => lsp_318_claims::run(),
@@ -4377,6 +4497,18 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::ModuleTrain { command } => match command {
             ModuleTrainCommand::Status { tree } => module_train::run_status(&tree),
             ModuleTrainCommand::Next { tree } => module_train::run_next(&tree),
+            ModuleTrainCommand::Live { command } => match command {
+                ModuleTrainLiveCommand::Refresh { output, from_fixture } => {
+                    module_train_live::run_refresh(&output, from_fixture.as_deref())
+                }
+                ModuleTrainLiveCommand::Check { snapshot } => {
+                    module_train_live::run_check(&snapshot)
+                }
+                ModuleTrainLiveCommand::Next { snapshot } => module_train_live::run_next(&snapshot),
+                ModuleTrainLiveCommand::Explain { node, snapshot } => {
+                    module_train_live::run_explain(&node, &snapshot)
+                }
+            },
         },
 
         Commands::Goals { command } => match command {
@@ -4418,7 +4550,8 @@ fn run_cli(cli: Cli) -> Result<()> {
             })?;
             if !reachable {
                 // Exit 2: not ancestor — distinct from 1 (error).
-                // CLOSE_PROOF_POLICY.md: do not close if not reachable.
+                // CLOSE_PROOF_POLICY.md: landing proof failed; this result
+                // carries no issue-close authority in either direction.
                 std::process::exit(2);
             }
             Ok(())
@@ -4785,6 +4918,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                     emacs,
                     candidate,
                     client_source,
+                    client_package,
                     out,
                     timeout_ms,
                 } => {
@@ -4796,6 +4930,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                         emacs,
                         candidate,
                         client_source,
+                        client_package,
                         out,
                         timeout_ms,
                     )
@@ -5745,6 +5880,10 @@ fn run_cli(cli: Cli) -> Result<()> {
                     root_override,
                 },
             )
+        }
+        Commands::CheckGenerated { mode, json } => {
+            let root = utils::project_root()?;
+            tasks::generated_policy::run(&root, mode, json)
         }
         Commands::FreshnessCheck {
             base,

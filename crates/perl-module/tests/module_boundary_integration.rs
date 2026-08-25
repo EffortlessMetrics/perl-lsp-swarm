@@ -1,8 +1,6 @@
-use perl_module::boundary::{
-    contains_standalone_module_token, find_standalone_module_token_ranges,
-};
-use perl_module::import::parse_module_import_head;
-use perl_module::name::module_variant_pairs;
+use perl_module::module_variant_pairs;
+use perl_module::parse_module_import_head;
+use perl_module::{contains_standalone_module_token, find_standalone_module_token_ranges};
 
 #[test]
 fn direct_import_head_offsets_align_with_boundary_range() {

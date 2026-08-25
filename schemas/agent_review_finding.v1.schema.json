@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/agent_review_finding.v1.schema.json",
+  "title": "Shared adversarial review-finding contract v1",
+  "description": "Programme-neutral contract for one independent review finding and its current-head resolution. The contract owns the closed lens/outcome/severity/final-disposition vocabulary and the deterministic validation invariants binding every finding to the exact reviewed candidate head. Silence, a comment, or a later green workflow is not resolution: closing a finding requires current-head evidence. The contract does not submit reviews, retain threads, or decide mergeability. Finding instances are runtime-local outputs or durable GitHub review facts, never tracked live review state.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "finding_id",
+    "packet_ref",
+    "lens",
+    "outcome",
+    "severity",
+    "evidence",
+    "suggested_action",
+    "final_disposition"
+  ],
+  "properties": {
+    "schema": { "const": "agent_review_finding.v1" },
+    "schema_version": { "const": 1 },
+    "finding_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable identity of this finding within the owning review."
+    },
+    "packet_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["packet_id", "reviewed_head"],
+      "properties": {
+        "packet_id": { "type": "string", "minLength": 1 },
+        "reviewed_head": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact candidate head this finding was raised against."
+        }
+      }
+    },
+    "lens": {
+      "$ref": "#/$defs/review_lens",
+      "description": "Review lens this finding belongs to."
+    },
+    "outcome": {
+      "$ref": "#/$defs/finding_outcome",
+      "description": "Typed review outcome."
+    },
+    "severity": {
+      "$ref": "#/$defs/finding_severity",
+      "description": "Derived deterministically from the outcome; the composer asserts it and the validator recomputes it."
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "identity", "observation"],
+        "properties": {
+          "kind": { "type": "string", "minLength": 1 },
+          "identity": { "type": "string", "minLength": 1 },
+          "observation": { "type": "string", "minLength": 1 }
+        }
+      },
+      "description": "Supporting evidence identities and exact observations."
+    },
+    "suggested_action": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Concrete suggested action for the builder."
+    },
+    "builder_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disposition", "statement"],
+      "properties": {
+        "disposition": { "$ref": "#/$defs/builder_response_disposition" },
+        "statement": { "type": "string", "minLength": 1 }
+      },
+      "description": "Optional builder response; a response alone never resolves a finding."
+    },
+    "resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resolution_head", "evidence"],
+      "properties": {
+        "resolution_head": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Head the resolution evidence was observed against; must equal the reviewed head."
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "identity"],
+            "properties": {
+              "kind": { "type": "string", "minLength": 1 },
+              "identity": { "type": "string", "minLength": 1 }
+            }
+          },
+          "description": "Current-head resolution evidence; prose alone never resolves a finding."
+        }
+      },
+      "description": "Required exactly when the final disposition claims resolution on the current head."
+    },
+    "final_disposition": {
+      "$ref": "#/$defs/final_disposition"
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Non-semantic caller metadata; excluded from canonical identity and projections; never carries live review state."
+    }
+  },
+  "$defs": {
+    "review_lens": {
+      "enum": [
+        "semantic_correctness",
+        "architecture_authority_duplication",
+        "subject_evidence_identity",
+        "lifecycle_currentness_concurrency",
+        "security_trust_boundary",
+        "resource_retention_cleanup",
+        "platform_runtime_portability",
+        "spec_test_docs_consistency",
+        "release_external_boundary"
+      ]
+    },
+    "finding_outcome": {
+      "description": "Closed typed review outcomes.",
+      "enum": [
+        "material_blocker",
+        "bounded_follow_up",
+        "question_requires_evidence",
+        "claim_narrowing_required",
+        "stale_or_wrong_subject",
+        "instrument_failure",
+        "no_finding",
+        "resolved_current_head"
+      ]
+    },
+    "finding_severity": {
+      "description": "Closed severity, derived from the outcome.",
+      "enum": ["material", "bounded", "advisory"]
+    },
+    "builder_response_disposition": {
+      "enum": ["accepted", "rejected", "clarified"]
+    },
+    "final_disposition": {
+      "description": "Closed terminal states of a finding within the owning review. instrument_failure may only stay open or be superseded by a re-run; it may never become a resolution.",
+      "enum": [
+        "open",
+        "resolved_on_current_head",
+        "claim_narrowed",
+        "withdrawn_stale_subject",
+        "superseded_by_rerun",
+        "closed_no_finding"
+      ]
+    }
+  }
+}

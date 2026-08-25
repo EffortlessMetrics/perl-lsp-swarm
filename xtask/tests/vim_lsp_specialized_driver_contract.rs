@@ -138,8 +138,24 @@ fn timed_out_barrier_is_lawful_but_forces_not_proven() -> Result<()> {
 #[test]
 fn driver_leaves_the_cell_catalog_byte_identical() -> Result<()> {
     let registry = vim_lsp_cell_catalog::validate_compiled_registry()?;
-    ensure!(registry.catalogs.len() == 1, "driver module must not register a cell catalog");
-    ensure!(registry.cell_count == 17, "baseline catalog changed under the driver");
+    // The driver module registers no catalog of its own: the compiled registry
+    // carries exactly the catalogs the cell-catalog module aggregates, and the
+    // baseline catalog keeps its 17 published cells unchanged (the #12100
+    // law; family catalogs like #11381 freshness are additive siblings).
+    let registered: std::collections::BTreeSet<String> =
+        vim_lsp_cell_catalog::registry().iter().map(|c| c.catalog_id.clone()).collect();
+    let validated_ids: std::collections::BTreeSet<String> =
+        registry.catalogs.iter().map(|summary| summary.catalog_id.clone()).collect();
+    ensure!(
+        registered == validated_ids,
+        "compiled registry catalogs diverged from the catalog module's own aggregation"
+    );
+    let baseline = registry
+        .catalogs
+        .iter()
+        .find(|summary| summary.catalog_id == "vim_lsp_baseline")
+        .context("baseline catalog missing from the compiled registry")?;
+    ensure!(baseline.cell_count == 17, "baseline catalog changed under the driver");
     for spec in ACTIONS {
         let cell_shaped = spec
             .action_id
