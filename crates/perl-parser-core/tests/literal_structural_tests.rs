@@ -16,11 +16,11 @@ fn assert_number(source: &str, expected: &str, start: usize, end: usize) {
     let mut found_span = false;
 
     visit(&ast, &mut |node| {
-        if let NodeKind::Number { value } = &node.kind {
-            if value == expected {
-                found_value = true;
-                found_span = node.location.start == start && node.location.end == end;
-            }
+        if let NodeKind::Number { value } = &node.kind
+            && value == expected
+        {
+            found_value = true;
+            found_span = node.location.start == start && node.location.end == end;
         }
     });
 

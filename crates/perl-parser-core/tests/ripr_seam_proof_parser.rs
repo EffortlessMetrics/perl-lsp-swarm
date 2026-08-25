@@ -196,7 +196,7 @@ fn seam1_angle_fh_nodekind_is_readline_variant() -> Result<(), String> {
     let NodeKind::Program { ref statements } = ast.kind else {
         return Err("expected Program".into());
     };
-    let stmt = statements.first().expect("no statements");
+    let stmt = statements.first().ok_or("no statements")?;
     // The my_declaration's RHS child holds the Readline node.
     let NodeKind::VariableDeclaration { ref initializer, .. } = stmt.kind else {
         return Err("expected VariableDeclaration".into());
@@ -220,7 +220,7 @@ fn seam1_angle_dir_star_nodekind_is_glob_variant() -> Result<(), String> {
     let NodeKind::Program { ref statements } = ast.kind else {
         return Err("expected Program".into());
     };
-    let stmt = statements.first().expect("no statements");
+    let stmt = statements.first().ok_or("no statements")?;
     let NodeKind::VariableDeclaration { ref initializer, .. } = stmt.kind else {
         return Err("expected VariableDeclaration".into());
     };
@@ -358,7 +358,7 @@ fn seam2_class_version_nodekind_is_class_with_block() -> Result<(), String> {
     let class_node = statements
         .iter()
         .find(|s| matches!(s.kind, NodeKind::Class { .. }))
-        .expect("expected Class node");
+        .ok_or("expected Class node")?;
     let NodeKind::Class { ref body, .. } = class_node.kind else {
         return Err("expected Class kind".into());
     };
