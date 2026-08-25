@@ -73,7 +73,7 @@ impl TerminalProcessOutcome {
         match status {
             Some(0) => Self::CleanExit,
             Some(code) => {
-                if recognize_nonzero_exit(mode) {
+                if recognize_nonzero_exit(runner, mode, code) {
                     Self::RecognizedRunnerStatus { code, meaning: recognized_meaning(runner) }
                 } else {
                     Self::NonZeroExit { code }
@@ -135,16 +135,17 @@ impl TerminalProcessOutcome {
     }
 }
 
-/// Exact supported runner × mode nonzero-exit recognition matrix.
+/// Exact supported runner × mode × status nonzero-exit recognition matrix.
 ///
 /// Execute mode deliberately records the upstream scheduler's nonzero exit
-/// alongside green runner records (#3451), so that completion state is
-/// recognized rather than misclassified as instrument failure by zero-only
-/// defensive code. Parse/compile recognize no nonzero status yet: a status of
-/// 255 with all-green counts stays `not_proven` until an exact runner/mode
-/// contract independently proves that terminal admissible.
-fn recognize_nonzero_exit(mode: HarnessMode) -> bool {
-    matches!(mode, HarnessMode::Execute)
+/// alongside green `Test` runner records with status `1` (#3451), so that
+/// completion state is recognized rather than misclassified as instrument
+/// failure by zero-only defensive code. Parse/compile recognize no nonzero
+/// status yet, and execute recognizes no other runner or status: a status of
+/// `255` with all-green counts stays `not_proven` until an exact contract
+/// independently proves that terminal admissible.
+fn recognize_nonzero_exit(runner: HarnessRunner, mode: HarnessMode, code: i32) -> bool {
+    matches!((runner, mode, code), (HarnessRunner::Test, HarnessMode::Execute, 1))
 }
 
 fn recognized_meaning(runner: HarnessRunner) -> String {
@@ -210,6 +211,24 @@ mod tests {
         );
         assert!(terminal.is_scoreable(), "recognized nonzero must stay scoreable");
         assert_eq!(terminal.label(), "recognized_runner_status");
+    }
+
+    #[test]
+    fn execute_unproven_status_is_not_recognized() {
+        let terminal = outcome(Some(255), HarnessMode::Execute);
+        assert_eq!(terminal, TerminalProcessOutcome::NonZeroExit { code: 255 });
+        assert!(!terminal.is_scoreable());
+    }
+
+    #[test]
+    fn execute_unproven_runner_is_not_recognized() {
+        let terminal = TerminalProcessOutcome::from_harness_status(
+            Some(1),
+            HarnessRunner::Harness,
+            HarnessMode::Execute,
+        );
+        assert_eq!(terminal, TerminalProcessOutcome::NonZeroExit { code: 1 });
+        assert!(!terminal.is_scoreable());
     }
 
     #[test]
