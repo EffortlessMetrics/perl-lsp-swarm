@@ -13,6 +13,31 @@ AST (Abstract Syntax Tree) node definitions for the Perl parser ecosystem.
 
 Re-exports from `lib.rs`: `Node`, `NodeKind`, `SourceLocation`.
 
+## Ownership and depth safety
+
+`Node` is a recursively owned tree (`Box<Node>`, `Vec<Node>`, optional
+children, pair/clause records). That public geometry is unchanged.
+
+- **Drop** is iterative. Children are detached through the canonical mutable
+  child walk into a heap work stack before each node's remaining fields are
+  released. Dropping a 50,000-node chain does not overflow the thread stack
+  and does not leak the tree. `std::mem::forget` is not a production or test
+  strategy for this crate.
+- **Clone**, **Debug**, and **PartialEq** remain the derived recursive
+  implementations. They are a supported operation on ordinary parser-produced
+  trees (nesting within `MAX_AST_DEPTH` and the parser recursion limit). They
+  are **not** stack-safe for adversarial or hand-built chains of
+  destruction-test depth, and that precondition is not enforced at runtime.
+  Stack-safe replacements are tracked as [#8837](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8837)
+  (Clone), [#8839](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8839)
+  (PartialEq), and [#8840](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8840)
+  (Debug).
+- Recursive whole-tree reads such as `to_sexp`, `count_nodes`, and
+  `find_deepest_containing_offset` stay separately guarded by `MAX_AST_DEPTH`
+  and may truncate. That guard does not apply to Drop.
+
+See the rustdoc on `Node` and the [AST compatibility contract](../../docs/reference/ast-contract.md).
+
 ## Workspace Role
 
 Tier 1 leaf crate. Depended on by `perl-parser-core`, `perl-tokenizer`, `perl-pragma`, and `perl-error`.
