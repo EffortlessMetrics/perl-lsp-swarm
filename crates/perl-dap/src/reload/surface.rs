@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn a_bare_standard_command_name_can_never_be_the_custom_family() {
-        for command in crate::debug_adapter::SUPPORTED_DAP_COMMANDS {
+        for command in crate::debug_adapter::SUPPORTED_COMMANDS {
             let descriptor = ReloadRequestSurfaceDescriptor {
                 family: command.to_string(),
                 ..Default::default()

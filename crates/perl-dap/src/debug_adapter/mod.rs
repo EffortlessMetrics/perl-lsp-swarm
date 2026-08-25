@@ -30,7 +30,7 @@ mod variable_cache;
 // by the reload contract's protocol-surface collision check (#10097). The
 // list itself is enumerated only by tests.
 #[cfg(test)]
-pub(crate) use dispatch::SUPPORTED_DAP_COMMANDS;
+pub(crate) use dispatch::SUPPORTED_COMMANDS;
 pub(crate) use dispatch::is_supported_dap_command;
 
 use crate::breakpoint::{AstBreakpointValidator, BreakpointValidator};

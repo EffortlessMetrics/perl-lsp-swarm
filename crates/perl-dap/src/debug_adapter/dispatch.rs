@@ -5,7 +5,7 @@ use super::{DapMessage, DebugAdapter, Value};
 /// The adapter's closed standard DAP request-command list — the single
 /// authority, also consumed by the reload contract's collision check
 /// (#10097).
-pub(crate) const SUPPORTED_DAP_COMMANDS: [&str; 37] = [
+pub(crate) const SUPPORTED_COMMANDS: [&str; 37] = [
     "initialize",
     "launch",
     "attach",
@@ -48,7 +48,7 @@ pub(crate) const SUPPORTED_DAP_COMMANDS: [&str; 37] = [
 /// Whether `command` is one of the standard DAP request names this
 /// adapter dispatches.
 pub(crate) fn is_supported_dap_command(command: &str) -> bool {
-    SUPPORTED_DAP_COMMANDS.contains(&command)
+    SUPPORTED_COMMANDS.contains(&command)
 }
 
 impl DebugAdapter {
@@ -163,12 +163,12 @@ impl DebugAdapter {
 
     fn suggested_command(command: &str) -> Option<&'static str> {
         if let Some(case_suggestion) =
-            SUPPORTED_DAP_COMMANDS.iter().copied().find(|known| known.eq_ignore_ascii_case(command))
+            SUPPORTED_COMMANDS.iter().copied().find(|known| known.eq_ignore_ascii_case(command))
         {
             return Some(case_suggestion);
         }
 
-        SUPPORTED_DAP_COMMANDS
+        SUPPORTED_COMMANDS
             .iter()
             .copied()
             .filter_map(|known| {
