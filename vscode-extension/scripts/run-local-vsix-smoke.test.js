@@ -1038,7 +1038,7 @@ void test('unbound crash children leave rows not_proven, never failed', () => {
   );
   assert.equal(joined.transient_crash.replay, 'not_proven');
   assert.equal(joined.circuit_breaker.attempts, null);
-  assert.equal(joined.circuit_breaker.exhausted, false);
+  assert.equal(joined.circuit_breaker.exhausted, null);
   assert.equal(joined.watchdog, 'not_proven');
   assert.equal(joined.cleanup, 'not_proven');
   assert.equal(joined.verdict, 'not_proven');
@@ -1228,4 +1228,46 @@ void test('crash-recovery leg env arms one leg and strips foreign selectors', ()
   const breakerEnv = crashRecoveryLegEnv({}, 'breaker', context);
   assert.equal(breakerEnv.PERL_LSP_CRASH_RECOVERY_LEG, 'breaker');
   assert.equal(breakerEnv.PERL_LSP_CRASH_RECOVERY_SMOKE, '1');
+});
+
+void test('parsed-but-unbound crash children cannot fail the joined receipt', () => {
+  // A receipt that failed digest binding is not this candidate's evidence:
+  // even observations that look like product failures must leave the rows
+  // not_proven instead of turning an unbound observation into a failed row.
+  const transient = passingTransientChild({
+    observations: {
+      ...passingTransientChild().observations,
+      replay: { 'crash_transient_a.pl': 'Active document was not ready after 60000ms.' },
+      watchdog: { status: 'failed' },
+    },
+    verdict: 'failed',
+  });
+  const breaker = passingBreakerChild({
+    observations: {
+      ...passingBreakerChild().observations,
+      exhausted: false,
+      explicit_retry: {
+        binary_resolution_source_after: 'path',
+        readiness: 'timeout',
+        provider: { status: 'error' },
+      },
+    },
+    verdict: 'failed',
+  });
+  const joined = composeCrashRecoveryReceipt(
+    crashComposeBase({
+      transient,
+      breaker,
+      violations: ["the transient leg receipt VSIX digest is not this run's package"],
+    }),
+  );
+  assert.equal(joined.transient_crash.replay, 'not_proven');
+  assert.equal(joined.transient_crash.provider_after_recovery, 'not_proven');
+  assert.equal(joined.circuit_breaker.exhausted, null);
+  assert.equal(joined.circuit_breaker.explicit_retry, 'not_proven');
+  assert.equal(joined.watchdog, 'not_proven');
+  assert.equal(joined.cleanup, 'not_proven');
+  assert.equal(joined.verdict, 'not_proven');
+  assert.equal(joined.negative_controls.user_restart_not_used_for_failure_injection, null);
+  assert.equal(joined.negative_controls.budget_exhaustion_spawned_no_background_server, null);
 });

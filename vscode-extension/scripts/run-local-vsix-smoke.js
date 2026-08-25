@@ -858,25 +858,27 @@ function composeCrashRecoveryReceipt({
   const transientObservations = (transient && transient.observations) || {};
   const breakerObservations = (breaker && breaker.observations) || {};
   const childrenBound = violations.length === 0 && transient && breaker;
+  const breakerBound = childrenBound;
+  // Every observation-derived row is gated on binding: a receipt that failed
+  // schema/digest/version/leg validation is not this candidate's evidence,
+  // and its observations must leave the affected rows `not_proven` rather
+  // than turning an unbound observation into a product-regression `failed`.
+  const boundRow = (row) => (childrenBound ? row : 'not_proven');
 
   const isReplayRowPass = (value) =>
     typeof value === 'object' &&
     value !== null &&
     Object.keys(value).length > 0 &&
     Object.values(value).every((row) => row === 'ready_in_replacement_generation');
-  const replayRow = crashRowFromObservation(
-    transientObservations.replay,
-    legExitCodes.transient,
-    isReplayRowPass,
+  const replayRow = boundRow(
+    crashRowFromObservation(transientObservations.replay, legExitCodes.transient, isReplayRowPass),
   );
 
   const providerAfter = transientObservations.provider_after_recovery;
   const isProviderRowPass = (value) =>
     value && typeof value === 'object' && value.provider && value.provider.status === 'ok';
-  const providerRow = crashRowFromObservation(
-    providerAfter,
-    legExitCodes.transient,
-    isProviderRowPass,
+  const providerRow = boundRow(
+    crashRowFromObservation(providerAfter, legExitCodes.transient, isProviderRowPass),
   );
 
   const episodes = Array.isArray(breakerObservations.episodes) ? breakerObservations.episodes : [];
@@ -894,24 +896,27 @@ function composeCrashRecoveryReceipt({
     value.readiness === 'ready_in_retry_generation' &&
     value.provider &&
     value.provider.status === 'ok';
-  const explicitRetryRow = crashRowFromObservation(
-    breakerObservations.explicit_retry,
-    legExitCodes.breaker,
-    isExplicitRetryPass,
+  const explicitRetryRow = boundRow(
+    crashRowFromObservation(
+      breakerObservations.explicit_retry,
+      legExitCodes.breaker,
+      isExplicitRetryPass,
+    ),
   );
 
   const watchdogStatus =
     transientObservations.watchdog && typeof transientObservations.watchdog.status === 'string'
       ? transientObservations.watchdog.status
       : 'not_proven';
-  const watchdogRow = ['pass', 'failed', 'not_proven'].includes(watchdogStatus)
-    ? watchdogStatus
-    : 'not_proven';
+  const watchdogRow = boundRow(
+    ['pass', 'failed', 'not_proven'].includes(watchdogStatus) ? watchdogStatus : 'not_proven',
+  );
 
   const legsExitedCleanly = legExitCodes.transient === 0 && legExitCodes.breaker === 0;
   const hostExitClean = postHostExitProcesses.length === 0;
   const observedChildFailure =
-    (transient && transient.verdict === 'failed') || (breaker && breaker.verdict === 'failed');
+    childrenBound &&
+    ((transient && transient.verdict === 'failed') || (breaker && breaker.verdict === 'failed'));
   let cleanupRow;
   if (!childrenBound) {
     cleanupRow = 'not_proven';
@@ -925,7 +930,7 @@ function composeCrashRecoveryReceipt({
 
   const circuitBreaker = {
     attempts: childrenBound ? automaticRestarts.length : null,
-    exhausted,
+    exhausted: breakerBound ? exhausted : null,
     background_restart_after_exhaustion: backgroundAfterExhaustion,
     explicit_retry: explicitRetryRow,
     budget:
@@ -936,7 +941,6 @@ function composeCrashRecoveryReceipt({
       breakerObservations.action_required_dialog?.observable === true,
   };
 
-  const breakerBound = Boolean(breaker);
   const exhaustedRow = !breakerBound
     ? 'not_proven'
     : crashRowFromObservation(
@@ -953,23 +957,25 @@ function composeCrashRecoveryReceipt({
       );
 
   const negativeControls = {
-    user_restart_not_used_for_failure_injection:
-      childrenBound &&
-      typeof transient.fault?.method === 'string' &&
-      /harness-external process termination/.test(transient.fault.method) &&
-      typeof breaker.fault?.method === 'string' &&
-      /harness-external/.test(breaker.fault.method),
+    user_restart_not_used_for_failure_injection: childrenBound
+      ? typeof transient.fault?.method === 'string' &&
+        /harness-external process termination/.test(transient.fault.method) &&
+        typeof breaker.fault?.method === 'string' &&
+        /harness-external/.test(breaker.fault.method)
+      : null,
     replacement_servers_never_overlapped: childrenBound
       ? Number(transientObservations.recovery_samples?.max_simultaneous_server_processes ?? 0) <=
           1 && episodes.every((episode) => (episode.max_simultaneous_server_processes ?? 0) <= 1)
       : null,
-    budget_exhaustion_spawned_no_background_server: backgroundAfterExhaustion === false,
-    explicit_retry_did_not_substitute_binary_source:
-      breakerObservations.explicit_retry &&
-      breakerObservations.explicit_retry.binary_resolution_source_after === 'bundled',
-    failed_process_not_resurrected:
-      transientObservations.quiet_window &&
-      transientObservations.quiet_window.failed_pid_resurrected === false,
+    budget_exhaustion_spawned_no_background_server: childrenBound
+      ? backgroundAfterExhaustion === false
+      : null,
+    explicit_retry_did_not_substitute_binary_source: childrenBound
+      ? breakerObservations.explicit_retry?.binary_resolution_source_after === 'bundled'
+      : null,
+    failed_process_not_resurrected: childrenBound
+      ? transientObservations.quiet_window?.failed_pid_resurrected === false
+      : null,
   };
 
   const rows = [
