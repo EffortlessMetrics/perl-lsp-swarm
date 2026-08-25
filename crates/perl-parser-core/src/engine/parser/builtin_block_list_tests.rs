@@ -91,6 +91,55 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn user_defined_ampersand_prototype_uses_block_call_shape() {
+        let code = r#"
+            sub my_map (&@) { }
+            my @result = my_map { $_ * 2 } 1, 2, 3;
+        "#;
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        assert!(
+            parser.errors().is_empty(),
+            "user-defined block-taking call should parse without errors: {:?}",
+            parser.errors()
+        );
+
+        let sexp = ast.to_sexp();
+        assert!(
+            sexp.contains("(call my_map"),
+            "user-defined & prototype should use a call node: {sexp}"
+        );
+        assert!(sexp.contains("(block"), "block should be the first call argument: {sexp}");
+        assert!(
+            sexp.contains("(number 1)") && sexp.contains("(number 2)") && sexp.contains("(number 3)"),
+            "trailing list arguments should remain inside the call: {sexp}"
+        );
+        assert!(
+            !sexp.contains("ambiguous_function_call_expression"),
+            "user-defined block-taking call should not be ambiguous: {sexp}"
+        );
+    }
+
+    #[test]
+    fn qualified_user_defined_block_call_uses_call_shape() {
+        let code = "My::List::map { $_ * 2 } @items;";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let sexp = ast.to_sexp();
+
+        assert!(
+            sexp.contains("(call My::List::map"),
+            "qualified block-taking call should use a call node: {sexp}"
+        );
+        assert!(sexp.contains("(block"), "qualified call should contain a block: {sexp}");
+        assert!(
+            sexp.contains("(variable @ items)"),
+            "qualified call should retain the trailing list argument: {sexp}"
+        );
+    }
+
     // ---- map ----
 
     #[test]
