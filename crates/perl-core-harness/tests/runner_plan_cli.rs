@@ -32,6 +32,21 @@ fn discovery_paths(dir: &Path) -> String {
     single.to_string_lossy().into_owned()
 }
 
+fn build_invocation<'a>(
+    matrix: &'a str,
+    target: &'a str,
+    runner: &'a str,
+    raw: &'a str,
+    output: &'a str,
+    extra: &[&'a str],
+) -> Vec<&'a str> {
+    let mut args = Vec::with_capacity(8 + extra.len());
+    args.extend_from_slice(&["build", matrix, target, runner, raw, output]);
+    args.extend_from_slice(&["--frame", "canonical_repository_path"]);
+    args.extend_from_slice(extra);
+    args
+}
+
 fn expect_failure(output: &Output, fragment: &str) {
     assert!(!output.status.success(), "expected CLI failure, but it succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -77,17 +92,52 @@ fn check_parity_argument_count_prints_usage() {
 }
 
 #[test]
-fn unsupported_scheduling_option_is_named() {
+fn build_requires_an_explicit_discovery_frame() {
     let dir = tempfile::tempdir().expect("tempdir");
+    let matrix = bundle().to_string_lossy().into_owned();
+    let raw = discovery_paths(dir.path());
+    let out = dir.path().join("plan.json").to_string_lossy().into_owned();
+    let output = run(&["build", &matrix, "component_base", "test", &raw, &out]);
+    expect_failure(&output, "--frame is required; declare the raw discovery path frame");
+}
+
+#[test]
+fn frame_requires_a_discovery_frame_value() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let matrix = bundle().to_string_lossy().into_owned();
+    let raw = discovery_paths(dir.path());
+    let out = dir.path().join("plan.json").to_string_lossy().into_owned();
+    let output = run(&["build", &matrix, "component_base", "test", &raw, &out, "--frame"]);
+    expect_failure(&output, "--frame requires a discovery frame");
+}
+
+#[test]
+fn unsupported_discovery_frame_is_named() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let matrix = bundle().to_string_lossy().into_owned();
+    let raw = discovery_paths(dir.path());
+    let out = dir.path().join("plan.json").to_string_lossy().into_owned();
     let output = run(&[
         "build",
-        bundle().to_string_lossy().as_ref(),
+        &matrix,
         "component_base",
         "test",
-        discovery_paths(dir.path()).as_str(),
-        dir.path().join("plan.json").to_string_lossy().as_ref(),
-        "--bogus",
+        &raw,
+        &out,
+        "--frame",
+        "pre_12262_implicit_path",
     ]);
+    expect_failure(&output, "unsupported discovery frame pre_12262_implicit_path");
+}
+
+#[test]
+fn unsupported_scheduling_option_is_named() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let matrix = bundle().to_string_lossy().into_owned();
+    let raw = discovery_paths(dir.path());
+    let out = dir.path().join("plan.json").to_string_lossy().into_owned();
+    let output =
+        run(&build_invocation(&matrix, "component_base", "test", &raw, &out, &["--bogus"]));
     expect_failure(&output, "unsupported scheduling option --bogus");
 }
 
@@ -97,45 +147,46 @@ fn jobs_requires_a_positive_integer() {
     let matrix = bundle().to_string_lossy().into_owned();
     let raw = discovery_paths(dir.path());
     let out = dir.path().join("plan.json").to_string_lossy().into_owned();
-    let zero = run(&["build", &matrix, "component_base", "test", &raw, &out, "--jobs", "0"]);
+    let zero =
+        run(&build_invocation(&matrix, "component_base", "test", &raw, &out, &["--jobs", "0"]));
     expect_failure(&zero, "--jobs requires a positive integer");
 
     let nonnumeric =
-        run(&["build", &matrix, "component_base", "test", &raw, &out, "--jobs", "seven"]);
+        run(&build_invocation(&matrix, "component_base", "test", &raw, &out, &["--jobs", "seven"]));
     expect_failure(&nonnumeric, "--jobs requires a positive integer");
 }
 
 #[test]
 fn property_requires_key_equals_value() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let output = run(&[
-        "build",
-        bundle().to_string_lossy().as_ref(),
+    let matrix = bundle().to_string_lossy().into_owned();
+    let raw = discovery_paths(dir.path());
+    let out = dir.path().join("plan.json").to_string_lossy().into_owned();
+    let output = run(&build_invocation(
+        &matrix,
         "component_base",
         "test",
-        discovery_paths(dir.path()).as_str(),
-        dir.path().join("plan.json").to_string_lossy().as_ref(),
-        "--property",
-        "lane",
-    ]);
+        &raw,
+        &out,
+        &["--property", "lane"],
+    ));
     expect_failure(&output, "--property requires key=value");
 }
 
 #[test]
 fn duplicate_scheduling_property_is_rejected() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let output = run(&[
-        "build",
-        bundle().to_string_lossy().as_ref(),
+    let matrix = bundle().to_string_lossy().into_owned();
+    let raw = discovery_paths(dir.path());
+    let out = dir.path().join("plan.json").to_string_lossy().into_owned();
+    let output = run(&build_invocation(
+        &matrix,
         "component_base",
         "test",
-        discovery_paths(dir.path()).as_str(),
-        dir.path().join("plan.json").to_string_lossy().as_ref(),
-        "--property",
-        "lane=nightly",
-        "--property",
-        "lane=smoke",
-    ]);
+        &raw,
+        &out,
+        &["--property", "lane=nightly", "--property", "lane=smoke"],
+    ));
     expect_failure(&output, "duplicate scheduling property lane");
 }
 
@@ -196,9 +247,10 @@ fn compare_prints_exact_parity_status() {
     let raw = discovery_paths(dir.path());
     let left = dir.path().join("left.json").to_string_lossy().into_owned();
     let right = dir.path().join("right.json").to_string_lossy().into_owned();
-    let built_test = run(&["build", &matrix, "component_base", "test", &raw, &left]);
+    let built_test = run(&build_invocation(&matrix, "component_base", "test", &raw, &left, &[]));
     assert!(built_test.status.success(), "left build failed");
-    let built_harness = run(&["build", &matrix, "component_base", "harness", &raw, &right]);
+    let built_harness =
+        run(&build_invocation(&matrix, "component_base", "harness", &raw, &right, &[]));
     assert!(built_harness.status.success(), "right build failed");
 
     let report = dir.path().join("parity.json");
@@ -221,7 +273,7 @@ fn check_plan_revalidates_built_receipt_and_rejects_tampering() {
     let matrix = bundle().to_string_lossy().into_owned();
     let raw = discovery_paths(dir.path());
     let plan_path = dir.path().join("plan.json").to_string_lossy().into_owned();
-    let built = run(&["build", &matrix, "component_base", "test", &raw, &plan_path]);
+    let built = run(&build_invocation(&matrix, "component_base", "test", &raw, &plan_path, &[]));
     assert!(built.status.success(), "build failed");
 
     let checked = run(&["check-plan", &matrix, &raw, &plan_path]);
@@ -252,44 +304,20 @@ fn check_parity_revalidates_report_and_rejects_tampering() {
     let dir = tempfile::tempdir().expect("tempdir");
     let matrix = bundle().to_string_lossy().into_owned();
     let raw = discovery_paths(dir.path());
-    let left = dir.path().join("left.json");
-    let right = dir.path().join("right.json");
+    let left = dir.path().join("left.json").to_string_lossy().into_owned();
+    let right = dir.path().join("right.json").to_string_lossy().into_owned();
     let report = dir.path().join("parity.json");
+    let report_arg = report.to_string_lossy().into_owned();
 
-    let built_left =
-        run(&["build", &matrix, "component_base", "test", &raw, left.to_string_lossy().as_ref()]);
-    let built_right = run(&[
-        "build",
-        &matrix,
-        "component_base",
-        "harness",
-        &raw,
-        right.to_string_lossy().as_ref(),
-    ]);
+    let built_left = run(&build_invocation(&matrix, "component_base", "test", &raw, &left, &[]));
+    let built_right =
+        run(&build_invocation(&matrix, "component_base", "harness", &raw, &right, &[]));
     assert!(built_left.status.success() && built_right.status.success(), "builds failed");
 
-    let compared = run(&[
-        "compare",
-        &matrix,
-        left.to_string_lossy().as_ref(),
-        &raw,
-        right.to_string_lossy().as_ref(),
-        &raw,
-        report.to_string_lossy().as_ref(),
-    ]);
+    let compared = run(&["compare", &matrix, &left, &raw, &right, &raw, &report_arg]);
     assert!(compared.status.success(), "compare failed");
 
-    let left_arg = left.to_string_lossy().into_owned();
-    let right_arg = right.to_string_lossy().into_owned();
-    let checked = run(&[
-        "check-parity",
-        &matrix,
-        &left_arg,
-        &raw,
-        &right_arg,
-        &raw,
-        report.to_string_lossy().as_ref(),
-    ]);
+    let checked = run(&["check-parity", &matrix, &left, &raw, &right, &raw, &report_arg]);
     assert!(
         checked.status.success(),
         "check-parity failed: {}",
@@ -304,14 +332,6 @@ fn check_parity_revalidates_report_and_rejects_tampering() {
     .expect("valid JSON");
     forged["membership_status"] = "mismatch".into();
     std::fs::write(&report, serde_json::to_vec(&forged).unwrap()).expect("write forged");
-    let rejected = run(&[
-        "check-parity",
-        &matrix,
-        &left_arg,
-        &raw,
-        &right_arg,
-        &raw,
-        report.to_string_lossy().as_ref(),
-    ]);
+    let rejected = run(&["check-parity", &matrix, &left, &raw, &right, &raw, &report_arg]);
     expect_failure(&rejected, "mismatch");
 }
