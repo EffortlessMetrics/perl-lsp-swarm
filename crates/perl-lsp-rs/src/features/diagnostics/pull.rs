@@ -2508,7 +2508,7 @@ mod tests {
         // user-visible remediation. The merged row renders the producer's
         // exact Suggestion text and related information.
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///overlap_remediation_system.pl".parse()?;
+        let uri: Uri = Uri::from("file:///overlap_remediation_system.pl");
         let mut context = PullDiagnosticsContext::new();
         context.critic_engine = CriticEngine::Native;
         context.native_critic_profile = "strict".to_string();
@@ -2524,18 +2524,21 @@ mod tests {
         let pl603_rows: Vec<_> = items
             .iter()
             .filter(|diag| {
-                diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "PL603"),
-                )
+                diag.code
+                    .as_ref()
+                    .is_some_and(|code| matches!(code, Code::String(value) if value == "PL603"))
             })
             .collect();
         assert_eq!(pl603_rows.len(), 1, "one merged PL603 row: {items:?}");
-        assert!(
-            pl603_rows[0].message.contains(
-                "system() executes a shell command. Ensure input is sanitized.\nSuggestion: Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection",
+        assert_eq!(
+            pl603_rows[0].message,
+            Message::String(
+                "system() executes a shell command. Ensure input is sanitized.\nSuggestion: \
+                 Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to \
+                 avoid shell injection"
+                    .into(),
             ),
-            "merged message must carry the twin's verbatim Suggestion text: {}",
-            pl603_rows[0].message
+            "merged message must carry the twin's verbatim Suggestion text"
         );
         let related = pl603_rows[0].related_information.as_deref().unwrap_or_default();
         assert!(
@@ -2553,7 +2556,7 @@ mod tests {
         // the ordinary emitter's suggestion text and related information must
         // survive that merge byte-for-byte on the pull transport too.
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///overlap_remediation_undef.pl".parse()?;
+        let uri: Uri = Uri::from("file:///overlap_remediation_undef.pl");
         let mut context = PullDiagnosticsContext::new();
         context.critic_engine = CriticEngine::Native;
         context.native_critic_profile = "strict".to_string();
@@ -2569,18 +2572,21 @@ mod tests {
         let pl404_rows: Vec<_> = items
             .iter()
             .filter(|diag| {
-                diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "PL404"),
-                )
+                diag.code
+                    .as_ref()
+                    .is_some_and(|code| matches!(code, Code::String(value) if value == "PL404"))
             })
             .collect();
         assert_eq!(pl404_rows.len(), 1, "one merged literal-undef PL404 row: {items:?}");
-        assert!(
-            pl404_rows[0].message.contains(
-                "Using '==' with potentially undefined value -- use 'defined()' to check first\nSuggestion: Guard with 'defined($var)' or use the '//' (defined-or) operator",
+        assert_eq!(
+            pl404_rows[0].message,
+            Message::String(
+                "Using '==' with potentially undefined value -- use 'defined()' to check \
+                 first\nSuggestion: Guard with 'defined($var)' or use the '//' (defined-or) \
+                 operator"
+                    .into(),
             ),
-            "merged message must carry the twin's verbatim Suggestion text: {}",
-            pl404_rows[0].message
+            "merged message must carry the twin's verbatim Suggestion text"
         );
         let related = pl404_rows[0].related_information.as_deref().unwrap_or_default();
         assert!(
