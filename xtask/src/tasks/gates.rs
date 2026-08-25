@@ -37,6 +37,7 @@ use crate::tasks::ci_scope::{self, ScopeOutput};
 use crate::tasks::git_context::git_stdout_with_worktree_fallback;
 use crate::utils::project_root;
 
+pub mod disposition;
 mod first_failure;
 mod planning_types;
 
@@ -216,6 +217,10 @@ pub struct FlakePolicy {
     pub max_retries: u32,
     pub auto_quarantine_threshold: u32,
     pub quarantine_duration_days: u32,
+    /// Declared source of truth for quarantined items; consumed by the
+    /// `gate_disposition.v1` resolver (#10176) instead of a hardcoded path.
+    #[serde(default)]
+    pub debt_ledger_path: Option<String>,
     #[serde(default)]
     pub quarantined_gates: Vec<QuarantinedGate>,
     #[serde(default)]
@@ -615,6 +620,9 @@ pub struct GateRunnerConfig {
     pub receipt_path: Option<PathBuf>,
     pub diff_baseline: Option<PathBuf>,
     pub list_only: bool,
+    /// Explain the typed gate lifecycle disposition authority
+    /// (`gate_disposition.v1`, issue #10176) instead of running gates.
+    pub explain_disposition: bool,
     pub fail_fast: bool,
     /// For future parallel execution support
     #[allow(dead_code)]
@@ -640,6 +648,7 @@ impl Default for GateRunnerConfig {
             receipt_path: None,
             diff_baseline: None,
             list_only: false,
+            explain_disposition: false,
             fail_fast: false,
             parallel: false,
             verbose: false,
@@ -674,6 +683,16 @@ pub fn run(config: GateRunnerConfig) -> Result<()> {
     if config.list_only {
         let gates = filter_gates(&policy, &config)?;
         return list_gates(&gates, &policy);
+    }
+
+    // Explain mode prints the typed lifecycle disposition authority
+    // (`gate_disposition.v1`, issue #10176): for every governed gate, the
+    // current lifecycle, resolution, and the closed reason any row is
+    // expired or invalid. Like `--list`, this never executes a gate.
+    if config.explain_disposition {
+        let authority = disposition::resolve_with_policy_path(&root, &policy_path)?;
+        println!("{}", authority.format_explanation());
+        return Ok(());
     }
 
     // Build the executable plan. PR-fast uses the shared xtask runner plus
@@ -841,13 +860,13 @@ fn selects_commit_tier_gate(policy: &GatePolicy, config: &GateRunnerConfig) -> R
 /// tier). `--tier nightly` is *not* one of these paths — `NIGHTLY_EXTRA_TIERS`
 /// is `merge_gate` + `nightly` only, deliberately excluding `commit` — see
 /// [`selects_commit_tier_gate`], the single source of truth this function
-/// defers to. `--list` is exempt: it never executes a gate. `None` means the
-/// run may proceed.
+/// defers to. `--list` and `--explain-disposition` are exempt: neither ever
+/// executes a gate. `None` means the run may proceed.
 fn staged_guard_violation(
     policy: &GatePolicy,
     config: &GateRunnerConfig,
 ) -> Result<Option<String>> {
-    if config.staged || config.list_only {
+    if config.staged || config.list_only || config.explain_disposition {
         return Ok(None);
     }
     if !selects_commit_tier_gate(policy, config)? {
@@ -3500,6 +3519,23 @@ mod tests {
         let config = GateRunnerConfig {
             tier: GateTier::Commit,
             list_only: true,
+            ..GateRunnerConfig::default()
+        };
+
+        assert!(staged_guard_violation(&policy, &config)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn staged_guard_violation_none_in_explain_disposition_mode() -> color_eyre::eyre::Result<()> {
+        // `--explain-disposition` is as read-only as `--list`: it prints the
+        // `gate_disposition.v1` authority (#10176) and never executes a
+        // gate, so even `--tier all` must not demand `--staged` from it
+        // (review finding: the guard previously fired on explain runs).
+        let policy = policy_with_commit_and_pr_fast_gates();
+        let config = GateRunnerConfig {
+            tier: GateTier::All,
+            explain_disposition: true,
             ..GateRunnerConfig::default()
         };
 

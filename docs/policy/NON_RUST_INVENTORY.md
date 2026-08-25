@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11823 |
-| Rust-family files | 3576 |
-| Non-Rust files | 8247 |
-| Allowlisted | 5922 |
+| Total tracked files | 11831 |
+| Rust-family files | 3581 |
+| Non-Rust files | 8250 |
+| Allowlisted | 5925 |
 | Unclassified | 2325 |
 
 ## Non-Rust files by category
@@ -17,10 +17,10 @@
 | Category | Count |
 |---|---|
 | config | 420 |
-| documentation | 2687 |
+| documentation | 2688 |
 | generated | 2 |
 | production | 323 |
-| test | 1938 |
+| test | 1940 |
 | tooling | 552 |
 | unclassified | 2325 |
 
@@ -2413,6 +2413,7 @@
 | `.changes/unreleased/product-12185-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12425-Changed-064000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12428-Changed-071500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12489-Changed-095500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -3507,6 +3508,7 @@
 | `clients/lite-xl/tests/init_configuration_items_test.lua` | test | `non-rust-litexl-init-configuration-items-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_document_session_test.lua` | test | `non-rust-litexl-init-session-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_request_currentness_test.lua` | test | `non-rust-litexl-init-request-currentness-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/init_show_document_outcome_test.lua` | test | `non-rust-litexl-init-show-document-outcome-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/journey_session_test.lua` | test | `non-rust-litexl-journey-session-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/json_decode_test.lua` | test | `non-rust-litexl-json-decode-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_frame_test.lua` | test | `non-rust-litexl-server-frame-tests` | editor/lite-xl |
@@ -3699,6 +3701,7 @@
 | `crates/perl-lexer/tests/fixtures/substitution_operators/valid_s.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-lexer/tests/fixtures/substitution_operators/valid_tr.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-lexer/tests/fixtures/substitution_operators/valid_y.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-lexer/tests/lexer_robustness_tests.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
 | `crates/perl-lexer/tests/prop_lexer_termination.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
 | `crates/perl-line-index/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-line-index/README.md` | documentation | `non-rust-root-governance-docs` | docs |
