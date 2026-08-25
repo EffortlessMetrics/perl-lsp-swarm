@@ -608,19 +608,18 @@ impl DebugAdapter {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
+            && let Ok(mut guard) = self.session.lock()
         {
-            if let Ok(mut guard) = self.session.lock() {
-                *guard = Some(DebugSession {
-                    process: child,
-                    state: DebugState::Running,
-                    stack_frames: vec![],
-                    stack_frame_arguments: HashMap::new(),
-                    variable_cache: VariableCache::default(),
-                    thread_id: 1,
-                    last_resume_mode: ResumeMode::Continue,
-                    stopped_generation: 0,
-                });
-            }
+            *guard = Some(DebugSession {
+                process: child,
+                state: DebugState::Running,
+                stack_frames: vec![],
+                stack_frame_arguments: HashMap::new(),
+                variable_cache: VariableCache::default(),
+                thread_id: 1,
+                last_resume_mode: ResumeMode::Continue,
+                stopped_generation: 0,
+            });
         }
     }
 
@@ -1139,8 +1138,7 @@ print "result: $final\n";
             let _ = mapped_commands.insert(command);
         }
 
-        let mut request_seq = 2;
-        for command in mapped_commands {
+        for (request_seq, command) in (2_i64..).zip(mapped_commands) {
             let arguments = match command {
                 "configurationDone" => Some(json!({})),
                 "setFunctionBreakpoints" => {
@@ -1184,7 +1182,6 @@ print "result: $final\n";
             };
 
             let response = adapter.handle_request(request_seq, command, arguments);
-            request_seq += 1;
 
             match response {
                 DapMessage::Response { command: actual, message, .. } => {

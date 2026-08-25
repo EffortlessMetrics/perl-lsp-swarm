@@ -19,6 +19,8 @@
 //! a session id. [`DebugBackend::initialize`] blocks until the handshake
 //! completes or a timeout elapses.
 
+#[cfg(test)]
+use perl_tdd_support::{must, must_err};
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{Read, Write};
@@ -1126,7 +1128,7 @@ mod tests {
                 Ok(s) => s,
                 Err(_) => return,
             };
-            let mut write = stream.try_clone().expect("clone");
+            let mut write = must(stream.try_clone());
             let mut read = stream;
             let mut seq = 100;
 
@@ -1143,7 +1145,7 @@ mod tests {
                 })
                 .ok(),
             });
-            let _ = write.write_all(&encode_message(&hello).expect("enc"));
+            let _ = write.write_all(&must(encode_message(&hello)));
 
             let mut decoder = PeerFrameDecoder::new();
             let mut buf = [0u8; 4096];
@@ -1161,9 +1163,9 @@ mod tests {
                                     seq += 1;
                                     resp.seq = seq;
                                     resp.request_seq = req.seq;
-                                    let _ = write.write_all(
-                                        &encode_message(&PeerMessage::Response(resp)).expect("enc"),
-                                    );
+                                    let _ = write.write_all(&must(encode_message(
+                                        &PeerMessage::Response(resp),
+                                    )));
                                     if req.command == command::GOODBYE {
                                         break;
                                     }
@@ -1203,7 +1205,7 @@ mod tests {
         };
         let peer = spawn_fake_peer(addr, caps, |_req| None);
         let mut backend = accept_backend(listener);
-        backend.initialize(InitializeBackendParams::default()).expect("handshake");
+        must(backend.initialize(InitializeBackendParams::default()));
         let negotiated = backend.capabilities();
         assert!(negotiated.evaluate);
         assert!(negotiated.stepping);
@@ -1234,22 +1236,20 @@ mod tests {
             }
         });
         let mut backend = accept_backend(listener);
-        backend.initialize(InitializeBackendParams::default()).expect("handshake");
+        must(backend.initialize(InitializeBackendParams::default()));
         let src = DebugSource::from_path("/work/script.pl");
-        let out = backend
-            .set_breakpoints(SetBackendBreakpointsParams {
-                source: src.clone(),
-                breakpoints: vec![crate::model::DebugBreakpoint {
-                    id: None,
-                    source: src,
-                    line: 42,
-                    column: None,
-                    condition: None,
-                    hit_condition: None,
-                    log_message: None,
-                }],
-            })
-            .expect("set breakpoints");
+        let out = must(backend.set_breakpoints(SetBackendBreakpointsParams {
+            source: src.clone(),
+            breakpoints: vec![crate::model::DebugBreakpoint {
+                id: None,
+                source: src,
+                line: 42,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            }],
+        }));
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].id, 7);
         assert!(out[0].verified);
@@ -1264,8 +1264,8 @@ mod tests {
         // Peer that only reports stops: no step capability.
         let peer = spawn_fake_peer(addr, PeerReportedCapabilities::default(), |_req| None);
         let mut backend = accept_backend(listener);
-        backend.initialize(InitializeBackendParams::default()).expect("handshake");
-        let err = backend.continue_thread(ThreadId(1)).expect_err("should reject");
+        must(backend.initialize(InitializeBackendParams::default()));
+        let err = must_err(backend.continue_thread(ThreadId(1)));
         assert!(matches!(err, BackendError::Unsupported(_)));
         drop(backend);
         let _ = peer.join();
@@ -1284,9 +1284,7 @@ mod tests {
         };
         let peer = spawn_fake_peer(addr, caps, |_req| None);
         let mut backend = accept_backend(listener);
-        let err = backend
-            .initialize(InitializeBackendParams::default())
-            .expect_err("peer control-mode escalation must be rejected");
+        let err = must_err(backend.initialize(InitializeBackendParams::default()));
         assert!(
             matches!(err, BackendError::Unsupported(_)),
             "expected an unsupported-mode rejection, got {err:?}"
@@ -1309,12 +1307,12 @@ mod tests {
             PeerReportedCapabilities { can_step: true, can_pause: false, ..Default::default() };
         let peer = spawn_fake_peer(addr, caps, |_req| None);
         let mut backend = accept_backend(listener);
-        backend.initialize(InitializeBackendParams::default()).expect("handshake");
+        must(backend.initialize(InitializeBackendParams::default()));
         // Stepping is allowed...
         assert!(backend.capabilities().stepping);
         // ...but pause is not, because can_pause was false.
         assert!(!backend.capabilities().pause);
-        let err = backend.pause(ThreadId(1)).expect_err("pause not negotiated");
+        let err = must_err(backend.pause(ThreadId(1)));
         assert!(matches!(err, BackendError::Unsupported(_)));
         drop(backend);
         let _ = peer.join();
@@ -1332,9 +1330,7 @@ mod tests {
             |_req| None,
         );
         let mut backend = accept_backend_with_timeout(listener, Duration::from_secs(2));
-        let err = backend
-            .initialize(InitializeBackendParams::default())
-            .expect_err("mismatched version must be rejected");
+        let err = must_err(backend.initialize(InitializeBackendParams::default()));
         assert!(
             matches!(err, BackendError::Protocol(_)),
             "expected a clear protocol rejection, got {err:?}"
@@ -1351,12 +1347,10 @@ mod tests {
         let token = "0123456789abcdef0123456789abcdef".to_string();
         let caps = PeerReportedCapabilities { can_step: true, ..Default::default() };
         let peer = spawn_fake_peer_token(addr, Some(token.clone()), caps, |_req| None);
-        let expected_token = PeerSessionToken::try_from(token).expect("valid test token");
+        let expected_token = must(PeerSessionToken::try_from(token));
         let mut backend =
             accept_backend_with_token(listener, DEFAULT_PEER_TIMEOUT, Some(expected_token));
-        backend
-            .initialize(InitializeBackendParams::default())
-            .expect("matching token must complete the handshake");
+        must(backend.initialize(InitializeBackendParams::default()));
         assert!(backend.capabilities().stepping, "capabilities negotiate after a valid handshake");
         drop(backend);
         let _ = peer.join();
@@ -1373,14 +1367,9 @@ mod tests {
         let mut backend = accept_backend_with_token(
             listener,
             Duration::from_secs(2),
-            Some(
-                PeerSessionToken::try_from("0123456789abcdef0123456789abcdef")
-                    .expect("valid test token"),
-            ),
+            Some(must(PeerSessionToken::try_from("0123456789abcdef0123456789abcdef"))),
         );
-        let err = backend
-            .initialize(InitializeBackendParams::default())
-            .expect_err("a missing token must be rejected when the host minted one");
+        let err = must_err(backend.initialize(InitializeBackendParams::default()));
         assert!(
             matches!(err, BackendError::Protocol(_)),
             "expected a clear protocol rejection, got {err:?}"
@@ -1402,14 +1391,9 @@ mod tests {
         let mut backend = accept_backend_with_token(
             listener,
             Duration::from_secs(2),
-            Some(
-                PeerSessionToken::try_from("0123456789abcdef0123456789abcdef")
-                    .expect("valid test token"),
-            ),
+            Some(must(PeerSessionToken::try_from("0123456789abcdef0123456789abcdef"))),
         );
-        let err = backend
-            .initialize(InitializeBackendParams::default())
-            .expect_err("a mismatched token must be rejected");
+        let err = must_err(backend.initialize(InitializeBackendParams::default()));
         assert!(
             matches!(err, BackendError::Protocol(_)),
             "expected a clear protocol rejection, got {err:?}"
@@ -1423,8 +1407,10 @@ mod tests {
     fn legacy_listen_constructor_fails_before_binding() {
         let error =
             match ExternalDebuggerPeerBackend::listen("0.0.0.0", 0, Duration::from_millis(10)) {
-                Ok(_) => panic!("legacy unauthenticated listen must fail closed"),
                 Err(error) => error,
+                Ok(_) => {
+                    must(Err::<BackendError, _>("legacy unauthenticated listen must fail closed"))
+                }
             };
         assert!(matches!(error, BackendError::Unsupported(_)));
     }
@@ -1439,8 +1425,8 @@ mod tests {
 
     #[test]
     fn token_matches_enforces_only_when_host_minted_one() {
-        let secret = PeerSessionToken::try_from("0123456789abcdef0123456789abcdef".to_string())
-            .expect("test token has the required shape");
+        let secret =
+            must(PeerSessionToken::try_from("0123456789abcdef0123456789abcdef".to_string()));
         // No host token => nothing enforced (back-compat connect path).
         assert!(token_matches(None, None));
         assert!(token_matches(None, Some("anything")));
@@ -1467,22 +1453,20 @@ mod tests {
         // Peer completes handshake but never answers setBreakpoints.
         let peer = spawn_fake_peer(addr, caps, |_req| None);
         let mut backend = accept_backend_with_timeout(listener, Duration::from_millis(300));
-        backend.initialize(InitializeBackendParams::default()).expect("handshake");
+        must(backend.initialize(InitializeBackendParams::default()));
         let src = DebugSource::from_path("/x.pl");
-        let err = backend
-            .set_breakpoints(SetBackendBreakpointsParams {
-                source: src.clone(),
-                breakpoints: vec![crate::model::DebugBreakpoint {
-                    id: None,
-                    source: src,
-                    line: 1,
-                    column: None,
-                    condition: None,
-                    hit_condition: None,
-                    log_message: None,
-                }],
-            })
-            .expect_err("should time out");
+        let err = must_err(backend.set_breakpoints(SetBackendBreakpointsParams {
+            source: src.clone(),
+            breakpoints: vec![crate::model::DebugBreakpoint {
+                id: None,
+                source: src,
+                line: 1,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            }],
+        }));
         assert!(matches!(err, BackendError::Timeout(_)));
         drop(backend);
         let _ = peer.join();
@@ -1522,21 +1506,17 @@ mod tests {
                 })
                 .ok(),
             });
-            let _ = write.write_all(&encode_message(&hello).expect("encode hello"));
+            let _ = write.write_all(&must(encode_message(&hello)));
         });
 
         let mut backend = accept_backend_with_timeout(listener, Duration::from_secs(2));
         // Shut down the host's own outbound half before HELLO arrives, so the
         // handshake-response write inside `handle_peer_request` fails
         // deterministically.
-        lock(&backend.shared.write)
-            .shutdown(std::net::Shutdown::Write)
-            .expect("shutdown write half");
+        must(lock(&backend.shared.write).shutdown(std::net::Shutdown::Write));
         let _ = release_hello_tx.send(());
 
-        let err = backend
-            .initialize(InitializeBackendParams::default())
-            .expect_err("handshake must fail when the HELLO response write fails");
+        let err = must_err(backend.initialize(InitializeBackendParams::default()));
         assert!(
             matches!(err, BackendError::Protocol(_) | BackendError::NotConnected),
             "expected a handshake failure, got {err:?}"
@@ -1570,7 +1550,7 @@ mod tests {
                     return;
                 }
             };
-            let mut write = stream.try_clone().expect("clone");
+            let mut write = must(stream.try_clone());
             let mut read = stream;
             let mut decoder = PeerFrameDecoder::new();
             let mut buf = [0u8; 4096];
@@ -1587,7 +1567,7 @@ mod tests {
                 })
                 .ok(),
             });
-            let _ = write.write_all(&encode_message(&hello).expect("encode hello"));
+            let _ = write.write_all(&must(encode_message(&hello)));
 
             // Wait for the host's response to the FIRST hello.
             let first_ok = 'first: loop {
@@ -1596,10 +1576,10 @@ mod tests {
                     Ok(n) => {
                         decoder.push(&buf[..n]);
                         while let Ok(Some(msg)) = decoder.try_next() {
-                            if let PeerMessage::Response(resp) = msg {
-                                if resp.command == command::HELLO {
-                                    break 'first resp.success;
-                                }
+                            if let PeerMessage::Response(resp) = msg
+                                && resp.command == command::HELLO
+                            {
+                                break 'first resp.success;
                             }
                         }
                     }
@@ -1624,7 +1604,7 @@ mod tests {
                 })
                 .ok(),
             });
-            let _ = write.write_all(&encode_message(&hello2).expect("encode hello2"));
+            let _ = write.write_all(&must(encode_message(&hello2)));
 
             let second_rejected = 'second: loop {
                 match read.read(&mut buf) {
@@ -1632,10 +1612,11 @@ mod tests {
                     Ok(n) => {
                         decoder.push(&buf[..n]);
                         while let Ok(Some(msg)) = decoder.try_next() {
-                            if let PeerMessage::Response(resp) = msg {
-                                if resp.command == command::HELLO && resp.request_seq == 101 {
-                                    break 'second !resp.success;
-                                }
+                            if let PeerMessage::Response(resp) = msg
+                                && resp.command == command::HELLO
+                                && resp.request_seq == 101
+                            {
+                                break 'second !resp.success;
                             }
                         }
                     }
@@ -1646,13 +1627,12 @@ mod tests {
         });
 
         let mut backend = accept_backend_with_timeout(listener, Duration::from_secs(2));
-        backend.initialize(InitializeBackendParams::default()).expect("handshake");
+        must(backend.initialize(InitializeBackendParams::default()));
         // Capabilities from the FIRST hello must be negotiated.
         assert!(backend.capabilities().stepping, "can_step from first hello must negotiate");
         assert!(!backend.capabilities().evaluate, "first hello did not advertise evaluate");
 
-        let second_rejected =
-            result_rx.recv_timeout(Duration::from_secs(2)).expect("peer result channel");
+        let second_rejected = must(result_rx.recv_timeout(Duration::from_secs(2)));
         assert!(second_rejected, "second HELLO (replay) must be rejected by the host");
 
         // Capabilities must be UNCHANGED after the rejected replay attempt.
@@ -1672,8 +1652,8 @@ mod tests {
     // --- test rendezvous helpers (host listens, fake peer connects) ---
 
     fn bind_ephemeral() -> (TcpListener, std::net::SocketAddr) {
-        let l = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
-        let a = l.local_addr().expect("addr");
+        let l = must(TcpListener::bind(("127.0.0.1", 0)));
+        let a = must(l.local_addr());
         (l, a)
     }
 
@@ -1685,8 +1665,8 @@ mod tests {
         listener: TcpListener,
         timeout: Duration,
     ) -> ExternalDebuggerPeerBackend {
-        let (stream, _) = listener.accept().expect("accept");
-        ExternalDebuggerPeerBackend::from_stream(stream, timeout).expect("backend")
+        let (stream, _) = must(listener.accept());
+        must(ExternalDebuggerPeerBackend::from_stream(stream, timeout))
     }
 
     fn accept_backend_with_token(
@@ -1694,8 +1674,7 @@ mod tests {
         timeout: Duration,
         expected_token: Option<PeerSessionToken>,
     ) -> ExternalDebuggerPeerBackend {
-        let (stream, _) = listener.accept().expect("accept");
-        ExternalDebuggerPeerBackend::from_stream_with_token(stream, timeout, expected_token)
-            .expect("backend")
+        let (stream, _) = must(listener.accept());
+        must(ExternalDebuggerPeerBackend::from_stream_with_token(stream, timeout, expected_token))
     }
 }

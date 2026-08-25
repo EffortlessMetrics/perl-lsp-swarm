@@ -5,6 +5,8 @@
 //! DAP-style message plumbing. Command and event names are strings (like DAP);
 //! typed argument/body payloads live in [`super::payloads`].
 
+#[cfg(test)]
+use perl_tdd_support::must;
 use serde::{Deserialize, Serialize};
 
 /// A request from one peer to the other.
@@ -139,7 +141,7 @@ mod tests {
             command: command::HELLO.to_string(),
             arguments: None,
         });
-        let json = serde_json::to_value(&msg).expect("serialize");
+        let json = must(serde_json::to_value(&msg));
         assert_eq!(json["type"], "request");
         assert_eq!(json["command"], "peer/hello");
         assert_eq!(json["seq"], 1);
@@ -155,7 +157,7 @@ mod tests {
             message: None,
             body: None,
         });
-        let json = serde_json::to_value(&msg).expect("serialize");
+        let json = must(serde_json::to_value(&msg));
         assert_eq!(json["type"], "response");
         assert_eq!(json["requestSeq"], 1);
         assert!(json.get("request_seq").is_none());
@@ -168,8 +170,8 @@ mod tests {
             event: event::STOPPED.to_string(),
             body: Some(serde_json::json!({"reason": "breakpoint"})),
         });
-        let json = serde_json::to_string(&msg).expect("serialize");
-        let back: PeerMessage = serde_json::from_str(&json).expect("deserialize");
+        let json = must(serde_json::to_string(&msg));
+        let back: PeerMessage = must(serde_json::from_str(&json));
         assert_eq!(msg, back);
         assert_eq!(back.seq(), 10);
     }
