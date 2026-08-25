@@ -28,3 +28,14 @@ pub use raw::{
     ModuleActivationIdentity, ModuleVersionEvidence, NoopAdapterCancellationControl,
     UnavailableReason,
 };
+
+/// Evaluate a reviewed framework-version constraint against one observed
+/// version string.
+///
+/// Returns `None` when either side cannot be parsed into comparable version
+/// evidence. Exposed so registry-backed adapters share one reviewed comparison
+/// semantics instead of reimplementing version ordering.
+#[must_use]
+pub fn version_constraint_matches(constraint: &str, version: &str) -> Option<bool> {
+    version::constraint_matches(constraint, version)
+}

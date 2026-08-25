@@ -65,7 +65,7 @@ export default defineConfig({
 // out/commandResults.js + .map left behind by an unrelated
 // `tsc -p tsconfig.integration.json` run (out/ is a shared build directory;
 // that command also emits the integration test harness into out/test/**)
-// survived cleanDir:true across a subsequent `npm run compile`. The actual
+// survived cleanDir:true across a subsequent `npm run bundle`. The actual
 // fix is the "clean:out" npm script (removes everything under out/ except
 // out/test/**, which the test-harness tsc builds manage separately) that
-// runs before this config is invoked — see package.json's "compile" script.
+// runs before this config is invoked — see package.json's "bundle" script.

@@ -199,11 +199,16 @@ end
 package.preload["plugins.lsp.diagnostics"] = function()
   -- Lifecycle seams consumed by init.lua (#11124); inert in this suite,
   -- whose subject is document-session/version behavior, not publications.
+  -- set_render_resolver: combined-tree repair for this lane (#11165); the
+  -- #11128 seam call entered init.lua on main without updating these fakes.
   return {
     note_provider = function() end,
     close_session = function() end,
     retire_provider = function() end,
+    set_render_resolver = function() end,
     publish = function() return true, nil end,
+    -- #12047 render-resolver seam: init.lua registers it unconditionally at load.
+    set_render_resolver = function() end,
   }
 end
 
@@ -355,9 +360,9 @@ local function drain(server, method)
   return played
 end
 
----Canonical URI exactly as production computes it (staged util.touri).
+---Canonical URI exactly as production computes it (#11165 authority).
 local function expected_uri(path)
-  return dofile(here .. "/../upstream/util.lua").touri(path)
+  return dofile(here .. "/../upstream/util.lua").path_to_uri(path)
 end
 
 local INCREMENTAL = { textDocumentSync = { openClose = true, change = 2, save = { includeText = false } }, positionEncoding = "utf-16" }

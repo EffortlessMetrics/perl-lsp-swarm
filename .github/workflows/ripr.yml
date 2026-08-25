@@ -37,7 +37,11 @@ on:
 
 concurrency:
   group: ripr-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
+  # RIPR is evidence production, not a disposable fast-feedback check. A
+  # newer PR head must queue behind an active analysis instead of terminating
+  # it and turning an infrastructure cancellation into a false red required
+  # check. The latest completed head remains authoritative for its own SHA.
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -1042,16 +1046,13 @@ jobs:
           # this as "did not succeed: cancelled", which names the outcome but
           # still reads as a gate failure rather than an unevaluated head (#5460).
           #
-          # The cause is deliberately not asserted. The usual one is a newer push
-          # superseding this run via the concurrency group's cancel-in-progress,
-          # but a manual or API cancellation produces an identical `cancelled`
-          # result and no newer run exists in that case. Nothing available here
-          # distinguishes them, so the message names the outcome and offers
-          # supersession as the likely cause rather than directing the reader to
-          # a run that may not exist.
+          # The workflow deliberately does not cancel in-progress evidence runs
+          # when a newer PR head arrives. A cancelled lane therefore still names
+          # an external/manual cancellation or runner failure, not normal head
+          # supersession. Keep it blocking because no proof was produced.
           for lane_result in "$CX53_RESULT" "$CX43_RESULT" "$GITHUB_RESULT" "$FALLBACK_RESULT"; do
             if [ "$lane_result" = "cancelled" ]; then
-              echo "::error::ripr lane cancelled — no proof produced for this SHA. This is NOT a new RIPR gap. Most often a newer push superseded this run; a manual or API cancellation looks the same here. If a newer run exists for this PR, that run is authoritative; otherwise re-run this one."
+              echo "::error::ripr lane cancelled — no proof produced for this SHA. This is NOT a new RIPR gap. Normal PR synchronization does not cancel active RIPR runs; investigate an external, manual, or API cancellation and re-run this head."
               echo "ripr+ New Gap Gate: cancelled (no proof for this SHA)"
               exit 1
             fi

@@ -342,7 +342,7 @@ local function pub(diag, d, params)
   end
   -- Pristine fallback: emulate the upstream anonymous-filename listener so
   -- red-baseline assertions exercise real pristine behavior.
-  local fname = dofile(here .. "/../upstream/util.lua").tofilename(params.uri)
+  local fname = dofile(here .. "/../upstream/util.lua").uri_to_path(params.uri)
   if params.diagnostics and #params.diagnostics > 0 then
     return diag.add(fname, params.diagnostics), nil
   end
@@ -365,15 +365,15 @@ local function retire_provider(diag, name)
 end
 
 ---Filename exactly as production derives it from a document path
----(touri -> project_absolute_path -> listener tofilename round trip).
+---(path_to_uri -> project_absolute_path -> listener uri_to_path round trip).
 local path_util = dofile(here .. "/../upstream/util.lua")
 ---Wire URI exactly as production derives it from a document path.
 local function wire_uri(path)
-  return path_util.touri(path)
+  return path_util.path_to_uri(path)
 end
 
 local function platform_path(path)
-  return path_util.tofilename(path_util.touri(path))
+  return path_util.uri_to_path(path_util.path_to_uri(path))
 end
 
 local function visible_messages(diag, filename)

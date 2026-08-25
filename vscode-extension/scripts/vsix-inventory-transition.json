@@ -1,9 +1,9 @@
 {
-  "schema_version": 1,
-  "owner_issue": 7855,
-  "reason": "#7855 adds the test-only phase-boundary failure injector to the bundled activation owner (out/extension.js 1516263->1516689 archive-measured; changelog.md 21498->22224 after the vsce markdown processor) plus the production-path failure-injection proof suite. No file added, removed, or loosened; total recomputed ->1692126.",
-  "base_baseline_file_sha256": "594cdf44380693aca57965b0f776ee3b854fddd5ab4414f375bdc9f1de1c3c03",
-  "candidate_baseline_file_sha256": "18a4172fb4a69c99af4fded614d8fc8d080affd0ce80288430473bcbf379907f",
-  "base_inventory_sha256": "c16fd70c2236e859a325634c17d5fbd1a731d84fd76c251bca1c780f756dc67e",
-  "candidate_inventory_sha256": "ca68d145838a0012fdc7e08c39018bd91c40cceb2081c243d5814f8d9f64558b"
+  "base_baseline_file_sha256": "4a662d41a6f80249245b526e89b6b706d1b847195c16231fe0d303cbd44a5011",
+  "base_inventory_sha256": "3087c97c983e74fbc5d814d8739e985dbacc26a54e7ad32c43f1e3f9dae7c19e",
+  "candidate_baseline_file_sha256": "8a20c2b29c57b1baad098d658e385e2a8f32b92cbd9637b6681aa51aefcd119e",
+  "candidate_inventory_sha256": "77366544182581a948a34d8f7701f7388f1384f0d1efb539c3221fe0e93e5895",
+  "owner_issue": 9842,
+  "reason": "#9842 renames the extension build/watch command surface and routes every public tsc path through the governed seam. Only shipped package.json script metadata changes (58406->58886, +480 measured from the packaged VSIX: the governed-tsc rewiring, the build/bundle/watch:bundle contract, and the check:tsconfig-inventory + governed test wiring). No file added, removed, or loosened; out/extension.js is byte-identical (Rolldown re-run under the new command names); total recomputed ->1696163.",
+  "schema_version": 1
 }

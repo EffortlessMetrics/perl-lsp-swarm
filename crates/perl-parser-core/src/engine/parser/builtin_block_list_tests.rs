@@ -9,7 +9,29 @@
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use crate::parser::Parser;
+    use perl_ast::ast::{Node, NodeKind};
     use perl_tdd_support::must;
+
+    fn function_call_shape(node: &mut Node, target: &str) -> Option<(usize, bool)> {
+        let shape = match &node.kind {
+            NodeKind::FunctionCall { name, args } if name == target => Some((
+                args.len(),
+                matches!(args.first().map(|arg| &arg.kind), Some(NodeKind::Block { .. })),
+            )),
+            _ => None,
+        };
+        if shape.is_some() {
+            return shape;
+        }
+
+        let mut nested = None;
+        node.for_each_child_mut(|child| {
+            if nested.is_none() {
+                nested = function_call_shape(child, target);
+            }
+        });
+        nested
+    }
 
     #[test]
     fn filter_simple_uppercase_block_call() {
@@ -18,7 +40,7 @@ mod tests {
     s/MAGIC/42/g;
 };"#;
         let mut parser = Parser::new(code);
-        let ast = must(parser.parse());
+        let mut ast = must(parser.parse());
         assert!(
             parser.errors().is_empty(),
             "should not record parser errors: {:?}",
@@ -39,7 +61,7 @@ mod tests {
     fn grep_block_simple_comparison() {
         let code = "grep { $_ > 5 } @array;";
         let mut parser = Parser::new(code);
-        let ast = must(parser.parse());
+        let mut ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(sexp.contains("(call grep"), "should be a grep call: {}", sexp);
         assert!(sexp.contains("(block"), "should contain a block: {}", sexp);
@@ -49,7 +71,6 @@ mod tests {
             sexp
         );
     }
-
     #[test]
     fn grep_block_method_call_in_block() {
         let code = "grep { $_->is_valid } @items;";
@@ -89,6 +110,37 @@ mod tests {
             "trailing list should be inside the grep call: {}",
             sexp
         );
+    }
+
+    #[test]
+    fn user_defined_ampersand_prototype_uses_block_call_shape() {
+        let code = r#"
+            sub my_map (&@) { }
+            my @result = my_map { $_ * 2 } 1, 2, 3;
+        "#;
+        let mut parser = Parser::new(code);
+        let mut ast = must(parser.parse());
+        assert!(
+            parser.errors().is_empty(),
+            "user-defined block-taking call should parse without errors: {:?}",
+            parser.errors()
+        );
+
+        let (argument_count, starts_with_block) =
+            function_call_shape(&mut ast, "my_map").expect("my_map call should be present");
+        assert!(starts_with_block, "block should be the first call argument");
+        assert_eq!(argument_count, 4, "block and three list arguments should be retained");
+    }
+
+    #[test]
+    fn qualified_user_defined_block_call_uses_call_shape() {
+        let code = "sub My::List::map (&@) { } My::List::map { $_ * 2 } @items;";
+        let mut parser = Parser::new(code);
+        let mut ast = must(parser.parse());
+        let (argument_count, starts_with_block) = function_call_shape(&mut ast, "My::List::map")
+            .expect("qualified map call should be present");
+        assert!(starts_with_block, "qualified call should start with a block argument");
+        assert_eq!(argument_count, 2, "qualified call should retain its block and list arguments");
     }
 
     // ---- map ----

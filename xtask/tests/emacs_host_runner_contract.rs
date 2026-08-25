@@ -174,6 +174,11 @@ fn bundled_adapter_defines_the_driver_entrypoint_and_bundled_resolution() -> Res
         "the loaded file digest must be emitted as runtime identity evidence"
     );
     assert!(
+        adapter.contains("(insert-file-contents-literally"),
+        "digests must be computed over raw bytes: the decoded insert-file-contents performs \
+         coding-system and line-ending translation that silently changes the hash"
+    );
+    assert!(
         adapter.contains("(lm-version"),
         "the loaded file's own version header must be observed"
     );
@@ -322,14 +327,15 @@ fn bundled_configuration_carries_only_client_behavior_settings() -> Result<()> {
 }
 
 #[test]
-fn subject_registry_pins_exactly_one_bundled_eglot_subject() {
+fn subject_registry_pins_each_exact_client_subject_immutable() {
     assert_eq!(
-        host_run_task::known_subjects(),
-        &["bundled_eglot_emacs_30_1"],
-        "slice one wires exactly the bundled Eglot in Emacs 30.1 subject; later subjects are \
-         new rows, never silent replacements"
+        host_run_task::EmacsClientSubject::known_ids(),
+        &["bundled_eglot_emacs_30_1", "released_eglot_gnu_elpa_1_23"],
+        "each subject is an immutable registry row; new releases are new rows, never silent \
+         replacements"
     );
-    let subject = host_run_task::bundled_eglot_client_subject(format!("sha256:{}", "0".repeat(64)));
+    let subject = host_run_task::EmacsClientSubject::BundledEglotEmacs301
+        .client_identity(format!("sha256:{}", "0".repeat(64)), None);
     assert_eq!(subject.client_id, "bundled_eglot_emacs_30_1");
     assert_eq!(subject.kind, host_run_task::emacs_host_runner::EmacsClientKind::BundledEglot);
     assert_eq!(subject.version, "1.17.30");
@@ -339,14 +345,44 @@ fn subject_registry_pins_exactly_one_bundled_eglot_subject() {
         subject.package_sha256.is_none(),
         "a bundled subject cannot carry a separate package identity"
     );
+
+    let released = host_run_task::EmacsClientSubject::ReleasedEglotGnuElpa123.client_identity(
+        format!("sha256:{}", "1".repeat(64)),
+        Some(format!("sha256:{}", "2".repeat(64))),
+    );
+    assert_eq!(released.client_id, "released_eglot_gnu_elpa_1_23");
+    assert_eq!(released.kind, host_run_task::emacs_host_runner::EmacsClientKind::ExternalEglot);
+    assert_eq!(released.version, "1.23");
+    assert_eq!(released.source_ref, "gnu-elpa-eglot-1.23");
+    assert_eq!(released.source_state, xtask::editor_client_compat::ClientSourceState::Released);
+    assert!(
+        released.package_sha256.is_some(),
+        "a released subject must carry an exact package identity"
+    );
+    // Subject dispatch surfaces: the released row points at its own adapter
+    // and configuration, never the bundled ones.
+    assert_eq!(
+        host_run_task::EmacsClientSubject::ReleasedEglotGnuElpa123.adapter_relative_path(),
+        "scripts/test/emacs-clients/eglot-released.el"
+    );
+    assert_eq!(
+        host_run_task::EmacsClientSubject::ReleasedEglotGnuElpa123.configuration_relative_path(),
+        "scripts/test/emacs-clients/eglot-released-config.el"
+    );
+    assert_eq!(
+        host_run_task::EmacsClientSubject::ReleasedEglotGnuElpa123.journey_selector(),
+        "released_eglot_lifecycle.v1"
+    );
+    assert!(host_run_task::EmacsClientSubject::ReleasedEglotGnuElpa123.requires_client_package());
+    assert!(!host_run_task::EmacsClientSubject::BundledEglotEmacs301.requires_client_package());
 }
 
 #[test]
 fn fixture_materialization_is_deterministic_and_bounded() -> Result<()> {
     let first = tempfile::tempdir()?;
     let second = tempfile::tempdir()?;
-    let first_root = host_run_task::materialize_bundled_eglot_fixture(&first.path().join("f"))?;
-    let second_root = host_run_task::materialize_bundled_eglot_fixture(&second.path().join("f"))?;
+    let first_root = host_run_task::materialize_client_subject_fixture(&first.path().join("f"))?;
+    let second_root = host_run_task::materialize_client_subject_fixture(&second.path().join("f"))?;
     let first_digest = fixture_digest(&first_root)?;
     let second_digest = fixture_digest(&second_root)?;
     ensure!(first_digest == second_digest, "fixture materialization must be deterministic");
@@ -371,15 +407,17 @@ fn run_plan_builder_fails_closed_when_the_exact_host_is_absent() -> Result<()> {
     let root = tempfile::tempdir()?;
     let (_emacs, candidate, client_source) = fake_exact_inputs(root.path())?;
     let missing_emacs = root.path().join("absent-emacs");
-    let run = host_run_task::BundledEglotHostRun {
+    let run = host_run_task::EmacsHostRunInputs {
         emacs_executable: missing_emacs.clone(),
         candidate_executable: candidate,
         client_source,
+        client_package: None,
         out_root: root.path().join("out-missing"),
         timeout_ms: 0,
     };
-    let error = host_run_task::build_bundled_eglot_run_plan(
+    let error = host_run_task::build_client_subject_run_plan(
         &workspace_root()?,
+        host_run_task::EmacsClientSubject::BundledEglotEmacs301,
         &run,
         &"0".repeat(40),
         "perllsp fake",
@@ -399,15 +437,17 @@ fn run_plan_builder_fails_closed_when_the_exact_host_is_absent() -> Result<()> {
 fn run_plan_builder_validates_over_the_checked_tree_with_exact_fake_inputs() -> Result<()> {
     let root = tempfile::tempdir()?;
     let (emacs, candidate, client_source) = fake_exact_inputs(root.path())?;
-    let run = host_run_task::BundledEglotHostRun {
+    let run = host_run_task::EmacsHostRunInputs {
         emacs_executable: emacs,
         candidate_executable: candidate.clone(),
         client_source,
+        client_package: None,
         out_root: root.path().join("out"),
         timeout_ms: 0,
     };
-    let (plan, layout) = host_run_task::build_bundled_eglot_run_plan(
+    let (plan, layout) = host_run_task::build_client_subject_run_plan(
         &workspace_root()?,
+        host_run_task::EmacsClientSubject::BundledEglotEmacs301,
         &run,
         "0123456789abcdef0123456789abcdef01234567",
         "perllsp fake",
@@ -517,8 +557,10 @@ fn bundled_library_resolution_handles_real_installation_forms() -> Result<()> {
 /// subject and must be refused before anything is launched.
 #[test]
 fn pinned_host_version_is_enforced_before_launch() -> Result<()> {
-    host_run_task::ensure_pinned_host_version("GNU Emacs 30.1 (build 1, x86_64)")?;
-    let wrong = host_run_task::ensure_pinned_host_version("GNU Emacs 29.4")
+    host_run_task::EmacsClientSubject::BundledEglotEmacs301
+        .ensure_pinned_host_version("GNU Emacs 30.1 (build 1, x86_64)")?;
+    let wrong = host_run_task::EmacsClientSubject::BundledEglotEmacs301
+        .ensure_pinned_host_version("GNU Emacs 29.4")
         .err()
         .context("an unpinned host must be refused")?;
     assert!(
@@ -562,4 +604,278 @@ fn commit_like_tokens_are_standalone_forty_hex_runs() {
         None,
         "a 41-hex run is not a commit identity"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Released-Eglot client subject (#7778 slice 2): the GNU ELPA 1.23 adapter,
+// its package-identity binding, and the released-subject fail-closed laws.
+// ---------------------------------------------------------------------------
+
+const RELEASED_ADAPTER: &str = "scripts/test/emacs-clients/eglot-released.el";
+const RELEASED_CONFIGURATION: &str = "scripts/test/emacs-clients/eglot-released-config.el";
+
+#[test]
+fn released_adapter_defines_entrypoint_and_declared_package_resolution() -> Result<()> {
+    let adapter = read_checked(RELEASED_ADAPTER)?;
+    assert!(
+        adapter.contains("(defun perl-lsp-test-client-run"),
+        "the released adapter must define the entrypoint the common driver calls"
+    );
+    // The declared package file is the only resolution source: its directory
+    // is pushed onto load-path and the resolution is then proven equal to
+    // the declared file, so the bundled copy or an ambient cache entry that
+    // answered instead fails the run.
+    assert!(adapter.contains("PERL_LSP_EMACS_CLIENT_SOURCE"));
+    assert!(adapter.contains("PERL_LSP_EMACS_CLIENT_PACKAGE"));
+    assert!(adapter.contains("(add-to-list 'load-path (file-name-directory library))"));
+    assert!(
+        adapter.contains("(string-equal (file-truename resolved)\n                            (file-truename library))"),
+        "the resolved library must be proven to be the declared package file"
+    );
+    assert!(
+        adapter.contains("did not resolve to the declared package file"),
+        "a foreign resolution must fail the run with a typed reason"
+    );
+    // Released identity requires the version header, not just the digest.
+    assert!(adapter.contains("(lm-version"));
+    assert!(
+        adapter.contains("carries no version header"),
+        "an unreadable version header must fail a released run"
+    );
+    assert!(
+        adapter.contains("(secure-hash 'sha256"),
+        "the loaded file digest must be emitted as runtime identity evidence"
+    );
+    // A top-level `(require 'eglot)' would load the Emacs build's bundled
+    // copy before the declared package directory owns `load-path'; the only
+    // require must come after the load-path manipulation.
+    let require_index = adapter
+        .find("(require 'eglot)")
+        .context("the adapter must require eglot exactly once, after owning load-path")?;
+    let load_path_index = adapter
+        .find("(add-to-list 'load-path (file-name-directory library))")
+        .context("the adapter must push the declared package directory onto load-path")?;
+    ensure!(
+        load_path_index < require_index,
+        "the eglot require must come after the declared package directory is on load-path"
+    );
+    ensure!(
+        adapter.matches("(require 'eglot)").count() == 1,
+        "eglot must be required exactly once so no earlier load can satisfy it"
+    );
+    assert!(
+        adapter.contains("(insert-file-contents-literally"),
+        "digests must be computed over raw bytes, including the binary package archive"
+    );
+    assert!(
+        adapter.contains("released Eglot library did not resolve after require"),
+        "an unresolvable library must fail with a typed reason, not a nil file-truename error"
+    );
+    Ok(())
+}
+
+#[test]
+fn released_adapter_registers_exactly_one_manual_candidate_row() -> Result<()> {
+    let adapter = read_checked(RELEASED_ADAPTER)?;
+    assert!(
+        adapter.contains("(setq eglot-server-programs"),
+        "the adapter must own the registration table"
+    );
+    assert!(
+        adapter.contains("(perl-mode . ,contact)") && adapter.contains("(cperl-mode . ,contact)"),
+        "the manual candidate contact must be the whole table for both Perl modes"
+    );
+    assert!(
+        adapter.contains("(list candidate \"--stdio\")"),
+        "the single manual contact must launch the exact candidate over stdio"
+    );
+    for forbidden in [
+        "package-initialize",
+        "package-archives",
+        "package-install",
+        "package-refresh-contents",
+        "use-package",
+        "add-to-list 'eglot-server-programs",
+        "add-to-list #'eglot-server-programs",
+    ] {
+        assert!(
+            !adapter.contains(forbidden),
+            "the hermetic released adapter must never touch ambient package state: {forbidden}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn released_adapter_binds_process_log_and_lifecycle_like_the_bundled_one() -> Result<()> {
+    let adapter = read_checked(RELEASED_ADAPTER)?;
+    assert!(adapter.contains("(process-command"));
+    assert!(adapter.contains("non-candidate server program"));
+    assert!(adapter.contains("jsonrpc-events-buffer"));
+    assert!(adapter.contains("jsonrpc-stderr-buffer"));
+    assert!(adapter.contains("PERL_LSP_EMACS_CLIENT_LOG"));
+    assert!(adapter.contains("PERL_LSP_EMACS_SERVER_STDERR"));
+    for barrier in [
+        "client_loaded",
+        "registration_selected",
+        "initialize_observed",
+        "workspace_ready",
+        "buffer_opened",
+        "shutdown_started",
+        "shutdown_completed",
+    ] {
+        assert!(
+            adapter.contains(&format!("\"{barrier}\"")),
+            "the released adapter must emit the {barrier} driver barrier"
+        );
+    }
+    // The slice-1 review repairs are pinned here too: explicit connect
+    // class and shutdown optional order.
+    assert!(adapter.contains("'eglot-lsp-server contact"));
+    assert!(adapter.contains("(eglot-shutdown server nil"));
+    Ok(())
+}
+
+#[test]
+fn released_configuration_carries_only_client_behavior_settings() -> Result<()> {
+    let configuration = read_checked(RELEASED_CONFIGURATION)?;
+    for setting in ["eglot-sync-connect", "eglot-autoreconnect", "eglot-autoshutdown"] {
+        assert!(configuration.contains(setting), "the checked configuration must pin {setting}");
+    }
+    for forbidden in ["package-", "eglot-server-programs", "load-file"] {
+        assert!(
+            !configuration.contains(forbidden),
+            "the checked configuration must not touch {forbidden} state"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn released_run_plan_requires_and_binds_package_identity() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (_emacs, candidate, client_source) = fake_exact_inputs(root.path())?;
+    let package = root.path().join("eglot-1.23.tar");
+    fs::write(&package, b"fake released package bytes")?;
+    let run = host_run_task::EmacsHostRunInputs {
+        emacs_executable: root.path().join("emacs-exe"),
+        candidate_executable: candidate,
+        client_source,
+        client_package: None,
+        out_root: root.path().join("out-no-package"),
+        timeout_ms: 0,
+    };
+    let missing = host_run_task::build_client_subject_run_plan(
+        &workspace_root()?,
+        host_run_task::EmacsClientSubject::ReleasedEglotGnuElpa123,
+        &run,
+        "0123456789abcdef0123456789abcdef01234567",
+        "perllsp fake",
+        "GNU Emacs 30.1 (fake)",
+    )
+    .err()
+    .context("a released subject without its package file must not produce a plan")?;
+    assert!(
+        missing.to_string().contains("requires an exact client package file"),
+        "the failure must name the missing package identity: {missing}"
+    );
+
+    let run = host_run_task::EmacsHostRunInputs {
+        emacs_executable: root.path().join("emacs-exe"),
+        candidate_executable: root.path().join(if cfg!(windows) {
+            "perllsp.exe"
+        } else {
+            "perllsp"
+        }),
+        client_source: root.path().join("eglot.el"),
+        client_package: Some(package.clone()),
+        out_root: root.path().join("out"),
+        timeout_ms: 0,
+    };
+    let (plan, layout) = host_run_task::build_client_subject_run_plan(
+        &workspace_root()?,
+        host_run_task::EmacsClientSubject::ReleasedEglotGnuElpa123,
+        &run,
+        "0123456789abcdef0123456789abcdef01234567",
+        "perllsp fake",
+        "GNU Emacs 30.1 (fake)",
+    )?;
+    ensure!(
+        plan.identity.client.package_sha256.is_some(),
+        "the released plan must carry the package digest"
+    );
+    ensure!(plan.paths.client_package.as_deref() == Some(package.as_path()));
+    ensure!(plan.identity.journey_selector == "released_eglot_lifecycle.v1");
+    let command = host_run_task::emacs_host_runner::build_emacs_command(&plan, &layout)?;
+    let argv: Vec<String> =
+        command.get_args().map(|argument| argument.to_string_lossy().into_owned()).collect();
+    ensure!(
+        argv.iter().any(|argument| argument.ends_with("eglot-released.el")),
+        "the released adapter must be the one loaded"
+    );
+    let environment: std::collections::BTreeMap<&OsStr, &OsStr> =
+        command.get_envs().filter_map(|(name, value)| value.map(|value| (name, value))).collect();
+    ensure!(
+        environment
+            .get(OsStr::new("PERL_LSP_EMACS_CLIENT_SOURCE"))
+            .copied()
+            .is_some_and(|value| value == root.path().join("eglot.el").as_os_str()),
+        "the declared client source must reach the adapter environment"
+    );
+    ensure!(
+        environment
+            .get(OsStr::new("PERL_LSP_EMACS_CLIENT_PACKAGE"))
+            .copied()
+            .is_some_and(|value| value == package.as_os_str()),
+        "the declared package file must reach the adapter environment"
+    );
+    Ok(())
+}
+
+#[test]
+fn bundled_subject_rejects_a_package_identity() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (_emacs, candidate, client_source) = fake_exact_inputs(root.path())?;
+    let package = root.path().join("eglot-1.23.tar");
+    fs::write(&package, b"fake released package bytes")?;
+    let run = host_run_task::EmacsHostRunInputs {
+        emacs_executable: root.path().join("emacs-exe"),
+        candidate_executable: candidate,
+        client_source,
+        client_package: Some(package),
+        out_root: root.path().join("out"),
+        timeout_ms: 0,
+    };
+    let error = host_run_task::build_client_subject_run_plan(
+        &workspace_root()?,
+        host_run_task::EmacsClientSubject::BundledEglotEmacs301,
+        &run,
+        "0123456789abcdef0123456789abcdef01234567",
+        "perllsp fake",
+        "GNU Emacs 30.1 (fake)",
+    )
+    .err()
+    .context("a bundled subject must not accept a package identity")?;
+    assert!(
+        error.to_string().contains("cannot carry a separate package identity"),
+        "the failure must name the identity conflict: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn released_subject_never_searches_the_host_installation() -> Result<()> {
+    let unknown = host_run_task::EmacsClientSubject::from_id("made_up_subject")
+        .err()
+        .context("an unknown subject must be a typed error")?;
+    assert!(
+        unknown.to_string().contains("unknown client subject"),
+        "unknown ids must fail closed: {unknown}"
+    );
+    ensure!(
+        !host_run_task::EmacsClientSubject::ReleasedEglotGnuElpa123
+            .resolves_client_source_from_installation(),
+        "a released subject resolves its source only through declared package inputs"
+    );
+    Ok(())
 }

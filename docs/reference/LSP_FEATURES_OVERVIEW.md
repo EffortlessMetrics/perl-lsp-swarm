@@ -98,11 +98,11 @@ first to validate the rename and get the default placeholder text.
 
 | Feature | ID | Notes |
 |---|---|---|
-| Document formatting | `lsp.formatting` | Native formatter by default; Perl::Tidy compatibility is explicit opt-in |
-| Range formatting | `lsp.range_formatting` | Native single-range edits |
-| Multi-range formatting | `lsp.ranges_formatting` | `textDocument/rangesFormatting` (@proposed) |
-| On-type formatting | `lsp.on_type_formatting` | Auto-indent on `{`, `}`, `;` |
-| Format on save | `lsp.will_save_wait_until` | Via willSaveWaitUntil |
+| Document formatting | `lsp.formatting` | Native formatter by default; Perl::Tidy compatibility is explicit opt-in. The only live edit-producing formatting route |
+| Range formatting | `lsp.range_formatting` | WITHDRAWN (#11955): refuses until #9317 lands; not advertised |
+| Multi-range formatting | `lsp.ranges_formatting` | WITHDRAWN (#11955): refuses until #7089 lands; not advertised |
+| On-type formatting | `lsp.on_type_formatting` | WITHDRAWN (#11955): refuses until #9320 lands; not advertised |
+| Format on save | `lsp.will_save_wait_until` | WITHDRAWN (#11955): no formatter edits until #8092 proves one save owner; not advertised. Editors can still format on save through the whole-document provider |
 
 ## Text Document — Diagnostics
 
@@ -275,7 +275,7 @@ The server can ask the client to discard its cache for:
 | Open/change/close | `lsp.text_document_sync` |
 | Save | `lsp.did_save` |
 | willSave | `lsp.will_save` |
-| willSaveWaitUntil (format on save) | `lsp.will_save_wait_until` |
+| willSaveWaitUntil (format on save) | `lsp.will_save_wait_until` | WITHDRAWN (#11955): no formatter edits until #8092 proves one save owner |
 
 ---
 
