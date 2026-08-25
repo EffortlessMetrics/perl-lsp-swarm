@@ -39,6 +39,7 @@ import {
   _setUserInitiatedStopPendingForTest,
   _setLastStartupDiagnosisForTest,
   _watchdogFailureForTest,
+  _spawnReplacementCrashGenerationForTest,
 } from '../extension';
 
 // vscode-languageclient State numeric values (Stopped=1, Running=2, Starting=3).
@@ -257,5 +258,43 @@ describe('mid-session silent server crash recovery (#4625)', () => {
     handleClientStateChange(crashEvent() as never);
     await flush();
     expect(_autoRestartAttemptsForTest()).toBe(1);
+  });
+
+  // ------------------------------------------------------------------
+  // #7845 review falsifier: generation G+1 fails before generation G's
+  // `restartServer` promise resolves. The G+1 failure must be serialized
+  // behind G's active episode (no second concurrent restart), and G's
+  // continuation must settle exactly its own episode handle — never the
+  // newer episode — before the deferred G+1 failure re-arbitrates.
+  // ------------------------------------------------------------------
+  test('a replacement generation failing before the pending restart resolves is serialized behind the active episode', async () => {
+    // Generation 0 crashes: episode recovery-0-1 opens and its continuation
+    // begins awaiting restartServer.
+    handleClientStateChange(crashEvent() as never);
+    expect(showErrorMessage).toHaveBeenCalledTimes(1);
+
+    // The pending restart has already spawned generation 1, and generation
+    // 1 fails BEFORE generation 0's restartServer promise resolves.
+    _spawnReplacementCrashGenerationForTest();
+    handleClientStateChange(crashEvent() as never);
+
+    // No second concurrent restart may start while generation 0's restart
+    // promise is still pending: exactly one restart toast so far and one
+    // consumed budget slot.
+    expect(showErrorMessage).toHaveBeenCalledTimes(1);
+    expect(_autoRestartAttemptsForTest()).toBe(1);
+
+    await flush();
+
+    // Generation 0's continuation settled exactly its own episode handle,
+    // then the deferred generation-1 failure re-arbitrated serially into
+    // the next episode: attempt 2, one more restart, in order.
+    expect(_autoRestartAttemptsForTest()).toBe(2);
+    const restartToasts = showErrorMessage.mock.calls.filter((call) =>
+      /restarting automatically/i.test(String(call[0])),
+    );
+    expect(restartToasts).toHaveLength(2);
+    expect(String(restartToasts[0][0])).toMatch(/attempt 1\/3/);
+    expect(String(restartToasts[1][0])).toMatch(/attempt 2\/3/);
   });
 });

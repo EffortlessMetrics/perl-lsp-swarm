@@ -101,7 +101,12 @@ import { reportIssueCommand } from './supportCommands';
 export { formatIssueDiagnosticInfo } from './supportCommands';
 import { ExtensionLanguageClientLifecycle } from './extensionComposition';
 import type { LifecycleState } from './languageClientLifecycle';
-import { CrashRecoveryArbiter, type CrashObservationSource } from './crashRecoveryArbiter';
+import {
+  CrashRecoveryArbiter,
+  type CrashObservationSource,
+  type CrashRecoveryDecision,
+  type RecoveryTerminalDisposition,
+} from './crashRecoveryArbiter';
 import {
   ServerDemandCoordinator,
   isServerDependentDocument,
@@ -400,6 +405,21 @@ export function _setExtensionContextForTest(context: vscode.ExtensionContext): v
  */
 export function _watchdogFailureForTest(generation?: number): Promise<void> {
   return recoverFromObservedCrash('watchdog', generation);
+}
+
+/**
+ * Test helper — simulate the lifecycle spawning one replacement generation
+ * while a recovery continuation is still awaiting its restart promise.
+ * With a live lifecycle the crash-generation identity is owned by the
+ * lifecycle controller (it increments on every start); the unit-test
+ * harness has no controller, so tests drive the increment explicitly to
+ * model a replacement generation that exists (and can fail) before the
+ * older continuation's `restartServer` promise resolves (#7845).
+ * @internal
+ */
+export function _spawnReplacementCrashGenerationForTest(): number {
+  fallbackCrashGeneration += 1;
+  return fallbackCrashGeneration;
 }
 
 /**
@@ -2786,11 +2806,14 @@ function recordUnexpectedFailure(): string {
  * The observation is routed through the generation-owned
  * `crashRecoveryArbiter` first: a duplicate observation for a generation
  * that already has an active or recently settled recovery episode is
- * deduplicated and performs no recovery work. Only a `start_recovery`
- * decision captures the crash diagnosis, invalidates the failed generation's
- * demand state, surfaces the failure, and consumes one automatic-restart
- * slot; a `crash_budget_exhausted` decision stops looping and asks the user
- * to intervene.
+ * deduplicated and performs no recovery work, and a different-generation
+ * failure that arrives while an episode's restart promise is still pending
+ * is deferred behind that episode (the active continuation drains and
+ * re-arbitrates it after settling its own episode handle). Only a
+ * `start_recovery` decision captures the crash diagnosis, invalidates the
+ * failed generation's demand state, surfaces the failure, and consumes one
+ * automatic-restart slot; a `crash_budget_exhausted` decision stops looping
+ * and asks the user to intervene.
  */
 async function recoverFromObservedCrash(
   source: CrashObservationSource,
@@ -2824,6 +2847,17 @@ async function recoverFromObservedCrash(
     return;
   }
 
+  if (decision.disposition === 'deferred_active_episode') {
+    // A different generation failed while this episode's restart promise is
+    // still pending. It must not open a second concurrent restart nor
+    // overwrite the active episode: it is queued in the arbiter and
+    // re-arbitrated by the active continuation's settle (#7845).
+    outputChannel?.info(
+      `[lifecycle] ${source} observation for generation ${failedGeneration} deferred behind active recovery episode ${decision.episode_id}; it will be re-arbitrated when that episode settles.`,
+    );
+    return;
+  }
+
   const context = extensionContext;
   const hint = recordUnexpectedFailure();
 
@@ -2848,7 +2882,7 @@ async function recoverFromObservedCrash(
   });
   if (!context) {
     outputChannel?.info('[lifecycle] Cannot auto-restart: extension context is not available.');
-    crashRecoveryArbiter.settleActiveEpisode('recovery_failed', null);
+    await settleRecoveryEpisode(decision, 'recovery_failed', null);
     return;
   }
   // restartServer never rejects (it surfaces its own dialogs/logs and
@@ -2860,8 +2894,13 @@ async function recoverFromObservedCrash(
   // fallback generation advances here — after arbitration began — so that
   // a duplicate observation for the failed generation still dedupes).
   if (languageClientLifecycle === undefined) {
-    fallbackCrashGeneration += 1;
-    crashRecoveryArbiter.settleActiveEpisode('recovered', currentCrashGeneration());
+    // The fallback models "this restart spawned one newer generation":
+    // advance monotonically past the failed generation, but never past a
+    // replacement that already spawned and failed while the restart
+    // promise was pending — that failed replacement stays current so its
+    // deferred observation re-arbitrates after this settle.
+    fallbackCrashGeneration = Math.max(fallbackCrashGeneration, failedGeneration + 1);
+    await settleRecoveryEpisode(decision, 'recovered', currentCrashGeneration());
     return;
   }
   // With a live lifecycle, restartServer resolves only after the
@@ -2873,13 +2912,49 @@ async function recoverFromObservedCrash(
   // another retry slot.
   const replacementSnapshot = languageClientLifecycle.snapshot;
   if (replacementSnapshot.state === 'running') {
-    crashRecoveryArbiter.settleActiveEpisode('recovered', replacementSnapshot.generation);
+    await settleRecoveryEpisode(decision, 'recovered', replacementSnapshot.generation);
   } else {
-    crashRecoveryArbiter.settleActiveEpisode('recovery_failed', null);
+    await settleRecoveryEpisode(decision, 'recovery_failed', null);
     outputChannel?.error(
       `[lifecycle] Auto-restart attempt ${attempt} did not reach the running state (state: ${replacementSnapshot.state}).`,
     );
   }
+}
+
+/**
+ * Settle exactly the episode that authorized the current recovery
+ * continuation — the episode handle carried by `decision` — and then drain
+ * the oldest deferred different-generation failure, if any (#7845).
+ *
+ * Binding settlement to the handle means a continuation whose restart
+ * promise resolved late can never settle a newer episode that became
+ * active in the meantime; the deferred drain serializes a
+ * different-generation failure that arrived while this episode was active
+ * into its own recovery instead of running a second restart concurrently.
+ */
+async function settleRecoveryEpisode(
+  decision: CrashRecoveryDecision,
+  terminal: RecoveryTerminalDisposition,
+  replacementGeneration: number | null,
+): Promise<void> {
+  const settledActive = crashRecoveryArbiter.settleEpisode(
+    decision,
+    terminal,
+    replacementGeneration,
+  );
+  if (!settledActive) {
+    outputChannel?.warn(
+      `[lifecycle] Settling recovery episode ${decision.episode_id} as ${terminal} skipped: the episode is no longer active (superseded by an explicit recovery or an earlier settle).`,
+    );
+  }
+  const pending = crashRecoveryArbiter.takePendingFailureObservation();
+  if (pending === null) {
+    return;
+  }
+  outputChannel?.info(
+    `[lifecycle] Re-arbitrating deferred ${pending.source} observation for generation ${pending.failed_generation} after recovery episode ${decision.episode_id} settled (${terminal}).`,
+  );
+  await recoverFromObservedCrash(pending.source, pending.failed_generation);
 }
 
 /**
