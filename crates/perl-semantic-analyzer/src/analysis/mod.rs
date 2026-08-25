@@ -25,6 +25,8 @@ pub mod import_extractor;
 /// Lightweight workspace symbol index.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod index;
+/// Registry-backed Mojo::Base activation-site extraction (#9681).
+pub mod mojo_base_activation;
 /// Package graph edge extraction from inheritance and role-composition patterns.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod package_graph_extractor;
