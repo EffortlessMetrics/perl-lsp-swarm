@@ -191,6 +191,7 @@ fn route_from_expression(
     current_package: &Option<String>,
     declaration_index: u32,
 ) -> Option<Dancer2RouteDeclaration> {
+    let context = DeclarationContext { file_id, current_package, declaration_index };
     if let NodeKind::FunctionCall { name, args } = &expression.kind {
         if !DANCER2_ROUTE_KEYWORDS.contains(&name.as_str()) {
             return None;
@@ -201,16 +202,12 @@ fn route_from_expression(
             if name == "any" { bind_any_methods(&mut operands) } else { keyword_methods(name) };
         return build_from_operands(
             name,
-            DeclarationSpans {
-                keyword_start,
-                keyword_end: keyword_start + name.len(),
-                declaration_end: expression.location.end,
-            },
+            keyword_start,
+            keyword_start + name.len(),
+            expression.location.end,
             methods,
             &operands,
-            file_id,
-            current_package,
-            declaration_index,
+            &context,
         );
     }
 
@@ -221,16 +218,12 @@ fn route_from_expression(
     let operands: Vec<&Node> = rest.iter().collect();
     build_from_operands(
         name,
-        DeclarationSpans {
-            keyword_start: keyword_node.location.start,
-            keyword_end: keyword_node.location.end,
-            declaration_end: expression.location.end,
-        },
+        keyword_node.location.start,
+        keyword_node.location.end,
+        expression.location.end,
         method_set_from_list(method_list),
         &operands,
-        file_id,
-        current_package,
-        declaration_index,
+        &context,
     )
 }
 
@@ -301,12 +294,12 @@ fn method_set_from_elements(elements: &[Node]) -> RouteMethodSet {
     RouteMethodSet::Exact(methods)
 }
 
-/// Byte positions of the route keyword and its enclosing declaration,
-/// resolved once by each expression shape before operand binding.
-struct DeclarationSpans {
-    keyword_start: usize,
-    keyword_end: usize,
-    declaration_end: usize,
+/// File/package identity and source-order index shared by the declarations
+/// minted from one extraction walk.
+struct DeclarationContext<'a> {
+    file_id: FileId,
+    current_package: &'a Option<String>,
+    declaration_index: u32,
 }
 
 /// Bind name/pattern/options/handler operands by the reviewed form table.
@@ -314,16 +307,17 @@ struct DeclarationSpans {
 /// The handler is always the last operand. The remaining operands bind as
 /// `[PATTERN]`, `[PATTERN, OPTIONS]`, `[NAME, PATTERN]`, or
 /// `[NAME, PATTERN, OPTIONS]`; other shapes are malformed and mint nothing.
+#[allow(clippy::too_many_arguments)]
 fn build_from_operands(
     keyword: &str,
-    spans: DeclarationSpans,
+    keyword_start: usize,
+    keyword_end: usize,
+    declaration_end: usize,
     methods: RouteMethodSet,
     operands: &[&Node],
-    file_id: FileId,
-    current_package: &Option<String>,
-    declaration_index: u32,
+    context: &DeclarationContext<'_>,
 ) -> Option<Dancer2RouteDeclaration> {
-    let DeclarationSpans { keyword_start, keyword_end, declaration_end } = spans;
+    let DeclarationContext { file_id, current_package, declaration_index } = *context;
     if operands.len() < 2 {
         // A route needs at least a pattern operand and a handler operand.
         return None;
