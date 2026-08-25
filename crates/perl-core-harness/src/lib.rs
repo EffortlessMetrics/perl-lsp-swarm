@@ -59,7 +59,7 @@ use perl_core_harness_types::{
 pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
 use run_authority::{
     DirectDiagnosticReceipt, DirectDiagnosticSet, SettledDiagnosticProbe, UpstreamObservationSet,
-    direct_diagnostics_receipt, direct_diagnostics_receipt_path,
+    direct_diagnostics_receipt, direct_diagnostics_receipt_path, settle_probe_context_rows,
 };
 pub use series::{SeriesManifestConfig, series_manifest};
 
@@ -3074,6 +3074,8 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
             config.mode,
             &output_path,
         );
+    } else if observation.counts().extra > 0 {
+        retain_extra_row_census(&observation, config.mode, &output_path);
     }
 
     if report.summary.files_failed > 0 {
@@ -3112,10 +3114,15 @@ fn run_direct_diagnostic_probes(
     report_output_path: &Path,
 ) {
     let probe_context_path = run_tree.join("target").join("perl-lsp-direct-diagnostics.jsonl");
+    let mut context_trusted = true;
     if probe_context_path.exists() {
         let context = format!("removing stale probe context {}", probe_context_path.display());
         if let Err(err) = fs::remove_file(&probe_context_path) {
             tracing::warn!("{context}: {err}");
+            // Leftover rows from a previous run are indistinguishable from
+            // fresh bytes once removal fails; nothing probed against this
+            // context may claim a result (#8173).
+            context_trusted = false;
         }
     }
 
@@ -3138,35 +3145,43 @@ fn run_direct_diagnostic_probes(
         }
     }
 
-    let settled_rows = match read_runner_records_or_empty(&probe_context_path) {
-        Ok(rows) => {
-            let mut by_path = BTreeMap::<String, Vec<RunnerRecord>>::new();
-            for row in rows {
-                if let Some(path) = normalize_test_path(&row.path) {
-                    by_path.entry(path).or_default().push(row);
-                }
-            }
-            by_path
-        }
+    let rows = match read_runner_records_or_empty(&probe_context_path) {
+        Ok(rows) => rows,
         Err(err) => {
             tracing::warn!("direct diagnostic probe context unreadable: {err}");
-            BTreeMap::new()
+            Vec::new()
         }
     };
-    for (subject_path, process_status) in executed {
-        match settled_rows.get(&subject_path).and_then(|rows| rows.last()) {
-            Some(record) => diagnostics.add_probe(SettledDiagnosticProbe::settled(
-                &subject_path,
-                process_status,
-                record.clone(),
-            )),
-            None => diagnostics
-                .add_probe(SettledDiagnosticProbe::unavailable(&subject_path, process_status)),
-        }
-    }
+    settle_probe_context_rows(&mut diagnostics, &executed, rows, context_trusted);
 
+    retain_direct_diagnostics(&diagnostics, observation, mode, report_output_path);
+}
+
+/// Persist the upstream membership census when extras exist but no probe runs.
+///
+/// An upstream run whose observed rows fall outside expected selection
+/// membership otherwise exits green with no persisted trace at all: the
+/// counts reached only the diagnostics receipt, which was written only when
+/// probes ran (#8173). Membership-equality enforcement stays deferred to
+/// #7737/#12106.
+fn retain_extra_row_census(
+    observation: &UpstreamObservationSet,
+    mode: HarnessMode,
+    report_output_path: &Path,
+) {
+    let diagnostics = DirectDiagnosticSet::plan(observation);
+    retain_direct_diagnostics(&diagnostics, observation, mode, report_output_path);
+}
+
+/// Build and retain the direct-diagnostics receipt beside the report.
+fn retain_direct_diagnostics(
+    diagnostics: &DirectDiagnosticSet,
+    observation: &UpstreamObservationSet,
+    mode: HarnessMode,
+    report_output_path: &Path,
+) {
     let receipt = direct_diagnostics_receipt(
-        &diagnostics,
+        diagnostics,
         mode,
         observation.subject().as_str(),
         observation.terminal().status_code(),
@@ -5955,6 +5970,31 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_discovered_paths_fail_closed_instead_of_silently_deduplicating() -> TestResult {
+        // Distinct raw spellings of one normalized path must never merge into
+        // one expected row (#8173): the second discovery fails the freeze
+        // closed, matching the recorded-side law.
+        let discovered = vec![
+            DiscoveredTest { path: "base/ok.t".into(), root: "base".into() },
+            DiscoveredTest { path: "./base/ok.t".into(), root: "base".into() },
+        ];
+
+        let Err(err) = UpstreamObservationSet::settle(
+            HarnessRunner::Test,
+            HarnessMode::Compile,
+            HarnessProfile::Base,
+            &discovered,
+            &[],
+            Some(0),
+        ) else {
+            bail!("duplicate discovered paths should fail closed");
+        };
+
+        assert!(err.to_string().contains("duplicate discovered test path"));
+        Ok(())
+    }
+
+    #[test]
     fn malformed_upstream_record_paths_fail_closed_before_report_assembly() -> TestResult {
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let record = RunnerRecord {
@@ -6120,6 +6160,147 @@ mod tests {
         let roundtrip: run_authority::DirectDiagnosticReceipt = serde_json::from_str(&json)?;
         assert_eq!(roundtrip, receipt);
         let _ = temp;
+        Ok(())
+    }
+
+    #[test]
+    fn extra_upstream_rows_leave_a_durable_trace_without_probes() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
+        let record = |path: &str| RunnerRecord {
+            schema_version: "perl_core_harness.runner_record.v1".into(),
+            mode: "parse".into(),
+            path: path.into(),
+            status: RunnerStatus::Pass,
+            assertions_passed: 1,
+            assertions_total: 1,
+            bucket: None,
+            first_diagnostic: None,
+            semantic_boundaries: Vec::new(),
+        };
+        // One expected row plus one row outside selection membership: zero
+        // missing, exit zero, yet the wrong membership must stay visible.
+        let records = vec![record("base/ok.t"), record("outside-selection.t")];
+
+        let observation =
+            settle_test_observation(HarnessMode::Parse, &discovered, &records, Some(0))?;
+        assert_eq!(observation.counts().extra, 1);
+        assert!(observation.missing().is_empty());
+
+        // Even with no probes running, the census survives durably on the
+        // retained receipt instead of vanishing with the run (#8173).
+        let output_path = temp.path().join("run-report.json");
+        retain_extra_row_census(&observation, HarnessMode::Parse, &output_path);
+        let receipt_path = run_authority::direct_diagnostics_receipt_path(&output_path);
+        let raw = fs::read_to_string(&receipt_path)
+            .with_context(|| format!("reading {}", receipt_path.display()))?;
+        let receipt: run_authority::DirectDiagnosticReceipt = serde_json::from_str(&raw)?;
+        assert_eq!(receipt.probes.len(), 0);
+        assert_eq!(receipt.parent_observation.as_ref().map(|parent| parent.extra_rows), Some(1));
+        assert_eq!(receipt.parent_observation.as_ref().map(|parent| parent.missing_rows), Some(0));
+        assert_eq!(
+            receipt.limitations,
+            vec![run_authority::LIMITATION_MISSING_UPSTREAM_SELECTION_CONTEXT.to_string()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stale_probe_context_leftovers_cannot_back_a_reproduced_pass() -> TestResult {
+        let discovered = vec![DiscoveredTest { path: "base/gap.t".into(), root: "base".into() }];
+        let observation = settle_test_observation(HarnessMode::Parse, &discovered, &[], Some(0))?;
+        // A leftover passing row for this subject from a previous run, still
+        // present because stale-context removal failed.
+        let stale_row = RunnerRecord {
+            schema_version: "perl_core_harness.runner_record.v1".into(),
+            mode: "parse".into(),
+            path: "base/gap.t".into(),
+            status: RunnerStatus::Pass,
+            assertions_passed: 1,
+            assertions_total: 1,
+            bucket: None,
+            first_diagnostic: None,
+            semantic_boundaries: Vec::new(),
+        };
+
+        let mut diagnostics = DirectDiagnosticSet::plan(&observation);
+        run_authority::settle_probe_context_rows(
+            &mut diagnostics,
+            &[("base/gap.t".to_string(), Some(0))],
+            vec![stale_row],
+            false,
+        );
+        let receipt = run_authority::direct_diagnostics_receipt(
+            &diagnostics,
+            HarnessMode::Parse,
+            observation.subject().as_str(),
+            Some(0),
+            observation.counts(),
+        );
+
+        // The stale bytes must not be able to claim a reproduced pass.
+        assert_eq!(receipt.probes[0].outcome, run_authority::DiagnosticProbeOutcome::Unavailable);
+        assert!(
+            receipt.probes[0].limitations.contains(
+                &run_authority::LIMITATION_PROBE_CONTEXT_STALE_REMOVAL_FAILED.to_string()
+            )
+        );
+        assert!(
+            receipt.limitations.contains(
+                &run_authority::LIMITATION_PROBE_CONTEXT_STALE_REMOVAL_FAILED.to_string()
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_and_duplicate_probe_rows_become_visible_limitations() -> TestResult {
+        let discovered = vec![DiscoveredTest { path: "base/gap.t".into(), root: "base".into() }];
+        let observation = settle_test_observation(HarnessMode::Parse, &discovered, &[], Some(0))?;
+        let record = |path: &str| RunnerRecord {
+            schema_version: "perl_core_harness.runner_record.v1".into(),
+            mode: "parse".into(),
+            path: path.into(),
+            status: RunnerStatus::Pass,
+            assertions_passed: 1,
+            assertions_total: 1,
+            bucket: None,
+            first_diagnostic: None,
+            semantic_boundaries: Vec::new(),
+        };
+
+        let mut diagnostics = DirectDiagnosticSet::plan(&observation);
+        run_authority::settle_probe_context_rows(
+            &mut diagnostics,
+            &[("base/gap.t".to_string(), Some(0))],
+            vec![record("not-a-normalized-test.txt"), record("base/gap.t"), record("base/gap.t")],
+            true,
+        );
+        let receipt = run_authority::direct_diagnostics_receipt(
+            &diagnostics,
+            HarnessMode::Parse,
+            observation.subject().as_str(),
+            Some(0),
+            observation.counts(),
+        );
+
+        // Neither skip-silently nor last-wins: the subject cannot settle a
+        // result from colliding rows and both anomalies stay visible.
+        assert_eq!(receipt.probes[0].outcome, run_authority::DiagnosticProbeOutcome::Unavailable);
+        assert_eq!(
+            receipt.probes[0].limitations,
+            vec![run_authority::LIMITATION_PROBE_ROW_DUPLICATE.to_string()]
+        );
+        assert!(
+            receipt
+                .limitations
+                .contains(&run_authority::LIMITATION_PROBE_ROW_MALFORMED_PATH.to_string())
+        );
+        assert!(
+            receipt
+                .limitations
+                .contains(&run_authority::LIMITATION_PROBE_ROW_DUPLICATE.to_string())
+        );
         Ok(())
     }
 

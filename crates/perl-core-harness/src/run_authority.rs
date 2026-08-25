@@ -8,6 +8,13 @@
 //! can never flow back into upstream membership, completeness, totals,
 //! transitions, or accepted state. Nothing in this module converts one class
 //! into the other.
+//!
+//! Extras census honesty: rows observed outside expected selection membership
+//! never enter totals, but they also cannot vanish from every durable product
+//! (#8173). Until the full membership-equality law lands (#7737/#12106),
+//! extras are tolerated at freeze time, surfaced through a `tracing::warn!`
+//! during settle, and persisted as the `extra_rows` census on the retained
+//! direct-diagnostics receipt even when no probe runs.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -34,6 +41,18 @@ pub(crate) const LIMITATION_MISSING_UPSTREAM_SELECTION_CONTEXT: &str =
 
 /// Why a direct probe produced no usable record at all.
 pub(crate) const LIMITATION_PROBE_UNAVAILABLE: &str = "direct_probe_produced_no_runner_record";
+
+/// Why probe results could not be trusted: stale probe-context removal
+/// failed, so leftovers from a previous run are indistinguishable from fresh
+/// bytes.
+pub(crate) const LIMITATION_PROBE_CONTEXT_STALE_REMOVAL_FAILED: &str =
+    "direct_probe_context_stale_removal_failed";
+
+/// Why a probe row was excluded: its path did not normalize.
+pub(crate) const LIMITATION_PROBE_ROW_MALFORMED_PATH: &str = "direct_probe_row_malformed_path";
+
+/// Why a probe row was excluded: its normalized path appeared more than once.
+pub(crate) const LIMITATION_PROBE_ROW_DUPLICATE: &str = "direct_probe_row_duplicate";
 
 /// Immutable identity of one frozen upstream observation subject.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +92,13 @@ impl InvocationId {
 ///
 /// Classification stays with #6884; this records only what the process did so
 /// the authoritative report and receipts stay honest about terminality.
+///
+/// Taxonomy drift guard: this local enum maps lossily onto the typed terminal
+/// process taxonomy tracked by #6884 and modeled by #12377
+/// (`TerminalProcessOutcome`, transition terminal modeling). Once #12377
+/// lands in-tree, the mapping owner must retire this enum — or its
+/// derivation — in favor of the shared type instead of growing a parallel
+/// adapter here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UpstreamTerminalDisposition {
     /// The upstream process exited with status zero.
@@ -159,9 +185,11 @@ impl UpstreamObservationSet {
             let normalized = normalize_test_path(&test.path).ok_or_else(|| {
                 color_eyre::eyre::eyre!("discovered test path did not normalize: {}", test.path)
             })?;
-            if expected_ids.insert(InvocationId(normalized.clone())) {
-                expected.push(ExpectedInvocationId { invocation: InvocationId(normalized) });
+            let invocation = InvocationId(normalized);
+            if !expected_ids.insert(invocation.clone()) {
+                bail!("duplicate discovered test path for {}", invocation.as_str());
             }
+            expected.push(ExpectedInvocationId { invocation });
         }
 
         let mut observed = BTreeMap::<InvocationId, SettledInvocation>::new();
@@ -184,6 +212,16 @@ impl UpstreamObservationSet {
             observed.insert(
                 invocation.clone(),
                 SettledInvocation { invocation, record: record.clone() },
+            );
+        }
+
+        // Extras never enter totals, but silence would accept a wrong
+        // selection membership with no durable trace at all; warn at freeze
+        // time and persist the census on the retained receipt
+        // (#7737/#12106 deferral).
+        if extra_rows > 0 {
+            tracing::warn!(
+                "perl-core-harness: {extra_rows} upstream row(s) fell outside expected selection membership and never enter report totals"
             );
         }
 
@@ -287,6 +325,22 @@ impl SettledDiagnosticProbe {
         }
     }
 
+    /// Probe that cannot claim any result for a recorded reason, such as its
+    /// only candidate rows coming from an untrusted context.
+    pub(crate) fn unavailable_for_reason(
+        subject_path: &str,
+        process_status: Option<i32>,
+        limitation: &str,
+    ) -> Self {
+        Self {
+            subject_path: subject_path.to_string(),
+            process_status,
+            outcome: DiagnosticProbeOutcome::Unavailable,
+            record: None,
+            limitations: vec![limitation.to_string()],
+        }
+    }
+
     /// Probe whose raw row settled a result for its subject path.
     pub(crate) fn settled(
         subject_path: &str,
@@ -333,6 +387,13 @@ impl DirectDiagnosticSet {
         self.probes.push(probe);
     }
 
+    /// Record one additional set-level limitation (idempotent per reason).
+    pub(crate) fn add_limitation(&mut self, limitation: String) {
+        if !self.limitations.contains(&limitation) {
+            self.limitations.push(limitation);
+        }
+    }
+
     /// Parent observation investigated by these probes.
     pub(crate) fn parent_observation(&self) -> Option<&ObservedRunnerSubjectId> {
         self.parent_observation.as_ref()
@@ -346,6 +407,71 @@ impl DirectDiagnosticSet {
     /// Declared limitations carried by the whole diagnostic set.
     pub(crate) fn limitations(&self) -> &[String] {
         &self.limitations
+    }
+}
+
+/// Settle executed probes against raw probe-context rows under diagnostic
+/// authority only.
+///
+/// The upstream lane fails closed on malformed and duplicate rows; the probe
+/// lane mirrors that honesty without aborting diagnostics: malformed and
+/// duplicate rows become visible set-level limitations and can never back a
+/// settled outcome. When stale-context removal failed, fresh bytes cannot be
+/// distinguished from leftovers from a previous run, so no executed probe may
+/// claim a result at all (#8173).
+pub(crate) fn settle_probe_context_rows(
+    diagnostics: &mut DirectDiagnosticSet,
+    executed: &[(String, Option<i32>)],
+    rows: Vec<RunnerRecord>,
+    context_trusted: bool,
+) {
+    let mut by_path = BTreeMap::<String, Vec<RunnerRecord>>::new();
+    for row in rows {
+        match normalize_test_path(&row.path) {
+            Some(path) => by_path.entry(path).or_default().push(row),
+            None => {
+                tracing::warn!(
+                    "perl-core-harness: direct diagnostic probe row path did not normalize: {}",
+                    row.path
+                );
+                diagnostics.add_limitation(LIMITATION_PROBE_ROW_MALFORMED_PATH.to_string());
+            }
+        }
+    }
+    for (path, path_rows) in &by_path {
+        if path_rows.len() > 1 {
+            tracing::warn!(
+                "perl-core-harness: direct diagnostic probe context contains {} rows for {path}; none may stand for the subject",
+                path_rows.len()
+            );
+            diagnostics.add_limitation(LIMITATION_PROBE_ROW_DUPLICATE.to_string());
+        }
+    }
+
+    if !context_trusted {
+        diagnostics.add_limitation(LIMITATION_PROBE_CONTEXT_STALE_REMOVAL_FAILED.to_string());
+    }
+    for (subject_path, process_status) in executed {
+        let probe = if !context_trusted {
+            SettledDiagnosticProbe::unavailable_for_reason(
+                subject_path,
+                *process_status,
+                LIMITATION_PROBE_CONTEXT_STALE_REMOVAL_FAILED,
+            )
+        } else {
+            match by_path.get(subject_path).map(Vec::as_slice) {
+                Some([record]) => {
+                    SettledDiagnosticProbe::settled(subject_path, *process_status, record.clone())
+                }
+                Some(_) => SettledDiagnosticProbe::unavailable_for_reason(
+                    subject_path,
+                    *process_status,
+                    LIMITATION_PROBE_ROW_DUPLICATE,
+                ),
+                None => SettledDiagnosticProbe::unavailable(subject_path, *process_status),
+            }
+        };
+        diagnostics.add_probe(probe);
     }
 }
 
