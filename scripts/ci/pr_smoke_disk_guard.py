@@ -11,14 +11,18 @@ Two modes backing the two acceptance arms of issue #11943:
     diagnostic naming the filled path instead of dying 38 minutes later inside
     ``ld`` with SIGBUS disguised as a compile failure (run 32697324730).
 
-``classify``
+    ``classify``
     Run ``if: always()`` AFTER the gate runner exits. Scans the per-gate logs
     under ``target/receipts/logs`` for exhaustion signatures (ENOSPC /
     ``os error 28``, ``ld terminated with signal``, LLVM IO failure), emits
     ``::error`` annotations that name the offending log and the filled target
     directory, and appends a decision-grade verdict plus a fresh free-bytes
     snapshot to ``pr-fast-disk-pressure.log`` (composing with #11977's raw
-    capture). Advisory only: never changes the gate outcome.
+    capture). Only ENOSPC / os-error-28 / ld SIGBUS matches earn the
+    definitive "not candidate defects" verdict; a lone rustc-LLVM output-stream
+    failure is recorded as corroborating evidence under a distinct
+    ``not_proven_io_failure`` verdict that does not exonerate the candidate.
+    Advisory only: never changes the gate outcome.
 
 Measured basis (2026-08-24 receipt artifacts, runs 32697324730 and
 32697144932): the single PR Smoke ``CARGO_TARGET_DIR`` grows to ~83 GiB on a
@@ -62,6 +66,14 @@ EXHAUSTION_SIGNATURES: tuple[tuple[str, str], ...] = (
     ("llvm_io_failure", "IO failure on output stream"),
 )
 
+# Classes whose match alone proves disk exhaustion. ``llvm_io_failure`` is
+# deliberately absent from this set: "IO failure on output stream" names no
+# errno and also arises from broken pipes, closed outputs, filesystem I/O
+# faults, and permission/path failures, so a lone match is recorded and
+# annotated as corroborating evidence under the non-exonerating
+# ``not_proven_io_failure`` verdict instead of the definitive one.
+STRONG_EXHAUSTION_CLASSES = frozenset({"enospc", "link_sigbus"})
+
 Probe = Callable[[str], shutil._ntuple_diskusage]
 
 
@@ -85,8 +97,13 @@ class Finding:
     signature_text: str
 
     def annotation(self, target_dir: str) -> str:
+        label = (
+            "resource-exhaustion"
+            if self.signature_class in STRONG_EXHAUSTION_CLASSES
+            else "not-proven-io-failure"
+        )
         return (
-            f"resource-exhaustion [{self.signature_class}] in {self.log_path}: "
+            f"{label} [{self.signature_class}] in {self.log_path}: "
             f"{self.signature_text!r}; filled path family: {target_dir} "
             "(see pr-fast-disk-pressure.log for the df/du snapshot)"
         )
@@ -241,15 +258,39 @@ def run_preflight(args: argparse.Namespace) -> int:
 
 def run_classify(args: argparse.Namespace) -> int:
     findings = scan_logs(Path(args.logs_dir))
+    strong = [
+        finding
+        for finding in findings
+        if finding.signature_class in STRONG_EXHAUSTION_CLASSES
+    ]
+    corroborating = [
+        finding
+        for finding in findings
+        if finding.signature_class not in STRONG_EXHAUSTION_CLASSES
+    ]
     target_dir = args.target_dir or "target"
     body_lines = [render_snapshot({"cargo-target-dir": target_dir})]
-    if findings:
+    if strong:
         body_lines.append(
             "VERDICT: resource-exhaustion detected in gate logs "
             "(ENOSPC / ld SIGBUS class); the gate failures above are disk "
             "exhaustion, not candidate defects."
         )
-        for finding in findings:
+        for finding in (*strong, *corroborating):
+            annotation = finding.annotation(target_dir)
+            body_lines.append(annotation)
+            _emit(f"::error::{annotation}")
+    elif corroborating:
+        body_lines.append(
+            "VERDICT: not_proven_io_failure: a lone rustc-LLVM 'IO failure on "
+            "output stream' line does not identify ENOSPC by itself (broken "
+            "pipe, closed output, filesystem I/O fault, or permission/path "
+            "failure produce the same text), so this is not proof of disk "
+            "exhaustion and does not exonerate the candidate. Treat it as "
+            "corroborating evidence only unless an ENOSPC / os-error-28 / ld "
+            "SIGBUS match appears."
+        )
+        for finding in corroborating:
             annotation = finding.annotation(target_dir)
             body_lines.append(annotation)
             _emit(f"::error::{annotation}")

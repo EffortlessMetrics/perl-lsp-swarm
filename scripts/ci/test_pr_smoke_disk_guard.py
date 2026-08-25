@@ -260,6 +260,53 @@ class ClassifyFlowTests(unittest.TestCase):
             self.assertIn("VERDICT: resource-exhaustion detected", verdict)
             self.assertIn("/mnt/target-x", verdict)
 
+    def test_lone_llvm_stream_error_does_not_exonerate_candidate(self) -> None:
+        # Negative control: without any ENOSPC / os-error-28 / SIGBUS text in
+        # the same run, a generic LLVM stream error must not produce the
+        # definitive disk-exhaustion verdict.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs_dir = root / "logs"
+            logs_dir.mkdir()
+            (logs_dir / "unit_routed_full.log").write_text(
+                "rustc-LLVM ERROR: IO failure on output stream: broken pipe",
+                encoding="utf-8",
+            )
+            pressure_log = root / "pr-fast-disk-pressure.log"
+            output = self.run_classify(logs_dir, pressure_log, "/mnt/target-x")
+            self.assertIn("::error::not-proven-io-failure", output)
+            self.assertNotIn("resource-exhaustion", output)
+            verdict = pressure_log.read_text(encoding="utf-8")
+            self.assertIn("VERDICT: not_proven_io_failure", verdict)
+            self.assertIn("does not exonerate the candidate", verdict)
+            self.assertNotIn("not candidate defects", verdict)
+
+    def test_enospc_match_anywhere_still_earns_definitive_verdict(self) -> None:
+        # Corroboration semantics: once a strong signature exists anywhere,
+        # the run keeps the definitive verdict while the LLVM-only log's own
+        # annotation still names its weaker evidence class.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs_dir = root / "logs"
+            logs_dir.mkdir()
+            (logs_dir / "clippy_full.log").write_text(
+                "error: No space left on device (os error 28)",
+                encoding="utf-8",
+            )
+            (logs_dir / "unit_routed_full.log").write_text(
+                "rustc-LLVM ERROR: IO failure on output stream: broken pipe",
+                encoding="utf-8",
+            )
+            pressure_log = root / "pr-fast-disk-pressure.log"
+            output = self.run_classify(logs_dir, pressure_log, "/mnt/target-x")
+            self.assertIn("::error::resource-exhaustion [enospc]", output)
+            self.assertIn(
+                "::error::not-proven-io-failure [llvm_io_failure]", output
+            )
+            verdict = pressure_log.read_text(encoding="utf-8")
+            self.assertIn("VERDICT: resource-exhaustion detected", verdict)
+            self.assertIn("not candidate defects", verdict)
+
     def test_clean_run_records_absence_of_exhaustion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
