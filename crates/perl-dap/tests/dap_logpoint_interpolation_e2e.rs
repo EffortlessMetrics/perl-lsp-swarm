@@ -312,6 +312,14 @@ struct AllOutputEvents {
     console: Vec<String>,
     /// Whether any `stopped` event was received before `terminated`.
     saw_stopped: bool,
+    /// Whether the session actually reached `terminated`.
+    ///
+    /// This witness is mandatory for continue semantics: a receive timeout or
+    /// channel disconnect exits the collect loop with `saw_terminated = false`,
+    /// so an adapter that emits the logpoint message and then hangs — never
+    /// continuing execution to program end — fails the test instead of
+    /// satisfying both other assertions vacuously.
+    saw_terminated: bool,
 }
 
 /// Collect every `output(category="console")` event and track `stopped` until `terminated`.
@@ -322,7 +330,8 @@ struct AllOutputEvents {
 /// together prove that the logpoint fired and execution continued uninterrupted.
 fn collect_output_and_track_stops(session: &DapWorkflowSession) -> AllOutputEvents {
     let deadline = std::time::Instant::now() + session.timeout;
-    let mut out = AllOutputEvents { console: Vec::new(), saw_stopped: false };
+    let mut out =
+        AllOutputEvents { console: Vec::new(), saw_stopped: false, saw_terminated: false };
 
     while std::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
@@ -333,6 +342,7 @@ fn collect_output_and_track_stops(session: &DapWorkflowSession) -> AllOutputEven
             continue;
         };
         if event == "terminated" {
+            out.saw_terminated = true;
             break;
         }
         if event == "stopped" {
@@ -404,6 +414,17 @@ fn test_logpoint_does_not_emit_stopped_event() -> TestResult {
         !events.saw_stopped,
         "a logpoint must NOT emit a `stopped` event — execution must continue uninterrupted; \
          console events were {:?}",
+        events.console
+    );
+
+    // The termination witness: continued execution must be proven by the
+    // debuggee actually reaching program end. Without this, an adapter that
+    // logs the message and then hangs (never continuing) would satisfy both
+    // assertions above — no `stopped` fires because the run never finishes.
+    assert!(
+        events.saw_terminated,
+        "the debuggee must reach `terminated` after the logpoint fires — continued \
+         execution is only proven by observing program end; console events were {:?}",
         events.console
     );
 

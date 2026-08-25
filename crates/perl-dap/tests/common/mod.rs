@@ -445,7 +445,15 @@ impl DapWorkflowSession {
     pub fn disconnect(&mut self) -> Result<(), String> {
         let resp = self.request("disconnect", Some(json!({})));
         self.expect_success(&resp, "disconnect")?;
-        let _ = self.drain_until_event("terminated");
+        // The terminal event is once-only: when the debuggee program already
+        // ended before disconnect, `terminated` was emitted (and possibly
+        // consumed) earlier and `handle_disconnect` cannot re-emit it. Waiting
+        // a full workflow timeout for a duplicate that will never arrive would
+        // stall every such test, so cap the confirmation drain generously but
+        // finitely — a `terminated` emitted by disconnect itself is queued
+        // synchronously inside `request`, so it is already observable here.
+        let grace = self.timeout.min(Duration::from_secs(2));
+        let _ = self.drain_until_event_within("terminated", grace);
         Ok(())
     }
 
@@ -481,7 +489,16 @@ impl DapWorkflowSession {
     /// Uses the drain-loop pattern from `dap_smoke_e2e.rs` to discard
     /// non-matching events (e.g. `output` events interleaved with `stopped`).
     pub fn drain_until_event(&self, event_name: &str) -> Result<DapMessage, String> {
-        let deadline = Instant::now() + self.timeout;
+        self.drain_until_event_within(event_name, self.timeout)
+    }
+
+    /// [`drain_until_event`] with an explicit wait budget.
+    pub fn drain_until_event_within(
+        &self,
+        event_name: &str,
+        wait: Duration,
+    ) -> Result<DapMessage, String> {
+        let deadline = Instant::now() + wait;
         let mut recent_events = VecDeque::with_capacity(RECENT_EVENT_LIMIT);
         loop {
             let now = Instant::now();

@@ -6,9 +6,9 @@ use super::{
     DapEvent, DapMessage, DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
     Instant, Mutex, Read, RestartArguments, ResumeMode, Source, StackFrame, Stdio, SyncSender,
     TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState, Value, Write,
-    ansi_escape_re, catalog_has_feature, context_re, dispatch_event, emit_event_safe, error_re,
-    exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
-    thread, warning_re,
+    ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, dispatch_event,
+    emit_event_safe, error_re, exception_re, json, lock_or_recover, module_path_to_name, prompt_re,
+    security, stack_frame_re, thread, warning_re,
 };
 #[cfg(unix)]
 use nix::sys::signal::{self, Signal};
@@ -899,8 +899,33 @@ impl DebugAdapter {
                             break; // Exit the loop if client is gone
                         }
 
+                        // perl5db prints this fixed line when the debuggee
+                        // program ends — on normal exit AND on an uncaught die —
+                        // and then idles at a prompt instead of exiting, so
+                        // without this the client never observes `terminated`
+                        // for a completed run. Emit the terminal event at the
+                        // real program end. Session state intentionally stays
+                        // intact so cached frames remain answerable; process
+                        // cleanup remains with disconnect/watchdog (#9081).
+                        if analysis_text.starts_with("Debugged program terminated") {
+                            if let Some(ref sender) = sender {
+                                emit_terminated_event(
+                                    sender,
+                                    &seq,
+                                    &termination_state,
+                                    Some(session_generation),
+                                    Some(json!({ "reason": "debuggee_exit" })),
+                                );
+                            }
+                            continue;
+                        }
+
                         // Enhanced context information parsing with multiple patterns
                         let mut context_updated = false;
+                        // Whether THIS line is the perl5db die/warn-handler suffix
+                        // (` at FILE line N.`) — the stream signal that the
+                        // debugger's `__DIE__` handler observed an uncaught `die`.
+                        let mut matched_die_suffix = false;
 
                         // Try main context pattern
                         if let Some(re) = context_re()
@@ -965,13 +990,44 @@ impl DebugAdapter {
                             }
                         }
 
+                        // perl5db's `__DIE__` handler reports an uncaught `die` as
+                        // the message line followed by a bare ` at FILE line N.`
+                        // suffix line — including for `die "msg\n"`, whose own text
+                        // carries no suffix. A `print` of byte-identical text never
+                        // fires the handler, and a `die` caught by `eval` propagates
+                        // silently, so this line is the honest stream signal that an
+                        // uncaught die reached the debugger. `warn` fires the
+                        // sibling `__WARN__` handler with an indistinguishable
+                        // suffix line; that warn/die ambiguity is inherent to the
+                        // perl5db stream and stays with the residual #9081 warn
+                        // claim. The suffix carries the authoritative die location,
+                        // so attribute file/line from it.
+                        if !context_updated
+                            && let Some(re) = die_suffix_re()
+                            && let Some(caps) = re.captures(&analysis_text)
+                        {
+                            if let Some(file) = caps.name("file") {
+                                current_file = file.as_str().to_string();
+                            }
+                            if let Some(line_num) = caps.name("line") {
+                                current_line = line_num.as_str().parse::<i32>().unwrap_or(0);
+                            }
+                            context_updated = true;
+                            matched_die_suffix = true;
+                        }
+
                         if context_updated {
                             let break_on_die =
                                 exception_break_on_die.lock().map(|guard| *guard).unwrap_or(false);
                             let break_on_warn =
                                 exception_break_on_warn.lock().map(|guard| *guard).unwrap_or(false);
-                            let is_exception_line =
-                                exception_re().is_some_and(|re| re.is_match(&analysis_text));
+                            // Detection must not key on words inside the user's
+                            // die message (`exception_re` trigger words are kept
+                            // for compatibility); an ordinary uncaught `die` is
+                            // attributed from the perl5db handler suffix line.
+                            let is_exception_line = exception_re()
+                                .is_some_and(|re| re.is_match(&analysis_text))
+                                || matched_die_suffix;
                             let is_warning_line =
                                 warning_re().is_some_and(|re| re.is_match(&analysis_text));
                             let exception_match = break_on_die && is_exception_line;
