@@ -1193,11 +1193,19 @@ function lsp.start_server(filename, project_directory)
             local settings_list = {}
             for i = 1, #items do
               local item = items[i]
+              -- Local patch (#10845): presence and value are tracked
+              -- independently. A found value is appended verbatim — explicit
+              -- false stays JSON false, as do 0/""/[] and nested false — and
+              -- only a genuinely missing section becomes the null sentinel.
+              -- The legacy `value or json.null` collapsed an explicitly
+              -- configured false into absent/default semantics.
               local value = nil
+              local found = false
               if item.section then
                 -- No workspace was specified so we return from default settings
                 if not item.scopeUri then
-                  value = util.table_get_field(settings_default, item.section)
+                  value, found = util.table_get_field(
+                    settings_default, item.section)
                 -- A workspace was specified so we return from that workspace
                 else
                   -- Local patch (#11165): scope URIs convert through the one
@@ -1215,17 +1223,22 @@ function lsp.start_server(filename, project_directory)
                   local settings_workspace = lsp.get_workspace_settings(
                     server, scope_path
                   )
-                  value = util.table_get_field(settings_workspace, item.section)
+                  value, found = util.table_get_field(
+                    settings_workspace, item.section)
                 end
 
-                if not value then
+                if not found then
                   server:log("Asking for '%s' config but not set", item.section)
                 else
                   server:log("Asking for '%s' config", item.section)
                 end
               end
 
-              table.insert(settings_list, value or json.null)
+              if found then
+                table.insert(settings_list, value)
+              else
+                table.insert(settings_list, json.null)
+              end
             end
 
             server:push_response(

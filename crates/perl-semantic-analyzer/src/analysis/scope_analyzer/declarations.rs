@@ -22,6 +22,18 @@ pub(super) fn handle_variable_declaration<'a>(
     issues: &mut Vec<ScopeIssue>,
     context: &AnalysisContext<'a>,
 ) -> bool {
+    // `local *ALIAS = *TARGET` is represented as a typeglob assignment nested
+    // in the declaration's `variable` field.  The ordinary declaration path
+    // deliberately skips declaration targets, so explicitly walk the RHS to
+    // retain the target's use/reference in the scope analysis.
+    if declarator == "local"
+        && let NodeKind::Assignment { rhs, lhs, .. } = &variable.kind
+        && matches!(lhs.kind, NodeKind::Typeglob { .. })
+    {
+        analyzer.analyze_node(rhs, scope, ancestors, issues, context);
+        return false;
+    }
+
     let extracted = analyzer.extract_variable_name(variable);
     let (sigil, var_name_part) = extracted.parts();
 

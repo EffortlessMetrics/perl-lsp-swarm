@@ -97,6 +97,8 @@
 //! - [`backend`] defines the backend-neutral execution seam.
 //! - [`model`] carries canonical debugger facts across native and optional peer
 //!   backends.
+//! - [`reload`] freezes the loaded-module reload semantic contract consumed
+//!   by the reload train (#10097).
 //! - [`protocol`] carries DAP wire types.
 //! - [`platform`], [`shell`], and [`security`] own process, path, and admission
 //!   boundaries.
@@ -145,10 +147,15 @@ pub mod backend;
 pub mod breakpoint_oracle;
 /// Canonical, backend-neutral Perl debug model shared by all debug backends.
 pub mod model;
+pub mod mutation;
 /// The Perl Debugger Peer Protocol spoken to external engines (ptkdb-first).
 pub mod peer_protocol;
 /// `.ptkdbrc` bootstrap/fallback rendering for `Devel::ptkdb`.
 pub mod ptkdb_bootstrap;
+/// Loaded-module reload semantic contract (R01, #10097): eligibility,
+/// transaction phases, runtime-module generation, invalidation, protocol
+/// requirements, and mechanism limits.
+pub mod reload;
 /// Frozen debug-session packet builder (the stable external handoff format).
 pub mod session_plan;
 

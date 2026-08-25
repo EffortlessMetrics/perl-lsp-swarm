@@ -4,6 +4,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const RUNNER_PLAN_SCHEMA_VERSION: &str = "perl_core_harness.runner_plan.v2";
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Retired runner_plan.v1 identity is retained for mismatch tests; the production CLI rejects genuine v1 receipts at serde before this constant is consulted."
+    )
+)]
 pub const RUNNER_PLAN_V1_SCHEMA_VERSION: &str = "perl_core_harness.runner_plan.v1";
 pub const SOURCE_NORMALIZATION_SCHEMA_VERSION: &str = "perl_core_harness.source_identity.v2";
 pub const RUNNER_PARITY_SCHEMA_VERSION: &str = "perl_core_harness.runner_parity.v1";
