@@ -258,7 +258,7 @@ export function runBoundedProcess(
       if (truncatedTarget !== 'stderr') {
         appendDecodedOutput('stderr', stderrDecoder.end());
       }
-    }
+    };
 
     const onAbort = (): void => requestTermination('cancelled');
     if (signal?.aborted) {

@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout)] // test-only module: intentional AST diagnostics
 use super::*;
 use perl_tdd_support::{must, must_some};
 

@@ -634,14 +634,14 @@ fn pir_a_array_var_sigil_is_at_sign() {
     );
 
     // Sigil must be `@`.
-    if let Some(node) = write {
-        if let PirOperation::LexicalWrite { name } = &node.operation {
-            assert_eq!(
-                name.sigil, "@",
-                "LexicalWrite for @arr must have sigil `@`, got `{}`",
-                name.sigil
-            );
-        }
+    if let Some(node) = write
+        && let PirOperation::LexicalWrite { name } = &node.operation
+    {
+        assert_eq!(
+            name.sigil, "@",
+            "LexicalWrite for @arr must have sigil `@`, got `{}`",
+            name.sigil
+        );
     }
 }
 
@@ -657,14 +657,15 @@ fn pir_a_hash_var_sigil_is_percent() {
         .find(|n| matches!(&n.operation, PirOperation::LexicalWrite { name } if name.name == "h"));
     assert!(write.is_some(), "`my %h` must produce a LexicalWrite for %h");
 
-    if let Some(node) = write {
-        if let PirOperation::LexicalWrite { name } = &node.operation {
-            assert_eq!(
-                name.sigil, "%",
-                "LexicalWrite for %h must have sigil `%`, got `{}`",
-                name.sigil
-            );
-        }
+    // Sigil must be `%`.
+    if let Some(node) = write
+        && let PirOperation::LexicalWrite { name } = &node.operation
+    {
+        assert_eq!(
+            name.sigil, "%",
+            "LexicalWrite for %h must have sigil `%`, got `{}`",
+            name.sigil
+        );
     }
 }
 
@@ -701,14 +702,14 @@ fn pir_a_local_declaration_is_stash_write() {
     );
 
     // Sigil must be `$`.
-    if let Some(node) = stash_write {
-        if let PirOperation::StashWrite { symbol } = &node.operation {
-            assert_eq!(
-                symbol.sigil, "$",
-                "StashWrite for local $x must carry sigil `$`, got `{}`",
-                symbol.sigil
-            );
-        }
+    if let Some(node) = stash_write
+        && let PirOperation::StashWrite { symbol } = &node.operation
+    {
+        assert_eq!(
+            symbol.sigil, "$",
+            "StashWrite for local $x must carry sigil `$`, got `{}`",
+            symbol.sigil
+        );
     }
 }
 
@@ -1264,10 +1265,7 @@ fn pir_a_no_cross_body_fallthrough_edges() {
         .filter(|n| matches!(&n.operation, PirOperation::LexicalWrite { name } if name.name == "y"))
         .collect();
 
-    if !sub_body_nodes.is_empty() && !root_body_nodes.is_empty() {
-        let sub_last = sub_body_nodes.last().expect("sub body node");
-        let root_first = root_body_nodes.first().expect("root body node");
-
+    if let (Some(sub_last), Some(root_first)) = (sub_body_nodes.last(), root_body_nodes.first()) {
         // Check no Fallthrough edge goes from sub-body-last to root-body-first.
         let cross_body_edge =
             fallthroughs.iter().find(|e| e.from == sub_last.id && e.to == Some(root_first.id));
@@ -1293,16 +1291,15 @@ fn pir_a_leading_colon_var_no_empty_package() {
     for node in &graph.nodes {
         if let PirOperation::StashWrite { symbol } | PirOperation::StashRead { symbol } =
             &node.operation
+            && symbol.name.contains('x')
         {
-            if symbol.name.contains('x') {
-                assert_ne!(
-                    symbol.package.as_deref(),
-                    Some(""),
-                    "package must not be Some(\"\") for leading-`::` name `$::x`; \
-                     got symbol={:?}",
-                    symbol
-                );
-            }
+            assert_ne!(
+                symbol.package.as_deref(),
+                Some(""),
+                "package must not be Some(\"\") for leading-`::` name `$::x`; \
+                 got symbol={:?}",
+                symbol
+            );
         }
     }
 
