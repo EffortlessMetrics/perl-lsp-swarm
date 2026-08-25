@@ -717,7 +717,7 @@ mod tests {
     // unwraps; the workspace-wide deny is a production-code rule.
     #![allow(clippy::expect_used)]
     use super::*;
-    use perl_lsp_rs_core::providers::formatting_types::{FormatPosition, FormatRange};
+    use crate::features::formatting::{FormatPosition, FormatRange};
 
     fn range(sl: u32, sc: u32, el: u32, ec: u32) -> Value {
         json!({
@@ -731,6 +731,21 @@ mod tests {
             range: FormatRange::new(FormatPosition::new(sl, sc), FormatPosition::new(el, ec)),
             new_text: new_text.to_string(),
         }
+    }
+
+    /// `--lib` compiles everything before the first `#[cfg(test)]`.
+    /// A `#[cfg(test)] use` at module scope is therefore excluded, matching rustc.
+    fn lib_source(source: &str) -> &str {
+        source.split("#[cfg(test)]").next().unwrap_or(source)
+    }
+
+    fn lib_source_names_format_geometry(source: &str) -> bool {
+        let lib = lib_source(source);
+        lib.contains("FormatPosition") || lib.contains("FormatRange")
+    }
+
+    fn file_names_format_geometry(source: &str) -> bool {
+        source.contains("FormatPosition") && source.contains("FormatRange")
     }
 
     fn compose_plan(source: &str, ranges: &[Value]) -> RangePlan {
@@ -769,53 +784,6 @@ mod tests {
         )?;
         assert_ne!(digest_one, digest_generation);
         assert_ne!(digest_one, digest_config);
-        Ok(())
-    }
-
-    #[test]
-    fn compose_edits_accepts_empty_point_and_rejects_escape()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let source = "abcdef\n";
-        let plan = compose_plan(source, &[range(0, 3, 0, 3)]);
-        let (edits, _) =
-            compose_edits(source, &plan, vec![vec![edit(0, 3, 0, 3, "X")]], 1, "config")?;
-        assert_eq!(edits.len(), 1);
-
-        let escaped = compose_edits(source, &plan, vec![vec![edit(0, 4, 0, 4, "X")]], 1, "config")
-            .err()
-            .ok_or("empty-point escape was accepted")?;
-        assert_eq!(escaped.reason, "edit_outside_range");
-
-        let left_escape =
-            compose_edits(source, &plan, vec![vec![edit(0, 2, 0, 3, "X")]], 1, "config")
-                .err()
-                .ok_or("empty-point span must reject lower-bound escape")?;
-        assert_eq!(left_escape.reason, "edit_outside_range");
-
-        let right_escape =
-            compose_edits(source, &plan, vec![vec![edit(0, 3, 0, 4, "X")]], 1, "config")
-                .err()
-                .ok_or("empty-point span must reject upper-bound escape")?;
-        assert_eq!(right_escape.reason, "edit_outside_range");
-        Ok(())
-    }
-
-    #[test]
-    fn compose_edits_sorts_reverse_order_adjacent_edits() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let source = "abcdefgh\n";
-        let plan = compose_plan(source, &[range(0, 0, 0, 8)]);
-        let (edits, digest) = compose_edits(
-            source,
-            &plan,
-            vec![vec![edit(0, 4, 0, 8, "BBBB"), edit(0, 0, 0, 4, "AAAA")]],
-            7,
-            "config-fingerprint",
-        )?;
-        assert_eq!(edits.len(), 2);
-        assert_eq!(edits[0].new_text, "AAAA");
-        assert_eq!(edits[1].new_text, "BBBB");
-        assert!(!digest.is_empty(), "composed edit digest must be non-empty");
         Ok(())
     }
 
@@ -1056,34 +1024,31 @@ mod tests {
         Ok(())
     }
 
-    fn text_edit(sl: u32, sc: u32, el: u32, ec: u32, new_text: &str) -> FormatTextEdit {
-        use crate::features::formatting::{FormatPosition, FormatRange};
-        FormatTextEdit {
-            range: FormatRange::new(FormatPosition::new(sl, sc), FormatPosition::new(el, ec)),
-            new_text: new_text.to_string(),
-        }
-    }
-
     #[test]
     fn empty_point_compose_keeps_zero_width_bound() -> Result<(), Box<dyn std::error::Error>> {
         let source = "abcdef\n";
         let plan = build_plan(source, &[range(0, 3, 0, 3)])?;
-        let ok = compose_edits(source, &plan, vec![vec![text_edit(0, 3, 0, 3, "X")]], 1, "cfg")?;
+        let ok = compose_edits(source, &plan, vec![vec![edit(0, 3, 0, 3, "X")]], 1, "cfg")?;
         assert_eq!(ok.0.len(), 1);
         assert_eq!(ok.0[0].new_text, "X");
 
         // Bound each side independently so a one-sided gate regression cannot hide.
-        let left_escape =
-            compose_edits(source, &plan, vec![vec![text_edit(0, 2, 0, 3, "X")]], 1, "cfg")
-                .err()
-                .ok_or("empty-point span must reject lower-bound escape")?;
+        let left_escape = compose_edits(source, &plan, vec![vec![edit(0, 2, 0, 3, "X")]], 1, "cfg")
+            .err()
+            .ok_or("empty-point span must reject lower-bound escape")?;
         assert_eq!(left_escape.reason, "edit_outside_range");
 
         let right_escape =
-            compose_edits(source, &plan, vec![vec![text_edit(0, 3, 0, 4, "X")]], 1, "cfg")
+            compose_edits(source, &plan, vec![vec![edit(0, 3, 0, 4, "X")]], 1, "cfg")
                 .err()
                 .ok_or("empty-point span must reject upper-bound escape")?;
         assert_eq!(right_escape.reason, "edit_outside_range");
+
+        let outside_point =
+            compose_edits(source, &plan, vec![vec![edit(0, 4, 0, 4, "X")]], 1, "cfg")
+                .err()
+                .ok_or("empty-point escape was accepted")?;
+        assert_eq!(outside_point.reason, "edit_outside_range");
         Ok(())
     }
 
@@ -1095,7 +1060,7 @@ mod tests {
         let (edits, digest) = compose_edits(
             source,
             &plan,
-            vec![vec![text_edit(0, 4, 0, 8, "BBBB"), text_edit(0, 0, 0, 4, "AAAA")]],
+            vec![vec![edit(0, 4, 0, 8, "BBBB"), edit(0, 0, 0, 4, "AAAA")]],
             7,
             "cfg-fingerprint",
         )?;
@@ -1107,7 +1072,7 @@ mod tests {
         let conflict = compose_edits(
             source,
             &plan,
-            vec![vec![text_edit(0, 0, 0, 5, "AAAAA"), text_edit(0, 4, 0, 8, "BBBB")]],
+            vec![vec![edit(0, 0, 0, 5, "AAAAA"), edit(0, 4, 0, 8, "BBBB")]],
             7,
             "cfg-fingerprint",
         )
@@ -1115,5 +1080,90 @@ mod tests {
         .ok_or("overlapping same-line edits must refuse")?;
         assert_eq!(conflict.reason, "edit_conflict");
         Ok(())
+    }
+
+    #[test]
+    fn module_scope_format_geometry_import_is_visible_to_lib_source() {
+        let original_defect = r#"
+use perl_lsp_rs_core::providers::formatting_types::{FormatPosition, FormatRange};
+
+fn production() {}
+
+#[cfg(test)]
+mod tests {
+    fn uses_them() {
+        let _ = (FormatPosition::new(0, 0), FormatRange::whole_document(""));
+    }
+}
+"#;
+        assert!(
+            lib_source_names_format_geometry(original_defect),
+            "the #9618 unused-import shape must remain a lib-source hit"
+        );
+        assert!(
+            file_names_format_geometry(original_defect),
+            "control: the defect fixture still names both types"
+        );
+    }
+
+    #[test]
+    fn cfg_test_format_geometry_import_is_excluded_from_lib_source() {
+        let gated = r#"
+fn production() {}
+
+#[cfg(test)]
+use crate::features::formatting::{FormatPosition, FormatRange};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn uses_them() {
+        let _ = (FormatPosition::new(0, 0), FormatRange::whole_document(""));
+    }
+}
+"#;
+        assert!(
+            !lib_source_names_format_geometry(gated),
+            "#[cfg(test)] use at module scope must not count as --lib source"
+        );
+        assert!(file_names_format_geometry(gated), "control: gated fixture still names both types");
+    }
+
+    #[test]
+    fn deleting_format_geometry_names_is_a_visible_vacuity() {
+        let deleted = r#"
+fn production() {}
+
+#[cfg(test)]
+mod tests {}
+"#;
+        assert!(
+            !lib_source_names_format_geometry(deleted),
+            "control: deleted fixture has no lib-source leak"
+        );
+        assert!(
+            !file_names_format_geometry(deleted),
+            "deleting FormatPosition/FormatRange must fail the occupancy control"
+        );
+    }
+
+    #[test]
+    fn formatting_policy_lib_source_does_not_name_format_geometry() {
+        let files = [
+            ("mod.rs", include_str!("mod.rs")),
+            ("multi_range.rs", include_str!("multi_range.rs")),
+            ("handlers.rs", include_str!("handlers.rs")),
+            ("receipt.rs", include_str!("receipt.rs")),
+        ];
+        for (name, source) in files {
+            assert!(
+                !lib_source_names_format_geometry(source),
+                "{name} --lib source must not name FormatPosition/FormatRange (#9618)"
+            );
+        }
+        assert!(
+            file_names_format_geometry(include_str!("multi_range.rs")),
+            "multi_range.rs tests must still name FormatPosition/FormatRange so the lib scan cannot pass by deleting the types"
+        );
     }
 }

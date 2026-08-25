@@ -15,6 +15,9 @@ RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs -- --test-threads=2
 ## Verify
 ```bash
 cargo fmt --all
+# `--lib` is the clippy_scoped / clippy_full configuration (`-p perllsp`).
+# `--tests` hides unused imports that exist only inside `#[cfg(test)]` (#9618).
+cargo clippy -p perl-lsp-rs --lib --locked -- -D warnings -A missing_docs
 cargo clippy -p perl-lsp-rs --tests
 RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs -- --test-threads=2
 ```
