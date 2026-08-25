@@ -84,14 +84,15 @@ fn git_discovery_expands_tracked_symlinked_library_directory() -> TestResult {
     }
 
     let tmp = TempDir::new()?;
-    let shared = TempDir::new()?;
     let root = tmp.path();
-    create_file(shared.path(), "Shared/Module.pm")?;
+    create_file(root, "shared/Module.pm")?;
+    create_file(root, "shared/ignored/Hidden.pm")?;
+    fs::write(root.join(".gitignore"), "linked_lib/ignored/\n")?;
 
     run_git(root, &["init", "--quiet"])?;
     run_git(root, &["config", "user.email", "test@example.com"])?;
     run_git(root, &["config", "user.name", "Test"])?;
-    std::os::unix::fs::symlink(shared.path().join("Shared"), root.join("linked_lib"))?;
+    std::os::unix::fs::symlink(root.join("shared"), root.join("linked_lib"))?;
     run_git(root, &["add", "linked_lib"])?;
     run_git(root, &["commit", "-m", "linked library", "--quiet"])?;
 
@@ -99,6 +100,7 @@ fn git_discovery_expands_tracked_symlinked_library_directory() -> TestResult {
 
     assert_eq!(result.method, DiscoveryMethod::Git);
     assert!(result.files.iter().any(|path| path.ends_with("linked_lib/Module.pm")));
+    assert!(!result.files.iter().any(|path| path.ends_with("linked_lib/ignored/Hidden.pm")));
 
     Ok(())
 }

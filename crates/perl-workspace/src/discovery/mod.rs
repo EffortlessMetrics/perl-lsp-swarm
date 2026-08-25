@@ -6,8 +6,9 @@
 //!
 //! The resulting behavior is intentionally conservative: common non-source directories
 //! are skipped in both modes (`.git`, `.hg`, `.svn`, `target`, `node_modules`, `.cache`).
-//! Symlinked files and directories are followed so shared library trees remain visible;
-//! `WalkDir`'s loop detection prevents cyclic links from making discovery unbounded.
+//! Symlinked files and directories inside the workspace are followed so shared library
+//! trees remain visible; external targets require an explicit include path. `WalkDir`'s
+//! loop detection prevents cyclic links from making discovery unbounded.
 //! Explicit include roots can relax that skip only for configured Perl dependency
 //! trees such as `local/lib/perl5`.
 
@@ -15,7 +16,7 @@ use crate::ignore::{is_skipped_dir_name_with_extra, path_contains_skipped_compon
 use perl_parser_core::source_file::is_perl_source_path;
 use std::collections::HashSet;
 use std::ffi::OsString;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -266,8 +267,15 @@ fn try_git_discovery(
     // not enumerate the linked tree. Expand those entries separately so a
     // linked library remains visible in the fast path as well as the walk
     // fallback. The same skip and extension policy is applied to the expansion.
-    let (linked_files, linked_excluded, linked_cancelled) =
-        discover_linked_git_directories(root, &stdout, allowlist, config, should_cancel);
+    let tracked_paths = cached_git_paths(root).unwrap_or_default();
+    let (linked_files, linked_excluded, linked_cancelled) = discover_linked_git_directories(
+        root,
+        &stdout,
+        &tracked_paths,
+        allowlist,
+        config,
+        should_cancel,
+    );
     if linked_cancelled {
         return Ok(GitDiscoveryOutcome::Cancelled);
     }
@@ -291,6 +299,7 @@ fn try_git_discovery(
 fn discover_linked_git_directories(
     root: &Path,
     stdout: &[u8],
+    tracked_paths: &HashSet<PathBuf>,
     allowlist: &DiscoveryIncludeAllowlist,
     config: &DiscoveryConfig,
     should_cancel: &impl Fn() -> bool,
@@ -304,18 +313,28 @@ fn discover_linked_git_directories(
         }
 
         let relative_path = PathBuf::from(bytes_to_os_string(entry));
+        if !tracked_paths.contains(&relative_path) {
+            continue;
+        }
         let path = root.join(&relative_path);
         let is_linked_directory = std::fs::symlink_metadata(&path)
             .is_ok_and(|metadata| metadata.file_type().is_symlink())
             && std::fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir());
-        if !is_linked_directory || is_skipped_path(root, &relative_path, allowlist) {
+        if !is_linked_directory
+            || !is_allowed_link_target(root, &path, allowlist)
+            || is_skipped_path(root, &relative_path, allowlist)
+        {
             continue;
         }
 
+        let mut candidates = Vec::new();
         for linked_entry in WalkDir::new(&path)
             .follow_links(true)
             .into_iter()
-            .filter_entry(|entry| !should_skip_dir_with_allowlist(root, entry, allowlist, config))
+            .filter_entry(|entry| {
+                !should_skip_dir_with_allowlist(root, entry, allowlist, config)
+                    && is_allowed_link_target(root, entry.path(), allowlist)
+            })
         {
             if should_cancel() {
                 return (files, excluded_count, true);
@@ -327,8 +346,15 @@ fn discover_linked_git_directories(
             if !linked_entry.file_type().is_file() {
                 continue;
             }
-            if config.is_discovery_path(linked_entry.path()) {
-                files.push(linked_entry.path().to_path_buf());
+            candidates.push(linked_entry.path().to_path_buf());
+        }
+        let ignored = git_ignored_paths(root, &candidates);
+        for linked_path in candidates {
+            let relative = linked_path.strip_prefix(root).unwrap_or(&linked_path);
+            if ignored.contains(relative) {
+                excluded_count += 1;
+            } else if config.is_discovery_path(&linked_path) {
+                files.push(linked_path);
             } else {
                 excluded_count += 1;
             }
@@ -408,6 +434,13 @@ fn parse_git_ls_files_output_with_cancel(
         }
 
         let path = root.join(relative_path);
+        if std::fs::symlink_metadata(&path)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            && !is_allowed_link_target(root, &path, allowlist)
+        {
+            excluded_count += 1;
+            continue;
+        }
         if !config.is_discovery_path(&path) {
             excluded_count += 1;
             continue;
@@ -450,6 +483,77 @@ fn is_existing_regular_file(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
 }
 
+fn cached_git_paths(root: &Path) -> std::io::Result<HashSet<PathBuf>> {
+    let output = std::process::Command::new("git")
+        .args(["ls-files", "-z", "--cached"])
+        .current_dir(root)
+        .output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::other("git ls-files cached failed"));
+    }
+    Ok(output
+        .stdout
+        .split(|byte| *byte == b'\0')
+        .filter(|entry| !entry.is_empty())
+        .map(bytes_to_os_string)
+        .map(PathBuf::from)
+        .collect())
+}
+
+fn git_ignored_paths(root: &Path, paths: &[PathBuf]) -> HashSet<PathBuf> {
+    let relative_paths: Vec<PathBuf> = paths
+        .iter()
+        .filter_map(|path| path.strip_prefix(root).ok().map(Path::to_path_buf))
+        .collect();
+    if relative_paths.is_empty() {
+        return HashSet::new();
+    }
+
+    let mut child = match std::process::Command::new("git")
+        .args(["check-ignore", "-z", "--stdin", "--no-index"])
+        .current_dir(root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return HashSet::new(),
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        for path in &relative_paths {
+            let _ = stdin.write_all(path.to_string_lossy().as_bytes());
+            let _ = stdin.write_all(&[0]);
+        }
+    }
+    let output = match child.wait_with_output() {
+        Ok(output) => output,
+        Err(_) => return HashSet::new(),
+    };
+    output
+        .stdout
+        .split(|byte| *byte == b'\0')
+        .filter(|entry| !entry.is_empty())
+        .map(bytes_to_os_string)
+        .map(PathBuf::from)
+        .collect()
+}
+
+fn is_allowed_link_target(
+    root: &Path,
+    link: &Path,
+    allowlist: &DiscoveryIncludeAllowlist,
+) -> bool {
+    let Ok(target) = link.canonicalize() else {
+        return false;
+    };
+    let Ok(workspace_root) = root.canonicalize() else {
+        return false;
+    };
+    target.starts_with(workspace_root)
+        || allowlist.external_include_roots.iter().any(|allowed| target.starts_with(allowed))
+}
+
 #[cfg(test)]
 fn walk_discovery(root: &Path, start: Instant) -> DiscoveryResult {
     walk_discovery_with_allowlist(
@@ -478,7 +582,7 @@ fn walk_discovery_with_allowlist(
             skipped_dir_count += 1;
             return false;
         }
-        true
+        is_allowed_link_target(root, entry.path(), allowlist)
     }) {
         if should_cancel() {
             cancelled = true;
@@ -573,6 +677,7 @@ fn log_discovery(result: &DiscoveryResult) {
 #[derive(Debug, Default)]
 struct DiscoveryIncludeAllowlist {
     include_roots: Vec<PathBuf>,
+    external_include_roots: Vec<PathBuf>,
     extra_skipped_dirs: Vec<String>,
 }
 
@@ -586,9 +691,18 @@ impl DiscoveryIncludeAllowlist {
         P: AsRef<Path>,
     {
         let mut include_roots = Vec::new();
+        let mut external_include_roots = Vec::new();
         let mut seen = HashSet::new();
 
         for include_path in include_paths {
+            if include_path.as_ref().is_absolute()
+                && !include_path.as_ref().starts_with(workspace_root)
+            {
+                if let Ok(path) = include_path.as_ref().canonicalize() {
+                    external_include_roots.push(path);
+                }
+                continue;
+            }
             let Some(relative_path) = normalize_include_path(workspace_root, include_path.as_ref())
             else {
                 continue;
@@ -608,7 +722,11 @@ impl DiscoveryIncludeAllowlist {
             }
         }
 
-        Self { include_roots, extra_skipped_dirs: config.extra_skipped_dirs.clone() }
+        Self {
+            include_roots,
+            external_include_roots,
+            extra_skipped_dirs: config.extra_skipped_dirs.clone(),
+        }
     }
 
     fn has_unallowed_skipped_component(&self, relative_path: &Path) -> bool {
