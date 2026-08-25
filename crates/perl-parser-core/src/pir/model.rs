@@ -49,7 +49,7 @@ impl PirId {
 /// Every source-derived node anchors to the workspace range that caused it.
 /// Generated, framework, or ambient nodes only exist when their provenance is
 /// explicit, so a provider can never mistake a modeled fact for source text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[non_exhaustive]
 pub enum PirAnchorKind {
     /// Node anchors directly to source text.

@@ -3037,7 +3037,8 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
 
     // Freeze the upstream observation from exactly one context read before
     // any direct diagnostic work is planned or executed (#8173). Missing
-    // expected rows stay missing; nothing repairs upstream membership here.
+    // expected rows stay missing; nothing repairs upstream membership here,
+    // and terminal admission is classified inside the frozen set (#6884).
     let observation = UpstreamObservationSet::settle(
         config.runner,
         config.mode,
@@ -3054,6 +3055,7 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
     });
     let output_path =
         config.output.unwrap_or_else(|| default_run_report_path(config.mode, config.profile));
+    remove_stale_diagnostics_sidecar(&output_path)?;
     write_run_report(&output_path, &report)?;
 
     tracing::info!(
@@ -3075,9 +3077,23 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
             &output_path,
         );
     } else if observation.counts().extra > 0 {
-        retain_extra_row_census(&observation, config.mode, &output_path);
+        retain_extra_row_census(&observation, &output_path);
     }
 
+    // Terminal admission is decided from the frozen outcome, after the
+    // authoritative report and any separate diagnostics exist (#6884/#8173):
+    // a nonzero upstream process cannot become valid because diagnostics ran,
+    // and no direct row participates in this decision.
+    let terminal = observation.terminal();
+    if !terminal.is_scoreable() {
+        bail!(
+            "upstream harness terminal status {} is not admitted ({}) despite no recorded file failures\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            terminal.not_proven_reason(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     if report.summary.files_failed > 0 {
         bail!(
             "perl-core-harness {} {} failed for {} of {} files; see {}",
@@ -3086,14 +3102,6 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
             report.summary.files_failed,
             report.summary.files_total,
             output_path.display()
-        );
-    }
-    if !output.status.success() {
-        bail!(
-            "upstream harness exited with status {} despite no recorded file failures\nstdout:\n{}\nstderr:\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
         );
     }
     Ok(())
@@ -3154,7 +3162,7 @@ fn run_direct_diagnostic_probes(
     };
     settle_probe_context_rows(&mut diagnostics, &executed, rows, context_trusted);
 
-    retain_direct_diagnostics(&diagnostics, observation, mode, report_output_path);
+    retain_direct_diagnostics(&diagnostics, report_output_path);
 }
 
 /// Persist the upstream membership census when extras exist but no probe runs.
@@ -3164,29 +3172,14 @@ fn run_direct_diagnostic_probes(
 /// counts reached only the diagnostics receipt, which was written only when
 /// probes ran (#8173). Membership-equality enforcement stays deferred to
 /// #7737/#12106.
-fn retain_extra_row_census(
-    observation: &UpstreamObservationSet,
-    mode: HarnessMode,
-    report_output_path: &Path,
-) {
+fn retain_extra_row_census(observation: &UpstreamObservationSet, report_output_path: &Path) {
     let diagnostics = DirectDiagnosticSet::plan(observation);
-    retain_direct_diagnostics(&diagnostics, observation, mode, report_output_path);
+    retain_direct_diagnostics(&diagnostics, report_output_path);
 }
 
 /// Build and retain the direct-diagnostics receipt beside the report.
-fn retain_direct_diagnostics(
-    diagnostics: &DirectDiagnosticSet,
-    observation: &UpstreamObservationSet,
-    mode: HarnessMode,
-    report_output_path: &Path,
-) {
-    let receipt = direct_diagnostics_receipt(
-        diagnostics,
-        mode,
-        observation.subject().as_str(),
-        observation.terminal().status_code(),
-        observation.counts(),
-    );
+fn retain_direct_diagnostics(diagnostics: &DirectDiagnosticSet, report_output_path: &Path) {
+    let receipt = direct_diagnostics_receipt(diagnostics);
     let receipt_path = direct_diagnostics_receipt_path(report_output_path);
     match write_direct_diagnostics_receipt(&receipt_path, &receipt) {
         Ok(()) => tracing::info!(
@@ -3195,6 +3188,23 @@ fn retain_direct_diagnostics(
             receipt_path.display()
         ),
         Err(err) => tracing::warn!("writing direct diagnostics receipt failed: {err}"),
+    }
+}
+
+/// Remove a stale diagnostic receipt before publishing a fresh report.
+///
+/// A reused output path must not keep a `.direct-diagnostics.json` from an
+/// earlier invocation beside new authoritative bytes: the sidecar is derived
+/// diagnostic state whose absence is meaningful. Any removal failure other
+/// than a missing file fails closed before the report is published (#8173).
+fn remove_stale_diagnostics_sidecar(report_output_path: &Path) -> Result<()> {
+    let receipt_path = direct_diagnostics_receipt_path(report_output_path);
+    match fs::remove_file(&receipt_path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| {
+            format!("removing stale direct-diagnostics receipt {}", receipt_path.display())
+        }),
     }
 }
 
@@ -3214,18 +3224,22 @@ pub fn baseline(config: BaselineConfig) -> Result<()> {
         .clone()
         .unwrap_or_else(|| default_baseline_path(config.mode, config.profile));
     let report = read_run_report(&report_path)?;
-    // An absent or nonzero legacy runner terminal status never proves process
-    // completion for parse/compile evidence, however green the file and
-    // assertion counts look (#6884 interim false-green block). Refuse to check
-    // or accept a baseline from it. Execute mode is excluded: its ratcheted
-    // selected-base receipt deliberately records the upstream scheduler's
-    // nonzero exit alongside green runner records (#3451), and replacing that
-    // modeling belongs to the typed terminal taxonomy on #6884.
-    if config.mode != HarnessMode::Execute && report.harness_status != Some(0) {
+    // Terminal admission precedes any count semantics (#6884): only a clean
+    // exit or a recognized runner/mode completion state proves process
+    // completion, however green the file and assertion counts look. The
+    // execute-mode recognition keeps the #3451 selected-base receipt flow
+    // working instead of permanently misclassifying it as instrument failure.
+    let terminal = transition::TerminalProcessOutcome::from_harness_status(
+        report.harness_status,
+        report.runner,
+        report.mode,
+    );
+    if !terminal.is_scoreable() {
         bail!(
-            "perl-core-harness baseline refuses {} with runner terminal status {:?}: process completion is not proven",
+            "perl-core-harness baseline refuses {} with runner terminal status {:?}: process completion is not proven ({})",
             report_path.display(),
-            report.harness_status
+            report.harness_status,
+            terminal.not_proven_reason()
         );
     }
     reject_v2_options_without_series(&config)?;
@@ -5459,7 +5473,7 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
         runner: input.config.runner,
         mode: input.config.mode,
         profile: input.config.profile,
-        harness_status: input.observation.terminal().status_code(),
+        harness_status: input.observation.harness_status(),
         summary: RunSummary {
             files_total,
             files_passed,
@@ -6084,13 +6098,7 @@ mod tests {
         assert_eq!(report.summary.files_failed, 1);
 
         // The receipt records the passing probe plus explicit non-claims.
-        let receipt = run_authority::direct_diagnostics_receipt(
-            &diagnostics,
-            HarnessMode::Parse,
-            observation.subject().as_str(),
-            Some(0),
-            observation.counts(),
-        );
+        let receipt = run_authority::direct_diagnostics_receipt(&diagnostics);
         assert_eq!(receipt.probes.len(), 1);
         assert_eq!(
             receipt.probes[0].outcome,
@@ -6120,13 +6128,7 @@ mod tests {
         let mut diagnostics = DirectDiagnosticSet::plan(&observation);
         diagnostics.add_probe(SettledDiagnosticProbe::settled("base/ok.t", Some(0), payload));
 
-        let receipt = run_authority::direct_diagnostics_receipt(
-            &diagnostics,
-            HarnessMode::Parse,
-            observation.subject().as_str(),
-            Some(0),
-            observation.counts(),
-        );
+        let receipt = run_authority::direct_diagnostics_receipt(&diagnostics);
 
         // Identical bytes do not deduplicate across authority classes.
         assert_eq!(
@@ -6146,13 +6148,7 @@ mod tests {
         let observation = settle_test_observation(HarnessMode::Parse, &discovered, &[], Some(3))?;
         let mut diagnostics = DirectDiagnosticSet::plan(&observation);
         diagnostics.add_probe(SettledDiagnosticProbe::unavailable("base/gap.t", None));
-        let receipt = run_authority::direct_diagnostics_receipt(
-            &diagnostics,
-            HarnessMode::Parse,
-            observation.subject().as_str(),
-            Some(3),
-            observation.counts(),
-        );
+        let receipt = run_authority::direct_diagnostics_receipt(&diagnostics);
         let json = serde_json::to_string(&receipt)?;
 
         let decoded = serde_json::from_str::<RunReport>(&json);
@@ -6190,7 +6186,7 @@ mod tests {
         // Even with no probes running, the census survives durably on the
         // retained receipt instead of vanishing with the run (#8173).
         let output_path = temp.path().join("run-report.json");
-        retain_extra_row_census(&observation, HarnessMode::Parse, &output_path);
+        retain_extra_row_census(&observation, &output_path);
         let receipt_path = run_authority::direct_diagnostics_receipt_path(&output_path);
         let raw = fs::read_to_string(&receipt_path)
             .with_context(|| format!("reading {}", receipt_path.display()))?;
@@ -6230,13 +6226,7 @@ mod tests {
             vec![stale_row],
             false,
         );
-        let receipt = run_authority::direct_diagnostics_receipt(
-            &diagnostics,
-            HarnessMode::Parse,
-            observation.subject().as_str(),
-            Some(0),
-            observation.counts(),
-        );
+        let receipt = run_authority::direct_diagnostics_receipt(&diagnostics);
 
         // The stale bytes must not be able to claim a reproduced pass.
         assert_eq!(receipt.probes[0].outcome, run_authority::DiagnosticProbeOutcome::Unavailable);
@@ -6276,13 +6266,7 @@ mod tests {
             vec![record("not-a-normalized-test.txt"), record("base/gap.t"), record("base/gap.t")],
             true,
         );
-        let receipt = run_authority::direct_diagnostics_receipt(
-            &diagnostics,
-            HarnessMode::Parse,
-            observation.subject().as_str(),
-            Some(0),
-            observation.counts(),
-        );
+        let receipt = run_authority::direct_diagnostics_receipt(&diagnostics);
 
         // Neither skip-silently nor last-wins: the subject cannot settle a
         // result from colliding rows and both anomalies stay visible.
@@ -7691,14 +7675,21 @@ mod tests {
     #[test]
     fn baseline_refuses_report_without_proven_zero_terminal_status() -> TestResult {
         let temp = tempfile::tempdir()?;
-        for (name, status) in [("missing-status.json", None), ("nonzero-status.json", Some(7))] {
+        for (name, mode, status) in [
+            ("missing-status.json", HarnessMode::Compile, None),
+            ("nonzero-status.json", HarnessMode::Compile, Some(7)),
+            // #6884: execute mode with no recorded terminal identity is an
+            // instrument failure, not a proven observation.
+            ("execute-missing-status.json", HarnessMode::Execute, None),
+        ] {
             let report_path = temp.path().join(name);
             let mut report = sample_compile_report();
+            report.mode = mode;
             report.harness_status = status;
             write_run_report(&report_path, &report)?;
 
             let error = match baseline(BaselineConfig {
-                mode: HarnessMode::Compile,
+                mode,
                 profile: HarnessProfile::Base,
                 report: Some(report_path),
                 baseline: Some(temp.path().join("baseline.json")),
@@ -9126,6 +9117,31 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn run_mode_execute_accepts_the_recognized_scheduler_status() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree_with_base_if_test_and_exit(temp.path(), 1)?;
+        let runner = write_fake_execute_runner(temp.path())?;
+        let output = temp.path().join("execute-report.json");
+
+        run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Execute,
+            profile: HarnessProfile::Base,
+            tests: vec!["base/if.t".into()],
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+        })?;
+
+        let report: RunReport = serde_json::from_str(&fs::read_to_string(output)?)?;
+        assert_eq!(report.harness_status, Some(1));
+        assert_eq!(report.summary.files_failed, 0);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn run_mode_execute_runs_selected_base_subset() -> TestResult {
         let temp = tempfile::tempdir()?;
         let perl_tree = write_fake_perl_tree_with_base_execute_subset(temp.path())?;
@@ -9497,7 +9513,7 @@ mod tests {
             bail!("failing runner record should fail the harness run");
         };
 
-        assert!(err.to_string().contains("failed for 1 of 1 files"));
+        assert!(err.to_string().contains("upstream harness terminal status"));
         let raw = fs::read_to_string(output)?;
         let report: RunReport = serde_json::from_str(&raw)?;
         assert_eq!(report.summary.files_total, 1);
@@ -9536,10 +9552,10 @@ exit 7
             runner_binary: Some(runner),
             diagnostic_probes: true,
         }) else {
-            bail!("nonzero harness status should fail even when runner records pass");
+            bail!("unproven nonzero harness status should fail even when runner records pass");
         };
 
-        assert!(err.to_string().contains("upstream harness exited with status"));
+        assert!(err.to_string().contains("terminal status"));
         let raw = fs::read_to_string(output)?;
         let report: RunReport = serde_json::from_str(&raw)?;
         assert_eq!(report.summary.files_passed, 1);
@@ -9656,7 +9672,83 @@ exit 7
 
         let report: RunReport = serde_json::from_str(&fs::read_to_string(output)?)?;
         assert_eq!(report.summary.files_passed, 1);
+        assert_eq!(report.summary.files_failed, 0);
+        assert!(report.buckets.is_empty());
+        assert!(report.failures.is_empty());
+        assert_eq!(report.harness_status, Some(0));
         assert!(!temp.path().join("parse-report.json.direct-diagnostics.json").exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_removes_stale_sidecar_before_a_clean_no_diagnostic_run() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree(temp.path())?;
+        let runner = write_fake_runner(temp.path(), RunnerStatus::Pass)?;
+        let output = temp.path().join("parse-report.json");
+
+        // A leftover receipt from a previous invocation at the same output
+        // path must not survive a fresh authoritative publication (#8173).
+        let stale_sidecar = temp.path().join("parse-report.json.direct-diagnostics.json");
+        fs::write(
+            &stale_sidecar,
+            r#"{"schema_version":"perl_core_harness.direct_diagnostics.v1"}"#,
+        )?;
+
+        run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Parse,
+            profile: HarnessProfile::Base,
+            tests: Vec::new(),
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+            diagnostic_probes: true,
+        })?;
+
+        let report: RunReport = serde_json::from_str(&fs::read_to_string(output)?)?;
+        assert_eq!(report.summary.files_passed, 1);
+        assert!(
+            !stale_sidecar.exists(),
+            "a complete upstream run must leave no stale diagnostic sidecar"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_removes_stale_sidecar_when_diagnostics_are_disabled() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree(temp.path())?;
+        let runner = write_fake_runner(temp.path(), RunnerStatus::Pass)?;
+        let output = temp.path().join("parse-report.json");
+
+        let stale_sidecar = temp.path().join("parse-report.json.direct-diagnostics.json");
+        fs::write(
+            &stale_sidecar,
+            r#"{"schema_version":"perl_core_harness.direct_diagnostics.v1"}"#,
+        )?;
+
+        run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Parse,
+            profile: HarnessProfile::Base,
+            tests: Vec::new(),
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+            diagnostic_probes: false,
+        })?;
+
+        let report: RunReport = serde_json::from_str(&fs::read_to_string(output)?)?;
+        assert_eq!(report.summary.files_passed, 1);
+        assert!(
+            !stale_sidecar.exists(),
+            "diagnostics-disabled runs must still clear a stale diagnostic sidecar"
+        );
         Ok(())
     }
 
@@ -9762,18 +9854,38 @@ fi
 
     #[cfg(unix)]
     fn write_fake_perl_tree_with_base_if_test(root: &Path) -> TestResult<PathBuf> {
+        write_fake_perl_tree_with_base_if_test_and_body(root, "./perl base/if.t\n")
+    }
+
+    #[cfg(unix)]
+    fn write_fake_perl_tree_with_base_if_test_and_exit(
+        root: &Path,
+        status: i32,
+    ) -> TestResult<PathBuf> {
+        write_fake_perl_tree_with_base_if_test_and_body(
+            root,
+            &format!("./perl base/if.t\nexit {status}\n"),
+        )
+    }
+
+    #[cfg(unix)]
+    fn write_fake_perl_tree_with_base_if_test_and_body(
+        root: &Path,
+        run_body: &str,
+    ) -> TestResult<PathBuf> {
         let perl_tree = root.join("prepared-perl-base-if");
         let t_dir = perl_tree.join("t");
         fs::create_dir_all(t_dir.join("base"))?;
         fs::write(t_dir.join("base").join("if.t"), "1;\n")?;
-        let script = r#"#!/bin/sh
+        let script = format!(
+            r#"#!/bin/sh
 set -eu
-if [ "${1:-}" = "--dumptests" ]; then
+if [ "${{1:-}}" = "--dumptests" ]; then
   echo "base/if.t"
   exit 0
 fi
-./perl base/if.t
-"#;
+{run_body}"#
+        );
         fs::write(t_dir.join("TEST"), script)?;
         Ok(perl_tree)
     }

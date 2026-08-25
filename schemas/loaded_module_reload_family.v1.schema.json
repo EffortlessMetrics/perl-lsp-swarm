@@ -1,0 +1,255 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://perl-lsp.dev/schemas/loaded_module_reload_family.v1.schema.json",
+  "title": "perl-lsp/loadedModuleReload custom DAP family (v1)",
+  "description": "Wire projection of the frozen #10097 loaded-module reload contract as registered by #10138. The semantic vocabulary (outcome kinds, phases, dispositions, causes) is projected verbatim from crates/perl-dap/src/reload; this schema adds no semantics. The family is namespaced, versioned, not dispatched, and unadvertised until the R04 exact-proof leaf.",
+  "type": "object",
+  "$defs": {
+    "familyName": {
+      "type": "string",
+      "const": "perl-lsp/loadedModuleReload"
+    },
+    "familyVersion": {
+      "type": "integer",
+      "minimum": 1,
+      "const": 1
+    },
+    "opaqueIdentity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "digestToken": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "reasonCode": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]+$",
+      "maxLength": 96
+    },
+    "remediationCode": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]+$",
+      "maxLength": 256
+    },
+    "outcomeKind": {
+      "type": "string",
+      "enum": [
+        "reloaded",
+        "refused",
+        "failed_before_mutation",
+        "indeterminate_possibly_applied"
+      ]
+    },
+    "transactionPhase": {
+      "type": "string",
+      "enum": [
+        "admission",
+        "preflight",
+        "prepare",
+        "runtime_mutation_begins",
+        "runtime_acknowledgement_read_back",
+        "commit_generation",
+        "post_reload_reconciliation",
+        "terminal_projection"
+      ]
+    },
+    "refusalDisposition": {
+      "type": "string",
+      "enum": [
+        "not_loaded",
+        "source_not_exact_or_stale",
+        "dirty_or_unsaved_source",
+        "active_frame_in_target",
+        "main_program_not_module",
+        "xs_or_native_module",
+        "source_filter_or_compile_hook_boundary",
+        "generated_or_eval_source",
+        "ambiguous_runtime_mapping",
+        "outside_launch_authority",
+        "unsupported_runtime",
+        "not_stopped_or_not_command_ready"
+      ]
+    },
+    "failureCause": {
+      "type": "string",
+      "enum": [
+        "prepare_failed",
+        "cancelled_before_mutation_began",
+        "timeout_after_mutation_began",
+        "transport_loss_after_mutation_began",
+        "ambiguous_acknowledgement",
+        "read_back_inconclusive"
+      ]
+    },
+    "rejectionCode": {
+      "type": "string",
+      "enum": [
+        "family_not_negotiated",
+        "family_name_mismatch",
+        "family_version_unsupported",
+        "session_stale",
+        "operation_stale",
+        "operation_id_invalid",
+        "unknown_field_rejected",
+        "unknown_variant_rejected",
+        "raw_client_input_refused",
+        "subject_identity_insufficient",
+        "payload_too_large",
+        "identity_too_large",
+        "detail_too_large",
+        "deadline_out_of_range",
+        "family_not_backed_for_session",
+        "malformed_request"
+      ]
+    },
+    "reconciliationDisposition": {
+      "type": "string",
+      "enum": ["deferred"]
+    },
+    "reconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "loaded_source_refresh",
+        "inspection_invalidation",
+        "breakpoint_reconciliation"
+      ],
+      "properties": {
+        "loaded_source_refresh": { "$ref": "#/$defs/reconciliationDisposition" },
+        "inspection_invalidation": { "$ref": "#/$defs/reconciliationDisposition" },
+        "breakpoint_reconciliation": { "$ref": "#/$defs/reconciliationDisposition" }
+      }
+    },
+    "generationWitness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["previous", "current", "advanced"],
+      "properties": {
+        "previous": { "type": "integer", "minimum": 0 },
+        "current": { "type": "integer", "minimum": 0 },
+        "advanced": { "type": "boolean" }
+      }
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "moduleIdentity",
+        "savedSourceDigest",
+        "logicalSourceUri",
+        "observationGeneration"
+      ],
+      "properties": {
+        "moduleIdentity": { "$ref": "#/$defs/opaqueIdentity" },
+        "savedSourceDigest": { "$ref": "#/$defs/digestToken" },
+        "logicalSourceUri": { "$ref": "#/$defs/opaqueIdentity" },
+        "observationGeneration": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "family",
+        "familyVersion",
+        "sessionEpoch",
+        "operationId",
+        "subject"
+      ],
+      "properties": {
+        "family": { "$ref": "#/$defs/familyName" },
+        "familyVersion": { "$ref": "#/$defs/familyVersion" },
+        "sessionEpoch": { "type": "integer", "minimum": 1 },
+        "operationId": { "type": "integer", "minimum": 1 },
+        "subject": { "$ref": "#/$defs/subject" },
+        "deadlineMs": { "type": "integer", "minimum": 100, "maximum": 60000 }
+      }
+    },
+    "outcomeBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "phase", "possiblyApplied", "reconciliation"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/outcomeKind" },
+        "phase": { "$ref": "#/$defs/transactionPhase" },
+        "disposition": { "$ref": "#/$defs/refusalDisposition" },
+        "cause": { "$ref": "#/$defs/failureCause" },
+        "possiblyApplied": { "type": "boolean" },
+        "generation": { "$ref": "#/$defs/generationWitness" },
+        "reconciliation": { "$ref": "#/$defs/reconciliation" },
+        "reasons": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/reasonCode" }
+        },
+        "remediation": { "$ref": "#/$defs/remediationCode" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "refused" } } },
+          "then": { "required": ["disposition"] }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": ["failed_before_mutation", "indeterminate_possibly_applied"]
+              }
+            }
+          },
+          "then": { "required": ["cause"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "reloaded" } } },
+          "then": { "properties": { "possiblyApplied": { "const": false } } }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "indeterminate_possibly_applied" } }
+          },
+          "then": { "properties": { "possiblyApplied": { "const": true } } }
+        }
+      ]
+    },
+    "rejectionBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "code"],
+      "properties": {
+        "kind": { "const": "request_rejected" },
+        "code": { "$ref": "#/$defs/rejectionCode" },
+        "reasons": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/reasonCode" }
+        }
+      }
+    },
+    "responseEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["success", "operationId", "body"],
+      "properties": {
+        "success": { "type": "boolean" },
+        "operationId": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The correlated operation identity; 0 only when the request carried nothing parseable (such requests correlate via the DAP request sequence)."
+        },
+        "body": {
+          "oneOf": [
+            { "$ref": "#/$defs/outcomeBody" },
+            { "$ref": "#/$defs/rejectionBody" }
+          ]
+        }
+      }
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/responseEnvelope" }
+  ]
+}

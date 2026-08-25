@@ -85,6 +85,20 @@ The current implementation mixes source-derived variable discovery with optional
 
 Keys such as Perl executable selection, include paths, environment, workspace roots, external-peer mode, and adapter-specific timeouts are adapter configuration carried in DAP launch or attach arguments. They are not additions to the standard DAP schema merely because they cross the request boundary.
 
+### Versioned custom families
+
+A versioned custom family is a namespaced (`namespace/name`) project wire surface registered for explicit client/server negotiation, mechanically synchronized between the Rust adapter contract and the generated TypeScript projection, and never counted as standard DAP conformance. A registered family is a transport and compatibility surface only: it is **not dispatched** and **not advertised** until its owning leaf proves behavior.
+
+| Family | Version | Classification | Owner |
+|---|---|---|---|
+| `perl-lsp/loadedModuleReload` | `1` | `custom_dap_extension` | `#10138` |
+
+#### `perl-lsp/loadedModuleReload` (version 1)
+
+The bounded loaded-module reload family, registered by #10138 under the frozen #10097 semantic contract (ADR-0046). The single request `perl-lsp/loadedModuleReload` carries only the typed, adapter-issued opaque subject; raw paths, debugger commands, and Perl expressions are refused. The terminal vocabulary is projected verbatim from the frozen contract — `reloaded`, `refused` (with the twelve refusal dispositions), `failed_before_mutation`, and `indeterminate_possibly_applied` — and `indeterminate_possibly_applied` is never flattened to a clean or ordinary failure. Negotiation selects the highest mutually known version and fails closed for unknown versions, unknown mandatory variants, and (under the v1 registry policy) unknown fields. Session restart invalidates prior family and operation identities. Bounds and redaction are enforced before publication.
+
+The family stays `unadvertised-until-r04`: it appears in no capability, the adapter has no dispatch route for it, and no reload mechanism backs it yet (#10098 owns the mechanism, #10102 the composition). Registration is not behavior: ordinary standard DAP remains usable when the family is absent or incompatible, and handler registration or family negotiation is not capability proof.
+
 ### External debugger peer protocol
 
 The ptkdb peer protocol is a backend integration protocol behind the DAP frontend. It does not become standard DAP and does not require ptkdb to implement DAP. Its capabilities are intersected with frontend support before the adapter advertises behavior to a DAP client.

@@ -274,17 +274,17 @@ fn walk_ast_for_checkpoints(
     match &node.kind {
         NodeKind::Package { name, .. } => {
             scope.package_name = name.clone();
-            checkpoints.push(ParseCheckpoint {
-                byte: node.location.start,
-                scope_snapshot: scope.clone(),
-                node_id,
-            });
+            push_parse_checkpoint(checkpoints, node, scope, node_id);
         }
-        NodeKind::Subroutine { .. } | NodeKind::Block { .. } => checkpoints.push(ParseCheckpoint {
-            byte: node.location.start,
-            scope_snapshot: scope.clone(),
-            node_id,
-        }),
+        NodeKind::Subroutine { .. } => {
+            push_parse_checkpoint(checkpoints, node, scope, node_id);
+        }
+        NodeKind::Block { statements } => {
+            push_parse_checkpoint(checkpoints, node, scope, node_id);
+            let saved = scope.clone();
+            walk_statement_list(statements, checkpoints, scope, node_id);
+            *scope = saved;
+        }
         NodeKind::VariableDeclaration { variable, .. } => {
             if let NodeKind::Variable { name, sigil, .. } = &variable.kind {
                 scope.locals.push(format!("{}{}", sigil, name));
@@ -297,19 +297,38 @@ fn walk_ast_for_checkpoints(
                 }
             }
         }
-        _ => {}
-    }
-    match &node.kind {
-        NodeKind::Program { statements } | NodeKind::Block { statements } => {
-            for (i, stmt) in statements.iter().enumerate() {
-                walk_ast_for_checkpoints(
-                    stmt,
-                    checkpoints,
-                    scope,
-                    node_id.wrapping_mul(101).wrapping_add(i),
-                );
-            }
+        NodeKind::Program { statements } => {
+            walk_statement_list(statements, checkpoints, scope, node_id);
         }
         _ => {}
+    }
+}
+
+fn push_parse_checkpoint(
+    checkpoints: &mut Vec<ParseCheckpoint>,
+    node: &Node,
+    scope: &ScopeSnapshot,
+    node_id: usize,
+) {
+    checkpoints.push(ParseCheckpoint {
+        byte: node.location.start,
+        scope_snapshot: scope.clone(),
+        node_id,
+    });
+}
+
+fn walk_statement_list(
+    statements: &[Node],
+    checkpoints: &mut Vec<ParseCheckpoint>,
+    scope: &mut ScopeSnapshot,
+    node_id: usize,
+) {
+    for (i, stmt) in statements.iter().enumerate() {
+        walk_ast_for_checkpoints(
+            stmt,
+            checkpoints,
+            scope,
+            node_id.wrapping_mul(101).wrapping_add(i),
+        );
     }
 }

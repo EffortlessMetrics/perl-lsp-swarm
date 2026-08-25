@@ -18,6 +18,7 @@ use perl_dap::{
     AttachConfiguration, DapConfig, DapMessage, DapMode, DapServer, DapSocketBindError,
     DebugAdapter, LaunchConfiguration,
 };
+use perl_tdd_support::must_err;
 use serde_json::json;
 use std::collections::HashMap;
 use std::io::{self, Write};
@@ -831,7 +832,7 @@ fn native_socket_preserves_bind_error_identity() -> Result<(), Box<dyn std::erro
         DapConfig { log_level: "info".to_string(), mode: DapMode::Native, workspace_root: None };
     let mut server = DapServer::new(config)?;
 
-    let error = server.run_socket(port).expect_err("occupied port must fail before accept");
+    let error = must_err(server.run_socket(port));
     let marker = error
         .downcast_ref::<DapSocketBindError>()
         .ok_or_else(|| io::Error::other("missing DAP bind marker"))?;
