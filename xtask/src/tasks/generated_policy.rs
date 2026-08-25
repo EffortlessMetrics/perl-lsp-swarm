@@ -269,7 +269,7 @@ mod tests {
         assert!(!entry_matches(&exact, "flake.lock"));
         let mut glob = exact.clone();
         glob.path = None;
-        glob.glob = Some("docs/project/status/**.md".into());
+        glob.glob = Some("docs/project/status/**/*.md".into());
         assert!(entry_matches(&glob, "docs/project/status/ci.md"));
     }
 

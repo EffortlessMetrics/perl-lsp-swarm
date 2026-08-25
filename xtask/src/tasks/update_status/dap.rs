@@ -69,6 +69,9 @@ pub(super) fn count_dap_tests(root: &Path) -> DapTestCounts {
                         && !e.file_name().to_string_lossy().starts_with("breakpoints_multiline")
                         && !e.file_name().to_string_lossy().starts_with("breakpoints_pod")
                         && e.file_name().to_string_lossy() != "dap_real_session_data.pl"
+                        // `value_format_stdio_matrix.pl` backs `dap_value_format_stdio_proof`,
+                        // not the launch scorecard (hello, loops, eval, args, begin_end).
+                        && e.file_name().to_string_lossy() != "value_format_stdio_matrix.pl"
                 })
                 .count()
         })
