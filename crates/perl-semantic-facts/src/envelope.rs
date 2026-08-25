@@ -22,6 +22,8 @@ pub enum SemanticFactKind {
     Boundary,
     /// Callable return relation and exit coverage.
     CallableResult,
+    /// Framework route declaration (canonical route fact family).
+    Route,
 }
 
 /// Source identity for a fact's bytes or compiler input snapshot.
