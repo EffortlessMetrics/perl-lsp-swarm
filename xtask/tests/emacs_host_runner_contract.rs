@@ -150,6 +150,46 @@ fn read_checked(relative: &str) -> Result<String> {
     fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))
 }
 
+/// A minimal one-row subject manifest whose declared digest matches the
+/// fake bundled eglot bytes, so plan-builder mechanics stay hermetic while
+/// the bundled path is digest-validated through the subject resolver
+/// (#11744). The checked manifest's real rows stay pinned by the subject
+/// manifest contract tests.
+fn fixture_subject_manifest() -> Result<xtask::emacs_subject_manifest::SubjectManifest> {
+    use sha2::{Digest as ShaDigest, Sha256};
+    use xtask::editor_client_compat::ClientSourceState;
+    use xtask::emacs_subject_manifest::{
+        DigestAudit, MANIFEST_SCHEMA_VERSION, MaterializationMethod, SubjectClientKind,
+        SubjectManifest, SubjectRow,
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(b";; fake bundled eglot.el\n");
+    let digest = format!(
+        "sha256:{}",
+        hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+    );
+    Ok(SubjectManifest {
+        schema_version: MANIFEST_SCHEMA_VERSION.to_string(),
+        subjects: vec![SubjectRow {
+            subject_id: "bundled_eglot_emacs_30_1".to_string(),
+            client_kind: SubjectClientKind::BundledEglot,
+            source_state: ClientSourceState::Bundled,
+            emacs_release_tag: "emacs-30.1".to_string(),
+            emacs_version_token: "30.1".to_string(),
+            client_version_hint: "1.17.30".to_string(),
+            client_source_relative_path: "lisp/progmodes/eglot.el".to_string(),
+            client_source_sha256: digest,
+            materialization: MaterializationMethod::InstallationRootResolution,
+            client_library_forms: vec!["eglot.el".to_string()],
+            digest_audit: DigestAudit {
+                gnu_tarball_url: "https://ftp.gnu.org/gnu/emacs/fixture.tar.xz".to_string(),
+                gnu_tarball_sha256: format!("sha256:{}", "0".repeat(64)),
+                observed_client_version_header: "1.17.30".to_string(),
+            },
+        }],
+    })
+}
+
 const ADAPTER: &str = "scripts/test/emacs-clients/eglot-bundled.el";
 const CONFIGURATION: &str = "scripts/test/emacs-clients/eglot-bundled-config.el";
 
@@ -327,15 +367,19 @@ fn bundled_configuration_carries_only_client_behavior_settings() -> Result<()> {
 }
 
 #[test]
-fn subject_registry_pins_each_exact_client_subject_immutable() {
+fn subject_registry_pins_each_exact_client_subject_immutable() -> Result<()> {
     assert_eq!(
         host_run_task::EmacsClientSubject::known_ids(),
-        &["bundled_eglot_emacs_30_1", "released_eglot_gnu_elpa_1_23"],
+        &["bundled_eglot_emacs_29_4", "bundled_eglot_emacs_30_1", "released_eglot_gnu_elpa_1_23"],
         "each subject is an immutable registry row; new releases are new rows, never silent \
          replacements"
     );
-    let subject = host_run_task::EmacsClientSubject::BundledEglotEmacs301
-        .client_identity(format!("sha256:{}", "0".repeat(64)), None);
+    let manifest = xtask::emacs_subject_manifest::SubjectManifest::load(&workspace_root()?)?;
+    let subject = host_run_task::EmacsClientSubject::BundledEglotEmacs301.client_identity(
+        &manifest,
+        format!("sha256:{}", "0".repeat(64)),
+        None,
+    )?;
     assert_eq!(subject.client_id, "bundled_eglot_emacs_30_1");
     assert_eq!(subject.kind, host_run_task::emacs_host_runner::EmacsClientKind::BundledEglot);
     assert_eq!(subject.version, "1.17.30");
@@ -345,11 +389,24 @@ fn subject_registry_pins_each_exact_client_subject_immutable() {
         subject.package_sha256.is_none(),
         "a bundled subject cannot carry a separate package identity"
     );
+    let emacs_294 = host_run_task::EmacsClientSubject::BundledEglotEmacs294.client_identity(
+        &manifest,
+        format!("sha256:{}", "9".repeat(64)),
+        None,
+    )?;
+    assert_eq!(emacs_294.client_id, "bundled_eglot_emacs_29_4");
+    assert_eq!(emacs_294.version, "1.12.29");
+    assert_eq!(emacs_294.source_ref, "emacs-29.4");
+    assert_eq!(
+        host_run_task::EmacsClientSubject::BundledEglotEmacs294.pinned_emacs_version_token(),
+        "29.4"
+    );
 
     let released = host_run_task::EmacsClientSubject::ReleasedEglotGnuElpa123.client_identity(
+        &manifest,
         format!("sha256:{}", "1".repeat(64)),
         Some(format!("sha256:{}", "2".repeat(64))),
-    );
+    )?;
     assert_eq!(released.client_id, "released_eglot_gnu_elpa_1_23");
     assert_eq!(released.kind, host_run_task::emacs_host_runner::EmacsClientKind::ExternalEglot);
     assert_eq!(released.version, "1.23");
@@ -375,6 +432,7 @@ fn subject_registry_pins_each_exact_client_subject_immutable() {
     );
     assert!(host_run_task::EmacsClientSubject::ReleasedEglotGnuElpa123.requires_client_package());
     assert!(!host_run_task::EmacsClientSubject::BundledEglotEmacs301.requires_client_package());
+    Ok(())
 }
 
 #[test]
@@ -422,6 +480,7 @@ fn run_plan_builder_fails_closed_when_the_exact_host_is_absent() -> Result<()> {
         &"0".repeat(40),
         "perllsp fake",
         "GNU Emacs 30.1 (fake)",
+        &fixture_subject_manifest()?,
     )
     .err()
     .context("a missing exact host must not produce a runnable plan")?;
@@ -452,6 +511,7 @@ fn run_plan_builder_validates_over_the_checked_tree_with_exact_fake_inputs() -> 
         "0123456789abcdef0123456789abcdef01234567",
         "perllsp fake",
         "GNU Emacs 30.1 (fake)",
+        &fixture_subject_manifest()?,
     )?;
     ensure!(
         plan.identity.timeout_ms == 180_000,
@@ -772,6 +832,9 @@ fn released_run_plan_requires_and_binds_package_identity() -> Result<()> {
         "0123456789abcdef0123456789abcdef01234567",
         "perllsp fake",
         "GNU Emacs 30.1 (fake)",
+        // The released row predates the subject manifest and does not
+        // consult its rows; the checked manifest is the honest authority.
+        &xtask::emacs_subject_manifest::SubjectManifest::load(&workspace_root()?)?,
     )
     .err()
     .context("a released subject without its package file must not produce a plan")?;
@@ -799,6 +862,7 @@ fn released_run_plan_requires_and_binds_package_identity() -> Result<()> {
         "0123456789abcdef0123456789abcdef01234567",
         "perllsp fake",
         "GNU Emacs 30.1 (fake)",
+        &xtask::emacs_subject_manifest::SubjectManifest::load(&workspace_root()?)?,
     )?;
     ensure!(
         plan.identity.client.package_sha256.is_some(),
@@ -853,6 +917,7 @@ fn bundled_subject_rejects_a_package_identity() -> Result<()> {
         "0123456789abcdef0123456789abcdef01234567",
         "perllsp fake",
         "GNU Emacs 30.1 (fake)",
+        &fixture_subject_manifest()?,
     )
     .err()
     .context("a bundled subject must not accept a package identity")?;
