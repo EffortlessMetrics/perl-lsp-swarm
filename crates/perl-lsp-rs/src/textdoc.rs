@@ -11,7 +11,7 @@
 //! - **Incremental Updates**: Support for LSP TextDocumentContentChangeEvent
 //! - **Position Safety**: Boundary-checked conversions with graceful clamping
 
-use lsp_types::{Position, Range, TextDocumentContentChangeEvent};
+use gen_lsp_types::{Position, Range, TextDocumentContentChangeEvent};
 use ropey::Rope;
 
 /// Document state using Rope for efficient text operations
@@ -274,19 +274,23 @@ pub fn safe_range_mapping(rope: &Rope, range: &Range, enc: PosEnc) -> Option<Saf
 /// This function correctly converts LSP positions to char indices for rope operations.
 pub fn apply_changes(doc: &mut Doc, changes: &[TextDocumentContentChangeEvent], enc: PosEnc) {
     for ch in changes {
-        if let Some(r) = &ch.range {
-            if !is_forward_range(r) {
-                continue;
+        match ch {
+            TextDocumentContentChangeEvent::TextDocumentContentChangePartial(partial) => {
+                let r = &partial.range;
+                if !is_forward_range(r) {
+                    continue;
+                }
+                // IMPORTANT: Rope::remove and Rope::insert use char indices, not byte offsets
+                let (s, e) = range_to_chars(&doc.rope, r, enc);
+                if s <= e {
+                    doc.rope.remove(s..e);
+                    doc.rope.insert(s, &partial.text);
+                }
             }
-            // IMPORTANT: Rope::remove and Rope::insert use char indices, not byte offsets
-            let (s, e) = range_to_chars(&doc.rope, r, enc);
-            if s <= e {
-                doc.rope.remove(s..e);
-                doc.rope.insert(s, &ch.text);
+            TextDocumentContentChangeEvent::TextDocumentContentChangeWholeDocument(whole) => {
+                // Full document replace — same BOM normalization as didOpen (#5207)
+                doc.rope = Rope::from_str(strip_utf8_bom(&whole.text));
             }
-        } else {
-            // Full document replace — same BOM normalization as didOpen (#5207)
-            doc.rope = Rope::from_str(strip_utf8_bom(&ch.text));
         }
     }
 }
@@ -294,17 +298,18 @@ pub fn apply_changes(doc: &mut Doc, changes: &[TextDocumentContentChangeEvent], 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gen_lsp_types::{
+        Position, Range, TextDocumentContentChangePartial, TextDocumentContentChangeWholeDocument,
+    };
 
     /// Full-document replace must strip a leading UTF-8 BOM so a later
     /// didChange cannot reintroduce the shift that didOpen already fixed.
     #[test]
     fn full_document_replace_strips_utf8_bom() {
         let mut doc = Doc { rope: Rope::from_str("my $x = 1;\n"), version: 1 };
-        let change = TextDocumentContentChangeEvent {
-            range: None,
-            range_length: None,
-            text: "\u{FEFF}my $x = 2;\n".to_string(),
-        };
+        let change = TextDocumentContentChangeEvent::TextDocumentContentChangeWholeDocument(
+            TextDocumentContentChangeWholeDocument { text: "\u{FEFF}my $x = 2;\n".to_string() },
+        );
         apply_changes(&mut doc, &[change], PosEnc::Utf16);
         assert_eq!(doc.rope.to_string(), "my $x = 2;\n");
         assert!(!doc.rope.to_string().starts_with('\u{FEFF}'));
@@ -319,14 +324,16 @@ mod tests {
 
         // Delete the emoji: positions are in UTF-16 code units
         // "hi " = 3 chars/units, emoji = 2 units, so emoji is at [3, 5)
-        let change = TextDocumentContentChangeEvent {
-            range: Some(Range {
-                start: Position { line: 0, character: 3 },
-                end: Position { line: 0, character: 5 },
-            }),
-            range_length: None,
-            text: String::new(),
-        };
+        let change = TextDocumentContentChangeEvent::TextDocumentContentChangePartial(
+            TextDocumentContentChangePartial {
+                range: Range {
+                    start: Position { line: 0, character: 3 },
+                    end: Position { line: 0, character: 5 },
+                },
+                text: String::new(),
+                ..Default::default()
+            },
+        );
 
         apply_changes(&mut doc, &[change], PosEnc::Utf16);
 
@@ -385,14 +392,16 @@ mod tests {
     fn test_apply_change_past_line_end_inserts_before_newline() {
         let mut doc = Doc { rope: Rope::from_str("abc\ndef"), version: 1 };
 
-        let change = TextDocumentContentChangeEvent {
-            range: Some(Range {
-                start: Position { line: 0, character: 99 },
-                end: Position { line: 0, character: 99 },
-            }),
-            range_length: None,
-            text: "!".to_string(),
-        };
+        let change = TextDocumentContentChangeEvent::TextDocumentContentChangePartial(
+            TextDocumentContentChangePartial {
+                range: Range {
+                    start: Position { line: 0, character: 99 },
+                    end: Position { line: 0, character: 99 },
+                },
+                text: "!".to_string(),
+                ..Default::default()
+            },
+        );
 
         apply_changes(&mut doc, &[change], PosEnc::Utf16);
 

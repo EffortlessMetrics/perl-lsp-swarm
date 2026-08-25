@@ -112,7 +112,7 @@ fn test_multiple_parse_errors_diagnostic_collection() {
 fn test_lexer_error_diagnostic_publication() {
     // AC:9
     // Test lexer error token to diagnostic conversion
-    // Expected: DiagnosticSeverity::ERROR, accurate Range, source attribution
+    // Expected: DiagnosticSeverity::Error, accurate Range, source attribution
     // Lexer error diagnostic publication verified - error token to diagnostic conversion
 }
 
@@ -158,9 +158,9 @@ fn test_jsonrpc_error_response_compliance() {
 /// Tests that parser errors map to correct LSP diagnostic severity.
 ///
 /// Validates that:
-/// - Parse errors → DiagnosticSeverity::ERROR
-/// - Lexer errors → DiagnosticSeverity::ERROR
-/// - Warnings → DiagnosticSeverity::WARNING
+/// - Parse errors → DiagnosticSeverity::Error
+/// - Lexer errors → DiagnosticSeverity::Error
+/// - Warnings → DiagnosticSeverity::Warning
 ///
 /// # Specification Reference
 /// - AC9: LSP graceful degradation

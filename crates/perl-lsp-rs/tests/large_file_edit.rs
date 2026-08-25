@@ -3,7 +3,10 @@
 // way it does to production code.
 #![allow(clippy::print_stdout)]
 
-use lsp_types::{Position, Range, TextDocumentContentChangeEvent};
+use gen_lsp_types::{
+    Position, Range, TextDocumentContentChangeEvent, TextDocumentContentChangePartial,
+    TextDocumentContentChangeWholeDocument,
+};
 use perl_lsp::textdoc::{Doc, PosEnc, apply_changes, byte_to_lsp_pos, lsp_pos_to_byte};
 use ropey::Rope;
 use std::time::Instant;
@@ -13,11 +16,9 @@ use std::time::Instant;
 fn large_file_edit() -> Result<(), Box<dyn std::error::Error>> {
     let initial = "a".repeat(100_000);
     let mut doc = Doc { rope: Rope::from_str(&initial), version: 1 };
-    let change = TextDocumentContentChangeEvent {
-        range: None,
-        range_length: None,
-        text: "b".repeat(100_000),
-    };
+    let change = TextDocumentContentChangeEvent::TextDocumentContentChangeWholeDocument(
+        TextDocumentContentChangeWholeDocument { text: "b".repeat(100_000) },
+    );
     apply_changes(&mut doc, &[change], PosEnc::Utf16);
     assert_eq!(doc.rope.len_bytes(), 100_000);
     let first_char = doc.rope.to_string().chars().next().ok_or("Empty rope after edit")?;
@@ -42,17 +43,21 @@ fn large_file_incremental_edits() {
     // Test simple incremental edits with safe positions
     let edits = vec![
         // Insert at beginning
-        TextDocumentContentChangeEvent {
-            range: Some(Range::new(Position::new(0, 0), Position::new(0, 0))),
-            range_length: None,
-            text: "#!/usr/bin/perl\n".to_string(),
-        },
+        TextDocumentContentChangeEvent::TextDocumentContentChangePartial(
+            TextDocumentContentChangePartial {
+                range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+                text: "#!/usr/bin/perl\n".to_string(),
+                ..Default::default()
+            },
+        ),
         // Insert in middle (using a safe position)
-        TextDocumentContentChangeEvent {
-            range: Some(Range::new(Position::new(50, 0), Position::new(50, 0))),
-            range_length: None,
-            text: "# Inserted line\n".to_string(),
-        },
+        TextDocumentContentChangeEvent::TextDocumentContentChangePartial(
+            TextDocumentContentChangePartial {
+                range: Range::new(Position::new(50, 0), Position::new(50, 0)),
+                text: "# Inserted line\n".to_string(),
+                ..Default::default()
+            },
+        ),
     ];
 
     let start_time = Instant::now();

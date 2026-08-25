@@ -7,13 +7,20 @@
 use perl_parser_core::ast::{Node, NodeKind};
 
 #[cfg(feature = "lsp-compat")]
-use lsp_types::LocationLink;
+use gen_lsp_types::LocationLink;
 #[cfg(feature = "lsp-compat")]
 use perl_parser_core::source_file::is_binary_content;
 #[cfg(feature = "lsp-compat")]
 use std::collections::HashMap;
+
+/// Validate a URI string and wrap it in the substrate's String-backed `Uri`.
+///
+/// The selected substrate constructs `Uri` without parsing; this gate preserves
+/// the previous skip-invalid behavior of the removed `Uri::from_str` checks.
 #[cfg(feature = "lsp-compat")]
-use std::str::FromStr;
+fn validated_uri(uri: &str) -> Option<gen_lsp_types::Uri> {
+    url::Url::parse(uri).ok().map(|u| gen_lsp_types::Uri(u.as_str().to_string()))
+}
 
 /// Provides go-to-type-definition functionality for Perl code.
 ///
@@ -523,12 +530,15 @@ impl TypeDefinitionProvider {
                 node.location.end,
             );
 
-        let target_range = lsp_types::Range {
-            start: lsp_types::Position { line: target_start_line, character: target_start_char },
-            end: lsp_types::Position { line: target_end_line, character: target_end_char },
+        let target_range = gen_lsp_types::Range {
+            start: gen_lsp_types::Position {
+                line: target_start_line,
+                character: target_start_char,
+            },
+            end: gen_lsp_types::Position { line: target_end_line, character: target_end_char },
         };
 
-        if let Ok(target_uri) = lsp_types::Uri::from_str(uri) {
+        if let Some(target_uri) = validated_uri(uri) {
             locations.push(LocationLink {
                 origin_selection_range: None,
                 target_uri,
@@ -553,12 +563,15 @@ impl TypeDefinitionProvider {
         let (target_end_line, target_end_char) =
             perl_parser_core::engine::position::offset_to_utf16_line_col(source_text, end_offset);
 
-        let target_range = lsp_types::Range {
-            start: lsp_types::Position { line: target_start_line, character: target_start_char },
-            end: lsp_types::Position { line: target_end_line, character: target_end_char },
+        let target_range = gen_lsp_types::Range {
+            start: gen_lsp_types::Position {
+                line: target_start_line,
+                character: target_start_char,
+            },
+            end: gen_lsp_types::Position { line: target_end_line, character: target_end_char },
         };
 
-        if let Ok(target_uri) = lsp_types::Uri::from_str(uri) {
+        if let Some(target_uri) = validated_uri(uri) {
             locations.push(LocationLink {
                 origin_selection_range: None,
                 target_uri,

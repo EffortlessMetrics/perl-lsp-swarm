@@ -225,7 +225,7 @@ fn test_protocol_consumer_shape_contracts_and_flags() -> Result<(), Box<dyn std:
     assert!(std::mem::size_of::<BuildFlags>() > 0, "BuildFlags should be a concrete type");
 
     // Verify the function is callable (key functionality)
-    let server_caps = lsp_types::ServerCapabilities::default();
+    let server_caps = gen_lsp_types::ServerCapabilities::default();
     let feature_ids = feature_ids_from_caps(&server_caps);
     assert!(feature_ids.is_empty(), "default capabilities should produce empty feature list");
 

@@ -26,28 +26,48 @@
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use std::sync::Arc;
 
-use lsp_types::{NumberOrString, Uri};
+use gen_lsp_types::{Code, Message, Uri};
 use perl_lsp::features::diagnostics::PullDiagnosticsProvider;
+use url::Url;
 
-fn has_code(diag: &lsp_types::Diagnostic, code: &str) -> bool {
-    matches!(&diag.code, Some(NumberOrString::String(s)) if s == code)
+/// Wrap a URI string in the substrate's String-backed `Uri` after validation.
+fn substrate_uri(uri_str: &str) -> Result<Uri, url::ParseError> {
+    Ok(Uri(Url::parse(uri_str)?.as_str().to_string()))
+}
+
+/// Plain-string view of the substrate `Message` union.
+trait MessageStr {
+    fn message_str(&self) -> &str;
+}
+
+impl MessageStr for gen_lsp_types::Diagnostic {
+    fn message_str(&self) -> &str {
+        match &self.message {
+            Message::String(s) => s,
+            Message::MarkupContent(markup) => &markup.value,
+        }
+    }
+}
+
+fn has_code(diag: &gen_lsp_types::Diagnostic, code: &str) -> bool {
+    matches!(&diag.code, Some(Code::String(s)) if s == code)
 }
 
 fn items_from_report(
-    report: lsp_types::DocumentDiagnosticReport,
-) -> Result<Vec<lsp_types::Diagnostic>, Box<dyn std::error::Error>> {
+    report: gen_lsp_types::DocumentDiagnosticReport,
+) -> Result<Vec<gen_lsp_types::Diagnostic>, Box<dyn std::error::Error>> {
     match report {
-        lsp_types::DocumentDiagnosticReport::Full(full) => {
+        gen_lsp_types::DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(full) => {
             Ok(full.full_document_diagnostic_report.items)
         }
-        lsp_types::DocumentDiagnosticReport::Unchanged(_) => {
+        gen_lsp_types::DocumentDiagnosticReport::RelatedUnchangedDocumentDiagnosticReport(_) => {
             Err("expected Full report, got Unchanged".into())
         }
     }
 }
 
-fn has_pl109_for(items: &[lsp_types::Diagnostic], name: &str) -> bool {
-    items.iter().any(|d| has_code(d, "PL109") && d.message.contains(name))
+fn has_pl109_for(items: &[gen_lsp_types::Diagnostic], name: &str) -> bool {
+    items.iter().any(|d| has_code(d, "PL109") && d.message_str().contains(name))
 }
 
 // ── Cases 1 & 2: dynamic import order-awareness via real index_file path ────
@@ -70,7 +90,7 @@ fn case1_dynamic_import_before_bareword_suppresses_pl109() -> Result<(), Box<dyn
     use perl_workspace::workspace_index::WorkspaceIndex;
 
     let uri_str = "file:///test_case1_import_before.pl";
-    let uri: Uri = uri_str.parse()?;
+    let uri: Uri = substrate_uri(uri_str)?;
 
     // Dynamic import at byte 0, bare identifier `bar` at byte ~40.
     // Tests use bare-identifier form (print bar;) because PL109 fires for
@@ -88,7 +108,8 @@ fn case1_dynamic_import_before_bareword_suppresses_pl109() -> Result<(), Box<dyn
         provider.get_document_diagnostics_with_context(&uri, content, None, &context, None),
     )?;
 
-    let pl109_for_bar = items.iter().any(|d| has_code(d, "PL109") && d.message.contains("bar"));
+    let pl109_for_bar =
+        items.iter().any(|d| has_code(d, "PL109") && d.message_str().contains("bar"));
 
     if pl109_for_bar {
         return Err(format!(
@@ -113,7 +134,7 @@ fn case2_dynamic_import_after_bareword_pl109_still_fires() -> Result<(), Box<dyn
     use perl_workspace::workspace_index::WorkspaceIndex;
 
     let uri_str = "file:///test_case2_import_after.pl";
-    let uri: Uri = uri_str.parse()?;
+    let uri: Uri = substrate_uri(uri_str)?;
 
     // Bare identifier `bar` at byte ~25, dynamic import at byte ~35 (after bar).
     let content = "use strict 'subs';\nprint bar;\nFoo->import(@names);\n";
@@ -129,7 +150,8 @@ fn case2_dynamic_import_after_bareword_pl109_still_fires() -> Result<(), Box<dyn
         provider.get_document_diagnostics_with_context(&uri, content, None, &context, None),
     )?;
 
-    let pl109_for_bar = items.iter().any(|d| has_code(d, "PL109") && d.message.contains("bar"));
+    let pl109_for_bar =
+        items.iter().any(|d| has_code(d, "PL109") && d.message_str().contains("bar"));
 
     if !pl109_for_bar {
         return Err(format!(
@@ -155,7 +177,7 @@ fn case3_eval_named_sub_suppresses_pl109_for_that_name() -> Result<(), Box<dyn s
     use perl_workspace::workspace_index::WorkspaceIndex;
 
     let uri_str = "file:///test_eval_suppressed.pl";
-    let uri: Uri = uri_str.parse()?;
+    let uri: Uri = substrate_uri(uri_str)?;
 
     // Use bare identifier form (not function call) so PL109 fires when unsuppressed.
     let content = "use strict 'subs';\n\
@@ -173,8 +195,9 @@ fn case3_eval_named_sub_suppresses_pl109_for_that_name() -> Result<(), Box<dyn s
         provider.get_document_diagnostics_with_context(&uri, content, None, &context, None),
     )?;
 
-    let pl109_for_generated =
-        items.iter().any(|d| has_code(d, "PL109") && d.message.contains("generated_from_string"));
+    let pl109_for_generated = items
+        .iter()
+        .any(|d| has_code(d, "PL109") && d.message_str().contains("generated_from_string"));
 
     if pl109_for_generated {
         return Err(format!(
@@ -196,7 +219,7 @@ fn case4_eval_named_sub_does_not_suppress_unrelated_pl109() -> Result<(), Box<dy
     use perl_workspace::workspace_index::WorkspaceIndex;
 
     let uri_str = "file:///test_eval_unrelated.pl";
-    let uri: Uri = uri_str.parse()?;
+    let uri: Uri = substrate_uri(uri_str)?;
 
     let content = "use strict 'subs';\n\
         eval \"sub generated_from_string { return 1; }\";\n\
@@ -215,8 +238,9 @@ fn case4_eval_named_sub_does_not_suppress_unrelated_pl109() -> Result<(), Box<dy
     )?;
 
     // `generated_from_string` must be suppressed.
-    let pl109_generated =
-        items.iter().any(|d| has_code(d, "PL109") && d.message.contains("generated_from_string"));
+    let pl109_generated = items
+        .iter()
+        .any(|d| has_code(d, "PL109") && d.message_str().contains("generated_from_string"));
     if pl109_generated {
         return Err(format!(
             "Case 4: PL109 must NOT fire for `generated_from_string` \
@@ -227,7 +251,7 @@ fn case4_eval_named_sub_does_not_suppress_unrelated_pl109() -> Result<(), Box<dy
 
     // `truly_undefined` must still fire.
     let pl109_undefined =
-        items.iter().any(|d| has_code(d, "PL109") && d.message.contains("truly_undefined"));
+        items.iter().any(|d| has_code(d, "PL109") && d.message_str().contains("truly_undefined"));
     if !pl109_undefined {
         return Err(format!(
             "Case 4: PL109 MUST fire for `truly_undefined` \
@@ -245,7 +269,7 @@ fn case4_eval_named_sub_does_not_suppress_unrelated_pl109() -> Result<(), Box<dy
 /// undefined barewords. Regression guard for legacy fallback path.
 #[test]
 fn case5_no_semantics_legacy_pl109_still_fires() -> Result<(), Box<dyn std::error::Error>> {
-    let uri: Uri = "file:///test_no_semantics.pl".parse()?;
+    let uri: Uri = substrate_uri("file:///test_no_semantics.pl")?;
 
     // Bareword in strict context without workspace index.
     let content = "use strict 'subs';\nprint some_undefined_bareword;\n";
@@ -279,7 +303,7 @@ fn case7_non_literal_eval_does_not_suppress_bareword_pl109()
     use perl_workspace::workspace_index::WorkspaceIndex;
 
     let uri_str = "file:///test_eval_non_literal_fail_closed.pl";
-    let uri: Uri = uri_str.parse()?;
+    let uri: Uri = substrate_uri(uri_str)?;
 
     let content = "use strict 'subs';\n\
         my $code = $ENV{GENERATED_CODE};\n\
@@ -320,7 +344,7 @@ fn case8_dynamic_import_receiver_does_not_suppress_bareword_pl109()
     use perl_workspace::workspace_index::WorkspaceIndex;
 
     let uri_str = "file:///test_dynamic_import_receiver_fail_closed.pl";
-    let uri: Uri = uri_str.parse()?;
+    let uri: Uri = substrate_uri(uri_str)?;
 
     let content = "use strict 'subs';\n\
         my $class = 'Foo';\n\
@@ -363,7 +387,7 @@ fn case9_eval_sub_declared_after_bareword_fires_pl109() -> Result<(), Box<dyn st
     use perl_workspace::workspace_index::WorkspaceIndex;
 
     let uri_str = "file:///test_case9_eval_after.pl";
-    let uri: Uri = uri_str.parse()?;
+    let uri: Uri = substrate_uri(uri_str)?;
 
     // `foo` bareword at byte ~20; eval-sub declaration is after it.
     // PL109 MUST fire: the eval-sub comes AFTER the usage site.
@@ -403,7 +427,7 @@ fn case9b_eval_sub_declared_before_bareword_still_suppresses()
     use perl_workspace::workspace_index::WorkspaceIndex;
 
     let uri_str = "file:///test_case9b_eval_before.pl";
-    let uri: Uri = uri_str.parse()?;
+    let uri: Uri = substrate_uri(uri_str)?;
 
     let content = "use strict 'subs';\neval \"sub foo { 1 }\";\nprint foo;\n";
 
@@ -439,7 +463,7 @@ fn pull_diagnostics_eval_sub_suppression_via_workspace_context()
     use perl_workspace::workspace_index::WorkspaceIndex;
 
     let uri_str = "file:///test_pull_eval.pl";
-    let uri: Uri = uri_str.parse()?;
+    let uri: Uri = substrate_uri(uri_str)?;
 
     let content = "use strict 'subs';\n\
         eval \"sub pull_generated { return 1; }\";\n\
@@ -457,7 +481,7 @@ fn pull_diagnostics_eval_sub_suppression_via_workspace_context()
     )?;
 
     let pl109_suppressed =
-        items.iter().any(|d| has_code(d, "PL109") && d.message.contains("pull_generated"));
+        items.iter().any(|d| has_code(d, "PL109") && d.message_str().contains("pull_generated"));
 
     if pl109_suppressed {
         return Err(format!(

@@ -6,8 +6,8 @@
 
 use crate::type_hierarchy::TypeHierarchyProvider;
 use crate::util::uri::parse_uri;
-use lsp_types::LocationLink;
-use lsp_types::{Position as LspPosition, Range as LspRange};
+use gen_lsp_types::LocationLink;
+use gen_lsp_types::{Position as LspPosition, Range as LspRange};
 use perl_parser::ast::{Node, NodeKind};
 use perl_parser::workspace_index::WorkspaceIndex;
 use std::collections::HashMap;
@@ -183,14 +183,14 @@ impl ImplementationProvider {
 
         // Then find the method in each subclass, restricted to the subclass package scope
         for (subclass_name, subclass_link) in &subclasses {
-            if let Some(doc_content) = documents.get(subclass_link.target_uri.as_str())
+            if let Some(doc_content) = documents.get(subclass_link.target_uri.as_ref())
                 && let Ok(ast) = crate::Parser::new(doc_content).parse()
             {
                 self.find_method_in_package(
                     &ast,
                     method,
                     subclass_name,
-                    subclass_link.target_uri.as_str(),
+                    subclass_link.target_uri.as_ref(),
                     doc_content,
                     &mut results,
                 );

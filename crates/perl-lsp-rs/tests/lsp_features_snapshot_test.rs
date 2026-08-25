@@ -8,7 +8,7 @@ use support::lsp_harness::LspHarness;
 
 #[test]
 fn test_advertised_features_match_capabilities() -> Result<(), Box<dyn std::error::Error>> {
-    use lsp_types::*;
+    use gen_lsp_types::*;
 
     // Use shared client capabilities for consistency
     let client_caps = support::client_caps::full();

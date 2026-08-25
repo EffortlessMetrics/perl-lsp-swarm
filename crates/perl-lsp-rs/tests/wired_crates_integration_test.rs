@@ -208,7 +208,7 @@ fn test_wired_import_management_collect_imports() {
 /// Capability map helpers must be reachable from perl-lsp-rs-core.
 #[test]
 fn test_wired_capability_map_roundtrip() {
-    use lsp_types::ServerCapabilities;
+    use gen_lsp_types::ServerCapabilities;
     use perl_lsp_rs_core::capability_map::{caps_from_feature_ids, feature_ids_from_caps};
     // Default (empty) capabilities → empty feature list
     let empty_caps = ServerCapabilities::default();

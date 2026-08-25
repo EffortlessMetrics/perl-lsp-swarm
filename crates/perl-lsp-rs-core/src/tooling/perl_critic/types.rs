@@ -2,7 +2,7 @@ use perl_parser_core::position::{Position, Range};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "lsp-compat")]
-use lsp_types;
+use gen_lsp_types;
 
 /// Severity levels for Perl::Critic violations.
 ///
@@ -57,20 +57,20 @@ impl Severity {
     /// Converts this severity to a `DiagnosticSeverity` for LSP reporting.
     ///
     /// Perl::Critic severity 5 ([`Severity::Gentle`], the most severe bucket)
-    /// maps to [`lsp_types::DiagnosticSeverity::ERROR`]; severity 1
+    /// maps to [`gen_lsp_types::DiagnosticSeverity::Error`]; severity 1
     /// ([`Severity::Brutal`], the least severe bucket) maps to
-    /// [`lsp_types::DiagnosticSeverity::HINT`]. See the type-level docs for
+    /// [`gen_lsp_types::DiagnosticSeverity::Hint`]. See the type-level docs for
     /// why the variant names run opposite to the numbers.
     ///
     /// This is the single source of truth for the perlcritic-to-LSP severity
     /// mapping. Call it rather than re-deriving the `match` at a call site.
     #[cfg(feature = "lsp-compat")]
-    pub fn to_diagnostic_severity(self) -> lsp_types::DiagnosticSeverity {
+    pub fn to_diagnostic_severity(self) -> gen_lsp_types::DiagnosticSeverity {
         match self {
-            Self::Gentle => lsp_types::DiagnosticSeverity::ERROR,
-            Self::Stern | Self::Harsh => lsp_types::DiagnosticSeverity::WARNING,
-            Self::Cruel => lsp_types::DiagnosticSeverity::INFORMATION,
-            Self::Brutal => lsp_types::DiagnosticSeverity::HINT,
+            Self::Gentle => gen_lsp_types::DiagnosticSeverity::Error,
+            Self::Stern | Self::Harsh => gen_lsp_types::DiagnosticSeverity::Warning,
+            Self::Cruel => gen_lsp_types::DiagnosticSeverity::Information,
+            Self::Brutal => gen_lsp_types::DiagnosticSeverity::Hint,
         }
     }
 
@@ -179,12 +179,12 @@ mod severity_direction_tests {
     fn numeric_severity_five_is_most_severe_and_maps_to_error() {
         assert_eq!(
             Severity::from_number(5).to_diagnostic_severity(),
-            lsp_types::DiagnosticSeverity::ERROR,
+            gen_lsp_types::DiagnosticSeverity::Error,
             "perlcritic severity 5 is the MOST severe and must surface as an LSP Error"
         );
         assert_eq!(
             Severity::from_number(1).to_diagnostic_severity(),
-            lsp_types::DiagnosticSeverity::HINT,
+            gen_lsp_types::DiagnosticSeverity::Hint,
             "perlcritic severity 1 is the LEAST severe and must surface as an LSP Hint"
         );
     }
@@ -194,17 +194,17 @@ mod severity_direction_tests {
         // Higher perlcritic number == worse code == more prominent LSP
         // severity. `DiagnosticSeverity` numbers run the other way (ERROR is
         // 1), so descending perlcritic scores must be non-decreasing here.
-        let ordered: Vec<lsp_types::DiagnosticSeverity> =
+        let ordered: Vec<gen_lsp_types::DiagnosticSeverity> =
             (1..=5).rev().map(|n| Severity::from_number(n).to_diagnostic_severity()).collect();
 
         assert_eq!(
             ordered,
             vec![
-                lsp_types::DiagnosticSeverity::ERROR,       // 5
-                lsp_types::DiagnosticSeverity::WARNING,     // 4
-                lsp_types::DiagnosticSeverity::WARNING,     // 3
-                lsp_types::DiagnosticSeverity::INFORMATION, // 2
-                lsp_types::DiagnosticSeverity::HINT,        // 1
+                gen_lsp_types::DiagnosticSeverity::Error,       // 5
+                gen_lsp_types::DiagnosticSeverity::Warning,     // 4
+                gen_lsp_types::DiagnosticSeverity::Warning,     // 3
+                gen_lsp_types::DiagnosticSeverity::Information, // 2
+                gen_lsp_types::DiagnosticSeverity::Hint,        // 1
             ],
             "perlcritic 5..=1 must map to a non-increasing severity ramp"
         );

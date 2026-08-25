@@ -2,7 +2,7 @@
 //!
 //! Decision D5 specified optional gating of lsp-types via lsp-compat feature.
 //! Orchestrator decision (Option A): Keep lsp-types as required, lsp-compat as signal feature.
-//! Rationale: rs-core uses lsp_types unconditionally in 5+ modules (capability_map, protocol,
+//! Rationale: rs-core uses gen_lsp_types unconditionally in 5+ modules (capability_map, protocol,
 //! providers, tooling, uri), making conditional compilation invasive. Real optional-gating
 //! (WASM-style builds) is deferred as a follow-up issue.
 //!
@@ -24,7 +24,7 @@ fn g3_lsp_compat_feature_signal_not_gating() {
     // Keep lsp-types as REQUIRED, not optional. Keep lsp-compat as an empty SIGNAL feature.
     //
     // Rationale: capability_map, protocol, providers, tooling, and uri modules all use
-    // lsp_types unconditionally. Making it optional requires invasive per-module cfg gating.
+    // gen_lsp_types unconditionally. Making it optional requires invasive per-module cfg gating.
     // The lsp-compat feature is a consumer signal for dependent crates like perl-lsp-rs
     // that need compatibility tracking. Real optional-gating for WASM-style builds is
     // deferred as a follow-up issue.

@@ -1,4 +1,7 @@
-use lsp_types::{Position, Range, TextDocumentContentChangeEvent};
+use gen_lsp_types::{
+    Position, Range, TextDocumentContentChangeEvent, TextDocumentContentChangePartial,
+    TextDocumentContentChangeWholeDocument,
+};
 use perl_lsp::textdoc::{Doc, PosEnc, apply_changes, safe_range_mapping};
 use ropey::Rope;
 
@@ -37,11 +40,9 @@ fn multibyte_boundary_edit_is_rejected_for_incremental_mapping() -> TestResult {
 #[test]
 fn full_document_replacement_event_is_conservative_by_definition() -> TestResult {
     let mut doc = Doc { rope: Rope::from_str("old\n"), version: 1 };
-    let full_replace = TextDocumentContentChangeEvent {
-        range: None,
-        range_length: None,
-        text: "new\n".to_string(),
-    };
+    let full_replace = TextDocumentContentChangeEvent::TextDocumentContentChangeWholeDocument(
+        TextDocumentContentChangeWholeDocument { text: "new\n".to_string() },
+    );
 
     apply_changes(&mut doc, &[full_replace], PosEnc::Utf16);
     assert_eq!(doc.rope.to_string(), "new\n");
@@ -52,23 +53,27 @@ fn full_document_replacement_event_is_conservative_by_definition() -> TestResult
 fn malformed_ranges_do_not_panic_or_corrupt_following_changes() -> TestResult {
     let mut doc = Doc { rope: Rope::from_str("my $x = 1;\n"), version: 1 };
 
-    let malformed = TextDocumentContentChangeEvent {
-        range: Some(Range {
-            start: Position { line: 0, character: 9 },
-            end: Position { line: 0, character: 2 },
-        }),
-        range_length: None,
-        text: "BROKEN".to_string(),
-    };
+    let malformed = TextDocumentContentChangeEvent::TextDocumentContentChangePartial(
+        TextDocumentContentChangePartial {
+            range: Range {
+                start: Position { line: 0, character: 9 },
+                end: Position { line: 0, character: 2 },
+            },
+            text: "BROKEN".to_string(),
+            ..Default::default()
+        },
+    );
 
-    let valid = TextDocumentContentChangeEvent {
-        range: Some(Range {
-            start: Position { line: 0, character: 8 },
-            end: Position { line: 0, character: 9 },
-        }),
-        range_length: None,
-        text: "2".to_string(),
-    };
+    let valid = TextDocumentContentChangeEvent::TextDocumentContentChangePartial(
+        TextDocumentContentChangePartial {
+            range: Range {
+                start: Position { line: 0, character: 8 },
+                end: Position { line: 0, character: 9 },
+            },
+            text: "2".to_string(),
+            ..Default::default()
+        },
+    );
 
     apply_changes(&mut doc, &[malformed, valid], PosEnc::Utf16);
     assert_eq!(doc.rope.to_string(), "my $x = 2;\n");
@@ -129,22 +134,26 @@ fn utf8_range_inside_multibyte_character_is_rejected_for_incremental_mapping() -
 fn sequential_changes_can_replace_crlf_line_and_then_append() -> TestResult {
     let mut doc = Doc { rope: Rope::from_str("my $x = 1;\r\nprint $x;\r\n"), version: 1 };
     let changes = vec![
-        TextDocumentContentChangeEvent {
-            range: Some(Range {
-                start: Position { line: 0, character: 8 },
-                end: Position { line: 0, character: 9 },
-            }),
-            range_length: None,
-            text: "2".to_string(),
-        },
-        TextDocumentContentChangeEvent {
-            range: Some(Range {
-                start: Position { line: 1, character: 9 },
-                end: Position { line: 1, character: 9 },
-            }),
-            range_length: None,
-            text: " # updated".to_string(),
-        },
+        TextDocumentContentChangeEvent::TextDocumentContentChangePartial(
+            TextDocumentContentChangePartial {
+                range: Range {
+                    start: Position { line: 0, character: 8 },
+                    end: Position { line: 0, character: 9 },
+                },
+                text: "2".to_string(),
+                ..Default::default()
+            },
+        ),
+        TextDocumentContentChangeEvent::TextDocumentContentChangePartial(
+            TextDocumentContentChangePartial {
+                range: Range {
+                    start: Position { line: 1, character: 9 },
+                    end: Position { line: 1, character: 9 },
+                },
+                text: " # updated".to_string(),
+                ..Default::default()
+            },
+        ),
     ];
 
     apply_changes(&mut doc, &changes, PosEnc::Utf16);
