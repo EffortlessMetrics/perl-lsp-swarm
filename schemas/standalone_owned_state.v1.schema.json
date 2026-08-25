@@ -269,7 +269,34 @@
             "sha256": {
               "$ref": "#/$defs/sha256"
             }
-          }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "kind": { "enum": ["sha256_content", "directory_tree_digest"] }
+                },
+                "required": ["kind"]
+              },
+              "then": {
+                "required": ["kind", "sha256"]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": { "const": "unavailable" }
+                },
+                "required": ["kind"]
+              },
+              "then": {
+                "properties": {
+                  "sha256": false
+                }
+              }
+            }
+          ],
+          "description": "Digest-backed identity or an honest unavailable marker: sha256_content and directory_tree_digest require sha256; unavailable forbids it."
         },
         "process_refs": {
           "type": "array",

@@ -87,6 +87,92 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "result": { "const": "removed" } },
+        "required": ["result"]
+      },
+      "then": {
+        "properties": {
+          "complete_evidence": { "const": true },
+          "retryable": { "const": false },
+          "removed_entries": { "minItems": 1 },
+          "failed_entries": { "maxItems": 0 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "result": { "const": "already_absent_owned_state" } },
+        "required": ["result"]
+      },
+      "then": {
+        "properties": {
+          "complete_evidence": { "const": true },
+          "removed_entries": { "maxItems": 0 },
+          "failed_entries": { "maxItems": 0 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "result": { "const": "partial_failure" } },
+        "required": ["result"]
+      },
+      "then": {
+        "properties": {
+          "failed_entries": { "minItems": 1 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "result": { "const": "path_cleanup_failed" } },
+        "required": ["result"]
+      },
+      "then": {
+        "properties": {
+          "failed_entries": { "minItems": 1 },
+          "removed_entries": { "minItems": 1 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "result": { "const": "not_applicable" } },
+        "required": ["result"]
+      },
+      "then": {
+        "properties": {
+          "activation_state": { "const": "conditional_activation_selected" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "result": {
+            "enum": [
+              "blocked_running",
+              "blocked_unknown_or_foreign",
+              "root_or_manifest_mismatch",
+              "cancelled",
+              "instrument_failure",
+              "not_proven"
+            ]
+          }
+        },
+        "required": ["result"]
+      },
+      "then": {
+        "properties": {
+          "removed_entries": { "maxItems": 0 },
+          "failed_entries": { "maxItems": 0 }
+        }
+      }
+    }
+  ],
   "$defs": {
     "failure_stage": {
       "enum": ["verify", "remove", "marker_cleanup", "postcondition"]

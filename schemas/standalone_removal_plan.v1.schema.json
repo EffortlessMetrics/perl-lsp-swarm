@@ -133,7 +133,40 @@
           "type": "string",
           "minLength": 1
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "action": { "enum": ["remove_exact", "remove_marker"] }
+            },
+            "required": ["action"]
+          },
+          "then": {
+            "required": [
+              "relative_path",
+              "action",
+              "order_index",
+              "verified_identity_sha256",
+              "reason"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": { "enum": ["preserve", "revalidate"] }
+            },
+            "required": ["action"]
+          },
+          "then": {
+            "properties": {
+              "verified_identity_sha256": false
+            }
+          }
+        }
+      ],
+      "description": "Destructive rows (remove_exact/remove_marker) must carry verified_identity_sha256; non-destructive rows (preserve/revalidate) must not."
     }
   }
 }
