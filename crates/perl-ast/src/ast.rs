@@ -4623,6 +4623,10 @@ mod deep_tree_destruction_tests {
     }
 
     /// Iterative structure check for trees too deep for derived [`PartialEq`].
+    ///
+    /// Compares kind name, location, child cardinality, and `Number` payloads.
+    /// Non-Number payload fidelity at adversarial depth is the derived
+    /// [`NodeKind`] clone; shallow fixtures use public [`PartialEq`].
     fn assert_iterative_shape_eq(left: &Node, right: &Node) {
         let mut stack = vec![(left, right)];
         while let Some((left, right)) = stack.pop() {
@@ -5285,6 +5289,25 @@ mod deep_tree_destruction_tests {
         let (cloned_else, else_work) = clone_and_count(&with_else);
         assert_eq!(else_work.child_edges, 3);
         assert_eq!(cloned_else, with_else);
+    }
+
+    #[test]
+    fn cloned_tree_releases_every_node() {
+        let _ = drop_audit::take_counts();
+        let original = chain_of(DEEP_CYCLE_DEPTH, wrap_boxed);
+        let cloned = original.clone();
+        drop(cloned);
+        drop(original);
+        let (constructed, destroyed) = drop_audit::take_counts();
+        assert_eq!(
+            constructed, destroyed,
+            "clone+drop constructed {constructed} nodes but destroyed {destroyed}"
+        );
+        assert!(
+            destroyed >= (DEEP_CYCLE_DEPTH + 1) as u64,
+            "clone+drop destroyed only {destroyed} of at least {} original nodes",
+            DEEP_CYCLE_DEPTH + 1
+        );
     }
 
     #[test]

@@ -99,12 +99,14 @@ impl Drop for ShellCloneGuard {
 }
 
 fn clone_slot_placeholder() -> Node {
-    Node { kind: NodeKind::Ellipsis, location: SourceLocation { start: 0, end: 0 } }
+    // Same constructor Drop uses for detached slots so clone-created nodes
+    // participate in `drop_audit` rather than destroying without a construct.
+    Node::new(NodeKind::Ellipsis, SourceLocation { start: 0, end: 0 })
 }
 
 fn clone_payload_shell(source: &Node) -> Node {
     let _guard = ShellCloneGuard::enter();
-    Node { kind: source.kind.clone(), location: source.location }
+    Node::new(source.kind.clone(), source.location)
 }
 
 fn take_last_n_reversed(done: &mut Vec<Node>, n: usize) -> Vec<Node> {
