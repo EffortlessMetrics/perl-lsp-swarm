@@ -6,9 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from .common import ReceiptError, parse_digest, sha256_file
+from .dap_cache import EXPECTED_SCENARIOS
 from .dap_contract import DAP_MANAGED_PREFIX, validate_dap_contract
 
 DAP_RECEIPT_SCHEMA = "zed_perl_dap_asset_receipt.v1"
+CACHE_RECOVERY_PROVEN = "proven_isolated_cache_model_only"
 
 
 def _verifier_matches(verifier: dict[str, Any], row: dict[str, Any]) -> bool:
@@ -79,11 +81,42 @@ def validate_dap_receipt(
     if not isinstance(verifier, dict) or not verifier.get("os") or not verifier.get("architecture"):
         raise ReceiptError("passing receipt must bind its verifier host")
 
+    # The release, topology, and projection blocks are bound to the exact
+    # checked contract subjects, so a receipt cannot carry evidence for a
+    # different release while quoting the real contract digest.
+    source = contract["source"]
+    if (
+        release.get("id") != source.get("release_id")
+        or release.get("tag") != source.get("tag")
+        or release.get("version") != source.get("version")
+        or release.get("producer") != source.get("producer")
+    ):
+        raise ReceiptError(
+            "receipt release identity does not match the checked contract source"
+        )
+    bindings = contract["bindings"]
+    if receipt.get("topology") != {
+        "subject": bindings["topology"]["path"],
+        "sha256": bindings["topology"]["sha256"],
+    }:
+        raise ReceiptError("receipt topology binding does not match the checked contract")
+    if receipt.get("projection") != {
+        "zed_adapter_subject": bindings["zed_adapter_projection"]["path"],
+        "sha256": bindings["zed_adapter_projection"]["sha256"],
+        "debug_adapter_id": bindings["zed_adapter_projection"]["debug_adapter_id"],
+    }:
+        raise ReceiptError("receipt projection binding does not match the checked contract")
+
     rows = receipt.get("targets")
     if not isinstance(rows, list) or not rows:
         raise ReceiptError("passing receipt must contain target rows")
 
     expected_targets = {row["target"]: row.get("disposition") for row in contract["targets"]}
+    contract_rows = {
+        str(row["target"]): row
+        for row in contract["targets"]
+        if row.get("disposition") == "managed"
+    }
     actual_targets: dict[str, Any] = {}
     executed = 0
     managed = 0
@@ -121,6 +154,34 @@ def validate_dap_receipt(
                 "receipt installed path must stay inside the perl-dap-managed- boundary"
             )
 
+        # Every row is bound to the exact contract subject: asset identity,
+        # archive digests, member path, and binary digest are compared, not
+        # merely syntax-checked, so fabricated or stale byte evidence for the
+        # same target cannot pose as the checked subject.
+        checked = contract_rows.get(target_name)
+        if not isinstance(checked, dict):
+            raise ReceiptError(f"managed target {target_name} is absent from the contract")
+        if (
+            asset.get("id") != checked.get("asset_id")
+            or asset.get("name") != checked.get("asset_name")
+            or asset.get("sha256") != checked.get("asset_digest")
+            or asset.get("archive_type") != checked.get("archive_type")
+        ):
+            raise ReceiptError(
+                f"receipt asset identity for {target_name} does not match the checked contract"
+            )
+        if (
+            archive.get("required_member") != checked.get("archive_member")
+            or archive.get("installed_path") != checked.get("installed_path")
+        ):
+            raise ReceiptError(
+                f"receipt archive member/path for {target_name} does not match the contract"
+            )
+        if binary.get("sha256") != checked.get("member_sha256"):
+            raise ReceiptError(
+                f"receipt perl-dap member digest for {target_name} does not match the contract"
+            )
+
         if row.get("result") == "managed_executed":
             executed += 1
             if not _verifier_matches(verifier, row):
@@ -144,6 +205,31 @@ def validate_dap_receipt(
     cache = receipt.get("cache_recovery")
     if not isinstance(cache, dict) or cache.get("result") != "pass":
         raise ReceiptError("passing receipt lacks a passing managed-DAP cache recovery suite")
+    scenarios = cache.get("scenario_results")
+    if not isinstance(scenarios, list):
+        raise ReceiptError("cache recovery block lacks scenario results")
+    observed_names = [
+        row.get("scenario")
+        for row in scenarios
+        if isinstance(row, dict) and isinstance(row.get("scenario"), str)
+    ]
+    if sorted(observed_names) != sorted(EXPECTED_SCENARIOS):
+        raise ReceiptError(
+            "cache recovery scenario set does not match the complete expected denominator"
+        )
+    for row in scenarios:
+        if row.get("known_good_preserved") is not True:
+            raise ReceiptError(
+                f"cache recovery scenario {row.get('scenario')!r} is not preserved"
+            )
+    if not isinstance(cache.get("known_good_before"), dict) or not isinstance(
+        cache.get("selected_after"), dict
+    ):
+        raise ReceiptError("cache recovery block lacks known-good/selected evidence")
+    if boundary.get("cache_recovery") != CACHE_RECOVERY_PROVEN:
+        raise ReceiptError(
+            "passing receipt must bound its cache proof to the isolated model"
+        )
 
     dap_process = boundary.get("dap_process")
     if executed and dap_process != "proven_for_matching_host_only":

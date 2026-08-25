@@ -157,13 +157,15 @@
       "member_digest_mismatch",
       "unsafe_archive_path",
       "duplicate_member",
+      "foreign_executable_member",
       "missing_member",
       "partial_download",
       "extraction_failure",
       "launch_failure",
-      "protocol_impurity"
+      "protocol_impurity",
+      "promote_failure"
     ],
-    "staging_is_private": "Every candidate is staged in a .tmp sibling and promoted by atomic rename only after the member exists with the expected digest; a partial extraction is never visible at the durable path.",
+    "staging_is_private": "Every candidate is staged in a .tmp sibling and promoted by a retire-and-swap rename that rolls the incumbent back on promote failure; a partial extraction is never visible at the durable path and the incumbent is never deleted before the replacement is in place.",
     "cleanup_scope": "older directories matching the exact perl-dap-managed- prefix only; cleanup must never remove perllsp- or perl-lsp- language-server caches, another debugger, user binaries, or unrelated cache state"
   },
   "claim_boundary": {

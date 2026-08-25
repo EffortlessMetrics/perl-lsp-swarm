@@ -16,8 +16,10 @@ boundary it manages — independently of Zed:
 release metadata
   < downloaded bytes, independent SHA-256, and the release SHA256SUMS asset
   < safe archive inspection and exact perl-dap member extraction
-  < exact-host perl-dap --version and DAP initialize/initialized/disconnect/terminated
-  < offline managed-cache known-good preservation suite
+  < exact-host perl-dap --version (exact canonical `perl-dap <version>` line) and the
+  DAP initialize/disconnect exchange with its partial-order transcript proof
+  (initialize before disconnect, initialized before terminated, terminated last)
+  < offline managed-cache known-good preservation suite (16 scenarios)
   < real Zed debug session (#9486) and official-registry journey (#9487)
 ```
 
@@ -106,8 +108,11 @@ Windows x86_64 or emulation evidence.
 ## Evidence boundary
 
 This lane proves public asset bytes, archive assumptions, the matching
-host's bounded adapter process lifecycle, and managed-cache preservation
-semantics. It does not prove Zed registration, configuration, launch, a real
+host's bounded adapter process lifecycle, and the preservation semantics of
+the isolated managed-DAP cache model this lane owns (`cache_recovery:
+proven_isolated_cache_model_only`). The production Zed downloader in the
+extension fixture is a different implementation surface owned by #9485 and
+is deliberately not claimed here. It does not prove Zed registration, configuration, launch, a real
 debug session (#9486), official-registry installation (#9487), breakpoint/
 stack/variables behavior, or public support projection (#9489).
 

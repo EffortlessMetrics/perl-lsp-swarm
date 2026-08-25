@@ -342,7 +342,14 @@ def execute_dap(
             if any(row["result"] == "managed_executed" for row in receipt["targets"])
             else "not_executed_on_this_verifier"
         )
-        receipt["claim_boundary"]["cache_recovery"] = "proven"
+        # The cache-recovery suite proves the isolated managed-DAP cache model
+        # the receipt lane owns; the production Zed downloader in the extension
+        # fixture is a different implementation surface owned by #9485.
+        receipt["claim_boundary"]["cache_recovery"] = "proven_isolated_cache_model_only"
+        receipt["cache_recovery"]["limitations"].append(
+            "The production Zed extension downloader is not exercised by this "
+            "suite; the fixture route is owned by #9485 and remains unproven here."
+        )
         return write_receipt(output_path, receipt, exit_code=0)
     except ReceiptError as error:
         receipt["result"] = "fail"

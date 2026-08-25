@@ -36,11 +36,13 @@ PRESERVE_KNOWN_GOOD_ON = [
     "member_digest_mismatch",
     "unsafe_archive_path",
     "duplicate_member",
+    "foreign_executable_member",
     "missing_member",
     "partial_download",
     "extraction_failure",
     "launch_failure",
     "protocol_impurity",
+    "promote_failure",
 ]
 
 

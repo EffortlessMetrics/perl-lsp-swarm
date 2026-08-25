@@ -19,10 +19,30 @@ from .common import ReceiptError, sha256_bytes, validate_relative_member
 
 SHARED_BINARY_NAMES = {"perllsp", "perllsp.exe", "perl-dap", "perl-dap.exe"}
 ARCHIVE_SUMS_MEMBER_SUFFIX = "/SHA256SUMS.txt"
+WINDOWS_EXECUTABLE_SUFFIXES = (".exe", ".bat", ".cmd")
 
 
 def _is_known_binary(name: str) -> bool:
     return PurePosixPath(name.replace("\\", "/")).name.lower() in SHARED_BINARY_NAMES
+
+
+def _reject_foreign_executable(normalized: str, mode: int | None) -> None:
+    """Reject any executable member outside the permitted shared-family binaries.
+
+    A foreign payload that merely carries a different name is not enough to
+    trust it: an archive is only `safe` when nothing executable ships except
+    the two known products. On tar members the executable mode bits are the
+    authority; on zip members the Windows executable suffixes and the stored
+    external mode both count.
+    """
+    basename = PurePosixPath(normalized.replace("\\", "/")).name.lower()
+    suffix_executable = basename.endswith(WINDOWS_EXECUTABLE_SUFFIXES)
+    mode_executable = mode is not None and mode & 0o111 != 0
+    if (suffix_executable or mode_executable) and basename not in SHARED_BINARY_NAMES:
+        raise ReceiptError(
+            f"unexpected executable member: {normalized!r} "
+            f"(mode {mode:o}) is outside the shared perllsp/perl-dap family"
+        )
 
 
 def _zip_is_symlink(info: zipfile.ZipInfo) -> bool:
@@ -63,6 +83,8 @@ def inspect_tar(path: Path, expected_member: str) -> list[str]:
                 _check_member(normalized, seen, expected_member)
                 if member.issym() or member.islnk():
                     raise ReceiptError(f"archive links are not accepted: {normalized}")
+                if member.isfile():
+                    _reject_foreign_executable(normalized, member.mode)
                 if normalized == expected_member:
                     if member.name != expected_member:
                         raise ReceiptError(
@@ -90,6 +112,8 @@ def inspect_zip(path: Path, expected_member: str) -> list[str]:
                 _check_member(normalized, seen, expected_member)
                 if _zip_is_symlink(info):
                     raise ReceiptError(f"archive symlink is not accepted: {normalized}")
+                if not info.is_dir():
+                    _reject_foreign_executable(normalized, (info.external_attr >> 16) & 0xFFFF)
                 if normalized == expected_member:
                     if info.filename.rstrip("/") != expected_member:
                         raise ReceiptError(

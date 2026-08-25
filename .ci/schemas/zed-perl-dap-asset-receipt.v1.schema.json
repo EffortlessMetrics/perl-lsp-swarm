@@ -100,7 +100,7 @@
         "asset_bytes": {"enum": ["not_run", "proven"]},
         "archive_layout": {"enum": ["not_run", "proven"]},
         "dap_process": {"enum": ["not_run", "proven_for_matching_host_only", "not_executed_on_this_verifier"]},
-        "cache_recovery": {"enum": ["not_run", "proven"]},
+        "cache_recovery": {"enum": ["not_run", "proven_isolated_cache_model_only"]},
         "real_zed_debug_session": {"const": "not_proven"},
         "actual_zed": {"const": "not_proven"},
         "public_registry": {"const": "not_proven"}

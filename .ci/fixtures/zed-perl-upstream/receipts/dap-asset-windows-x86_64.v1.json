@@ -2,7 +2,7 @@
   "cache_recovery": {
     "known_good_before": {
       "archive_member": "perllsp-9.9.9-x86_64-unknown-linux-musl/perl-dap",
-      "asset_digest": "sha256:a1786ae904ec990fd38b0dcd62a420e9bcfff18b520843e8fc567730018e6268",
+      "asset_digest": "sha256:9bf7ea887985e7e9345d585a30287a570f1fb1579c0464493cf11250148ca00e",
       "asset_name": "good.tar.gz",
       "installed_binary": "perl-dap-managed-9.9.9-x86_64-unknown-linux-musl/perl-dap",
       "member_sha256": "sha256:382ace2b8bab5c10705b07514cd66c4d70e375cc025f87c83edc14ac49cf04cb",
@@ -10,7 +10,8 @@
       "version": "9.9.9"
     },
     "limitations": [
-      "Offline synthetic archives: the suite proves the managed-DAP cache boundary and preservation semantics, not live GitHub release state."
+      "Offline synthetic archives: the suite proves the managed-DAP cache boundary and preservation semantics, not live GitHub release state.",
+      "The production Zed extension downloader is not exercised by this suite; the fixture route is owned by #9485 and remains unproven here."
     ],
     "result": "pass",
     "scenario_results": [
@@ -40,7 +41,7 @@
         "scenario": "wrong_product_member_preserves_known_good"
       },
       {
-        "detail": "digest_mismatch: downloaded 'good.tar.gz' digest sha256:a1786ae904ec990fd38b0dcd62a420e9bcfff18b520843e8fc567730018e6268 does not match the retained digest sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "detail": "digest_mismatch: downloaded 'good.tar.gz' digest sha256:9bf7ea887985e7e9345d585a30287a570f1fb1579c0464493cf11250148ca00e does not match the retained digest sha256:1111111111111111111111111111111111111111111111111111111111111111",
         "known_good_preserved": true,
         "scenario": "digest_mismatch_preserves_known_good"
       },
@@ -53,6 +54,11 @@
         "detail": "unsafe archive member path: '../evil'",
         "known_good_preserved": true,
         "scenario": "unsafe_archive_path_preserves_known_good"
+      },
+      {
+        "detail": "unexpected executable member: 'perllsp-9.9.9-x86_64-unknown-linux-musl/payload' (mode 755) is outside the shared perllsp/perl-dap family",
+        "known_good_preserved": true,
+        "scenario": "foreign_executable_member_preserves_known_good"
       },
       {
         "detail": "duplicate archive member: perllsp-9.9.9-x86_64-unknown-linux-musl/perl-dap",
@@ -80,6 +86,11 @@
         "scenario": "protocol_impurity_preserves_known_good"
       },
       {
+        "detail": "promote_failure: simulated promote failure",
+        "known_good_preserved": true,
+        "scenario": "promote_failure_preserves_known_good"
+      },
+      {
         "detail": "cleanup removed exactly the superseded managed-DAP entries",
         "known_good_preserved": true,
         "scenario": "cleanup_stays_inside_the_perl_dap_family"
@@ -87,7 +98,7 @@
     ],
     "selected_after": {
       "archive_member": "perllsp-9.9.9-x86_64-unknown-linux-musl/perl-dap",
-      "asset_digest": "sha256:a1786ae904ec990fd38b0dcd62a420e9bcfff18b520843e8fc567730018e6268",
+      "asset_digest": "sha256:9bf7ea887985e7e9345d585a30287a570f1fb1579c0464493cf11250148ca00e",
       "asset_name": "good.tar.gz",
       "installed_binary": "perl-dap-managed-9.9.9-x86_64-unknown-linux-musl/perl-dap",
       "member_sha256": "sha256:382ace2b8bab5c10705b07514cd66c4d70e375cc025f87c83edc14ac49cf04cb",
@@ -99,7 +110,7 @@
     "actual_zed": "not_proven",
     "archive_layout": "proven",
     "asset_bytes": "proven",
-    "cache_recovery": "proven",
+    "cache_recovery": "proven_isolated_cache_model_only",
     "dap_process": "proven_for_matching_host_only",
     "public_registry": "not_proven",
     "real_zed_debug_session": "not_proven"
@@ -107,7 +118,7 @@
   "contract": {
     "relative_path": ".ci/fixtures/zed-perl-upstream/perl-dap-managed-downloads.v1.json",
     "schema_version": "zed_perl_dap_managed_downloads.v1",
-    "sha256": "sha256:eb8f0f3033aed09d9f4f20e398aa3d84eaab93b7b1cf8e909eec144ef1b497c2"
+    "sha256": "sha256:420308d64d3e57f888caa7cd43c7f5eebbda2284e36bf70617c128749a7bbd03"
   },
   "currentness": {
     "invalidators": [
@@ -118,7 +129,7 @@
     ]
   },
   "limitations": [],
-  "observed_at": "2026-08-24T23:26:14.036018Z",
+  "observed_at": "2026-08-25T01:18:40.558700Z",
   "projection": {
     "debug_adapter_id": "perl-dap",
     "sha256": "sha256:a567b4e613a53c1c8b527c590b3ca1d83c7611f678eb1d8fc8cad50dbfa3cf5b",
@@ -304,17 +315,17 @@
         "frames": 4,
         "initialize_response": true,
         "initialized_event": true,
-        "launched_pid": 162608,
+        "launched_pid": 200004,
         "orphan_result": "no_orphans",
         "process_exit": 0,
         "process_inventory_after": [],
         "process_inventory_after_launch": [
-          162608
+          200004
         ],
         "process_inventory_before": [],
         "result": "pass",
-        "stderr_sha256": "sha256:5694b6d2e78a7978b4d975628d7e000a46130360892a5d5ee0cb727911ef6a77",
-        "stderr_tail": "2026-08-24T23:26:18.841509Z  INFO perl_lsp_rs_core::runtime::launcher: server starting server=\"perl-dap\" version=\"0.17.0\" transport=\"stdio\"\n2026-08-24T23:26:18.841587Z  INFO perl_dap: Starting DAP server on stdio\n",
+        "stderr_sha256": "sha256:43a066750509378d25162cda2bb66feb6eac7605ceed6b910eebf5020fc2b2f1",
+        "stderr_tail": "2026-08-25T01:19:14.775034Z  INFO perl_lsp_rs_core::runtime::launcher: server starting server=\"perl-dap\" version=\"0.17.0\" transport=\"stdio\"\n2026-08-25T01:19:14.775097Z  INFO perl_dap: Starting DAP server on stdio\n",
         "stdout_pure": true,
         "terminated_event": true,
         "version_output": "perl-dap 0.17.0"

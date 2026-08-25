@@ -257,34 +257,74 @@ fn receipt_mutations_fail_closed_on_overclaim_and_stale_subjects() -> Result<(),
     let target = root.join("target/zed-dap-receipt-contract-tests");
     fs::create_dir_all(&target)?;
     let template = load_json(&root.join(TEMPLATE))?;
+    let contract = load_json(&root.join(CONTRACT))?;
 
-    // A passing receipt fabricated without any executed bytes: it must be
-    // rejected because its contract digest is not the checked contract's.
+    // A fabricated passing receipt that quotes the real contract digest and
+    // every contract-exact asset/release/binding identity, so only the
+    // cross-build defect distinguishes it from honest evidence: a windows
+    // verifier can never satisfy an executed linux row.
+    let linux_row = contract["targets"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter().find(|row| {
+                row.get("target").and_then(Value::as_str) == Some("x86_64-unknown-linux-musl")
+            })
+        })
+        .cloned()
+        .ok_or_else(|| io::Error::other("contract lacks the linux musl row"))?;
+    let scenarios: Vec<Value> = std::iter::repeat_n(
+        json!({"scenario": "x", "known_good_preserved": true, "detail": "x"}),
+        16,
+    )
+    .collect();
     let mut fake_pass = template.clone();
     fake_pass["result"] = json!("pass");
     fake_pass["contract"]["sha256"] =
         json!("sha256:3333333333333333333333333333333333333333333333333333333333333333");
     fake_pass["release"] = json!({
-        "repository": "EffortlessMetrics/perl-lsp",
-        "id": 1, "tag": "v0.17.0", "version": "0.17.0",
-        "prerelease": false, "draft": false,
-        "published_at": "2026-06-28T21:22:46Z", "producer": "github-actions[bot]",
+        "repository": contract["source"]["repository"],
+        "id": contract["source"]["release_id"],
+        "tag": contract["source"]["tag"],
+        "version": contract["source"]["version"],
+        "prerelease": false,
+        "draft": false,
+        "published_at": "2026-06-28T21:22:46Z",
+        "producer": contract["source"]["producer"],
+    });
+    fake_pass["topology"] = json!({
+        "subject": contract["bindings"]["topology"]["path"],
+        "sha256": contract["bindings"]["topology"]["sha256"],
+    });
+    fake_pass["projection"] = json!({
+        "zed_adapter_subject": contract["bindings"]["zed_adapter_projection"]["path"],
+        "sha256": contract["bindings"]["zed_adapter_projection"]["sha256"],
+        "debug_adapter_id": contract["bindings"]["zed_adapter_projection"]["debug_adapter_id"],
     });
     fake_pass["verifier"] =
         json!({"os": "windows", "version": "10", "architecture": "x86_64", "python": "3"});
     fake_pass["claim_boundary"]["dap_process"] = json!("proven_for_matching_host_only");
-    fake_pass["claim_boundary"]["cache_recovery"] = json!("proven");
-    fake_pass["cache_recovery"] = json!({"result": "pass", "known_good_before": {}, "selected_after": {}, "scenario_results": []});
+    fake_pass["claim_boundary"]["cache_recovery"] = json!("proven_isolated_cache_model_only");
+    fake_pass["cache_recovery"] = json!({
+        "result": "pass",
+        "known_good_before": {"version": "9.9.9"},
+        "selected_after": {"version": "9.9.9"},
+        "scenario_results": scenarios,
+        "limitations": [],
+    });
     fake_pass["targets"] = json!([{
         "target": "x86_64-unknown-linux-musl", "os": "linux", "architecture": "x86_64",
         "disposition": "managed", "result": "managed_executed",
-        "asset": {"sha256": "sha256:4444444444444444444444444444444444444444444444444444444444444444"},
+        "asset": {
+            "id": linux_row["asset_id"], "name": linux_row["asset_name"],
+            "sha256": linux_row["asset_digest"], "archive_type": linux_row["archive_type"],
+        },
         "archive": {
             "members_sha256": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
-            "installed_path": "perl-dap-managed-0.17.0-x86_64-unknown-linux-musl/perllsp-0.17.0-x86_64-unknown-linux-musl/perl-dap",
+            "required_member": linux_row["archive_member"],
+            "installed_path": linux_row["installed_path"],
             "safe": true,
         },
-        "binary": {"product": "perl-dap", "sha256": "sha256:6666666666666666666666666666666666666666666666666666666666666666"},
+        "binary": {"product": "perl-dap", "sha256": linux_row["member_sha256"]},
         "stdio_smoke": {"result": "pass", "stdout_pure": true, "orphan_result": "no_orphans"},
         "errors": [],
     }]);
@@ -300,9 +340,8 @@ fn receipt_mutations_fail_closed_on_overclaim_and_stale_subjects() -> Result<(),
         "does not match the checked perl-dap contract",
     )?;
 
-    // The same fabricated receipt, this time with the real checked contract
-    // digest, proves the cross-build discriminator: a windows verifier can
-    // never satisfy an executed linux row.
+    // Same receipt, now quoting the real checked contract digest: the only
+    // remaining defect is the cross-build execution claim.
     use sha2::{Digest, Sha256};
     let contract_bytes = fs::read(root.join(CONTRACT))?;
     let digest = format!(
@@ -316,6 +355,64 @@ fn receipt_mutations_fail_closed_on_overclaim_and_stale_subjects() -> Result<(),
         &["validate-dap-receipt", "--receipt", &contract_arg(&fake_path), "--contract", CONTRACT],
     )?;
     assert_rejected(&output, "cross-build executed row", "cross-built")?;
+
+    // The committed honest receipt must reject a single tampered asset digest
+    // even though every other field still matches: the row is bound to the
+    // contract's exact bytes, not to its shape.
+    let committed = load_json(&root.join(EXECUTED_RECEIPT))?;
+    let mut tampered = committed.clone();
+    tampered["targets"][4]["asset"]["sha256"] =
+        json!("sha256:7777777777777777777777777777777777777777777777777777777777777777");
+    let tampered_path = target.join("receipt-tampered-asset.json");
+    write_temp(&tampered_path, &tampered)?;
+    let output = run(
+        &root,
+        &[
+            "validate-dap-receipt",
+            "--receipt",
+            &contract_arg(&tampered_path),
+            "--contract",
+            CONTRACT,
+        ],
+    )?;
+    assert_rejected(&output, "tampered asset digest", "asset identity")?;
+
+    // A cache-recovery block that silently drops a scenario fails closed.
+    let mut dropped = committed.clone();
+    dropped["cache_recovery"]["scenario_results"]
+        .as_array_mut()
+        .ok_or_else(|| io::Error::other("committed receipt lacks scenarios"))?
+        .pop();
+    let dropped_path = target.join("receipt-dropped-scenario.json");
+    write_temp(&dropped_path, &dropped)?;
+    let output = run(
+        &root,
+        &[
+            "validate-dap-receipt",
+            "--receipt",
+            &contract_arg(&dropped_path),
+            "--contract",
+            CONTRACT,
+        ],
+    )?;
+    assert_rejected(&output, "dropped cache scenario", "scenario set")?;
+
+    // A cache-recovery row that flips one preservation result fails closed.
+    let mut flipped = committed.clone();
+    flipped["cache_recovery"]["scenario_results"][0]["known_good_preserved"] = json!(false);
+    let flipped_path = target.join("receipt-flipped-scenario.json");
+    write_temp(&flipped_path, &flipped)?;
+    let output = run(
+        &root,
+        &[
+            "validate-dap-receipt",
+            "--receipt",
+            &contract_arg(&flipped_path),
+            "--contract",
+            CONTRACT,
+        ],
+    )?;
+    assert_rejected(&output, "flipped cache scenario", "is not preserved")?;
 
     // A perllsp product identity inside the receipt binary block is rejected.
     fake_pass["targets"][0]["binary"]["product"] = json!("perllsp");
@@ -384,7 +481,8 @@ fn implementation_binds_the_dap_matrix_boundaries() -> Result<(), Box<dyn Error>
     let dap_contract = read("scripts/zed_assets/dap_contract.py")?;
 
     // The DAP smoke executes the exact public binary twice: --version and
-    // --stdio, and proves the full lifecycle with protocol-only stdout.
+    // --stdio, proves the exact canonical version line, and asserts the full
+    // ORDERED DAP lifecycle with protocol-only stdout.
     assert!(dap_process.contains("[str(binary), \"--version\"]"));
     assert!(dap_process.contains("[str(binary), \"--stdio\"]"));
     assert!(dap_process.contains("perl-dap --version timed out"));
@@ -392,19 +490,42 @@ fn implementation_binds_the_dap_matrix_boundaries() -> Result<(), Box<dyn Error>
         dap_process.contains("version output does not identify perl-dap"),
         "a perllsp-only version output must never satisfy the DAP row"
     );
-    assert!(dap_process.contains("DAP lifecycle lacks the initialize response"));
-    assert!(dap_process.contains("DAP lifecycle lacks the initialized event"));
-    assert!(dap_process.contains("DAP lifecycle lacks the disconnect response"));
-    assert!(dap_process.contains("DAP lifecycle lacks the terminated event"));
+    assert!(
+        dap_process.contains("canonical = f\"perl-dap {expected_version}\""),
+        "the version proof must require the exact canonical perl-dap version line"
+    );
+    assert!(
+        dap_process.contains("is not the exact canonical line"),
+        "a prefix or suffix version substitution must fail closed"
+    );
+    assert!(
+        dap_process.contains("expected_frames"),
+        "the lifecycle proof must assert the exact frame transcript"
+    );
+    assert!(
+        dap_process.contains("partial order is violated"),
+        "an out-of-order DAP transcript must fail closed"
+    );
+    assert!(
+        dap_process.contains("does not end with the terminated event"),
+        "the terminated event must close the transcript"
+    );
+    assert!(dap_process.contains("DAP initialize response did not echo request_seq 1"));
     assert!(dap_process.contains("perl-dap process inventory grew after disconnect"));
     assert!(dap_process.contains("did not observe the launched perl-dap process"));
     assert!(dap_process.contains("orphan_result"));
     assert!(dap_process.contains("configuration_boundary"));
 
     // The shared archive family scan keeps both products but rejects any
-    // foreign or ambiguous executable, never extractall()s, and cross-checks
-    // the in-archive checksum manifest.
+    // foreign or ambiguous executable — including mode-executable members
+    // with unknown names — never extractall()s, and cross-checks the
+    // in-archive checksum manifest.
     assert!(dap_archive.contains("SHARED_BINARY_NAMES"));
+    assert!(dap_archive.contains("_reject_foreign_executable"));
+    assert!(
+        dap_archive.contains("unexpected executable member"),
+        "a mode-executable foreign member must be rejected before safe=true"
+    );
     assert!(dap_archive.contains("ambiguous perl-dap member"));
     assert!(dap_archive.contains("duplicate archive member"));
     assert!(dap_archive.contains("archive links are not accepted"));
@@ -415,31 +536,64 @@ fn implementation_binds_the_dap_matrix_boundaries() -> Result<(), Box<dyn Error>
         "the in-archive sums authority must be enforced"
     );
 
-    // The managed cache boundary is debugger-specific and preserves
-    // known-good state through every failure class.
+    // The managed cache boundary is debugger-specific, swaps through a
+    // retire-and-rollback promote, and preserves known-good state through
+    // every failure class.
     assert!(dap_cache.contains("perl-dap-managed-"));
     assert!(dap_cache.contains("current.json"));
+    assert!(dap_cache.contains("EXPECTED_SCENARIOS"));
     assert!(dap_cache.contains("missing_asset"));
     assert!(dap_cache.contains("wrong_product_member"));
+    assert!(dap_cache.contains("foreign_executable_member"));
     assert!(dap_cache.contains("protocol_impurity"));
+    assert!(dap_cache.contains("promote_failure"));
+    assert!(
+        dap_cache.contains(".retired"),
+        "the incumbent must be retired, not deleted, before promotion"
+    );
+    assert!(
+        dap_cache.contains("os.rename(retired, version_dir)"),
+        "a failed promote must roll the incumbent back into place"
+    );
     assert!(dap_cache.contains("cleanup_stays_inside_the_perl_dap_family"));
     assert!(
         dap_cache.contains("perllsp-0.17.0-x86_64-unknown-linux-musl/perllsp"),
         "the cleanup fixture must plant a language-server cache that must survive"
     );
 
-    // The producer cross-checks two independent digest authorities and keeps
-    // cross-host extraction distinct from execution.
+    // The producer cross-checks two independent digest authorities, keeps
+    // cross-host extraction distinct from execution, and bounds the cache
+    // proof to the isolated model.
     assert!(dap_producer.contains("_verify_consolidated_sums"));
     assert!(dap_producer.contains("contract_stale"));
     assert!(dap_producer.contains("managed_extracted_not_executed"));
     assert!(dap_producer.contains("sha256_file(archive_path)"));
+    assert!(
+        dap_producer.contains("proven_isolated_cache_model_only"),
+        "the cache proof must not claim the production Zed downloader"
+    );
 
-    // The receipt validator rejects cross-build execution and keeps higher
-    // stages unproven.
+    // The receipt validator binds every row to the contract's exact subjects,
+    // rejects cross-build execution, recomputes the full scenario denominator,
+    // and keeps higher stages unproven.
     assert!(dap_validation.contains("cross-built"));
+    assert!(
+        dap_validation.contains("does not match the checked contract"),
+        "receipt asset and release identities must be bound to the contract"
+    );
+    assert!(
+        dap_validation.contains("scenario set"),
+        "the cache-recovery scenario denominator must be recomputed"
+    );
+    assert!(
+        dap_validation.contains("is not preserved"),
+        "a flipped cache scenario result must fail closed"
+    );
+    assert!(
+        dap_validation.contains("isolated model"),
+        "the cache proof boundary must stay bounded to the isolated model"
+    );
     assert!(dap_validation.contains("real_zed_debug_session"));
-    assert!(dap_validation.contains("cache recovery"));
     assert!(dap_validation.contains("perl-dap-managed-"));
 
     // The contract validator enforces the identity separation in both

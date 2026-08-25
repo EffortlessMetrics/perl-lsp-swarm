@@ -26,6 +26,28 @@ from .dap_archive import extract_expected_member
 DAP_MANAGED_PREFIX = "perl-dap-managed-"
 CURRENT_MANIFEST = "current.json"
 
+#: The complete recovery-scenario denominator. The receipt validator
+#: recomputes this set, so a receipt cannot claim a passing cache-recovery
+#: suite while silently dropping scenarios.
+EXPECTED_SCENARIOS: tuple[str, ...] = (
+    "complete_candidate_becomes_current",
+    "missing_asset_preserves_known_good",
+    "duplicate_asset_preserves_known_good",
+    "wrong_target_asset_preserves_known_good",
+    "wrong_product_member_preserves_known_good",
+    "digest_mismatch_preserves_known_good",
+    "member_digest_mismatch_preserves_known_good",
+    "unsafe_archive_path_preserves_known_good",
+    "duplicate_member_preserves_known_good",
+    "foreign_executable_member_preserves_known_good",
+    "partial_download_preserves_known_good",
+    "extraction_failure_preserves_known_good",
+    "launch_failure_preserves_known_good",
+    "protocol_impurity_preserves_known_good",
+    "promote_failure_preserves_known_good",
+    "cleanup_stays_inside_the_perl_dap_family",
+)
+
 
 def _digest_bytes(payload: bytes) -> str:
     return "sha256:" + hashlib.sha256(payload).hexdigest()
@@ -115,13 +137,16 @@ class ManagedDapCache:
         assets_by_name: dict[str, list[Path]],
         version: str,
         verify_process: Callable[[Path], None] | None = None,
+        simulate_promote_failure: bool = False,
     ) -> Path:
         """Install one candidate release row, preserving known-good on failure.
 
         The candidate is staged in a private `.tmp` sibling, verified against
-        the exact release/member digests, and promoted atomically. Any failure
-        removes the staging tree and leaves both the durable directory tree
-        and the current selection untouched.
+        the exact release/member digests, and promoted through a
+        retire-and-swap: the incumbent is moved aside, the staged tree is
+        renamed into place, and any promote failure rolls the incumbent back
+        before the error surfaces, so the durable directory and the current
+        selection are never simultaneously absent.
         """
         name = row.get("asset_name")
         matches = assets_by_name.get(str(name), [])
@@ -138,6 +163,7 @@ class ManagedDapCache:
         target = str(row["target"])
         version_dir = self.root / f"{DAP_MANAGED_PREFIX}{version}-{target}"
         staging = self.root / f"{version_dir.name}.tmp"
+        retired = self.root / f"{version_dir.name}.retired"
         if staging.exists():
             shutil.rmtree(staging)
         staging.mkdir(parents=True)
@@ -170,9 +196,22 @@ class ManagedDapCache:
                 except OSError as error:
                     raise ReceiptError(f"launch_failure: {error}") from error
 
+            incumbent_retired = False
             if version_dir.exists():
-                shutil.rmtree(version_dir)
-            os.rename(staging, version_dir)
+                if retired.exists():
+                    shutil.rmtree(retired)
+                os.rename(version_dir, retired)
+                incumbent_retired = True
+            try:
+                if simulate_promote_failure:
+                    raise OSError("simulated promote failure")
+                os.rename(staging, version_dir)
+            except BaseException as error:
+                if incumbent_retired:
+                    os.rename(retired, version_dir)
+                raise ReceiptError(f"promote_failure: {error}") from error
+            if incumbent_retired:
+                shutil.rmtree(retired, ignore_errors=True)
         except ReceiptError:
             shutil.rmtree(staging, ignore_errors=True)
             raise
@@ -364,6 +403,22 @@ def run_recovery_scenarios(root: Path) -> dict[str, Any]:
         "unsafe archive member path",
     )
 
+    foreign_archive = build_tar(
+        scenario_root / "foreign-exec.tar.gz",
+        {
+            f"{package}/perl-dap": perl_dap,
+            f"{package}/payload": b"#!/bin/sh\n",
+        },
+        executable={f"{package}/perl-dap", f"{package}/payload"},
+    )
+    foreign_row = good_row(version, target, foreign_archive, _digest_bytes(perl_dap))
+    expect_preserved(
+        "foreign_executable_member_preserves_known_good",
+        foreign_row,
+        {foreign_archive.name: [foreign_archive]},
+        "unexpected executable member",
+    )
+
     duplicate_buffer = io.BytesIO()
     with tarfile.open(fileobj=duplicate_buffer, mode="w:gz") as tar_writer:
         for _ in range(2):
@@ -437,6 +492,29 @@ def run_recovery_scenarios(root: Path) -> dict[str, Any]:
         "protocol_impurity",
         verify_process=impure_protocol,
     )
+
+    # -- promote failure: the incumbent must roll back into place ----------
+    before_selection = cache.current()
+    before_snapshot = fingerprint(cache.root)
+    try:
+        cache.install(
+            gate_row,
+            {gate_archive.name: [gate_archive]},
+            version,
+            simulate_promote_failure=True,
+        )
+        promote_preserved = False
+        promote_detail = "promote failure was accepted"
+    except ReceiptError as error:
+        message = str(error)
+        incumbent_intact = (
+            cache.current() == before_selection
+            and fingerprint(cache.root) == before_snapshot
+            and (scenario_root / "selection" / f"{DAP_MANAGED_PREFIX}{version}-{target}").is_dir()
+        )
+        promote_preserved = "promote_failure" in message and incumbent_intact
+        promote_detail = message
+    record("promote_failure_preserves_known_good", promote_preserved, promote_detail)
 
     # -- cleanup boundary -----------------------------------------------------------
     cleanup_root = scenario_root / "cleanup"

@@ -22,6 +22,15 @@ MAX_STDERR_BYTES = 8192
 PROCESS_TIMEOUT_SECONDS = 30
 
 
+def canonical_version_line(output: str) -> str:
+    """The first non-empty line of the version output."""
+    for line in output.splitlines():
+        line = line.strip()
+        if line:
+            return line
+    return ""
+
+
 def _version(binary: Path, expected_version: str) -> str:
     try:
         version = subprocess.run(
@@ -38,10 +47,12 @@ def _version(binary: Path, expected_version: str) -> str:
         raise ReceiptError(f"perl-dap --version failed with exit {version.returncode}")
     if "perl-dap" not in output.lower():
         raise ReceiptError(f"version output does not identify perl-dap: {output!r}")
-    if expected_version not in output:
+    canonical = f"perl-dap {expected_version}"
+    first_line = canonical_version_line(output)
+    if first_line != canonical:
         raise ReceiptError(
-            f"version output {output!r} does not report the expected release "
-            f"version {expected_version!r}"
+            f"version output {first_line!r} is not the exact canonical line "
+            f"{canonical!r}; a prefix or suffix version cannot satisfy the row"
         )
     return output
 
@@ -100,32 +111,68 @@ def run_dap_stdio_smoke(
         raise
 
     frames = parse_lsp_frames(stdout)
-    responses = {
-        frame.get("request_seq"): frame
-        for frame in frames
-        if frame.get("type") == "response"
+
+    # The lifecycle claim is an ordered protocol sequence, so the proof keeps
+    # the observed order: folding frames into maps would let an out-of-order
+    # transcript pass membership checks. The adapter does not guarantee where
+    # the `initialized` event lands relative to the disconnect response (the
+    # event may flush after it), so the enforced invariant is the protocol's
+    # partial order: exactly these four frames, initialize response before
+    # the disconnect response, initialized before terminated, terminated last.
+    sequence: list[tuple[str, str]] = []
+    responses: dict[Any, dict[str, Any]] = {}
+    for frame in frames:
+        frame_type = frame.get("type")
+        if frame_type == "response":
+            sequence.append(("response", str(frame.get("command"))))
+            responses[frame.get("request_seq")] = frame
+        elif frame_type == "event":
+            sequence.append(("event", str(frame.get("event"))))
+        else:
+            raise ReceiptError(
+                f"DAP stdout carries an unexpected frame type {frame_type!r}; "
+                "protocol-only stdout admits responses and events only"
+            )
+    expected_frames = {
+        ("response", "initialize"),
+        ("event", "initialized"),
+        ("response", "disconnect"),
+        ("event", "terminated"),
     }
-    events = [
-        frame.get("event") for frame in frames if frame.get("type") == "event"
-    ]
+    if set(sequence) != expected_frames or len(sequence) != len(expected_frames):
+        raise ReceiptError(
+            f"DAP frame transcript {sequence} is not exactly the initialize/"
+            "initialized/disconnect/terminated exchange"
+        )
+
+    def first_index(entry: tuple[str, str]) -> int:
+        return sequence.index(entry)
+
+    if first_index(("response", "initialize")) >= first_index(("response", "disconnect")):
+        raise ReceiptError(
+            "DAP transcript answers disconnect before initialize; the required "
+            "initialize-before-disconnect partial order is violated"
+        )
+    if first_index(("event", "initialized")) >= first_index(("event", "terminated")):
+        raise ReceiptError(
+            "DAP transcript reports termination before initialization; the "
+            "initialized-before-terminated partial order is violated"
+        )
+    if sequence[-1] != ("event", "terminated"):
+        raise ReceiptError("DAP transcript does not end with the terminated event")
 
     initialize_response = responses.get(1)
-    if not isinstance(initialize_response, dict) or initialize_response.get("command") != "initialize":
-        raise ReceiptError("DAP lifecycle lacks the initialize response")
+    if not isinstance(initialize_response, dict):
+        raise ReceiptError("DAP initialize response did not echo request_seq 1")
     if initialize_response.get("success") is not True:
         raise ReceiptError("DAP initialize response did not succeed")
     if not isinstance(initialize_response.get("body"), dict):
         raise ReceiptError("DAP initialize response lacks a capabilities body")
-    if "initialized" not in events:
-        raise ReceiptError("DAP lifecycle lacks the initialized event")
-
     disconnect_response = responses.get(2)
-    if not isinstance(disconnect_response, dict) or disconnect_response.get("command") != "disconnect":
-        raise ReceiptError("DAP lifecycle lacks the disconnect response")
+    if not isinstance(disconnect_response, dict):
+        raise ReceiptError("DAP disconnect response did not echo request_seq 2")
     if disconnect_response.get("success") is not True:
         raise ReceiptError("DAP disconnect response did not succeed")
-    if "terminated" not in events:
-        raise ReceiptError("DAP lifecycle lacks the terminated event")
     if process.returncode != 0:
         raise ReceiptError(f"perl-dap DAP process exited with {process.returncode}")
 
