@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11833 |
-| Rust-family files | 3582 |
-| Non-Rust files | 8251 |
-| Allowlisted | 5926 |
+| Total tracked files | 11897 |
+| Rust-family files | 3603 |
+| Non-Rust files | 8294 |
+| Allowlisted | 5969 |
 | Unclassified | 2325 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 420 |
-| documentation | 2688 |
+| config | 457 |
+| documentation | 2689 |
 | generated | 2 |
-| production | 323 |
-| test | 1941 |
-| tooling | 552 |
+| production | 324 |
+| test | 1943 |
+| tooling | 554 |
 | unclassified | 2325 |
 
 ## Unclassified files
@@ -2960,6 +2960,7 @@
 | `.github/workflows/ux-regression-gate.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/validate-ci-lane-history.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/version-bump.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/vim-hermetic-host.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/vscode-current-source-linux-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/vscode-managed-binary-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/vscode-published-extension-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -3581,6 +3582,40 @@
 | `contracts/compiler/perl_compiler_concept_proof.v1.toml` | config | `non-rust-compiler-concept-proof-contract` | compiler |
 | `contracts/compiler/perl_compiler_concepts.v1.toml` | config | `non-rust-compiler-concepts-contract` | compiler |
 | `contracts/compiler/perl_compiler_proof_policy.v1.toml` | config | `non-rust-compiler-proof-policy-contract` | compiler |
+| `contracts/dap/fixtures/negative-adapter-kubectl-port-forward.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-ambient-listener.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-artifact-arch-loader-mismatch.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-attach-process-id.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-baseline-perl-row.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-capability-catalog-claim.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-digest-mismatch-after-copy.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-editor-path-rewrite.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-init-image-perl.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-kubernetes-api-rbac.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-lsp-profile-inheritance.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-missing-cleanup-owner.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-missing-resource-profile.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-musl-glibc-loader-mismatch.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-node-port-service.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-operator-crds.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-optional-cell-evidence-claim.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-post-copy-unverified.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-project-perl-plan-differs.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-security-context-root.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-service-account-token-used.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-shared-multi-tenant.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-shell-transport.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-sidecar-other-perl.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-source-other-absolute-path.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-standalone-deployment.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-tag-only-image.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-unbound-injection-source.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-writable-tool-mount.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-wrong-architecture.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-wrong-executable-mode.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/positive-injected-tool.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/positive-project-image.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/kubernetes_dap_workspace_profile.v1.toml` | config | `non-rust-kubernetes-dap-profiles-contract` | dap |
 | `crates/perl-ast-v2/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-ast-v2/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-ast/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -5005,6 +5040,7 @@
 | `docs/project/status/generated-status-cells.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/hir_lowering.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/index.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/project/status/kubernetes_dap_workspace_profiles.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/lsp.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/lsp_clients.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/memory_plateau.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6129,6 +6165,8 @@
 | `schemas/agent_review_packet.v1.schema.json` | config | `non-rust-agent-review-packet-schema` | tooling/agent-review |
 | `schemas/binary_identity_protocol.v1.schema.json` | config | `non-rust-binary-identity-schema` | identity |
 | `schemas/install_identity_verification.v1.schema.json` | documentation | `non-rust-install-identity-verification-schema` | release/ci |
+| `schemas/kubernetes_dap_workspace_profile.v1.schema.json` | config | `non-rust-kubernetes-dap-profiles-schema` | dap |
+| `schemas/kubernetes_dap_workspace_profile_fixture.v1.schema.json` | config | `non-rust-kubernetes-dap-profile-fixture-schema` | dap |
 | `schemas/loaded_module_reload_family.v1.schema.json` | config | `non-rust-loaded-module-reload-family-schema` | identity |
 | `schemas/perl_builtin_semantics.v1.schema.json` | config | `non-rust-compiler-builtin-semantics-schema` | compiler |
 | `schemas/perl_compiler_concept_proof.v1.schema.json` | config | `non-rust-compiler-concept-proof-schema` | compiler |
@@ -6465,6 +6503,8 @@
 | `scripts/test/emacs-clients/eglot-released-config.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-clients/eglot-released.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-host-driver.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/vim-clients/vim-lsp-adapter.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/vim-host-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_iterative_parser.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -8246,6 +8286,8 @@
 | `vscode-extension/test/grammar/fixtures/keywords_control.pl.snap` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/test/grammar/fixtures/numbers.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `vscode-extension/test/grammar/fixtures/numbers.pl.snap` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/test/grammar/fixtures/operator_boundaries.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `vscode-extension/test/grammar/fixtures/operator_boundaries.pl.snap` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/test/grammar/fixtures/operators.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `vscode-extension/test/grammar/fixtures/operators.pl.snap` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/test/grammar/fixtures/pod.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
