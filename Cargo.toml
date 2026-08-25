@@ -418,6 +418,7 @@ duration_suboptimal_units = "warn"
 needless_type_cast = "warn"
 manual_ilog2 = "warn"
 manual_take = "deny"
+manual_clear = "deny"
 unnecessary_trailing_comma = "warn"
 # wildcard_imports: Phase 1 (warn) — measures violations before crate-by-crate fix (#2333).
 wildcard_imports = "warn"
