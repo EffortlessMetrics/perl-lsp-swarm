@@ -3344,3 +3344,145 @@ my $obj = Foo->new();
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Test: issue #12559 — `require "Foo/Bar.pm"` literal path-form goto-definition
+//
+// Two cells:
+// 1. Cursor on the `Foo::Bar::helper()` call — function call resolution via
+//    the symbol the server knows is defined in the file-path-required module.
+// 2. Cursor on/inside the `"Foo/Bar.pm"` string itself — module-file jump via
+//    the new path-form-aware extraction wired into the UseModule arm.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn go_to_definition_on_function_call_from_string_path_require_navigates_to_source_module()
+-> TestResult {
+    let mut harness = LspHarness::new();
+    let workspace = TempWorkspace::new()?;
+
+    workspace.write(
+        "lib/Foo/Bar.pm",
+        r#"package Foo::Bar;
+use strict;
+use warnings;
+
+sub helper {
+    my ($self) = @_;
+    return 42;
+}
+
+1;
+"#,
+    )?;
+
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+
+    let module_uri = workspace.uri("lib/Foo/Bar.pm");
+    let module_content = std::fs::read_to_string(workspace.dir.path().join("lib/Foo/Bar.pm"))
+        .map_err(|e| format!("failed to read module: {e}"))?;
+    harness.open(&module_uri, &module_content)?;
+
+    // Script uses the quoted-path require form and then calls a method from
+    // the loaded package.
+    let caller = r#"#!/usr/bin/perl
+use strict;
+use warnings;
+use lib 'lib';
+require "Foo/Bar.pm";
+my $result = Foo::Bar::helper();
+"#;
+    let caller_uri = workspace.uri("script.pl");
+    harness.open(&caller_uri, caller)?;
+    harness.barrier();
+
+    // Cursor on `helper` in `Foo::Bar::helper()`.
+    let (line, character) = find_line_char(caller, "Foo::Bar::helper")?;
+    let result = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": caller_uri},
+            "position": {"line": line, "character": character + 10}
+        }),
+    )?;
+
+    let locations = result.as_array().ok_or("expected location array")?;
+    assert!(
+        !locations.is_empty(),
+        "expected goto-definition result when cursor on Foo::Bar::helper() after require \"Foo/Bar.pm\""
+    );
+    let first = &locations[0];
+    assert_valid_location(first);
+    let uri = first["uri"].as_str().ok_or("Expected URI")?;
+    assert!(
+        uri.contains("Foo/Bar.pm") || uri.contains("Foo%2FBar.pm"),
+        "Definition should point to lib/Foo/Bar.pm, got: {uri}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn go_to_definition_cursor_on_string_path_in_require_navigates_to_module_file() -> TestResult {
+    let mut harness = LspHarness::new();
+    let workspace = TempWorkspace::new()?;
+
+    workspace.write(
+        "lib/Foo/Bar.pm",
+        r#"package Foo::Bar;
+use strict;
+use warnings;
+
+sub helper {
+    my ($self) = @_;
+    return 42;
+}
+
+1;
+"#,
+    )?;
+
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+
+    let module_uri = workspace.uri("lib/Foo/Bar.pm");
+    let module_content = std::fs::read_to_string(workspace.dir.path().join("lib/Foo/Bar.pm"))
+        .map_err(|e| format!("failed to read module: {e}"))?;
+    harness.open(&module_uri, &module_content)?;
+
+    let caller = r#"#!/usr/bin/perl
+use strict;
+use warnings;
+use lib 'lib';
+require "Foo/Bar.pm";
+my $result = Foo::Bar::helper();
+"#;
+    let caller_uri = workspace.uri("script.pl");
+    harness.open(&caller_uri, caller)?;
+    harness.barrier();
+
+    // Cursor on/inside the "Foo/Bar.pm" string literal on the require line.
+    // find_line_char returns the start of "Foo", which is inside the string.
+    let (line, character) = find_line_char(caller, "Foo/Bar")?;
+    let result = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": caller_uri},
+            "position": {"line": line, "character": character}
+        }),
+    )?;
+
+    let locations = result.as_array().ok_or("expected location array")?;
+    assert!(
+        !locations.is_empty(),
+        "expected goto-definition result when cursor is on the \"Foo/Bar.pm\" string in require"
+    );
+    let first = &locations[0];
+    assert_valid_location(first);
+    let uri = first["uri"].as_str().ok_or("Expected URI")?;
+    assert!(
+        uri.contains("Foo/Bar.pm") || uri.contains("Foo%2FBar.pm"),
+        "Definition on the string \"Foo/Bar.pm\" should jump to lib/Foo/Bar.pm, got: {uri}"
+    );
+
+    Ok(())
+}

@@ -4,6 +4,7 @@
 //! by `use`/`require` statements.
 
 use crate::name::normalize_package_separator;
+use crate::path::module_path_to_name;
 use crate::token_parser::parse_module_token;
 use perl_parser_core::text_line::{is_keyword_boundary, line_bounds_at, skip_ascii_whitespace};
 
@@ -21,19 +22,33 @@ pub enum ModuleReferenceKind {
 pub struct ModuleReference<'a> {
     /// Statement kind (`use` or `require`).
     pub kind: ModuleReferenceKind,
-    /// Raw module token text as written in source.
+    /// Raw module token text as written in source (inner content for quoted
+    /// file-path forms; e.g. `Foo/Bar.pm` for `require "Foo/Bar.pm"`).
     pub module_name: &'a str,
     /// Inclusive byte start offset of `module_name` in the input text.
     pub module_start: usize,
     /// Exclusive byte end offset of `module_name` in the input text.
     pub module_end: usize,
+    /// True when the source form is a quoted file path (`require "Foo/Bar.pm"`).
+    /// [`canonical_module_name`][Self::canonical_module_name] applies
+    /// path-to-module conversion in this case (e.g. `Foo/Bar.pm` → `Foo::Bar`).
+    pub(crate) is_file_path_form: bool,
 }
 
 impl ModuleReference<'_> {
     /// Return the module name normalized to canonical `::` separators.
+    ///
+    /// For file-path `require` forms (`require "Foo/Bar.pm"`), strips the `.pm`
+    /// extension and converts `/` separators to `::` (e.g. `Foo/Bar.pm` →
+    /// `Foo::Bar`).  For all other forms, normalises legacy `'` separators to
+    /// `::`.
     #[must_use]
     pub fn canonical_module_name(&self) -> String {
-        normalize_package_separator(self.module_name).into_owned()
+        if self.is_file_path_form {
+            module_path_to_name(self.module_name)
+        } else {
+            normalize_package_separator(self.module_name).into_owned()
+        }
     }
 }
 
@@ -173,6 +188,7 @@ fn find_parent_base_module_in_line<'a>(
                 module_name,
                 module_start: line_offset + token_start_in_line,
                 module_end: line_offset + token_end_in_line,
+                is_file_path_form: false,
             });
         }
 
@@ -258,7 +274,45 @@ fn find_in_line_for_keyword<'a>(
                 module_name: &line[module_start..span.end],
                 module_start: line_offset + module_start,
                 module_end: line_offset + span.end,
+                is_file_path_form: false,
             });
+        }
+
+        // Handle `require "Foo/Bar.pm"` and `require 'Foo/Bar.pm'` — quoted
+        // file-path forms.  `parse_module_token` cannot match them because the
+        // leading quote is not an identifier start byte, so we detect them here.
+        // Only applies to `require` (ModuleReferenceKind::Require); `use` never
+        // takes a quoted file path as its primary argument.
+        if matches!(kind, ModuleReferenceKind::Require)
+            && module_start < bytes.len()
+            && (bytes[module_start] == b'"' || bytes[module_start] == b'\'')
+        {
+            let quote = bytes[module_start] as char;
+            // Inner path starts one byte past the opening quote.
+            let inner_start = module_start + 1;
+            // Find the closing quote (first unescaped occurrence).
+            let inner = &line[inner_start..];
+            if let Some(close_idx) = inner.find(quote) {
+                let inner_end = inner_start + close_idx;
+                let path = &line[inner_start..inner_end];
+                // Only accept `.pm` paths: plain `.pl` scripts and extensionless
+                // files are not module navigation targets.
+                if path.ends_with(".pm") {
+                    // The cursor must be somewhere on or inside the quoted span,
+                    // including the surrounding quotes.
+                    let quoted_start = module_start; // opening quote
+                    let quoted_end = inner_end + 1; // byte past closing quote
+                    if cursor_in_line >= quoted_start && cursor_in_line <= quoted_end {
+                        return Some(ModuleReference {
+                            kind,
+                            module_name: path,
+                            module_start: line_offset + inner_start,
+                            module_end: line_offset + inner_end,
+                            is_file_path_form: true,
+                        });
+                    }
+                }
+            }
         }
     }
 

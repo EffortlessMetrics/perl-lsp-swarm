@@ -585,3 +585,113 @@ fn contains_module_token_returns_false_for_no_match() -> Result<(), String> {
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// require "Foo/Bar.pm" quoted file-path form — cursor-on-string extraction
+// (Covers the fix for #12559: `find_in_line_for_keyword` now handles quoted
+// `.pm` paths after `require` as a file-path form whose `canonical_module_name`
+// converts the path to a `::` module name.)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn find_module_reference_require_quoted_double_cursor_on_inner_path() -> Result<(), String> {
+    let line = r#"require "Foo/Bar.pm";"#;
+    // Cursor inside the quoted string — midpoint of "Foo/Bar.pm"
+    let cursor = line.find("Bar").ok_or("missing inner token")? + 1;
+    let reference =
+        find_module_reference(line, cursor).ok_or("expected Some for quoted require")?;
+    if reference.kind != ModuleReferenceKind::Require {
+        return Err(format!("expected Require kind, got {:?}", reference.kind));
+    }
+    // module_name is the raw inner path (without quotes)
+    if reference.module_name != "Foo/Bar.pm" {
+        return Err(format!("expected module_name 'Foo/Bar.pm', got {:?}", reference.module_name));
+    }
+    // canonical_module_name must convert the file path to a module name
+    let canonical = reference.canonical_module_name();
+    if canonical != "Foo::Bar" {
+        return Err(format!("expected canonical 'Foo::Bar', got {canonical:?}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn find_module_reference_require_quoted_single_cursor_on_inner_path() -> Result<(), String> {
+    let line = "require 'Foo/Bar.pm';";
+    let cursor = line.find("Foo").ok_or("missing inner token")? + 1;
+    let reference =
+        find_module_reference(line, cursor).ok_or("expected Some for single-quoted require")?;
+    if reference.kind != ModuleReferenceKind::Require {
+        return Err(format!("expected Require kind, got {:?}", reference.kind));
+    }
+    let canonical = reference.canonical_module_name();
+    if canonical != "Foo::Bar" {
+        return Err(format!("expected canonical 'Foo::Bar', got {canonical:?}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn find_module_reference_require_quoted_cursor_on_opening_quote() -> Result<(), String> {
+    // Cursor exactly on the opening quote — should still resolve.
+    let line = r#"require "Foo/Bar.pm";"#;
+    let cursor = line.find('"').ok_or("missing opening quote")?;
+    let reference =
+        find_module_reference(line, cursor).ok_or("expected Some when cursor on opening quote")?;
+    let canonical = reference.canonical_module_name();
+    if canonical != "Foo::Bar" {
+        return Err(format!("expected 'Foo::Bar', got {canonical:?}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn find_module_reference_require_quoted_cursor_before_quote_returns_none() -> Result<(), String> {
+    // Cursor on the space between `require` and `"` — not inside the quoted span.
+    let line = r#"require "Foo/Bar.pm";"#;
+    let cursor = "require".len(); // points at the space
+    let result = find_module_reference(line, cursor);
+    if result.is_some() {
+        return Err(format!(
+            "expected None when cursor is on the space before the quote, got {:?}",
+            result.unwrap().module_name
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn find_module_reference_require_quoted_pl_extension_returns_none() -> Result<(), String> {
+    // `.pl` scripts are not module navigation targets — should return None.
+    let line = r#"require "helper.pl";"#;
+    let cursor = line.find("helper").ok_or("missing token")? + 2;
+    let result = find_module_reference(line, cursor);
+    if result.is_some() {
+        return Err("expected None for .pl file path".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn find_module_reference_require_quoted_nested_path_canonical() -> Result<(), String> {
+    let line = r#"require "My/Deep/Module.pm";"#;
+    let cursor = line.find("Deep").ok_or("missing token")? + 2;
+    let reference = find_module_reference(line, cursor).ok_or("expected Some")?;
+    let canonical = reference.canonical_module_name();
+    if canonical != "My::Deep::Module" {
+        return Err(format!("expected 'My::Deep::Module', got {canonical:?}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn extract_module_reference_require_quoted_path_returns_canonical_name() -> Result<(), String> {
+    let line = r#"require "Baz/Qux.pm";"#;
+    let cursor = line.find("Qux").ok_or("missing token")? + 1;
+    let canonical = extract_module_reference(line, cursor)
+        .ok_or("expected Some from extract_module_reference")?;
+    if canonical != "Baz::Qux" {
+        return Err(format!("expected 'Baz::Qux', got {canonical:?}"));
+    }
+    Ok(())
+}
