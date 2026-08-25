@@ -2131,10 +2131,7 @@ fn run_shell_command_with_retries(
         let mut execution = run_shell_command_with_timeout(command, log_path, timeout_secs)?;
         let test_execution_reached = log_reaches_test_execution(command, log_path)
             .or_else(|| parse_test_execution_reached(command, &execution.stdout));
-        attempt_evidence.push(RetryAttemptEvidence {
-            attempt,
-            test_execution_reached,
-        });
+        attempt_evidence.push(RetryAttemptEvidence { attempt, test_execution_reached });
         if execution.timed_out {
             timeouts_seen += 1;
             if attempt < total_attempts {
@@ -2160,15 +2157,14 @@ fn run_shell_command_with_retries(
             } else {
                 format!("exited {} after earlier watchdog timeout(s)", execution.exit_code)
             };
-            let trailer =
-                append_retry_trailer(
-                    log_path,
-                    gate_name,
-                    attempt,
-                    total_attempts,
-                    &outcome,
-                    &attempt_evidence,
-                )?;
+            let trailer = append_retry_trailer(
+                log_path,
+                gate_name,
+                attempt,
+                total_attempts,
+                &outcome,
+                &attempt_evidence,
+            )?;
             execution.stdout.push_str(&trailer);
         }
         return Ok(execution);
@@ -2196,9 +2192,8 @@ fn append_retry_trailer(
     let mut file = fs::OpenOptions::new().append(true).open(log_path).with_context(|| {
         format!("Failed to open gate log for retry trailer: {}", log_path.display())
     })?;
-    let mut trailer = format!(
-        "\n==== gate {gate_name} retry history ({total_attempts} attempts) ====\n"
-    );
+    let mut trailer =
+        format!("\n==== gate {gate_name} retry history ({total_attempts} attempts) ====\n");
     for evidence in attempt_evidence {
         let reached = match evidence.test_execution_reached {
             Some(true) => "yes",
@@ -5049,8 +5044,7 @@ gates:
     }
 
     #[test]
-    fn retry_trailer_retains_mixed_test_execution_reach_evidence()
-    -> color_eyre::eyre::Result<()> {
+    fn retry_trailer_retains_mixed_test_execution_reach_evidence() -> color_eyre::eyre::Result<()> {
         let tmp = tempdir()?;
         let log_path = tmp.path().join("retry-history.log");
         fs::write(&log_path, "test result: ok\n")?;
