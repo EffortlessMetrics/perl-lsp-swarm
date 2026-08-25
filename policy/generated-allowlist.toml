@@ -2,7 +2,7 @@ schema_version = 1
 policy = "generated-allowlist"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-08-24"
+updated = "2026-08-25"
 
 [[allow]]
 id = "generated-cargo-lock"
@@ -51,4 +51,28 @@ owner = "release/ci"
 reason = "The committed non-Rust inventory is generated from tracked files and the canonical policy ledger."
 covered_by = ["cargo xtask check-generated", "cargo xtask non-rust inventory"]
 created = "2026-08-24"
+review_after = "2026-11-22"
+
+[[allow]]
+id = "generated-test-topology-compiler-critical-json"
+path = "docs/policy/TEST_TOPOLOGY_COMPILER_CRITICAL.json"
+kind = "inventory"
+generated_by = "cargo xtask test-topology inventory --cohort compiler-critical"
+regenerate = "cargo xtask test-topology inventory --cohort compiler-critical"
+owner = "test/topology"
+reason = "Committed machine-owned inventory of compiler-critical Cargo targets and execution subjects (#12125, parent #8437); the denominator consumed by later test-topology leaves."
+covered_by = ["cargo xtask test-topology check --cohort compiler-critical"]
+created = "2026-08-25"
+review_after = "2026-11-22"
+
+[[allow]]
+id = "generated-test-topology-compiler-critical-md"
+path = "docs/policy/TEST_TOPOLOGY_COMPILER_CRITICAL.md"
+kind = "inventory"
+generated_by = "cargo xtask test-topology inventory --cohort compiler-critical"
+regenerate = "cargo xtask test-topology inventory --cohort compiler-critical"
+owner = "test/topology"
+reason = "Human projection of the committed compiler-critical test topology inventory (#12125, parent #8437); regenerated with the JSON artifact."
+covered_by = ["cargo xtask test-topology check --cohort compiler-critical"]
+created = "2026-08-25"
 review_after = "2026-11-22"

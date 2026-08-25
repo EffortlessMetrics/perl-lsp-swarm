@@ -57,9 +57,11 @@ pub fn rows_into_inventory(
 ) -> anyhow::Result<TestTopologyInventoryV1> {
     let mut rows = Vec::with_capacity(discovered.len());
     for target in discovered {
-        rows.push(target.topology_row().with_context(|| {
-            format!("building topology row for {}", target.target_id)
-        })?);
+        rows.push(
+            target
+                .topology_row()
+                .with_context(|| format!("building topology row for {}", target.target_id))?,
+        );
     }
     TestTopologyInventoryV1::new(
         Cohort::CompilerCritical.as_slug(),
@@ -95,8 +97,8 @@ pub fn run_inventory(root: &Path) -> anyhow::Result<String> {
 /// discovery. Returns the pass summary or an error listing every violation.
 pub fn run_check(root: &Path) -> anyhow::Result<String> {
     let committed = load_committed_inventory(root)?;
-    let discovered = discover_live(root)
-        .context("discovering live cohort subjects for the topology check")?;
+    let discovered =
+        discover_live(root).context("discovering live cohort subjects for the topology check")?;
     ensure_current(&committed, &discovered)?;
     Ok(format!(
         "test-topology check passed: {} committed row(s) match live discovery for cohort {}",
@@ -125,8 +127,7 @@ fn write_artifact(root: &Path, relative: &str, contents: &str) -> anyhow::Result
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    std::fs::write(&path, contents)
-        .with_context(|| format!("writing {}", path.display()))
+    std::fs::write(&path, contents).with_context(|| format!("writing {}", path.display()))
 }
 
 #[cfg(test)]

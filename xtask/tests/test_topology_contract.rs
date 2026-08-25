@@ -13,8 +13,8 @@ use xtask::test_topology::model::{
     FeatureSubjectV1, ProofRoleV1, TargetKindV1, TestTopologyRowV1,
 };
 use xtask::test_topology::{
-    Cohort, TestTopologyInventoryV1, Violation, ensure_current, inventory_from_json,
-    render_json, render_markdown, render_report, rows_into_inventory, validate_inventory,
+    Cohort, TestTopologyInventoryV1, Violation, ensure_current, inventory_from_json, render_json,
+    render_markdown, render_report, rows_into_inventory, validate_inventory,
 };
 
 const ROOT_A: &str = "Z:/ws";
@@ -158,14 +158,14 @@ fn manifests(pairs: &[(&str, &str)]) -> anyhow::Result<BTreeMap<String, Manifest
     Ok(map)
 }
 
-fn expect_failure(result: Result<(), anyhow::Error>, what: &'static str) -> anyhow::Result<anyhow::Error> {
+fn expect_failure(
+    result: Result<(), anyhow::Error>,
+    what: &'static str,
+) -> anyhow::Result<anyhow::Error> {
     result.err().ok_or_else(|| anyhow::anyhow!("{what}"))
 }
 
-fn find_row<'a>(
-    rows: &'a [DiscoveredTarget],
-    target_id: &str,
-) -> anyhow::Result<DiscoveredTarget> {
+fn find_row<'a>(rows: &'a [DiscoveredTarget], target_id: &str) -> anyhow::Result<DiscoveredTarget> {
     rows.iter()
         .find(|target| target.target_id == target_id)
         .cloned()
@@ -184,8 +184,7 @@ fn violations_text(violations: &[Violation]) -> String {
 fn test_topology_falsifier_new_integration_target_without_row_fails_check() -> anyhow::Result<()> {
     let manifests = manifests(&[(MANIFEST_A, PARSER_MANIFEST)])?;
     let baseline = discover_from_metadata(&parser_targets(ROOT_A, None), &manifests)?;
-    let grown =
-        discover_from_metadata(&parser_targets(ROOT_A, Some("new_cut_proof")), &manifests)?;
+    let grown = discover_from_metadata(&parser_targets(ROOT_A, Some("new_cut_proof")), &manifests)?;
     let committed = rows_into_inventory(baseline)?;
     let findings = validate_inventory(&committed, &grown);
     let rendered = violations_text(&findings);
@@ -215,10 +214,7 @@ fn test_topology_falsifier_feature_subject_drift_without_identity_change_detecte
         "[[test]]\nname = \"core_parse_contract\"",
         "[[test]]\nname = \"core_parse_contract\"\nrequired-features = [\"lsp-compat\"]",
     );
-    manifests.insert(
-        MANIFEST_A.to_string(),
-        discovery::parse_manifest_facts(&drifted_manifest)?,
-    );
+    manifests.insert(MANIFEST_A.to_string(), discovery::parse_manifest_facts(&drifted_manifest)?);
     let after = discover_from_metadata(&parser_targets(ROOT_A, None), &manifests)?;
     let drifted = find_row(&after, "perl-parser-core/core_parse_contract/integration-test")?;
     assert_eq!(
@@ -248,23 +244,49 @@ fn test_topology_falsifier_feature_subject_drift_without_identity_change_detecte
 fn test_topology_falsifier_integration_target_as_library_module_rejected() -> anyhow::Result<()> {
     let manifests = manifests(&[(MANIFEST_A, PARSER_MANIFEST)])?;
     let discovered = discover_from_metadata(&parser_targets(ROOT_A, None), &manifests)?;
+
+    // Layer 1 — incoherent flip: same identity, module kind. The closed
+    // schema itself names this kind confusion instead of accepting it.
+    let mut flipped = rows_into_inventory(discovered.clone())?;
+    for row in &mut flipped.rows {
+        if row.target_id == "perl-parser-core/core_parse_contract/integration-test" {
+            row.target_kind = TargetKindV1::UnitTestModule;
+        }
+    }
+    let findings = validate_inventory(&flipped, &discovered);
+    assert!(
+        violations_text(&findings).contains("kind confusion"),
+        "an integration target relabeled as a library-test module must be rejected, got:\n{}",
+        violations_text(&findings)
+    );
+
+    // Layer 2 — coherent relabel: identity, kind, and path agree with each
+    // other but disagree with the live tree; the checker reports both sides.
     let mut committed = rows_into_inventory(discovered.clone())?;
     for row in &mut committed.rows {
         if row.target_id == "perl-parser-core/core_parse_contract/integration-test" {
             row.target_kind = TargetKindV1::UnitTestModule;
+            row.target_id = "perl-parser-core/core_parse_contract/unit-test-module".to_string();
             row.path = "crates/perl-parser-core/src/lib.rs".to_string();
         }
     }
     let findings = validate_inventory(&committed, &discovered);
     let rendered = violations_text(&findings);
     assert!(
-        rendered.contains("kind confusion"),
-        "expected kind-confusion finding for module-vs-integration representation, got:\n{rendered}"
+        rendered.contains("missing topology row")
+            && rendered.contains("perl-parser-core/core_parse_contract/integration-test"),
+        "the live integration subject must be reported missing, got:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("stale topology row")
+            && rendered.contains("perl-parser-core/core_parse_contract/unit-test-module"),
+        "the invented module subject must be reported stale, got:\n{rendered}"
     );
 
     // Constructor-level rejection: a tests/ path may never be a module row.
-    let mut confused = find_row(&discovered, "perl-parser-core/core_parse_contract/integration-test")?
-        .topology_row()?;
+    let mut confused =
+        find_row(&discovered, "perl-parser-core/core_parse_contract/integration-test")?
+            .topology_row()?;
     confused.path = "crates/perl-parser-core/tests/core_parse_contract.rs".to_string();
     confused.target_kind = TargetKindV1::UnitTestModule;
     confused.target_id = "perl-parser-core/core_parse_contract/unit-test-module".to_string();
@@ -416,8 +438,7 @@ fn duplicated_identity_fixture() -> String {
         )
     };
     let first = row_template("crates/perl-parser-core/tests/core_parse_contract.rs", "x");
-    let second =
-        row_template("crates/perl-parser-core/tests/../tests/core_parse_contract.rs", "y");
+    let second = row_template("crates/perl-parser-core/tests/../tests/core_parse_contract.rs", "y");
     format!(
         r##"{{
             "schema_id": "test_topology_inventory.v1",
@@ -455,8 +476,8 @@ fn test_topology_falsifier_provider_read_misclassified_as_infrastructure_rejecte
     .to_string();
     let manifests = manifests(&[(LSP_MANIFEST_A, LSP_MANIFEST)])?;
     let discovered = discover_from_metadata(&hover_doc, &manifests)?;
-    let classified = find_row(&discovered, "perl-lsp-rs/lsp_hover_tests/integration-test")?
-        .topology_row()?;
+    let classified =
+        find_row(&discovered, "perl-lsp-rs/lsp_hover_tests/integration-test")?.topology_row()?;
     assert_eq!(
         classified.proof_role,
         ProofRoleV1::ProviderRead,
@@ -492,18 +513,12 @@ fn test_topology_output_bytes_are_ordering_independent() -> anyhow::Result<()> {
         "workspace_root": ROOT_A,
     })
     .to_string();
-    let manifests_forward = manifests(&[
-        (MANIFEST_A, PARSER_MANIFEST),
-        (WORKSPACE_MANIFEST_A, WORKSPACE_MANIFEST),
-    ])?;
-    let manifests_reversed = manifests(&[
-        (WORKSPACE_MANIFEST_A, WORKSPACE_MANIFEST),
-        (MANIFEST_A, PARSER_MANIFEST),
-    ])?;
-    let left =
-        rows_into_inventory(discover_from_metadata(&forward, &manifests_forward)?)?;
-    let right =
-        rows_into_inventory(discover_from_metadata(&reversed, &manifests_reversed)?)?;
+    let manifests_forward =
+        manifests(&[(MANIFEST_A, PARSER_MANIFEST), (WORKSPACE_MANIFEST_A, WORKSPACE_MANIFEST)])?;
+    let manifests_reversed =
+        manifests(&[(WORKSPACE_MANIFEST_A, WORKSPACE_MANIFEST), (MANIFEST_A, PARSER_MANIFEST)])?;
+    let left = rows_into_inventory(discover_from_metadata(&forward, &manifests_forward)?)?;
+    let right = rows_into_inventory(discover_from_metadata(&reversed, &manifests_reversed)?)?;
     assert_eq!(
         render_json(&left)?,
         render_json(&right)?,
@@ -617,10 +632,8 @@ fn test_topology_falsifier_copied_feature_matrix_rejected_in_favor_of_authoritie
         Vec::new(),
         vec!["#3790-powerset-snapshot".to_string()],
     );
-    let invented = expect_failure(
-        invented.map(|_| ()),
-        "invented authority references must be rejected",
-    )?;
+    let invented =
+        expect_failure(invented.map(|_| ()), "invented authority references must be rejected")?;
     assert!(
         format!("{invented:#}").contains("unknown feature authority reference"),
         "unexpected error: {invented:#}"
@@ -674,10 +687,8 @@ impl<T> ExpectErrValue<T> for std::result::Result<T, serde_json::Error> {
 
 #[test]
 fn test_topology_falsifier_unknown_kind_and_role_never_coerced() -> anyhow::Result<()> {
-    for (field, value) in [
-        ("target_kind", "mystery_kind"),
-        ("proof_role", "ordinary_compile_only"),
-    ] {
+    for (field, value) in [("target_kind", "mystery_kind"), ("proof_role", "ordinary_compile_only")]
+    {
         let payload = unknown_variant_fixture(field, value);
         let error = serde_json::from_str::<TestTopologyRowV1>(&payload)
             .map(|_| ())
@@ -765,8 +776,7 @@ fn test_topology_real_tree_inventory_round_trips_through_the_checker() -> anyhow
     ensure_current(&reparsed, &discovered)?;
 
     // Regeneration is byte-stable.
-    let regenerated =
-        rows_into_inventory(xtask::test_topology::discover_live(&root)?)?;
+    let regenerated = rows_into_inventory(xtask::test_topology::discover_live(&root)?)?;
     assert_eq!(json, render_json(&regenerated)?, "same tree must give byte-identical JSON");
 
     // Cohort wiring sanity: seed packages and the xtask routing tests appear.
@@ -789,11 +799,8 @@ fn test_topology_report_counts_match_inventory() -> anyhow::Result<()> {
     let inventory = rows_into_inventory(discovered)?;
     let report = render_report(&inventory);
 
-    let package_count = inventory
-        .rows
-        .iter()
-        .filter(|row| row.package_id == "perl-parser-core")
-        .count();
+    let package_count =
+        inventory.rows.iter().filter(|row| row.package_id == "perl-parser-core").count();
     assert!(
         report.contains(&format!("  perl-parser-core: {package_count}\n")),
         "report must state per-package counts matching the inventory\n{report}"

@@ -207,7 +207,7 @@ pub enum CompileObligationV1 {
 /// a denominator of governed subjects, not a verdict ledger. Any attempt to
 /// mark [`ExecutionClaimV1::claimed`] is refused by validation, including
 /// attempts that cite `cargo check --all-targets` success as execution proof.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionClaimV1 {
     /// Always `false` in schema v1; `true` is a validation error.
@@ -217,12 +217,6 @@ pub struct ExecutionClaimV1 {
     /// is `false` and never accepted as execution evidence.
     #[serde(default)]
     pub evidence_ref: Option<String>,
-}
-
-impl Default for ExecutionClaimV1 {
-    fn default() -> Self {
-        Self { claimed: false, evidence_ref: None }
-    }
 }
 
 /// Required/default/forbidden feature subject of one target.
@@ -353,19 +347,36 @@ impl TestTopologyRowV1 {
     /// the row alone lives here so both deserialization consumers and
     /// generators share one definition of "well formed".
     pub fn validate(&self) -> anyhow::Result<()> {
-        let expected_prefix =
-            format!("{}/{}/{}/", self.package_id, self.cargo_target_name, self.target_kind.as_token());
-        if self.target_id != expected_prefix.trim_end_matches('/') {
+        let expected_identity = format!(
+            "{}/{}/{}",
+            self.package_id,
+            self.cargo_target_name,
+            self.target_kind.as_token()
+        );
+        if self.target_id != expected_identity {
+            // When package and target agree but the kind token diverges, the
+            // row is a kind-confused representation of the same subject
+            // (e.g. an integration test relabeled as a library-test module).
+            let subject_prefix = format!("{}/{}/", self.package_id, self.cargo_target_name);
+            if self.target_id.starts_with(&subject_prefix) {
+                bail!(
+                    "kind confusion: identity {} declares kind {} but the row carries kind {}",
+                    self.target_id,
+                    self.target_id.strip_prefix(&subject_prefix).unwrap_or("<none>"),
+                    self.target_kind.as_token()
+                );
+            }
             bail!(
                 "target_id {} does not follow the canonical <package>/<target>/<kind> form {}",
                 self.target_id,
-                expected_prefix.trim_end_matches('/')
+                expected_identity
             );
         }
         if self.path.contains('\\') || self.path.starts_with('/') {
             bail!("path {} must be workspace-relative with forward slashes", self.path);
         }
-        if self.path.starts_with("tests/") && self.target_kind != TargetKindV1::IntegrationTest {
+        let in_tests_directory = self.path.split('/').any(|segment| segment == "tests");
+        if in_tests_directory && self.target_kind != TargetKindV1::IntegrationTest {
             bail!(
                 "kind confusion: {} lives under tests/ but is represented as {} instead of {}",
                 self.target_id,
@@ -384,10 +395,7 @@ impl TestTopologyRowV1 {
             );
         }
         if self.minimum_nonzero_work == 0 {
-            bail!(
-                "minimum_nonzero_work must be strictly positive for {}",
-                self.target_id
-            );
+            bail!("minimum_nonzero_work must be strictly positive for {}", self.target_id);
         }
         if self.execution_claim.claimed {
             bail!(
@@ -522,7 +530,10 @@ impl TestTopologyInventoryV1 {
             cohort: cohort.to_string(),
             generated_by: generated_by.to_string(),
             regenerate_command: generated_by.to_string(),
-            feature_authorities: FEATURE_AUTHORITIES.iter().map(|value| (*value).to_string()).collect(),
+            feature_authorities: FEATURE_AUTHORITIES
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
             controllers: {
                 let mut controllers = controllers.to_vec();
                 controllers.sort();
@@ -569,15 +580,15 @@ impl TestTopologyInventoryV1 {
                     row.target_id
                 );
             }
-            if let Some(previous) = previous {
-                if row.target_id.as_str() <= previous {
-                    bail!(
-                        "canonical ordering drift: {} follows {}; rows must be strictly \
-                         sorted by target_id",
-                        row.target_id,
-                        previous
-                    );
-                }
+            if let Some(previous) = previous
+                && row.target_id.as_str() <= previous
+            {
+                bail!(
+                    "canonical ordering drift: {} follows {}; rows must be strictly \
+                     sorted by target_id",
+                    row.target_id,
+                    previous
+                );
             }
             row.validate().with_context(|| format!("validating row {}", row.target_id))?;
             previous = Some(row.target_id.as_str());
@@ -588,13 +599,12 @@ impl TestTopologyInventoryV1 {
 
 /// Deserializes an inventory from JSON with context-rich errors.
 pub fn inventory_from_json(json: &str) -> anyhow::Result<TestTopologyInventoryV1> {
-    let inventory: TestTopologyInventoryV1 = serde_json::from_str(json)
-        .map_err(|error| {
-            anyhow::Error::new(error).context(
-                "rejected topology inventory JSON: the schema is closed, so unknown fields, \
+    let inventory: TestTopologyInventoryV1 = serde_json::from_str(json).map_err(|error| {
+        anyhow::Error::new(error).context(
+            "rejected topology inventory JSON: the schema is closed, so unknown fields, \
                  unknown kinds, unknown proof roles, and unknown profiles are hard errors",
-            )
-        })?;
+        )
+    })?;
     inventory.validate()?;
     Ok(inventory)
 }
@@ -604,11 +614,10 @@ mod tests {
     use super::*;
 
     fn sample_row(target_id: &str, kind: TargetKindV1) -> TestTopologyRowV1 {
-        let (package, target) = match target_id.split_once('/') {
-            Some((package, rest)) => (package.to_string(), rest.to_string()),
-            None => ("sample-pkg".to_string(), target_id.to_string()),
-        };
-        let target_name = target.rsplit('/').next().unwrap_or(target.as_str()).to_string();
+        // target_id form under test: <package>/<target>/<kind-token>.
+        let mut segments = target_id.split('/');
+        let package = segments.next().unwrap_or_default().to_string();
+        let target_name = segments.next().unwrap_or_default().to_string();
         let mut row = TestTopologyRowV1 {
             target_id: target_id.to_string(),
             package_id: package,
@@ -696,8 +705,10 @@ mod tests {
     #[test]
     fn execution_claims_are_refused_even_when_citing_check_all_targets() -> anyhow::Result<()> {
         let mut row = sample_row("pkg/t/library", TargetKindV1::Library);
-        row.execution_claim =
-            ExecutionClaimV1 { claimed: true, evidence_ref: Some("cargo check --all-targets exit 0".into()) };
+        row.execution_claim = ExecutionClaimV1 {
+            claimed: true,
+            evidence_ref: Some("cargo check --all-targets exit 0".into()),
+        };
         let error = row
             .validate()
             .err()
@@ -713,14 +724,10 @@ mod tests {
     fn kind_confusion_between_tests_dir_and_module_rows_is_rejected() -> anyhow::Result<()> {
         let mut row = sample_row("pkg/t/unit-test-module", TargetKindV1::UnitTestModule);
         row.path = "crates/pkg/tests/t.rs".to_string();
-        let error = row
-            .validate()
-            .err()
-            .ok_or_else(|| anyhow::anyhow!("tests/ path with unit-test-module kind must be rejected"))?;
-        assert!(
-            format!("{error:#}").contains("kind confusion"),
-            "unexpected error: {error:#}"
-        );
+        let error = row.validate().err().ok_or_else(|| {
+            anyhow::anyhow!("tests/ path with unit-test-module kind must be rejected")
+        })?;
+        assert!(format!("{error:#}").contains("kind confusion"), "unexpected error: {error:#}");
         Ok(())
     }
 
@@ -732,10 +739,7 @@ mod tests {
             .validate()
             .err()
             .ok_or_else(|| anyhow::anyhow!("zero work floor must be rejected"))?;
-        assert!(
-            format!("{error:#}").contains("strictly positive"),
-            "unexpected error: {error:#}"
-        );
+        assert!(format!("{error:#}").contains("strictly positive"), "unexpected error: {error:#}");
         Ok(())
     }
 
