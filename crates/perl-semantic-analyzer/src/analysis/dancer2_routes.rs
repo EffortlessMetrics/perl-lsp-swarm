@@ -307,6 +307,7 @@ struct DeclarationContext<'a> {
 /// The handler is always the last operand. The remaining operands bind as
 /// `[PATTERN]`, `[PATTERN, OPTIONS]`, `[NAME, PATTERN]`, or
 /// `[NAME, PATTERN, OPTIONS]`; other shapes are malformed and mint nothing.
+#[allow(clippy::too_many_arguments)]
 fn build_from_operands(
     keyword: &str,
     keyword_start: usize,

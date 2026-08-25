@@ -43,6 +43,18 @@
 -- the array-replacement branch removed (documented in
 -- util_config_merge_test.lua).
 --
+-- Value-fidelity extension (#10845): the matrix cases prove presence and
+-- value are tracked independently through the response payload — an explicit
+-- boolean false (top-level or nested), true, 0, "", and [] round-trip exactly,
+-- while only a genuinely missing section becomes the null sentinel, including
+-- positional coexistence of false and null in one response. Red-first: run
+-- this suite against CURRENT MAIN before the #10845 patch (or any copy whose
+-- slot append still reads `table.insert(settings_list, value or json.null)`):
+-- `value or json.null` converts an explicitly configured false into null, so
+-- every false-bearing case MUST fail there. Mutation falsifier of the PATCHED
+-- module: restore the single `value or json.null` append line in a copied
+-- init.lua and the same cases fail again.
+--
 -- No framework: plain soft asserts, one process, deterministic, exit code
 -- carries the result. Compatible with the Lite XL Lua runtime family
 -- (Lua 5.4).
@@ -446,6 +458,94 @@ do
   ok(#r == 1 and r[1].result == nil and type(r[1].error) == "table"
     and r[1].error.code == -32602,
     "non-string scopeUri answers InvalidParams without reaching URI conversion")
+end
+
+-- ---------------------------------------------------------------------------
+-- Value-fidelity cases (#10845): explicit false never becomes null; only a
+-- genuinely missing section answers the null sentinel. Presence is tracked
+-- separately from value truthiness through the exact response payload.
+-- ---------------------------------------------------------------------------
+
+do
+  local lsp = fresh_module_load()
+  local json = require "plugins.lsp.json"
+  local client = start_captured_client(lsp, {
+    perl = {
+      enabled = false,
+      truthy = true,
+      zero = 0,
+      empty = "",
+      emptyList = json.array({}),
+      nested = { disabled = false },
+    },
+  })
+
+  ---Requests one section and returns the single decoded slot value.
+  local function one_slot(section, id)
+    local r = deliver(client, "workspace/configuration", id,
+      { items = json.decode('[{"section":"' .. section .. '"}]') })
+    if not (r[1] and r[1].error == nil and type(r[1].result) == "table"
+        and #r[1].result == 1) then
+      return nil, "~invalid response shape~"
+    end
+    return r[1].result[1]
+  end
+
+  -- false stays false: an explicitly configured disable must not decode as null.
+  local enabled = one_slot("perl.enabled", 31)
+  ok(enabled == false,
+    "explicit boolean false round-trips exactly as JSON false")
+
+  -- true / 0 / "" keep their exact identities.
+  ok(one_slot("perl.truthy", 32) == true, "explicit true round-trips exactly")
+  ok(one_slot("perl.zero", 33) == 0, "zero keeps its numeric identity")
+  ok(one_slot("perl.empty", 34) == "", "empty string keeps its string identity")
+
+  -- [] stays an explicitly typed empty array.
+  local empty_list = one_slot("perl.emptyList", 35)
+  ok(type(empty_list) == "table" and json.is_array(empty_list)
+    and #empty_list == 0 and json.encode(empty_list) == "[]",
+    "empty list round-trips as an explicitly typed empty JSON array")
+
+  -- Nested false survives section traversal at depth.
+  ok(one_slot("perl.nested.disabled", 36) == false,
+    "nested boolean false survives traversal exactly")
+
+  -- Only a genuinely absent section becomes the null sentinel.
+  ok(json.is_null(one_slot("perl.absent", 37)),
+    "genuinely missing section still answers the explicit null sentinel")
+
+  -- Positional coexistence: false, null and 0 keep distinct slots in ONE
+  -- response array — the discriminator between value fidelity and collapse.
+  local r = deliver(client, "workspace/configuration", 38,
+    { items = json.decode(
+      '[{"section":"perl.enabled"},{"section":"perl.absent"},{"section":"perl.zero"}]') })
+  ok(r[1] and r[1].error == nil and type(r[1].result) == "table"
+    and #r[1].result == 3
+    and r[1].result[1] == false
+    and json.is_null(r[1].result[2])
+    and r[1].result[3] == 0,
+    "false, null and zero keep distinct exact slots in one positional response")
+
+  -- Logging distinguishes found=false from not found (secondary pin: the two
+  -- branches use different format strings captured by the core.log fake).
+  log_records = {}
+  deliver(client, "workspace/configuration", 39,
+    { items = json.decode('[{"section":"perl.enabled"}]') })
+  deliver(client, "workspace/configuration", 40,
+    { items = json.decode('[{"section":"perl.absent"}]') })
+  local saw_found_false_log, saw_not_found_log = false, false
+  for _, record in ipairs(log_records) do
+    if record:find("Asking for '.*' config but not set", 1, false) then
+      saw_not_found_log = true
+    end
+    if record:find("Asking for '", 1, true)
+      and not record:find("but not set", 1, true) then
+      saw_found_false_log = true
+    end
+  end
+  ok(saw_found_false_log, "found=false-valued section logs the found branch")
+  ok(saw_not_found_log, "missing section logs the not-set branch distinctly")
 end
 
 -- ---------------------------------------------------------------------------
