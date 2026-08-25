@@ -442,6 +442,16 @@ enum Commands {
         rust_scanner: bool,
     },
 
+    /// Inventory, check, and report governed compiler-critical Cargo test
+    /// topology (#12125, parent #8437). Discovers targets via cargo metadata
+    /// plus manifest cross-checks and maintains the committed generated
+    /// inventories under docs/policy/. Never claims execution results.
+    #[command(name = "test-topology")]
+    TestTopology {
+        #[command(subcommand)]
+        command: TestTopologyCommand,
+    },
+
     /// Run tests with various configurations
     Test {
         /// Run tests in release mode
@@ -4196,6 +4206,49 @@ enum DevexCommand {
     },
 }
 
+/// Cohort selector for `test-topology`.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum TestTopologyCohortArg {
+    /// Compiler-convergence critical path (#12125).
+    CompilerCritical,
+}
+
+impl TestTopologyCohortArg {
+    fn cohort(self) -> xtask::test_topology::Cohort {
+        match self {
+            Self::CompilerCritical => xtask::test_topology::Cohort::CompilerCritical,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum TestTopologyCommand {
+    /// Discover the cohort and regenerate the committed JSON/Markdown
+    /// inventories (registered generated artifacts).
+    Inventory {
+        /// Cohort to inventory.
+        #[arg(long, value_enum, default_value = "compiler-critical")]
+        cohort: TestTopologyCohortArg,
+    },
+
+    /// Validate the committed inventory against live discovery: missing,
+    /// stale, duplicate, reordered, fact-drifted, or misclassified rows all
+    /// fail loudly.
+    Check {
+        /// Cohort to check.
+        #[arg(long, value_enum, default_value = "compiler-critical")]
+        cohort: TestTopologyCohortArg,
+    },
+
+    /// Print the deterministic human summary (counts per package, proof
+    /// role, candidate profile) of the committed inventory.
+    Report {
+        /// Cohort to report.
+        #[arg(long, value_enum, default_value = "compiler-critical")]
+        cohort: TestTopologyCohortArg,
+    },
+}
+
 #[derive(Subcommand)]
 enum ModuleTrainCommand {
     /// Project every stable node into its typed exact current-tree state.
@@ -4492,6 +4545,32 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
+        Commands::TestTopology { command } => {
+            // The CLI currently exposes exactly one cohort; the binding
+            // documents the selection until further cohorts land (#8437).
+            let root = utils::project_root()?;
+            // Library runners use anyhow; bridge into this binary's eyre
+            // result while preserving the full cause chain.
+            let bridge = |result: anyhow::Result<String>| {
+                result.map_err(|error| eyre!("test-topology failed: {error:#}"))
+            };
+            let summary = match command {
+                TestTopologyCommand::Inventory { cohort } => {
+                    let _ = cohort.cohort();
+                    bridge(xtask::test_topology::run_inventory(&root))
+                }
+                TestTopologyCommand::Check { cohort } => {
+                    let _ = cohort.cohort();
+                    bridge(xtask::test_topology::run_check(&root))
+                }
+                TestTopologyCommand::Report { cohort } => {
+                    let _ = cohort.cohort();
+                    bridge(xtask::test_topology::run_report(&root))
+                }
+            }?;
+            println!("{summary}");
+            Ok(())
+        }
         Commands::CheckProductHealthRailContract => product_health_rail_contract::run(),
         Commands::CheckAgentImplementationPacket { update_golden } => {
             agent_implementation_packet::run(update_golden)
