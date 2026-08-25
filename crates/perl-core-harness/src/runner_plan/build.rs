@@ -6,9 +6,8 @@ use crate::model::{
 };
 use crate::normalize::{matches_any_selector, normalize_source_item, source_form_allowed};
 use crate::runner_model::{
-    DiscoveryFrame, InvocationCaptureStatus, RUNNER_PLAN_SCHEMA_VERSION,
-    RUNNER_PLAN_V1_SCHEMA_VERSION, RunnerKind, RunnerPlan, RunnerScheduling,
-    SOURCE_NORMALIZATION_SCHEMA_VERSION,
+    DiscoveryFrame, InvocationCaptureStatus, RUNNER_PLAN_SCHEMA_VERSION, RunnerKind, RunnerPlan,
+    RunnerScheduling, SOURCE_NORMALIZATION_SCHEMA_VERSION,
 };
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -123,11 +122,6 @@ pub(crate) fn build_runner_plan_with_frame(
 }
 
 pub(crate) fn validate_runner_plan(plan: &RunnerPlan) -> Result<(), String> {
-    if plan.schema_version == RUNNER_PLAN_V1_SCHEMA_VERSION {
-        return Err(format!(
-            "unsupported runner plan schema {RUNNER_PLAN_V1_SCHEMA_VERSION}; expected {RUNNER_PLAN_SCHEMA_VERSION}"
-        ));
-    }
     if plan.schema_version != RUNNER_PLAN_SCHEMA_VERSION {
         return Err(format!("unsupported runner plan schema {}", plan.schema_version));
     }
