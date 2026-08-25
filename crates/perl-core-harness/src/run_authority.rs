@@ -2,12 +2,12 @@
 //! probes (#8173).
 //!
 //! An [`UpstreamObservationSet`] is the frozen product of exactly one upstream
-//! harness run: its expected membership, its observed rows, and its raw
-//! process terminal disposition. A [`DirectDiagnosticSet`] records bounded
-//! diagnostic probes that may investigate a frozen upstream discrepancy but
-//! can never flow back into upstream membership, completeness, totals,
-//! transitions, or accepted state. Nothing in this module converts one class
-//! into the other.
+//! harness run: its expected membership, canonical observed rows, explicit
+//! discrepancies, and raw process terminal disposition. A
+//! [`DirectDiagnosticSet`] records bounded diagnostic probes that may
+//! investigate that exact frozen observation but can never flow back into
+//! upstream membership, completeness, totals, transitions, or accepted state.
+//! Nothing in this module converts one authority class into the other.
 //!
 //! Extras census honesty: rows observed outside expected selection membership
 //! never enter totals, but they also cannot vanish from every durable product
@@ -54,12 +54,31 @@ pub(crate) const LIMITATION_PROBE_ROW_MALFORMED_PATH: &str = "direct_probe_row_m
 /// Why a probe row was excluded: its normalized path appeared more than once.
 pub(crate) const LIMITATION_PROBE_ROW_DUPLICATE: &str = "direct_probe_row_duplicate";
 
-/// Immutable identity of one frozen upstream observation subject.
+/// Immutable identity of the expected upstream runner subject.
+///
+/// This is deliberately narrower than [`UpstreamObservationId`]: equal target
+/// membership does not imply equal observed evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ObservedRunnerSubjectId(String);
 
 impl ObservedRunnerSubjectId {
     /// Stable receipt form of the subject identity.
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Immutable identity of one complete frozen upstream observation.
+///
+/// The digest binds runner/profile/mode, ordered expected rows, canonical
+/// observed records, missing and extra discrepancies, and terminal
+/// disposition. A direct diagnostic set can obtain this identity only from an
+/// already-settled [`UpstreamObservationSet`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UpstreamObservationId(String);
+
+impl UpstreamObservationId {
+    /// Stable receipt form of the observation identity.
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
@@ -95,10 +114,9 @@ impl InvocationId {
 ///
 /// Taxonomy drift guard: this local enum maps lossily onto the typed terminal
 /// process taxonomy tracked by #6884 and modeled by #12377
-/// (`TerminalProcessOutcome`, transition terminal modeling). Once #12377
-/// lands in-tree, the mapping owner must retire this enum — or its
-/// derivation — in favor of the shared type instead of growing a parallel
-/// adapter here.
+/// (`TerminalProcessOutcome`, transition terminal modeling). The integration
+/// rebase must retire this adapter in favor of that shared type rather than
+/// growing a parallel taxonomy here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UpstreamTerminalDisposition {
     /// The upstream process exited with status zero.
@@ -115,6 +133,15 @@ impl UpstreamTerminalDisposition {
             Some(0) => Self::Success,
             Some(code) => Self::Failure(code),
             None => Self::Unknown,
+        }
+    }
+
+    /// Stable terminal-disposition identity used by receipts and digests.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failure(_) => "failure",
+            Self::Unknown => "unknown",
         }
     }
 
@@ -151,17 +178,21 @@ pub(crate) struct UpstreamMembershipCounts {
     pub extra: usize,
 }
 
-/// Frozen upstream observation: expected membership, observed rows, terminal.
+/// Frozen upstream observation: expected membership, observed rows,
+/// discrepancies, and terminal state.
 ///
 /// Construction goes through [`UpstreamObservationSet::settle`] only, which
-/// validates rows before any summary, digest, or diagnostic exists. Fields are
-/// private so no mixed-authority collection can be substituted later.
+/// validates rows and derives the observation digest before any summary or
+/// diagnostic exists. Fields are private so no mixed-authority collection or
+/// caller-supplied digest can be substituted later.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UpstreamObservationSet {
     subject: ObservedRunnerSubjectId,
+    observation_id: UpstreamObservationId,
+    mode: HarnessMode,
     expected: Vec<ExpectedInvocationId>,
     observed: BTreeMap<InvocationId, SettledInvocation>,
-    extra_rows: usize,
+    extras: Vec<SettledInvocation>,
     terminal: UpstreamTerminalDisposition,
 }
 
@@ -169,8 +200,8 @@ impl UpstreamObservationSet {
     /// Freeze one upstream observation from exactly one context read.
     ///
     /// Missing expected rows stay missing: nothing here repairs membership.
-    /// Duplicate normalized rows and malformed paths fail closed instead of
-    /// silently collapsing into totals.
+    /// Duplicate normalized expected rows and malformed paths fail closed
+    /// instead of silently collapsing into totals.
     pub(crate) fn settle(
         runner: HarnessRunner,
         mode: HarnessMode,
@@ -193,7 +224,7 @@ impl UpstreamObservationSet {
         }
 
         let mut observed = BTreeMap::<InvocationId, SettledInvocation>::new();
-        let mut extra_rows = 0usize;
+        let mut extras = Vec::<SettledInvocation>::new();
         for record in records {
             let normalized = normalize_test_path(&record.path).ok_or_else(|| {
                 color_eyre::eyre::eyre!(
@@ -203,7 +234,7 @@ impl UpstreamObservationSet {
             })?;
             let invocation = InvocationId(normalized);
             if !expected_ids.contains(&invocation) {
-                extra_rows += 1;
+                extras.push(SettledInvocation { invocation, record: record.clone() });
                 continue;
             }
             if observed.contains_key(&invocation) {
@@ -219,25 +250,36 @@ impl UpstreamObservationSet {
         // selection membership with no durable trace at all; warn at freeze
         // time and persist the census on the retained receipt
         // (#7737/#12106 deferral).
-        if extra_rows > 0 {
+        if !extras.is_empty() {
+            let extra_rows = extras.len();
             tracing::warn!(
                 "perl-core-harness: {extra_rows} upstream row(s) fell outside expected selection membership and never enter report totals"
             );
         }
 
+        let terminal = UpstreamTerminalDisposition::from_status_code(terminal_status);
         let subject = subject_id(runner, mode, profile, &expected);
+        let observation_id =
+            observation_id(runner, mode, profile, &expected, &observed, &extras, terminal)?;
         Ok(Self {
             subject,
+            observation_id,
+            mode,
             expected,
             observed,
-            extra_rows,
-            terminal: UpstreamTerminalDisposition::from_status_code(terminal_status),
+            extras,
+            terminal,
         })
     }
 
-    /// Frozen subject identity of this observation.
+    /// Frozen expected-subject identity of this observation.
     pub(crate) fn subject(&self) -> &ObservedRunnerSubjectId {
         &self.subject
+    }
+
+    /// Digest of the complete frozen observation, not merely its subject.
+    pub(crate) fn observation_id(&self) -> &UpstreamObservationId {
+        &self.observation_id
     }
 
     /// Expected invocations in discovery order.
@@ -261,7 +303,7 @@ impl UpstreamObservationSet {
             expected: self.expected.len(),
             observed: self.observed.len(),
             missing: self.missing().len(),
-            extra: self.extra_rows,
+            extra: self.extras.len(),
         }
     }
 
@@ -288,6 +330,70 @@ fn subject_id(
         canonical.push('\n');
     }
     ObservedRunnerSubjectId(sha256_digest_bytes(canonical.as_bytes()))
+}
+
+fn observation_id(
+    runner: HarnessRunner,
+    mode: HarnessMode,
+    profile: HarnessProfile,
+    expected: &[ExpectedInvocationId],
+    observed: &BTreeMap<InvocationId, SettledInvocation>,
+    extras: &[SettledInvocation],
+    terminal: UpstreamTerminalDisposition,
+) -> Result<UpstreamObservationId> {
+    let mut canonical = Vec::<u8>::new();
+    append_canonical_field(
+        &mut canonical,
+        "schema",
+        b"perl_core_harness.upstream_observation.v1",
+    );
+    append_canonical_field(&mut canonical, "runner", runner.as_str().as_bytes());
+    append_canonical_field(&mut canonical, "mode", mode.as_str().as_bytes());
+    append_canonical_field(&mut canonical, "profile", profile.as_str().as_bytes());
+
+    for item in expected {
+        append_canonical_field(&mut canonical, "expected", item.as_str().as_bytes());
+    }
+    for (invocation, settled) in observed {
+        append_canonical_field(&mut canonical, "observed_id", invocation.as_str().as_bytes());
+        let encoded = serde_json::to_vec(settled.record())?;
+        append_canonical_field(&mut canonical, "observed_record", &encoded);
+    }
+    for item in expected {
+        if !observed.contains_key(&item.invocation) {
+            append_canonical_field(&mut canonical, "missing", item.as_str().as_bytes());
+        }
+    }
+
+    // Extra rows are canonicalized by normalized identity and complete record
+    // bytes so input iteration order cannot change the observation digest.
+    let mut canonical_extras = extras
+        .iter()
+        .map(|settled| {
+            let encoded = serde_json::to_vec(settled.record())?;
+            Ok((settled.invocation.as_str().to_string(), encoded))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    canonical_extras.sort();
+    for (invocation, encoded) in canonical_extras {
+        append_canonical_field(&mut canonical, "extra_id", invocation.as_bytes());
+        append_canonical_field(&mut canonical, "extra_record", &encoded);
+    }
+
+    append_canonical_field(&mut canonical, "terminal", terminal.label().as_bytes());
+    let status = terminal.status_code().map_or_else(|| "none".to_string(), |code| code.to_string());
+    append_canonical_field(&mut canonical, "terminal_status", status.as_bytes());
+
+    Ok(UpstreamObservationId(sha256_digest_bytes(&canonical)))
+}
+
+fn append_canonical_field(target: &mut Vec<u8>, label: &str, value: &[u8]) {
+    target.extend_from_slice(label.as_bytes());
+    target.push(b'=');
+    target.extend_from_slice(value.len().to_string().as_bytes());
+    target.push(b'\n');
+    target.extend_from_slice(value);
+    target.push(b'\n');
 }
 
 /// Outcome of one direct diagnostic probe.
@@ -361,22 +467,44 @@ impl SettledDiagnosticProbe {
     }
 }
 
+/// Frozen parent facts copied from one settled upstream observation.
+///
+/// This is the only source of parent lineage for diagnostic receipts. The
+/// compatibility arguments on [`direct_diagnostics_receipt`] are ignored so a
+/// caller cannot replace the parent digest, terminal state, mode, or counts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FrozenDirectParentObservation {
+    subject: ObservedRunnerSubjectId,
+    observation_id: UpstreamObservationId,
+    mode: String,
+    terminal_label: String,
+    harness_status: Option<i32>,
+    membership: UpstreamMembershipCounts,
+}
+
 /// Separate diagnostic product: probes investigating a frozen discrepancy.
 ///
 /// This type has no conversion into [`UpstreamObservationSet`], no shared
 /// collection with it, and no path into report totals or accepted state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DirectDiagnosticSet {
-    parent_observation: Option<ObservedRunnerSubjectId>,
+    parent_observation: Option<FrozenDirectParentObservation>,
     probes: Vec<SettledDiagnosticProbe>,
     limitations: Vec<String>,
 }
 
 impl DirectDiagnosticSet {
-    /// Plan diagnostics against one frozen upstream observation.
+    /// Plan diagnostics against one exact frozen upstream observation.
     pub(crate) fn plan(parent: &UpstreamObservationSet) -> Self {
         Self {
-            parent_observation: Some(parent.subject().clone()),
+            parent_observation: Some(FrozenDirectParentObservation {
+                subject: parent.subject().clone(),
+                observation_id: parent.observation_id().clone(),
+                mode: parent.mode.as_str().to_string(),
+                terminal_label: parent.terminal().label().to_string(),
+                harness_status: parent.terminal().status_code(),
+                membership: parent.counts(),
+            }),
             probes: Vec::new(),
             limitations: vec![LIMITATION_MISSING_UPSTREAM_SELECTION_CONTEXT.to_string()],
         }
@@ -395,7 +523,7 @@ impl DirectDiagnosticSet {
     }
 
     /// Parent observation investigated by these probes.
-    pub(crate) fn parent_observation(&self) -> Option<&ObservedRunnerSubjectId> {
+    fn parent_observation(&self) -> Option<&FrozenDirectParentObservation> {
         self.parent_observation.as_ref()
     }
 
@@ -493,11 +621,13 @@ impl DirectDeclaredNonClaims {
     }
 }
 
-/// Reference to the frozen upstream observation a diagnostic investigated.
+/// Reference to the exact frozen upstream observation a diagnostic
+/// investigated.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DirectParentObservation {
     pub subject_id: String,
-    pub upstream_context_digest: String,
+    pub observation_digest: String,
+    pub terminal_disposition: String,
     pub harness_status: Option<i32>,
     pub expected_rows: usize,
     pub observed_rows: usize,
@@ -535,25 +665,33 @@ pub(crate) struct DirectDiagnosticReceipt {
     pub declared_non_claims: DirectDeclaredNonClaims,
 }
 
-/// Build the diagnostic receipt from a settled diagnostic set plus the frozen
-/// upstream facts it investigated.
+/// Build the diagnostic receipt from a settled diagnostic set.
+///
+/// The additional arguments are retained temporarily so this bounded repair
+/// can land before the conflicting integration rebase. They are deliberately
+/// ignored: all load-bearing parent facts were copied from
+/// [`UpstreamObservationSet`] by [`DirectDiagnosticSet::plan`].
 pub(crate) fn direct_diagnostics_receipt(
     diagnostics: &DirectDiagnosticSet,
-    mode: HarnessMode,
-    upstream_context_digest: &str,
-    harness_status: Option<i32>,
-    membership: UpstreamMembershipCounts,
+    _mode: HarnessMode,
+    _upstream_context_digest: &str,
+    _harness_status: Option<i32>,
+    _membership: UpstreamMembershipCounts,
 ) -> DirectDiagnosticReceipt {
-    let parent_observation =
-        diagnostics.parent_observation().map(|subject| DirectParentObservation {
-            subject_id: subject.as_str().to_string(),
-            upstream_context_digest: upstream_context_digest.to_string(),
-            harness_status,
-            expected_rows: membership.expected,
-            observed_rows: membership.observed,
-            missing_rows: membership.missing,
-            extra_rows: membership.extra,
-        });
+    let parent_observation = diagnostics.parent_observation().map(|parent| DirectParentObservation {
+        subject_id: parent.subject.as_str().to_string(),
+        observation_digest: parent.observation_id.as_str().to_string(),
+        terminal_disposition: parent.terminal_label.clone(),
+        harness_status: parent.harness_status,
+        expected_rows: parent.membership.expected,
+        observed_rows: parent.membership.observed,
+        missing_rows: parent.membership.missing,
+        extra_rows: parent.membership.extra,
+    });
+    let mode = diagnostics
+        .parent_observation()
+        .map(|parent| parent.mode.as_str())
+        .unwrap_or("unknown");
     let probes = diagnostics
         .probes()
         .iter()
@@ -572,7 +710,7 @@ pub(crate) fn direct_diagnostics_receipt(
             DirectProbeReceiptRow {
                 authority: DIRECT_PROBE_AUTHORITY.to_string(),
                 path: probe.subject_path.clone(),
-                mode: mode.as_str().to_string(),
+                mode: mode.to_string(),
                 process_status: probe.process_status,
                 outcome: probe.outcome,
                 status,
@@ -602,4 +740,116 @@ pub(crate) fn direct_diagnostics_receipt_path(report_path: &Path) -> PathBuf {
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| "run-report.json".to_string());
     report_path.with_file_name(format!("{file_name}.direct-diagnostics.json"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn discovered() -> Vec<DiscoveredTest> {
+        vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }]
+    }
+
+    fn record(assertions: usize) -> RunnerRecord {
+        RunnerRecord {
+            schema_version: "perl_core_harness.runner_record.v1".into(),
+            mode: "parse".into(),
+            path: "base/ok.t".into(),
+            status: RunnerStatus::Pass,
+            assertions_passed: assertions,
+            assertions_total: assertions,
+            bucket: None,
+            first_diagnostic: None,
+            semantic_boundaries: Vec::new(),
+        }
+    }
+
+    fn observation(assertions: usize, terminal_status: Option<i32>) -> Result<UpstreamObservationSet> {
+        UpstreamObservationSet::settle(
+            HarnessRunner::Test,
+            HarnessMode::Parse,
+            HarnessProfile::Base,
+            &discovered(),
+            &[record(assertions)],
+            terminal_status,
+        )
+    }
+
+    #[test]
+    fn observation_digest_changes_when_observed_payload_changes() -> Result<()> {
+        let first = observation(1, Some(0))?;
+        let second = observation(2, Some(0))?;
+
+        assert_eq!(first.subject(), second.subject());
+        assert_ne!(first.observation_id(), second.observation_id());
+
+        let first_receipt = direct_diagnostics_receipt(
+            &DirectDiagnosticSet::plan(&first),
+            HarnessMode::Compile,
+            "caller-forged",
+            Some(99),
+            UpstreamMembershipCounts::default(),
+        );
+        let second_receipt = direct_diagnostics_receipt(
+            &DirectDiagnosticSet::plan(&second),
+            HarnessMode::Compile,
+            "caller-forged",
+            Some(99),
+            UpstreamMembershipCounts::default(),
+        );
+        assert_ne!(
+            first_receipt.parent_observation.as_ref().map(|parent| &parent.observation_digest),
+            second_receipt.parent_observation.as_ref().map(|parent| &parent.observation_digest)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn observation_digest_changes_when_terminal_disposition_changes() -> Result<()> {
+        let clean = observation(1, Some(0))?;
+        let failed = observation(1, Some(7))?;
+
+        assert_eq!(clean.subject(), failed.subject());
+        assert_ne!(clean.observation_id(), failed.observation_id());
+        Ok(())
+    }
+
+    #[test]
+    fn caller_arguments_cannot_replace_frozen_parent_lineage() -> Result<()> {
+        let parent = observation(1, Some(0))?;
+        let diagnostics = DirectDiagnosticSet::plan(&parent);
+
+        let first = direct_diagnostics_receipt(
+            &diagnostics,
+            HarnessMode::Parse,
+            "forged-a",
+            Some(17),
+            UpstreamMembershipCounts {
+                expected: 99,
+                observed: 98,
+                missing: 97,
+                extra: 96,
+            },
+        );
+        let second = direct_diagnostics_receipt(
+            &diagnostics,
+            HarnessMode::Compile,
+            "forged-b",
+            None,
+            UpstreamMembershipCounts::default(),
+        );
+
+        assert_eq!(first, second);
+        let frozen = first
+            .parent_observation
+            .as_ref()
+            .expect("planned diagnostics have a parent");
+        assert_eq!(frozen.harness_status, Some(0));
+        assert_eq!(frozen.expected_rows, 1);
+        assert_eq!(frozen.observed_rows, 1);
+        assert_eq!(frozen.missing_rows, 0);
+        assert_eq!(frozen.extra_rows, 0);
+        assert_eq!(first.probes.len(), 0);
+        Ok(())
+    }
 }
