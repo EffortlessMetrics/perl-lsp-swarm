@@ -724,7 +724,7 @@ mod tests {
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = PayloadEqGuard::enter();
             assert!(EQ_PAYLOAD_SHELL.with(Cell::get));
-            panic!("payload-shell unwind");
+            std::panic::resume_unwind(Box::new("payload-shell unwind"));
         }));
         assert!(panicked.is_err());
         assert!(!EQ_PAYLOAD_SHELL.with(Cell::get), "Drop must restore the flag on unwind");

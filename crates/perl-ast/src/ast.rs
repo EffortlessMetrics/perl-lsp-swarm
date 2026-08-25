@@ -5569,10 +5569,7 @@ mod deep_tree_destruction_tests {
                 let left = chain_of(FAMILY_DEPTH, wrap);
                 let right = chain_of_value(FAMILY_DEPTH, wrap, "1-neq");
                 assert_ne!(left, right, "family {name}: deepest leaf must be material");
-                assert_ne!(
-                    left.kind, right.kind,
-                    "family {name}: NodeKind leaf must be material"
-                );
+                assert_ne!(left.kind, right.kind, "family {name}: NodeKind leaf must be material");
                 drop(right);
                 drop(left);
             })
