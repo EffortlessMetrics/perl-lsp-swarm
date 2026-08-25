@@ -3336,3 +3336,23 @@ covered_by = [
 ]
 created = "2026-08-24"
 review_after = "2026-11-24"
+
+# =============================================================================
+# Archived legacy material
+# =============================================================================
+
+[[allow]]
+id = "non-rust-archive-tree"
+glob = "archive/**"
+kind = "archived_source"
+language = "mixed"
+surface = "archive"
+classification = "documentation"
+owner = "parser/legacy"
+reason = "Archived legacy crates (e.g., tree-sitter-perl-rs) kept for historical reference; workspace-excluded and not built."
+covered_by = ["cargo xtask check-file-policy"]
+broad_glob_reason = "archive/ is intentionally heterogeneous: legacy C, JS, pest grammars, benchmarks, disabled Rust binaries. Workspace-excluded; not built; non-executable per existing exclusion policy."
+created = "2026-08-24"
+review_after = "2027-02-20"
+expires = "2027-08-24"
+
