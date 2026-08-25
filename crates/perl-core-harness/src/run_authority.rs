@@ -15,6 +15,10 @@
 //! extras are tolerated at freeze time, surfaced through a `tracing::warn!`
 //! during settle, and persisted as the `extra_rows` census on the retained
 //! direct-diagnostics receipt even when no probe runs.
+//!
+//! Terminal identity comes exclusively from the shared
+//! [`TerminalProcessOutcome`] taxonomy (#6884/#12377); this module defines no
+//! parallel terminal vocabulary.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -27,6 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::normalization::sha256_digest_bytes;
 use crate::normalize_test_path;
+use crate::transition::TerminalProcessOutcome;
 
 /// Schema of the separately retained direct diagnostic receipt.
 pub(crate) const DIRECT_DIAGNOSTICS_SCHEMA_VERSION: &str =
@@ -107,54 +112,6 @@ impl InvocationId {
     }
 }
 
-/// Raw upstream process terminal capture.
-///
-/// Classification stays with #6884; this records only what the process did so
-/// the authoritative report and receipts stay honest about terminality.
-///
-/// Taxonomy drift guard: this local enum maps lossily onto the typed terminal
-/// process taxonomy tracked by #6884 and modeled by #12377
-/// (`TerminalProcessOutcome`, transition terminal modeling). The integration
-/// rebase must retire this adapter in favor of that shared type rather than
-/// growing a parallel taxonomy here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UpstreamTerminalDisposition {
-    /// The upstream process exited with status zero.
-    Success,
-    /// The upstream process exited with a nonzero status code.
-    Failure(i32),
-    /// The upstream process terminal state could not be captured.
-    Unknown,
-}
-
-impl UpstreamTerminalDisposition {
-    pub(crate) fn from_status_code(status: Option<i32>) -> Self {
-        match status {
-            Some(0) => Self::Success,
-            Some(code) => Self::Failure(code),
-            None => Self::Unknown,
-        }
-    }
-
-    /// Stable terminal-disposition identity used by receipts and digests.
-    fn label(self) -> &'static str {
-        match self {
-            Self::Success => "success",
-            Self::Failure(_) => "failure",
-            Self::Unknown => "unknown",
-        }
-    }
-
-    /// Numeric status code when one was captured.
-    pub(crate) fn status_code(self) -> Option<i32> {
-        match self {
-            Self::Success => Some(0),
-            Self::Failure(code) => Some(code),
-            Self::Unknown => None,
-        }
-    }
-}
-
 /// One validated upstream row bound to its invocation identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SettledInvocation {
@@ -193,7 +150,8 @@ pub(crate) struct UpstreamObservationSet {
     expected: Vec<ExpectedInvocationId>,
     observed: BTreeMap<InvocationId, SettledInvocation>,
     extras: Vec<SettledInvocation>,
-    terminal: UpstreamTerminalDisposition,
+    terminal: TerminalProcessOutcome,
+    harness_status: Option<i32>,
 }
 
 impl UpstreamObservationSet {
@@ -257,10 +215,14 @@ impl UpstreamObservationSet {
             );
         }
 
-        let terminal = UpstreamTerminalDisposition::from_status_code(terminal_status);
+        // The legacy persisted terminal fact and its shared-taxonomy
+        // admission decision are both frozen together (#6884/#12377): the
+        // admission gate later reads the frozen outcome, never a fresh
+        // classification.
+        let terminal = TerminalProcessOutcome::from_harness_status(terminal_status, runner, mode);
         let subject = subject_id(runner, mode, profile, &expected);
         let observation_id =
-            observation_id(runner, mode, profile, &expected, &observed, &extras, terminal)?;
+            observation_id(runner, mode, profile, &expected, &observed, &extras, &terminal)?;
         Ok(Self {
             subject,
             observation_id,
@@ -269,6 +231,7 @@ impl UpstreamObservationSet {
             observed,
             extras,
             terminal,
+            harness_status: terminal_status,
         })
     }
 
@@ -307,9 +270,14 @@ impl UpstreamObservationSet {
         }
     }
 
-    /// Raw upstream process terminal disposition captured at freeze time.
-    pub(crate) fn terminal(&self) -> UpstreamTerminalDisposition {
-        self.terminal
+    /// Shared-taxonomy terminal outcome frozen at settle time (#6884).
+    pub(crate) fn terminal(&self) -> &TerminalProcessOutcome {
+        &self.terminal
+    }
+
+    /// Legacy persisted exit-status identity frozen at settle time.
+    pub(crate) fn harness_status(&self) -> Option<i32> {
+        self.harness_status
     }
 }
 
@@ -339,14 +307,10 @@ fn observation_id(
     expected: &[ExpectedInvocationId],
     observed: &BTreeMap<InvocationId, SettledInvocation>,
     extras: &[SettledInvocation],
-    terminal: UpstreamTerminalDisposition,
+    terminal: &TerminalProcessOutcome,
 ) -> Result<UpstreamObservationId> {
     let mut canonical = Vec::<u8>::new();
-    append_canonical_field(
-        &mut canonical,
-        "schema",
-        b"perl_core_harness.upstream_observation.v1",
-    );
+    append_canonical_field(&mut canonical, "schema", b"perl_core_harness.upstream_observation.v1");
     append_canonical_field(&mut canonical, "runner", runner.as_str().as_bytes());
     append_canonical_field(&mut canonical, "mode", mode.as_str().as_bytes());
     append_canonical_field(&mut canonical, "profile", profile.as_str().as_bytes());
@@ -381,10 +345,38 @@ fn observation_id(
     }
 
     append_canonical_field(&mut canonical, "terminal", terminal.label().as_bytes());
-    let status = terminal.status_code().map_or_else(|| "none".to_string(), |code| code.to_string());
-    append_canonical_field(&mut canonical, "terminal_status", status.as_bytes());
+    append_terminal_identity_fields(&mut canonical, terminal);
 
     Ok(UpstreamObservationId(sha256_digest_bytes(&canonical)))
+}
+
+/// Canonical variant-payload identity of the shared terminal taxonomy.
+///
+/// The label alone cannot distinguish, for example, a recognized nonzero
+/// completion from an unproven one carrying the same status byte; the digest
+/// therefore binds every behavior-bearing payload field (#6884/#12377).
+fn append_terminal_identity_fields(target: &mut Vec<u8>, terminal: &TerminalProcessOutcome) {
+    match terminal {
+        TerminalProcessOutcome::CleanExit => {}
+        TerminalProcessOutcome::RecognizedRunnerStatus { code, meaning } => {
+            append_canonical_field(target, "terminal_code", code.to_string().as_bytes());
+            append_canonical_field(target, "terminal_meaning", meaning.as_bytes());
+        }
+        TerminalProcessOutcome::NonZeroExit { code } => {
+            append_canonical_field(target, "terminal_code", code.to_string().as_bytes());
+        }
+        TerminalProcessOutcome::Signal { signal, name } => {
+            append_canonical_field(target, "terminal_signal", signal.to_string().as_bytes());
+            let name = name.as_deref().unwrap_or("none");
+            append_canonical_field(target, "terminal_signal_name", name.as_bytes());
+        }
+        TerminalProcessOutcome::TimedOut
+        | TerminalProcessOutcome::Cancelled
+        | TerminalProcessOutcome::SpawnFailed
+        | TerminalProcessOutcome::OutputTruncated
+        | TerminalProcessOutcome::InstrumentFailure
+        | TerminalProcessOutcome::CleanupFailure => {}
+    }
 }
 
 fn append_canonical_field(target: &mut Vec<u8>, label: &str, value: &[u8]) {
@@ -469,9 +461,8 @@ impl SettledDiagnosticProbe {
 
 /// Frozen parent facts copied from one settled upstream observation.
 ///
-/// This is the only source of parent lineage for diagnostic receipts. The
-/// compatibility arguments on [`direct_diagnostics_receipt`] are ignored so a
-/// caller cannot replace the parent digest, terminal state, mode, or counts.
+/// This is the only source of parent lineage for diagnostic receipts; no
+/// caller-supplied string or count can replace any of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FrozenDirectParentObservation {
     subject: ObservedRunnerSubjectId,
@@ -502,7 +493,7 @@ impl DirectDiagnosticSet {
                 observation_id: parent.observation_id().clone(),
                 mode: parent.mode.as_str().to_string(),
                 terminal_label: parent.terminal().label().to_string(),
-                harness_status: parent.terminal().status_code(),
+                harness_status: parent.harness_status(),
                 membership: parent.counts(),
             }),
             probes: Vec::new(),
@@ -667,31 +658,24 @@ pub(crate) struct DirectDiagnosticReceipt {
 
 /// Build the diagnostic receipt from a settled diagnostic set.
 ///
-/// The additional arguments are retained temporarily so this bounded repair
-/// can land before the conflicting integration rebase. They are deliberately
-/// ignored: all load-bearing parent facts were copied from
-/// [`UpstreamObservationSet`] by [`DirectDiagnosticSet::plan`].
+/// Every load-bearing parent fact was copied from [`UpstreamObservationSet`]
+/// by [`DirectDiagnosticSet::plan`]; this function accepts nothing else.
 pub(crate) fn direct_diagnostics_receipt(
     diagnostics: &DirectDiagnosticSet,
-    _mode: HarnessMode,
-    _upstream_context_digest: &str,
-    _harness_status: Option<i32>,
-    _membership: UpstreamMembershipCounts,
 ) -> DirectDiagnosticReceipt {
-    let parent_observation = diagnostics.parent_observation().map(|parent| DirectParentObservation {
-        subject_id: parent.subject.as_str().to_string(),
-        observation_digest: parent.observation_id.as_str().to_string(),
-        terminal_disposition: parent.terminal_label.clone(),
-        harness_status: parent.harness_status,
-        expected_rows: parent.membership.expected,
-        observed_rows: parent.membership.observed,
-        missing_rows: parent.membership.missing,
-        extra_rows: parent.membership.extra,
-    });
-    let mode = diagnostics
-        .parent_observation()
-        .map(|parent| parent.mode.as_str())
-        .unwrap_or("unknown");
+    let parent_observation =
+        diagnostics.parent_observation().map(|parent| DirectParentObservation {
+            subject_id: parent.subject.as_str().to_string(),
+            observation_digest: parent.observation_id.as_str().to_string(),
+            terminal_disposition: parent.terminal_label.clone(),
+            harness_status: parent.harness_status,
+            expected_rows: parent.membership.expected,
+            observed_rows: parent.membership.observed,
+            missing_rows: parent.membership.missing,
+            extra_rows: parent.membership.extra,
+        });
+    let mode =
+        diagnostics.parent_observation().map(|parent| parent.mode.as_str()).unwrap_or("unknown");
     let probes = diagnostics
         .probes()
         .iter()
@@ -764,7 +748,10 @@ mod tests {
         }
     }
 
-    fn observation(assertions: usize, terminal_status: Option<i32>) -> Result<UpstreamObservationSet> {
+    fn observation(
+        assertions: usize,
+        terminal_status: Option<i32>,
+    ) -> Result<UpstreamObservationSet> {
         UpstreamObservationSet::settle(
             HarnessRunner::Test,
             HarnessMode::Parse,
@@ -783,20 +770,8 @@ mod tests {
         assert_eq!(first.subject(), second.subject());
         assert_ne!(first.observation_id(), second.observation_id());
 
-        let first_receipt = direct_diagnostics_receipt(
-            &DirectDiagnosticSet::plan(&first),
-            HarnessMode::Compile,
-            "caller-forged",
-            Some(99),
-            UpstreamMembershipCounts::default(),
-        );
-        let second_receipt = direct_diagnostics_receipt(
-            &DirectDiagnosticSet::plan(&second),
-            HarnessMode::Compile,
-            "caller-forged",
-            Some(99),
-            UpstreamMembershipCounts::default(),
-        );
+        let first_receipt = direct_diagnostics_receipt(&DirectDiagnosticSet::plan(&first));
+        let second_receipt = direct_diagnostics_receipt(&DirectDiagnosticSet::plan(&second));
         assert_ne!(
             first_receipt.parent_observation.as_ref().map(|parent| &parent.observation_digest),
             second_receipt.parent_observation.as_ref().map(|parent| &parent.observation_digest)
@@ -811,40 +786,58 @@ mod tests {
 
         assert_eq!(clean.subject(), failed.subject());
         assert_ne!(clean.observation_id(), failed.observation_id());
+
+        // Same status byte, different shared-taxonomy admission class: in
+        // execute mode the scheduler's nonzero exit is a recognized completion
+        // (#3451), in parse mode it is unproven. The digest must bind that
+        // distinction even though the legacy status identity is equal.
+        let recognized = UpstreamObservationSet::settle(
+            HarnessRunner::Test,
+            HarnessMode::Execute,
+            HarnessProfile::Base,
+            &discovered(),
+            &[record(1)],
+            Some(1),
+        )?;
+        let unproven = UpstreamObservationSet::settle(
+            HarnessRunner::Test,
+            HarnessMode::Parse,
+            HarnessProfile::Base,
+            &discovered(),
+            &[record(1)],
+            Some(1),
+        )?;
+        assert_eq!(
+            recognized.terminal().label(),
+            "recognized_runner_status",
+            "execute/test/1 is the #3451 recognized completion state"
+        );
+        assert_eq!(unproven.terminal().label(), "nonzero_exit");
+        assert_ne!(recognized.observation_id(), unproven.observation_id());
+        assert_ne!(
+            direct_diagnostics_receipt(&DirectDiagnosticSet::plan(&recognized))
+                .parent_observation
+                .as_ref()
+                .map(|parent| parent.terminal_disposition.clone()),
+            direct_diagnostics_receipt(&DirectDiagnosticSet::plan(&unproven))
+                .parent_observation
+                .as_ref()
+                .map(|parent| parent.terminal_disposition.clone())
+        );
         Ok(())
     }
 
     #[test]
-    fn caller_arguments_cannot_replace_frozen_parent_lineage() -> Result<()> {
+    fn receipt_parent_lineage_comes_only_from_the_frozen_plan() -> Result<()> {
         let parent = observation(1, Some(0))?;
         let diagnostics = DirectDiagnosticSet::plan(&parent);
 
-        let first = direct_diagnostics_receipt(
-            &diagnostics,
-            HarnessMode::Parse,
-            "forged-a",
-            Some(17),
-            UpstreamMembershipCounts {
-                expected: 99,
-                observed: 98,
-                missing: 97,
-                extra: 96,
-            },
-        );
-        let second = direct_diagnostics_receipt(
-            &diagnostics,
-            HarnessMode::Compile,
-            "forged-b",
-            None,
-            UpstreamMembershipCounts::default(),
-        );
-
+        let first = direct_diagnostics_receipt(&diagnostics);
+        let second = direct_diagnostics_receipt(&DirectDiagnosticSet::plan(&parent));
         assert_eq!(first, second);
-        let frozen = first
-            .parent_observation
-            .as_ref()
-            .expect("planned diagnostics have a parent");
+        let frozen = first.parent_observation.as_ref().expect("planned diagnostics have a parent");
         assert_eq!(frozen.harness_status, Some(0));
+        assert_eq!(frozen.terminal_disposition, "clean_exit");
         assert_eq!(frozen.expected_rows, 1);
         assert_eq!(frozen.observed_rows, 1);
         assert_eq!(frozen.missing_rows, 0);
