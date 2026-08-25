@@ -384,17 +384,32 @@ do
   end
 
   do
-    -- Decline and prompt close/cancel both answer success=false exactly once.
-    for _, decision in ipairs({ false }) do
+    -- Decline and prompt close/cancel both reach the same declined terminal
+    -- decision: the host wrapper maps any non-accept answer to answered(false),
+    -- so both shapes are exercised explicitly.
+    for _, label in ipairs({ "decline", "cancel" }) do
       local server, hooks, world = async_world()
       safe_show(server,
         { uri = "https://example.test/x", external = true }, hooks)
-      world.prompts[1].answered(decision)
+      world.prompts[1].answered(false)
       ok(#world.outcomes == 1 and world.outcomes[1].success == false
         and world.outcomes[1].reason == "user_declined",
-        "decline/cancel yields exactly one success=false outcome")
-      ok(#process_calls == 0, "declined target never launches")
+        label .. " yields exactly one success=false outcome")
+      ok(#process_calls == 0, label .. " target never launches")
     end
+  end
+
+  do
+    -- A repeated host answer is inert (#10873 review): settle runs at most
+    -- once, so Yes/Yes cannot start two launches or report two outcomes.
+    local server, hooks, world = async_world()
+    safe_show(server,
+      { uri = "https://example.test/double", external = true }, hooks)
+    world.prompts[1].answered(true)
+    world.prompts[1].answered(true)
+    ok(#process_calls == 1, "double accept launches the target once")
+    ok(#world.outcomes == 1 and world.outcomes[1].success == true,
+      "double accept reports exactly one success outcome")
   end
 
   do

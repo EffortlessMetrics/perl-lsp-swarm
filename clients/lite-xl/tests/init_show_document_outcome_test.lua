@@ -59,10 +59,23 @@ end
 
 local log_records = {}
 local opened_docviews = {}
+local selection_calls = {}
 ---One shared root-view instance: init.lua reaches the editor's open_doc
 ---through the core fake's root_view field and the core.rootview module.
+---Returns a docview carrying a minimal .doc so selection conversion and
+---set_selection behavior are provable end to end.
 local core_root_view = {}
-function core_root_view.open_doc(_, docview)
+function core_root_view.open_doc(_, doc)
+  local docview = {
+    filename = doc.filename,
+    doc = {
+      lines = { "hello world" },
+      set_selection = function(self, line1, col1, line2, col2)
+        selection_calls[#selection_calls + 1] =
+          { line1 = line1, col1 = col1, line2 = line2, col2 = col2 }
+      end,
+    },
+  }
   opened_docviews[#opened_docviews + 1] = docview
   return docview
 end
@@ -297,6 +310,7 @@ local function fresh_module_load()
   constructed_clients = {}
   prompts = {}
   opened_docviews = {}
+  selection_calls = {}
   process_calls = {}
   fail_next = false
   raise_calls = 0
@@ -397,11 +411,30 @@ do
   ok(#opened_docviews == 1, "internal open went through root_view:open_doc")
   ok(raise_calls == 1, "takeFocus raise applied after successful reveal")
 
+  -- Internal valid selection: set_selection runs on the opened document with
+  -- the converted coordinates (utf-16 columns pass through for ASCII text).
+  selection_calls = {}
+  r = deliver(client, 109, {
+    uri = "file:///C:/proj/selected.pl",
+    external = false,
+    selection = {
+      start = { line = 0, character = 1 },
+      ["end"] = { line = 0, character = 5 },
+    },
+  })
+  ok(#r == 1 and r[1].result ~= nil and r[1].result.success == true,
+    "internal valid selection answers one success=true")
+  ok(#selection_calls == 1 and selection_calls[1].line1 == 1
+    and selection_calls[1].col1 == 2 and selection_calls[1].line2 == 1
+    and selection_calls[1].col2 == 6,
+    "valid selection applies one converted set_selection on the opened doc")
+
   -- Internal unconvertible URI: one explicit success=false.
   r = deliver(client, 105, { uri = "https://example.test/nope", external = false })
   ok(#r == 1 and r[1].result ~= nil and r[1].result.success == false,
     "internal non-file URI answers one explicit success=false")
-  ok(#opened_docviews == 1, "refused internal URI never opened a document")
+  ok(#opened_docviews == 2,
+    "refused internal URI never opened a document")
 
   -- Internal selection conversion failure: explicit success=false, no crash.
   r = deliver(client, 106, {
@@ -421,11 +454,17 @@ do
   ok(#process_calls == 1, "stale prompt never launches")
   lsp.servers_running["perllsp"] = client
 
-  -- Double terminal delivery stays one response.
+  -- Double terminal delivery stays one response, and a repeated Yes cannot
+  -- start a second launch (#10873 review): the whole sequence settles once.
+  local launches_before = #process_calls
   r = deliver(client, 108, { uri = "https://example.test/w", external = true })
   prompts[#prompts].callback(nil, 1)
-  prompts[#prompts].callback(nil, 2)
+  local launches_after_first = #process_calls
+  prompts[#prompts].callback(nil, 1)
   ok(#r == 1, "a double host callback still produces exactly one response")
+  ok(launches_after_first == launches_before + 1
+    and #process_calls == launches_after_first,
+    "a repeated Yes answer never starts a second launch")
 end
 
 print(string.format("%d passed, %d failed", passed, failed))

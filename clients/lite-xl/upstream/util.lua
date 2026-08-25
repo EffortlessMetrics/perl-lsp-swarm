@@ -574,8 +574,16 @@ function util.show_document(server, params, hooks)
   end
 
   -- One terminal settle path for the external decision: decline reports
-  -- false, accept launches and reports the observable launch result.
+  -- false, accept launches and reports the observable launch result. A
+  -- repeated host answer is inert (#10873 review): the sequence settles at
+  -- most once, so a double Yes/No delivery cannot launch twice or answer
+  -- twice even before the listener's own deduplication.
+  local settled = false
   local function settle(accepted)
+    if settled then
+      return nil, "already_settled"
+    end
+    settled = true
     if hooks.alive and not hooks.alive() then
       return nil, "stale"
     end
