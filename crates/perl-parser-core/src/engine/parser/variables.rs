@@ -1798,10 +1798,7 @@ mod inline_expression_tests {
             Err(error) => error,
         };
         if error.location() != Some(17) {
-            let location = match error.location() {
-                Some(location) => location,
-                None => 17,
-            };
+            let location = error.location().unwrap_or(17);
             return Err(ParseError::syntax(
                 "expected the non-expression error at the outer offset",
                 location,
