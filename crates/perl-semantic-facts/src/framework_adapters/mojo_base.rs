@@ -55,10 +55,11 @@ pub const MOJO_BASE_ADAPTER_ID: AdapterId = AdapterId(0x004D_4F42);
 pub const MOJO_BASE_PROFILE_VERSION: &str = "mojo-base.profile.1.v1";
 
 /// Reviewed versioned-descriptor schema revision for this adapter. Tracks
-/// [`FRAMEWORK_ADAPTER_SCHEMA_VERSION`](crate::framework_raw::FRAMEWORK_ADAPTER_SCHEMA_VERSION):
+/// [`FRAMEWORK_ADAPTER_SCHEMA_VERSION`](crate::framework::FRAMEWORK_ADAPTER_SCHEMA_VERSION):
 /// the descriptor travels on the adapter SDK wire, whose version 2 carries
 /// the #8921 route-family fact kinds.
-pub const MOJO_BASE_DESCRIPTOR_REVISION: u32 = 2;
+pub const MOJO_BASE_DESCRIPTOR_REVISION: u32 =
+    crate::framework::FRAMEWORK_ADAPTER_SCHEMA_VERSION;
 
 /// Build the Mojo::Base adapter descriptor.
 ///

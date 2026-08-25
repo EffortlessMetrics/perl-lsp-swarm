@@ -732,7 +732,8 @@ fn same_parameter_name_is_route_scoped() {
     assert_eq!(facts.parameters.len(), 2);
     assert_eq!(parameter_names(&facts), vec!["id".to_string(), "id".to_string()]);
     assert_ne!(facts.parameters[0].envelope.fact_id, facts.parameters[1].envelope.fact_id);
-    assert_ne!(facts.parameters[0].route_declaration_index, 1);
+    assert_eq!(facts.parameters[0].route_declaration_index, 0);
+    assert_eq!(facts.parameters[1].route_declaration_index, 1);
     for parameter in &facts.parameters {
         assert_eq!(parameter.envelope.package.as_deref(), Some("App"));
     }
