@@ -343,6 +343,7 @@ const MATRIX_TRANSITIONAL_STATUS_PATTERNS: &[RawPatternCheck] = &[
     RawPatternCheck { needle: "needs-capability-parser", label: "transitional matrix status" },
     RawPatternCheck { needle: "needs-compat-test", label: "transitional matrix status" },
     RawPatternCheck { needle: "planned-needs-negative-gate", label: "transitional matrix status" },
+    RawPatternCheck { needle: "withdrawn-containment", label: "transitional matrix status" },
 ];
 
 const FEATURE_CATALOG_FORBIDDEN_PATTERNS: &[RawPatternCheck] = &[
@@ -1098,6 +1099,25 @@ mod tests {
         assert_eq!(violations[0].line, 3);
         assert_eq!(violations[0].label, "transitional matrix status");
         assert!(violations[0].detail.contains("implemented-needs-positive-wire-test"));
+        Ok(())
+    }
+
+    #[test]
+    fn matrix_closeout_status_check_rejects_withdrawn_containment() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        write_matrix_fixture(
+            temp.path(),
+            "| Feature | Status |\n| --- | --- |\n| Multi-range formatting | withdrawn-containment (#11955) |\n",
+        )?;
+
+        let mut violations = Vec::new();
+        check_matrix_closeout_statuses(temp.path(), &mut violations)?;
+
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].rel_path, MATRIX_PATH);
+        assert_eq!(violations[0].line, 3);
+        assert_eq!(violations[0].label, "transitional matrix status");
+        assert!(violations[0].detail.contains("withdrawn-containment"));
         Ok(())
     }
 }

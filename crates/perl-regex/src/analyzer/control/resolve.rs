@@ -265,6 +265,7 @@ mod tests {
         CaptureLanguageProfile, EffectiveModifiers, FeatureState, PerlVersion,
         RegexLanguageProfile, capture::analyze_captures,
     };
+    use perl_test_must::must_some_with;
 
     fn captures_of(pattern: &str) -> CaptureAnalysis {
         let profile = CaptureLanguageProfile::new(
@@ -275,7 +276,7 @@ mod tests {
     }
 
     fn at(pattern: &str, needle: &str) -> RegexRange {
-        let start = pattern.find(needle).expect("needle present in pattern");
+        let start = must_some_with(pattern.find(needle), "needle present in pattern");
         RegexRange { start, end: start + needle.len() }
     }
 

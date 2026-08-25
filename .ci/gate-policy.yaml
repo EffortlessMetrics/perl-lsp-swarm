@@ -790,7 +790,7 @@ gates:
 
   - name: clippy_tests_kernel
     tier: pr_fast
-    description: "Clippy --all-targets on the known-clean staged cohort (32/46 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
+    description: "Clippy --all-targets on the known-clean staged cohort (34/46 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
     required: true
     # (#11736): The workspace lints in Cargo.toml deny `unwrap_used`, `expect_used`,
     # and `panic` but the existing clippy gates use `--lib` only, so these denials
@@ -835,6 +835,16 @@ gates:
     #     perl-pod (2 needless_borrow), perl-pragma (unfulfilled_lint_expectation +
     #     bool_assert_comparison), perl-test-generators (2 collapsible_if),
     #     perl-core-harness-types (expect_err_on_result)
+    #   2026-08-25 batch (residual tranches repaired, see PR for #11736):
+    #     perllsp (3 expect_err replaced with typed let-else bail, 2 unused
+    #     bindings dropped, 1 deferred-init binding), perl-regex (8 Option::expect
+    #     in cfg(test) replaced with must_some_with via a new perl-test-must
+    #     dev-dependency). The two fresh regressions inside the existing cohort
+    #     (perl-semantic-analyzer too_many_arguments from #12334,
+    #     perl-semantic-facts explicit_auto_deref) were repaired on main itself
+    #     (#12395, #12398), so this batch's duplicate fixes were dropped during
+    #     the merge with e40c2a386. Exact extended-cohort rerun PASS on this
+    #     branch.
     command: >-
       cargo clippy
       -p perl-token
@@ -869,12 +879,22 @@ gates:
       -p perl-pragma
       -p perl-test-generators
       -p perl-core-harness-types
+      -p perl-regex
+      -p perllsp
       --all-targets --locked
       -- -D warnings -A missing_docs
     # Budget: measured ~80s locally with warm dependencies and cold check
     # fingerprints for the 32-crate cohort (~1s fully warm); scaled from the
     # previous 7-crate envelope and kept below the compile_all_targets
-    # ceiling (600s / 540000ms), which compiles strictly more work.
+    # ceiling (600s / 540000ms), which compiles strictly more work. The
+    # 2026-08-25 additions pull in perl-lsp-rs/perl-lsp-rs-core libraries
+    # through perllsp; clippy emits metadata only (no linking), and
+    # clippy_full already lints those libraries inside its 300s envelope,
+    # so the dominant new cost stays within existing measured ceilings.
+    # The PR Smoke run carrying this change produces the authoritative
+    # cold-runner number requested on #11736; if it exceeds the envelope,
+    # split perllsp into its own sharded kernel lane rather than raising
+    # this budget.
     timeout_seconds: 480
     retry_count: 0
     budgets:

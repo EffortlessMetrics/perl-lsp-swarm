@@ -238,10 +238,7 @@ pub fn shape(root: &Node) -> Vec<String> {
 }
 
 fn push_variant_name(n: &Node, out: &mut Vec<String>) {
-    // Variant name from Debug up to '(' or '{'
-    let s = format!("{:?}", n.kind);
-    let name = s.split(['(', '{']).next().map_or_else(|| s.clone(), |n| n.to_string());
-    out.push(name);
+    out.push(n.kind.kind_name().to_string());
 }
 
 fn extract_shape_rec(node: &Node, out: &mut Vec<String>) {

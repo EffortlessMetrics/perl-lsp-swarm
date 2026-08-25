@@ -35,6 +35,14 @@ Pinned blob: {{blob}}
 |---|---|---|
 | `launch/attach arguments` | `adapter-configuration` | `#4754` |
 
+### Versioned custom families
+
+A custom family is registered for explicit negotiation and is not standard DAP.
+
+| Family | Version | Classification | Owner |
+|---|---|---|---|
+| `perl-lsp/loadedModuleReload` | `1` | `custom_dap_extension` | `#10138` |
+
 <a id="4-breakpoint-requests"></a>
 ## Breakpoint requests
 """
@@ -104,6 +112,54 @@ def schema_bytes(schema: dict | None = None) -> bytes:
     return (json.dumps(schema or fake_schema(), sort_keys=True) + "\n").encode("utf-8")
 
 
+def family_for() -> dict:
+    return {
+        "family": "perl-lsp/loadedModuleReload",
+        "version": 1,
+        "classification": "custom_dap_extension",
+        "request_name": "perl-lsp/loadedModuleReload",
+        "event_names": [],
+        "capability_advertisement": "unadvertised-until-r04",
+        "dispatched": False,
+        "backed": False,
+        "owner": "#10138",
+        "contract": "#10097",
+        "negotiation": {
+            "mode": "explicit-client-declaration",
+            "selection": "highest-mutual-version",
+            "unknown_version_policy": "reject-closed",
+            "unknown_variant_policy": "reject-closed",
+            "unknown_field_policy": "reject-closed",
+            "session_binding": "epoch",
+            "restart_effect": "prior-family-and-operation-identities-invalid",
+        },
+        "identity_policy": {
+            "subject_shape": "adapter-issued-opaque-tokens-only",
+            "raw_client_input": "refused",
+            "correlation": "operation-id-on-every-request-response-pair",
+            "terminal_vocabulary": "frozen-#10097-outcome-codes",
+            "possibly_applied_boundary": "runtime_mutation_begins",
+        },
+        "bounds": {
+            "max_request_bytes": 8192,
+            "max_identity_chars": 256,
+            "max_digest_chars": 128,
+            "max_reasons": 16,
+            "max_reason_chars": 96,
+            "max_detail_chars": 256,
+            "max_retained_operations": 64,
+        },
+        "redaction": "codes-and-opaque-identities-only",
+        "cancellation": "honored-only-before-runtime_mutation_begins",
+        "standard_dap_exclusion": True,
+        "schema": "schemas/loaded_module_reload_family.v1.schema.json",
+        "typescript_projection": "vscode-extension/src/loadedModuleReloadFamily.generated.ts",
+        "rust_contract": "crates/perl-dap/src/reload_family.rs",
+        "vectors": ".spec/10138-loaded-module-reload-family/fixtures",
+        "generator_check": "cargo test -p perl-dap reload_family --locked",
+    }
+
+
 def manifest_for(data: bytes, *, include_sha256: bool = True) -> dict:
     return {
         "schema_version": MODULE.MANIFEST_SCHEMA,
@@ -140,6 +196,7 @@ def manifest_for(data: bytes, *, include_sha256: bool = True) -> dict:
                 "owner": "#4754",
             }
         ],
+        "project_families": [family_for()],
     }
 
 
@@ -422,6 +479,112 @@ class DapProtocolAuthorityTests(unittest.TestCase):
             second["authority"]["manifest_sha256"],
         )
         self.assertEqual(second["authority"]["project_extensions"][0]["owner"], "#9999")
+
+    def test_family_section_is_required(self) -> None:
+        manifest = copy.deepcopy(self.manifest)
+        del manifest["project_families"]
+        self.assertAuthorityError(lambda: MODULE.validate_manifest(manifest, require_sha256=True))
+
+    def test_unnamespaced_family_fails(self) -> None:
+        manifest = copy.deepcopy(self.manifest)
+        manifest["project_families"][0]["family"] = "loadedModuleReload"
+        manifest["project_families"][0]["request_name"] = "loadedModuleReload"
+        self.assertAuthorityError(lambda: MODULE.validate_manifest(manifest, require_sha256=True))
+
+    def test_family_standard_request_name_fails(self) -> None:
+        # A bare standard DAP request spelling can never be a custom family.
+        manifest = copy.deepcopy(self.manifest)
+        manifest["project_families"][0]["family"] = "perl-lsp/restart"
+        manifest["project_families"][0]["request_name"] = "restart"
+        self.assertAuthorityError(lambda: MODULE.validate_manifest(manifest, require_sha256=True))
+
+    def test_family_bad_classification_fails(self) -> None:
+        manifest = copy.deepcopy(self.manifest)
+        manifest["project_families"][0]["classification"] = "extension"
+        self.assertAuthorityError(lambda: MODULE.validate_manifest(manifest, require_sha256=True))
+
+    def test_family_version_zero_fails(self) -> None:
+        manifest = copy.deepcopy(self.manifest)
+        manifest["project_families"][0]["version"] = 0
+        self.assertAuthorityError(lambda: MODULE.validate_manifest(manifest, require_sha256=True))
+
+    def test_family_standard_capability_advertisement_fails(self) -> None:
+        manifest = copy.deepcopy(self.manifest)
+        manifest["project_families"][0]["capability_advertisement"] = "supportsLoadedModuleReload"
+        self.assertAuthorityError(lambda: MODULE.validate_manifest(manifest, require_sha256=True))
+
+    def test_family_unknown_negotiation_policy_fails(self) -> None:
+        manifest = copy.deepcopy(self.manifest)
+        manifest["project_families"][0]["negotiation"]["unknown_variant_policy"] = "ignore"
+        self.assertAuthorityError(lambda: MODULE.validate_manifest(manifest, require_sha256=True))
+
+    def test_family_unnamespaced_event_fails(self) -> None:
+        manifest = copy.deepcopy(self.manifest)
+        manifest["project_families"][0]["event_names"] = ["stopped"]
+        self.assertAuthorityError(lambda: MODULE.validate_manifest(manifest, require_sha256=True))
+
+    def test_family_dispatch_mismatch_fails(self) -> None:
+        # The registered family is deliberately not dispatched: adding a
+        # production route for it without flipping (and graduating) the
+        # record must fail closed.
+        self._write_production(commands=("initialize", "inlineValues", "perl-lsp/loadedModuleReload"))
+        validated = MODULE.validate_manifest(self.manifest, require_sha256=True)
+        observed = MODULE.validate_schema_bytes(self.data, validated, require_sha256=True)
+        self.assertAuthorityError(
+            lambda: MODULE.validate_production_boundary(self.root, validated, observed)
+        )
+
+    def test_family_emitted_event_fails(self) -> None:
+        manifest = copy.deepcopy(self.manifest)
+        manifest["project_families"][0]["event_names"] = ["perl-lsp/loadedModuleReloadOutcome"]
+        validated = MODULE.validate_manifest(manifest, require_sha256=True)
+        observed = MODULE.validate_schema_bytes(self.data, validated, require_sha256=True)
+        self._write_production(
+            events=("initialized", "continued", "perl-lsp/loadedModuleReloadOutcome")
+        )
+        self.assertAuthorityError(
+            lambda: MODULE.validate_production_boundary(self.root, validated, observed)
+        )
+
+    def test_family_metadata_must_match_docs(self) -> None:
+        # The docs must carry the manifest's exact family row: an owner
+        # change in the manifest without the documentation row is drift.
+        manifest = copy.deepcopy(self.manifest)
+        manifest["project_families"][0]["owner"] = "#9999"
+        validated = MODULE.validate_manifest(manifest, require_sha256=True)
+        self.assertAuthorityError(lambda: MODULE.validate_docs(self.root, validated))
+
+    def test_family_row_missing_from_docs_fails(self) -> None:
+        for relative in MODULE.DOC_PATHS:
+            path = self.root / relative
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "| `perl-lsp/loadedModuleReload` | `1` | `custom_dap_extension` | `#10138` |",
+                    "",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+        self.assertAuthorityError(lambda: MODULE.validate_docs(self.root, self.manifest))
+
+    def test_receipt_records_the_family_boundary(self) -> None:
+        validated, observed, production = self._validate()
+        receipt = MODULE.build_receipt(validated, observed, production)
+        self.assertEqual(
+            receipt["authority"]["project_families"][0]["family"],
+            "perl-lsp/loadedModuleReload",
+        )
+        self.assertEqual(
+            production["project_families"],
+            [
+                {
+                    "family": "perl-lsp/loadedModuleReload",
+                    "request_name": "perl-lsp/loadedModuleReload",
+                    "event_names": [],
+                    "dispatched": False,
+                }
+            ],
+        )
 
 
 if __name__ == "__main__":
