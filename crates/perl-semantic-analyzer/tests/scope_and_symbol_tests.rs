@@ -685,6 +685,20 @@ sub modify_it {
     Ok(())
 }
 
+#[test]
+fn scope_local_typeglob_alias_keeps_rhs_target_visible() -> Result<(), Box<dyn std::error::Error>> {
+    let issues =
+        scope_issues_strict("use strict;\nmy $target = 'TARGET';\nlocal *ALIAS = *{$target};\n");
+
+    assert!(
+        issues.iter().all(|issue| {
+            !(issue.kind == IssueKind::UnusedVariable && issue.variable_name == "$target")
+        }),
+        "dynamic typeglob target should retain its lexical dependency: {issues:?}"
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // 3b. local with builtin special variables — issue #3502
 // ---------------------------------------------------------------------------

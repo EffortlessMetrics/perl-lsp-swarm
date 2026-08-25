@@ -369,7 +369,7 @@ jobs:
 
       - name: Build (rolldown)
         working-directory: vscode-extension
-        run: npm run compile
+        run: npm run bundle
 
       - name: Unit tests (jest --ci)
         id: jest

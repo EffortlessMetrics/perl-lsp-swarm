@@ -1,0 +1,66 @@
+{
+  "packet_schema": "standalone_candidate_selection_vector.v1",
+  "expectation": {
+    "verdict": "reject",
+    "reason_code": "malformed_current_record"
+  },
+  "candidates": [
+    {
+      "schema_version": "standalone_candidate.v1",
+      "policy_version": "v1",
+      "route_mode": "first_party_posix",
+      "source_mode": "release_archive",
+      "transaction_id": "tx-11179-build-a",
+      "attempt_id": "at-11179-build-a",
+      "created_by_operation": "install",
+      "resolved_subject_digest": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "stage_dag_digest": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "release_display_version": "0.19.0",
+      "release_topology_digest": "d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6",
+      "target_platform": "linux",
+      "target_triple": "x86_64-unknown-linux-gnu",
+      "target_libc": "gnu",
+      "product_unit_disposition": "archive_pair_required",
+      "dap_preview_maturity": false,
+      "candidate_generation": 1,
+      "members": [
+        {
+          "role": "perllsp_server",
+          "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "observation_packet_sha256": "abababababababababababababababababababababababababababababababab",
+          "subject_binding": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        },
+        {
+          "role": "perl_dap_adapter",
+          "artifact_sha256": "cacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca",
+          "observation_packet_sha256": "cbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcb",
+          "subject_binding": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        }
+      ],
+      "limitations": [
+        "synthetic contract vector for the standalone install train"
+      ],
+      "candidate_id": "0881d897be01c74163eabcc3abd3f33189a70000c7bc28fbb3aa8a08e7117a64",
+      "manifest_sha256": "71463d1dcea4609524540bf6ec9e97beaff497267a2570b235f0c7241b90e437"
+    }
+  ],
+  "prior_selection": {
+    "schema_version": "standalone_current_selection.v1",
+    "selection_policy_version": "v1",
+    "install_root": {
+      "root_role": "user_local",
+      "root_identity_sha256": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+    },
+    "selection_generation": 0,
+    "selected_candidate_id": "0881d897be01c74163eabcc3abd3f33189a70000c7bc28fbb3aa8a08e7117a64",
+    "selected_manifest_sha256": "71463d1dcea4609524540bf6ec9e97beaff497267a2570b235f0c7241b90e437",
+    "previous_known_good": null,
+    "operation": "install",
+    "transaction_id": "tx-11179-bad-09",
+    "attempt_id": "at-11179-bad-09",
+    "commit_result": "committed",
+    "bounded_reason": "generation zero cannot identify selection state"
+  },
+  "next_selection": null,
+  "transition": null
+}

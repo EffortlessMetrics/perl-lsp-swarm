@@ -534,14 +534,16 @@ do
   local first = get_session(lsp, doc, server)
   ok(first ~= nil and first.session_generation == 1, "case5: first open is session generation 1")
 
-  -- Queue a change that never goes out (backpressure) so the old session
-  -- holds unsent pending state.
-  server.can_push_value = false
+  -- Queue a change and leave its batch unsent so the old session holds
+  -- pending state (#10833): batches always queue - there is no admission
+  -- hold anymore - so holding is a property of the unsent queue whose send
+  -- callback has not run, not of a can_push gate.
   doc:raw_insert(1, 5, "stale", nil, 0)
-  drain(server)
-  server.can_push_value = true
   ok(first ~= nil and #first.pending_changes == 1,
     "case5: old session holds one unsent pending change before close")
+  local stale_batches = drain(server, "textDocument/didChange")
+  ok(#stale_batches == 1 and first ~= nil and #first.pending_changes == 0,
+    "case5: sending the batch releases exactly the held change")
 
   lsp.close_document(doc)
   local closed = drain(server, "textDocument/didClose")

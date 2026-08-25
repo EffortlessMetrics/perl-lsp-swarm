@@ -172,7 +172,7 @@ fn wait_for_current_parse_tokens(
 ) -> Result<Vec<u64>> {
     let deadline = Instant::now() + timeout();
     let mut attempt = 0u32;
-    let mut last_result = Value::Null;
+    let mut last_result;
 
     loop {
         let id = format!("{id_prefix}-{attempt}");

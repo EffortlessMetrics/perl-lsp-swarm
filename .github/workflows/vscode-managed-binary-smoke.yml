@@ -52,7 +52,7 @@ jobs:
         run: npm run typecheck:authority
 
       - name: Compile extension
-        run: npm run compile
+        run: npm run bundle
 
       - name: Run extension-host smoke
         if: runner.os != 'Linux'

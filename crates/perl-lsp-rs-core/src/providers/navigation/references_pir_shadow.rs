@@ -46,7 +46,7 @@
 
 use std::collections::BTreeSet;
 
-use perl_parser_core::pir::{LexicalExtractorReceipt, LexicalRole};
+use perl_parser_core::pir::LexicalExtractorReceipt;
 use perl_semantic_facts::{
     Confidence, Provenance, ProviderFactFreshness, ProviderFactSourceKind, ProviderFactTrace,
     ProviderFallbackState, ProviderSurface,
@@ -1083,9 +1083,13 @@ mod promote_tests {
         let output = parser.parse_with_recovery();
         let hir = lower_ast(&output.ast);
         let receipt = extract_lexical_facts(&hir);
-        // Deliberately provide a forged widened legacy range. Exact promotion
-        // must consume the canonical HIR binding anchor instead.
-        let forged_legacy = vec![(4usize, 9usize)];
+        // Deliberately provide forged legacy ranges: one entirely outside the
+        // declaration, and one exactly matching the obsolete widened `my $i`
+        // span. Exact promotion must consume the canonical HIR binding anchor
+        // instead — a regression emitting the widened anchor alongside the
+        // token anchor, or an implementation that only narrows overlapping
+        // legacy ranges while leaking non-overlapping forgeries, fails here.
+        let forged_legacy = vec![(0usize, 1usize), (4usize, 9usize)];
 
         let outcome = references_pir_promote(
             PromotionMode::PromoteExact,
@@ -1105,11 +1109,13 @@ mod promote_tests {
             .iter()
             .map(|range| (range.start.character as usize, range.end.character as usize))
             .collect::<Vec<_>>();
-        if !mapped.contains(&(7, 9)) {
-            return Err(format!("promoted declaration was not token-normalized: {mapped:?}"));
-        }
-        if mapped.contains(&(4, 9)) {
-            return Err(format!("promoted declaration leaked widened anchor: {mapped:?}"));
+        // The foreach binding anchor is the `$i` token (7..9), per the
+        // iterator-binding token-anchor contract merged in #12274 — not the
+        // whole `my $i` span (4..9) this expectation pinned before it. Assert
+        // the complete result so exact promotion cannot emit unrelated ranges.
+        let expected = vec![(7, 9), (27, 29)];
+        if mapped != expected {
+            return Err(format!("expected only canonical anchors {expected:?}, got {mapped:?}"));
         }
         Ok(())
     }

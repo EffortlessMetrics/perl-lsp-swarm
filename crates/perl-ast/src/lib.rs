@@ -13,6 +13,7 @@
 //! - [`ast`] -- The primary AST used by the current recursive-descent parser.
 //! - [`invariant_policy`] -- Exhaustive range, child, payload, and recovery policy.
 //! - [`invariants`] -- Bounded structural validation shared by parser paths.
+//! - [`kind_schema`] -- Structural `NodeKind` registry: production FieldId membership and field-aware traversal.
 //! - [`v2`] -- Experimental second-generation AST re-exported from `perl-ast-v2`
 //!   for incremental parsing.
 //!
@@ -49,6 +50,20 @@
 //! recursive call stack. The policy registry is reconciled directly with
 //! [`NodeKind::ALL_KIND_NAMES`], so a new variant cannot inherit an undocumented
 //! permissive policy.
+//!
+//! # Depth safety
+//!
+//! [`Node`] remains recursively owned. Destruction is iterative: a 50,000-node
+//! chain on a 256 KiB worker does not overflow the thread stack.
+//! Construct/destroy equality is proven at 10,000-node cycle depth, not on
+//! the overflow fixture. [`Clone`] is likewise iterative: a 50,000-node chain
+//! on a 256 KiB worker does not overflow the thread stack. [`PartialEq`] is
+//! iterative exact structural equality: a 50,000-node chain on a 256 KiB
+//! worker does not overflow the thread stack. [`Debug`] is an iterative
+//! bounded human projection: a 50,000-node chain on a 256 KiB worker does
+//! not overflow the thread stack, output stays under the documented byte
+//! bound, and truncation is visible. Rust [`Debug`] is not machine identity.
+//! See [`Node`] for the operation-by-operation contract.
 
 pub mod ast;
 /// Static classification metadata for [`NodeKind`] variants: categories and flags.
@@ -57,6 +72,12 @@ pub mod classification;
 pub mod invariant_policy;
 /// Bounded structural validation for parser-produced ASTs.
 pub mod invariants;
+/// Shadow `NodeKind` structural registry and check-mode parity checker.
+///
+/// Production FieldId membership and field-aware child traversal are derived
+/// from this module. It does not drive S-expression rendering, generated
+/// status, or schema fingerprint.
+pub mod kind_schema;
 
 /// Incremental parsing AST types extracted into a dedicated microcrate.
 pub use perl_ast_v2 as v2;

@@ -246,7 +246,7 @@ If the VS Code extension is ready:
 
 1. Confirm `vscode-extension/package.json` is at `$VERSION` — `cargo xtask bump-version` in step 1 already wrote it; if it disagrees, stop and re-run that step rather than editing by hand
 2. Update binary download URLs and checksums
-3. Build: `npm run compile`
+3. Build: `npm run bundle`
 4. Package: `vsce package`
 5. Publish: `vsce publish`
 
