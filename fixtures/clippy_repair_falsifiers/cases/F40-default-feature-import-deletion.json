@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "case_id": "F40-default-feature-import-deletion",
+  "family": "real_regression_10600_family",
+  "purpose": "Feature-gated imports deleted from default-feature evidence while the feature path still needs them (#10600 class).",
+  "incident_reference": "#10600",
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "#[cfg(feature = \"incremental\")]",
+      "default-features run looked clean"
+    ],
+    "content": "// #[cfg(feature = \"incremental\")] use crate::incremental::Reparser;\n// removed after a default-features run looked clean\n",
+    "sha256": "5c273eaa1ae28da6de02c9e2b62a0075261e8408905517ab179951b4281675c1"
+  },
+  "rejecting_authority": {
+    "status": "bound",
+    "authority_kind": "file_contract",
+    "reference": "file:scripts/check_features_invariants.py#"
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "feature_gated_import_deletion"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "check_features_invariants.py"
+    ],
+    "note": "Feature invariants machine-checked.",
+    "content": "python3 scripts/check_features_invariants.py\n",
+    "sha256": "0fefe8b2dfb638deff6c405118ba7b23c2ff0a08c5652dd0631a548fae59a0ae"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Features invariants script stands guard; exact-subject completeness rides #11222."
+}

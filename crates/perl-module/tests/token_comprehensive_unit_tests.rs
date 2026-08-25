@@ -3,7 +3,7 @@
 //! Covers: `module_variant_pairs`, `contains_module_token`, `replace_module_token`
 //! with edge cases, boundary conditions, and real-world Perl patterns.
 
-use perl_module::token::{contains_module_token, module_variant_pairs, replace_module_token};
+use perl_module::{contains_module_token, module_variant_pairs, replace_module_token};
 
 // ---------------------------------------------------------------------------
 // module_variant_pairs

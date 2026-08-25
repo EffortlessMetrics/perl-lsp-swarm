@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "B16-open-world-item-as-closed-cleanup",
+  "family": "count_identity_debt_substitution",
+  "purpose": "Treating a generated or public/open-world item as ordinary closed-world cleanup deletes consumers outside local visibility.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "re-export pruned",
+      "no longer calls it"
+    ],
+    "content": "// public re-export pruned because the local crate no longer calls it\n// external/path-included tests and downstream consumers break silently\npub use crate::legacy::LegacyFrame;\n",
+    "sha256": "281b3cebfb1e3a7bd0cb673a24f278b98a2c1bf596b1c99c9ce70c7a8aaabd40"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11257,
+    "unresolved_reason": "Open-world/generated admission classes need the packet adapter's shared admission fields (#11257); no automated rejector exists."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "open_world_cleanup_theater"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "retained while",
+      "#10600-family liveness"
+    ],
+    "note": "Public surface survives until its owner rules.",
+    "content": "// kept: re-export retained while #10600-family liveness evidence is evaluated\npub use crate::legacy::LegacyFrame;\n",
+    "sha256": "e91dc479440a90e5fc4f7f4ea0913e32a8f73638f7e38d067db5c255be268487"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Real #10600 re-export deletion shows the mechanism; admission authority pending packets."
+}
