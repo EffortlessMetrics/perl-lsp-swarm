@@ -266,39 +266,38 @@ mod tests {
         assert!(entry_matches(exact, "Cargo.lock"));
         assert!(!entry_matches(exact, "flake.lock"));
 
-        // Live allowlist still records `docs/project/status/**.md`. The `glob` crate
-        // rejects that spelling because `**` must be a whole path component, so
-        // matching is pinned to the valid subtree form against a current tracked
-        // status page. Repairing the live glob is a separate generated-policy claim:
-        // it would reclassify status pages and churn `docs/policy/NON_RUST_INVENTORY.md`.
+        let status = policy
+            .allow
+            .iter()
+            .find(|entry| entry.id == "generated-status-pages")
+            .expect("generated-status-pages allowlist entry");
+        let live_glob = status.glob.as_deref().expect("generated-status-pages glob");
+        assert_eq!(
+            live_glob,
+            "docs/project/status/**.md",
+            "live status glob is currently the invalid **.md form; repairing it is a generated-policy claim because it reclassifies status pages and churns NON_RUST_INVENTORY"
+        );
         assert!(
-            Pattern::new("docs/project/status/**.md").is_err(),
-            "**.md remains an invalid glob-crate pattern"
+            Pattern::new(live_glob).is_err(),
+            "live generated-status-pages glob is invalid for the glob crate"
         );
 
-        let glob = Entry {
-            id: "status-glob".into(),
-            path: None,
-            glob: Some("docs/project/status/**/*.md".into()),
-            kind: "status_page".into(),
-            generated_by: "cargo xtask update-status --write".into(),
-            regenerate: Some("cargo xtask update-status --write".into()),
-            owner: "docs/status".into(),
-            reason: "status pages".into(),
-            covered_by: vec![],
-            created: "2026-08-24".into(),
-            review_after: "2026-11-22".into(),
-            broad_glob_reason: Some(
-                "Status pages are generated across the status-document subtree.".into(),
-            ),
-        };
         const SAMPLE: &str = "docs/project/status/dap.md";
         assert!(
             files.iter().any(|path| path == SAMPLE),
             "status glob sample {SAMPLE} must stay tracked"
         );
-        assert!(entry_matches(&glob, SAMPLE));
-        assert!(!entry_matches(&glob, "docs/project/ROADMAP.md"));
+        assert!(
+            !entry_matches(status, SAMPLE),
+            "invalid live glob cannot match a tracked status page"
+        );
+        assert!(!entry_matches(status, "docs/project/ROADMAP.md"));
+
+        let mut valid = status.clone();
+        valid.glob = Some(live_glob.replace("**.md", "**/*.md"));
+        assert_eq!(valid.glob.as_deref(), Some("docs/project/status/**/*.md"));
+        assert!(entry_matches(&valid, SAMPLE));
+        assert!(!entry_matches(&valid, "docs/project/ROADMAP.md"));
     }
 
     #[test]

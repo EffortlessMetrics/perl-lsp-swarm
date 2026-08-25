@@ -63,11 +63,11 @@ const ROWS: &[MatrixRow] = &[
         client_gate: "range-formatting client support",
         server_shape: "`documentRangeFormattingProvider.rangesSupport`",
         method_or_shape: "`textDocument/rangesFormatting`",
-        status: "withdrawn-containment (#11955)",
+        status: "negative-gated+documented",
         proof: "`lsp_formatting_e2e::withdrawn_ranges_formatting_refuses_at_process_boundary`; `lsp_caps_contract_shapes`; `lsp_capabilities_snapshot`; `lsp_cap_snap`",
         owner: "restoration: #7089 exact atomic composition/currentness contract; containment in `crates/perl-lsp-rs/src/runtime/dispatch/formatting_policy.rs`",
         priority: "P0",
-        notes: "Route refuses MethodNotFound (-32601) and the capability is not advertised until #7089 lands; `documentRangesFormattingProvider` is not a valid capability and remains forbidden.",
+        notes: "Withdrawn containment (#11955): route refuses MethodNotFound (-32601) and the capability is not advertised until #7089 lands; `documentRangesFormattingProvider` is not a valid capability and remains forbidden.",
     },
     MatrixRow {
         feature: "`workspace/textDocumentContent`",
@@ -316,7 +316,6 @@ const CLOSED_STATUSES: &[&str] = &[
     "implemented+tested+documented",
     "negative-gated+documented",
     "not-applicable+documented",
-    "withdrawn-containment (#11955)",
 ];
 
 pub fn run(check: bool) -> Result<()> {
@@ -453,6 +452,7 @@ mod tests {
             "needs-capability-parser",
             "needs-compat-test",
             "planned-needs-negative-gate",
+            "withdrawn-containment",
         ] {
             assert!(
                 !rendered.contains(transitional),
