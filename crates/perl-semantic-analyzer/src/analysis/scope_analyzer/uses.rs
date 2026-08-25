@@ -21,7 +21,7 @@ pub(super) fn handle_variable<'a>(
     ancestors: &[&'a Node],
     issues: &mut Vec<ScopeIssue>,
     context: &AnalysisContext<'a>,
-    _strict_vars_mode: bool,
+    strict_vars_mode: bool,
 ) -> bool {
     // Capture variables ($1, $2, ...) are built-in globals but require a preceding
     // regex match in scope to be meaningful. Check before the general builtin skip.
@@ -81,7 +81,7 @@ pub(super) fn handle_typeglob(
     scope: &Rc<Scope>,
     issues: &mut Vec<ScopeIssue>,
     context: &AnalysisContext<'_>,
-    strict_vars_mode: bool,
+    _strict_vars_mode: bool,
 ) {
     // `Typeglob { name }` stores the name without its leading `*`, unlike the
     // equivalent `Variable { sigil: "*", name }` shape.  Reconstruct the
