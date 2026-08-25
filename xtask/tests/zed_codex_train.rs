@@ -255,8 +255,11 @@ fn core_train_is_topologically_ordered_and_unique() -> Result<(), Box<dyn Error>
 }
 
 /// Stage states that assert a landed increment on `main`.
-const LANDED_STATES: [&str; 2] =
-    ["complete_static_substrate_execution_not_proven", "authority_merged_execution_not_proven"];
+const LANDED_STATES: [&str; 3] = [
+    "complete_static_substrate_execution_not_proven",
+    "authority_merged_execution_not_proven",
+    "evidence_merged_matching_host_only",
+];
 
 #[test]
 fn live_frontier_matches_merged_and_open_pr_state() -> Result<(), Box<dyn Error>> {
@@ -266,7 +269,9 @@ fn live_frontier_matches_merged_and_open_pr_state() -> Result<(), Box<dyn Error>
         string_set(rules, "current_core_frontier")?,
         BTreeSet::from(["C01", "P03", "P06", "P07", "P09"])
     );
-    assert_eq!(string_set(rules, "current_dap_frontier")?, BTreeSet::from(["D01"]));
+    // D01 landed via #12271 and DA01 landed via #12333; the next DAP stage
+    // (D02) still waits on core P03, so the derived DAP frontier is empty.
+    assert_eq!(string_set(rules, "current_dap_frontier")?, BTreeSet::new());
 
     let core = core_index(&train)?;
     assert_eq!(string(core["P00"], "state")?, "complete_static_substrate_execution_not_proven");
@@ -292,7 +297,72 @@ fn live_frontier_matches_merged_and_open_pr_state() -> Result<(), Box<dyn Error>
     }
 
     let dap = dap_index(&train)?;
-    assert_eq!(string(dap["D01"], "state")?, "ready");
+    assert_eq!(string(dap["D01"], "state")?, "authority_merged_execution_not_proven");
+    assert_eq!(dap["D01"].get("pull_request").and_then(Value::as_u64), Some(12271));
+    assert_eq!(string(dap["DA01"], "state")?, "evidence_merged_matching_host_only");
+    assert_eq!(dap["DA01"].get("pull_request").and_then(Value::as_u64), Some(12333));
+    Ok(())
+}
+
+/// The DAP counterpart of `ready_stages_and_the_declared_frontier_follow_from_landed_dependencies`.
+///
+/// The DAP frontier is derived from landed core and sidecar dependencies, not
+/// restated: a `ready` DAP stage must have only landed dependencies (and no
+/// pull request yet), a blocked one must retain an unlanded dependency, and
+/// the declared `current_dap_frontier` must equal the derived set.
+#[test]
+fn dap_frontier_follows_from_landed_dependencies() -> Result<(), Box<dyn Error>> {
+    let train = load_train()?;
+    let core = core_index(&train)?;
+    let dap = dap_index(&train)?;
+
+    let mut derived = BTreeSet::new();
+    for (id, stage) in &dap {
+        let state = string(stage, "state")?;
+        let mut unlanded = BTreeSet::new();
+        for dependency in string_set(stage, "depends_on_core")? {
+            let declared = core.get(dependency).ok_or_else(|| {
+                io::Error::other(format!("`{id}` depends on unknown core `{dependency}`"))
+            })?;
+            if !LANDED_STATES.contains(&string(declared, "state")?) {
+                unlanded.insert(format!("core:{dependency}"));
+            }
+        }
+        for dependency in string_set(stage, "depends_on_sidecar")? {
+            let declared = dap.get(dependency).ok_or_else(|| {
+                io::Error::other(format!("`{id}` depends on unknown sidecar `{dependency}`"))
+            })?;
+            if !LANDED_STATES.contains(&string(declared, "state")?) {
+                unlanded.insert(format!("sidecar:{dependency}"));
+            }
+        }
+
+        match state {
+            "ready" => {
+                assert!(
+                    unlanded.is_empty(),
+                    "DAP stage `{id}` is `ready` while dependencies {unlanded:?} have not landed"
+                );
+                assert!(
+                    stage.get("pull_request").and_then(Value::as_u64).is_none(),
+                    "DAP stage `{id}` is `ready` but already names a pull request"
+                );
+                derived.insert(*id);
+            }
+            "blocked_on_dependencies" => assert!(
+                !unlanded.is_empty(),
+                "DAP stage `{id}` is blocked but every dependency has landed"
+            ),
+            _ => {}
+        }
+    }
+
+    let rules = train.get("rules").ok_or_else(|| io::Error::other("train lacks rules"))?;
+    assert_eq!(
+        string_set(rules, "current_dap_frontier")?,
+        derived,
+        "declared DAP frontier drifted from the frontier derived from landed dependencies"
+    );
     Ok(())
 }
 

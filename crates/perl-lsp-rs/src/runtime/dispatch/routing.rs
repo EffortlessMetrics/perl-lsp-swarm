@@ -200,9 +200,9 @@ impl LspServer {
             "textDocument/documentLink" => self.handle_document_links_dispatch(request.params),
             "documentLink/resolve" => self.handle_document_link_resolve_dispatch(request.params),
             "textDocument/selectionRange" => self.handle_selection_range_dispatch(request.params),
-            "textDocument/onTypeFormatting" => {
-                self.handle_on_type_formatting_dispatch(request.params)
-            }
+            // textDocument/onTypeFormatting is withdrawn (#11955): the shared
+            // policy route refuses it; an un-intercepted request must fail
+            // closed as method-not-found below rather than reach any handler.
             "textDocument/codeLens" => self.handle_code_lens_dispatch(request.params),
             "codeLens/resolve" => self.handle_code_lens_resolve_dispatch(request.params),
             "textDocument/linkedEditingRange" => {
@@ -240,10 +240,10 @@ impl LspServer {
                     self.handle_formatting_cancellable_dispatch(request.params, request_id)
                 });
             }
-            "textDocument/rangeFormatting" => self.handle_range_formatting_dispatch(request.params),
-            "textDocument/rangesFormatting" => {
-                self.handle_ranges_formatting_dispatch(request.params)
-            }
+            // textDocument/rangeFormatting and textDocument/rangesFormatting
+            // are withdrawn (#11955): the shared policy route refuses them; an
+            // un-intercepted request must fail closed as method-not-found
+            // below rather than reach any handler.
             "textDocument/prepareCallHierarchy" => {
                 self.handle_prepare_call_hierarchy_dispatch(request.params)
             }

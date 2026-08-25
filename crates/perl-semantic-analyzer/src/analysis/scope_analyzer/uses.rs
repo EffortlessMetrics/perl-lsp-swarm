@@ -83,17 +83,29 @@ pub(super) fn handle_typeglob(
     context: &AnalysisContext<'_>,
     strict_vars_mode: bool,
 ) {
-    let (sigil, var_name) = split_variable_name(name);
+    // `Typeglob { name }` stores the name without its leading `*`, unlike the
+    // equivalent `Variable { sigil: "*", name }` shape.  Reconstruct the
+    // sigil here so typeglob aliases participate in the same scope/use ledger.
+    // Brace-delimited names remain dynamic and must not become literal symbols.
+    if let Some(expression) = name.strip_prefix('{').and_then(|name| name.strip_suffix('}')) {
+        let (sigil, var_name) = split_variable_name(expression);
+        if !sigil.is_empty() && !var_name.is_empty() && !var_name.contains("::") {
+            analyzer.record_variable_use(
+                scope,
+                strict_vars_mode,
+                context,
+                issues,
+                node,
+                sigil,
+                var_name,
+            );
+        }
+        return;
+    }
+
+    let (sigil, var_name) = ("*", name);
     if !sigil.is_empty() && !var_name.is_empty() && !var_name.contains("::") {
-        analyzer.record_variable_use(
-            scope,
-            strict_vars_mode,
-            context,
-            issues,
-            node,
-            sigil,
-            var_name,
-        );
+        analyzer.record_variable_use(scope, false, context, issues, node, sigil, var_name);
     }
 }
 

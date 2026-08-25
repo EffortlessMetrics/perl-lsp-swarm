@@ -392,6 +392,16 @@ impl HermeticLayout {
             plan.paths.candidate_executable.as_os_str().to_owned(),
         );
         environment.insert(
+            OsString::from("PERL_LSP_EMACS_CLIENT_SOURCE"),
+            plan.paths.client_source.as_os_str().to_owned(),
+        );
+        if let Some(client_package) = plan.paths.client_package.as_ref() {
+            environment.insert(
+                OsString::from("PERL_LSP_EMACS_CLIENT_PACKAGE"),
+                client_package.as_os_str().to_owned(),
+            );
+        }
+        environment.insert(
             OsString::from("PERL_LSP_EMACS_FIXTURE_ROOT"),
             plan.paths.fixture_root.as_os_str().to_owned(),
         );

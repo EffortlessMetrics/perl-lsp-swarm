@@ -51,7 +51,7 @@ use crate::types::{Source, StackFrame, Variable};
 use crate::variables::{PerlVariableRenderer, RenderedVariable, VariableParser, VariableRenderer};
 use perl_lexer::DAP_COMPLETION_KEYWORDS;
 use perl_lsp_rs_core::transport::framing::ContentLengthFramer;
-use perl_module::path::module_path_to_name;
+use perl_module::module_path_to_name;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -286,6 +286,30 @@ impl DebugAdapter {
         state.generation = state.generation.saturating_add(1);
         state.emitted = false;
         state.generation
+    }
+
+    /// Close the session generation at the end of a client-initiated terminal
+    /// request (`terminate`/`disconnect`).
+    ///
+    /// The request's own emission attempt ran against the generation it closed
+    /// (yielding to an asynchronous winner when one already emitted, per the
+    /// single-emission gate). Closing the generation afterwards:
+    ///
+    /// - keeps every asynchronous emitter of the closed generation suppressed
+    ///   through the generation check in `reserve_terminated_event`, and retires
+    ///   a reservation still outstanding at delivery time via
+    ///   `terminated_delivery_is_current` (an old session's terminal event must
+    ///   not leak into a newer client conversation), and
+    /// - re-arms the gate so the *next* client terminal request is acknowledged
+    ///   with its own `terminated` event (#383 terminate-idempotency matrix,
+    ///   re-established by #12082 after the gate landed without moving the
+    ///   matrix).
+    ///
+    /// Without this close, a second successful `terminate` could never emit:
+    /// the first request left `emitted` latched with no live session left to
+    /// reset it (`clear_active_session_state` does not touch the gate).
+    pub(super) fn close_terminal_session_generation(&self) {
+        self.begin_session_generation();
     }
 
     /// Return the current session generation for event-handler threads.

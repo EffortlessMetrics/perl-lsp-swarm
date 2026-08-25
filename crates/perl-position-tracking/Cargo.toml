@@ -24,6 +24,7 @@ include = [
 serde_json.workspace = true
 ropey.workspace = true
 serde = { workspace = true }
+thiserror.workspace = true
 
 [features]
 default = []

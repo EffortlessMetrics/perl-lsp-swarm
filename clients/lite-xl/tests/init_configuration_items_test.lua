@@ -31,6 +31,18 @@
 --      that treats empty tables as objects -> zero_items_answer_empty_array
 --      fails.
 --
+-- Effective-settings extension (#11143): the two include_paths cases at the
+-- end drive the real get_workspace_settings merge through the production
+-- listener with fixture-backed USERDIR/.lite_lsp.lua probes (io.open and
+-- dofile are temporarily bound to deterministic fixture answers, no
+-- filesystem access). Red-first: pass the PRISTINE upstream util.lua @ d1432ae
+-- (blob 588c101aa97ef0d112926aac316e7a95a52a6994) as the second argument and
+-- both cases fail there — the legacy recursive numeric-key deep_merge leaves
+-- an inherited ["src","vendor"] tail and cannot clear a list with an empty
+-- array. The same two cases also fail against the #11143 mutation copy with
+-- the array-replacement branch removed (documented in
+-- util_config_merge_test.lua).
+--
 -- No framework: plain soft asserts, one process, deterministic, exit code
 -- carries the result. Compatible with the Lite XL Lua runtime family
 -- (Lua 5.4).
@@ -41,6 +53,14 @@ if not init_module_path then
   local info = debug.getinfo(1, "S").source:sub(2)
   local dir = info:match("^(.*)[/\\]") or "."
   init_module_path = dir .. "/../upstream/init.lua"
+end
+
+local util_module_path = arg and arg[2] or nil
+
+if not util_module_path then
+  local info = debug.getinfo(1, "S").source:sub(2)
+  local dir = info:match("^(.*)[/\\]") or "."
+  util_module_path = dir .. "/../upstream/util.lua"
 end
 
 local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or "."
@@ -165,7 +185,7 @@ package.preload["process"] = function()
 end
 
 package.preload["plugins.lsp.util"] = function()
-  return dofile(here .. "/../upstream/util.lua")
+  return dofile(util_module_path)
 end
 
 package.preload["plugins.lsp.listbox"] = function()
@@ -177,7 +197,10 @@ package.preload["plugins.lsp.diagnostics"] = function()
     note_provider = function() end,
     close_session = function() end,
     retire_provider = function() end,
+    set_render_resolver = function() end,
     publish = function() return true, nil end,
+    -- #12047 render-resolver seam: init.lua registers it unconditionally at load.
+    set_render_resolver = function() end,
   }
 end
 
@@ -423,6 +446,86 @@ do
   ok(#r == 1 and r[1].result == nil and type(r[1].error) == "table"
     and r[1].error.code == -32602,
     "non-string scopeUri answers InvalidParams without reaching URI conversion")
+end
+
+-- ---------------------------------------------------------------------------
+-- Effective-settings cases (#11143): the real get_workspace_settings typed
+-- merge observed through the production workspace/configuration listener.
+-- USERDIR/.lite_lsp.lua probes are answered by deterministic fixture binds
+-- of io.open and dofile; no filesystem state is read or written.
+-- ---------------------------------------------------------------------------
+
+---Temporarily bind io.open (existence probe) and dofile (settings load) for
+---`.lite_lsp.lua` paths to one fixture settings table, run `fn`, then restore
+---the originals. Returns fn's result or re-raises.
+local function with_fixture_lua_settings(lua_settings, fn)
+  local original_open, original_dofile = io.open, dofile
+  local raw_dofile = original_dofile
+  io.open = function(path, mode)
+    if type(path) == "string" and path:find("%.lite_lsp%.lua$") then
+      return { close = function() end }
+    end
+    return original_open(path, mode)
+  end
+  dofile = function(path)
+    if type(path) == "string" and path:find("%.lite_lsp%.lua$") then
+      return lua_settings
+    end
+    return raw_dofile(path)
+  end
+  local ok_run, result = pcall(fn)
+  io.open, dofile = original_open, original_dofile
+  if not ok_run then error(result, 0) end
+  return result
+end
+
+do
+  -- effective_response_has_no_inherited_tail: a discovered ["lib","vendor"]
+  -- list overridden by server.settings ["src"] must answer exactly ["src"]
+  -- through the production listener — never the legacy merged tail.
+  local lsp = fresh_module_load()
+  local json = require "plugins.lsp.json"
+  local client = start_captured_client(lsp, {
+    perl = { include_paths = {"src"} },
+  })
+  local responses = with_fixture_lua_settings(
+    { perl = { include_paths = {"lib", "vendor"} } },
+    function()
+      return deliver(client, "workspace/configuration", 21,
+        { items = json.decode('[{"section":"perl.include_paths"}]') })
+    end)
+  ok(responses[1] and responses[1].error == nil
+    and type(responses[1].result) == "table"
+    and #responses[1].result == 1,
+    "effective include_paths request answers one exact slot")
+  ok(responses[1] and type(responses[1].result) == "table"
+    and responses[1].result[1]
+    and json.encode(responses[1].result[1]) == '["src"]',
+    "effective merged include_paths carries no inherited vendor tail")
+end
+
+do
+  -- empty_array_clears_through_listener: an explicitly typed empty array in
+  -- server.settings clears a discovered list, observable on the wire as [].
+  local lsp = fresh_module_load()
+  local json = require "plugins.lsp.json"
+  local client = start_captured_client(lsp, {
+    perl = { tags = json.array({}) },
+  })
+  local responses = with_fixture_lua_settings(
+    { perl = { tags = {"stale"} } },
+    function()
+      return deliver(client, "workspace/configuration", 22,
+        { items = json.decode('[{"section":"perl.tags"}]') })
+    end)
+  ok(responses[1] and responses[1].error == nil
+    and type(responses[1].result) == "table"
+    and #responses[1].result == 1,
+    "cleared tags request answers one exact slot")
+  ok(responses[1] and type(responses[1].result) == "table"
+    and responses[1].result[1]
+    and json.encode(responses[1].result[1]) == "[]",
+    "explicit empty array clears an inherited list on the effective response")
 end
 
 print(string.format("%d passed, %d failed", passed, failed))

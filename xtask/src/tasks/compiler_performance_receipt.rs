@@ -12,12 +12,20 @@ const SCHEMA_PATH: &str = "schemas/compiler_performance_receipt.v1.schema.json";
 const SCHEMA_ID: &str =
     "https://effortlessmetrics.dev/perl-lsp/schemas/compiler_performance_receipt.v1.schema.json";
 const VERSION: &str = "compiler_performance_receipt.v1";
-const REQUIRED: &[&str] = &[
-    "schema_version", "receipt_id", "subject", "workload", "stages", "provider", "limitations",
-];
+const REQUIRED: &[&str] =
+    &["schema_version", "receipt_id", "subject", "workload", "stages", "provider", "limitations"];
 const STAGES: &[&str] = &[
-    "upstream", "lex_parse", "hir", "pir", "effects", "module_graph", "world",
-    "interface_invalidation", "fact_projection", "provider_request", "serialization",
+    "upstream",
+    "lex_parse",
+    "hir",
+    "pir",
+    "effects",
+    "module_graph",
+    "world",
+    "interface_invalidation",
+    "fact_projection",
+    "provider_request",
+    "serialization",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -125,8 +133,7 @@ pub fn run() -> Result<()> {
 fn validate(root: &Path) -> Result<(usize, usize)> {
     let path = root.join(SCHEMA_PATH);
     let schema: Value = serde_json::from_str(
-        &fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?,
+        &fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?,
     )?;
     let mut errors = Vec::new();
     require_string(&schema, &["$id"], SCHEMA_ID, &mut errors);
