@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "case_id": "F39-lib-only-helper-deletion",
+  "family": "real_regression_10600_family",
+  "purpose": "Deleting a helper used by binary/integration/path-included tests because lib-only evidence looks clean (#10600 class).",
+  "incident_reference": "#10600",
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "coerce_exit_status",
+      "callers stop compiling"
+    ],
+    "content": "// crates/perl-xtask-helper/src/lib.rs\n// pub(crate) fn coerce_exit_status(status: std::process::ExitStatus) -> i32\n// deleted: lib tests pass; bins/integration callers stop compiling.\n",
+    "sha256": "4d4fed8f13af06f569f04f6a7ef9636f2580aa9144a5128e5cab7a55aae74b7a"
+  },
+  "rejecting_authority": {
+    "status": "bound",
+    "authority_kind": "gate_command",
+    "reference": "gate:compile_all_targets"
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "dead_helper_deletion_lib_only_evidence"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "just check-all-targets"
+    ],
+    "note": "Every target kind still compiles.",
+    "content": "just check-all-targets\n",
+    "sha256": "591a37c8d25ac2247a99ea3dc0aa76c5db6fb7c7a780e2ce4543d94d87828a71"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Permanent discriminating case from PR #10600; compile_all_targets is the standing control."
+}

@@ -1,0 +1,11 @@
+STAGE CLOSURE PROJECTION example-train/R_service_marker/N_service_marker_probe/closure/2026-08-24T00:00:00Z | packet example-train/R_service_marker/N_service_marker_probe/2026-08-24T00:00:00Z reviewed b31d5e9a2 current b31d5e9a2
+BUILDER-DIGEST: reviewed sha256:1c0f current sha256:1c0f
+ROLES:
+  builder_self_review: terminal
+  adversarial_challenger: terminal
+  specialist: not_applicable
+  evidence_worker: not_applicable
+FINDINGS:
+  example-train/R_service_marker/N_service_marker_probe/FIND-marker-tree-comparison: resolved_on_current_head [resolved_current_head]
+CONTROLS: load_bearing=true old_paths=true generated_current=true
+ELIGIBILITY: closure_eligible (advisory_only; merge_authorized=false)

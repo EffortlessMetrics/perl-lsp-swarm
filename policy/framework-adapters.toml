@@ -313,3 +313,26 @@ blocks = [
   "unsupported_fact_class",
 ]
 claim_boundary = "Object::Pad facts are deferred until source-backed class/field/method receipts define exact boundaries."
+
+[[adapter]]
+framework = "Dancer2"
+fact_class = "framework_import"
+state = "shadow"
+fact_provenance = "SourceBackedGenerated"
+source_anchor_required = true
+generated_label_required = true
+rename_policy = "blocked_without_class_specific_edit_proof"
+safe_delete_policy = "blocked_without_class_specific_edit_proof"
+provider_surfaces = []
+blocks = [
+  "generated_no_source",
+  "dynamic_boundary",
+  "ambiguous_identity",
+  "stale_fact",
+  "low_confidence",
+  "unsupported_fact_class",
+  "unresolved_module_identity",
+  "unsupported_version",
+]
+claim_boundary = "Dancer2 activation/import facts are registry-backed shadow output (#8914): exact activation requires resolved supported Dancer2 module identity, stays package/generation scoped, and no provider surface may consume it until the registry-dispatch (#6821) and shard-publication (#6822) contracts land."
+version_constraint = ">=1.0.0,<2.0.0"
