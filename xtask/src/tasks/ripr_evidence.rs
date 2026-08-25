@@ -6882,41 +6882,40 @@ esac
     // run_output file transport tests (#12569)
     // ---------------------------------------------------------------------------
 
-    /// Create a platform-specific script that writes exactly `byte_count` ASCII `x` bytes
+    /// Create a platform-specific helper that writes exactly `byte_count` ASCII `x` bytes
     /// to stdout in one large write.
     fn write_large_output_script(dir: &Path, byte_count: usize) -> Result<PathBuf> {
+        let source = dir.join("large_output.rs");
+        fs::write(
+            &source,
+            format!(
+                "use std::io::Write;\n\
+                 fn main() {{\n\
+                     let payload = vec![b'x'; {byte_count}];\n\
+                     if let Err(error) = std::io::stdout().write_all(&payload) {{\n\
+                         eprintln!(\"{{error}}\");\n\
+                         std::process::exit(1);\n\
+                     }}\n\
+                 }}\n"
+            ),
+        )?;
         #[cfg(windows)]
-        {
-            let payload = dir.join("large_payload.bin");
-            fs::write(&payload, vec![b'x'; byte_count])?;
-            let path = dir.join("gen_large.cmd");
-            write_text(
-                &path,
-                &format!(
-                    "@echo off\r\ntype \"{}\"\r\nif errorlevel 1 exit /b 1\r\n",
-                    payload.display()
-                ),
-            )?;
-            Ok(path)
-        }
-
+        let binary = dir.join("large_output.exe");
         #[cfg(not(windows))]
-        {
-            // Round up to whole megabytes so dd's block arithmetic is exact.
-            let mb = byte_count.div_ceil(1_048_576);
-            let path = dir.join("gen_large.sh");
-            fs::write(
-                &path,
-                format!(
-                    "#!/bin/sh\ndd if=/dev/zero bs=1048576 count={mb} 2>/dev/null | tr '\\0' 'x'\n"
-                ),
-            )?;
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&path)?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&path, perms)?;
-            Ok(path)
+        let binary = dir.join("large_output");
+        let output = Command::new("rustc")
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .context("failed to compile large-output test helper")?;
+        if !output.status.success() {
+            bail!(
+                "failed to compile large-output test helper:\n{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
         }
+        Ok(binary)
     }
 
     #[test]
