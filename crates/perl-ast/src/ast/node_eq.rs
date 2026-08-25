@@ -659,8 +659,11 @@ mod tests {
             }
             other => assert_eq!(format!("{other:?}"), "payload difference"),
         }
-        let left = program(vec![numbered("1", 0)]);
-        let right = program(vec![numbered("1", 0), numbered("2", 1)]);
+        let left = Node::new(NodeKind::Program { statements: vec![numbered("1", 0)] }, loc(0, 4));
+        let right = Node::new(
+            NodeKind::Program { statements: vec![numbered("1", 0), numbered("2", 1)] },
+            loc(0, 4),
+        );
         match compare_structural(&left, &right, None) {
             StructuralCompare::Different { reason, path, .. } => {
                 assert_eq!(reason, DiffReason::FieldCardinality);
