@@ -71,6 +71,7 @@ pub use lints::role_conflicts;
 pub use lints::security;
 pub use lints::strict_warnings;
 pub use lints::unreachable_code;
+pub use lints::unreachable_code_disposition;
 pub use lints::unused_imports;
 pub use lints::version_compat;
 
