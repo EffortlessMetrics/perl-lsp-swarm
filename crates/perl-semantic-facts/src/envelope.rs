@@ -24,6 +24,8 @@ pub enum SemanticFactKind {
     CallableResult,
     /// Framework route declaration (canonical route fact family).
     Route,
+    /// Framework hook declaration (canonical hook fact family).
+    Hook,
 }
 
 /// Source identity for a fact's bytes or compiler input snapshot.

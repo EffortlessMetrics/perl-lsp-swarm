@@ -31,30 +31,36 @@
 //! following statements, and a lexical block restores the enclosing package
 //! state afterwards.
 
+use crate::analysis::dancer2_handler_targets::{SubroutineTargetIndex, handler_from_node};
 use crate::ast::{Node, NodeKind};
 use perl_semantic_facts::framework_adapters::dancer2_routes::{
     DANCER2_ROUTE_KEYWORDS, Dancer2RouteDeclaration, dancer2_keyword_methods,
     normalize_dancer2_method,
 };
 use perl_semantic_facts::route::{
-    RouteDeclaration, RouteHandler, RouteHandlerBoundary, RouteMethodSet, RouteName,
-    RouteNameSelection, RouteOption, RouteOptionValue, RouteOptions, RoutePattern,
-    RoutePatternKind,
+    RouteDeclaration, RouteMethodSet, RouteName, RouteNameSelection, RouteOption, RouteOptionValue,
+    RouteOptions, RoutePattern, RoutePatternKind,
 };
 use perl_semantic_facts::{AnchorId, FileId, SourceAnchor};
 
 /// Extract every supported Dancer2 route declaration from `ast`, in source
 /// order, with per-declaration package/file identity and a source-order
 /// declaration index.
+///
+/// Handler operands resolve static coderefs against the in-file
+/// package-scoped subroutine declaration index (#8924 promotion): `\&handler`
+/// with an in-file `sub handler` — including forward declarations and stubs —
+/// binds an exact declaration target; anything else stays a typed boundary.
 #[must_use]
 pub fn extract_dancer2_route_declarations(
     ast: &Node,
     file_id: FileId,
 ) -> Vec<Dancer2RouteDeclaration> {
+    let targets = SubroutineTargetIndex::build(ast, file_id);
     let mut declarations = Vec::new();
     let mut current_package: Option<String> = Some("main".to_string());
     let mut next_index: u32 = 0;
-    walk_node(ast, file_id, &mut current_package, &mut declarations, &mut next_index);
+    walk_node(ast, file_id, &mut current_package, &mut declarations, &mut next_index, &targets);
     declarations
 }
 
@@ -64,6 +70,7 @@ fn walk_node(
     current_package: &mut Option<String>,
     declarations: &mut Vec<Dancer2RouteDeclaration>,
     next_index: &mut u32,
+    targets: &SubroutineTargetIndex,
 ) {
     match &node.kind {
         NodeKind::Program { statements } | NodeKind::Block { statements } => {
@@ -71,12 +78,26 @@ fn walk_node(
             // walk it with a block-local copy so the enclosing package state
             // is restored afterwards (mirrors the #8914 activation walk).
             let mut block_package = current_package.clone();
-            walk_statements(statements, file_id, &mut block_package, declarations, next_index);
+            walk_statements(
+                statements,
+                file_id,
+                &mut block_package,
+                declarations,
+                next_index,
+                targets,
+            );
         }
         NodeKind::Package { name, block: Some(block), .. } => {
             let mut package_scope = Some(name.clone());
             if let NodeKind::Block { statements } = &block.kind {
-                walk_statements(statements, file_id, &mut package_scope, declarations, next_index);
+                walk_statements(
+                    statements,
+                    file_id,
+                    &mut package_scope,
+                    declarations,
+                    next_index,
+                    targets,
+                );
             }
         }
         NodeKind::Package { name, block: None, .. } => {
@@ -89,7 +110,7 @@ fn walk_node(
         NodeKind::Subroutine { .. } => {}
         _ => {
             for child in node.children() {
-                walk_node(child, file_id, current_package, declarations, next_index);
+                walk_node(child, file_id, current_package, declarations, next_index, targets);
             }
         }
     }
@@ -101,6 +122,7 @@ fn walk_statements(
     current_package: &mut Option<String>,
     declarations: &mut Vec<Dancer2RouteDeclaration>,
     next_index: &mut u32,
+    targets: &SubroutineTargetIndex,
 ) {
     let mut index = 0;
     while index < statements.len() {
@@ -108,7 +130,7 @@ fn walk_statements(
         if let NodeKind::ExpressionStatement { expression } = &statement.kind {
             // Single-statement forms: `VERB ...` call or `any [...] ...` list.
             if let Some(declaration) =
-                route_from_expression(expression, file_id, current_package, *next_index)
+                route_from_expression(expression, file_id, current_package, *next_index, targets)
             {
                 declarations.push(declaration);
                 *next_index += 1;
@@ -144,7 +166,12 @@ fn walk_statements(
                         methods: keyword_methods(name),
                         pattern: pattern_from_node(pattern_node, file_id),
                         options: RouteOptions::Map(Vec::new()),
-                        handler: handler_from_node(handler_node, file_id),
+                        handler: handler_from_node(
+                            handler_node,
+                            file_id,
+                            current_package.as_deref(),
+                            targets,
+                        ),
                     },
                 });
                 *next_index += 1;
@@ -152,7 +179,7 @@ fn walk_statements(
                 continue;
             }
         }
-        walk_node(statement, file_id, current_package, declarations, next_index);
+        walk_node(statement, file_id, current_package, declarations, next_index, targets);
         index += 1;
     }
 }
@@ -190,8 +217,9 @@ fn route_from_expression(
     file_id: FileId,
     current_package: &Option<String>,
     declaration_index: u32,
+    targets: &SubroutineTargetIndex,
 ) -> Option<Dancer2RouteDeclaration> {
-    let context = DeclarationContext { file_id, current_package, declaration_index };
+    let context = DeclarationContext { file_id, current_package, declaration_index, targets };
     if let NodeKind::FunctionCall { name, args } = &expression.kind {
         if !DANCER2_ROUTE_KEYWORDS.contains(&name.as_str()) {
             return None;
@@ -294,12 +322,13 @@ fn method_set_from_elements(elements: &[Node]) -> RouteMethodSet {
     RouteMethodSet::Exact(methods)
 }
 
-/// File/package identity and source-order index shared by the declarations
-/// minted from one extraction walk.
+/// File/package identity, source-order index, and the in-file coderef target
+/// index shared by the declarations minted from one extraction walk.
 struct DeclarationContext<'a> {
     file_id: FileId,
     current_package: &'a Option<String>,
     declaration_index: u32,
+    targets: &'a SubroutineTargetIndex,
 }
 
 /// Bind name/pattern/options/handler operands by the reviewed form table.
@@ -316,7 +345,7 @@ fn build_from_operands(
     operands: &[&Node],
     context: &DeclarationContext<'_>,
 ) -> Option<Dancer2RouteDeclaration> {
-    let DeclarationContext { file_id, current_package, declaration_index } = *context;
+    let DeclarationContext { file_id, current_package, declaration_index, targets } = *context;
     if operands.len() < 2 {
         // A route needs at least a pattern operand and a handler operand.
         return None;
@@ -363,7 +392,7 @@ fn build_from_operands(
             methods,
             pattern,
             options,
-            handler: handler_from_node(handler_node, file_id),
+            handler: handler_from_node(handler_node, file_id, current_package.as_deref(), targets),
         },
     })
 }
@@ -393,7 +422,7 @@ fn unquote(raw: &str) -> Option<String> {
 /// trailing sigil (e.g. the regex anchor `$` in `^/re/(\d+)$`) stays static.
 /// Escaped sigils (`"\\$x"`) stay conservatively dynamic: the boundary is
 /// honest even when the escape would make the value static.
-fn interpolated_value_is_dynamic(value: &str) -> bool {
+pub(crate) fn interpolated_value_is_dynamic(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.iter().enumerate().any(|(index, byte)| {
         matches!(byte, b'$' | b'@')
@@ -509,31 +538,6 @@ fn options_from_node(node: &Node, file_id: FileId) -> RouteOptions {
     RouteOptions::Map(entries)
 }
 
-fn handler_from_node(node: &Node, file_id: FileId) -> RouteHandler {
-    match &node.kind {
-        NodeKind::Subroutine { name, .. } if name.is_none() => RouteHandler::InlineSub {
-            anchor: anchor(node.location.start, node.location.end, file_id),
-        },
-        NodeKind::String { value, .. } => RouteHandler::Bounded {
-            boundary: RouteHandlerBoundary::String,
-            anchor: Some(anchor(node.location.start, node.location.end, file_id)),
-            reason: format!("string handler `{value}` is not an exact Dancer2 subroutine target"),
-        },
-        NodeKind::Unary { op, .. } if op == "\\" => RouteHandler::Bounded {
-            boundary: RouteHandlerBoundary::StaticCoderef,
-            anchor: Some(anchor(node.location.start, node.location.end, file_id)),
-            reason: "static coderef handler is anchored but its named subroutine target is \
-                     not proven by the canonical callable fact layer"
-                .to_string(),
-        },
-        _ => RouteHandler::Bounded {
-            boundary: RouteHandlerBoundary::Computed,
-            anchor: Some(anchor(node.location.start, node.location.end, file_id)),
-            reason: "computed handler expression is not an exact handler target".to_string(),
-        },
-    }
-}
-
 /// Single `(pattern, handler)` pair statement of the two-statement route form.
 fn single_pair_pattern_handler(statement: &Node) -> Option<(&Node, &Node)> {
     let NodeKind::ExpressionStatement { expression } = &statement.kind else {
@@ -550,6 +554,7 @@ fn single_pair_pattern_handler(statement: &Node) -> Option<(&Node, &Node)> {
 mod tests {
     use super::*;
     use crate::Parser;
+    use perl_semantic_facts::route::{RouteHandler, RouteHandlerBoundary};
     use perl_tdd_support::{must, must_some};
 
     fn declarations(code: &str) -> Vec<Dancer2RouteDeclaration> {
@@ -765,6 +770,8 @@ mod tests {
 
     #[test]
     fn static_coderef_handler_is_bounded_not_exact() {
+        // No in-file declaration of `handler`: the target may be imported,
+        // cross-file, or undefined — a typed boundary, never a fictional one.
         let found = declarations("get '/x' => \\&handler;");
         assert_eq!(found.len(), 1);
         assert_eq!(
@@ -774,6 +781,61 @@ mod tests {
             }),
             RouteHandlerBoundary::StaticCoderef
         );
+    }
+
+    #[test]
+    fn static_coderef_handler_resolves_in_file_declaration() {
+        // #8924 promotion: `\&handler` with an in-file package-scoped `sub
+        // handler` — forward reference included — binds the exact declaration
+        // identity instead of a typed boundary.
+        let code = "get '/x' => \\&handler;\nsub handler { 1 }";
+        let found = declarations(code);
+        assert_eq!(found.len(), 1);
+        let (name, target, anchor) = must_some(match &found[0].route.handler {
+            RouteHandler::StaticCoderef { name, target, anchor } => {
+                Some((name.as_str(), target, *anchor))
+            }
+            _ => None,
+        });
+        assert_eq!(name, "handler");
+        assert_eq!(target.name, "handler");
+        assert_eq!(target.package, "main");
+        assert_eq!(&code[anchor.start_byte as usize..anchor.end_byte as usize], "\\&handler");
+        assert_eq!(
+            &code[target.name_anchor.start_byte as usize..target.name_anchor.end_byte as usize],
+            "handler",
+            "the target anchor points at the declaration name token"
+        );
+        assert!(target.body_anchor.is_some());
+        assert!(!found[0].route.has_boundary(), "a resolved handler is not a route boundary");
+    }
+
+    #[test]
+    fn static_coderef_handler_resolves_package_scoped_target() {
+        let code = "package App;\nsub handler { 1 }\npackage Other;\nget '/x' => \\&App::handler;";
+        let found = declarations(code);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].package.as_deref(), Some("Other"));
+        let (name, target) = must_some(match &found[0].route.handler {
+            RouteHandler::StaticCoderef { name, target, .. } => Some((name.as_str(), target)),
+            _ => None,
+        });
+        assert_eq!(name, "App::handler");
+        assert_eq!(target.package, "App", "qualified coderefs resolve to the named package");
+    }
+
+    #[test]
+    fn static_coderef_from_wrong_package_stays_bounded() {
+        // `sub handler` exists only in `App`; the route in `Other` has no
+        // in-file `Other::handler` declaration.
+        let found = declarations(
+            "package App;\nsub handler { 1 }\npackage Other;\nget '/x' => \\&handler;",
+        );
+        assert_eq!(found.len(), 1);
+        assert!(matches!(
+            &found[0].route.handler,
+            RouteHandler::Bounded { boundary: RouteHandlerBoundary::StaticCoderef, .. }
+        ));
     }
 
     #[test]

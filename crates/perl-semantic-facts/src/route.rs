@@ -12,13 +12,15 @@
 //! `framework_adapters::dancer2_routes`; this module only defines what a route
 //! declaration must preserve: identity by source order, route name separate
 //! from pattern, normalized method set, pattern kind, static options, handler
-//! anchor, and the full declaration/keyword ranges.
+//! anchor, and the full declaration/keyword ranges. The handler relation
+//! itself is the shared [`crate::handler`] contract (#8924 promoted the
+//! static-coderef arm from a typed boundary to a resolved declaration fact).
 //!
 //! Exactness contract:
 //!
 //! - a route fact is [`SemanticFactStatus::Exact`] only when the envelope is
 //!   exact **and** the payload carries no dynamic or bounded member (literal
-//!   pattern, exact method set, inline-sub handler, literal options);
+//!   pattern, exact method set, exact handler relation, literal options);
 //! - dynamic/computed/bounded members keep the fact usable but degraded —
 //!   typed boundaries, never false exact fields;
 //! - two declarations with the same methods and pattern remain distinct route
@@ -32,6 +34,13 @@ use crate::{
     SourceGeneration,
 };
 use serde::{Deserialize, Serialize};
+
+// Shared handler-relation aliases (#8924): the route family keeps its public
+// `RouteHandler` spelling while the arms live in the shared `handler` module
+// so the hook family carries the identical contract.
+pub use crate::handler::FrameworkHandler as RouteHandler;
+pub use crate::handler::FrameworkHandlerBoundary as RouteHandlerBoundary;
+pub use crate::handler::SubroutineTarget as RouteSubroutineTarget;
 
 /// Kind of a route pattern operand.
 #[non_exhaustive]
@@ -135,40 +144,6 @@ pub enum RouteMethodSet {
     Exact(Vec<String>),
     /// Computed method list — a boundary, never `ANY` exactness.
     Dynamic {
-        /// Bounded explanation.
-        reason: String,
-    },
-}
-
-/// Why a handler operand is not an exact inline subroutine target.
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum RouteHandlerBoundary {
-    /// Static coderef expression (e.g. `\&handler`): anchored, but the named
-    /// subroutine target is not proven by the canonical callable fact layer.
-    StaticCoderef,
-    /// String handler (Dancer v1 style action name): not a Dancer2 target.
-    String,
-    /// Computed handler expression.
-    Computed,
-}
-
-/// Handler relation of one route declaration.
-#[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RouteHandler {
-    /// Inline anonymous sub: exact source-backed handler anchor.
-    InlineSub {
-        /// Source range of the `sub { ... }` operand (exact tokens).
-        anchor: SourceAnchor,
-    },
-    /// Bounded handler relation: the route fact is retained, the handler is
-    /// not an exact framework subroutine target.
-    Bounded {
-        /// Boundary classification.
-        boundary: RouteHandlerBoundary,
-        /// Source range of the handler operand, when anchored.
-        anchor: Option<SourceAnchor>,
         /// Bounded explanation.
         reason: String,
     },

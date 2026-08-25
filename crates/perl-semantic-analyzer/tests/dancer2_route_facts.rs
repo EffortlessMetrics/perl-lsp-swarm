@@ -24,7 +24,8 @@ use perl_semantic_facts::framework_adapters::dancer2_routes::{
     Dancer2RouteDeclaration, dancer2_route_facts,
 };
 use perl_semantic_facts::route::{
-    RouteFact, RouteHandler, RouteMethodSet, RouteNameSelection, RouteOptions, RoutePatternKind,
+    RouteFact, RouteHandler, RouteHandlerBoundary, RouteMethodSet, RouteNameSelection,
+    RouteOptions, RoutePatternKind,
 };
 use perl_semantic_facts::{Confidence, FileId, SemanticFactStatus, SourceGeneration};
 use perl_tdd_support::{must, must_some};
@@ -367,6 +368,48 @@ fn dynamic_boundaries_stay_degraded_not_exact() {
     assert!(matches!(facts[1].route.handler, RouteHandler::Bounded { .. }));
     assert_eq!(facts[1].status(), SemanticFactStatus::Degraded);
     assert!(facts.iter().all(|fact| fact.route.route_name_literal_value().is_none()));
+}
+
+// #8924 promotion: a static `\&handler` coderef with an in-file
+// package-scoped declaration (forward reference included) is an exact handler
+// relation — the route fact is exact, the target anchors at the declaration.
+#[test]
+fn static_coderef_handler_promotion_mints_exact_route() {
+    let code = "package App;\nuse Dancer2;\nget '/x' => \\&handler;\nsub handler { 'y' }";
+    let facts = canonical_facts(code, "gen-1");
+    assert_eq!(facts.len(), 1);
+    let fact = &facts[0];
+    let (name, target, anchor) = must_some(match &fact.route.handler {
+        RouteHandler::StaticCoderef { name, target, anchor } => {
+            Some((name.as_str(), target, *anchor))
+        }
+        _ => None,
+    });
+    assert_eq!(name, "handler");
+    assert_eq!(target.package, "App");
+    assert_eq!(&code[anchor.start_byte as usize..anchor.end_byte as usize], "\\&handler");
+    assert_eq!(
+        &code[target.name_anchor.start_byte as usize..target.name_anchor.end_byte as usize],
+        "handler"
+    );
+    assert!(!fact.route.has_boundary());
+    assert_eq!(fact.status(), SemanticFactStatus::Exact);
+    assert!(fact.envelope.boundary.is_none());
+}
+
+// The unresolvable case stays the typed boundary the #8918 closeout pinned:
+// no in-file declaration means the target is not statically provable.
+#[test]
+fn static_coderef_handler_without_declaration_stays_degraded() {
+    let code = "package App;\nuse Dancer2;\nget '/x' => \\&handler;";
+    let facts = canonical_facts(code, "gen-1");
+    assert_eq!(facts.len(), 1);
+    assert!(matches!(
+        &facts[0].route.handler,
+        RouteHandler::Bounded { boundary: RouteHandlerBoundary::StaticCoderef, .. }
+    ));
+    assert_eq!(facts[0].status(), SemanticFactStatus::Degraded);
+    assert!(facts[0].envelope.boundary.is_some());
 }
 
 #[test]
