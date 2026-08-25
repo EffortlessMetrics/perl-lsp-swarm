@@ -507,12 +507,30 @@ pub fn classify(packet: &ObservationPacket, pinned: &PinnedSubject) -> Result<Re
     let mut newest_observed_tag: Option<String> = None;
     if refs_ok {
         let master = packet.refs_probe.master.as_deref();
-        master_matches_pin = master.map(|master| master == pinned.selected_commit);
+        let head = packet.refs_probe.head.as_deref();
+        // The tracked ref is master when it exists; an upstream default-
+        // branch rename removes it, and HEAD then carries the maintained
+        // tip. A HEAD/master split with master still pinned is itself
+        // upstream drift the artifact must show.
+        let tracked = master.or(head);
+        master_matches_pin = tracked.map(|tracked| tracked == pinned.selected_commit);
+        if let (Some(master), Some(head)) = (master, head)
+            && master != head
+        {
+            classifier.fire(
+                DriftClass::NewUpstreamReleaseOrRefAvailable,
+                &[PROBE_REFS],
+                format!(
+                    "upstream HEAD {head} detached from refs/heads/master {master}: the default branch moved while the tracked ref stayed put, via {}",
+                    packet.refs_probe.method
+                ),
+            );
+        }
         if master_matches_pin == Some(true) {
             classifier.positive(
                 PROBE_REFS,
                 format!(
-                    "refs/heads/master == pinned selected_commit {} via {}",
+                    "tracked upstream ref == pinned selected_commit {} via {}",
                     pinned.selected_commit, packet.refs_probe.method
                 ),
             );
@@ -523,8 +541,8 @@ pub fn classify(packet: &ObservationPacket, pinned: &PinnedSubject) -> Result<Re
                 DriftClass::NewUpstreamReleaseOrRefAvailable,
                 &[PROBE_REFS],
                 format!(
-                    "refs/heads/master observed {} != pinned selected_commit {} via {}",
-                    master.unwrap_or("<missing>"),
+                    "tracked upstream ref observed {} != pinned selected_commit {} via {}",
+                    tracked.unwrap_or("<missing>"),
                     pinned.selected_commit,
                     packet.refs_probe.method
                 ),
@@ -674,7 +692,13 @@ pub fn classify(packet: &ObservationPacket, pinned: &PinnedSubject) -> Result<Re
                 | DriftClass::InstrumentFailed
         )
     });
-    let upstream_moved = master_matches_pin == Some(false) || newer_release_available == Some(true);
+    let default_branch_moved = matches!(
+        (packet.refs_probe.master.as_deref(), packet.refs_probe.head.as_deref()),
+        (Some(master), Some(head)) if master != head
+    );
+    let upstream_moved = master_matches_pin == Some(false)
+        || newer_release_available == Some(true)
+        || default_branch_moved;
     if !instrument_failed && !unknown && !semantic_drift {
         if upstream_moved {
             classifier.fire(
@@ -693,8 +717,30 @@ pub fn classify(packet: &ObservationPacket, pinned: &PinnedSubject) -> Result<Re
     }
 
     // --- assemble artifact ----------------------------------------------------
-    let mut classes = classifier.classes;
-    classes.sort_by_key(|entry| entry.class);
+    // Coalesce per-probe firings into one entry per class (merged evidence,
+    // joined details) so a multi-needle regression cannot duplicate a class
+    // or exceed the class count cap.
+    let mut merged: BTreeMap<DriftClass, ClassifiedDrift> = BTreeMap::new();
+    for entry in classifier.classes {
+        match merged.entry(entry.class) {
+            std::collections::btree_map::Entry::Occupied(mut slot) => {
+                let existing = slot.get_mut();
+                for probe in entry.evidence_probe_ids {
+                    if !existing.evidence_probe_ids.contains(&probe) {
+                        existing.evidence_probe_ids.push(probe);
+                    }
+                }
+                if existing.detail != entry.detail {
+                    existing.detail =
+                        bounded(format!("{}; {}", existing.detail, entry.detail), 400);
+                }
+            }
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(entry);
+            }
+        }
+    }
+    let classes: Vec<ClassifiedDrift> = merged.into_values().collect();
     let impacted = collect_impacts(&classes);
     let mut disposition: Vec<&'static str> = Vec::new();
     for entry in &classes {

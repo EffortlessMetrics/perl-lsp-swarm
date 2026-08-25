@@ -267,14 +267,16 @@ pub fn validate_packet(packet: &ObservationPacket, pinned: &PinnedSubject) -> Re
     ensure!(is_bounded(&packet.refs_probe.method, 300), "refs method exceeds cap");
     match packet.refs_probe.status {
         ProbeStatus::Ok => {
+            // HEAD is required; refs/heads/master is best-effort because an
+            // upstream default-branch rename removes it, and that removal is
+            // itself drift the classifier must see, not an invalid packet.
             ensure!(
                 packet.refs_probe.head.as_deref().is_some_and(is_sha),
                 "refs head missing or malformed"
             );
-            ensure!(
-                packet.refs_probe.master.as_deref().is_some_and(is_sha),
-                "refs master missing or malformed"
-            );
+            if let Some(master) = packet.refs_probe.master.as_deref() {
+                ensure!(is_sha(master), "refs master is malformed");
+            }
         }
         ProbeStatus::Failed => {
             ensure!(
@@ -426,8 +428,9 @@ pub fn validate_packet(packet: &ObservationPacket, pinned: &PinnedSubject) -> Re
             ensure!(is_version(value), "neovim floor {value} is not a bounded version");
         }
     }
-    // Surface findings must cover the probe table exactly: no probe may be
-    // silently skipped, and no extra rows may be invented.
+    // Surface findings must cover the probe table exactly, but only a
+    // successful head probe can carry them: a failed probe carries none so
+    // the classifier can emit instrument_failed instead of a rejected packet.
     let expected_findings: std::collections::BTreeSet<(String, String, String)> = SURFACE_PROBES
         .iter()
         .map(|probe| (probe.surface.to_string(), probe.file.to_string(), probe.needle.to_string()))
@@ -437,12 +440,18 @@ pub fn validate_packet(packet: &ObservationPacket, pinned: &PinnedSubject) -> Re
         .iter()
         .map(|finding| (finding.surface.clone(), finding.file.clone(), finding.needle.clone()))
         .collect();
-    ensure!(
-        expected_findings == observed_findings,
-        "surface findings do not match the probe table exactly ({} expected, {} observed)",
-        expected_findings.len(),
-        observed_findings.len()
-    );
+    match head.status {
+        ProbeStatus::Ok => ensure!(
+            expected_findings == observed_findings,
+            "surface findings do not match the probe table exactly ({} expected, {} observed)",
+            expected_findings.len(),
+            observed_findings.len()
+        ),
+        ProbeStatus::Failed => ensure!(
+            observed_findings.is_empty(),
+            "a failed head probe must not carry partial surface findings"
+        ),
+    }
     Ok(())
 }
 

@@ -581,6 +581,99 @@ fn head_tree_read_from_another_commit_classifies_conflicting_authority() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn failed_head_packet_validates_and_classifies_instrument_failed() {
+    // A live head-fetch failure must reach the classifier (which reports
+    // instrument_failed), not die in packet validation on empty findings.
+    let mut packet = unchanged_packet();
+    packet.refs_probe.master = Some(MOVED_MASTER.to_string());
+    packet.refs_probe.head = Some(MOVED_MASTER.to_string());
+    packet.head_tree_probe.status = ProbeStatus::Failed;
+    packet.head_tree_probe.commit = None;
+    packet.head_tree_probe.files.clear();
+    packet.head_tree_probe.floor = None;
+    packet.head_tree_probe.plugin_defaults.clear();
+    packet.head_tree_probe.load_guard_present = None;
+    packet.head_tree_probe.snippet_note_present = None;
+    packet.head_tree_probe.surface_findings.clear();
+    packet.head_tree_probe.error = Some("head fetch failed".to_string());
+    crate::vim_lsp_subject_refresh::validate_packet(&packet, &pinned())
+        .expect("a failed head probe must validate so it can classify instrument_failed");
+    let artifact = run(&packet);
+    let fired = classes(&artifact);
+    assert!(fired.contains(&DriftClass::InstrumentFailed), "got {fired:?}");
+    assert!(fired.contains(&DriftClass::NewUpstreamReleaseOrRefAvailable), "got {fired:?}");
+    assert!(!fired.contains(&DriftClass::NoChange));
+}
+
+#[test]
+fn moved_default_branch_with_pinned_master_classifies_new_upstream_ref() {
+    // HEAD moved to a new default branch while refs/heads/master stays at
+    // the pin: upstream drift must be visible, not reported as no_change.
+    let mut packet = unchanged_packet();
+    packet.refs_probe.head = Some(MOVED_MASTER.to_string());
+    let artifact = run(&packet);
+    let fired = classes(&artifact);
+    assert!(
+        fired.contains(&DriftClass::NewUpstreamReleaseOrRefAvailable),
+        "a HEAD/master split must classify ref drift; got {fired:?}"
+    );
+    assert!(!fired.contains(&DriftClass::NoChange));
+    assert!(
+        artifact.drift_classes.iter().any(|entry| entry.detail.contains("default branch moved"))
+    );
+}
+
+#[test]
+fn masterless_refs_observation_is_valid_and_tracks_head() {
+    // Default branch renamed away: refs/heads/master is gone, HEAD remains.
+    let mut packet = unchanged_packet();
+    packet.refs_probe.master = None;
+    crate::vim_lsp_subject_refresh::validate_packet(&packet, &pinned())
+        .expect("a masterless refs observation must validate");
+    let artifact = run(&packet);
+    assert_eq!(classes(&artifact), vec![DriftClass::NoChange]);
+    assert_eq!(artifact.release_observation.master_matches_pin, Some(true));
+}
+
+#[test]
+fn multiple_missing_needles_of_one_surface_coalesce_into_one_class_entry() {
+    let mut packet = unchanged_packet();
+    break_needle(
+        &mut packet,
+        "server registration and root callback",
+        "function! lsp#register_server(",
+    );
+    break_needle(
+        &mut packet,
+        "server registration and root callback",
+        "function! lsp#utils#path_to_uri(",
+    );
+    break_needle(&mut packet, "server registration and root callback", "'root_uri'");
+    let artifact = run(&packet);
+    let registration_entries: Vec<_> = artifact
+        .drift_classes
+        .iter()
+        .filter(|entry| entry.class == DriftClass::RegistrationRootOrConfigApiChanged)
+        .collect();
+    assert_eq!(
+        registration_entries.len(),
+        1,
+        "per-needle firings must coalesce into one class entry with joined evidence"
+    );
+    let entry = registration_entries[0];
+    assert!(entry.detail.contains("lsp#register_server"), "joined detail: {}", entry.detail);
+    assert!(entry.detail.contains("path_to_uri"), "joined detail: {}", entry.detail);
+    // Many simultaneous missing needles still satisfy the class-count cap.
+    for finding in &mut packet.head_tree_probe.surface_findings {
+        finding.found = false;
+    }
+    let artifact = run(&packet);
+    crate::vim_lsp_subject_refresh::validate_artifact_boundedness(&artifact)
+        .expect("all-needles-missing artifact stays bounded and unique per class");
+    assert!(artifact.drift_classes.len() <= DriftClass::ALL.len());
+}
+
+#[test]
 fn every_drift_class_has_a_deterministic_impact_entry() {
     for class in DriftClass::ALL {
         let impacts = crate::vim_lsp_subject_refresh::classify::impact_entries(*class);

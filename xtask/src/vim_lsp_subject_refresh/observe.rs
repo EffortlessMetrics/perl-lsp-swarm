@@ -182,15 +182,19 @@ pub fn observe(
     }
     let observed_at_utc = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
-    // Probe 1: refs.
-    let refs_method = format!("git ls-remote {repository} HEAD refs/heads/master 'refs/tags/*'");
-    let refs_probe = match run_git(
-        None,
-        ["ls-remote", repository, "HEAD", "refs/heads/master", "refs/tags/*"],
-    ) {
+    // Probe 1: refs. HEAD and tags are required; refs/heads/master is
+    // best-effort because an upstream default-branch rename removes it, and
+    // that removal is drift the classifier must classify, not an instrument
+    // failure.
+    let refs_method =
+        format!("git ls-remote {repository} HEAD 'refs/tags/*' (+ best-effort refs/heads/master)");
+    let refs_probe = match run_git(None, ["ls-remote", repository, "HEAD", "refs/tags/*"]) {
         Ok(output) => {
-            let (head, master, tags) = parse_ls_remote(&output);
-            ensure!(head.is_some() && master.is_some(), "ls-remote returned no HEAD/master");
+            let (head, _master, tags) = parse_ls_remote(&output);
+            ensure!(head.is_some(), "ls-remote returned no HEAD");
+            let master = run_git(None, ["ls-remote", repository, "refs/heads/master"])
+                .ok()
+                .and_then(|output| parse_ls_remote(&output).1);
             RefsProbe {
                 method: refs_method,
                 status: ProbeStatus::Ok,
@@ -267,8 +271,9 @@ pub fn observe(
         };
 
     // Probe 3: observed head tree.
-    let head_method = format!("git fetch --depth 1 {repository} <observed-master>");
-    let head_probe = match refs_probe.master.clone() {
+    let head_method = format!("git fetch --depth 1 {repository} <observed-tracked-ref>");
+    let tracked_ref = refs_probe.master.clone().or_else(|| refs_probe.head.clone());
+    let head_probe = match tracked_ref {
         Some(master) => match fetch_commit(scratch.path(), repository, &master) {
             Ok(commit) => {
                 let mut probed_paths: Vec<&str> =
@@ -353,7 +358,7 @@ pub fn observe(
             maintenance_markers: Vec::new(),
             snippet_note_present: None,
             surface_findings: Vec::new(),
-            error: Some("refs probe carried no master head".to_string()),
+            error: Some("refs probe carried no tracked ref".to_string()),
         },
     };
 
