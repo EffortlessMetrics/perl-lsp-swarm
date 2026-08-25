@@ -30,8 +30,8 @@ use perl_lsp_rs_core::config::{
     ExternalIncludePathAuthority, UnauthorizedExternalIncludePathSource,
     WorkspaceConfigUpdateContext,
 };
-use perl_module::path::file_path_to_module_name;
-use perl_module::rename::plan_module_rename_edits;
+use perl_module::file_path_to_module_name;
+use perl_module::plan_module_rename_edits;
 #[cfg(feature = "workspace")]
 use perl_parser::workspace_index::{
     DegradationReason, EarlyExitReason, IndexState, ResourceKind, SymbolKind,
@@ -1185,9 +1185,8 @@ impl LspServer {
                                     &sym.qualified_name,
                                 )
                             {
-                                resolved["containerName"] = json!(
-                                    perl_module::path::normalize_package_separator(container)
-                                );
+                                resolved["containerName"] =
+                                    json!(perl_module::normalize_package_separator(container));
                             }
 
                             return Ok(Some(json!(resolved)));
@@ -1219,6 +1218,11 @@ pub(crate) fn extract_perl_settings(settings: &Value) -> Option<&Value> {
 impl LspServer {
     /// Surface invalid enum values from editor-provided settings without changing
     /// the fail-safe configuration update behavior.
+    ///
+    /// Suppression identity lives in the bounded session-warning dedup store
+    /// (#9769): setting tag + value type + normalized value fingerprint, so
+    /// the raw editor-provided value is never retained. Wording and the
+    /// warn-once-per-setting/value policy are unchanged.
     fn warn_invalid_client_settings(&self, settings: &Value) {
         for invalid in
             perl_lsp_rs_core::config::ServerConfig::invalid_client_setting_values(settings)
@@ -1228,8 +1232,14 @@ impl LspServer {
             } else {
                 invalid.value.trim().to_ascii_lowercase()
             };
-            let key = format!("{}={}={normalized_value}", invalid.setting, invalid.value_type);
-            if !self.client_setting_warnings_sent.lock().insert(key) {
+            if matches!(
+                self.session_warning_dedup.note_client_setting(
+                    invalid.setting,
+                    invalid.value_type,
+                    &normalized_value
+                ),
+                super::session_warning_dedup::SessionWarningDecision::Suppress
+            ) {
                 continue;
             }
 
@@ -1315,7 +1325,8 @@ impl LspServer {
                 #[cfg(not(target_arch = "wasm32"))]
                 if critic_config_changed {
                     *self.critic_analyzer.lock() = None;
-                    self.critic_workspace_warnings_sent.lock().clear();
+                    self.session_warning_dedup
+                        .clear_family(super::session_warning_dedup::SessionWarningFamily::Critic);
                     self.pull_diagnostics_orchestrator.reset();
                 }
 
@@ -1414,7 +1425,8 @@ impl LspServer {
                 // A configuration notification starts a new user-visible
                 // configuration session; do not let an old auth failure
                 // suppress feedback after settings are changed or removed.
-                self.ai_backend_warnings_sent.lock().clear();
+                self.session_warning_dedup
+                    .clear_family(super::session_warning_dedup::SessionWarningFamily::AiBackend);
 
                 // Refresh AI backend when config changes (constructs or clears provider)
                 self.refresh_ai_backend();

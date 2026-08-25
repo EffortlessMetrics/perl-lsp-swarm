@@ -875,11 +875,7 @@ mod tests {
 
         let mut full = CheckpointedIncrementalParser::new();
         let full_tree = must(full.parse(expected_source));
-        assert_eq!(
-            format!("{incremental_tree:?}"),
-            format!("{full_tree:?}"),
-            "incremental tree diverged from fresh full parse"
-        );
+        assert_eq!(incremental_tree, full_tree, "incremental tree diverged from fresh full parse");
     }
 
     #[test]
@@ -919,11 +915,7 @@ mod tests {
 
         let mut full = CheckpointedIncrementalParser::new();
         let full_tree = must(full.parse(expected_source));
-        assert_eq!(
-            format!("{incremental_tree:?}"),
-            format!("{full_tree:?}"),
-            "incremental tree diverged from fresh full parse"
-        );
+        assert_eq!(incremental_tree, full_tree, "incremental tree diverged from fresh full parse");
     }
 
     #[test]
@@ -973,8 +965,7 @@ mod tests {
         let full_tree = must(full.parse(expected_source));
 
         assert_eq!(
-            format!("{tree:?}"),
-            format!("{full_tree:?}"),
+            tree, full_tree,
             "invalidated checkpoint path must produce the same tree as a full parse"
         );
         assert_eq!(
@@ -1033,11 +1024,7 @@ mod tests {
         expected_source.replace_range(edit.start..edit.end, &edit.new_text);
         let mut full = CheckpointedIncrementalParser::new();
         let full_tree = must(full.parse(expected_source));
-        assert_eq!(
-            format!("{incremental_tree:?}"),
-            format!("{full_tree:?}"),
-            "incremental tree diverged from fresh full parse"
-        );
+        assert_eq!(incremental_tree, full_tree, "incremental tree diverged from fresh full parse");
     }
 
     #[test]

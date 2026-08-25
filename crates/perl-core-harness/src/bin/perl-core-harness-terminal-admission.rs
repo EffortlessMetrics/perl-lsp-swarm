@@ -775,4 +775,32 @@ mod tests {
         fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&report)?))?;
         Ok(path)
     }
+
+    /// #6884: the legacy receipt bin must refuse exactly the shapes the typed
+    /// terminal authority refuses, so the two admission surfaces cannot drift
+    /// while the v2 legacy schema stays frozen.
+    #[test]
+    fn bin_admission_matches_typed_terminal_authority() -> TestResult {
+        for mode in [HarnessMode::Parse, HarnessMode::Compile] {
+            for status in [None, Some(0), Some(255)] {
+                let temp = tempfile::tempdir()?;
+                let path = write_report(temp.path(), "report.json", mode, status, false)?;
+                let evidence = read_report_evidence(&path)?;
+                let typed =
+                    perl_core_harness::transition::TerminalProcessOutcome::from_harness_status(
+                        status,
+                        HarnessRunner::Test,
+                        mode,
+                    );
+                assert_eq!(
+                    evidence.admission.terminal_admitted,
+                    typed.is_scoreable(),
+                    "bin/typed drift for {mode:?} status {status:?}: bin reason '{}', typed '{}'",
+                    evidence.admission.reason,
+                    typed.label()
+                );
+            }
+        }
+        Ok(())
+    }
 }

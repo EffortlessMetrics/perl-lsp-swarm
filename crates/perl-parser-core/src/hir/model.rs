@@ -1378,6 +1378,8 @@ pub struct PackageInheritanceEdge {
 pub enum InheritanceSource {
     /// `our @ISA = ...`.
     IsaAssignment,
+    /// `push @ISA, ...`.
+    IsaPush,
     /// `use parent ...`.
     UseParent,
     /// `use base ...`.
@@ -1448,6 +1450,8 @@ pub enum StashDynamicBoundaryKind {
     DynamicStashMutation,
     /// Export declaration has a non-static member list or tag shape.
     DynamicExportDeclaration,
+    /// `@ISA` receives a parent name that cannot be proven statically.
+    DynamicInheritance,
     /// `AUTOLOAD` makes method lookup dynamic for this package.
     Autoload,
 }
