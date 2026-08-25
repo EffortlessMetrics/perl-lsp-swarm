@@ -124,11 +124,24 @@ If the head moves before merge, re-read the candidate. Refresh only proof, revie
 integration dimensions affected by the new commit. Never use administrative bypass to
 discover what is failing or to outrun unresolved review/integration evidence.
 
+If an armed auto-merge has not fired, one manual probe merge through the REST endpoint
+(`gh api -X PUT repos/{owner}/{repo}/pulls/<n>/merge -f merge_method=squash`) is the
+sanctioned next step, not polling churn — but it is the same administrator bypass of
+legacy branch-protection checks and merges past a still-pending required context:
+probe ONLY once `ripr+ New Gap Gate` reports green on the head SHA, or an explicit
+waiver is recorded on the PR or issue naming the reason (#12289's probe merged 42
+minutes before the required check failed; #12565 confirmed the mechanism).
+
 ## Reconciliation
 
 After merge or evidence-backed deliberate closure:
 
-1. verify the landed/current-main effect where applicable;
+1. verify the landed/current-main effect where applicable — during multi-landing
+   sessions, after every 2-3 landings run one non-green query over main's head
+   check-runs (`gh api repos/{owner}/{repo}/commits/main/check-runs`); the
+   2026-08-24/25 waves shipped fmt drift (#12278), dead-code clippy reds
+   (#12311/#12374-class), and a stale test expectation (#12274/#12357) that
+   cross-lane pain found late;
 2. update or close the controlling issue accurately;
 3. keep umbrella goals open when only one predicate landed;
 4. update durable contracts, proof, support claims, and changelog only within the

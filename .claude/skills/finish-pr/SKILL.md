@@ -151,6 +151,18 @@ armed auto-merge—record the exact pending fact and wake event once when useful
 return `PR_IN_FLIGHT`. Do not poll unchanged state or call the wider goal blocked. A
 remote integration wait does not make a still-current substantive review stale.
 
+An armed auto-merge that appears stalled is usually waiting on the slowest required
+context, not broken: `ripr+ New Gap Gate` is the tail of the required union. The
+manual probe merge (`gh api -X PUT repos/{owner}/{repo}/pulls/<n>/merge -f
+merge_method=squash`, optionally with the current head SHA as compare-and-swap)
+succeeds every time precisely because it is an administrator bypass of legacy
+branch-protection checks — it merges past a still-pending required context (#12357
+was merged 22 minutes before `ripr+` reported; #12289's merged 42 minutes before it
+failed; #12565 confirmed the mechanism). Probe ONLY once `ripr+ New Gap Gate` reports
+green on the head SHA, or an explicit waiver is recorded on the PR or issue naming
+the reason; before that, the armed merge remains the GitHub-owned wait (#12312's
+"stall" was exactly the ripr runtime — merged 13 seconds after `ripr+` went green).
+
 ## Useful GitHub boundary
 
 Publish candidate-wide route/proof/limitation changes in the PR body or a compact PR
