@@ -309,6 +309,18 @@ suite('Packaged crash-recovery journey (#7848)', function () {
       );
       const api = (await extension.activate()) as CrashJourneyApi | undefined;
       assert.ok(api, 'activation must return the extension API');
+      assert.ok(
+        api.getLanguageClientStartupMetrics,
+        'the crash journey requires getLanguageClientStartupMetrics',
+      );
+      assert.ok(
+        api.getActiveDocumentReadiness,
+        'the crash journey requires getActiveDocumentReadiness',
+      );
+      assert.ok(
+        api.waitForActiveDocumentReady,
+        'the crash journey requires waitForActiveDocumentReady',
+      );
 
       fs.writeFileSync(path.join(workspacePath, TRANSIENT_FIXTURE_A), fixtureContent('a'));
       fs.writeFileSync(path.join(workspacePath, TRANSIENT_FIXTURE_B), fixtureContent('b'));
@@ -642,24 +654,26 @@ suite('Packaged crash-recovery journey (#7848)', function () {
             };
           } else {
             // The later process-exit of the suspended generation must dedupe
-            // into the watchdog episode: exactly one generation advance, one
-            // replacement pid, and stability across a quiet window.
+            // into the watchdog episode: stability is judged against the
+            // generation the watchdog recovery itself produced — a second
+            // serial restart after the suspended process's exit would move a
+            // sample past that bound and must fail the row (a max-of-samples
+            // bound would be vacuously true).
+            const recoveryGeneration = watchdogRecovery.final.readiness_generation;
             const dedupeDeadline = Date.now() + QUIET_WINDOW_MS * 2;
             const dedupeSamples: CrashObservationSample[] = [];
             while (Date.now() < dedupeDeadline) {
               await delay(POLL_INTERVAL_MS * 4);
               dedupeSamples.push(await sampleState(api, binDirectory));
             }
-            const settledGeneration = dedupeSamples.reduce(
-              (latest, sample) => Math.max(latest, sample.readiness_generation ?? 0),
-              0,
-            );
+            const generationStable =
+              recoveryGeneration !== null &&
+              dedupeSamples.every(
+                (sample) => (sample.readiness_generation ?? 0) <= recoveryGeneration,
+              );
             watchdogRow = {
               status:
-                maxOverlap(dedupeSamples) <= 1 &&
-                dedupeSamples.every(
-                  (sample) => (sample.readiness_generation ?? 0) <= settledGeneration,
-                )
+                recoveryGeneration !== null && maxOverlap(dedupeSamples) <= 1 && generationStable
                   ? 'pass'
                   : 'failed',
               watchdog_episode_generation: watchdogRecovery.final.readiness_generation,
@@ -709,6 +723,18 @@ suite('Packaged crash-recovery journey (#7848)', function () {
       );
       const api = (await extension.activate()) as CrashJourneyApi | undefined;
       assert.ok(api, 'activation must return the extension API');
+      assert.ok(
+        api.getLanguageClientStartupMetrics,
+        'the crash journey requires getLanguageClientStartupMetrics',
+      );
+      assert.ok(
+        api.getActiveDocumentReadiness,
+        'the crash journey requires getActiveDocumentReadiness',
+      );
+      assert.ok(
+        api.waitForActiveDocumentReady,
+        'the crash journey requires waitForActiveDocumentReady',
+      );
 
       fs.writeFileSync(path.join(workspacePath, BREAKER_FIXTURE), fixtureContent('breaker'));
       const candidate = await journeyCandidate(extension, workspacePath, [BREAKER_FIXTURE]);

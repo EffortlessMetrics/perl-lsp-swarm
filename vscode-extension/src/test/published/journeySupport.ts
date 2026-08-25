@@ -333,18 +333,22 @@ export async function scanServerProcessIdentities(
   }
   const caseInsensitive = process.platform === 'win32' || process.platform === 'darwin';
   const needle = caseInsensitive ? resolved.toLowerCase() : resolved;
+  // `ps -eo pid=,args=` pads its columns with spaces while the PowerShell
+  // probe emits id/path tab-separated: accept any whitespace separator so
+  // both hosts parse (a tab-only parser silently drops every Linux row).
   return result.stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
     .map((line) => {
-      const separator = line.indexOf('\t');
-      if (separator <= 0) {
+      const match = /^(\d+)[ \t]+(.+)$/.exec(line);
+      const pidText = match?.[1];
+      const executable = match?.[2]?.trim();
+      if (pidText === undefined || executable === undefined) {
         return null;
       }
-      const pid = Number.parseInt(line.slice(0, separator), 10);
-      const executable = line.slice(separator + 1).trim();
-      if (!Number.isInteger(pid) || pid <= 0 || executable.length === 0) {
+      const pid = Number.parseInt(pidText, 10);
+      if (pid <= 0 || executable.length === 0) {
         return null;
       }
       const haystack = caseInsensitive ? executable.toLowerCase() : executable;

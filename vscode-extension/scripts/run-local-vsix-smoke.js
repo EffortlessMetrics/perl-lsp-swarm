@@ -933,10 +933,7 @@ function composeCrashRecoveryReceipt({
         ? breakerObservations.automatic_budget
         : null,
     action_required_dialog_observable:
-      breakerObservations.action_required_dialog &&
-      typeof breakerObservations.action_required_dialog === 'object'
-        ? breakerObservations.action_required_dialog.observable === true
-        : false,
+      breakerObservations.action_required_dialog?.observable === true,
   };
 
   const breakerBound = Boolean(breaker);
@@ -958,9 +955,9 @@ function composeCrashRecoveryReceipt({
   const negativeControls = {
     user_restart_not_used_for_failure_injection:
       childrenBound &&
-      typeof (transient.fault && transient.fault.method) === 'string' &&
+      typeof transient.fault?.method === 'string' &&
       /harness-external process termination/.test(transient.fault.method) &&
-      typeof (breaker.fault && breaker.fault.method) === 'string' &&
+      typeof breaker.fault?.method === 'string' &&
       /harness-external/.test(breaker.fault.method),
     replacement_servers_never_overlapped: childrenBound
       ? Number(transientObservations.recovery_samples?.max_simultaneous_server_processes ?? 0) <=
@@ -1706,7 +1703,11 @@ function runCrashRecoveryJourneyAttempt(baseEnv, context, paths) {
     };
   }
   return {
-    status: joined.verdict === 'pass' ? 'pass' : 'not_proven',
+    // An observed product failure in the joined receipt (a failed row, for
+    // example the watchdog row) is a failed stage, not instrumentation
+    // uncertainty; only a missing/contradictory verdict stays not_proven.
+    status:
+      joined.verdict === 'pass' ? 'pass' : joined.verdict === 'failed' ? 'failed' : 'not_proven',
     exit_codes: legExitCodes,
     recovery_verdict: joined.verdict,
     receipt: path.relative(repoRoot, joinedReceiptFile).replaceAll('\\', '/'),
