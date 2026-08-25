@@ -1,3 +1,4 @@
+'\n        );\n    }\n}\n'
 //! Corpus-backed parser panic invariant.
 //!
 //! This test deliberately accepts parse errors. The invariant is narrower and
@@ -12,7 +13,6 @@ use std::path::{Path, PathBuf};
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").to_path_buf()
 }
-
 fn files_under(root: &Path, include: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
     let mut files = Vec::new();
     let mut pending = vec![root.to_path_buf()];
