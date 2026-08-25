@@ -335,6 +335,9 @@ pub fn code_action_extract_variable_fixture() -> LspProtocolFixture {
 }
 
 /// Import organization code action response
+///
+/// Withdrawn (#8305): the legacy line-oriented organizer no longer exists, so a
+/// filtered `source.organizeImports` request returns no actions at all.
 #[cfg(test)]
 pub fn code_action_organize_imports_fixture() -> LspProtocolFixture {
     LspProtocolFixture {
@@ -353,30 +356,7 @@ pub fn code_action_organize_imports_fixture() -> LspProtocolFixture {
                 "only": ["source.organizeImports"]
             }
         }),
-        expected_response: json!([
-            {
-                "title": "Organize imports",
-                "kind": "source.organizeImports",
-                "edit": {
-                    "changes": {
-                        "file:///test/workspace/imports.pl": [
-                            {
-                                "range": {
-                                    "start": { "line": 5, "character": 0 },
-                                    "end": { "line": 18, "character": 0 }
-                                },
-                                "newText": "# Organized imports (alphabetical, duplicates removed)\nuse Carp;\nuse File::Path qw(make_path);\nuse My::Custom::Module;\nuse POSIX qw(strftime);\nuse Scalar::Util qw(blessed);\n\n"
-                            }
-                        ]
-                    }
-                },
-                "data": {
-                    "refactoring_type": "organize_imports",
-                    "removed_duplicates": ["File::Path"],
-                    "removed_unused": ["Data::Dumper", "List::Util"]
-                }
-            }
-        ]),
+        expected_response: json!([]),
         response_time_ms: Some(38),
         thread_safe: true,
         navigation_type: NavigationType::CodeAction,

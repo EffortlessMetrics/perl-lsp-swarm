@@ -25,11 +25,6 @@ export interface WorkspaceStatusSnapshot {
   readonly nextAction?: string;
 }
 
-/** Invoke VS Code's organize-imports command. */
-export async function organizeImportsCommand(): Promise<void> {
-  await vscode.commands.executeCommand('editor.action.organizeImports');
-}
-
 /** Display the active server version or an actionable recovery prompt. */
 export async function showVersionCommand(
   dependencies: NavigationCommandDependencies,
@@ -157,15 +152,6 @@ export async function showStatusMenuCommand(): Promise<void> {
       description: 'Shift+Alt+R',
       detail: 'Restart the language server',
       command: 'perl-lsp.restart',
-    },
-    {
-      label: '$(organization) Organize Imports',
-      description: 'Shift+Alt+O',
-      detail: isPerl
-        ? 'Sort and organize use statements'
-        : 'Sort and organize use statements (Only available for Perl files)',
-      command: 'perl-lsp.organizeImports',
-      disabled: !isPerl,
     },
     {
       label: '$(beaker) Run Tests in Current File',

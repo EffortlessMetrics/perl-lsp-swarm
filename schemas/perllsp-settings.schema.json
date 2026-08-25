@@ -26,9 +26,9 @@
               "type": "array",
               "items": { "type": "string" },
               "default": [],
-              "description": "Absolute external Perl module roots. This is machine/user authority and is ignored on resource-scoped workspace payloads.",
+              "description": "Absolute external Perl module roots. Reserved for a future server-owned trusted user/operator adapter; no client channel currently carries the required authority (#4998), so entries are rejected and previously accepted values are preserved.",
               "x-perllsp-scope": "machine",
-              "x-perllsp-transports": ["workspace/configuration-global"]
+              "x-perllsp-transports": []
             },
             "discoveryExtensions": {
               "type": "array",
@@ -83,16 +83,6 @@
             "maxLength": { "type": "integer", "minimum": 0, "default": 30 }
           }
         },
-        "testRunner": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": { "type": "boolean", "default": true },
-            "command": { "type": "string", "default": "perl" },
-            "args": { "type": "array", "items": { "type": "string" }, "default": [] },
-            "timeout": { "type": "integer", "minimum": 0, "default": 60000 }
-          }
-        },
         "limits": {
           "type": "object",
           "additionalProperties": false,
@@ -121,14 +111,6 @@
         "telemetry": {
           "type": "object",
           "additionalProperties": false,
-          "properties": {
-            "enabled": { "type": "boolean", "default": false }
-          }
-        },
-        "nextEdit": {
-          "type": "object",
-          "additionalProperties": false,
-          "description": "Preview gate for future next-edit suggestions; enabling it does not by itself create an editor-visible provider.",
           "properties": {
             "enabled": { "type": "boolean", "default": false }
           }
@@ -173,7 +155,7 @@
             "formatOnSave": { "type": "boolean", "default": true },
             "engine": {
               "type": "string",
-              "enum": ["native", "compat", "external-legacy", "off"],
+              "enum": ["native", "compat", "off"],
               "default": "native"
             },
             "maximumLineLength": { "type": "integer", "minimum": 0, "default": 80 },
@@ -191,11 +173,30 @@
         "aiCompletion": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Client-controlled AI completion behavior. Endpoint and credential-routing fields are intentionally excluded because workspace-delivered LSP settings may not redirect source/secret-bearing requests.",
+          "description": "Client-controlled AI completion behavior. Endpoint and credential-routing fields are intentionally excluded from this schema (#5684). Activation and provider/model selection fields remain documented but advertise no client transports: no generic LSP settings channel can prove user/machine provenance (#4997), so arrivals are rejected and previously accepted state is preserved.",
           "properties": {
-            "enabled": { "type": "boolean", "default": false },
-            "provider": { "type": "string", "enum": ["openai_compat"], "default": "openai_compat" },
-            "model": { "type": "string", "default": "gpt-4o-mini" },
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Reserved for a future server-owned trusted user/operator adapter; no client channel currently carries the required authority (#4997), so values are rejected and previously accepted activation is preserved.",
+              "x-perllsp-scope": "machine",
+              "x-perllsp-transports": []
+            },
+            "provider": {
+              "type": "string",
+              "enum": ["openai_compat"],
+              "default": "openai_compat",
+              "description": "Backend/egress identity selection requires trusted user/operator authority (#4997); generic-channel values are rejected.",
+              "x-perllsp-scope": "machine",
+              "x-perllsp-transports": []
+            },
+            "model": {
+              "type": "string",
+              "default": "gpt-4o-mini",
+              "description": "Request identity selection requires trusted user/operator authority (#4997); generic-channel values are rejected.",
+              "x-perllsp-scope": "machine",
+              "x-perllsp-transports": []
+            },
             "timeoutMs": { "type": "integer", "minimum": 0, "default": 1800 },
             "maxOutputTokens": { "type": "integer", "minimum": 1, "default": 64 },
             "rateLimitRps": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
@@ -205,8 +206,15 @@
             "streaming": {
               "type": "object",
               "additionalProperties": false,
+              "description": "Streaming presentation preferences. streaming.enabled follows the same authority law as backend arming (#4997) and is reserved for the future trusted adapter; only updateDebounceMs remains generically settable.",
               "properties": {
-                "enabled": { "type": "boolean", "default": true },
+                "enabled": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Streaming preferences never imply or revoke remote egress authorization (#4997); values from generic channels are rejected.",
+                  "x-perllsp-scope": "machine",
+                  "x-perllsp-transports": []
+                },
                 "updateDebounceMs": { "type": "integer", "minimum": 0, "default": 60 }
               }
             }

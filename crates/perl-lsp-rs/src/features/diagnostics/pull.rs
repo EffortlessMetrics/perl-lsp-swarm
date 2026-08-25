@@ -21,23 +21,35 @@ use perl_diagnostics::codes::DiagnosticCode;
 use perl_lsp_rs_core::config::CriticEngine;
 use perl_lsp_rs_core::providers::diagnostics::{parse_error_code, parse_error_severity};
 use perl_lsp_rs_core::tooling::perl_critic::{
-    CriticConfig, CriticContext, CriticFinding, NativeCriticProfile, NativeCriticRegistry, Severity,
+    CriticConfig, CriticContext, NativeCriticProfile, NativeCriticRegistry, Severity,
 };
-use perl_module::resolution::use_lib::{
+use perl_module::{
     UseLibOperation, extract_use_lib_operations_with_offsets,
     no_lib_cancelled_paths_from_operations_at_offset,
     resolve_use_lib_paths_from_operations_at_offset,
 };
 use perl_parser::Parser;
-use perl_parser::error::ParseError;
+use perl_parser::error::{ParseError, ResolvedParseDiagnosticAnchor};
+#[cfg(test)]
+use perl_parser::error::{RecoveryKind, RecoverySite};
 use perl_parser::position::offset_to_utf16_line_col;
 use perl_parser::util::code_slice;
 
 // Import core diagnostics types from perl-lsp-providers (via parent module re-export)
+use super::report_identity::{
+    DiagnosticProjectionFragment, PullPositionEncoding, PullReportResultId, compose_report_identity,
+};
 use super::{
     Diagnostic as InternalDiagnostic, DiagnosticSeverity as InternalDiagnosticSeverity,
     DiagnosticTag as InternalDiagnosticTag, DiagnosticsProvider, RelatedInformation,
 };
+
+/// Root authority assumed by contexts built without an explicit workspace
+/// binding. The convenience constructors define their own complete (degenerate)
+/// report-subject scope so equal inputs stay deterministic; production paths
+/// always bind the real owning folder or leave the authority explicitly absent
+/// (fail-closed, full-report-without-ID).
+const PROVIDER_DEFAULT_ROOT_AUTHORITY: &str = "perl-lsp:pull-provider-default-root";
 
 /// Context for pull diagnostics operations.
 ///
@@ -69,6 +81,17 @@ pub struct PullDiagnosticsContext {
     /// Optional workspace index for dead code detection
     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
     pub workspace_index: Option<std::sync::Arc<perl_workspace::workspace_index::WorkspaceIndex>>,
+    /// Owning folder/root authority key binding this document's report subject.
+    ///
+    /// `None` means no root authority could be established: the report stays
+    /// valid but can never carry a reusable result ID (#7480).
+    pub identity_root_key: Option<String>,
+    /// Current project-fact (workspace index) generation, when the fact tier
+    /// is live and fresh for this document. `None` encodes the explicit
+    /// not-ready/unavailable fact state.
+    pub facts_generation: Option<u64>,
+    /// Behavior-bearing negotiated wire-projection state (#7480).
+    pub projection: DiagnosticProjectionFragment,
 }
 
 impl PullDiagnosticsContext {
@@ -85,6 +108,12 @@ impl PullDiagnosticsContext {
             workspace_root: None,
             include_paths: Vec::new(),
             markup_message_support: false,
+            identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
+            facts_generation: None,
+            projection: DiagnosticProjectionFragment {
+                position_encoding: PullPositionEncoding::Utf16,
+                markup_messages: false,
+            },
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             workspace_index: None,
         }
@@ -104,6 +133,12 @@ impl PullDiagnosticsContext {
             workspace_root: None,
             include_paths: Vec::new(),
             markup_message_support: false,
+            identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
+            facts_generation: None,
+            projection: DiagnosticProjectionFragment {
+                position_encoding: PullPositionEncoding::Utf16,
+                markup_messages: false,
+            },
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             workspace_index: None,
         }
@@ -125,6 +160,12 @@ impl PullDiagnosticsContext {
             workspace_root: None,
             include_paths: Vec::new(),
             markup_message_support: false,
+            identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
+            facts_generation: None,
+            projection: DiagnosticProjectionFragment {
+                position_encoding: PullPositionEncoding::Utf16,
+                markup_messages: false,
+            },
             workspace_index: Some(index),
         }
     }
@@ -143,6 +184,9 @@ impl std::fmt::Debug for PullDiagnosticsContext {
             .field("workspace_root", &self.workspace_root)
             .field("include_paths", &self.include_paths)
             .field("markup_message_support", &self.markup_message_support)
+            .field("identity_root_key", &self.identity_root_key)
+            .field("facts_generation", &self.facts_generation)
+            .field("projection", &self.projection)
             .field("workspace_index", &"<WorkspaceIndex>")
             .finish()
     }
@@ -192,9 +236,22 @@ impl PullDiagnosticsProvider {
         context: &PullDiagnosticsContext,
         doc_state: Option<&DocumentState>,
     ) -> DocumentDiagnosticReport {
-        let result_id = format!("{:x}", md5::compute(content));
-        if previous_result_id.as_deref() == Some(&result_id) {
-            return self.build_unchanged_report(result_id);
+        let result_id = compose_report_identity(
+            &uri.to_string(),
+            content,
+            doc_state.map(DocumentState::current_generation).map(u64::from),
+            context,
+            true,
+        );
+
+        // `Unchanged` only for a prior ID that parses under the current schema
+        // and equals the complete current report subject (#7480).
+        let unchanged_prior = previous_result_id
+            .as_deref()
+            .and_then(PullReportResultId::from_wire)
+            .filter(|prior| result_id.as_ref() == Some(prior));
+        if let Some(prior) = unchanged_prior {
+            return self.build_unchanged_report(prior.into_string());
         }
 
         let diagnostics =
@@ -226,34 +283,32 @@ impl PullDiagnosticsProvider {
             let uri = parse_uri(uri_str);
             let prev_id = prev_ids.get(&uri).cloned();
 
-            let result_id = format!("{:x}", md5::compute(&doc_state.text));
-            let report = if prev_id.as_deref() == Some(&result_id) {
-                self.build_unchanged_report(result_id)
-            } else if doc_state.current_parsed().is_none() {
-                // Pending-parse gap (#3396 PR4): the document's text generation
-                // is ahead of the last published parse snapshot, so
-                // `collect_diagnostics_for_state_with_context` would report an
-                // empty diagnostics set computed from no current-generation
-                // AST at all -- a false "nothing wrong" claim that would
-                // replace whatever the client is currently displaying for
-                // this file. When we know the client's last resultId, tell it
-                // nothing changed (keep displaying what it has) instead of
-                // asserting freshness we don't have. With no known prior
-                // result there is nothing cached client-side to protect, so
-                // fall through to the normal (still-safe, just possibly
-                // AST-less) computation.
-                match prev_id {
-                    Some(id) => self.build_unchanged_report(id),
-                    None => {
-                        let diagnostics = self
-                            .collect_diagnostics_for_state_with_context(&uri, doc_state, context);
-                        self.build_full_report(result_id, diagnostics)
-                    }
+            // A pending-parse gap (#3396 PR4) is an explicit not-ready subject:
+            // the report stays full but never carries a reusable ID, so it can
+            // never be echoed back as `Unchanged` (#7480).
+            let ready = doc_state.current_parsed().is_some();
+            let result_id = compose_report_identity(
+                uri_str,
+                &doc_state.text,
+                Some(u64::from(doc_state.current_generation())),
+                context,
+                ready,
+            );
+
+            let unchanged_prior = if ready { prev_id.as_deref() } else { None }
+                .and_then(PullReportResultId::from_wire)
+                .filter(|prior| result_id.as_ref() == Some(prior));
+
+            let report = match unchanged_prior {
+                Some(prior) => self.build_unchanged_report(prior.into_string()),
+                None => {
+                    // Without readiness the composed identity is suppressed so
+                    // the not-ready subject cannot be cached client-side.
+                    let reusable_id = ready.then_some(result_id).flatten();
+                    let diagnostics =
+                        self.collect_diagnostics_for_state_with_context(&uri, doc_state, context);
+                    self.build_full_report(reusable_id, diagnostics)
                 }
-            } else {
-                let diagnostics =
-                    self.collect_diagnostics_for_state_with_context(&uri, doc_state, context);
-                self.build_full_report(result_id, diagnostics)
             };
 
             items.push(self.to_workspace_report(uri, Some(doc_state.version), report));
@@ -276,7 +331,9 @@ impl PullDiagnosticsProvider {
 
             for (uri_str, content) in chunk {
                 let uri = parse_uri(uri_str);
-                let result_id = format!("{:x}", md5::compute(content));
+                // Partial workspace progress items use the same per-document
+                // identity authority as document and full workspace reports.
+                let result_id = compose_report_identity(uri_str, content, None, context, true);
                 // For partial results, we need to parse the content
                 let diagnostics =
                     self.collect_diagnostics_for_text_with_context(&uri, content, context, None);
@@ -296,7 +353,7 @@ impl PullDiagnosticsProvider {
         uri: &Uri,
         content: &str,
         context: &PullDiagnosticsContext,
-        _doc_state: Option<&DocumentState>,
+        doc_state: Option<&DocumentState>,
     ) -> Vec<LspDiagnostic> {
         let code_text = code_slice(content);
         let mut parser = Parser::new(code_text);
@@ -361,7 +418,7 @@ impl PullDiagnosticsProvider {
 
                 // Wire workspace semantic queries when available (pull-text path).
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                let base_diagnostics: Vec<_> = {
+                let core_diagnostics: Vec<_> = {
                     let semantic_diags =
                         context.workspace_index.as_ref().and_then(|workspace_index| {
                             workspace_index.with_semantic_queries_for_uri(
@@ -380,40 +437,53 @@ impl PullDiagnosticsProvider {
                                 },
                             )
                         });
-                    semantic_diags
-                        .unwrap_or_else(|| {
-                            provider.get_diagnostics_with_path(
-                                &ast,
-                                &parse_errors,
-                                content,
-                                Some(&resolver),
-                                &search_paths,
-                                source_path.as_deref(),
-                            )
-                        })
-                        .into_iter()
-                        .map(|d| self.to_lsp_diagnostic_with_context(uri, content, d, context))
-                        .collect()
+                    semantic_diags.unwrap_or_else(|| {
+                        provider.get_diagnostics_with_path(
+                            &ast,
+                            &parse_errors,
+                            content,
+                            Some(&resolver),
+                            &search_paths,
+                            source_path.as_deref(),
+                        )
+                    })
                 };
                 #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-                let base_diagnostics: Vec<_> = provider
-                    .get_diagnostics_with_path(
-                        &ast,
-                        &parse_errors,
-                        content,
-                        Some(&resolver),
-                        &search_paths,
-                        source_path.as_deref(),
-                    )
+                let core_diagnostics: Vec<_> = provider.get_diagnostics_with_path(
+                    &ast,
+                    &parse_errors,
+                    content,
+                    Some(&resolver),
+                    &search_paths,
+                    source_path.as_deref(),
+                );
+
+                let mut core_diagnostics = core_diagnostics;
+                // Critic composition runs over the producer-owned core rows so
+                // declared overlap observations can enter the normalized seam
+                // before LSP projection (#11918); surviving rows are mapped
+                // afterwards.
+                let mut critic_rows: Vec<LspDiagnostic> = Vec::new();
+                let critic_generation =
+                    doc_state.map(|state| state.current_generation()).unwrap_or(0);
+                self.add_policy_critic_diagnostics(
+                    uri,
+                    &ast,
+                    content,
+                    context,
+                    perl_lsp_rs_core::tooling::perl_critic::critic_source_identity_for_uri(
+                        &uri.to_string(),
+                        critic_generation,
+                    ),
+                    &mut core_diagnostics,
+                    &mut critic_rows,
+                );
+
+                core_diagnostics
                     .into_iter()
                     .map(|d| self.to_lsp_diagnostic_with_context(uri, content, d, context))
-                    .collect();
-
-                let mut diagnostics = base_diagnostics;
-
-                self.add_policy_critic_diagnostics(uri, &ast, content, context, &mut diagnostics);
-
-                diagnostics
+                    .chain(critic_rows)
+                    .collect()
             }
             Err(error) => {
                 vec![self.parse_error_to_diagnostic_with_context(uri, content, &error, context)]
@@ -530,20 +600,35 @@ impl PullDiagnosticsProvider {
     }
 
     /// Add configured policy critic diagnostics.
+    ///
+    /// Under the native engine this also consumes core diagnostics whose
+    /// emitter declared a reviewed critic overlap observation: those ordinary
+    /// rows are replaced by the normalized logical rows appended to
+    /// `critic_rows`, merged with their native aliases (#11918).
     fn add_policy_critic_diagnostics(
         &self,
         uri: &Uri,
         ast: &std::sync::Arc<perl_parser::ast::Node>,
         content: &str,
         context: &PullDiagnosticsContext,
-        diagnostics: &mut Vec<LspDiagnostic>,
+        source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
+        core_diagnostics: &mut Vec<InternalDiagnostic>,
+        critic_rows: &mut Vec<LspDiagnostic>,
     ) {
         match context.critic_engine {
             CriticEngine::Legacy => {
-                self.add_builtin_critic_diagnostics(uri, ast, content, diagnostics);
+                self.add_builtin_critic_diagnostics(uri, ast, content, critic_rows);
             }
             CriticEngine::Native => {
-                self.add_native_critic_diagnostics(uri, ast, content, context, diagnostics);
+                self.add_native_critic_diagnostics(
+                    uri,
+                    ast,
+                    content,
+                    context,
+                    source_identity,
+                    core_diagnostics,
+                    critic_rows,
+                );
             }
         }
     }
@@ -581,6 +666,8 @@ impl PullDiagnosticsProvider {
                 related_information: Vec::new(),
                 tags: Vec::new(),
                 suggestion: None,
+                fixable: is_fixable_diagnostic(&violation.policy),
+                critic_observation: None,
             };
 
             diagnostics.push(self.to_lsp_diagnostic(uri, content, internal_diag));
@@ -594,10 +681,20 @@ impl PullDiagnosticsProvider {
         ast: &std::sync::Arc<perl_parser::ast::Node>,
         content: &str,
         context: &PullDiagnosticsContext,
-        diagnostics: &mut Vec<LspDiagnostic>,
+        source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
+        core_diagnostics: &mut Vec<InternalDiagnostic>,
+        critic_rows: &mut Vec<LspDiagnostic>,
     ) {
+        use perl_lsp_rs_core::providers::diagnostics::take_critic_overlap_observations;
+        use perl_lsp_rs_core::tooling::perl_critic::{
+            BuiltInCriticObservation, CriticSuppressionMap, NativeCriticPolicy,
+            built_in_observation_candidates, native_finding_candidates_with_accounting,
+            normalize_with_native_policy,
+        };
+
+        let severity_threshold = context.perlcritic_severity.clamp(1, 5) as u8;
         let critic_config = CriticConfig {
-            severity: context.perlcritic_severity.clamp(1, 5) as u8,
+            severity: severity_threshold,
             profile: context.perlcritic_profile.clone(),
             include: context.native_critic_include.clone(),
             exclude: context.native_critic_exclude.clone(),
@@ -608,28 +705,59 @@ impl PullDiagnosticsProvider {
             .unwrap_or(NativeCriticProfile::Strict);
         let registry = NativeCriticRegistry::for_profile_with_config(profile, &critic_config);
 
-        for finding in registry.check(&critic_context) {
-            diagnostics.push(self.native_finding_to_lsp_diagnostic(uri, content, finding));
+        // Producer outputs enter the canonical normalized set (#7475): checked
+        // identities at collection, alias merge, then policy applied exactly
+        // once post-merge. Findings without a registered producer-owned
+        // identity are rejected here rather than guessed, and every rejection
+        // is accounted for instead of silently vanishing.
+        //
+        // Core lint emitters that declared a reviewed critic overlap
+        // observation surrender their ordinary diagnostic here (#11918): the
+        // logical row comes out of this same normalization, merged with the
+        // native alias and carrying both contributor identities.
+        let overlap_observations: Vec<BuiltInCriticObservation> =
+            take_critic_overlap_observations(core_diagnostics);
+        let candidates = native_finding_candidates_with_accounting(
+            &uri.to_string(),
+            registry.check_unfiltered(&critic_context),
+            source_identity,
+        )
+        .into_iter()
+        .chain(built_in_observation_candidates(
+            overlap_observations,
+            content,
+            source_identity,
+        ));
+        let suppressions = CriticSuppressionMap::from_source(content);
+        let policy = NativeCriticPolicy::new(
+            severity_threshold,
+            &context.native_critic_include,
+            &context.native_critic_exclude,
+            &suppressions,
+        );
+
+        for finding in normalize_with_native_policy(candidates, &policy) {
+            critic_rows.push(self.normalized_finding_to_lsp_diagnostic(uri, content, &finding));
         }
     }
 
-    fn native_finding_to_lsp_diagnostic(
+    fn normalized_finding_to_lsp_diagnostic(
         &self,
         _uri: &Uri,
         text: &str,
-        finding: CriticFinding,
+        finding: &perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding,
     ) -> LspDiagnostic {
-        let range = lsp_range_from_offsets(text, finding.range.start.byte, finding.range.end.byte);
-        let severity = Some(native_critic_severity_to_lsp(finding.severity));
-        let code = Some(NumberOrString::String(finding.rule_id.clone()));
-        let fixable = finding.fix.is_some();
+        let range =
+            lsp_range_from_offsets(text, finding.range().start.byte, finding.range().end.byte);
+        let severity = Some(native_critic_severity_to_lsp(finding.severity()));
+        let code = Some(NumberOrString::String(finding.public_code().to_string()));
         let data = Some(serde_json::json!({
-            "code": finding.rule_id,
-            "category": format!("{:?}", finding.category),
-            "fixable": fixable,
+            "code": finding.public_code(),
+            "category": finding.category().map(|category| format!("{category:?}")).unwrap_or_else(|| "Other".to_string()),
+            "fixable": finding.has_available_fix(),
             "tags": [],
-            "suppressionKey": finding.suppression_key,
-            "explanation": finding.explanation,
+            "suppressionKey": finding.public_code(),
+            "explanation": finding.explanation(),
         }));
 
         LspDiagnostic {
@@ -638,7 +766,7 @@ impl PullDiagnosticsProvider {
             code,
             code_description: None,
             source: Some("perl-lsp".to_string()),
-            message: finding.message,
+            message: finding.message().to_string(),
             related_information: None,
             tags: None,
             data,
@@ -706,7 +834,7 @@ impl PullDiagnosticsProvider {
 
             // Wire workspace semantic queries when available (pull-state path).
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-            let base_diagnostics: Vec<_> = {
+            let core_diagnostics: Vec<_> = {
                 let semantic_diags = context.workspace_index.as_ref().and_then(|workspace_index| {
                     workspace_index.with_semantic_queries_for_uri(&uri_str, |file_id, queries| {
                         provider.get_diagnostics_with_path_and_semantics(
@@ -721,44 +849,48 @@ impl PullDiagnosticsProvider {
                         )
                     })
                 });
-                semantic_diags
-                    .unwrap_or_else(|| {
-                        provider.get_diagnostics_with_path(
-                            ast,
-                            parse_errors,
-                            &doc_state.text,
-                            Some(&resolver),
-                            &search_paths,
-                            source_path.as_deref(),
-                        )
-                    })
-                    .into_iter()
-                    .map(|d| self.to_lsp_diagnostic_with_context(uri, &doc_state.text, d, context))
-                    .collect()
+                semantic_diags.unwrap_or_else(|| {
+                    provider.get_diagnostics_with_path(
+                        ast,
+                        parse_errors,
+                        &doc_state.text,
+                        Some(&resolver),
+                        &search_paths,
+                        source_path.as_deref(),
+                    )
+                })
             };
             #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-            let base_diagnostics: Vec<_> = provider
-                .get_diagnostics_with_path(
-                    ast,
-                    parse_errors,
-                    &doc_state.text,
-                    Some(&resolver),
-                    &search_paths,
-                    source_path.as_deref(),
-                )
-                .into_iter()
-                .map(|d| self.to_lsp_diagnostic_with_context(uri, &doc_state.text, d, context))
-                .collect();
+            let core_diagnostics: Vec<_> = provider.get_diagnostics_with_path(
+                ast,
+                parse_errors,
+                &doc_state.text,
+                Some(&resolver),
+                &search_paths,
+                source_path.as_deref(),
+            );
 
-            let mut diagnostics = base_diagnostics;
-
+            let mut core_diagnostics = core_diagnostics;
+            // Critic composition over producer-owned core rows first (#11918);
+            // surviving rows map to LSP afterwards.
+            let mut critic_rows: Vec<LspDiagnostic> = Vec::new();
             self.add_policy_critic_diagnostics(
                 uri,
                 ast,
                 &doc_state.text,
                 context,
-                &mut diagnostics,
+                perl_lsp_rs_core::tooling::perl_critic::critic_source_identity_for_uri(
+                    &uri.to_string(),
+                    doc_state.current_generation(),
+                ),
+                &mut core_diagnostics,
+                &mut critic_rows,
             );
+            let mut diagnostics: Vec<LspDiagnostic> = core_diagnostics
+                .into_iter()
+                .map(|d| self.to_lsp_diagnostic_with_context(uri, &doc_state.text, d, context))
+                .chain(critic_rows)
+                .collect();
 
             // Add dead code diagnostics from workspace-wide symbol analysis
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
@@ -811,13 +943,15 @@ impl PullDiagnosticsProvider {
 
     fn build_full_report(
         &self,
-        result_id: String,
+        result_id: Option<PullReportResultId>,
         diagnostics: Vec<LspDiagnostic>,
     ) -> DocumentDiagnosticReport {
         DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
             related_documents: None,
             full_document_diagnostic_report: FullDocumentDiagnosticReport {
-                result_id: Some(result_id),
+                // `None` is the honest full report for a valid-but-not-reusable
+                // subject (#7480): LSP result IDs are optional.
+                result_id: result_id.map(PullReportResultId::into_string),
                 items: diagnostics,
             },
         })
@@ -881,6 +1015,7 @@ impl PullDiagnosticsProvider {
             })
             .collect();
         let tags = to_lsp_tags(&diagnostic.tags);
+        let fixable = diagnostic.fixable;
 
         // Append the context_hint and suggestion to the message so users
         // see actionable remediation inline (#5109). context_hint comes from
@@ -904,7 +1039,6 @@ impl PullDiagnosticsProvider {
                 let category = DiagnosticCode::parse_code(code_str)
                     .map(|dc| format!("{:?}", dc.category()))
                     .unwrap_or_else(|| "Other".to_string());
-                let fixable = is_fixable_diagnostic(code_str);
                 serde_json::to_value(DiagnosticData {
                     code: code_str.clone(),
                     category,
@@ -959,6 +1093,7 @@ impl PullDiagnosticsProvider {
             })
             .collect();
         let tags = to_lsp_tags(&diagnostic.tags);
+        let fixable = diagnostic.fixable;
 
         // Append the suggestion to the message when present so users see it inline
         let message = match diagnostic.suggestion {
@@ -978,7 +1113,6 @@ impl PullDiagnosticsProvider {
                             "Other".to_string()
                         }
                     });
-                let fixable = is_fixable_diagnostic(code_str);
                 let data_obj = DiagnosticData {
                     code: code_str.clone(),
                     category,
@@ -1118,15 +1252,32 @@ impl PullDiagnosticsProvider {
         error: &ParseError,
         context: &PullDiagnosticsContext,
     ) -> LspDiagnostic {
-        let (offset, base_message) = match error {
-            ParseError::UnexpectedToken { location, expected, found } => {
-                (*location, format!("Expected {expected}, found {found}"))
+        // Keep message formatting local, but let parser-core own source placement.
+        let base_message = match error {
+            ParseError::UnexpectedToken { expected, found, .. } => {
+                format!("Expected {expected}, found {found}")
             }
-            ParseError::SyntaxError { location, message } => (*location, message.clone()),
-            ParseError::Advisory { location, message } => (*location, message.clone()),
-            ParseError::UnexpectedEof => (text.len(), "Unexpected end of input".to_string()),
-            ParseError::LexerError { message } => (0, message.clone()),
-            _ => (0, error.to_string()),
+            ParseError::SyntaxError { message, .. } | ParseError::Advisory { message, .. } => {
+                message.clone()
+            }
+            ParseError::Recovered { .. } => error.to_string(),
+            ParseError::UnexpectedEof => "Unexpected end of input".to_string(),
+            ParseError::LexerError { message } => message.clone(),
+            ParseError::RecursionLimit
+            | ParseError::InvalidNumber { .. }
+            | ParseError::InvalidString
+            | ParseError::UnclosedDelimiter { .. }
+            | ParseError::InvalidRegex { .. }
+            | ParseError::NestingTooDeep { .. }
+            | ParseError::Cancelled => error.to_string(),
+            // `ParseError` is `#[non_exhaustive]`, so a wildcard is mandatory
+            // outside perl-parser-core. It is safe here because this match only
+            // selects message text, and `Display` is defined for every variant,
+            // present and future. Source placement deliberately does not come
+            // from this match — it comes from `resolved_diagnostic_anchor`,
+            // whose exhaustiveness is enforced inside the defining crate, so a
+            // future variant cannot silently anchor a diagnostic at byte 0.
+            _ => error.to_string(),
         };
 
         // Append the suggestion inline so users see actionable hints in the fallback path,
@@ -1138,6 +1289,7 @@ impl PullDiagnosticsProvider {
             None => base_message,
         };
 
+        let offset = resolved_parse_diagnostic_offset(error, text);
         let end_offset = offset.saturating_add(1).min(text.len());
         let range = lsp_range_from_offsets(text, offset, end_offset);
 
@@ -1198,6 +1350,30 @@ fn lsp_range_from_offsets(text: &str, start: usize, end: usize) -> Range {
     let (start_line, start_col) = offset_to_utf16_line_col(text, start);
     let (end_line, end_col) = offset_to_utf16_line_col(text, end);
     Range::new(Position::new(start_line, start_col), Position::new(end_line, end_col))
+}
+
+fn resolved_parse_diagnostic_offset(error: &ParseError, text: &str) -> usize {
+    match error.resolved_diagnostic_anchor(text) {
+        ResolvedParseDiagnosticAnchor::Exact(offset) => offset,
+        ResolvedParseDiagnosticAnchor::EndOfInput(offset) => offset,
+        ResolvedParseDiagnosticAnchor::NoSource => 0,
+        ResolvedParseDiagnosticAnchor::InvalidOffset { reported, source_len } => {
+            tracing::error!(
+                reported,
+                source_len,
+                "parser returned an out-of-range diagnostic anchor"
+            );
+            source_len
+        }
+        ResolvedParseDiagnosticAnchor::InvalidUtf8Boundary { reported, source_len } => {
+            tracing::error!(
+                reported,
+                source_len,
+                "parser returned a UTF-8 interior diagnostic anchor"
+            );
+            source_len
+        }
+    }
 }
 
 fn to_lsp_severity(severity: InternalDiagnosticSeverity) -> LspDiagnosticSeverity {
@@ -1513,6 +1689,52 @@ mod tests {
     }
 
     #[test]
+    fn pull_diagnostic_preserves_recovered_anchor() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///test.pl".parse()?;
+        let diagnostic = provider.parse_error_to_diagnostic(
+            &uri,
+            "ab + ;",
+            &ParseError::Recovered {
+                site: RecoverySite::InfixRhs,
+                kind: RecoveryKind::MissingOperand,
+                location: 2,
+            },
+        );
+
+        assert_eq!(diagnostic.range.start, Position::new(0, 2));
+        Ok(())
+    }
+
+    #[test]
+    fn pull_diagnostic_rejects_out_of_range_anchor() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///test.pl".parse()?;
+        let diagnostic = provider.parse_error_to_diagnostic(
+            &uri,
+            "abc",
+            &ParseError::SyntaxError { location: 42, message: "bad syntax".to_string() },
+        );
+
+        assert_eq!(diagnostic.range.start, Position::new(0, 3));
+        Ok(())
+    }
+
+    #[test]
+    fn pull_diagnostic_rejects_utf8_interior_anchor() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///test.pl".parse()?;
+        let diagnostic = provider.parse_error_to_diagnostic(
+            &uri,
+            "💖",
+            &ParseError::SyntaxError { location: 1, message: "bad syntax".to_string() },
+        );
+
+        assert_eq!(diagnostic.range.start, Position::new(0, 2));
+        Ok(())
+    }
+
+    #[test]
     fn perlcritic_policy_codes_are_marked_fixable_in_diagnostic_data() {
         assert!(is_fixable_diagnostic("PL502"));
         assert!(is_fixable_diagnostic("PL503"));
@@ -1627,27 +1849,31 @@ mod tests {
         assert_eq!(data["suppressionKey"], "native.common.deprecated_defined");
         assert_eq!(data["fixable"], true);
 
+        // #11918: the literal-undef comparison merges with its built-in PL404
+        // observation into one logical row presented with the built-in
+        // spelling; the native spelling rides inside the row, not beside it.
         let undef_comparison = items
             .iter()
             .find(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.common.undef_comparison"),
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL404"),
                 )
             })
-            .ok_or("expected native undef-comparison finding")?;
+            .ok_or("expected merged undef-comparison row")?;
         assert_eq!(undef_comparison.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(undef_comparison.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(
-            undef_comparison.message,
-            "Using '==' with undef -- use defined() to check first"
+        assert!(
+            undef_comparison.message.contains("defined"),
+            "merged row carries the producer message: {}",
+            undef_comparison.message
         );
-        let data = undef_comparison
-            .data
-            .as_ref()
-            .ok_or("native undef-comparison data should be populated")?;
-        assert_eq!(data["code"], "native.common.undef_comparison");
-        assert_eq!(data["suppressionKey"], "native.common.undef_comparison");
-        assert_eq!(data["fixable"], true);
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.common.undef_comparison"),
+                )
+            }),
+            "native undef-comparison spelling must not appear as a separate row"
+        );
 
         let stale_dollar_at = items
             .iter()
@@ -1758,41 +1984,47 @@ mod tests {
         assert_eq!(data["suppressionKey"], "native.io.unchecked_open_close");
         assert_eq!(data["fixable"], false);
 
-        let backtick_exec = items
+        // #11918: backtick and qx each keep one merged PL601 row per reviewed
+        // shape; the native spellings ride inside the merged rows.
+        let pl601_rows = items
             .iter()
-            .find(|diag| {
+            .filter(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL601"),
+                )
+            })
+            .count();
+        assert_eq!(pl601_rows, 2, "backtick and qx each merge into one PL601 row");
+        assert!(
+            !items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
                     |code| matches!(code, NumberOrString::String(value) if value == "native.security.backtick_exec"),
                 )
-            })
-            .ok_or("expected native backtick execution finding")?;
-        assert_eq!(backtick_exec.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(backtick_exec.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(backtick_exec.message, "Command execution detected");
-        let data = backtick_exec
-            .data
-            .as_ref()
-            .ok_or("native backtick execution data should be populated")?;
-        assert_eq!(data["code"], "native.security.backtick_exec");
-        assert_eq!(data["suppressionKey"], "native.security.backtick_exec");
-        assert_eq!(data["fixable"], false);
+            }),
+            "native backtick spelling must not appear as a separate row"
+        );
 
-        let qx_readpipe = items
+        let readpipe = items
             .iter()
             .find(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.security.qx_readpipe"),
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL606"),
                 )
             })
-            .ok_or("expected native qx/readpipe finding")?;
-        assert_eq!(qx_readpipe.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(qx_readpipe.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(qx_readpipe.message, "qx/readpipe command execution detected");
-        let data =
-            qx_readpipe.data.as_ref().ok_or("native qx/readpipe data should be populated")?;
-        assert_eq!(data["code"], "native.security.qx_readpipe");
-        assert_eq!(data["suppressionKey"], "native.security.qx_readpipe");
-        assert_eq!(data["fixable"], false);
+            .ok_or("expected merged readpipe row")?;
+        assert_eq!(readpipe.source.as_deref(), Some("perl-lsp"));
+        assert_eq!(
+            readpipe.message,
+            "readpipe() executes a shell command (equivalent to qx//). Ensure input is sanitized."
+        );
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.security.qx_readpipe"),
+                )
+            }),
+            "native qx/readpipe spelling must not appear as a separate row"
+        );
 
         let string_eval = items
             .iter()
@@ -1811,22 +2043,37 @@ mod tests {
         assert_eq!(data["suppressionKey"], "native.security.string_eval");
         assert_eq!(data["fixable"], false);
 
+        // #11918: system and exec merge with their built-in PL603/PL604
+        // observations; the native spelling rides inside the merged rows.
         let system_exec = items
             .iter()
             .find(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.security.system_exec"),
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL603"),
                 )
             })
-            .ok_or("expected native system/exec finding")?;
+            .ok_or("expected merged system row")?;
         assert_eq!(system_exec.source.as_deref(), Some("perl-lsp"));
-        assert_eq!(system_exec.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(system_exec.message, "system() executes a shell command");
-        let data =
-            system_exec.data.as_ref().ok_or("native system/exec data should be populated")?;
-        assert_eq!(data["code"], "native.security.system_exec");
-        assert_eq!(data["suppressionKey"], "native.security.system_exec");
-        assert_eq!(data["fixable"], false);
+        assert_eq!(
+            system_exec.message,
+            "system() executes a shell command. Ensure input is sanitized."
+        );
+        assert!(
+            items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL604"),
+                )
+            }),
+            "expected merged exec row"
+        );
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.security.system_exec"),
+                )
+            }),
+            "native system/exec spelling must not appear as a separate row"
+        );
 
         let unused = items
             .iter()
@@ -2145,6 +2392,118 @@ mod tests {
     }
 
     #[test]
+    fn pull_overlap_rows_merge_into_one_product_row_before_projection()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #11918: the pull transport historically had no XOR dedup at all, so
+        // the core PL603 row and the native system row appeared as duplicates.
+        // The normalized seam now merges them for both transports.
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///overlap.pl".parse()?;
+        let mut context = PullDiagnosticsContext::new();
+        context.critic_engine = CriticEngine::Native;
+        context.native_critic_profile = "strict".to_string();
+
+        let items = get_full_items(provider.get_document_diagnostics_with_context(
+            &uri,
+            "use strict;\nuse warnings;\nsystem('ls');\n",
+            None,
+            &context,
+            None,
+        ));
+
+        let pl603 = items
+            .iter()
+            .filter(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL603"),
+                )
+            })
+            .count();
+        assert_eq!(pl603, 1, "exactly one merged logical row carries PL603: {items:?}");
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(|code| {
+                    matches!(code, NumberOrString::String(value) if value == "native.security.system_exec")
+                })
+            }),
+            "the native spelling must ride inside the merged row: {items:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pull_overlap_merges_respect_reviewed_shapes_and_distinct_findings()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///shapes.pl".parse()?;
+        let mut context = PullDiagnosticsContext::new();
+        context.critic_engine = CriticEngine::Native;
+        context.native_critic_profile = "strict".to_string();
+
+        let items = get_full_items(provider.get_document_diagnostics_with_context(
+            &uri,
+            "use strict;\nuse warnings;\nmy $a = `ls`;\nmy $b = qx(date);\nmy $c = readpipe('id');\nif (5 == undef) { }\nif ($undeclared_var == 5) { }\nprint $a . $b . $c;\n",
+            None,
+            &context,
+            None,
+        ));
+
+        let count_code = |needle: &str| {
+            items
+                .iter()
+                .filter(|diag| {
+                    diag.code.as_ref().is_some_and(
+                        |code| matches!(code, NumberOrString::String(value) if value == needle),
+                    )
+                })
+                .count()
+        };
+        assert_eq!(count_code("PL601"), 2, "backtick and qx each keep one row: {items:?}");
+        assert_eq!(count_code("PL606"), 1, "readpipe keeps its own row: {items:?}");
+        assert_eq!(count_code("PL604"), 0, "no exec finding in this document: {items:?}");
+        // Literal-undef PL404 merges with its native alias into one row; the
+        // data-flow PL404 stays a distinct built-in-only row.
+        assert_eq!(count_code("PL404"), 2, "literal and data-flow PL404 rows: {items:?}");
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(|code| {
+                    matches!(code, NumberOrString::String(value) if value == "native.common.undef_comparison")
+                })
+            }),
+            "the native literal spelling rides inside its merged row: {items:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pull_suppression_by_compat_spelling_removes_the_complete_alias_row()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///suppress.pl".parse()?;
+        let mut context = PullDiagnosticsContext::new();
+        context.critic_engine = CriticEngine::Native;
+        context.native_critic_profile = "strict".to_string();
+
+        let items = get_full_items(provider.get_document_diagnostics_with_context(
+            &uri,
+            "## no critic PL603\nuse strict;\nuse warnings;\nsystem('ls');\n",
+            None,
+            &context,
+            None,
+        ));
+
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL603"),
+                )
+            }),
+            "suppression must remove the whole logical row in the pull path too: {items:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn unknown_subroutine_attribute_syntax_error_stays_warning()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
@@ -2165,21 +2524,23 @@ mod tests {
         Ok(())
     }
 
-    // ── pending-parse gap (#3396 PR4) ─────────────────────────────────────
+    // ── pending-parse gap (#3396 PR4 / #7480) ─────────────────────────────
     //
     // `get_workspace_diagnostics_with_context` is not reachable from the live
     // `workspace/diagnostic` JSON-RPC dispatch today (the hand-rolled
     // `LspServer::handle_workspace_diagnostic` in `runtime/diagnostics.rs`
     // handles that request directly and is exercised in
     // `tests/pull_diagnostics_freshness_tests.rs`). It remains public API on
-    // `PullDiagnosticsProvider`, so it must uphold the same pending-parse
-    // policy: a `DocumentState` with no current-generation `ParsedSnapshot`
-    // must never be reported as a false-fresh empty/full diagnostics set.
+    // `PullDiagnosticsProvider`, so it must uphold the pending-parse policy:
+    // a `DocumentState` with no current-generation `ParsedSnapshot` is an
+    // explicitly not-ready subject — its report is returned in full but never
+    // carries a reusable result ID and never comes back as `Unchanged`,
+    // even when the client echoes a known prior ID.
     // `DocumentState::new` never publishes a snapshot, so `current_parsed()`
     // is `None` by construction -- exactly the gap state.
 
     #[test]
-    fn workspace_diagnostics_reports_unchanged_for_gapped_doc_with_known_result_id()
+    fn workspace_diagnostics_returns_full_without_result_id_for_gapped_doc_with_known_prior()
     -> Result<(), Box<dyn std::error::Error>> {
         let doc = DocumentState::new("my $x = 1;\n", 1);
         assert!(doc.current_parsed().is_none(), "fresh DocumentState must have no snapshot yet");
@@ -2193,16 +2554,16 @@ mod tests {
         let report = provider.get_workspace_diagnostics(&documents, previous_result_ids);
         assert_eq!(report.items.len(), 1);
         match &report.items[0] {
-            WorkspaceDocumentDiagnosticReport::Unchanged(unchanged) => {
-                assert_eq!(
-                    unchanged.unchanged_document_diagnostic_report.result_id, "stale-result-id",
-                    "gap with a known previous resultId must echo it back unchanged"
+            WorkspaceDocumentDiagnosticReport::Full(full) => {
+                assert!(
+                    full.full_document_diagnostic_report.result_id.is_none(),
+                    "a not-ready (gapped) subject must not receive a reusable resultId"
                 );
                 Ok(())
             }
             other => Err(format!(
-                "expected Unchanged report for a pending-parse-gap document with a known \
-                 previous resultId, got: {other:?}"
+                "expected a Full report without resultId for a pending-parse-gap document \
+                 with a known prior ID, got: {other:?}"
             )
             .into()),
         }
@@ -2223,16 +2584,266 @@ mod tests {
         match &report.items[0] {
             WorkspaceDocumentDiagnosticReport::Full(full) => {
                 assert!(
+                    full.full_document_diagnostic_report.result_id.is_none(),
+                    "a not-ready (gapped) subject must not receive a reusable resultId"
+                );
+                assert!(
                     full.full_document_diagnostic_report.items.is_empty(),
                     "no current-generation AST means no diagnostics can be computed"
                 );
                 Ok(())
             }
             other => Err(format!(
-                "expected a (empty) Full report when there is no previous resultId to \
-                 protect, got: {other:?}"
+                "expected a (empty) Full report without resultId when there is no previous \
+                 resultId to protect, got: {other:?}"
             )
             .into()),
         }
+    }
+
+    // ── complete-subject result identity (#7480) ──────────────────────────
+
+    fn full_result_id(report: &DocumentDiagnosticReport) -> Option<String> {
+        match report {
+            DocumentDiagnosticReport::Full(full) => {
+                full.full_document_diagnostic_report.result_id.clone()
+            }
+            DocumentDiagnosticReport::Unchanged(unchanged) => {
+                Some(unchanged.unchanged_document_diagnostic_report.result_id.clone())
+            }
+        }
+    }
+
+    /// Exact same complete subject/profile → deterministic same ID and a valid
+    /// `Unchanged` on the next pull (#7480 fixture).
+    #[test]
+    fn pull_document_unchanged_for_identical_complete_subject()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///identity_stable.pl".parse()?;
+        let context = PullDiagnosticsContext::new();
+
+        let first = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $x = 1;\n",
+            None,
+            &context,
+            None,
+        );
+        let result_id = full_result_id(&first).ok_or("full report must carry a reusable ID")?;
+
+        let second = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $x = 1;\n",
+            Some(result_id.clone()),
+            &context,
+            None,
+        );
+        match &second {
+            DocumentDiagnosticReport::Unchanged(unchanged) => {
+                assert_eq!(
+                    unchanged.unchanged_document_diagnostic_report.result_id, result_id,
+                    "unchanged response must echo the composed subject ID"
+                );
+            }
+            other => Err(format!("expected Unchanged for identical subject, got: {other:?}"))?,
+        }
+
+        Ok(())
+    }
+
+    /// Source-identical but later document instance (generation advance) is a
+    /// different subject than the pre-edit instance (#7480 fixture).
+    #[test]
+    fn pull_document_full_after_generation_advance_with_identical_bytes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///identity_generation.pl".parse()?;
+        let context = PullDiagnosticsContext::new();
+
+        let before = DocumentState::new("my $x = 1;\n", 1);
+        let first = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $x = 1;\n",
+            None,
+            &context,
+            Some(&before),
+        );
+        let before_id = full_result_id(&first).ok_or("expected reusable ID before edit")?;
+
+        // Simulate edit + revert to identical bytes: generation advanced.
+        let after = DocumentState::new("my $y = 9;\nmy $x = 1;\n", 3);
+        let second = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $y = 9;\nmy $x = 1;\n",
+            Some(before_id.clone()),
+            &context,
+            Some(&after),
+        );
+        let after_id =
+            full_result_id(&second).ok_or("edited content must produce a fresh reusable ID")?;
+        assert_ne!(before_id, after_id, "a source edit must supersede the prior result");
+
+        Ok(())
+    }
+
+    /// Behavior-bearing configuration movement over unchanged bytes must move
+    /// the ID (negative control: keeping the old ID would authorize false
+    /// `Unchanged`) (#7480 fixture/negative control).
+    #[test]
+    fn pull_document_supersedes_on_config_movement_over_unchanged_bytes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///identity_config.pl".parse()?;
+        let mut context = PullDiagnosticsContext::new();
+
+        let first = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $x = 1;\n",
+            None,
+            &context,
+            None,
+        );
+        let baseline_id = full_result_id(&first).ok_or("expected reusable baseline ID")?;
+
+        // Severity movement with identical bytes.
+        context.perlcritic_severity = 4;
+        let severity_moved = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $x = 1;\n",
+            Some(baseline_id.clone()),
+            &context,
+            None,
+        );
+        let severity_id =
+            full_result_id(&severity_moved).ok_or("config-moved report must stay reusable")?;
+        assert_ne!(
+            baseline_id, severity_id,
+            "accepted-config movement must invalidate the prior result ID"
+        );
+
+        // Negotiated projection movement (markup support) with identical bytes.
+        let mut context = PullDiagnosticsContext::new();
+        context.projection.markup_messages = true;
+        let markup_moved = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $x = 1;\n",
+            Some(severity_id.clone()),
+            &context,
+            None,
+        );
+        assert!(matches!(markup_moved, DocumentDiagnosticReport::Full(_)));
+        assert_ne!(
+            Some(severity_id),
+            full_result_id(&markup_moved),
+            "projection-profile movement must invalidate the prior result ID"
+        );
+
+        Ok(())
+    }
+
+    /// Include/resolver environment movement over unchanged bytes must move
+    /// the ID (#7480 fixture).
+    #[test]
+    fn pull_document_supersedes_on_resolver_environment_movement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///identity_resolver.pl".parse()?;
+        let mut context = PullDiagnosticsContext::new();
+
+        let first = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $x = 1;\n",
+            None,
+            &context,
+            None,
+        );
+        let baseline_id = full_result_id(&first).ok_or("expected reusable baseline ID")?;
+
+        context.include_paths = vec!["/opt/site/lib".to_string()];
+        let moved = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $x = 1;\n",
+            Some(baseline_id),
+            &context,
+            None,
+        );
+
+        assert_ne!(
+            PullDiagnosticsContext::new().include_paths,
+            context.include_paths,
+            "fixture must actually move the resolver environment"
+        );
+        assert!(
+            matches!(moved, DocumentDiagnosticReport::Full(_)),
+            "resolver-environment movement must supersede, never return Unchanged"
+        );
+
+        Ok(())
+    }
+
+    /// A prior ID minted under a foreign/older scheme never authorizes
+    /// `Unchanged`, even over identical bytes (#7480 fixture/negative control).
+    #[test]
+    fn pull_document_treats_foreign_schema_prior_as_full() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///identity_foreign_prior.pl".parse()?;
+        let context = PullDiagnosticsContext::new();
+
+        let report = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $x = 1;\n",
+            Some("5d41402abc4b2a76b9719d911017c592".to_string()),
+            &context,
+            None,
+        );
+
+        assert!(
+            matches!(report, DocumentDiagnosticReport::Full(_)),
+            "an unknown-schema prior ID must produce full, not unchanged"
+        );
+
+        Ok(())
+    }
+
+    /// Document and partial-workspace transports mint identical per-document
+    /// IDs through the same identity authority (#7480 fixture).
+    #[test]
+    fn document_and_workspace_transports_share_per_document_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri_str = "file:///identity_shared.pl";
+        let uri: Uri = uri_str.parse()?;
+        let content = "my $x = 1;\n";
+        let context = PullDiagnosticsContext::new();
+
+        let document_report =
+            provider.get_document_diagnostics_with_context(&uri, content, None, &context, None);
+        let document_id =
+            full_result_id(&document_report).ok_or("document transport must mint a reusable ID")?;
+
+        let partial = provider.get_workspace_diagnostics_partial_with_context(
+            &[(uri_str.into(), content.into())],
+            8,
+            &context,
+        );
+        let [chunk] = partial.as_slice() else {
+            return Err("expected exactly one partial chunk".into());
+        };
+        let [item] = chunk.items.as_slice() else {
+            return Err("expected exactly one partial item".into());
+        };
+        let WorkspaceDocumentDiagnosticReport::Full(workspace_full) = item else {
+            return Err(format!("expected workspace Full report, got: {item:?}").into());
+        };
+
+        assert_eq!(
+            workspace_full.full_document_diagnostic_report.result_id.as_deref(),
+            Some(document_id.as_str()),
+            "workspace partial items must reuse the document identity authority"
+        );
+
+        Ok(())
     }
 }

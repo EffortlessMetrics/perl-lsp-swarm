@@ -11,8 +11,8 @@
 //! filtering branches be exercised without spinning up a real parser pipeline.
 
 use perl_lsp_rs_core::tooling::perl_critic::{
-    CriticCategory, CriticConfig, CriticContext, CriticFinding, CriticRule, NativeCriticProfile,
-    NativeCriticRegistry, Severity,
+    CriticCategory, CriticConfig, CriticContext, CriticFinding, CriticFindingShape, CriticRule,
+    NativeCriticProfile, NativeCriticRegistry, Severity,
 };
 use perl_parser_core::position::{Position, Range};
 use perl_parser_core::{Node, NodeKind, SourceLocation};
@@ -276,6 +276,7 @@ impl CriticRule for MarkerRule {
             message: format!("{} finding", self.id),
             explanation: String::new(),
             suppression_key: self.id.to_string(),
+            observed_shape: CriticFindingShape::General,
             related: Vec::new(),
             fix: None,
         });

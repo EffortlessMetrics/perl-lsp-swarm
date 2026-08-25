@@ -62,9 +62,11 @@ jobs:
       # Candidate-bound installed acceptance is intentionally Linux-only: the
       # manifest carries one bundled-server digest, and only Linux assembles
       # and validates the parent fan-in receipt.
-      PERL_LSP_CANDIDATE_ID: ${{ runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && inputs.candidate_id || '' }}
-      PERL_LSP_ARTIFACT_SET_ID: ${{ runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && inputs.artifact_set_id || '' }}
-      PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: ${{ runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && inputs.candidate_artifact_manifest || '' }}
+      # NOTE: job-level `env` cannot use the `runner` context; gate on the
+      # matrix entry instead (`matrix.os == 'ubuntu-latest'` is the Linux leg).
+      PERL_LSP_CANDIDATE_ID: ${{ matrix.os == 'ubuntu-latest' && github.event_name == 'workflow_dispatch' && inputs.candidate_id || '' }}
+      PERL_LSP_ARTIFACT_SET_ID: ${{ matrix.os == 'ubuntu-latest' && github.event_name == 'workflow_dispatch' && inputs.artifact_set_id || '' }}
+      PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: ${{ matrix.os == 'ubuntu-latest' && github.event_name == 'workflow_dispatch' && inputs.candidate_artifact_manifest || '' }}
 
     steps:
       - name: Checkout

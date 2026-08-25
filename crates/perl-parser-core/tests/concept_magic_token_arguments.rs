@@ -172,11 +172,15 @@ fn magic_tokens_stop_before_comma_fat_arrow_and_closing_delimiters() -> Result<(
     });
     observed.sort();
 
-    assert_eq!(observed, vec!["__FILE__", "__FILE__", "__LINE__", "__PACKAGE__", "__SUB__"]);
+    // The fat-arrow operator autoquotes the word on its left (per perlop): `__FILE__ => x`
+    // produces a hash key that is the string "__FILE__", not the runtime magic-token value.
+    // Only the `__FILE__` appearing on the *value* side of a fat-arrow pair is emitted as
+    // a nullary FunctionCall; the one in key position is converted to a String node.
+    assert_eq!(observed, vec!["__FILE__", "__LINE__", "__PACKAGE__", "__SUB__"]);
     assert_eq!(
         hash_pairs,
         Some(vec![
-            ("FunctionCall", "__FILE__".to_owned(), "Identifier", "line".to_owned()),
+            ("String", "__FILE__".to_owned(), "Identifier", "line".to_owned()),
             ("String", "file".to_owned(), "FunctionCall", "__FILE__".to_owned()),
             ("String", "line".to_owned(), "FunctionCall", "__LINE__".to_owned()),
         ])

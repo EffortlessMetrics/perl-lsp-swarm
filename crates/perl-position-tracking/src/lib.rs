@@ -5,7 +5,12 @@
 //!
 //! - [`ByteSpan`]: Byte-offset based spans for parser/AST use
 //! - [`LineStartsCache`]: Efficient line index for offset-to-position conversion
+//! - [`LineRecordTable`]: Chunk-stable LF source-line geometry authority (#4973/#10574)
 //! - [`WirePosition`]/[`WireRange`]: LSP protocol-compatible position types
+//! - [`wire_position_to_byte`]: Strict UTF-8/UTF-16 wire-coordinate conversion
+//!
+//! The strict free functions are correctness primitives for isolated conversions.
+//! Repeated editor-path mapping should consume them through an indexed adapter.
 //!
 //! # Example
 //!
@@ -34,13 +39,23 @@ pub use mapper::{
     newline_count, position_to_json,
 };
 pub use position::{Position, Range};
+pub use source_lines::{
+    LineRecord, LineRecordTable, SOURCE_LINE_POLICY_ID, SeparatorKind, SourceLineError,
+};
 pub use span::{ByteSpan, SourceLocation};
+pub use strict::{
+    BytePositionMapping, ByteRangeMapping, PositionEncoding, PositionMapping,
+    PositionMappingDisposition, RangeMapping, byte_range_to_wire_range, byte_to_wire_position,
+    wire_position_to_byte, wire_range_to_bytes,
+};
 
 mod convert;
 mod line_index;
 pub mod mapper;
 mod position;
+mod source_lines;
 mod span;
+mod strict;
 
 mod wire;
 pub use wire::{WireLocation, WirePosition, WireRange};

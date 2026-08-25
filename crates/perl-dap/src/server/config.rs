@@ -1,13 +1,15 @@
 use crate::server::mode::DapMode;
 
-/// DAP server configuration
+/// DAP server configuration.
 ///
-/// Controls the operating mode, logging, and workspace context for the DAP server.
+/// Controls logging and workspace context for the native DAP server. `mode`
+/// remains a typed field for API/configuration stability; [`DapMode::Native`] is
+/// the only current product runtime.
 pub struct DapConfig {
-    /// Logging level for DAP operations
+    /// Logging level for DAP operations.
     pub log_level: String,
-    /// Operating mode (native or bridge)
+    /// Native debugger operating mode.
     pub mode: DapMode,
-    /// Workspace root directory
+    /// Workspace root directory.
     pub workspace_root: Option<std::path::PathBuf>,
 }

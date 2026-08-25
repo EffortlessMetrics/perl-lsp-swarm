@@ -13,6 +13,7 @@
 //! | [`Node`] / [`NodeKind`] | AST node and its discriminant (re-exported from `perl-ast`) |
 //! | [`ParseError`] | Syntax error collected during parsing |
 //! | [`ParseOutput`] | AST + diagnostics bundle for IDE workflows |
+//! | [`RegexParseOutput`] | Parse output plus source-generation-bound regex analysis |
 //! | [`Token`] / [`TokenKind`] | Lexer tokens consumed by the parser |
 //! | [`SourceLocation`] | Byte-offset span for every node |
 //!
@@ -104,6 +105,11 @@ pub use engine::parser_context;
 pub use engine::pragma_tracker;
 /// Parser for Perl quote and quote-like operators.
 pub use engine::quote_parser;
+/// Parser entry points that retain source-generation-bound regex analysis.
+pub use engine::regex_retention::{
+    RegexParseOutput, parse_source_with_cancellation_and_regex_analysis,
+    parse_source_with_regex_analysis, parse_tokens_with_regex_analysis,
+};
 /// Legacy module aliases for moved engine components.
 pub use engine::{error, parser, position};
 /// Parser utilities and helpers.
@@ -122,6 +128,11 @@ pub use syntax::percentile;
 pub use syntax::qualified_name;
 /// Canonical qw/q/qq operator content extractor shared across the workspace.
 pub use syntax::quote::{parse_quote_operator_content, parse_qw_words};
+/// Source-generation-bound regex analysis records and freshness identities.
+pub use syntax::regex_analysis::{
+    REGEX_ANALYSIS_MODEL_VERSION, RegexAnalysisAvailability, RegexAnalysisId, RegexAnalysisRecord,
+    RegexAnalysisTable, RegexSourceDigest, RetainedRegexPatternAnalysis,
+};
 /// Generation-bound lexical source region index.
 pub use syntax::source_context::{
     RangeClassification, SourceRegion, SourceRegionIndex, SourceRegionKind,

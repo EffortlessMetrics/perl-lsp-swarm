@@ -1,0 +1,283 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/vsix_candidate_payload.v1.schema.json",
+  "title": "VSIX candidate payload manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "extension",
+    "candidate",
+    "releaseTopologySha256",
+    "package",
+    "server",
+    "dap"
+  ],
+  "properties": {
+    "schema": {
+      "const": "vsix_candidate_payload.v1"
+    },
+    "extension": {
+      "$ref": "#/$defs/extensionIdentity"
+    },
+    "candidate": {
+      "$ref": "#/$defs/candidateIdentity"
+    },
+    "releaseTopologySha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "package": {
+      "$ref": "#/$defs/packageIdentity"
+    },
+    "server": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/nativePayload"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "dap": {
+      "$ref": "#/$defs/dapIdentity"
+    }
+  },
+  "$defs": {
+    "sourceSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "safeMember": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[A-Za-z0-9._/-]+$"
+    },
+    "extensionIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "sourceSha"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceSha": {
+          "$ref": "#/$defs/sourceSha"
+        }
+      }
+    },
+    "candidateIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "release",
+        "sourceSha"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "release": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceSha": {
+          "$ref": "#/$defs/sourceSha"
+        }
+      }
+    },
+    "packageIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vscodeTargetId",
+        "rustTarget",
+        "mode",
+        "inventorySha256"
+      ],
+      "properties": {
+        "vscodeTargetId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rustTarget": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mode": {
+          "enum": [
+            "target_specific",
+            "universal_managed"
+          ]
+        },
+        "inventorySha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "nativePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidateId",
+        "target",
+        "member",
+        "sha256",
+        "identityRef"
+      ],
+      "properties": {
+        "candidateId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "member": {
+          "$ref": "#/$defs/safeMember"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "identityRef": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "dapIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "disposition",
+        "payload"
+      ],
+      "properties": {
+        "disposition": {
+          "enum": [
+            "required_present",
+            "preview_unavailable",
+            "not_required"
+          ]
+        },
+        "payload": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/nativePayload"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "package": {
+            "properties": {
+              "mode": {
+                "const": "target_specific"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "package": {
+            "properties": {
+              "rustTarget": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "server": {
+            "$ref": "#/$defs/nativePayload"
+          },
+          "dap": {
+            "properties": {
+              "disposition": {
+                "const": "required_present"
+              },
+              "payload": {
+                "$ref": "#/$defs/nativePayload"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "package": {
+            "properties": {
+              "mode": {
+                "const": "universal_managed"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "package": {
+            "properties": {
+              "rustTarget": {
+                "type": "null"
+              }
+            }
+          },
+          "server": {
+            "type": "null"
+          },
+          "dap": {
+            "properties": {
+              "disposition": {
+                "const": "not_required"
+              },
+              "payload": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

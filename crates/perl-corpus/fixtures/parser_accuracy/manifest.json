@@ -2553,8 +2553,8 @@
       "family": "regex",
       "label_mode": "partial",
       "source_path": "crates/perl-corpus/fixtures/parser_accuracy/regex_match.pl",
-      "scored_lines": 4,
-      "scored_symbols": 2,
+      "scored_lines": 7,
+      "scored_symbols": 3,
       "fully_labeled_regions": 0,
       "partial_labeled_regions": 1,
       "unknown_regions": 1,
@@ -2585,6 +2585,25 @@
         },
         {
           "line": 5,
+          "expected_tags": [
+            "regex"
+          ]
+        },
+        {
+          "line": 8,
+          "expected_tags": [
+            "sub_decl"
+          ]
+        },
+        {
+          "line": 9,
+          "expected_tags": [
+            "variable_decl",
+            "function_call"
+          ]
+        },
+        {
+          "line": 10,
           "expected_tags": [
             "regex"
           ]
@@ -2645,6 +2664,56 @@
           "id": "regex_match_variabledeclaration_l4_my_value_shift",
           "kind": "VariableDeclaration",
           "line": 4,
+          "span_text": "my $value = shift",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "regex_match_negated_sub",
+          "kind": "Subroutine",
+          "line": 8,
+          "span_text": "sub does_not_match {",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "regex_match_negated_shift_call",
+          "kind": "FunctionCall",
+          "line": 9,
+          "span_text": "shift",
+          "parent_kind": "VariableDeclaration",
+          "depth": 4,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "regex_match_negated_bound_match",
+          "kind": "Match",
+          "line": 10,
+          "span_text": "$value !~ /bar/",
+          "parent_kind": "Return",
+          "depth": 4,
+          "operator": "!~",
+          "parent_operator": null
+        },
+        {
+          "id": "regex_match_negated_return",
+          "kind": "Return",
+          "line": 10,
+          "span_text": "return $value !~ /bar/",
+          "parent_kind": "Block",
+          "depth": 3,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "regex_match_negated_variabledeclaration_l9_my_value_shift",
+          "kind": "VariableDeclaration",
+          "line": 9,
           "span_text": "my $value = shift",
           "parent_kind": "Block",
           "depth": 3,

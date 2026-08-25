@@ -88,7 +88,6 @@
 //! - **Cancellation aware**: Respects LSP cancellation for responsiveness
 //! - **Memory efficient**: Uses streaming iteration without loading all results
 
-pub(crate) mod auto_import;
 mod builtins;
 mod context;
 mod file_path;
@@ -96,6 +95,7 @@ mod functions;
 mod import_map;
 mod items;
 mod keywords;
+pub use keywords::FUNDAMENTAL_CONSTRUCT_LABELS;
 mod lexical_context;
 mod methods;
 mod packages;
@@ -118,6 +118,7 @@ pub use self::workspace::collect_module_names_from_roots_with_cache;
 pub use self::xs_api::{add_xs_api_completions_for_prefix, get_xs_api_documentation, is_xs_source};
 
 use crate::providers::completion::module_scan_cache::ModuleCompletionScanCache;
+use import_map::RuntimeImportAuthority;
 use perl_parser_core::ast::Node;
 use perl_semantic_analyzer::class_model::{ClassModel, ClassModelBuilder, Framework};
 use perl_semantic_analyzer::semantic::{BuiltinDoc, get_moose_type_documentation};
@@ -175,6 +176,7 @@ pub struct CompletionProvider {
     type_engine: Option<TypeInferenceEngine>,
     workspace_index: Option<Arc<WorkspaceIndex>>,
     import_map: ImportMap,
+    runtime_imports: Vec<RuntimeImportAuthority>,
     /// Modules referenced by `use` statements in the buffer, regardless
     /// of explicit symbol lists. Used by the bounded Unknown-receiver
     /// method-completion fallback (#7929) — bare `use Foo;` *is*
@@ -379,6 +381,7 @@ impl CompletionProvider {
         let class_models = Self::build_class_models(ast);
         let type_engine = Self::build_type_engine(ast, workspace_index.is_some());
         let import_map = import_map::extract_import_map(ast);
+        let runtime_imports = import_map::extract_runtime_import_authority(ast);
         let used_modules = import_map::collect_used_module_names(ast);
         let pragma_map = perl_pragma::PragmaTracker::build(ast);
 
@@ -388,6 +391,7 @@ impl CompletionProvider {
             type_engine,
             workspace_index,
             import_map,
+            runtime_imports,
             used_modules,
             include_paths,
             system_inc_paths,
@@ -404,6 +408,19 @@ impl CompletionProvider {
     pub fn with_scan_cache(mut self, cache: Arc<ModuleCompletionScanCache>) -> Self {
         self.scan_cache = Some(cache);
         self
+    }
+
+    pub(super) fn import_state_at(&self, position: usize) -> (ImportMap, HashSet<String>) {
+        let mut import_map = self.import_map.clone();
+        let mut used_modules = self.used_modules.clone();
+        for runtime in self.runtime_imports.iter().filter(|runtime| runtime.end <= position) {
+            import_map
+                .entry(runtime.module.clone())
+                .or_default()
+                .extend(runtime.symbols.iter().cloned());
+            used_modules.insert(runtime.module.clone());
+        }
+        (import_map, used_modules)
     }
 
     fn extract_symbol_table(ast: &Node, source: &str) -> SymbolTable {

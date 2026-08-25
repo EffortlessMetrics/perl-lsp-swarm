@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-ACTION = "codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac"
+ACTION = "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f"
 TOKEN = "${{ secrets.CODECOV_TOKEN }}"
 CONTRACT_WORKFLOW = ROOT / ".github/workflows/workflow-contracts-advisory.yml"
 

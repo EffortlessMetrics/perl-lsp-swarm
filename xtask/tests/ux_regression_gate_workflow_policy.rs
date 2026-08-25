@@ -15,6 +15,11 @@ use serde_json::Value as JsonValue;
 use serde_yaml_ng::Value;
 use tempfile::TempDir;
 
+#[path = "support/workflow_bash.rs"]
+mod workflow_bash;
+
+use workflow_bash::bash_executable;
+
 const IMMUTABLE_SUBJECT: &str =
     "github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha";
 const FIXED_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -60,20 +65,6 @@ fn run_step<'a>(steps: &'a [Value], name: &str) -> Result<&'a str> {
         .get("run")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("step `{name}` must have a run block"))
-}
-
-fn bash_executable() -> PathBuf {
-    if let Some(path) = env::var_os("BASH") {
-        return path.into();
-    }
-    #[cfg(windows)]
-    {
-        let git_bash = PathBuf::from(r"C:\Program Files\Git\bin\bash.exe");
-        if git_bash.is_file() {
-            return git_bash;
-        }
-    }
-    PathBuf::from("bash")
 }
 
 fn execute_run_block(run: &str, command_status: i32, tee_status: i32) -> Result<(TempDir, Output)> {
@@ -142,12 +133,12 @@ fn execute_verifier(run: &str, root: &Path) -> Result<Output> {
     let run = format!("python3() {{ command python \"$@\"; }}\n{run}");
     #[cfg(not(windows))]
     let run = run.to_owned();
-    Ok(Command::new(bash_executable())
+    Command::new(bash_executable())
         .args(["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", &run])
         .env("TESTED_SHA", FIXED_SHA)
         .current_dir(root)
         .output()
-        .context("executing exact-subject verifier with Actions bash semantics")?)
+        .context("executing exact-subject verifier with Actions bash semantics")
 }
 
 #[test]

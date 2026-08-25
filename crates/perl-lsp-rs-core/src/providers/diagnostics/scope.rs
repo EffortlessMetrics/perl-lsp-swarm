@@ -81,6 +81,8 @@ pub fn scope_issues_to_diagnostics(issues: Vec<ScopeIssue>) -> Vec<Diagnostic> {
                 Vec::new()
             },
             suggestion,
+            fixable: matches!(code, DiagnosticCode::VariableRedeclaration),
+            critic_observation: None,
         });
     }
 
@@ -287,6 +289,8 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
                 Vec::new()
             },
             suggestion,
+            fixable: matches!(code, DiagnosticCode::VariableRedeclaration),
+            critic_observation: None,
         });
     }
 

@@ -406,11 +406,11 @@ mod tests {
     #[test]
     fn ci_doctor_git_porcelain_untracked_only_detection() {
         // When all lines start with '??' it's untracked-only
-        let lines = vec!["?? foo.rs", "?? bar.rs"];
+        let lines = ["?? foo.rs", "?? bar.rs"];
         let all_untracked = lines.iter().all(|l| l.starts_with("??"));
         assert!(all_untracked);
 
-        let mixed = vec!["M  foo.rs", "?? bar.rs"];
+        let mixed = ["M  foo.rs", "?? bar.rs"];
         let mixed_untracked = mixed.iter().all(|l| l.starts_with("??"));
         assert!(!mixed_untracked);
     }

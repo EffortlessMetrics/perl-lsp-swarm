@@ -2,7 +2,12 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { ChildProcess } from 'child_process';
-import { parseSubtestResults, parseTapOutput, runBoundedProcess } from '../testAdapter';
+import {
+  describeFileFailure,
+  parseSubtestResults,
+  parseTapOutput,
+  runBoundedProcess,
+} from '../testAdapter';
 
 describe('test adapter TAP parsing', () => {
   test('summarizes top-level TAP without counting indented subtests', () => {
@@ -303,4 +308,57 @@ describe('bounded prove process execution', () => {
       fs.rmSync(marker, { force: true });
     }
   }, 30_000);
+});
+
+describe('file-level failure explanation', () => {
+  test('uses the singular noun for a single-test file', () => {
+    expect(describeFileFailure(1, { total: 1, failed: 1, bailOut: null })).toBe(
+      '1 of 1 test failed',
+    );
+  });
+
+  test('uses the plural noun for a multi-test file', () => {
+    expect(describeFileFailure(1, { total: 4, failed: 2, bailOut: null })).toBe(
+      '2 of 4 tests failed',
+    );
+  });
+
+  test('names the bail out alongside the failing assertions', () => {
+    expect(describeFileFailure(1, { total: 3, failed: 1, bailOut: 'db offline' })).toBe(
+      '1 of 3 tests failed (Bail out! db offline)',
+    );
+  });
+
+  test('reports a bail out that failed no assertion as a bail out', () => {
+    // "0 of 2 tests failed" contradicts the failed run the user is looking at.
+    expect(describeFileFailure(1, { total: 2, failed: 0, bailOut: 'db offline' })).toBe(
+      'Test run bailed out: db offline',
+    );
+  });
+
+  test('reports a bare bail out as a bail out', () => {
+    // parseTapOutput yields bailOut: '' for `Bail out!` with no reason; a
+    // truthiness test would misreport that as an unexplained process failure.
+    expect(describeFileFailure(1, { total: 0, failed: 0, bailOut: '' })).toBe(
+      'Test run bailed out',
+    );
+  });
+
+  test('reports a non-zero exit with no failing assertion as a process failure', () => {
+    expect(describeFileFailure(9, { total: 3, failed: 0, bailOut: null })).toBe(
+      'No assertion failed, but the test process exited with 9.',
+    );
+  });
+
+  test('reports a run that produced no TAP results at all', () => {
+    expect(describeFileFailure(2, { total: 0, failed: 0, bailOut: null })).toBe(
+      'No test results were reported; the test process exited with 2.',
+    );
+  });
+
+  test('names a signal termination instead of a missing exit code', () => {
+    expect(describeFileFailure(null, { total: 0, failed: 0, bailOut: null })).toBe(
+      'No test results were reported; the test process was terminated by a signal.',
+    );
+  });
 });

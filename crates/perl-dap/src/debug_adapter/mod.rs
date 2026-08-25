@@ -51,7 +51,7 @@ use crate::types::{Source, StackFrame, Variable};
 use crate::variables::{PerlVariableRenderer, RenderedVariable, VariableParser, VariableRenderer};
 use perl_lexer::DAP_COMPLETION_KEYWORDS;
 use perl_lsp_rs_core::transport::framing::ContentLengthFramer;
-use perl_module::path::module_path_to_name;
+use perl_module::module_path_to_name;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -68,6 +68,7 @@ use std::time::{Duration, Instant};
 use crate::breakpoints::{BreakpointHitOutcome, BreakpointStore};
 use crate::debug_adapter::data_breakpoints::DataBreakpointRecord;
 use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
+use crate::debug_adapter::variable_cache::CachedVariable;
 #[cfg(any(test, feature = "test-helpers"))]
 use crate::debug_adapter::variable_cache::VariableCache;
 use crate::debug_adapter::variable_cache::{VariableCacheKind, slice_variables};
@@ -94,6 +95,25 @@ fn is_escape_sequence(s: &str, match_start: usize) -> bool {
         return false;
     }
     s.as_bytes()[match_start - 1] == b'\\'
+}
+
+/// Deserialize a DAP request's arguments into a typed struct with an honest
+/// error message (#9588).
+///
+/// `Ok(args)` requires well-formed arguments; `None` arguments report
+/// `Missing arguments`, and malformed JSON (including an unsupported option
+/// inside a `ValueFormat` object, which `deny_unknown_fields` rejects) reports
+/// `Invalid arguments: <serde error>` instead of masquerading as missing
+/// arguments. All `ValueFormat` request families share this single behavior.
+pub(super) fn parse_dap_arguments<T: serde::de::DeserializeOwned>(
+    arguments: Option<Value>,
+) -> Result<T, String> {
+    match arguments {
+        None => Err("Missing arguments".to_string()),
+        Some(value) => {
+            serde_json::from_value(value).map_err(|error| format!("Invalid arguments: {error}"))
+        }
+    }
 }
 
 /// DAP server that handles debug sessions
@@ -126,6 +146,8 @@ pub struct DebugAdapter {
     exception_break_on_warn: Arc<Mutex<bool>>,
     /// Unique marker IDs used to frame debugger output per command.
     debugger_output_marker: Arc<AtomicU64>,
+    /// Test-observable count of framed debugger query writes.
+    debugger_query_count: Arc<AtomicU64>,
     /// Cancellation flag for in-progress requests.
     cancel_requested: Arc<AtomicBool>,
     /// Data breakpoints (watchpoints) stored with REPLACE semantics
@@ -222,6 +244,7 @@ impl DebugAdapter {
             exception_break_on_die: Arc::new(Mutex::new(false)),
             exception_break_on_warn: Arc::new(Mutex::new(false)),
             debugger_output_marker: Arc::new(AtomicU64::new(1)),
+            debugger_query_count: Arc::new(AtomicU64::new(0)),
             cancel_requested: Arc::new(AtomicBool::new(false)),
             data_breakpoints: Arc::new(Mutex::new(Vec::new())),
             last_exception_message: Arc::new(Mutex::new(None)),
@@ -263,6 +286,30 @@ impl DebugAdapter {
         state.generation = state.generation.saturating_add(1);
         state.emitted = false;
         state.generation
+    }
+
+    /// Close the session generation at the end of a client-initiated terminal
+    /// request (`terminate`/`disconnect`).
+    ///
+    /// The request's own emission attempt ran against the generation it closed
+    /// (yielding to an asynchronous winner when one already emitted, per the
+    /// single-emission gate). Closing the generation afterwards:
+    ///
+    /// - keeps every asynchronous emitter of the closed generation suppressed
+    ///   through the generation check in `reserve_terminated_event`, and retires
+    ///   a reservation still outstanding at delivery time via
+    ///   `terminated_delivery_is_current` (an old session's terminal event must
+    ///   not leak into a newer client conversation), and
+    /// - re-arms the gate so the *next* client terminal request is acknowledged
+    ///   with its own `terminated` event (#383 terminate-idempotency matrix,
+    ///   re-established by #12082 after the gate landed without moving the
+    ///   matrix).
+    ///
+    /// Without this close, a second successful `terminate` could never emit:
+    /// the first request left `emitted` latched with no live session left to
+    /// reset it (`clear_active_session_state` does not touch the gate).
+    pub(super) fn close_terminal_session_generation(&self) {
+        self.begin_session_generation();
     }
 
     /// Return the current session generation for event-handler threads.
@@ -375,6 +422,12 @@ impl DebugAdapter {
         self.debugger_output_marker.fetch_add(1, Ordering::Relaxed)
     }
 
+    #[cfg(any(test, feature = "test-helpers"))]
+    /// Return the number of framed debugger queries issued by this adapter.
+    pub fn debugger_query_count_for_test(&self) -> u64 {
+        self.debugger_query_count.load(Ordering::Relaxed)
+    }
+
     /// Write a debugger command and flush immediately so output framing remains ordered.
     fn write_debugger_command(stdin: &mut impl Write, command: &str) -> Result<(), String> {
         stdin.write_all(command.as_bytes()).map_err(|e| format!("write debugger command: {e}"))?;
@@ -390,6 +443,7 @@ impl DebugAdapter {
         stdin: &mut impl Write,
         commands: &[String],
     ) -> Result<(String, String), String> {
+        self.debugger_query_count.fetch_add(1, Ordering::Relaxed);
         let marker_id = self.next_debugger_marker_id();
         let begin_marker = format!("DAP_BEGIN_{marker_id}");
         let end_marker = format!("DAP_END_{marker_id}");
@@ -557,6 +611,7 @@ impl DebugAdapter {
                     variable_cache: VariableCache::default(),
                     thread_id: 1,
                     last_resume_mode: ResumeMode::Continue,
+                    stopped_generation: 0,
                 });
             }
         }
@@ -588,6 +643,7 @@ impl DebugAdapter {
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
+            stopped_generation: 0,
         });
         Ok(())
     }
@@ -646,6 +702,9 @@ impl DebugAdapter {
     /// via the cache-hit path, NOT be swallowed by the early-return short-circuit added
     /// for stale (cache-miss) EvalResult refs.
     ///
+    /// Rows are seeded without typed facts, so any DAP `ValueFormat` on a
+    /// request served from them projects to the cached display unchanged (#9588).
+    ///
     /// Only for use in tests; not part of the public API contract.
     #[cfg(test)]
     pub fn seed_eval_result_cache_for_test(
@@ -655,7 +714,11 @@ impl DebugAdapter {
     ) {
         let mut session = lock_or_recover(&self.session, "debug_adapter.seed_eval_result_cache");
         if let Some(ref mut sess) = *session {
-            sess.variable_cache.upsert(eval_ref_wire, VariableCacheKind::EvaluateResult, variables);
+            sess.variable_cache.upsert(
+                eval_ref_wire,
+                VariableCacheKind::EvaluateResult,
+                variables.into_iter().map(CachedVariable::untyped).collect(),
+            );
         }
     }
 
@@ -685,6 +748,7 @@ impl DebugAdapter {
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
+            stopped_generation: 0,
         });
     }
 

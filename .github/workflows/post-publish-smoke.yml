@@ -27,6 +27,8 @@ concurrency:
 
 permissions:
   contents: read
+  # Reading the upstream publish run's receipt artifact (#9593).
+  actions: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -41,18 +43,56 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       should_run: ${{ steps.version.outputs.should_run }}
+      # The ref the smoke scripts are executed from, never the dispatch
+      # selection: that would let whoever dispatches this workflow choose the
+      # code issuing the "published version is installable" verdict
+      # (#9593 finding 2).
+      #
+      # This binds the checkout, not the workflow definition, and the two have
+      # different owners. A dispatch runs whichever copy of this file lives on
+      # the selected ref -- GITHUB_REF is "branch or tag that received
+      # dispatch" -- so a modified or simply pre-fix branch runs its own
+      # definition and nothing here applies to it. `workflow_run` is pinned by
+      # the platform: GITHUB_REF is the default branch, so the receipted path
+      # always executes the reviewed copy of this file. That asymmetry is why
+      # only `workflow_run` is ever labelled a bound proof below, and why the
+      # remaining dispatch exposure cannot be closed from inside this file.
+      subject: ${{ steps.version.outputs.subject }}
 
     steps:
+      # The publish workflow writes this only after verifying the crates are
+      # present in the crates.io sparse index, and never for a dry run, so its
+      # presence is evidence of a real publication. Missing artifact is not an
+      # error here: the run block below turns its absence into a refusal with a
+      # diagnostic, rather than falling back to guessing from the ref.
+      - name: Download publication receipt
+        if: github.event_name == 'workflow_run'
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: publication-receipt
+          path: receipt
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
       - name: Determine version
         id: version
         env:
           EVENT_NAME: ${{ github.event_name }}
           DISPATCH_VERSION: ${{ github.event.inputs.version }}
           WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          WORKFLOW_RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RECEIPT_PATH: receipt/publication-receipt.json
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             VERSION="$DISPATCH_VERSION"
+            # A dispatch supplies a version, not a ref, so check out the
+            # default branch rather than the dispatch selection. This is a
+            # floor, not a boundary: the dispatcher already chose which copy of
+            # this file runs. It constrains an ordinary operator re-check; it
+            # does not constrain someone who edited this workflow. Dispatch
+            # results are labelled unbound below for exactly that reason.
+            SUBJECT="$DEFAULT_BRANCH"
             SHOULD_RUN="true"
           elif [ "$EVENT_NAME" = "workflow_run" ]; then
             # Only run when the upstream publish workflow succeeded
@@ -62,17 +102,54 @@ jobs:
               echo "version=skip" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            # Extract the version from the workflow_run event name.
-            # The publish workflow is triggered on release events with tag names like "v0.12.2".
-            # Fall back to the head SHA's Cargo.toml workspace version if no tag.
-            if [[ "$WORKFLOW_RUN_HEAD_BRANCH" =~ ^v([0-9]+\.[0-9]+\.[0-9]+.*)$ ]]; then
-              VERSION="${BASH_REMATCH[1]}"
-            else
-              # Checkout to read the workspace version
-              echo "could not determine version from branch '$WORKFLOW_RUN_HEAD_BRANCH'; needs manual dispatch"
+            # Take the version from the upstream run's publication receipt.
+            # Deriving it from the ref name proved only that something
+            # release-shaped ran: a branch named v9.9.9 produced a smoke result
+            # that read as publication proof for a version nobody published
+            # (#9593). The receipt is written by the publish workflow after it
+            # verifies the crates on the sparse index.
+            if [ ! -f "$RECEIPT_PATH" ]; then
+              echo "::warning::Upstream run published no receipt; refusing to guess a version from the ref. Re-run this workflow by dispatch with an explicit version."
               echo "should_run=false" >> "$GITHUB_OUTPUT"
               echo "version=unknown" >> "$GITHUB_OUTPUT"
               exit 0
+            fi
+            VERSION="$(python3 -c '
+          import json, sys
+          try:
+              with open(sys.argv[1], encoding="utf-8") as handle:
+                  print(json.load(handle).get("version", ""))
+          except Exception:
+              print("")
+          ' "$RECEIPT_PATH")"
+            if [ -z "$VERSION" ]; then
+              echo "::error::Publication receipt at $RECEIPT_PATH carries no usable version."
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              echo "version=unknown" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # The receipt records the commit the publish actually ran from, and
+            # the proof must execute that exact subject. Falling back to the
+            # default branch here would issue a publication verdict using code
+            # that changed after the release — the same class of false proof
+            # this workflow exists to prevent, just moved from "which version"
+            # to "which code". There are no receipts without this field: the
+            # producer has written `subject_sha` in the same printf as the
+            # version since the format was introduced, so its absence means a
+            # corrupt or tampered receipt, not an old one.
+            SUBJECT="$(python3 -c '
+          import json, sys
+          try:
+              with open(sys.argv[1], encoding="utf-8") as handle:
+                  print(json.load(handle).get("subject_sha", ""))
+          except Exception:
+              print("")
+          ' "$RECEIPT_PATH")"
+            if ! [[ "$SUBJECT" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Publication receipt carries no usable subject SHA (got '${SUBJECT}'). Refusing to certify ${VERSION} using code that may postdate it."
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              echo "version=unknown" >> "$GITHUB_OUTPUT"
+              exit 1
             fi
             SHOULD_RUN="true"
           else
@@ -89,7 +166,15 @@ jobs:
 
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "should_run=${SHOULD_RUN}" >> "$GITHUB_OUTPUT"
-          echo "Resolved version: ${VERSION}"
+          echo "subject=${SUBJECT}" >> "$GITHUB_OUTPUT"
+          # Name which claim this run supports. A receipted run is bound to the
+          # published commit; a dispatch is an operator re-check against current
+          # default-branch scripts and is not publication proof for that release.
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            printf 'Bound publication proof: version %s from published subject %s\n' "$VERSION" "$SUBJECT"
+          else
+            printf 'Unbound manual re-check: version %s from %s (not publication proof)\n' "$VERSION" "$SUBJECT"
+          fi
 
   smoke:
     name: Smoke test v${{ needs.resolve-version.outputs.version }}
@@ -99,8 +184,14 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # Pinned to the resolved subject. Without `ref:` this checks out whatever
+      # the operator selected at dispatch, and `scripts/post-publish-smoke.sh`
+      # from that branch is what produces the publication verdict (#9593).
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.resolve-version.outputs.subject }}
+          persist-credentials: false
 
       - name: Setup Rust (stable)
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)

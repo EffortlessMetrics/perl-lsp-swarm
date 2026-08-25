@@ -17,7 +17,7 @@
 # Multi-root workspaces: each workspace folder loads its own .perl-lsp.toml.
 # [perl] is scoped per-folder (include_paths etc. never leak across folders).
 # The other sections — [diagnostics], [critic], [features], [formatting],
-# [ai_completion], [next_edit] — are server-global: if two folders set the
+# [ai_completion] — are server-global: if two folders set the
 # same key to different values, the FIRST folder wins and the server emits a
 # window/showMessage warning naming the conflict. Non-conflicting keys from
 # different folders all apply. For genuinely per-folder diagnostics/formatting,
@@ -159,13 +159,4 @@
 # Opt out of AI completions for this project.
 # When false, disables AI even if the user enabled it in their editor.
 # When true or absent, has no effect (a repository cannot turn AI on).
-# enabled = false
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Next Edit (experimental)
-# ──────────────────────────────────────────────────────────────────────────────
-# Future runtime boundary for next-edit suggestions. Currently dormant.
-
-[next_edit]
-# Enable the next-edit runtime. Experimental.
 # enabled = false

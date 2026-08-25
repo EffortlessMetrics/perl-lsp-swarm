@@ -3,7 +3,7 @@
 //! This module provides timeout protection for parsing operations and
 //! detection of files that may cause timeouts or hangs.
 
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::Result;
 use perl_parser::Parser;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

@@ -1,0 +1,18 @@
+{
+  "schema_version": "perl_core_harness.target_topology_drift.v1",
+  "status": "not_proven",
+  "pinned_matrix_fingerprint": "4182b36d39baa378790619cbf9d674de40cd895507a412750bd0e5fb0fa583fa",
+  "observed_matrix_fingerprint": null,
+  "observed_perl_ref": "blead",
+  "observed_perl_resolved_ref": "fd584474cf36982e2f2ef85b042ea51bb02fffaa",
+  "observed_topology_sources": {
+    "Makefile.SH": "dfd3090201312760198a05f06c6f6616a4732e38",
+    "t/TEST": "d6556c335d3d24f28d7e1b74e098cfd82480b849",
+    "t/harness": "c038ad3c96a5e3e9450f3d3fe91ba932356ebfa4"
+  },
+  "added_target_ids": [],
+  "removed_target_ids": [],
+  "changed_target_ids": [],
+  "not_proven_reason": "A source-derived observed target matrix has not yet been generated for the bound blead source blobs.",
+  "claim_boundary": "Exact blead source identity only; target topology parity with pinned Perl 5.42.2 is not proven."
+}

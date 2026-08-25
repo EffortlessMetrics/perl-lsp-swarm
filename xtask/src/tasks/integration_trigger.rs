@@ -6,6 +6,13 @@
 //! discover GitHub state, compare sibling lanes, or invent another command
 //! matrix.
 
+// The `integration-trigger.v1` evaluator is complete and covered by its own
+// tests, but no production caller has landed yet, so every item reads as dead
+// to the bin target. Deleting a versioned schema and its evaluator to satisfy
+// dead_code would drop the contract, not dead code. Remove this when #4588's
+// consumer wires it in.
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: &str = "integration-trigger.v1";

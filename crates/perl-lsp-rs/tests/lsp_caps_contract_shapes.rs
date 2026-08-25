@@ -372,9 +372,14 @@ fn test_ga_lock_is_conservative() -> Result<(), Box<dyn std::error::Error>> {
     assert!(ga.code_lens, "code lens is GA");
     assert!(ga.type_definition, "type definition is GA");
     assert!(ga.implementation, "implementation is GA");
-    assert!(ga.source_organize_imports, "organize imports is GA");
+    // `source.organizeImports` is withdrawn (#8305): the legacy line-oriented
+    // organizer was removed from every request path, so the flag no longer
+    // exists and cannot be GA. Restoration: #8319/#10696.
     assert!(ga.formatting, "formatting is GA");
-    assert!(ga.range_formatting, "range formatting is GA");
+    // Secondary formatting routes are withdrawn (#11955): no profile may arm
+    // them until their exact owners land. Restoration: #9317/#7089/#9320.
+    assert!(!ga.range_formatting, "range formatting stays withdrawn");
+    assert!(!ga.on_type_formatting, "on-type formatting stays withdrawn");
 
     Ok(())
 }

@@ -3,6 +3,7 @@ name: PR Title Check
 on:
   pull_request_target:
     types: [opened, edited, reopened, synchronize]
+  workflow_dispatch: {}
 
 permissions:
   pull-requests: write
@@ -20,7 +21,25 @@ jobs:
         with:
           script: |
             const actor = context.actor;
-            const pr = context.payload.pull_request;
+            let pr = context.payload.pull_request;
+            if (!pr) {
+              // workflow_dispatch mode (post-merge-status raises this check on
+              // its generated branch, since GITHUB_TOKEN PRs fire no
+              // pull_request_target events): resolve the open PR from the
+              // dispatched ref instead of the absent payload.
+              const branch = context.ref.replace('refs/heads/', '');
+              const { data: pulls } = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                head: `${context.repo.owner}:${branch}`,
+                state: 'open',
+              });
+              if (pulls.length === 0) {
+                core.info(`No open PR found for ${branch}; nothing to validate.`);
+                return;
+              }
+              pr = pulls[0];
+            }
             const title = pr.title;
             const login = pr.user.login;
 

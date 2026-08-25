@@ -666,12 +666,12 @@ sub main {
     );
 
     let items = prepare_response.as_array();
-    if let Some(items) = items {
-        if !items.is_empty() {
-            let item = &items[0];
-            // Function name should be preserved
-            assert!(item["name"].is_string(), "Function name should be string");
-        }
+    if let Some(items) = items
+        && !items.is_empty()
+    {
+        let item = &items[0];
+        // Function name should be preserved
+        assert!(item["name"].is_string(), "Function name should be string");
     }
     Ok(())
 }

@@ -17,6 +17,10 @@ pub(super) fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+// This module is shared by the `workspace-doctor-inventory` bin (which uses
+// `render_human`) and by the inventory tests, which include it by path and do
+// not. The re-export is live; only the test include sees it as unused.
+#[allow(unused_imports)]
 pub use inventory::{build_inventory, render_human, validate_inventory};
 // Re-exported for the contract and falsifier test crates, which include this
 // module through `#[path]`. The binary itself does not call them, so the

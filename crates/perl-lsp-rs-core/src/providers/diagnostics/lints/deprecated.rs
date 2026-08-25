@@ -52,6 +52,8 @@ pub fn check_deprecated_syntax(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                             }
                         ],
                         tags: vec![DiagnosticTag::Deprecated],
+                        fixable: false,
+                        critic_observation: None,
                         suggestion: Some(format!("Replace with 'if ({}{})'", sigil, name)),
                     });
                 }
@@ -76,6 +78,8 @@ pub fn check_deprecated_syntax(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                             }
                         ],
                         tags: vec![DiagnosticTag::Deprecated],
+                        fixable: false,
+                        critic_observation: None,
                         suggestion: Some("Remove '$[' -- arrays always start at index 0".to_string()),
                     });
                 }

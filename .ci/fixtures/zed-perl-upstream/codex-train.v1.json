@@ -16,6 +16,7 @@
     "current_core_frontier": [
       "P03",
       "P06",
+      "P07",
       "P09",
       "C01"
     ],
@@ -127,7 +128,7 @@
       "pull_request": null,
       "actor": "codex",
       "kind": "authority",
-      "state": "blocked_on_dependencies",
+      "state": "ready",
       "depends_on": [
         "P01",
         "P02"

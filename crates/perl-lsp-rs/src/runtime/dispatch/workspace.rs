@@ -25,13 +25,6 @@ impl LspServer {
         self.handle_workspace_symbol_resolve(params)
     }
 
-    pub(super) fn handle_configuration_dispatch(
-        &self,
-        params: Option<Value>,
-    ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_configuration(params)
-    }
-
     pub(super) fn handle_did_change_watched_files_dispatch(
         &self,
         params: Option<Value>,
@@ -105,13 +98,6 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         self.handle_did_create_files(params)
-    }
-
-    pub(super) fn handle_apply_edit_dispatch(
-        &self,
-        params: Option<Value>,
-    ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_apply_edit(params)
     }
 
     pub(super) fn handle_text_document_content_dispatch(

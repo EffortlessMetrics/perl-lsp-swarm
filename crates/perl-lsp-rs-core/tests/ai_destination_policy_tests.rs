@@ -25,6 +25,7 @@ fn backend_request() -> BackendRequest {
             current_package: None,
             variables: Vec::new(),
             imports: Vec::new(),
+            ..PreparedInlineCompletionContext::default()
         },
         max_output_tokens: 16,
         timeout_ms: 2_000,

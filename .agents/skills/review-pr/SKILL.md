@@ -155,11 +155,29 @@ same direction or from different ones.
    cannot be dispositioned per finding. `scripts/reviews/inline` never resolves
    anything; resolution stays in `scripts/reviews/disposition`.
 
-   Attribute a failing check before recording it. Confirm it ran on the live head; a
-   failure at a superseded SHA describes a commit the branch no longer has, and
-   cancelled lanes usually say so in their logs. Then confirm it does not reproduce on
-   the base; a gate already red on `main` is a repository condition to file, not a
-   candidate finding.
+
+   A `COMMENTED` review is only a GitHub fact; it does not become substantive merely
+   because a human submitted it. When the cumulative conclusion is `REVIEW_CURRENT`,
+   append one subject-bound marker generated from the current PR diff:
+
+   ```bash
+   python3 scripts/ci/check-pr-semantic-review-currentness.py      <pr> <owner/repo> --emit-marker
+   ```
+
+   Put the emitted `<!-- semantic-review:v1 ... -->` marker in the same review body
+   after the useful review record below. The marker binds the judgment to the PR's
+   merge base, reviewed head, and cumulative binary diff; it is not an exact-head
+   ceremony. The checker may carry it across a later push only when every later edit is
+   whitespace-only in an already-reviewed `.md` or `.txt` file. Any code, configuration,
+   path, mode, or material prose change requires focused review and a new marker.
+
+   Attribute a failing check before recording it, in both directions. A cancelled run
+   reached no verdict and is not evidence; a genuine failure at a superseded SHA
+   remains a finding until the named seam changed, so revalidate that seam at the
+   current head. Base ownership requires the same gate, the same failure signature,
+   and that signature at this PR's merge base — not at current `main`; short of that
+   the failure is `NOT_PROVEN`, and a base failing a different test leaves the
+   candidate owning its own.
 
    **The integrating reviewer posts.** A skill run that only answers a bounded review
    question returns file/line-anchored findings as evidence and does not write to

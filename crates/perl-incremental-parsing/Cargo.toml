@@ -8,13 +8,14 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Incremental parsing support for Perl with subtree reuse and LSP integration"
+description = "Compatibility adapter for the canonical perl-parser incremental API"
 readme = "README.md"
 documentation = "https://docs.rs/perl-incremental-parsing"
-keywords = ["perl", "incremental", "parser", "lsp", "rope"]
-categories = ["parsing", "development-tools", "text-editors"]
+keywords = ["perl", "incremental", "parser", "compatibility"]
+categories = ["parsing", "development-tools"]
 include = [
   "src/**",
+  "behavior_disposition.json",
   "Cargo.toml",
   "LICENSE*",
   "README.md"
@@ -43,4 +44,3 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [lints]
 workspace = true
-

@@ -16,8 +16,7 @@ fn read(root: &Path, path: &str) -> Result<String, Box<dyn std::error::Error>> {
 }
 
 fn prose(text: &str) -> String {
-    text.replace('`', "")
-        .replace('*', "")
+    text.replace(['`', '*'], "")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -170,9 +169,7 @@ fn accepted_spec_has_closed_semantic_model() -> Result<(), Box<dyn std::error::E
     let root = project_root()?;
     let spec = read(&root, "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md")?;
 
-    if let Err(error) = validate_contract(&spec) {
-        panic!("PLSP-SPEC-0006: {error}");
-    }
+    validate_contract(&spec).map_err(|error| format!("PLSP-SPEC-0006: {error}"))?;
     Ok(())
 }
 

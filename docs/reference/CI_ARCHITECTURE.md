@@ -202,7 +202,6 @@ these blocks merge (via the `ci/merge-gate` commit status check):
 | `v2_bundle_sync` | `bash scripts/check-v2-bundle-sync.sh` | v2 bundle files stay synchronized |
 | `workflow_audit` | `python3 scripts/ci-audit-workflows.py` | No ungated expensive jobs in workflows |
 | `nested_lock_check` | `find . -name Cargo.lock` | No nested Cargo.lock files |
-| `published_crate_count` | `xtask published-crate-count` | Crate count ratchet |
 
 ### Advisory (Informational) Gates
 
@@ -214,7 +213,6 @@ These gates have `required: false`. Failures produce signal and are tracked in
 | `parser_corpus_ratchet` | Baseline drifts with runner Perl version (Ubuntu Perl updates produce environmental false positives) |
 | `cpan_corpus_ratchet` | CPAN corpus not installed on PR runners; owned by post-merge cron |
 | `security_audit` | Currently quarantined: `cargo-audit` ecosystem breakage as of 2026-04-26 |
-| `published_crate_count` | Quarantined until collapse completes (~30–31 target crates) |
 | All `nightly` gates | Informational by tier definition |
 
 **Quarantine tracking**: Quarantined items are tracked in `.ci/debt-ledger.yaml`. The

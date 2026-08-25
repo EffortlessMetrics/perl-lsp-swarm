@@ -82,10 +82,16 @@ fn sidecar_requires_fixture_file_to_exist() -> Result<(), Box<dyn Error>> {
     let Err(error) = outcome else {
         return Err("a sidecar without its paired fixture must not resolve".into());
     };
+    // The loader renders the member path with `Path::display`, and it rebuilds
+    // that path from components, so the separator is the platform's: this text
+    // is backslash-separated on Windows. The control is that the failure names
+    // the paired *fixture member*, not how the separator is spelled, so compare
+    // on a separator-normalized rendering rather than pinning one platform's.
     let rendered = format!("{error:#}");
+    let normalized = rendered.replace('\\', "/");
     assert!(
-        rendered.contains("fixture member")
-            && rendered.contains("tests/perl-corpus/recovery/missing_brace.pl"),
+        normalized.contains("fixture member")
+            && normalized.contains("tests/perl-corpus/recovery/missing_brace.pl"),
         "missing fixture must be reported against the paired fixture member: {rendered}",
     );
 

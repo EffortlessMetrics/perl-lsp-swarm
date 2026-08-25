@@ -1,0 +1,38 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/6282",
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5901"
+    ],
+    "subject_shas": [
+      "b5c1ae82881b3d88b0b235a70591e3d3fea46f3a"
+    ],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves only the CP00 contradiction class."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 6282,
+    "title": "feat(readiness): expose active document and limited index state (#5901)",
+    "body": "## Claim Boundary\n\nThis PR proves readiness transport and the client seam. This PR does not claim the complete #5901 presentation layer or packaged acceptance closure.\n\nCloses #5901."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 5901,
+      "title": "ux(vscode): present coherent startup, readiness, fallback, refusal, and failure states",
+      "body": "## Outcome\n\nAdd one provider-neutral, VS Code-native presentation layer.\n\n## Acceptance\n\n- The installed extension exposes one coherent lifecycle/readiness state.\n- Exact-source and packaged acceptance scenarios pass.\n- Full evidence remains available on demand.\n- Healthy operation is quiet and failure paths are actionable."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "FAIL_PROOF_LEVEL_CONTRADICTION",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 5901,
+        "code": "FAIL_PROOF_LEVEL_CONTRADICTION"
+      }
+    ]
+  }
+}

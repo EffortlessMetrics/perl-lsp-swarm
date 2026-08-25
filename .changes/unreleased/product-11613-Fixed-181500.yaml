@@ -1,0 +1,9 @@
+project: product
+component: VS Code extension
+kind: Fixed
+body: "Managed release discovery for first-use, repair, and update routes now selects through one compatibility-first selector; the GitHub /releases/latest convenience endpoint and route-local picks are gone, a tag channel without versionTag fails closed, and releases without a host-target asset are refused before any download."
+time: 2026-08-18T15:00:00Z
+custom:
+  PR: "11613"
+  Slug: vscode-managed-release-route-unification
+  Breaking: "no"

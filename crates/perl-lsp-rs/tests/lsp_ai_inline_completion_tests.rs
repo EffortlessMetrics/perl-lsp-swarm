@@ -384,3 +384,493 @@ fn test_ai_provider_error_with_fallback_returns_deterministic()
     );
     Ok(())
 }
+
+// ── Automatic requests are local-first ──────────────────────────────────────
+
+/// Mock backend that counts how many times it was consulted and blocks for the
+/// caller's whole timeout budget, standing in for a slow or unreachable remote.
+struct CountingSlowBackend {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend
+    for CountingSlowBackend
+{
+    fn stream(
+        &self,
+        req: &perl_lsp_rs_core::providers::inline_completion::BackendRequest,
+        _sink: &mut dyn FnMut(
+            perl_lsp_rs_core::providers::inline_completion::StreamChunk,
+        )
+            -> perl_lsp_rs_core::providers::inline_completion::StreamControl,
+    ) -> Result<(), perl_lsp_rs_core::providers::inline_completion::BackendError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(req.timeout_ms.min(200)));
+        Err(perl_lsp_rs_core::providers::inline_completion::BackendError::Timeout)
+    }
+}
+
+/// An automatic request is triggered by a keystroke, so it must not pay for a
+/// remote round trip: the backend is never consulted and the deterministic
+/// answer is returned without waiting on it.
+#[test]
+fn test_automatic_request_makes_no_backend_call() -> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_automatic_local_first.pl";
+    open_doc(&server, uri, "use str");
+
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    server.test_configure_ai_completion(true, true);
+    server
+        .test_install_ai_backend(Some(Arc::new(CountingSlowBackend { calls: Arc::clone(&calls) })));
+
+    let started = std::time::Instant::now();
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "textDocument/inlineCompletion".into(),
+        params: Some(json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 7 },
+            "context": { "triggerKind": 2 }
+        })),
+    };
+    let response = server.handle_request(request).ok_or("inline completion response")?;
+    let elapsed = started.elapsed();
+    let result = response.result.ok_or("result field present")?;
+
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "an automatic request must not consult the AI backend"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(200),
+        "the deterministic answer must not wait behind the backend budget: {elapsed:?}"
+    );
+
+    let texts: Vec<&str> = result["items"]
+        .as_array()
+        .ok_or("items array")?
+        .iter()
+        .filter_map(|item| item["insertText"].as_str())
+        .collect();
+    assert_eq!(texts, vec!["strict;"], "expected the deterministic candidate");
+    Ok(())
+}
+
+/// An explicitly invoked request keeps the remote budget: the backend is
+/// consulted, and its failure still falls back to the deterministic answer.
+#[test]
+fn test_invoked_request_still_consults_backend() -> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_invoked_consults_backend.pl";
+    open_doc(&server, uri, "use str");
+
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    server.test_configure_ai_completion(true, true);
+    server
+        .test_install_ai_backend(Some(Arc::new(CountingSlowBackend { calls: Arc::clone(&calls) })));
+
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "textDocument/inlineCompletion".into(),
+        params: Some(json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 7 },
+            "context": { "triggerKind": 1 }
+        })),
+    };
+    let response = server.handle_request(request).ok_or("inline completion response")?;
+    let result = response.result.ok_or("result field present")?;
+
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "an invoked request must still consult the AI backend"
+    );
+    let texts: Vec<&str> = result["items"]
+        .as_array()
+        .ok_or("items array")?
+        .iter()
+        .filter_map(|item| item["insertText"].as_str())
+        .collect();
+    assert!(texts.contains(&"strict;"), "expected deterministic fallback, got: {texts:?}");
+    Ok(())
+}
+
+/// External backend text carries no local supporting fact. Even when the
+/// backend answers instantly with clean single-line Perl, an automatic request
+/// shows the deterministic candidate instead.
+#[test]
+fn test_automatic_request_never_shows_backend_text() -> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_automatic_no_backend_text.pl";
+    open_doc(&server, uri, "use str");
+
+    server.test_configure_ai_completion(true, true);
+    server.test_install_ai_backend(Some(Arc::new(MockSuccessBackend { response: "ict;".into() })));
+
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "textDocument/inlineCompletion".into(),
+        params: Some(json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 7 },
+            "context": { "triggerKind": 2 }
+        })),
+    };
+    let response = server.handle_request(request).ok_or("inline completion response")?;
+    let result = response.result.ok_or("result field present")?;
+
+    let texts: Vec<&str> = result["items"]
+        .as_array()
+        .ok_or("items array")?
+        .iter()
+        .filter_map(|item| item["insertText"].as_str())
+        .collect();
+    assert_eq!(texts, vec!["strict;"], "automatic ghost text must come from local evidence");
+    Ok(())
+}
+
+/// Issue #10246 parity: the buffered route and the custom stream route share
+/// one evaluated finalization seam, so the same external candidate must
+/// receive the same selected-completion verdict in both modes. A compatible
+/// selected completion keeps the exact accepted replacement range.
+#[test]
+fn test_invoked_ai_candidate_respects_selected_completion_info_range()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_selected_completion_match.pl";
+    open_doc(&server, uri, "use str");
+
+    server.test_configure_ai_completion(true, true);
+    server
+        .test_install_ai_backend(Some(Arc::new(MockSuccessBackend { response: "strict;".into() })));
+
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "textDocument/inlineCompletion".into(),
+        params: Some(json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 7 },
+            "context": {
+                "triggerKind": 1,
+                "selectedCompletionInfo": {
+                    "range": {
+                        "start": { "line": 0, "character": 4 },
+                        "end": { "line": 0, "character": 7 }
+                    },
+                    "text": "strict"
+                }
+            }
+        })),
+    };
+    let response = server.handle_request(request).ok_or("inline completion response")?;
+    let result = response.result.ok_or("result field present")?;
+
+    let items = result["items"].as_array().ok_or("items array")?;
+    let item = items
+        .iter()
+        .find(|item| item["insertText"].as_str() == Some("strict;"))
+        .ok_or("external candidate must survive a compatible selected completion")?;
+    assert_eq!(
+        item["range"],
+        json!({
+            "start": { "line": 0, "character": 4 },
+            "end": { "line": 0, "character": 7 }
+        }),
+        "a compatible selected completion must keep the exact accepted replacement range"
+    );
+    Ok(())
+}
+
+/// Issue #8291/#10246 parity: an incompatible `selectedCompletionInfo` suppresses
+/// the external candidate in the buffered route exactly as in the stream
+/// route; with fallback disabled the result is final and empty.
+#[test]
+fn test_invoked_ai_candidate_suppressed_by_mismatched_selected_completion_info()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_selected_completion_mismatch.pl";
+    open_doc(&server, uri, "use ");
+
+    server.test_configure_ai_completion(true, false);
+    server
+        .test_install_ai_backend(Some(Arc::new(MockSuccessBackend { response: "strict;".into() })));
+
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "textDocument/inlineCompletion".into(),
+        params: Some(json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 4 },
+            "context": {
+                "triggerKind": 1,
+                "selectedCompletionInfo": {
+                    "range": {
+                        "start": { "line": 0, "character": 4 },
+                        "end": { "line": 0, "character": 4 }
+                    },
+                    "text": "strictlyDifferent"
+                }
+            }
+        })),
+    };
+    let response = server.handle_request(request).ok_or("inline completion response")?;
+    let result = response.result.ok_or("result field present")?;
+
+    let items = result["items"].as_array().ok_or("items array")?;
+    assert!(
+        items.is_empty(),
+        "a candidate that does not extend the selected completion must be filtered, got: {items:?}"
+    );
+    Ok(())
+}
+
+// ── Bounded suffix-aware AI context (#10273) ────────────────────────────────
+
+/// Mock backend that records every `BackendRequest` it receives.
+struct CapturingBackend {
+    requests: std::sync::Mutex<Vec<perl_lsp_rs_core::providers::inline_completion::BackendRequest>>,
+}
+
+impl CapturingBackend {
+    fn new() -> Arc<Self> {
+        Arc::new(Self { requests: std::sync::Mutex::new(Vec::new()) })
+    }
+
+    fn captured(&self) -> Vec<perl_lsp_rs_core::providers::inline_completion::BackendRequest> {
+        self.requests.lock().map(|guard| guard.clone()).unwrap_or_default()
+    }
+}
+
+impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend for CapturingBackend {
+    fn stream(
+        &self,
+        req: &perl_lsp_rs_core::providers::inline_completion::BackendRequest,
+        sink: &mut dyn FnMut(
+            perl_lsp_rs_core::providers::inline_completion::StreamChunk,
+        )
+            -> perl_lsp_rs_core::providers::inline_completion::StreamControl,
+    ) -> Result<(), perl_lsp_rs_core::providers::inline_completion::BackendError> {
+        match self.requests.lock() {
+            Ok(mut guard) => guard.push(req.clone()),
+            Err(_) => {
+                return Err(
+                    perl_lsp_rs_core::providers::inline_completion::BackendError::Provider(
+                        "captured request log poisoned".into(),
+                    ),
+                );
+            }
+        }
+        sink(perl_lsp_rs_core::providers::inline_completion::StreamChunk {
+            text: "1;".to_string(),
+            is_final: true,
+        });
+        Ok(())
+    }
+}
+
+/// The invoked AI request that reaches the backend carries the bounded
+/// right-context: the current-line suffix, nearby following lines (including
+/// a closing delimiter), and the snapshot-bound request identity.
+#[test]
+fn test_invoked_ai_request_carries_bounded_suffix_and_identity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_suffix_context.pl";
+    let source = "sub helper {\n    my $input = \n    return $input;\n}\n1;\n";
+    open_doc(&server, uri, source);
+
+    let backend = CapturingBackend::new();
+    server.test_configure_ai_completion(true, true);
+    server.test_install_ai_backend(Some(Arc::clone(&backend) as Arc<_>));
+
+    let result = inline_completion(&server, uri, 1, 16)?;
+    assert!(
+        result["items"].as_array().map(|items| !items.is_empty()).unwrap_or(false),
+        "AI candidate expected, got: {result}"
+    );
+
+    let captured = backend.captured();
+    assert_eq!(captured.len(), 1, "exactly one backend request expected");
+    let context = &captured[0].context;
+    assert_eq!(context.prefix, "    my $input = ");
+    assert_eq!(context.suffix, "", "end-of-line cursor has an exact empty suffix");
+    assert!(
+        context.following_lines.iter().any(|line| line.contains("return $input;")),
+        "following statement must reach the backend, got {:?}",
+        context.following_lines
+    );
+    assert!(
+        context.following_lines.iter().any(|line| line.trim() == "}"),
+        "nearby closing delimiter must reach the backend"
+    );
+    let request = context.request.as_ref().ok_or("request identity expected")?;
+    assert_eq!(request.line, 1);
+    assert_eq!(request.character, 16);
+    assert_eq!(request.source.document_version, Some(1), "didOpen version");
+    assert_eq!(request.source.source_bytes, source.len());
+    assert!(request.source.source_digest.starts_with("fnv1a64:"));
+    assert!(request.source.source_generation.is_some());
+    Ok(())
+}
+
+/// A mid-line request carries the exact visible statement tail as suffix.
+#[test]
+fn test_invoked_ai_request_carries_exact_mid_line_suffix() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = setup_server()?;
+    let uri = "file:///ai_mid_line_suffix.pl";
+    open_doc(&server, uri, "my $x = + $y; # note\n");
+
+    let backend = CapturingBackend::new();
+    server.test_configure_ai_completion(true, true);
+    server.test_install_ai_backend(Some(Arc::clone(&backend) as Arc<_>));
+
+    let _ = inline_completion(&server, uri, 0, 8)?;
+    let captured = backend.captured();
+    assert_eq!(captured.len(), 1);
+    let context = &captured[0].context;
+    assert_eq!(context.prefix, "my $x = ");
+    assert_eq!(context.suffix, "+ $y; # note");
+    Ok(())
+}
+
+/// A stale request version fails closed: zero backend calls, deterministic
+/// answer only.
+#[test]
+fn test_stale_request_version_makes_zero_backend_calls() -> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_stale_version.pl";
+    open_doc(&server, uri, "use str");
+
+    let backend = CapturingBackend::new();
+    server.test_configure_ai_completion(true, true);
+    server.test_install_ai_backend(Some(Arc::clone(&backend) as Arc<_>));
+
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "textDocument/inlineCompletion".into(),
+        params: Some(json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 7 },
+            "context": {
+                "triggerKind": 1,
+                "selectedCompletionInfo": {
+                    "range": {
+                        "start": { "line": 0, "character": 4 },
+                        "end": { "line": 0, "character": 7 }
+                    },
+                    "text": "strict",
+                    "textDocumentVersion": 0
+                }
+            }
+        })),
+    };
+    let response = server.handle_request(request).ok_or("inline completion response")?;
+    let result = response.result.ok_or("result field present")?;
+
+    assert!(backend.captured().is_empty(), "a stale request must make zero backend calls");
+    let texts: Vec<&str> = result["items"]
+        .as_array()
+        .ok_or("items array")?
+        .iter()
+        .filter_map(|item| item["insertText"].as_str())
+        .collect();
+    assert_eq!(texts, vec!["strict;"], "deterministic answer still served");
+    Ok(())
+}
+
+/// A cursor inside a hard-reject zone (string literal) makes zero backend
+/// calls on the invoked route.
+#[test]
+fn test_hard_zone_invoked_request_makes_zero_backend_calls()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_hard_zone.pl";
+    open_doc(&server, uri, "my $s = \"abc\";\n");
+
+    let backend = CapturingBackend::new();
+    server.test_configure_ai_completion(true, true);
+    server.test_install_ai_backend(Some(Arc::clone(&backend) as Arc<_>));
+
+    let _ = inline_completion(&server, uri, 0, 11)?;
+    assert!(backend.captured().is_empty(), "a hard-reject cursor must make zero backend calls");
+    Ok(())
+}
+
+/// Buffered and streamed routes prepare byte-equivalent provider context for
+/// the same snapshot and position (#10273 route parity).
+#[test]
+fn test_buffered_and_streamed_routes_prepare_equivalent_context()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_route_parity.pl";
+    let source = "sub helper {\n    my $input = \n    return $input;\n}\n1;\n";
+    open_doc(&server, uri, source);
+
+    let backend = CapturingBackend::new();
+    server.test_configure_ai_completion(true, true);
+    server.test_install_ai_backend(Some(Arc::clone(&backend) as Arc<_>));
+
+    // Buffered route.
+    let _ = inline_completion(&server, uri, 1, 16)?;
+
+    // Streamed route: same document, same position, matching version.
+    let stream_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
+        method: "textDocument/perlInlineCompletionStream".into(),
+        params: Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "position": { "line": 1, "character": 16 },
+            "partialResultToken": "parity-token"
+        })),
+    };
+    let response = server.handle_request(stream_request).ok_or("stream response")?;
+    assert!(response.result.map(|r| r.is_null()).unwrap_or(false), "stream returns null");
+
+    let captured = backend.captured();
+    assert_eq!(captured.len(), 2, "one request per route");
+    assert_eq!(
+        captured[0].context, captured[1].context,
+        "buffered and streamed routes must prepare equivalent context"
+    );
+    Ok(())
+}
+
+/// A stale streamed request (version older than the snapshot) starts no
+/// backend work.
+#[test]
+fn test_stale_streamed_request_makes_zero_backend_calls() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = setup_server()?;
+    let uri = "file:///ai_stale_stream.pl";
+    open_doc(&server, uri, "use str");
+
+    let backend = CapturingBackend::new();
+    server.test_configure_ai_completion(true, true);
+    server.test_install_ai_backend(Some(Arc::clone(&backend) as Arc<_>));
+
+    let stream_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(3_i64)),
+        method: "textDocument/perlInlineCompletionStream".into(),
+        params: Some(json!({
+            "textDocument": { "uri": uri, "version": 0 },
+            "position": { "line": 0, "character": 7 },
+            "partialResultToken": "stale-token"
+        })),
+    };
+    let response = server.handle_request(stream_request).ok_or("stream response")?;
+    assert!(response.result.map(|r| r.is_null()).unwrap_or(false));
+    assert!(backend.captured().is_empty(), "a stale streamed request must make zero backend calls");
+    Ok(())
+}

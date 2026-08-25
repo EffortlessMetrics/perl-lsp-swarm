@@ -1,12 +1,12 @@
 ---
 source: crates/perl-lsp-rs/tests/lsp_cap_snap.rs
+assertion_line: 32
 expression: caps
 ---
 callHierarchyProvider: true
 codeActionProvider:
   codeActionKinds:
     - quickfix
-    - source.organizeImports
     - refactor
     - refactor.extract
     - refactor.rewrite
@@ -45,13 +45,6 @@ documentFormattingProvider: true
 documentHighlightProvider: true
 documentLinkProvider:
   resolveProvider: true
-documentOnTypeFormattingProvider:
-  firstTriggerCharacter: "}"
-  moreTriggerCharacter:
-    - ;
-    - "\n"
-documentRangeFormattingProvider:
-  rangesSupport: true
 documentSymbolProvider: true
 executeCommandProvider:
   commands:
@@ -77,14 +70,12 @@ executeCommandProvider:
     - perl.previewPackageRename
     - perl.explainMissingModuleLookup
 experimental:
-  perlInlineCompletionStream: true
   typeHierarchyProvider: true
 foldingRangeProvider: true
 hoverProvider: true
 implementationProvider: true
 inlayHintProvider:
   resolveProvider: true
-inlineCompletionProvider: {}
 inlineValueProvider: true
 linkedEditingRangeProvider: true
 monikerProvider: true
@@ -153,72 +144,11 @@ textDocumentSync:
   save:
     includeText: true
   willSave: true
-  willSaveWaitUntil: true
+  willSaveWaitUntil: false
 typeDefinitionProvider: true
 typeHierarchyProvider:
   workDoneProgressOptions: {}
 workspace:
-  fileOperations:
-    didCreate:
-      filters:
-        - pattern:
-            glob: "**/*.pl"
-        - pattern:
-            glob: "**/*.pm"
-        - pattern:
-            glob: "**/*.t"
-        - pattern:
-            glob: "**/*.psgi"
-    didDelete:
-      filters:
-        - pattern:
-            glob: "**/*.pl"
-        - pattern:
-            glob: "**/*.pm"
-        - pattern:
-            glob: "**/*.t"
-        - pattern:
-            glob: "**/*.psgi"
-    didRename:
-      filters:
-        - pattern:
-            glob: "**/*.pl"
-        - pattern:
-            glob: "**/*.pm"
-        - pattern:
-            glob: "**/*.t"
-        - pattern:
-            glob: "**/*.psgi"
-    willCreate:
-      filters:
-        - pattern:
-            glob: "**/*.pl"
-        - pattern:
-            glob: "**/*.pm"
-        - pattern:
-            glob: "**/*.t"
-        - pattern:
-            glob: "**/*.psgi"
-    willDelete:
-      filters:
-        - pattern:
-            glob: "**/*.pl"
-        - pattern:
-            glob: "**/*.pm"
-        - pattern:
-            glob: "**/*.t"
-        - pattern:
-            glob: "**/*.psgi"
-    willRename:
-      filters:
-        - pattern:
-            glob: "**/*.pl"
-        - pattern:
-            glob: "**/*.pm"
-        - pattern:
-            glob: "**/*.t"
-        - pattern:
-            glob: "**/*.psgi"
   textDocumentContent:
     schemes:
       - perldoc

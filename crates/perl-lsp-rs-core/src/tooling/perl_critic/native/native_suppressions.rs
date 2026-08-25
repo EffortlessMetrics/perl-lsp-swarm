@@ -495,6 +495,7 @@ mod tests {
             message: "test finding".to_string(),
             explanation: "test explanation".to_string(),
             suppression_key: rule_id.to_string(),
+            observed_shape: crate::tooling::perl_critic::CriticFindingShape::General,
             related: Vec::new(),
             fix: None,
         }

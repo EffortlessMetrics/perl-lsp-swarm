@@ -34,6 +34,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+mod event_buffer;
+use event_buffer::{PeerEventBuffer, PushOutcome};
+
 use super::capabilities::{ControlMode, DebugBackendCapabilities};
 use super::{
     AttachBackendParams, AttachResult, BackendError, BackendResult, ContinueResult, DebugBackend,
@@ -157,12 +160,14 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 struct Shared {
     write: Mutex<TcpStream>,
     pending: Mutex<HashMap<i64, Sender<PeerResponse>>>,
-    events: Mutex<Vec<DebugEvent>>,
+    events: Mutex<PeerEventBuffer>,
     peer_caps: Mutex<Option<PeerReportedCapabilities>>,
     handshake_done: Mutex<bool>,
     /// Set when the handshake is rejected (e.g. protocol-version mismatch), so
     /// `initialize()` returns a clear error instead of an opaque timeout.
     handshake_error: Mutex<Option<String>>,
+    /// Typed terminal cause retained after the reader closes the socket.
+    terminal_error: Mutex<Option<BackendError>>,
     handshake_cv: Condvar,
     host_seq: AtomicI64,
     closed: AtomicBool,
@@ -200,6 +205,36 @@ impl Shared {
             self.mark_closed();
         }
         result
+    }
+
+    fn closed_error(&self) -> BackendError {
+        lock(&self.terminal_error).clone().unwrap_or(BackendError::NotConnected)
+    }
+
+    fn mark_closed_with_error(&self, error: BackendError) {
+        {
+            let mut terminal_error = lock(&self.terminal_error);
+            if terminal_error.is_none() {
+                *terminal_error = Some(error);
+            }
+        }
+        self.mark_closed();
+    }
+
+    fn queue_event(&self, event: DebugEvent) {
+        let resource_limit = {
+            let mut events = lock(&self.events);
+            match events.push(event) {
+                PushOutcome::Buffered | PushOutcome::Degraded => None,
+                PushOutcome::ResourceLimit(reason) => {
+                    events.force_resource_limit(&reason);
+                    Some(reason)
+                }
+            }
+        };
+        if let Some(reason) = resource_limit {
+            self.mark_closed_with_error(BackendError::ResourceLimit(reason));
+        }
     }
 
     fn mark_closed(&self) {
@@ -254,10 +289,11 @@ impl ExternalDebuggerPeerBackend {
         let shared = Arc::new(Shared {
             write: Mutex::new(write),
             pending: Mutex::new(HashMap::new()),
-            events: Mutex::new(Vec::new()),
+            events: Mutex::new(PeerEventBuffer::default()),
             peer_caps: Mutex::new(None),
             handshake_done: Mutex::new(false),
             handshake_error: Mutex::new(None),
+            terminal_error: Mutex::new(None),
             handshake_cv: Condvar::new(),
             host_seq: AtomicI64::new(0),
             closed: AtomicBool::new(false),
@@ -360,7 +396,7 @@ impl ExternalDebuggerPeerBackend {
                 return Err(BackendError::Protocol(reason));
             }
             if self.shared.closed.load(Ordering::SeqCst) {
-                return Err(BackendError::NotConnected);
+                return Err(self.shared.closed_error());
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -382,7 +418,7 @@ impl ExternalDebuggerPeerBackend {
     /// Send a host→peer request and block for its response.
     fn request(&self, command: &str, arguments: Option<Value>) -> BackendResult<PeerResponse> {
         if self.shared.closed.load(Ordering::SeqCst) {
-            return Err(BackendError::NotConnected);
+            return Err(self.shared.closed_error());
         }
         let seq = self.shared.next_host_seq();
         let (tx, rx): (Sender<PeerResponse>, Receiver<PeerResponse>) = channel();
@@ -409,17 +445,26 @@ impl ExternalDebuggerPeerBackend {
                 lock(&self.shared.pending).remove(&seq);
                 Err(BackendError::Timeout(command.to_string()))
             }
-            Err(RecvTimeoutError::Disconnected) => Err(BackendError::NotConnected),
+            Err(RecvTimeoutError::Disconnected) => Err(self.shared.closed_error()),
         }
     }
 
     fn negotiated_caps(&self) -> DebugBackendCapabilities {
-        // `.as_ref()` borrows the inner Option so we do not depend on the
-        // `Copy` derive to read it out of the guard.
-        lock(&self.shared.peer_caps)
+        let mut caps = lock(&self.shared.peer_caps)
             .as_ref()
             .map(|c| c.to_backend_capabilities())
-            .unwrap_or_else(DebugBackendCapabilities::none)
+            .unwrap_or_else(DebugBackendCapabilities::none);
+        // The host-bound control mode wins over anything the peer claimed in
+        // its hello, so a rejected escalation can never leak into the
+        // capability view advertised to the editor (#7313 review).
+        caps.control_mode = self.control_mode;
+        caps
+    }
+
+    /// Control mode the peer claimed during its handshake, before host-side
+    /// ownership is applied.
+    fn peer_claimed_control_mode(&self) -> ControlMode {
+        lock(&self.shared.peer_caps).as_ref().map(|c| c.control_mode).unwrap_or_default()
     }
 
     /// Guard a control command against negotiated capabilities so the backend
@@ -449,7 +494,18 @@ impl DebugBackend for ExternalDebuggerPeerBackend {
 
     fn initialize(&mut self, _params: InitializeBackendParams) -> BackendResult<()> {
         self.await_handshake()?;
-        self.control_mode = self.negotiated_caps().control_mode;
+        // Mirror ownership is enforced at the handshake (#7313 review): the
+        // session was bound to a host-selected control mode, so a peer that
+        // claims a different one in `peer/hello` is rejected instead of the
+        // backend silently adopting whatever ownership it announced.
+        let claimed = self.peer_claimed_control_mode();
+        if claimed != self.control_mode {
+            return Err(BackendError::Unsupported(format!(
+                "peer negotiated {claimed:?} control mode; this session is bound \
+                 to {:?}, which cannot be escalated by the peer",
+                self.control_mode
+            )));
+        }
         Ok(())
     }
 
@@ -613,7 +669,7 @@ impl DebugBackend for ExternalDebuggerPeerBackend {
     }
 
     fn drain_events(&mut self) -> Vec<DebugEvent> {
-        std::mem::take(&mut *lock(&self.shared.events))
+        lock(&self.shared.events).drain()
     }
 
     fn is_closed(&self) -> bool {
@@ -658,7 +714,12 @@ fn reader_loop(mut stream: TcpStream, shared: Arc<Shared>) {
                 decoder.push(&buf[..n]);
                 loop {
                     match decoder.try_next() {
-                        Ok(Some(msg)) => handle_incoming(&shared, msg),
+                        Ok(Some(msg)) => {
+                            handle_incoming(&shared, msg);
+                            if shared.closed.load(Ordering::SeqCst) {
+                                return;
+                            }
+                        }
                         Ok(None) => break,
                         Err(PeerFrameError::Framing(_)) => {
                             // Genuinely broken wire format (unparseable header, bad
@@ -713,7 +774,7 @@ fn handle_incoming(shared: &Arc<Shared>, msg: PeerMessage) {
         }
         PeerMessage::Event(ev) => {
             if let Some(model_ev) = translate_event(&ev) {
-                lock(&shared.events).push(model_ev);
+                shared.queue_event(model_ev);
             }
         }
         PeerMessage::Request(req) => handle_peer_request(shared, req),
@@ -1206,6 +1267,35 @@ mod tests {
         backend.initialize(InitializeBackendParams::default()).expect("handshake");
         let err = backend.continue_thread(ThreadId(1)).expect_err("should reject");
         assert!(matches!(err, BackendError::Unsupported(_)));
+        drop(backend);
+        let _ = peer.join();
+    }
+
+    #[test]
+    fn initialize_rejects_peer_control_mode_escalation() {
+        // A peer that claims a non-mirror control mode in `peer/hello` must be
+        // rejected at initialize instead of the host silently adopting the
+        // escalated ownership (mirror ownership enforced at handshake; #7313).
+        let (listener, addr) = bind_ephemeral();
+        let caps = PeerReportedCapabilities {
+            can_step: true,
+            control_mode: ControlMode::DapControlled,
+            ..Default::default()
+        };
+        let peer = spawn_fake_peer(addr, caps, |_req| None);
+        let mut backend = accept_backend(listener);
+        let err = backend
+            .initialize(InitializeBackendParams::default())
+            .expect_err("peer control-mode escalation must be rejected");
+        assert!(
+            matches!(err, BackendError::Unsupported(_)),
+            "expected an unsupported-mode rejection, got {err:?}"
+        );
+        assert_eq!(
+            backend.capabilities().control_mode,
+            ControlMode::Mirror,
+            "the session must not adopt the peer's claimed control mode"
+        );
         drop(backend);
         let _ = peer.join();
     }

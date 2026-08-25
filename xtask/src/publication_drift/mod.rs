@@ -113,6 +113,21 @@ fn ensure_safe_output(out: &Path, input: &Path, authority: Option<&Path>) -> Res
                 );
             }
             for source in protected.into_iter().flatten() {
+                // Deliberate proceed-with-evidence: a source that is absent right
+                // now cannot be hard-link aliased at this instant, and a
+                // declared-but-unreadable manifest is a modeled outcome downstream
+                // (`AuthoritySource::Invalid` produces a NotProven receipt), so only
+                // existing sources need identity proof. Any other inspection error
+                // propagates and blocks the run.
+                match fs::symlink_metadata(source) {
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => {
+                        return Err(error).wrap_err_with(|| {
+                            format!("inspecting protected evidence source {}", source.display())
+                        });
+                    }
+                }
                 if same_file_identity(out, source)? {
                     bail!(
                         "publication drift output {} is a hard-link alias of protected evidence source {}",
@@ -174,6 +189,10 @@ fn normalize_lexically(path: &Path) -> Result<PathBuf> {
 fn same_file_identity(output: &Path, source: &Path) -> Result<bool> {
     use std::os::unix::fs::MetadataExt;
 
+    // Deliberate proceed-with-evidence: an absent source cannot be hard-link
+    // aliased at this instant, so treating it as distinct is proven by direct
+    // observation rather than assumed; every other metadata failure propagates
+    // and blocks the run. The caller resolves absence before this comparison.
     let output = fs::metadata(output).wrap_err_with(|| {
         format!("reading publication drift output metadata {}", output.display())
     })?;
@@ -189,63 +208,32 @@ fn same_file_identity(output: &Path, source: &Path) -> Result<bool> {
     Ok(output.dev() == source.dev() && output.ino() == source.ino())
 }
 
+/// Decide whether two existing paths denote the same underlying Windows file.
+///
+/// Fail closed: when either kernel identity cannot be established, the drift
+/// guard refuses to classify the pair as distinct, because proceeding toward an
+/// overwrite without identity proof could clobber protected evidence through an
+/// unproven alias. Callers resolve absence first (a nonexistent source cannot
+/// be aliased at that instant); this comparison only accepts proven answers.
 #[cfg(windows)]
 fn same_file_identity(output: &Path, source: &Path) -> Result<bool> {
-    let output_identity = windows_file_identity(output)?;
-    let source_identity = windows_file_identity(source)?;
-    Ok(output_identity.is_some() && output_identity == source_identity)
-}
-
-#[cfg(windows)]
-fn windows_file_identity(path: &Path) -> Result<Option<(u32, u32, u32)>> {
-    use std::os::windows::ffi::OsStrExt;
-    use std::ptr::null_mut;
-    use winapi::um::fileapi::{
-        BY_HANDLE_FILE_INFORMATION, CreateFileW, GetFileInformationByHandle, OPEN_EXISTING,
+    let output_identity =
+        crate::file_identity::windows_file_identity(output).wrap_err_with(|| {
+            format!("reading publication drift output identity {}", output.display())
+        })?;
+    let source_identity =
+        crate::file_identity::windows_file_identity(source).wrap_err_with(|| {
+            format!("reading protected evidence source identity {}", source.display())
+        })?;
+    let (Some(output_identity), Some(source_identity)) = (output_identity, source_identity) else {
+        bail!(
+            "publication drift cannot prove {} is distinct from protected evidence source {}; \
+             Windows file identity is unavailable",
+            output.display(),
+            source.display()
+        );
     };
-    use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
-    use winapi::um::winnt::{
-        FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    };
-
-    let display_path = path.display().to_string();
-    let wide_path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let handle = unsafe {
-        CreateFileW(
-            wide_path.as_ptr(),
-            0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            null_mut(),
-            OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
-            null_mut(),
-        )
-    };
-    if handle == INVALID_HANDLE_VALUE {
-        let error = std::io::Error::last_os_error();
-        if error.kind() == std::io::ErrorKind::NotFound {
-            return Ok(None);
-        }
-        return Err(error).wrap_err_with(|| format!("reading file identity {display_path}"));
-    }
-
-    let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-    let result = unsafe { GetFileInformationByHandle(handle, &mut information) };
-    let close_result = unsafe { CloseHandle(handle) };
-    if result == 0 {
-        return Err(std::io::Error::last_os_error())
-            .wrap_err_with(|| format!("reading file identity {display_path}"));
-    }
-    if close_result == 0 {
-        return Err(std::io::Error::last_os_error())
-            .wrap_err_with(|| format!("closing file identity handle {display_path}"));
-    }
-
-    Ok(Some((
-        information.dwVolumeSerialNumber,
-        information.nFileIndexHigh,
-        information.nFileIndexLow,
-    )))
+    Ok(output_identity == source_identity)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -287,6 +275,47 @@ mod output_tests {
         let input = temp.path().join("observation.json");
         fs::write(&input, "{}")?;
         expect_rejection(&input, &input, None, "aliases protected evidence source")
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dangling_protected_source_rejects_before_publication_write() -> Result<()> {
+        use std::os::windows::fs::symlink_file;
+
+        let temp = TempDir::new()?;
+        let out = temp.path().join("receipt.json");
+        let input = temp.path().join("observation.json");
+        let dangling = temp.path().join("dangling-source.json");
+        let missing_target = temp.path().join("missing-target.json");
+        let original = b"existing receipt\n";
+        fs::write(&out, original)?;
+        fs::write(&input, "{}")?;
+        symlink_file(&missing_target, &dangling)?;
+
+        let error = ensure_safe_output(&out, &input, Some(&dangling))
+            .expect_err("dangling protected source must fail closed");
+        let message = format!("{error:#}");
+        if !message.contains("protected evidence source")
+            || !message.contains("dangling-source.json")
+        {
+            bail!("unexpected dangling-source error: {message}");
+        }
+        if fs::read(&out)? != original {
+            bail!("publication output changed after rejecting dangling protected source");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn absent_protected_source_does_not_block_a_regular_output() -> Result<()> {
+        let temp = TempDir::new()?;
+        let input = temp.path().join("observation.json");
+        let authority = temp.path().join("authority.json");
+        let out = temp.path().join("receipt.json");
+        fs::write(&input, "{}")?;
+        fs::write(&out, "{}")?;
+        ensure_safe_output(&out, &input, Some(&authority))
     }
 
     #[cfg(unix)]

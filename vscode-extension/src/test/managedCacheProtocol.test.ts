@@ -84,6 +84,28 @@ describe('managed cache protocol', () => {
     );
   });
 
+  test('requires the complete canonical candidate identity on mutation attempts', () => {
+    expect(validateManagedMutationAttempt(attempt())).toEqual([]);
+
+    const malformed = [
+      'candidate-', // prefix only, no digest
+      `candidate-${'a'.repeat(63)}`, // short digest
+      `candidate-${'a'.repeat(65)}`, // long digest
+      `candidate-${'g'.repeat(64)}`, // non-hex digest
+      'candidate-../../steal-candidate', // path-shaped suffix
+      `candidate-${'a'.repeat(32)}/${'a'.repeat(31)}`, // slash payload
+      `candidate-${'a'.repeat(32)}\\${'a'.repeat(31)}`, // backslash payload
+      `candidate-${'A'.repeat(64)}`, // minted identity is lowercase-only
+    ];
+    for (const candidateId of malformed) {
+      const value = attempt();
+      value.candidate_id = candidateId;
+      expect(validateManagedMutationAttempt(value)).toContain(
+        'candidate_id must use canonical candidate identity',
+      );
+    }
+  });
+
   test('releases only with the exact lease token rather than PID or age', () => {
     const lease = buildManagedMutationLease(attempt(), 'lease-3f3d');
     expect(mayReleaseManagedLease(lease, 'lease-3f3d')).toBe(true);

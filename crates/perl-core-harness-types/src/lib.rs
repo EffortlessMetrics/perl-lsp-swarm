@@ -1167,8 +1167,11 @@ mod tests {
             "failures": [],
             "unexpected_authority_field": true
         }"#;
-        let err = serde_json::from_str::<RunReport>(json).expect_err("unknown field must fail");
-        assert!(err.to_string().contains("unexpected_authority_field"));
+        let err = serde_json::from_str::<RunReport>(json).err();
+        assert!(
+            err.is_some_and(|err| err.to_string().contains("unexpected_authority_field")),
+            "unknown field must be rejected with 'unexpected_authority_field'"
+        );
     }
 
     #[test]

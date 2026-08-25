@@ -96,6 +96,7 @@ pub struct CriticFindingCandidate {
     range: Range,
     message: String,
     explanation: Option<String>,
+    fix_available: bool,
 }
 
 impl CriticFindingCandidate {
@@ -109,6 +110,29 @@ impl CriticFindingCandidate {
         message: impl Into<String>,
         explanation: Option<String>,
     ) -> Self {
+        Self::with_fix_availability(
+            identity,
+            source_identity,
+            severity,
+            range,
+            message,
+            explanation,
+            false,
+        )
+    }
+
+    /// Construct a candidate that also carries producer-owned remediation
+    /// availability (#7475 projection provenance).
+    #[must_use]
+    pub fn with_fix_availability(
+        identity: CriticObservedIdentity<'_>,
+        source_identity: CriticSourceIdentity,
+        severity: Severity,
+        range: Range,
+        message: impl Into<String>,
+        explanation: Option<String>,
+        fix_available: bool,
+    ) -> Self {
         Self {
             identity: identity.into(),
             source_identity,
@@ -116,6 +140,7 @@ impl CriticFindingCandidate {
             range,
             message: message.into(),
             explanation,
+            fix_available,
         }
     }
 
@@ -214,6 +239,7 @@ pub struct NormalizedCriticFinding {
     message: String,
     explanation: Option<String>,
     contributors: Vec<CriticFindingContributor>,
+    fix_available: bool,
     #[serde(skip)]
     presentation_rank: u8,
     #[serde(skip)]
@@ -260,6 +286,7 @@ impl NormalizedCriticFinding {
             message: candidate.message,
             explanation: candidate.explanation,
             contributors: vec![contributor],
+            fix_available: candidate.fix_available,
             presentation_rank,
             explanation_rank,
             explanation_code,
@@ -307,6 +334,7 @@ impl NormalizedCriticFinding {
         }
 
         self.contributors.push(CriticFindingContributor::from_candidate(&candidate));
+        self.fix_available = self.fix_available || candidate.fix_available;
     }
 
     fn finalize(mut self) -> Self {
@@ -387,6 +415,12 @@ impl NormalizedCriticFinding {
     #[must_use]
     pub fn contributors(&self) -> &[CriticFindingContributor] {
         &self.contributors
+    }
+
+    /// Whether any contributing producer reported a remediation capability.
+    #[must_use]
+    pub const fn has_available_fix(&self) -> bool {
+        self.fix_available
     }
 }
 

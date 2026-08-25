@@ -1,0 +1,85 @@
+schema = 1
+
+[[lint]]
+name = "clippy::unreachable"
+level = "deny"
+status = "tracked"
+class = "panic"
+reason = "Unreachable markers hide parser and protocol states that should be modeled."
+
+[[lint]]
+name = "clippy::get_unwrap"
+level = "deny"
+status = "tracked"
+class = "panic"
+reason = "Checked access should be explicit rather than hidden behind get().unwrap()."
+
+[[lint]]
+name = "clippy::unwrap_in_result"
+level = "deny"
+status = "tracked"
+class = "panic"
+reason = "Result-returning code should propagate errors instead of panicking internally."
+
+[[lint]]
+name = "clippy::panic_in_result_fn"
+level = "deny"
+status = "tracked"
+class = "panic"
+reason = "Result-returning APIs promise recoverable failure, not panic paths."
+
+[[lint]]
+name = "clippy::assertions_on_result_states"
+level = "deny"
+status = "tracked"
+class = "panic"
+reason = "Tests should inspect results with helpers that preserve error detail."
+
+[[lint]]
+name = "clippy::string_slice"
+level = "deny"
+status = "tracked"
+class = "ast-safety"
+reason = "Byte slicing UTF-8 text is unsafe for Perl parser and LSP boundary logic."
+
+[[lint]]
+name = "clippy::indexing_slicing"
+level = "deny"
+status = "tracked"
+class = "ast-safety"
+reason = "Indexing and slicing must be checked at parser, lexer, and protocol boundaries."
+
+[[lint]]
+name = "clippy::out_of_bounds_indexing"
+level = "deny"
+status = "tracked"
+class = "ast-safety"
+reason = "Out-of-bounds indexing is a correctness failure."
+
+[[lint]]
+name = "clippy::unchecked_time_subtraction"
+level = "deny"
+status = "tracked"
+class = "correctness"
+reason = "Telemetry and timeout math should not underflow silently."
+
+[[lint]]
+name = "clippy::char_indices_as_byte_indices"
+level = "deny"
+status = "tracked"
+class = "ast-safety"
+reason = "Perl source offsets must not confuse character and byte positions."
+
+[[lint]]
+name = "clippy::sliced_string_as_bytes"
+level = "deny"
+status = "tracked"
+class = "ast-safety"
+reason = "String-byte conversion should not preserve an unchecked slice boundary."
+
+[[lint]]
+name = "clippy::index_refutable_slice"
+level = "deny"
+status = "tracked"
+class = "ast-safety"
+reason = "Prefer slice patterns that encode parser boundary expectations."

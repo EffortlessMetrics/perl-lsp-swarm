@@ -283,7 +283,6 @@ fn test_runtime_text_utils_helpers_methods() -> Result<(), Box<dyn std::error::E
     let helper = TextEditHelpers::new("test code", &lines);
     // Verify key methods exist and are callable.
     let _start = helper.find_statement_start(5);
-    let _import_pos = helper.find_import_insert_position();
     let _pragma_pos = helper.find_pragma_insert_position();
     let _sub_pos = helper.find_subroutine_insert_position(10);
     Ok(())

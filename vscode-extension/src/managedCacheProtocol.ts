@@ -61,6 +61,21 @@ export interface ManagedAbandonmentEvidence {
 
 const SHA256 = /^(?:sha256:)?[0-9a-fA-F]{64}$/;
 const SAFE_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
+const CANDIDATE_ID = /^candidate-[0-9a-f]{64}$/;
+
+/**
+ * Canonical candidate identity is exactly `candidate-<64 lowercase hex>`: the
+ * SHA-256 of the canonical candidate subject as minted by
+ * {@link managedCandidateId}. This is an identity-shape contract only — it
+ * says nothing about catalog membership, since a live or released host may
+ * legitimately reference an identity that is no longer selected. Identities
+ * are compared by exact string equality everywhere, so non-canonical casing
+ * or digest length is rejected here rather than admitted as an identity that
+ * can never match a minted candidate.
+ */
+export function isCanonicalManagedCandidateId(candidateId: string): boolean {
+  return CANDIDATE_ID.test(candidateId);
+}
 
 function normalizeDigest(value: string): string {
   const normalized = value.toLowerCase();
@@ -146,7 +161,7 @@ export function validateManagedMutationAttempt(attempt: ManagedMutationAttempt):
   if (!SAFE_ID.test(attempt.owner_nonce)) {
     errors.push('owner_nonce must be a bounded path-safe identity');
   }
-  if (!attempt.candidate_id.startsWith('candidate-')) {
+  if (!isCanonicalManagedCandidateId(attempt.candidate_id)) {
     errors.push('candidate_id must use canonical candidate identity');
   }
   if (

@@ -1,0 +1,99 @@
+schema = 1
+
+[[lint]]
+name = "rust::unused_must_use"
+level = "deny"
+status = "tracked"
+class = "silent-failure"
+reason = "Must-use values represent work that cannot be silently discarded."
+
+[[lint]]
+name = "clippy::let_underscore_future"
+level = "deny"
+status = "tracked"
+class = "silent-failure"
+reason = "Futures must be awaited, spawned, or explicitly dropped by policy."
+
+[[lint]]
+name = "clippy::let_underscore_must_use"
+level = "deny"
+status = "tracked"
+class = "silent-failure"
+reason = "Must-use values cannot be discarded with let-underscore."
+
+[[lint]]
+name = "clippy::let_underscore_lock"
+level = "deny"
+status = "tracked"
+class = "silent-failure"
+reason = "Locks must be held by named guards with visible scope."
+
+[[lint]]
+name = "clippy::unused_result_ok"
+level = "deny"
+status = "tracked"
+class = "silent-failure"
+reason = "Calling ok() to discard errors hides failed work."
+
+[[lint]]
+name = "clippy::map_err_ignore"
+level = "deny"
+status = "tracked"
+class = "silent-failure"
+reason = "Error conversion must preserve diagnostic context."
+
+[[lint]]
+name = "clippy::lines_filter_map_ok"
+level = "deny"
+status = "tracked"
+class = "silent-failure"
+reason = "Line iteration must not hide repeated IO errors."
+
+[[lint]]
+name = "clippy::await_holding_invalid_type"
+level = "deny"
+status = "tracked"
+class = "async"
+reason = "Do not hold configured invalid guard types across await points."
+
+[[lint]]
+name = "clippy::future_not_send"
+level = "warn"
+status = "tracked"
+class = "async"
+reason = "Non-Send futures should be reviewed before becoming server boundary debt."
+
+[[lint]]
+name = "clippy::large_futures"
+level = "warn"
+status = "tracked"
+class = "async"
+reason = "Large futures should stay visible during provider review."
+
+[[lint]]
+name = "clippy::arc_with_non_send_sync"
+level = "deny"
+status = "tracked"
+class = "async"
+reason = "Arc should not imply cross-thread safety for non-Send and non-Sync payloads."
+
+[[lint]]
+name = "clippy::rc_mutex"
+level = "deny"
+status = "tracked"
+class = "async"
+reason = "Mutex-protected sharing should use thread-safe ownership."
+
+[[lint]]
+name = "clippy::mut_mutex_lock"
+level = "deny"
+status = "tracked"
+class = "async"
+reason = "Mutable mutex access should avoid unnecessary locking."
+
+[[lint]]
+name = "clippy::readonly_write_lock"
+level = "deny"
+status = "tracked"
+class = "async"
+reason = "Use read locks when mutation is not required."

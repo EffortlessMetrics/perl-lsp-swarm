@@ -9,7 +9,7 @@ mod changie;
 #[path = "commit_checks.rs"]
 mod established;
 
-pub use established::{CheckReport, CommitCheckOutcome, Posture, REPORT_MARKER, parse_report};
+pub use established::{CheckReport, CommitCheckOutcome, Posture, parse_report};
 
 use crate::utils::project_root;
 use color_eyre::eyre::Result;

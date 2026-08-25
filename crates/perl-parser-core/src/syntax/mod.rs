@@ -32,6 +32,8 @@ pub mod percentile;
 pub mod qualified_name;
 /// Quote operator parsing helpers (previously `perl-quote`).
 pub mod quote;
+/// Generation-bound canonical regex-analysis records.
+pub mod regex_analysis;
 /// Lexical source-region index for comment/literal/POD classification.
 pub mod source_context;
 /// Perl source-file classification helpers (previously `perl-source-file`).

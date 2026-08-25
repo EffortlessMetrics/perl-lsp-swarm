@@ -92,7 +92,7 @@ fn build_index_at_scale(file_count: usize) -> WorkspaceIndex {
     let index = WorkspaceIndex::new();
     for i in 0..file_count {
         let (uri, src) = generate_module(i);
-        index.index_file(uri, src).ok();
+        index.index_initial_file(uri, src).ok();
     }
     index
 }

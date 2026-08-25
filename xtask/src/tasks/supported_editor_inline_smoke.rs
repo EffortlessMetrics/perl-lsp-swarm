@@ -32,10 +32,10 @@ const ROUTES: &[SupportedEditorRouteRequirement] = &[
                 path: "docs/EDITORS/INTELLIJ_IDEA_SETUP.md",
                 markers: &[
                     "Recommended: LSP4IJ Upstream Integration",
-                    "The upstream LSP4IJ entry should launch `perllsp` with stdio transport",
+                    "confirm the command is the intended `perllsp --stdio` binary",
                     "client/registerCapability",
                     "textDocument/inlineCompletion",
-                    "inlineCompletionProvider",
+                    "dynamic registration through `client/registerCapability`",
                     "perllsp --stdio",
                 ],
             },
@@ -232,6 +232,7 @@ fn summarize_next_edit_supported_editor_boundary() -> Result<NextEditSupportedEd
         current_package: Some("Demo".to_string()),
         variables: vec!["$got".to_string()],
         imports: vec!["strict".to_string(), "warnings".to_string()],
+        ..PreparedInlineCompletionContext::default()
     };
     let mut request = NextEditRequest::receipt_only(context);
 

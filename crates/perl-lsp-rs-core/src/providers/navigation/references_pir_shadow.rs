@@ -156,6 +156,15 @@ pub struct PirShadowCompareReceipt {
 /// near-match (range disagreement) rather than independent missing/extra sites.
 const RANGE_NEAR_MATCH_BYTES: usize = 2;
 
+/// Return the canonical source range carried by a lexical fact.
+///
+/// Lexical anchors are produced by the parser/HIR lowering path. This helper
+/// deliberately accepts no legacy-provider input: shadow output may compare
+/// against the compiler range, but it cannot construct, narrow, or repair it.
+fn lexical_fact_range(range: Option<(usize, usize)>) -> Option<(usize, usize)> {
+    range
+}
+
 impl PirShadowCompareReceipt {
     /// Construct a refusal receipt with all counts zeroed.
     fn refused(reason: PirShadowRefusalReason) -> Self {
@@ -294,15 +303,17 @@ pub fn shadow_references_with_pir(
         return PirShadowCompareReceipt::refused(reason);
     }
 
+    let legacy_set: BTreeSet<(usize, usize)> = legacy_result.iter().copied().collect();
+
     // Build the compiler set: anchored facts for `target_name` (bare name) in the target body.
     let compiler_ranges: BTreeSet<(usize, usize)> = receipt.bodies[target_body_idx]
         .facts
         .iter()
         .filter(|f| f.name.name == target_name && f.source_anchor.is_anchored())
-        .filter_map(|f| f.source_anchor.range.as_ref().map(|r| (r.start, r.end)))
+        .filter_map(|fact| {
+            lexical_fact_range(fact.source_anchor.range.as_ref().map(|r| (r.start, r.end)))
+        })
         .collect();
-
-    let legacy_set: BTreeSet<(usize, usize)> = legacy_result.iter().copied().collect();
 
     let compiler_candidate_count = compiler_ranges.len();
     let legacy_candidate_count = legacy_set.len();
@@ -504,8 +515,10 @@ fn evaluate_pir_reference_candidate(
             declaration_skipped = true;
             continue;
         }
-        if let Some(r) = fact.source_anchor.range.as_ref() {
-            ranges.push(uri_mapper(r.start, r.end));
+        if let Some((start, end)) =
+            lexical_fact_range(fact.source_anchor.range.as_ref().map(|r| (r.start, r.end)))
+        {
+            ranges.push(uri_mapper(start, end));
         }
     }
 
@@ -1062,11 +1075,71 @@ mod promote_tests {
         }
         Ok(())
     }
+
+    #[test]
+    fn promote_exact_ignores_forged_legacy_anchor_for_loop_declaration() -> Result<(), String> {
+        let source = "for my $i (1 .. 3) { print $i; }\n";
+        let mut parser = Parser::new(source);
+        let output = parser.parse_with_recovery();
+        let hir = lower_ast(&output.ast);
+        let receipt = extract_lexical_facts(&hir);
+        // Deliberately provide a forged widened legacy range. Exact promotion
+        // must consume the canonical HIR binding anchor instead.
+        let forged_legacy = vec![(0usize, 1usize)];
+
+        let outcome = references_pir_promote(
+            PromotionMode::PromoteExact,
+            "$",
+            "i",
+            &receipt,
+            &forged_legacy,
+            0,
+            &byte_mapper,
+            opts_all(),
+        );
+        let ReferencesPirPromoteOutcome::Exact(ranges) = outcome else {
+            return Err(format!("expected Exact, got {outcome:?}"));
+        };
+
+        let mapped = ranges
+            .iter()
+            .map(|range| (range.start.character as usize, range.end.character as usize))
+            .collect::<Vec<_>>();
+        if !mapped.contains(&(4, 9)) {
+            return Err(format!("canonical anchor missing: {mapped:?}"));
+        }
+        if mapped.contains(&(0, 1)) {
+            return Err(format!("forged anchor leaked: {mapped:?}"));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{PirShadowRefusalReason, evaluate_refusal};
+    use super::{
+        PirShadowRefusalReason, evaluate_refusal,
+        lexical_fact_range as production_lexical_fact_range,
+    };
+
+    fn canonical(range: Option<(usize, usize)>) -> Option<(usize, usize)> {
+        production_lexical_fact_range(range)
+    }
+
+    #[test]
+    fn canonical_anchor_is_consumed_without_legacy_repair() {
+        assert_eq!(canonical(Some((7, 9))), Some((7, 9)));
+        assert_eq!(canonical(Some((3, 5))), Some((3, 5)));
+        assert_eq!(canonical(Some((6, 8))), Some((6, 8)));
+        assert_eq!(canonical(Some((4, 6))), Some((4, 6)));
+    }
+
+    #[test]
+    fn canonical_anchor_preserves_unicode_byte_geometry() {
+        assert_eq!(canonical(Some((3, 6))), Some((3, 6)));
+        assert_eq!(canonical(Some((0, 20))), Some((0, 20)));
+        assert_eq!(canonical(None), None);
+    }
 
     // The five refusal guards, exercised with literal arguments so the two
     // guards the real PR1 pipeline never reaches (empty bodies, behavior change)

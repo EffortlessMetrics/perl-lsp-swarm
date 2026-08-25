@@ -7,6 +7,10 @@
 
 use super::super::{JsonRpcError, LspServer, Value, json};
 use crate::protocol::{invalid_params, req_position, req_uri};
+use crate::runtime::language::misc::{
+    ExternalCompletionOutcome, evaluate_external_candidates, external_completion_permitted,
+    inline_completion_trigger_kind, selected_inline_completion_info,
+};
 use crate::runtime::stream_session::SessionKey;
 use perl_lsp_rs_core::providers::inline_completion::BackendError;
 use std::time::{Duration, Instant};
@@ -27,13 +31,25 @@ impl LspServer {
 
         let uri = req_uri(&params)?;
         let (line, character) = req_position(&params)?;
+        // Parse the actual request context the same way the standard route
+        // does, so the stream applies the identical trigger and
+        // selected-completion policy.
+        let trigger_kind = inline_completion_trigger_kind(&params)?;
+        let selected_completion = selected_inline_completion_info(&params)?;
         let partial_result_token =
             params.get("partialResultToken").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let document_version = params
-            .get("textDocument")
-            .and_then(|td| td.get("version"))
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
+        // The request's document version, when the client supplies one. An
+        // absent version is "unknown", not zero: it cannot prove staleness.
+        let request_document_version =
+            params.get("textDocument").and_then(|td| td.get("version")).and_then(|v| v.as_i64());
+        let document_version = request_document_version.unwrap_or(0);
+
+        // An automatic custom-stream request can never display external output
+        // unbidden: delegate to the standard deterministic-only route before
+        // any session or backend work.
+        if !external_completion_permitted(trigger_kind) {
+            return self.handle_inline_completion(Some(params));
+        }
 
         // Must have a partial result token for streaming
         let token = match partial_result_token {
@@ -44,11 +60,21 @@ impl LspServer {
             }
         };
 
-        // Snapshot text
-        let text = {
+        // Snapshot text plus its version/generation identity under the
+        // document lock. The identity binds the prepared AI context to one
+        // immutable snapshot, matching the buffered route.
+        let (text, snapshot_identity) = {
             let documents = self.documents_guard();
             match self.get_document(&documents, uri) {
-                Some(doc) => doc.text_arc.to_string(),
+                Some(doc) => (
+                    doc.text_arc.to_string(),
+                    perl_lsp_rs_core::providers::inline_completion::InlineCompletionSnapshotIdentity {
+                        document_version: Some(i64::from(doc.version)),
+                        source_generation: Some(u64::from(
+                            doc.generation.load(std::sync::atomic::Ordering::Acquire),
+                        )),
+                    },
+                ),
                 None => return Ok(Some(json!(null))),
             }
         };
@@ -87,12 +113,22 @@ impl LspServer {
         };
         let session = self.stream_sessions().start_session(session_key);
 
-        // Prepare context
+        // Prepare context. Invoked AI preparation fails closed here: a stale
+        // request version or a hard-reject cursor makes zero backend calls,
+        // exactly as in the buffered route.
         let provider =
             perl_lsp_rs_core::providers::inline_completion::InlineCompletionProvider::new();
-        let context = match provider.prepare_context(&text, line, character) {
-            Some(ctx) => ctx,
-            None => return Ok(Some(json!(null))),
+        let context = match provider.prepare_invoked_context(
+            &text,
+            line,
+            character,
+            snapshot_identity,
+            request_document_version,
+        ) {
+            perl_lsp_rs_core::providers::inline_completion::PreparedInvocationContext::Ready(
+                ctx,
+            ) => *ctx,
+            _ => return Ok(Some(json!(null))),
         };
 
         // Build request
@@ -142,6 +178,10 @@ impl LspServer {
         let mut sent_final = false;
         let debounce = Duration::from_millis(streaming_debounce_ms);
         let mut last_emitted_at: Option<Instant> = None;
+        // The typed final decision for the stream's last candidate, retained
+        // for #10005's terminal owner: filtered output is a decision, never an
+        // implicit empty list.
+        let mut final_outcome: Option<ExternalCompletionOutcome> = None;
 
         // Stream from the backend -- each chunk carries cumulative text
         let stream_result = backend.stream(
@@ -162,25 +202,55 @@ impl LspServer {
                     sent_final = true;
                 }
 
-                let candidate = provider.apply_replacement_ranges_for_context(
-                    perl_lsp_rs_core::providers::inline_completion::InlineCompletionList {
-                        items: vec![
-                            perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem {
-                                insert_text: chunk.text,
-                                filter_text: None,
-                                range: None,
-                                command: None,
-                            },
-                        ],
-                    },
+                // One external candidate per cumulative chunk, evaluated
+                // through the same shared finalization seam the buffered route
+                // uses: exact range, parse-safety, selected-completion
+                // constraint, and trigger policy — never a stream-local verdict.
+                let outcome = evaluate_external_candidates(
+                    &provider,
+                    vec![
+                        perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem {
+                            insert_text: chunk.text,
+                            filter_text: None,
+                            range: None,
+                            command: None,
+                        },
+                    ],
+                    &text,
                     &context,
+                    selected_completion.as_ref(),
+                    trigger_kind,
                     line,
                     character,
+                    ai_fallback,
                 );
-                let safe_items = provider
-                    .filter_parse_safe_items(candidate, &text, line, character)
-                    .items;
+                let safe_items = match outcome {
+                    ExternalCompletionOutcome::Accepted(list) => list.items,
+                    ExternalCompletionOutcome::FallbackRequired if is_final => {
+                        // A filtered final with fallback configured hands the
+                        // final content to the deterministic route.
+                        final_outcome = Some(ExternalCompletionOutcome::FallbackRequired);
+                        self.deterministic_inline_items(
+                            &provider,
+                            uri,
+                            &text,
+                            line,
+                            character,
+                            selected_completion.as_ref(),
+                            trigger_kind,
+                        )
+                    }
+                    filtered @ (ExternalCompletionOutcome::FallbackRequired
+                    | ExternalCompletionOutcome::FinalEmpty) => {
+                        if is_final {
+                            final_outcome = Some(filtered);
+                        }
+                        Vec::new()
+                    }
+                };
                 if safe_items.is_empty() && !is_final {
+                    // Unsafe or filtered intermediate cumulative text is
+                    // skipped without ending the backend stream.
                     return perl_lsp_rs_core::providers::inline_completion::StreamControl::Continue;
                 }
 
@@ -244,43 +314,63 @@ impl LspServer {
             let cumulative_text =
                 session.current_text.lock().map(|t| t.clone()).unwrap_or_default();
 
-            let items = if cumulative_text.is_empty() {
-                json!([])
+            // Evaluate the terminal cumulative text through the same shared
+            // seam. A filtered final is a typed decision: with fallback
+            // configured, the deterministic route owns the final content;
+            // without it, the final list is empty.
+            let outcome = if cumulative_text.is_empty() {
+                None
             } else {
-                let candidate = provider.apply_replacement_ranges_for_context(
-                    perl_lsp_rs_core::providers::inline_completion::InlineCompletionList {
-                        items: vec![
-                            perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem {
-                                insert_text: cumulative_text,
-                                filter_text: None,
-                                range: None,
-                                command: None,
-                            },
-                        ],
-                    },
+                Some(evaluate_external_candidates(
+                    &provider,
+                    vec![perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem {
+                        insert_text: cumulative_text,
+                        filter_text: None,
+                        range: None,
+                        command: None,
+                    }],
+                    &text,
                     &context,
+                    selected_completion.as_ref(),
+                    trigger_kind,
                     line,
                     character,
-                );
-                let safe_items =
-                    provider.filter_parse_safe_items(candidate, &text, line, character).items;
-                json!(safe_items
-                    .into_iter()
-                    .map(|item| {
-                        let range = item.range.unwrap_or(lsp_types::Range {
-                            start: lsp_types::Position { line, character },
-                            end: lsp_types::Position { line, character },
-                        });
-                        json!({
-                            "insertText": item.insert_text,
-                            "range": {
-                                "start": { "line": range.start.line, "character": range.start.character },
-                                "end": { "line": range.end.line, "character": range.end.character }
-                            }
-                        })
-                    })
-                    .collect::<Vec<_>>())
+                    ai_fallback,
+                ))
             };
+            let final_decision = outcome.or(final_outcome.take());
+
+            let final_items = match final_decision {
+                Some(ExternalCompletionOutcome::Accepted(list)) => list.items,
+                Some(ExternalCompletionOutcome::FallbackRequired) => self
+                    .deterministic_inline_items(
+                        &provider,
+                        uri,
+                        &text,
+                        line,
+                        character,
+                        selected_completion.as_ref(),
+                        trigger_kind,
+                    ),
+                Some(ExternalCompletionOutcome::FinalEmpty) | None => Vec::new(),
+            };
+
+            let items = json!(final_items
+                .into_iter()
+                .map(|item| {
+                    let range = item.range.unwrap_or(lsp_types::Range {
+                        start: lsp_types::Position { line, character },
+                        end: lsp_types::Position { line, character },
+                    });
+                    json!({
+                        "insertText": item.insert_text,
+                        "range": {
+                            "start": { "line": range.start.line, "character": range.start.character },
+                            "end": { "line": range.end.line, "character": range.end.character }
+                        }
+                    })
+                })
+                .collect::<Vec<_>>());
 
             let progress = json!({
                 "token": token_clone,

@@ -1,0 +1,11 @@
+project: product
+component: Editor Integrations
+kind: Added
+body: >-
+  Add an exact, fail-closed compatibility and currentness authority for the
+  LSP-perllsp, Sublime LSP, host, and managed perllsp subject tuple.
+time: 2026-08-13T22:25:00Z
+custom:
+  PR: "8027"
+  Slug: sublime-compatibility-authority
+  Breaking: "no"

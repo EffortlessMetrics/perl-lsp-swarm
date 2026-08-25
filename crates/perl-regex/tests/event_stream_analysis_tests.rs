@@ -242,3 +242,21 @@ fn malformed_structure_is_retained_without_fabricated_findings()
     assert!(analysis.facts.nested_quantifiers.is_empty());
     Ok(())
 }
+
+#[test]
+fn embedded_code_without_closing_paren_is_malformed() -> Result<(), Box<dyn std::error::Error>> {
+    // `(?{ code })` requires the literal `)` after the closing `}`.  A bare
+    // `(?{ code }` that lacks the `)` is rejected by Perl as unterminated.
+    //
+    // Before the fix the scanner advanced past `}`, optionally consumed `)` if
+    // present, then unconditionally returned `closed = true`.  This meant a
+    // pattern that Perl rejects was reported as well-formed, producing a
+    // definitive analysis result from a structurally invalid pattern.
+    let malformed = RegexValidator::new().analyze("(?{ run }");
+    assert!(malformed.malformed, "(?{{ run }} without closing ) must be reported as malformed");
+
+    // The well-formed spelling closes normally and must not be malformed.
+    let well_formed = RegexValidator::new().analyze("(?{ run })");
+    assert!(!well_formed.malformed, "(?{{ run }}) with closing ) must not be malformed");
+    Ok(())
+}

@@ -45,7 +45,7 @@ perllsp --health
 | Vim | use `vim-lsp` with `perllsp --stdio` | [docs/EDITORS/VIM_SETUP.md](../EDITORS/VIM_SETUP.md) |
 | coc.nvim | configure `languageserver.perl-lsp` in `coc-settings.json` to launch `perllsp --stdio`; works in Neovim and Vim when the buffer filetype is `perl` | [docs/EDITORS/COC_NEOVIM_SETUP.md](../EDITORS/COC_NEOVIM_SETUP.md) |
 | Emacs | use `lsp-mode` or `eglot` with `perllsp --stdio` | [docs/EDITORS/EMACS_SETUP.md](../EDITORS/EMACS_SETUP.md) |
-| Helix | add a `perllsp` language server entry | [docs/EDITORS/HELIX_SETUP.md](../EDITORS/HELIX_SETUP.md) |
+| Helix | use the reviewed manual Perl 5 override; released stable and current master are separate client cohorts | [docs/EDITORS/HELIX_SETUP.md](../EDITORS/HELIX_SETUP.md) |
 | Zed | **Planned / not proven:** the public Perl extension does not register `perllsp`; do not reuse its independent `perl-lsp` ID | [docs/EDITORS/ZED_SETUP.md](../EDITORS/ZED_SETUP.md) |
 | Sublime Text | register `perllsp` in LSP package settings | [docs/EDITORS/SUBLIME_SETUP.md](../EDITORS/SUBLIME_SETUP.md) |
 | Amazon Kiro | register a Perl LSP client using `perllsp --stdio` | [docs/EDITORS/KIRO_SETUP.md](../EDITORS/KIRO_SETUP.md) |
@@ -159,15 +159,39 @@ It must be `perl`.
 
 ### Helix
 
-```toml
-[[language]]
-name = "perl"
-language-servers = ["perllsp"]
+Helix's current built-in `perl` language entry also owns Raku/NQP/P6 file
+extensions. `perllsp` is a Perl 5 server, so use the reviewed override rather
+than replacing only the language-server name on the combined entry:
 
+```toml
 [language-server.perllsp]
 command = "perllsp"
 args = ["--stdio"]
+
+[[language]]
+name = "perl"
+language-servers = ["perllsp"]
+roots = [".perl-lsp.toml", "Makefile.PL", "Build.PL", "cpanfile", "dist.ini"]
+file-types = [
+  "pl",
+  "pm",
+  "t",
+  "psgi",
+  { glob = "latexmkrc" },
+  { glob = ".latexmkrc" },
+]
+shebangs = ["perl"]
 ```
+
+The checked fixture is
+[`docs/examples/helix/languages.toml`](../examples/helix/languages.toml).
+This safe override deliberately stops the same entry from owning Raku-family
+file detection; it does not supply or imply Raku LSP support.
+
+Official Helix 25.07.1 uses push diagnostics and predates workspace trust.
+Pinned current master uses pull diagnostics and workspace trust. See the
+detailed guide for the exact cohort, project-local configuration, root, trust,
+and evidence boundaries.
 
 ### Zed
 
@@ -297,6 +321,9 @@ push.
 
 **Editor-specific notes:**
 
+- **Helix:** official 25.07.1 does not advertise pull diagnostics and uses push;
+  pinned current master advertises pull and has a polling path. Keep their
+  support rows and troubleshooting separate.
 - **OpenCode:** the server force-enables push diagnostics for OpenCode clients
   regardless of capability advertisement, because OpenCode's agent feedback
   loop relies on push. See

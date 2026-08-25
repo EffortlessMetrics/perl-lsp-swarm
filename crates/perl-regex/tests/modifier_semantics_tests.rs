@@ -503,3 +503,41 @@ fn raw_sequences_round_trip_losslessly_across_operators_and_profiles()
     }
     Ok(())
 }
+
+#[test]
+fn substitution_c_without_g_is_diagnosed_and_does_not_preserve_position()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Perl accepts `/c` on `s///` but emits a "meaningless use of /c" warning
+    // because match-position preservation only applies to `m//gc`.  Static
+    // analysis must mirror that: `s///c` must emit a `ModifierHasNoEffect`
+    // diagnostic and must NOT set `keep_match_position`.
+    //
+    // This is the discriminating negative case: the existing suite already
+    // covers `s///gc`, but the defect claim is that even `s///c` (without `/g`)
+    // was reported as harmless.  Without a discriminating test a suite that only
+    // asserts the well-formed `m//gc` spelling passes with the defect present.
+    let s_c = RegexAnalyzer::analyze_modifiers(
+        RegexOperator::Substitution,
+        sequence("c", 0)?,
+        profile(44, FeatureState::Disabled),
+    );
+    assert!(!s_c.effective.keep_match_position, "s///c must not set keep_match_position");
+    assert!(
+        s_c.diagnostics.iter().any(|d| d.code == RegexDiagnosticCode::ModifierHasNoEffect),
+        "s///c must emit ModifierHasNoEffect; got: {:?}",
+        s_c.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>()
+    );
+
+    // Contrast: `m//gc` is the one valid form that preserves a match position.
+    let m_gc = RegexAnalyzer::analyze_modifiers(
+        RegexOperator::Match,
+        sequence("gc", 0)?,
+        profile(44, FeatureState::Disabled),
+    );
+    assert!(m_gc.effective.keep_match_position, "m//gc must set keep_match_position");
+    assert!(
+        !m_gc.diagnostics.iter().any(|d| d.code == RegexDiagnosticCode::ModifierHasNoEffect),
+        "m//gc must not emit ModifierHasNoEffect"
+    );
+    Ok(())
+}

@@ -964,13 +964,13 @@ impl<'a> Parser<'a> {
                                 let first_arg = self.parse_assignment_or_declaration()?;
                                 let args_node =
                                     self.collect_comma_fat_arrow_continuation(first_arg)?;
-                                let args = match args_node.kind {
-                                    NodeKind::ArrayLiteral { elements } => elements,
-                                    NodeKind::HashLiteral { pairs } => pairs
+                                let args = match args_node.into_parts() {
+                                    (NodeKind::ArrayLiteral { elements }, _) => elements,
+                                    (NodeKind::HashLiteral { pairs }, _) => pairs
                                         .into_iter()
                                         .flat_map(|(k, v)| [k, v])
                                         .collect(),
-                                    _ => vec![args_node],
+                                    (kind, location) => vec![Node::new(kind, location)],
                                 };
                                 let call_end = args
                                     .last()

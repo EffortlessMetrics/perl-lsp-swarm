@@ -1,3 +1,4 @@
+use crate::runtime::LspServer;
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
 use perl_parser::workspace_index::IndexCoordinator;
 use serde_json::{Value, json};
@@ -972,5 +973,303 @@ mod tests {
         assert!(outcome.is_fallback_safe());
         assert!(outcome.reason().contains("scan timeout"));
         Ok(())
+    }
+}
+
+use std::collections::HashMap;
+/// Accepted-ticket active-document parser-core readiness (#11675, EFS-04
+/// tiers 1-2 only).
+///
+/// One generation-owned state per open document, derived from the exact
+/// accepted parser ticket plus the required core document-effect outcomes
+/// for profile v1 (parser diagnostics publication + local document symbols,
+/// both owned by this crate's accepted-ticket sinks from #12031/#12035).
+/// Queue settlement, pending-parse counters, worker completion, and
+/// workspace-index completion are operational observations; none of them can
+/// construct or mint readiness here. Workspace/semantic/dependency tiers
+/// remain with their existing owners (#10791/#8619/#8642, #7309); provider
+/// policy stays with #3099.
+use std::sync::atomic::AtomicU32;
+
+use parking_lot::Mutex;
+
+use super::workspace_progress;
+
+/// Readiness states. Exact names are claim-local latitude (#11675); what is
+/// NOT collapsible is parser acceptance versus per-effect completion versus
+/// clean versus recovered/limited versus terminal unavailability.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ActiveDocumentReadinessState {
+    /// Installed for the exact target generation before parse work began.
+    PendingParser,
+    /// Ticket accepted; required effect outcomes not all attached yet.
+    ParserStateAcceptedEffectsPending,
+    /// Clean acceptance + every required effect committed for this ticket.
+    ParserCoreReady,
+    /// Recovered/limited acceptance + every required effect committed. Never
+    /// presented as exact clean readiness.
+    RecoveredOrLimitedReady,
+    /// Current parse failure terminal; supersedes prior readiness honestly.
+    UnavailableTerminal,
+    /// Guarded no-parse document (template / oversize / binary content).
+    Guarded,
+}
+
+impl ActiveDocumentReadinessState {
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::PendingParser => "pending_parser",
+            Self::ParserStateAcceptedEffectsPending => "accepted_effects_pending",
+            Self::ParserCoreReady => "parser_core_ready",
+            Self::RecoveredOrLimitedReady => "recovered_or_limited_ready",
+            Self::UnavailableTerminal => "unavailable_terminal",
+            Self::Guarded => "guarded",
+        }
+    }
+
+    fn is_ready_projection(&self) -> bool {
+        matches!(self, Self::ParserCoreReady | Self::RecoveredOrLimitedReady)
+    }
+}
+
+/// How the accepted ticket's parser outcome was classified at acceptance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ParserAcceptanceClass {
+    Clean,
+    RecoveredOrLimited,
+    Failed,
+}
+
+/// One open document's current readiness entry. A newer install replaces the
+/// whole entry: the predecessor is superseded by construction, never merged.
+pub(crate) struct ActiveDocumentReadinessEntry {
+    pub(crate) client_uri: String,
+    pub(crate) document_instance: Arc<AtomicU32>,
+    pub(crate) generation: u32,
+    pub(crate) state: ActiveDocumentReadinessState,
+    pub(crate) limitation: Option<String>,
+    pub(crate) sequence: u64,
+    /// Profile v1 required-effect rows. The diagnostics row is
+    /// `not_applicable` (pre-satisfied) when the client uses pull
+    /// diagnostics; push publication is then not a required core effect.
+    pub(crate) diagnostics_effect_satisfied: bool,
+    pub(crate) symbols_effect_satisfied: bool,
+}
+
+/// Required-effect identity a sink reports when one of its commits lands.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CoreEffectKind {
+    ParserDiagnosticsPublication,
+    DocumentSymbols,
+}
+
+/// Per-server readiness table keyed by normalized URI.
+#[derive(Default)]
+pub(crate) struct ActiveDocumentParserReadiness {
+    entries: Mutex<HashMap<String, ActiveDocumentReadinessEntry>>,
+}
+
+impl ActiveDocumentParserReadiness {
+    /// Receipt observation for focused tests:
+    /// `(state name, generation, monotonic sequence)`.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub(crate) fn observe(&self, normalized_uri: &str) -> Option<(&'static str, u32, u64)> {
+        let entries = self.entries.lock();
+        entries.get(normalized_uri).map(|e| (e.state.as_str(), e.generation, e.sequence))
+    }
+}
+
+impl LspServer {
+    /// Install the pending state for the exact target generation before any
+    /// parse work for it begins. Supersedes whatever stood for this URI.
+    pub(crate) fn install_active_document_pending(
+        &self,
+        normalized_uri: &str,
+        client_uri: &str,
+        document_instance: &Arc<AtomicU32>,
+        generation: u32,
+    ) {
+        let mut entries = self.active_document_readiness.entries.lock();
+        let previous_sequence = entries.get(normalized_uri).map(|e| e.sequence).unwrap_or(0);
+        if let Some(previous) = entries.get(normalized_uri) {
+            tracing::debug!(
+                uri = %normalized_uri,
+                superseded_generation = previous.generation,
+                "Superseding active-document readiness before replacement work"
+            );
+        }
+        entries.insert(
+            normalized_uri.to_string(),
+            ActiveDocumentReadinessEntry {
+                client_uri: client_uri.to_string(),
+                document_instance: Arc::clone(document_instance),
+                generation,
+                state: ActiveDocumentReadinessState::PendingParser,
+                limitation: None,
+                sequence: previous_sequence + 1,
+                // Profile v1 applicability is fixed at install time: pull
+                // clients own diagnostic currency on demand, so push
+                // publication cannot be a required core effect for them.
+                diagnostics_effect_satisfied: self
+                    .client_supports_pull_diags
+                    .load(Ordering::Relaxed),
+                symbols_effect_satisfied: false,
+            },
+        );
+    }
+
+    /// Record that the exact ticket's parser result was accepted
+    /// (`publish_parsed_if_current` succeeded), classifying the terminal
+    /// class. Failed acceptance is a terminal supersession: no effect attach
+    /// may move it back toward readiness.
+    pub(crate) fn mark_active_document_parser_accepted(
+        &self,
+        normalized_uri: &str,
+        document_instance: &Arc<AtomicU32>,
+        generation: u32,
+        class: ParserAcceptanceClass,
+        limitation: Option<String>,
+    ) {
+        let mut entries = self.active_document_readiness.entries.lock();
+        let Some(entry) = entries.get_mut(normalized_uri) else {
+            return;
+        };
+        if !Self::entry_matches(entry, document_instance, generation) {
+            return;
+        }
+        match class {
+            ParserAcceptanceClass::Clean | ParserAcceptanceClass::RecoveredOrLimited => {
+                if entry.state == ActiveDocumentReadinessState::PendingParser {
+                    entry.state = ActiveDocumentReadinessState::ParserStateAcceptedEffectsPending;
+                    entry.limitation = limitation;
+                }
+            }
+            ParserAcceptanceClass::Failed => {
+                entry.state = ActiveDocumentReadinessState::UnavailableTerminal;
+                entry.limitation = limitation.or_else(|| Some("parse_failed".to_string()));
+            }
+        }
+    }
+
+    /// Mark a guarded no-parse document terminal. Guarded documents never
+    /// project parser-core readiness.
+    pub(crate) fn mark_active_document_guarded(
+        &self,
+        normalized_uri: &str,
+        document_instance: &Arc<AtomicU32>,
+        generation: u32,
+        reason: &str,
+    ) {
+        let mut entries = self.active_document_readiness.entries.lock();
+        match entries.get_mut(normalized_uri) {
+            Some(entry) if Self::entry_matches(entry, document_instance, generation) => {
+                entry.state = ActiveDocumentReadinessState::Guarded;
+                entry.limitation = Some(reason.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    /// Attach one required-effect commit outcome to the entry whose identity
+    /// exactly matches `(instance, generation)`. Anything else -- stale
+    /// generation, wrong instance, unknown document, terminal/guarded state --
+    /// is rejected without mutating readiness. Minting readiness emits the
+    /// `perl-lsp/active-document-ready` notification as a PROJECTION of the
+    /// already-current state; it is never the state itself.
+    pub(crate) fn attach_active_document_effect(
+        &self,
+        normalized_uri: &str,
+        document_instance: &Arc<AtomicU32>,
+        generation: u32,
+        effect: CoreEffectKind,
+    ) {
+        let minted = {
+            let mut entries = self.active_document_readiness.entries.lock();
+            let Some(entry) = entries.get_mut(normalized_uri) else {
+                return;
+            };
+            if !Self::entry_matches(entry, document_instance, generation) {
+                tracing::debug!(
+                    uri = %normalized_uri,
+                    generation,
+                    "Rejected stale active-document effect attachment"
+                );
+                return;
+            }
+            if entry.state != ActiveDocumentReadinessState::ParserStateAcceptedEffectsPending {
+                return;
+            }
+            match effect {
+                CoreEffectKind::ParserDiagnosticsPublication => {
+                    entry.diagnostics_effect_satisfied = true;
+                }
+                CoreEffectKind::DocumentSymbols => {
+                    entry.symbols_effect_satisfied = true;
+                }
+            }
+            if entry.diagnostics_effect_satisfied && entry.symbols_effect_satisfied {
+                entry.state = if entry.limitation.is_some() {
+                    ActiveDocumentReadinessState::RecoveredOrLimitedReady
+                } else {
+                    ActiveDocumentReadinessState::ParserCoreReady
+                };
+                true
+            } else {
+                false
+            }
+        };
+
+        if minted {
+            let payload_uri = {
+                let entries = self.active_document_readiness.entries.lock();
+                entries.get(normalized_uri).map(|e| (e.client_uri.clone(), u64::from(e.generation)))
+            };
+            if let Some((client_uri, generation)) = payload_uri {
+                workspace_progress::send_active_document_ready_notification(
+                    self.outbound_sink(),
+                    &client_uri,
+                    generation,
+                );
+                tracing::debug!(
+                    uri = %normalized_uri,
+                    generation,
+                    "Active-document parser-core readiness minted"
+                );
+            }
+        }
+    }
+
+    /// Remove the entry entirely (didClose eviction): a closed document has
+    /// no live readiness claim.
+    pub(crate) fn remove_active_document_readiness(&self, normalized_uri: &str) {
+        self.active_document_readiness.entries.lock().remove(normalized_uri);
+    }
+
+    fn entry_matches(
+        entry: &ActiveDocumentReadinessEntry,
+        document_instance: &Arc<AtomicU32>,
+        generation: u32,
+    ) -> bool {
+        Arc::ptr_eq(&entry.document_instance, document_instance) && entry.generation == generation
+    }
+
+    /// Receipt observation for focused tests.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub(crate) fn test_active_document_readiness(
+        &self,
+        normalized_uri: &str,
+    ) -> Option<(&'static str, u32, u64)> {
+        self.active_document_readiness.observe(normalized_uri)
+    }
+
+    /// Whether a readiness entry exists and projects usable readiness.
+    #[allow(dead_code)]
+    pub(crate) fn active_document_is_ready(&self, normalized_uri: &str) -> bool {
+        self.active_document_readiness
+            .entries
+            .lock()
+            .get(normalized_uri)
+            .is_some_and(|e| e.state.is_ready_projection())
     }
 }

@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "B13-consumed-finding-identity-reintroduction",
+  "family": "count_identity_debt_substitution",
+  "purpose": "A consumed/closed finding identity reappearing later must be a NEW admission, not silent resurrection of old acceptance.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "finding #4311 consumed",
+      "cites the old consumption"
+    ],
+    "content": "// receipt marks finding #4311 consumed at sha X;\n// candidate reintroduces identical code and cites the old consumption as cover.\n",
+    "sha256": "86468ff15a6b03fd1397e9b2d8c37f5ab5159eecd1fdbca431f0716729f3810e"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11407,
+    "unresolved_reason": "Consumptive finding-admission transitions (#11407) are unlanded; identity vocabulary exists only in issue prose."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "consumed_identity_resurrection"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "new debt row",
+      "delta provenance"
+    ],
+    "note": "Resurrection requires a fresh reviewed admission.",
+    "content": "// honest shape: new debt row + delta provenance referencing the reopened incident\n",
+    "sha256": "e9204a27d30bda3f647303e90e82626bd6956f4dfde9caf891ad49326006551a"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Unresolved until the admission ledger exists; corpus freezes the failure class now."
+}

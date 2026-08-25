@@ -6,7 +6,11 @@ pub use crate::{
         CaptureNumberConfidence, CaptureProfileConfidence, CaptureSourceConfidence, CaptureSyntax,
         CharacterSetMode, EffectiveModifiers, ExtendedMode, FeatureState, ModifierAnalysis,
         ModifierRequirement, ModifierRequirementKind, ModifierSequence, ModifierToken,
-        NamedCaptureFamily, PerlVersion, RegexLanguageProfile, RegexOperator,
+        NamedCaptureFamily, PatternBoundary, PatternBoundaryKind, PatternControlAnalysis,
+        PatternControlAnalysisStatus, PatternControlDiagnostic, PatternControlDiagnosticCode,
+        PatternControlEffect, PatternControlFact, PatternControlId, PatternControlKind,
+        PatternControlResolution, PatternControlUnresolvedReason, PatternExtendedMode,
+        PatternModeState, PatternReferenceSyntax, PerlVersion, RegexLanguageProfile, RegexOperator,
         RequirementDisposition, TransliterationModifiers,
     },
     validator::{

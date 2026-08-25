@@ -1,0 +1,12 @@
+project: product
+component: Compatibility
+kind: Fixed
+body: >-
+  Negotiate Sublime Text file-operation and inline-completion capabilities from
+  the client's declared LSP 2.13 surface instead of advertising unsupported
+  operations.
+time: 2026-08-13T09:55:00Z
+custom:
+  PR: "7782"
+  Slug: sublime-capability-profile
+  Breaking: "no"

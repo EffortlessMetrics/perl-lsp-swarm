@@ -618,7 +618,42 @@ impl LspServer {
                             native_profile,
                             &critic_config,
                         );
-                    for finding in registry.check(&critic_context) {
+                    use perl_lsp_rs_core::tooling::perl_critic::{
+                        CriticSuppressionMap, NativeCriticPolicy, critic_source_identity_for_uri,
+                        native_finding_candidates_with_accounting, normalize_with_native_policy,
+                    };
+
+                    let raw_findings = registry.check_unfiltered(&critic_context);
+                    let candidates = native_finding_candidates_with_accounting(
+                        uri,
+                        raw_findings.iter().cloned(),
+                        critic_source_identity_for_uri(uri, 0),
+                    );
+                    let suppressions = CriticSuppressionMap::from_source(&doc.text);
+                    let policy = NativeCriticPolicy::new(
+                        severity.clamp(1, 5),
+                        &critic_config.include,
+                        &critic_config.exclude,
+                        &suppressions,
+                    );
+
+                    for normalized in normalize_with_native_policy(candidates, &policy) {
+                        // Normalization decides whether this logical finding is
+                        // admitted. The raw producer is retained only for its
+                        // existing safe edit and title; no raw finding can
+                        // bypass alias-aware exclusion or suppression.
+                        let Some(finding) = raw_findings.iter().find(|finding| {
+                            finding.range == normalized.range()
+                                && normalized.contributors().iter().any(|contributor| {
+                                    let identity = contributor.identity();
+                                    identity.origin()
+                                        == perl_lsp_rs_core::tooling::perl_critic::CriticFindingOrigin::NativeCritic
+                                        && identity.code() == finding.rule_id
+                                        && identity.shape() == finding.observed_shape
+                                })
+                        }) else {
+                            continue;
+                        };
                         // Only findings that carry a Safe automatic edit become
                         // quick-fixes. Suggested fixes need user confirmation
                         // (declaration-only renames corrupt references);
@@ -840,7 +875,10 @@ impl LspServer {
                         InternalCodeActionKind::RefactorInline => "refactor.inline",
                         InternalCodeActionKind::RefactorRewrite => "refactor.rewrite",
                         InternalCodeActionKind::Source => "source",
-                        InternalCodeActionKind::SourceOrganizeImports => "source.organizeImports",
+                        // `source.organizeImports` is withdrawn (#8305): the
+                        // legacy line-oriented organizer no longer exists, so
+                        // the kind is absent from the internal enum and cannot
+                        // be serialized. Restoration: #8319/#10696.
                         InternalCodeActionKind::SourceFixAll => "source.fixAll",
                         InternalCodeActionKind::SourceModernize => "source.modernize",
                     },
@@ -899,7 +937,8 @@ impl LspServer {
                         InternalCodeActionKind::RefactorInline => "refactor.inline",
                         InternalCodeActionKind::RefactorRewrite => "refactor.rewrite",
                         InternalCodeActionKind::Source => "source",
-                        InternalCodeActionKind::SourceOrganizeImports => "source.organizeImports",
+                        // `source.organizeImports` is withdrawn (#8305); see the
+                        // original-provider mapping above for the restoration path.
                         InternalCodeActionKind::SourceFixAll => "source.fixAll",
                         InternalCodeActionKind::SourceModernize => "source.modernize",
                     },
@@ -1175,16 +1214,14 @@ impl LspServer {
         if let (Some(uri), Some(offset), Some(text)) = data_info
             && let Some(obj) = action.as_object_mut()
         {
-            let edit_range = if offset as usize >= doc.text.len() {
-                let end = self.get_document_end_position(&doc.text);
-                json!({"start": end.clone(), "end": end })
-            } else {
-                let (line, col) = self.offset_to_pos16(doc, offset as usize);
-                json!({
-                    "start": {"line": line, "character": col},
-                    "end": {"line": line, "character": col}
-                })
-            };
+            // True EOF (`insertAt == document length`) projects through the
+            // same UTF-16 mapper as every other offset (#10220). No
+            // byte-column or split-based endpoint authority remains here.
+            let (line, col) = self.offset_to_pos16(doc, offset as usize);
+            let edit_range = json!({
+                "start": {"line": line, "character": col},
+                "end": {"line": line, "character": col}
+            });
 
             obj.insert(
                 "edit".into(),
@@ -1332,6 +1369,8 @@ impl LspServer {
                     suggestion: None,
                     related_information: Vec::new(),
                     tags: Vec::new(),
+                    fixable: false,
+                    critic_observation: None,
                 })
             })
             .collect()
@@ -1674,9 +1713,14 @@ mod tests {
         Ok(())
     }
 
-    /// Build a minimal quickfix action for use in unit tests.  The action has
-    /// exactly one edit on the supplied single-line range and a single
-    /// associated diagnostic so we can verify diagnostic propagation.
+    // Left nested rather than collapsed into a let-chain. Collapsing it
+    // registers a new gap under `enforce-new-ripr` that this PR could not
+    // discharge: focused unit tests, an integration test, and moving this
+    // suppression between the seam and the function were all tried, and
+    // none cleared it. The nested form matches main. The exact gap-identity
+    // rule is NOT established -- see the NOT_PROVEN note on PR #9674 before
+    // assuming one. See #9528.
+    #[allow(clippy::collapsible_if)]
     fn make_quickfix(
         uri: &str,
         line: u64,
@@ -2521,5 +2565,136 @@ my $x = 1 + 2;
                 "filter must retain only source.fixAll: {action:#?}"
             );
         }
+    }
+
+    // ── #11919 post-merge policy parity (quickfix surface) ───────────────────
+    //
+    // The critic quickfix block must derive from the same admitted normalized
+    // rows as the diagnostics plane: excluding an approved alias spelling must
+    // leave no second active spelling on the action surface (#7475 bullet 7),
+    // and unrelated quickfix families must survive. Because every alias-set row
+    // currently carries no Safe fix payload, a raw-ID reversion produces the
+    // same visible actions — `critic_normalization_wiring_tests` gates own that
+    // discrimination until #6970's remediation envelope changes fix payloads.
+
+    /// Document tripping `native.security.backtick_exec` plus a Safe-fix control
+    /// row (`native.testing.require_use_strict`) that becomes a critic quickfix.
+    const PARITY_DOC: &str = "my $out = `ls -la`;\nprint 1;\n";
+
+    fn critic_quickfix_codes(actions: &[Value]) -> Vec<String> {
+        actions
+            .iter()
+            .filter(|action| action["kind"].as_str() == Some("quickfix"))
+            .filter_map(|action| {
+                action.pointer("/diagnostics/0/code").and_then(Value::as_str).map(str::to_string)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn code_action_critic_baseline_offers_safe_fix_quickfix_for_control_row()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///critic_parity_baseline.pl";
+        open_test_document(&server, uri, PARITY_DOC);
+
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 }
+            },
+            "context": { "diagnostics": [] }
+        })))?;
+        let codes = critic_quickfix_codes(
+            response
+                .ok_or("missing code action response")?
+                .as_array()
+                .cloned()
+                .as_deref()
+                .ok_or("code action response must be an array")?,
+        );
+
+        assert!(
+            codes.iter().any(|code| code == "native.testing.require_use_strict"),
+            "baseline proves the critic quickfix pipeline runs on this document: {codes:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn code_action_excluding_compat_alias_spelling_keeps_unrelated_quickfixes_only()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        server.test_configure_native_critic_filters(Vec::new(), vec!["PL601".to_string()]);
+        let uri = "file:///critic_parity_exclude_pl601.pl";
+        open_test_document(&server, uri, PARITY_DOC);
+
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 }
+            },
+            "context": { "diagnostics": [] }
+        })))?;
+        let actions = response
+            .ok_or("missing code action response")?
+            .as_array()
+            .cloned()
+            .ok_or("code action response must be an array")?;
+
+        let codes = critic_quickfix_codes(&actions);
+        assert!(
+            !codes.iter().any(|code| code.contains("backtick")),
+            "excluding PL601 must remove every backtick-spelling action: {codes:?}"
+        );
+        for spelling in ["native.security.backtick_exec", "critic.security.backtick_exec", "PL601"]
+        {
+            assert!(
+                !codes.iter().any(|code| code == spelling),
+                "no second active {spelling} spelling may survive exclusion: {codes:?}"
+            );
+        }
+        assert!(
+            codes.iter().any(|code| code == "native.testing.require_use_strict"),
+            "excluding PL601 must leave unrelated critic quickfixes alone: {codes:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn code_action_severity_threshold_gates_critic_quickfixes_like_diagnostics_plane()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Both rows are Harsh (= 3); threshold 5 must gate the quickfix off
+        // exactly like the diagnostics plane's policy application.
+        let server = LspServer::new();
+        server.test_configure_perlcritic(true, 5, None);
+        let uri = "file:///critic_parity_severity.pl";
+        open_test_document(&server, uri, PARITY_DOC);
+
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 }
+            },
+            "context": { "diagnostics": [] }
+        })))?;
+        let codes = critic_quickfix_codes(
+            response
+                .ok_or("missing code action response")?
+                .as_array()
+                .cloned()
+                .as_deref()
+                .ok_or("code action response must be an array")?,
+        );
+
+        assert!(
+            !codes.iter().any(|code| code == "native.testing.require_use_strict"),
+            "threshold 5 must gate Harsh critic quickfixes off like the diagnostics plane: \
+             {codes:?}"
+        );
+        Ok(())
     }
 }

@@ -51,7 +51,7 @@
 //! ```
 
 use super::import_optimizer::ImportOptimizer;
-use perl_module::path::module_name_to_path;
+use perl_module::module_name_to_path;
 use perl_workspace::workspace_index::{
     SymKind, SymbolKey, WorkspaceIndex, fs_path_to_uri, normalize_var, uri_to_fs_path,
 };
@@ -1055,7 +1055,7 @@ mod tests {
             let path_str = path.to_str().ok_or_else(|| {
                 format!("Failed to convert path to string for test file: {}", name)
             })?;
-            index.index_file_str(path_str, content)?;
+            index.index_initial_file_str(path_str, content)?;
             paths.push(path);
         }
         Ok((dir, index, paths))

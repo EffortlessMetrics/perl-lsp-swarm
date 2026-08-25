@@ -623,6 +623,8 @@ struct RiprSuppression {
     #[serde(default)]
     paths: Vec<String>,
     #[serde(default)]
+    classification: Vec<String>,
+    #[serde(default)]
     reason: String,
 }
 
@@ -630,6 +632,7 @@ struct RiprSuppression {
 struct RiprSuppressionRules {
     display_patterns: Vec<String>,
     path_patterns: Vec<Pattern>,
+    classification_patterns: Vec<Vec<String>>,
     invalid_patterns: Vec<String>,
     suppression_reasons: Vec<Value>,
 }
@@ -661,6 +664,7 @@ fn read_ripr_suppression_rules(repo: &Path, path: &Path) -> Result<RiprSuppressi
                 Ok(pattern) => {
                     rules.display_patterns.push(path_pattern);
                     rules.path_patterns.push(pattern);
+                    rules.classification_patterns.push(suppression.classification.clone());
                 }
                 Err(_) => rules.invalid_patterns.push(path_pattern),
             }
@@ -709,6 +713,11 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     write_text(&repo.join(PR_RAW_CHECK_JSON), &check_json)?;
     let suppressions = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))?;
     let head_extents = HeadLineExtents::from_committed_diff(repo, &diff_receipt);
+    // Attribution basis for the new-gap count (#11690): findings must sit in a
+    // changed workspace package or one of its real dependents. Metadata failure
+    // keeps every finding counted — the gate never under-attributes on an
+    // unreadable graph.
+    let attribution_scope = attribution_scope_for_repo(repo, &diff_receipt).ok();
     let packet = pr_evidence_packet_with_count(
         options,
         &check_value,
@@ -717,6 +726,7 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
         &suppressions,
         changed_file_count,
         Some(&head_extents),
+        attribution_scope.as_ref(),
     );
     validate_pr_evidence_packet(&packet, options, changed_file_count, true, &base_sha, &head_sha)?;
     write_text(&repo.join(PR_EVIDENCE_JSON), &format_json(&packet)?)?;
@@ -790,6 +800,10 @@ struct RiprPrSummaryCounts {
     /// Same, for findings whose classification was not recognized. Decrements
     /// `severe_gaps` directly, like `suppressed_unclassified`.
     outside_head_unclassified: usize,
+    /// Classified findings sitting in a workspace package outside the changed
+    /// packages' dependent closure (#11690). Dropped before bucket counting and
+    /// reported for transparency; not a policy suppression.
+    out_of_dependency_graph: usize,
 }
 
 fn ripr_pr_summary_counts(
@@ -797,6 +811,7 @@ fn ripr_pr_summary_counts(
     check_summary: Option<&Map<String, Value>>,
     suppressions: &RiprSuppressionRules,
     head_extents: Option<&HeadLineExtents>,
+    attribution: Option<&DependencyAttribution>,
 ) -> RiprPrSummaryCounts {
     let summary_counts = RiprPrSummaryCounts {
         weakly_exposed: count_field(check_summary, "weakly_exposed"),
@@ -811,6 +826,8 @@ fn ripr_pr_summary_counts(
     let mut suppressed = RiprPrSummaryCounts::default();
     let mut outside_head = RiprPrSummaryCounts::default();
     let mut unsuppressed_from_findings = RiprPrSummaryCounts::default();
+    let mut out_of_graph_buckets = RiprPrSummaryCounts::default();
+    let mut out_of_graph_total = 0usize;
     for finding in findings {
         // ripr 0.5.x: "classification" field, values "weakly_exposed" | "reachable_unrevealed" | "no_static_path".
         // ripr 0.9.x: "grip_class" field, values "weakly_gripped" | "reachable_unrevealed" | "no_static_path".
@@ -847,7 +864,25 @@ fn ripr_pr_summary_counts(
             }
             continue;
         };
-        let counts = if suppression_matches_finding(suppressions, finding) {
+        let policy_suppressed = suppression_matches_finding(suppressions, finding);
+        if !policy_suppressed
+            && !outside
+            && attribution.is_some_and(|attribution| attribution.finding_is_out_of_graph(finding))
+        {
+            // #11690: the finding sits in a workspace package that does not
+            // depend on any changed package (or outside every package). It is
+            // dropped before bucket counting and reported for transparency.
+            // Policy suppression and head-revision filtering keep precedence.
+            out_of_graph_total += 1;
+            match canonical {
+                "weakly_exposed" => out_of_graph_buckets.weakly_exposed += 1,
+                "reachable_unrevealed" => out_of_graph_buckets.reachable_unrevealed += 1,
+                "no_static_path" => out_of_graph_buckets.no_static_path += 1,
+                _ => {}
+            }
+            continue;
+        }
+        let counts = if policy_suppressed {
             suppressed.suppressed_by_policy += 1;
             &mut suppressed
         } else if outside {
@@ -872,19 +907,23 @@ fn ripr_pr_summary_counts(
             weakly_exposed: summary_counts
                 .weakly_exposed
                 .saturating_sub(suppressed.weakly_exposed)
-                .saturating_sub(outside_head.weakly_exposed),
+                .saturating_sub(outside_head.weakly_exposed)
+                .saturating_sub(out_of_graph_buckets.weakly_exposed),
             reachable_unrevealed: summary_counts
                 .reachable_unrevealed
                 .saturating_sub(suppressed.reachable_unrevealed)
-                .saturating_sub(outside_head.reachable_unrevealed),
+                .saturating_sub(outside_head.reachable_unrevealed)
+                .saturating_sub(out_of_graph_buckets.reachable_unrevealed),
             no_static_path: summary_counts
                 .no_static_path
                 .saturating_sub(suppressed.no_static_path)
-                .saturating_sub(outside_head.no_static_path),
+                .saturating_sub(outside_head.no_static_path)
+                .saturating_sub(out_of_graph_buckets.no_static_path),
             suppressed_by_policy: suppressed.suppressed_by_policy,
             suppressed_unclassified: suppressed.suppressed_unclassified,
             outside_head_revision: outside_head.outside_head_revision,
             outside_head_unclassified: outside_head.outside_head_unclassified,
+            out_of_dependency_graph: out_of_graph_total,
         };
     }
     // Path B: no summary object — bucket totals come from `unsuppressed_from_findings`, which
@@ -897,6 +936,7 @@ fn ripr_pr_summary_counts(
         suppressed_unclassified: 0,
         outside_head_revision: outside_head.outside_head_revision,
         outside_head_unclassified: 0,
+        out_of_dependency_graph: out_of_graph_total,
         ..unsuppressed_from_findings
     }
 }
@@ -906,9 +946,36 @@ fn suppression_matches_finding(rules: &RiprSuppressionRules, finding: &Value) ->
         return false;
     };
     let path = normalize_suppression_match_path(&path);
-    rules.path_patterns.iter().zip(rules.display_patterns.iter()).any(|(pattern, pattern_text)| {
-        pattern.matches(&path) || suppression_directory_pattern_matches(pattern_text, &path)
-    })
+    let raw_classification = finding
+        .get("classification")
+        .and_then(Value::as_str)
+        .or_else(|| finding.get("grip_class").and_then(Value::as_str));
+    rules
+        .path_patterns
+        .iter()
+        .zip(rules.display_patterns.iter())
+        .zip(rules.classification_patterns.iter())
+        .any(|((pattern, pattern_text), allowed_classifications)| {
+            let path_matches = pattern.matches(&path)
+                || suppression_directory_pattern_matches(pattern_text, &path);
+            path_matches
+                && (allowed_classifications.is_empty()
+                    || raw_classification.is_some_and(|classification| {
+                        allowed_classifications.iter().any(|allowed| {
+                            canonical_suppression_classification(classification)
+                                == canonical_suppression_classification(allowed)
+                        })
+                    }))
+        })
+}
+
+fn canonical_suppression_classification(classification: &str) -> &str {
+    match classification {
+        // ripr 0.9.x renamed this class while the repository policy retains the
+        // stable semantic name used by older receipts.
+        "weakly_gripped" => "reachable_unrevealed",
+        other => other,
+    }
 }
 
 fn suppression_directory_pattern_matches(pattern: &str, path: &str) -> bool {
@@ -1009,10 +1076,10 @@ impl HeadLineExtents {
             // phantom deletion and silently drop its findings — fail-open, the one
             // direction this filter must never take. `C` leaves its source in place;
             // only `D` and `R` remove one.
-            if entry.status.starts_with(['D', 'R']) {
-                if let Some(old_path) = entry.old_path.as_deref() {
-                    removed.insert(normalize_repo_relative_path(old_path));
-                }
+            if entry.status.starts_with(['D', 'R'])
+                && let Some(old_path) = entry.old_path.as_deref()
+            {
+                removed.insert(normalize_repo_relative_path(old_path));
             }
         }
         // A path some other entry adds back still exists at head and keeps its extent.
@@ -1081,6 +1148,265 @@ fn path_suffix_matches(candidate: &str, repo_path: &str) -> bool {
     prefix.is_empty() || prefix.ends_with('/')
 }
 
+// ---------------------------------------------------------------------------
+// Dependency-graph attribution basis (#11690)
+// ---------------------------------------------------------------------------
+
+/// The attribution basis stamped into packets that narrow counted findings to
+/// the real dependency graph: changed workspace packages plus their transitive
+/// dependents, derived from `cargo metadata` resolve edges.
+const ATTRIBUTION_BASIS: &str = "changed_plus_workspace_dependents";
+
+/// Graph source recorded alongside the basis so receipts stay honest about
+/// where the reachability decision came from.
+const ATTRIBUTION_GRAPH_SOURCE: &str = "cargo_metadata";
+
+/// How the producer attributed counted findings for this diff (#11690).
+#[derive(Debug, Clone)]
+enum AttributionScope {
+    /// Filtering is active: only findings inside a reachable package count.
+    Applied(DependencyAttribution),
+    /// A shared workspace input (root `Cargo.toml`, `Cargo.lock`, `.cargo/`)
+    /// can affect every member; nothing is excluded.
+    SharedWorkspaceInput,
+    /// No changed file mapped into a workspace package (docs-only and similar);
+    /// there is no graph claim to make, so nothing is excluded.
+    NoChangedPackage,
+}
+
+impl AttributionScope {
+    fn applied(&self) -> Option<&DependencyAttribution> {
+        match self {
+            AttributionScope::Applied(attribution) => Some(attribution),
+            _ => None,
+        }
+    }
+
+    /// The receipt-facing status string for the packet's attribution stamp.
+    fn status(&self) -> &'static str {
+        match self {
+            AttributionScope::Applied(_) => "applied",
+            AttributionScope::SharedWorkspaceInput => "shared_workspace_input_kept_all",
+            AttributionScope::NoChangedPackage => "no_changed_package_kept_all",
+        }
+    }
+
+    fn changed_packages(&self) -> Vec<String> {
+        match self {
+            AttributionScope::Applied(attribution) => {
+                attribution.changed_packages.iter().cloned().collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn reachable_packages(&self) -> Vec<String> {
+        match self {
+            AttributionScope::Applied(attribution) => {
+                attribution.reachable_packages.iter().cloned().collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// Package-level reachability derived from the real cargo dependency graph.
+///
+/// `package_dirs` holds repo-relative manifest directories (longest first) so a
+/// finding path resolves to exactly one owning package. Paths outside every
+/// workspace package — archived sources under `archive/**`, generated docs,
+/// tooling configs — belong to no package and therefore cannot link against
+/// changed crates through cargo edges.
+#[derive(Debug, Clone)]
+struct DependencyAttribution {
+    changed_packages: BTreeSet<String>,
+    /// Changed packages plus every transitive dependent, per the resolve graph.
+    reachable_packages: BTreeSet<String>,
+    package_dirs: Vec<(String, String)>,
+}
+
+/// Where a finding path sits relative to the reachable package set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttributionPathState {
+    InReachablePackage,
+    OutOfGraph,
+    Unknown,
+}
+
+impl DependencyAttribution {
+    fn resolve(&self, raw_path: &str) -> AttributionPathState {
+        let path = normalize_suppression_match_path(raw_path);
+        // Longest-prefix-first ordering makes one owning package win.
+        let owning = self.package_dirs.iter().find(|(dir, _)| {
+            path == *dir
+                || path.strip_prefix(dir.as_str()).is_some_and(|rest| rest.starts_with('/'))
+        });
+        if let Some((_, name)) = owning {
+            return if self.reachable_packages.contains(name) {
+                AttributionPathState::InReachablePackage
+            } else {
+                AttributionPathState::OutOfGraph
+            };
+        }
+
+        // A path we can tie to the repository but to no workspace package is
+        // positively outside every member: dependents must be workspace
+        // packages built by cargo, so archived sources (`archive/**`), docs,
+        // tooling configs, and stray unregistered directories cannot link
+        // against changed crates (#11690).
+        //
+        // A host-prefixed path that anchors nowhere stays Unknown — the same
+        // fail-open convention as [`HeadLineExtents`] (#6260): the gate never
+        // under-attributes on an ambiguous answer.
+        if path.starts_with('/') || path.as_bytes().get(1) == Some(&b':') {
+            return AttributionPathState::Unknown;
+        }
+        AttributionPathState::OutOfGraph
+    }
+
+    /// True only when the finding is positively known to sit in a workspace
+    /// package outside the reachable set. Unknown paths keep counting — the
+    /// same fail-open convention as [`HeadLineExtents`] (#6260): the gate never
+    /// under-attributes on an ambiguous answer.
+    fn finding_is_out_of_graph(&self, finding: &Value) -> bool {
+        let Some(path) = ripr_finding_path(finding) else {
+            return false;
+        };
+        self.resolve(&path) == AttributionPathState::OutOfGraph
+    }
+}
+
+/// Build the attribution scope for a committed diff from cargo metadata.
+///
+/// Errors mean the graph could not be read at all; callers must then skip
+/// filtering entirely rather than guess.
+fn dependency_attribution_scope(
+    metadata: &Value,
+    changed_paths: &[String],
+) -> Result<AttributionScope> {
+    let root = metadata
+        .get("workspace_root")
+        .and_then(Value::as_str)
+        .ok_or_else(|| eyre!("cargo metadata missing workspace_root"))?
+        .replace('\\', "/");
+    let packages = metadata
+        .get("packages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| eyre!("cargo metadata missing packages array"))?
+        .iter()
+        .filter_map(|pkg| {
+            let name = pkg.get("name").and_then(Value::as_str)?;
+            let manifest = pkg.get("manifest_path").and_then(Value::as_str)?;
+            let dir = manifest
+                .replace('\\', "/")
+                .strip_prefix(root.as_str())
+                .and_then(|rest| rest.strip_prefix('/'))
+                .and_then(|rest| rest.strip_suffix("/Cargo.toml"))?
+                .to_string();
+            Some((dir, name.to_string()))
+        })
+        .collect::<Vec<_>>();
+    if packages.is_empty() {
+        bail!("cargo metadata listed no workspace package manifests");
+    }
+    let all_package_names = packages.iter().map(|(_, name)| name.clone()).collect::<BTreeSet<_>>();
+
+    let mut changed_packages = BTreeSet::new();
+    let mut shared_input_touched = false;
+    for file in changed_paths {
+        let normalized = normalize_repo_relative_path(file);
+        if normalized == "Cargo.toml"
+            || normalized == "Cargo.lock"
+            || normalized.starts_with(".cargo/")
+        {
+            shared_input_touched = true;
+        }
+        for (dir, name) in &packages {
+            let inside = normalized == *dir
+                || normalized.strip_prefix(dir.as_str()).is_some_and(|rest| rest.starts_with('/'));
+            if inside {
+                changed_packages.insert(name.clone());
+                break;
+            }
+        }
+    }
+
+    if shared_input_touched {
+        return Ok(AttributionScope::SharedWorkspaceInput);
+    }
+    if changed_packages.is_empty() {
+        return Ok(AttributionScope::NoChangedPackage);
+    }
+
+    let mut package_dirs = packages;
+    package_dirs
+        .sort_by(|left, right| right.0.len().cmp(&left.0.len()).then_with(|| left.0.cmp(&right.0)));
+    // The resolve graph reflects the currently resolved feature set, so a
+    // dev-, build-, or optional-dependency edge can be absent from it while a
+    // real configuration still links the changed crate. Union every declared
+    // manifest edge into the reverse map: over-approximating reachability only
+    // keeps more findings counted — under-attribution is the one direction
+    // this filter must never take (#11690).
+    let mut rev_deps = crate::tasks::ci_scope::build_reverse_dep_map(metadata);
+    for pkg in metadata.get("packages").and_then(Value::as_array).into_iter().flatten() {
+        let Some(pkg_name) = pkg.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        for dep in pkg.get("dependencies").and_then(Value::as_array).into_iter().flatten() {
+            let Some(dep_name) = dep.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            if !dep_name.is_empty() {
+                rev_deps.entry(dep_name.to_string()).or_default().insert(pkg_name.to_string());
+            }
+        }
+    }
+    let dependents = crate::tasks::ci_scope::reverse_dep_closure(
+        &changed_packages,
+        &rev_deps,
+        &all_package_names,
+    );
+    let mut reachable_packages = changed_packages.clone();
+    reachable_packages.extend(dependents);
+
+    Ok(AttributionScope::Applied(DependencyAttribution {
+        changed_packages,
+        reachable_packages,
+        package_dirs,
+    }))
+}
+
+/// Resolve the live attribution scope for a repo checkout. Metadata failure is
+/// reported, never guessed around.
+fn attribution_scope_for_repo(
+    repo: &Path,
+    diff: &CommittedDiffReceipt,
+) -> Result<AttributionScope> {
+    let metadata = crate::tasks::ci_scope::load_metadata(repo)?;
+    let changed_paths = committed_diff_entry_paths(&diff.entries);
+    dependency_attribution_scope(&metadata, &changed_paths)
+}
+
+fn attribution_stamp(scope: Option<&AttributionScope>) -> Value {
+    let Some(scope) = scope else {
+        return json!({
+            "basis": ATTRIBUTION_BASIS,
+            "graph_source": ATTRIBUTION_GRAPH_SOURCE,
+            "status": "unavailable",
+            "changed_packages": [],
+            "reachable_packages": [],
+            "reason": "cargo metadata could not be read; no findings were excluded",
+        });
+    };
+    json!({
+        "basis": ATTRIBUTION_BASIS,
+        "graph_source": ATTRIBUTION_GRAPH_SOURCE,
+        "status": scope.status(),
+        "changed_packages": scope.changed_packages(),
+        "reachable_packages": scope.reachable_packages(),
+    })
+}
+
 fn normalize_suppression_match_path(path: &str) -> String {
     let normalized = normalize_path_text(path);
     let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
@@ -1091,6 +1417,7 @@ fn normalize_suppression_match_path(path: &str) -> String {
         .map_or_else(|| normalized.to_string(), |index| normalized[index..].to_string())
 }
 
+#[cfg(test)]
 fn pr_evidence_packet(
     options: &PrEvidenceOptions,
     changed_files: &[String],
@@ -1107,6 +1434,7 @@ fn pr_evidence_packet(
         suppressions,
         changed_files.len(),
         None,
+        None,
     )
 }
 
@@ -1118,9 +1446,16 @@ fn pr_evidence_packet_with_count(
     suppressions: &RiprSuppressionRules,
     changed_file_count: usize,
     head_extents: Option<&HeadLineExtents>,
+    attribution_scope: Option<&AttributionScope>,
 ) -> Value {
     let check_summary = check_value.get("summary").and_then(Value::as_object);
-    let summary = ripr_pr_summary_counts(check_value, check_summary, suppressions, head_extents);
+    let summary = ripr_pr_summary_counts(
+        check_value,
+        check_summary,
+        suppressions,
+        head_extents,
+        attribution_scope.and_then(AttributionScope::applied),
+    );
     let weakly_exposed = summary.weakly_exposed;
     let reachable_unrevealed = summary.reachable_unrevealed;
     let no_static_path = summary.no_static_path;
@@ -1170,8 +1505,10 @@ fn pr_evidence_packet_with_count(
             "routing_reason": if ripr_severe_gap { json!("ripr severe gap") } else { Value::Null },
             "suppressed_by_policy": summary.suppressed_by_policy,
             "outside_head_revision": summary.outside_head_revision,
+            "out_of_dependency_graph": summary.out_of_dependency_graph,
             "suppression_patterns": suppressions.display_patterns.clone(),
         },
+        "attribution": attribution_stamp(attribution_scope),
         "artifacts": [
             {
                 "label": "PR evidence JSON",
@@ -1281,6 +1618,26 @@ fn validate_pr_evidence_packet(
     {
         violations.push("summary.routing_reason must be string or null".to_string());
     }
+    if !summary.get("out_of_dependency_graph").is_some_and(Value::is_u64) {
+        violations.push("summary.out_of_dependency_graph is missing or not an integer".to_string());
+    }
+    match packet.get("attribution").and_then(Value::as_object) {
+        Some(attribution) => {
+            if attribution.get("basis").and_then(Value::as_str) != Some(ATTRIBUTION_BASIS) {
+                violations.push(format!("attribution.basis must be {ATTRIBUTION_BASIS:?}"));
+            }
+            match attribution.get("status").and_then(Value::as_str) {
+                Some(
+                    "applied"
+                    | "shared_workspace_input_kept_all"
+                    | "no_changed_package_kept_all"
+                    | "unavailable",
+                ) => {}
+                _ => violations.push("attribution.status is not a valid basis status".to_string()),
+            }
+        }
+        None => violations.push("attribution is missing or not an object".to_string()),
+    }
     if !packet.get("warnings").is_some_and(Value::is_array) {
         violations.push("warnings is missing or not an array".to_string());
     }
@@ -1380,7 +1737,7 @@ fn write_review_comments(repo: &Path, options: &ReviewCommentsOptions) -> Result
     if current_pr_evidence_has_no_severe_gaps(repo, options)? {
         write_clean_review_comments(repo, options, &root)?;
     } else if let Err(err) = run_ripr_review_comments(repo, options, &root) {
-        write_error_review_comments(repo, options, &root, &err.to_string())?;
+        write_degraded_review_comments(repo, options, &root, &err.to_string())?;
     }
     stamp_review_comments_receipt(repo, options)?;
     validate_review_comments(repo, options, true)?;
@@ -1633,6 +1990,248 @@ fn render_error_review_comments_markdown(packet: &Value) -> String {
         string_field(packet, "head", DEFAULT_HEAD),
         md_escape(warning)
     )
+}
+
+/// Cap on synthesized fallback seam names so one large diff cannot emit an
+/// unbounded receipt.
+const FALLBACK_GUIDANCE_LIMIT: usize = 25;
+
+/// Raw-check classifications the merge gate can block on. Mirrors
+/// `genuine_new_ripr_gap_count` in `quality_gate.rs`, whose blocking count is
+/// `reachable_unrevealed + no_static_path`.
+fn gate_actionable_classification(classification: &str) -> bool {
+    matches!(classification, "reachable_unrevealed" | "no_static_path")
+}
+
+/// Suggested-proof text attached to fallback seam names. The diff-scoped
+/// analysis identifies the seam; only the full review-comments pass derives
+/// analyzer-specific proof suggestions, so this text is deliberately generic.
+fn fallback_suggested_test(classification: &str) -> &'static str {
+    match classification {
+        "reachable_unrevealed" => {
+            "Add a focused test that executes the owner of this changed seam and asserts a discriminating value, so the reachable seam is revealed."
+        }
+        _ => {
+            "Add a focused test that statically exercises the owner of this changed seam. If the seam is a non-executable declaration or a body the analyzer cannot trace to its covering test (ripr#1429 class), say so in the PR instead of adding proof theatre."
+        }
+    }
+}
+
+/// Build named seam comments from the completed diff-scoped raw check when the
+/// review-comments pass itself did not finish (#10054). Returns `None` when the
+/// raw check is unavailable, stale against the requested base, or has no
+/// unsuppressed actionable seam at the head revision, so the caller can fall
+/// back to the plain error receipt.
+fn fallback_guidance_comments(
+    repo: &Path,
+    options: &ReviewCommentsOptions,
+) -> Result<Option<(Vec<Value>, usize)>> {
+    let Ok(text) = fs::read_to_string(repo.join(PR_RAW_CHECK_JSON)) else {
+        return Ok(None);
+    };
+    let Ok(packet) = serde_json::from_str::<Value>(&text) else {
+        return Ok(None);
+    };
+    if packet.get("base").and_then(Value::as_str) != Some(options.base.as_str()) {
+        return Ok(None);
+    }
+    let Some(findings) = packet.get("findings").and_then(Value::as_array) else {
+        return Ok(None);
+    };
+    let Ok(suppressions) = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))
+    else {
+        return Ok(None);
+    };
+    // Best-effort head-revision and dependency-graph filters, matching the
+    // producer's counted set (#6260, #11690). If the diff cannot be resolved,
+    // name without them — the direction is names ⊇ counted, which stays
+    // fail-closed.
+    let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head).ok();
+    let attribution = diff_receipt
+        .as_ref()
+        .and_then(|diff| attribution_scope_for_repo(repo, diff).ok())
+        .unwrap_or(AttributionScope::NoChangedPackage);
+    let head_extents =
+        diff_receipt.as_ref().map(|diff| HeadLineExtents::from_committed_diff(repo, diff));
+
+    let mut suppressed = 0usize;
+    let mut seams: Vec<(String, u64, String, Value)> = Vec::new();
+    for finding in findings {
+        // ripr 0.5.x: "classification"; ripr 0.9.x may emit "grip_class" with
+        // "weakly_gripped" folded into the counted reachable_unrevealed bucket
+        // (see ripr_pr_summary_counts). Accept both and name the counted class.
+        let raw_class = finding
+            .get("classification")
+            .and_then(Value::as_str)
+            .or_else(|| finding.get("grip_class").and_then(Value::as_str));
+        let canonical = match raw_class {
+            Some("weakly_gripped") => "reachable_unrevealed",
+            Some(other) => other,
+            None => continue,
+        };
+        if !gate_actionable_classification(canonical) {
+            continue;
+        }
+        if suppression_matches_finding(&suppressions, finding) {
+            suppressed += 1;
+            continue;
+        }
+        if head_extents.as_ref().is_some_and(|extents| extents.finding_is_outside_head(finding)) {
+            continue;
+        }
+        if let Some(attribution) = attribution.applied()
+            && attribution.finding_is_out_of_graph(finding)
+        {
+            continue;
+        }
+        let Some(file) = ripr_finding_path(finding) else { continue };
+        let path = normalize_suppression_match_path(&file);
+        // Without a known anchor the normalized value is still an absolute host
+        // path; never emit CI-runner paths into receipts.
+        if path.starts_with('/') || path.as_bytes().get(1) == Some(&b':') {
+            continue;
+        }
+        let Some(line) = ripr_finding_line(finding) else { continue };
+        let id = finding
+            .get("id")
+            .and_then(Value::as_str)
+            .or_else(|| finding.pointer("/probe/id").and_then(Value::as_str))
+            .or_else(|| finding.pointer("/seam/id").and_then(Value::as_str))
+            .unwrap_or("unknown-seam");
+        let family = finding
+            .pointer("/probe/family")
+            .and_then(Value::as_str)
+            .or_else(|| finding.pointer("/seam/family").and_then(Value::as_str))
+            .unwrap_or(canonical);
+        let expression = finding
+            .pointer("/probe/expression")
+            .and_then(Value::as_str)
+            .or_else(|| finding.pointer("/seam/expression").and_then(Value::as_str))
+            .unwrap_or("");
+        let reach_summary = finding
+            .pointer("/ripr/reach/summary")
+            .and_then(Value::as_str)
+            .unwrap_or("no static test path found");
+        let comment = json!({
+            "id": id,
+            "path": path,
+            "line": line,
+            "seam": format!("{family}: {}", first_line(expression)),
+            "reason": format!("{canonical}: {reach_summary}"),
+            "suggested_test": fallback_suggested_test(canonical),
+        });
+        seams.push((path.clone(), line, id.to_string(), comment));
+    }
+
+    seams.sort_by(|left, right| (&left.0, left.1, &left.2).cmp(&(&right.0, right.1, &right.2)));
+    seams.dedup_by(|next, previous| next.0 == previous.0 && next.1 == previous.1);
+    seams.truncate(FALLBACK_GUIDANCE_LIMIT);
+    let comments = seams.into_iter().map(|(_, _, _, comment)| comment).collect::<Vec<_>>();
+    if comments.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((comments, suppressed)))
+}
+
+/// Emit an `incomplete` guidance receipt that names the gate-actionable seams
+/// from the completed diff-scoped analysis when the review-comments pass did
+/// not finish (#10054). The gate may then block on named evidence it has —
+/// file, line, seam, reason — instead of an unnamed count.
+fn write_fallback_review_comments(
+    repo: &Path,
+    options: &ReviewCommentsOptions,
+    root: &str,
+    error: &str,
+    comments: &[Value],
+    suppressed: usize,
+) -> Result<()> {
+    let packet = json!({
+        "schema_version": "0.1",
+        "tool": "ripr",
+        "status": "incomplete",
+        "root": normalize_path_text(root),
+        "base": options.base,
+        "head": options.head,
+        "pr_head_sha": optional_sha_value(options.pr_head_sha.as_deref()),
+        "evaluated_head": options.head,
+        "evaluated_head_sha": revision_sha(repo, &options.head)?,
+        "mode": "pr_evidence_fallback",
+        "rendering_limits": {
+            "max_inline_comments": 0,
+            "max_summary_items": FALLBACK_GUIDANCE_LIMIT
+        },
+        "summary": {
+            "comments": 0,
+            "summary_only": comments.len(),
+            "suppressed": suppressed,
+            "unchanged_tests": true,
+            "source": "raw_check_fallback"
+        },
+        "comments": [],
+        "summary_only": comments,
+        "suppressed": [],
+        "warnings": [
+            {
+                "kind": "tool_error",
+                "message": first_line(error),
+                "path": null
+            },
+            {
+                "kind": "guidance_fallback",
+                "message": "review-comments pass did not complete; seam names were synthesized from the completed diff-scoped ripr check. Suggested-proof text is generic, not analyzer-derived.",
+                "path": null
+            }
+        ],
+        "limits_note": "Review guidance generation is advisory. The producer did not complete, so seam names come from the completed diff-scoped analysis rather than the guidance pass."
+    });
+    write_text(&repo.join(REVIEW_COMMENTS_JSON), &format_json(&packet)?)?;
+    write_text(&repo.join(REVIEW_COMMENTS_MD), &render_fallback_review_comments_markdown(&packet))
+}
+
+fn write_degraded_review_comments(
+    repo: &Path,
+    options: &ReviewCommentsOptions,
+    root: &str,
+    error: &str,
+) -> Result<()> {
+    match fallback_guidance_comments(repo, options)? {
+        Some((comments, suppressed)) => {
+            write_fallback_review_comments(repo, options, root, error, &comments, suppressed)
+        }
+        None => write_error_review_comments(repo, options, root, error),
+    }
+}
+
+fn render_fallback_review_comments_markdown(packet: &Value) -> String {
+    let mut markdown = format!(
+        "# RIPR PR Guidance\n\n- status: incomplete\n- base: `{}`\n- head: `{}`\n- line annotations: 0\n- summary-only recommendations: {}\n- suppressed recommendations: {}\n\nThe review-comments pass did not complete; the seam names below come from the completed diff-scoped ripr check.\n",
+        string_field(packet, "base", DEFAULT_BASE),
+        string_field(packet, "head", DEFAULT_HEAD),
+        packet.pointer("/summary/summary_only").and_then(Value::as_u64).unwrap_or(0),
+        packet.pointer("/summary/suppressed").and_then(Value::as_u64).unwrap_or(0),
+    );
+    if let Some(items) = packet.get("summary_only").and_then(Value::as_array) {
+        markdown.push_str("\n## Named seams (fallback)\n\n");
+        for item in items {
+            markdown.push_str(&format!(
+                "- `{}:{}` {} — {}\n",
+                string_field(item, "path", "<unknown>"),
+                item.get("line").and_then(Value::as_u64).unwrap_or(0),
+                md_escape(string_field(item, "seam", "<unknown seam>")),
+                md_escape(string_field(item, "reason", "<no reason>")),
+            ));
+        }
+    }
+    if let Some(warning) = packet
+        .get("warnings")
+        .and_then(Value::as_array)
+        .and_then(|warnings| warnings.first())
+        .and_then(|warning| warning.get("message"))
+        .and_then(Value::as_str)
+    {
+        markdown.push_str(&format!("\n## Warnings\n\n- tool_error: {}\n", md_escape(warning)));
+    }
+    markdown
 }
 
 fn render_pr_evidence_summary(repo: &Path) -> String {
@@ -2093,6 +2692,7 @@ fn verify_revision(repo: &Path, rev: &str) -> Result<()> {
         .with_context(|| format!("bad base/head revision {rev:?}"))
 }
 
+#[cfg(test)]
 fn changed_files(repo: &Path, base: &str, head: &str) -> Result<Vec<String>> {
     Ok(resolve_committed_diff(repo, base, head)?.changed_paths)
 }
@@ -2102,6 +2702,19 @@ struct CommittedDiffEntry {
     status: String,
     old_path: Option<String>,
     new_path: Option<String>,
+}
+
+/// Every path a diff entry touches. For renames and copies that is both
+/// endpoints: a file moving from package A to unrelated package B still
+/// removed content from A, so A and its dependent closure must stay
+/// attributed instead of collapsing into `out_of_dependency_graph` (#11690).
+fn committed_diff_entry_paths(entries: &[CommittedDiffEntry]) -> Vec<String> {
+    entries
+        .iter()
+        .flat_map(|entry| [entry.old_path.as_deref(), entry.new_path.as_deref()])
+        .flatten()
+        .map(str::to_owned)
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2595,7 +3208,7 @@ mod tests {
 
     #[test]
     fn ripr_plus_top_files_rank_repo_seams_across_path_shapes() {
-        let seams = vec![
+        let seams = [
             json!({"file": "crates/perl-parser/src/lib.rs"}),
             json!({"path": "crates/perl-lexer/src/lib.rs"}),
             json!({"location": {"path": r"crates\perl-parser\src\lib.rs"}}),
@@ -2618,7 +3231,7 @@ mod tests {
 
     #[test]
     fn ripr_plus_top_gap_kinds_rank_repo_seams_across_kind_shapes() {
-        let seams = vec![
+        let seams = [
             json!({"kind": "ReceiptParsing"}),
             json!({"gap_kind": "BoundaryPredicate"}),
             json!({"classification": ["StaticUnknown", "NoStaticPath"]}),
@@ -2762,6 +3375,7 @@ mod tests {
                 Pattern::new("archive/**")?,
                 Pattern::new("docs/project/status/**")?,
             ],
+            classification_patterns: vec![Vec::new(), Vec::new()],
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         };
@@ -2798,6 +3412,7 @@ mod tests {
         let suppressions = RiprSuppressionRules {
             display_patterns: vec!["archive/**".to_string()],
             path_patterns: Vec::new(),
+            classification_patterns: Vec::new(),
             invalid_patterns: vec!["archive/[".to_string()],
             suppression_reasons: vec![json!({
                 "id": "ripr-suppress-archive",
@@ -3149,6 +3764,29 @@ paths = ["archive/["]
     }
 
     #[test]
+    fn parser_comparison_suppression_requires_an_admissible_classification() -> Result<()> {
+        let rules =
+            read_ripr_suppression_rules(&repo_root()?, Path::new("policy/ripr-suppressions.toml"))?;
+        let path = "crates/perl-parser-comparison/src/evidence_payload.rs";
+
+        for classification in ["no_static_path", "weakly_exposed"] {
+            assert!(suppression_matches_finding(
+                &rules,
+                &json!({"classification": classification, "probe": {"file": path}})
+            ));
+        }
+        assert!(!suppression_matches_finding(
+            &rules,
+            &json!({"classification": "reachable_unrevealed", "probe": {"file": path}})
+        ));
+        assert!(!suppression_matches_finding(
+            &rules,
+            &json!({"grip_class": "weakly_gripped", "seam": {"file": path}})
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn mutation_label_routes_targeted() {
         let decision = routing_decision(&["mutation".to_string()], false);
         assert!(decision.requires_targeted_mutation);
@@ -3274,6 +3912,7 @@ paths = ["archive/["]
         let suppressions = RiprSuppressionRules {
             display_patterns: vec!["crates/perl-lsp-ux-tests/tests/**".to_string()],
             path_patterns: vec![Pattern::new("crates/perl-lsp-ux-tests/tests/**")?],
+            classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         };
@@ -3312,6 +3951,7 @@ paths = ["archive/["]
                 Pattern::new("crates/perl-lsp-ux-tests/tests/*")?,
                 Pattern::new("crates/perl-lsp-ux-tests/tests/**")?,
             ],
+            classification_patterns: vec![Vec::new(), Vec::new()],
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         };
@@ -3331,6 +3971,7 @@ paths = ["archive/["]
         let rules = RiprSuppressionRules {
             display_patterns: vec!["crates/perl-lsp-ux-tests/tests/**".to_string()],
             path_patterns: vec![Pattern::new("crates/perl-lsp-ux-tests/tests/**")?],
+            classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         };
@@ -3393,6 +4034,7 @@ paths = ["archive/["]
         let suppressions = RiprSuppressionRules {
             display_patterns: vec!["crates/perl-dap/src/debug_adapter/execution.rs".to_string()],
             path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/execution.rs")?],
+            classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         };
@@ -3457,6 +4099,7 @@ paths = ["archive/["]
         let suppressions = RiprSuppressionRules {
             display_patterns: vec!["crates/perl-dap/src/debug_adapter/execution.rs".to_string()],
             path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/execution.rs")?],
+            classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         };
@@ -3483,6 +4126,7 @@ paths = ["archive/["]
         RiprSuppressionRules {
             display_patterns: Vec::new(),
             path_patterns: Vec::new(),
+            classification_patterns: Vec::new(),
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         }
@@ -3507,6 +4151,7 @@ paths = ["archive/["]
             suppressions,
             1,
             Some(extents),
+            None,
         )
     }
 
@@ -3660,6 +4305,7 @@ paths = ["archive/["]
         let suppressions = RiprSuppressionRules {
             display_patterns: vec!["archive/**".to_string()],
             path_patterns: vec![Pattern::new("archive/**")?],
+            classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         };
@@ -4054,6 +4700,540 @@ paths = ["archive/["]
         assert!(markdown.contains("- status: error"), "{markdown}");
         assert!(markdown.contains("tool_error: ripr review-comments failed \\| timeout"));
         assert!(!markdown.contains("secondary detail"), "{markdown}");
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------------------
+    // Dependency-graph attribution basis (#11690)
+    // ---------------------------------------------------------------------------
+
+    /// Fake `cargo metadata` shape: `(name, manifest dir, direct dependencies)`
+    /// with manifests at `<root>/<dir>/Cargo.toml`, mirroring this workspace
+    /// layout where members live under `crates/` and the root `xtask/`.
+    fn fake_workspace_metadata(root: &str, packages: &[(&str, &str, &[&str])]) -> Value {
+        let pkg_base = |name: &str, dir: &str| -> String {
+            if dir.is_empty() { format!("{root}/{name}") } else { format!("{root}/{dir}/{name}") }
+        };
+        let pkgs = packages
+            .iter()
+            .map(|(name, dir, _)| {
+                json!({
+                    "id": format!("path+file://{}", pkg_base(name, dir)),
+                    "name": name,
+                    "manifest_path": format!("{}/Cargo.toml", pkg_base(name, dir)),
+                })
+            })
+            .collect::<Vec<_>>();
+        let nodes = packages
+            .iter()
+            .map(|(name, dir, deps)| {
+                let edges = deps
+                    .iter()
+                    .map(|dep| {
+                        let dep_dir = packages
+                            .iter()
+                            .find(|(n, _, _)| n == dep)
+                            .map_or("crates", |(_, d, _)| d);
+                        json!({"pkg": format!("path+file://{}", pkg_base(dep, dep_dir))})
+                    })
+                    .collect::<Vec<_>>();
+                json!({
+                    "id": format!("path+file://{}", pkg_base(name, dir)),
+                    "deps": edges,
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "workspace_root": root,
+            "packages": pkgs,
+            "resolve": { "nodes": nodes },
+        })
+    }
+
+    fn attribution_for(metadata: &Value, changed: &[&str]) -> Result<AttributionScope> {
+        let changed = changed.iter().map(|path| path.to_string()).collect::<Vec<_>>();
+        Ok(dependency_attribution_scope(metadata, &changed)?)
+    }
+
+    /// #6766 reproduction (#11690): a new module in a low-fan-in crate must not
+    /// inherit gaps from crates that cannot depend on it. The recorded receipt
+    /// scoped 120 production files for a 5-file change, including archived
+    /// sources and perl-dap/perl-lsp-rs/perl-workspace/perl-parser — none of
+    /// which reference `perl-core-harness`.
+    #[test]
+    fn low_fan_in_change_drops_non_dependents_and_archived_files() -> Result<()> {
+        let metadata = fake_workspace_metadata(
+            "/ws",
+            &[
+                ("perl-core-harness", "crates", &[] as &[&str]),
+                ("perl-core-harness-types", "crates", &["perl-core-harness"]),
+                ("perl-core-test-runner", "crates", &["perl-core-harness"]),
+                ("xtask", "", &["perl-core-harness"]),
+                ("perl-dap", "crates", &[]),
+                ("perl-lsp-rs", "crates", &["perl-dap"]),
+                ("perl-parser", "crates", &[]),
+                ("perl-workspace", "crates", &["perl-lsp-rs"]),
+            ],
+        );
+        let scope = attribution_for(&metadata, &["crates/perl-core-harness/src/contract.rs"])?;
+        let Some(attribution) = scope.applied() else {
+            bail!("a single-crate change must activate the graph filter");
+        };
+        assert_eq!(attribution.changed_packages, BTreeSet::from(["perl-core-harness".to_string()]),);
+        assert_eq!(
+            attribution.reachable_packages,
+            BTreeSet::from([
+                "perl-core-harness".to_string(),
+                "perl-core-harness-types".to_string(),
+                "perl-core-test-runner".to_string(),
+                "xtask".to_string(),
+            ]),
+        );
+
+        let keep = [
+            "crates/perl-core-harness/src/contract.rs",
+            "crates/perl-core-harness-types/src/lib.rs",
+            "crates/perl-core-test-runner/src/runner.rs",
+            "xtask/src/tasks/quality_gate.rs",
+        ];
+        for path in keep {
+            assert_eq!(
+                attribution.resolve(path),
+                AttributionPathState::InReachablePackage,
+                "{path} must stay attributed"
+            );
+        }
+
+        // The exact non-dependent files #11690 names as wrongly scoped, plus an
+        // archived crate that is excluded from the workspace entirely.
+        let drop = [
+            "archive/crates/tree-sitter-perl-rs/src/scanner/mod.rs",
+            "archive/crates/perl-ts-heredoc-parser/src/heredoc_parser.rs",
+            "crates/perl-dap/src/debug_adapter/evaluation.rs",
+            "crates/perl-lsp-rs/src/runtime/scheduler.rs",
+            "crates/perl-workspace/src/semantic/references.rs",
+            "crates/perl-parser/src/incremental/incremental_v2.rs",
+        ];
+        for path in drop {
+            assert_eq!(
+                attribution.resolve(path),
+                AttributionPathState::OutOfGraph,
+                "{path} must drop out of scope"
+            );
+        }
+        Ok(())
+    }
+
+    /// A dev/optional edge missing from the resolved graph must still keep its
+    /// dependent in scope: declared manifest edges are unioned in so no real
+    /// linking configuration loses findings (fail-closed, #11690).
+    #[test]
+    fn declared_edges_absent_from_resolve_keep_dependents_in_scope() -> Result<()> {
+        let metadata = json!({
+            "workspace_root": "/ws",
+            "packages": [
+                { "id": "p:a", "name": "gap-base", "manifest_path": "/ws/crates/gap-base/Cargo.toml",
+                  "dependencies": [] },
+                { "id": "p:b", "name": "gap-dep", "manifest_path": "/ws/crates/gap-dep/Cargo.toml",
+                  "dependencies": [ { "name": "gap-base", "optional": true, "kind": null } ] },
+                { "id": "p:c", "name": "gap-lone", "manifest_path": "/ws/crates/gap-lone/Cargo.toml",
+                  "dependencies": [] },
+            ],
+            "resolve": { "nodes": [
+                // gap-dep's optional dependency on gap-base is NOT resolved here.
+                { "id": "p:a", "deps": [] },
+                { "id": "p:b", "deps": [] },
+                { "id": "p:c", "deps": [] },
+            ] },
+        });
+
+        let scope = attribution_for(&metadata, &["crates/gap-base/src/lib.rs"])?;
+        let Some(attribution) = scope.applied() else {
+            bail!("expected applied attribution");
+        };
+
+        assert!(
+            attribution.reachable_packages.contains("gap-dep"),
+            "declared optional dependent must stay in scope"
+        );
+        assert!(
+            !attribution.reachable_packages.contains("gap-lone"),
+            "crate with no manifest edge must drop"
+        );
+        assert_eq!(
+            attribution.resolve("crates/gap-dep/src/lib.rs"),
+            AttributionPathState::InReachablePackage
+        );
+        assert_eq!(
+            attribution.resolve("crates/gap-lone/src/lib.rs"),
+            AttributionPathState::OutOfGraph
+        );
+        Ok(())
+    }
+
+    /// A cross-package rename touches both endpoints: the source package and
+    /// its dependents must stay attributed even though only the destination
+    /// path survives at HEAD — narrowing past that would reclassify source-
+    /// side findings as `out_of_dependency_graph` without reachability basis.
+    #[test]
+    fn cross_package_rename_attributes_both_endpoints() -> Result<()> {
+        let entries = [CommittedDiffEntry {
+            status: "R100".to_string(),
+            old_path: Some("crates/perl-origin/src/moved.rs".to_string()),
+            new_path: Some("crates/perl-destination/src/moved.rs".to_string()),
+        }];
+        assert_eq!(
+            committed_diff_entry_paths(&entries),
+            vec![
+                "crates/perl-origin/src/moved.rs".to_string(),
+                "crates/perl-destination/src/moved.rs".to_string(),
+            ]
+        );
+
+        let metadata = fake_workspace_metadata(
+            "/ws",
+            &[
+                ("perl-origin", "crates", &[] as &[&str]),
+                ("perl-origin-dependent", "crates", &["perl-origin"]),
+                ("perl-destination", "crates", &[]),
+                ("perl-unrelated", "crates", &[]),
+            ],
+        );
+        let scope = dependency_attribution_scope(&metadata, &committed_diff_entry_paths(&entries))?;
+        let Some(attribution) = scope.applied() else {
+            bail!("a two-package rename must activate the graph filter");
+        };
+        assert_eq!(
+            attribution.changed_packages,
+            BTreeSet::from(["perl-origin".to_string(), "perl-destination".to_string(),])
+        );
+        for path in [
+            "crates/perl-origin/src/still_here.rs",
+            "crates/perl-origin-dependent/src/closure.rs",
+            "crates/perl-destination/src/new_home.rs",
+        ] {
+            assert_eq!(
+                attribution.resolve(path),
+                AttributionPathState::InReachablePackage,
+                "{path} must stay attributed"
+            );
+        }
+        assert_eq!(
+            attribution.resolve("crates/perl-unrelated/src/lib.rs"),
+            AttributionPathState::OutOfGraph,
+            "an untouched package must still drop"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn high_fan_in_change_keeps_transitive_dependents_in_scope() -> Result<()> {
+        let metadata = fake_workspace_metadata(
+            "/ws",
+            &[
+                ("perl-parser", "crates", &[]),
+                ("perl-semantic", "crates", &["perl-parser"]),
+                ("perl-lsp-rs", "crates", &["perl-semantic"]),
+            ],
+        );
+        let scope = attribution_for(&metadata, &["crates/perl-parser/src/lib.rs"])?;
+        let Some(attribution) = scope.applied() else {
+            bail!("a code change must activate the graph filter");
+        };
+
+        for path in [
+            "crates/perl-parser/src/lib.rs",
+            "crates/perl-semantic/src/analysis/index.rs",
+            "crates/perl-lsp-rs/src/runtime/scheduler.rs",
+        ] {
+            assert_eq!(
+                attribution.resolve(path),
+                AttributionPathState::InReachablePackage,
+                "transitive dependent {path} must remain in scope"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unattributable_paths_stay_counted_fail_open() -> Result<()> {
+        let metadata =
+            fake_workspace_metadata("/ws", &[("perl-a", "crates", &[]), ("perl-b", "crates", &[])]);
+        let scope = attribution_for(&metadata, &["crates/perl-a/src/lib.rs"])?;
+        let Some(attribution) = scope.applied() else {
+            bail!("expected applied attribution");
+        };
+
+        // A host-prefixed path that anchors to no known package, and a finding
+        // without any path at all, resolve to Unknown — never filtered.
+        assert_eq!(
+            attribution.resolve(r"E:\elsewhere\mystery\src\lib.rs"),
+            AttributionPathState::Unknown
+        );
+        assert!(!attribution.finding_is_out_of_graph(&json!({"classification": "no_static_path"})));
+        Ok(())
+    }
+
+    #[test]
+    fn shared_workspace_input_change_keeps_everything_counted() -> Result<()> {
+        let metadata = fake_workspace_metadata(
+            "/ws",
+            &[("perl-a", "crates", &[]), ("perl-b", "crates", &["perl-a"])],
+        );
+
+        for shared in ["Cargo.lock", "Cargo.toml", ".cargo/config.toml"] {
+            let scope = attribution_for(&metadata, &[shared])?;
+            assert_eq!(scope.status(), "shared_workspace_input_kept_all", "{shared}");
+            assert!(scope.applied().is_none(), "{shared} must not filter");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn change_without_workspace_package_files_keeps_attribution_inactive() -> Result<()> {
+        let metadata = fake_workspace_metadata("/ws", &[("perl-a", "crates", &[])]);
+        let scope = attribution_for(&metadata, &["docs/ci/ripr.md"])?;
+
+        assert_eq!(scope.status(), "no_changed_package_kept_all");
+        assert!(scope.applied().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_metadata_reports_unavailable_instead_of_guessing() {
+        let missing_packages = json!({ "workspace_root": "/ws" });
+        let changed = ["crates/x/src/lib.rs".to_string()];
+        assert!(dependency_attribution_scope(&missing_packages, &changed).is_err());
+
+        let no_root = json!({ "packages": [] });
+        assert!(dependency_attribution_scope(&no_root, &changed).is_err());
+    }
+
+    /// Packet-level #6766-style dry-run: four findings from a raw check whose
+    /// scan expanded past the diff; only changed-plus-dependent seams survive,
+    /// and the packet records exactly what was dropped and why.
+    #[test]
+    fn packet_narrows_new_gaps_to_reachable_dependents_and_stamps_the_basis() -> Result<()> {
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+        let suppressions = no_suppressions();
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 4, "no_static_path": 0 },
+            "findings": [
+                raw_check_finding("probe:changed", "reachable_unrevealed", "crates/perl-core-harness/src/contract.rs", 10),
+                raw_check_finding("probe:dependent", "reachable_unrevealed", "crates/perl-core-test-runner/src/runner.rs", 20),
+                raw_check_finding("probe:dap", "reachable_unrevealed", "crates/perl-dap/src/debug_adapter/evaluation.rs", 30),
+                raw_check_finding("probe:archived", "reachable_unrevealed", "archive/crates/tree-sitter-perl-rs/src/scanner/mod.rs", 40),
+            ]
+        });
+        let metadata = fake_workspace_metadata(
+            "/ws",
+            &[
+                ("perl-core-harness", "crates", &[] as &[&str]),
+                ("perl-core-test-runner", "crates", &["perl-core-harness"]),
+                ("perl-dap", "crates", &[]),
+            ],
+        );
+        let scope = attribution_for(&metadata, &["crates/perl-core-harness/src/contract.rs"])?;
+        let packet = pr_evidence_packet_with_count(
+            &options,
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &suppressions,
+            5,
+            None,
+            Some(&scope),
+        );
+
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/out_of_dependency_graph"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/attribution/basis"), Some(&json!(ATTRIBUTION_BASIS)));
+        assert_eq!(packet.pointer("/attribution/graph_source"), Some(&json!("cargo_metadata")));
+        assert_eq!(packet.pointer("/attribution/status"), Some(&json!("applied")));
+
+        // The same raw check under the previous all-findings basis counted 4.
+        let unfiltered = pr_evidence_packet_with_count(
+            &options,
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &suppressions,
+            5,
+            None,
+            None,
+        );
+        assert_eq!(unfiltered.pointer("/summary/severe_gaps"), Some(&json!(4)));
+        assert_eq!(unfiltered.pointer("/attribution/status"), Some(&json!("unavailable")));
+        validate_pr_evidence_packet(&packet, &options, 5, true, "base-sha", "head-sha")?;
+        Ok(())
+    }
+
+    #[test]
+    fn validate_pr_evidence_packet_requires_the_attribution_stamp() -> Result<()> {
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+        let suppressions = no_suppressions();
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 1, "no_static_path": 0 },
+            "findings": [raw_check_finding("probe:x", "reachable_unrevealed", "crates/a/src/lib.rs", 5)]
+        });
+        let mut packet = pr_evidence_packet_with_count(
+            &options,
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &suppressions,
+            1,
+            None,
+            None,
+        );
+        let Some(packet_object) = packet.as_object_mut() else {
+            bail!("packet must be a JSON object");
+        };
+        packet_object.remove("attribution");
+
+        let Err(err) =
+            validate_pr_evidence_packet(&packet, &options, 1, true, "base-sha", "head-sha")
+        else {
+            bail!("a packet without the attribution stamp must violate the contract");
+        };
+        assert!(err.to_string().contains("attribution"), "{err}");
+        Ok(())
+    }
+
+    fn raw_check_finding(id: &str, classification: &str, file: &str, line: u64) -> Value {
+        json!({
+            "id": id,
+            "classification": classification,
+            "probe": {
+                "id": id,
+                "family": "error_path",
+                "file": file,
+                "line": line,
+                "expression": "return Err(ModelError::Failed);"
+            },
+            "ripr": {
+                "reach": { "state": "no", "summary": "No static test path found for the changed owner" }
+            }
+        })
+    }
+
+    #[test]
+    fn write_degraded_review_comments_names_actionable_seams_from_raw_check() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        fs::create_dir_all(repo.join("policy"))?;
+        fs::write(
+            repo.join("policy/ripr-suppressions.toml"),
+            "[[suppress]]\nid = \"test-suppression\"\nkind = \"test_receipt_surface\"\npaths = [\"crates/suppressed/**\"]\nreason = \"test fixture\"\n",
+        )?;
+        let raw_check = repo.join(PR_RAW_CHECK_JSON);
+        if let Some(parent) = raw_check.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(
+            &raw_check,
+            json!({
+                "base": "HEAD",
+                "findings": [
+                    raw_check_finding("probe:b20", "reachable_unrevealed", "/abs/repo/crates/foo/src/b.rs", 20),
+                    raw_check_finding("probe:a10b", "no_static_path", "/abs/repo/crates/foo/src/a.rs", 10),
+                    raw_check_finding("probe:a10a", "no_static_path", "/abs/repo/crates/foo/src/a.rs", 10),
+                    raw_check_finding("probe:c30", "exposed", "/abs/repo/crates/foo/src/c.rs", 30),
+                    raw_check_finding("probe:d40", "no_static_path", "/abs/repo/crates/suppressed/src/d.rs", 40),
+                    // ripr 0.9.x shape: grip_class + seam.file (no probe node).
+                    {
+                        "id": "probe:e50",
+                        "grip_class": "no_static_path",
+                        "seam": {
+                            "id": "probe:e50",
+                            "family": "match_arm",
+                            "file": "/abs/repo/crates/foo/src/e.rs",
+                            "line": 50,
+                            "expression": "Self::Fallback => write!(f, \"fallback\")"
+                        },
+                        "ripr": { "reach": { "state": "no", "summary": "No static test path found" } }
+                    }
+                ]
+            })
+            .to_string(),
+        )?;
+        let options = ReviewCommentsOptions {
+            root: ".".to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+            timeout_seconds: None,
+        };
+
+        write_degraded_review_comments(repo, &options, ".", "ripr timed out after 600s\n detail")?;
+        stamp_review_comments_receipt(repo, &options)?;
+        validate_review_comments(repo, &options, true)?;
+
+        let packet: Value =
+            serde_json::from_str(&fs::read_to_string(repo.join(REVIEW_COMMENTS_JSON))?)?;
+        assert_eq!(packet["status"], json!("incomplete"));
+        assert_eq!(packet.pointer("/summary/summary_only"), Some(&json!(3)));
+        assert_eq!(packet.pointer("/summary/suppressed"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/warnings/0/kind"), Some(&json!("tool_error")), "{packet}");
+        assert_eq!(packet.pointer("/warnings/1/kind"), Some(&json!("guidance_fallback")));
+
+        let items = packet
+            .get("summary_only")
+            .and_then(Value::as_array)
+            .ok_or_else(|| eyre!("missing summary_only array"))?;
+        assert_eq!(items[0]["path"], json!("crates/foo/src/a.rs"));
+        assert_eq!(items[0]["line"], json!(10));
+        assert_eq!(items[1]["path"], json!("crates/foo/src/b.rs"));
+        assert_eq!(items[2]["path"], json!("crates/foo/src/e.rs"));
+        assert_eq!(items[2]["line"], json!(50));
+        for item in items {
+            for key in ["id", "path", "seam", "reason", "suggested_test"] {
+                assert!(
+                    item.get(key).and_then(Value::as_str).is_some_and(|v| !v.is_empty()),
+                    "{item}"
+                );
+            }
+            assert!(item.get("line").and_then(Value::as_u64).is_some_and(|line| line > 0));
+        }
+
+        let markdown = fs::read_to_string(repo.join(REVIEW_COMMENTS_MD))?;
+        assert!(markdown.contains("- status: incomplete"), "{markdown}");
+        assert!(markdown.contains("crates/foo/src/a.rs:10"), "{markdown}");
+        assert!(markdown.contains("tool_error: ripr timed out after 600s"), "{markdown}");
+        Ok(())
+    }
+
+    #[test]
+    fn write_degraded_review_comments_without_raw_check_keeps_error_receipt() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        let options = ReviewCommentsOptions {
+            root: ".".to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+            timeout_seconds: None,
+        };
+
+        write_degraded_review_comments(repo, &options, ".", "ripr timed out after 600s")?;
+
+        let packet: Value =
+            serde_json::from_str(&fs::read_to_string(repo.join(REVIEW_COMMENTS_JSON))?)?;
+        assert_eq!(packet["status"], json!("error"));
+        assert_eq!(packet.pointer("/summary/summary_only"), Some(&json!(0)));
         Ok(())
     }
 
@@ -4690,7 +5870,7 @@ esac
     #[cfg(not(windows))]
     fn write_large_output_script(dir: &Path, byte_count: usize) -> Result<PathBuf> {
         // Round up to whole megabytes so dd's block arithmetic is exact.
-        let mb = (byte_count + 1_048_575) / 1_048_576;
+        let mb = byte_count.div_ceil(1_048_576);
         let path = dir.join("gen_large.sh");
         fs::write(
             &path,
@@ -4948,6 +6128,7 @@ esac
         let suppressions = RiprSuppressionRules {
             display_patterns: vec!["crates/perl-dap/src/debug_adapter/variables.rs".to_string()],
             path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/variables.rs")?],
+            classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         };
@@ -5016,6 +6197,7 @@ esac
         let suppressions = RiprSuppressionRules {
             display_patterns: vec!["crates/perl-dap/src/debug_adapter/variables.rs".to_string()],
             path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/variables.rs")?],
+            classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         };
@@ -5090,6 +6272,7 @@ esac
         let suppressions = RiprSuppressionRules {
             display_patterns: vec!["crates/perl-dap/src/debug_adapter/variables.rs".to_string()],
             path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/variables.rs")?],
+            classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
             suppression_reasons: Vec::new(),
         };

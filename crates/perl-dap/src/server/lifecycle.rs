@@ -1,7 +1,5 @@
-use crate::bridge_adapter::BridgeAdapter;
 use crate::debug_adapter::DebugAdapter;
 use crate::server::config::DapConfig;
-use crate::server::mode::DapMode;
 
 /// Marks a failure opening the native DAP TCP listener, before a client session exists.
 ///
@@ -22,28 +20,29 @@ impl perl_parser_core::ErrorClass for DapSocketBindError {
     }
 }
 
-/// DAP server
+/// Native DAP server lifecycle.
 ///
-/// Supports two operating modes:
-/// - **Native** (default): Uses the built-in [`DebugAdapter`] with `perl -d`
-/// - **Bridge**: Proxies DAP messages to Perl::LanguageServer via [`BridgeAdapter`]
+/// `DapServer` owns the supported product runtime: the built-in
+/// [`DebugAdapter`] driving the local Perl debugger. Historical proxying to an
+/// alternate DAP implementation is not part of this lifecycle.
 pub struct DapServer {
-    /// Server configuration
+    /// Server configuration.
     pub config: DapConfig,
-    /// The underlying debug adapter (used in Native mode)
+    /// The underlying native debug adapter.
     adapter: DebugAdapter,
 }
 
 impl DapServer {
-    /// Create a new DAP server instance
+    /// Create a new native DAP server instance.
     ///
     /// # Arguments
     ///
-    /// * `config` - Server configuration including operating mode
+    /// * `config` - Server configuration including logging and workspace context.
     ///
     /// # Errors
     ///
-    /// Currently always succeeds. Phase 2 will add validation and initialization errors.
+    /// Construction retains a result boundary for configuration and runtime
+    /// initialization failures.
     pub fn new(config: DapConfig) -> anyhow::Result<Self> {
         let adapter = DebugAdapter::new();
         // Wire the configured workspace boundary (if any) into the adapter so
@@ -56,41 +55,24 @@ impl DapServer {
         Ok(Self { config, adapter })
     }
 
-    /// Run the DAP server
+    /// Run the native DAP server over stdio.
     ///
-    /// Dispatches to the appropriate transport based on the configured [`DapMode`]:
-    /// - [`DapMode::Native`]: Starts the stdio transport loop via `DebugAdapter::run`
-    /// - [`DapMode::Bridge`]: Spawns Perl::LanguageServer and proxies DAP messages
-    ///   via [`BridgeAdapter`] using a tokio async runtime
+    /// # Errors
+    ///
+    /// Returns an error when the DAP transport or native adapter session fails.
     pub fn run(&mut self) -> anyhow::Result<()> {
-        match self.config.mode {
-            DapMode::Native => self.adapter.run().map_err(Into::into),
-            DapMode::Bridge => {
-                tracing::info!("Starting DAP server in bridge mode");
-                let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(async {
-                    let mut bridge = BridgeAdapter::new();
-                    bridge.spawn_pls_dap().await?;
-                    bridge.proxy_messages().await?;
-                    bridge.shutdown().await?;
-                    Ok(())
-                })
-            }
-        }
+        self.adapter.run().map_err(Into::into)
     }
 
-    /// Run the DAP server over TCP socket transport.
+    /// Run the native DAP server over TCP socket transport.
     ///
     /// This binds to `127.0.0.1:<port>` and serves one DAP client session.
     ///
     /// # Errors
     ///
-    /// Returns an error if bridge mode is selected, since socket transport
-    /// is only supported for native mode.
+    /// Returns an error when the listener cannot bind or the accepted DAP
+    /// session fails.
     pub fn run_socket(&mut self, port: u16) -> anyhow::Result<()> {
-        if self.config.mode == DapMode::Bridge {
-            anyhow::bail!("Socket transport is not supported in bridge mode");
-        }
         self.adapter.run_socket(port)
     }
 }

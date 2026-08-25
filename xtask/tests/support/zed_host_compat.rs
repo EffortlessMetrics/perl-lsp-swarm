@@ -507,7 +507,7 @@ pub fn validate_schema(receipt: &Value) -> Result<(), String> {
     )?;
     optional_bool(field(artifacts, "redacted", "artifacts")?, "artifacts.redacted")?;
     string_array(field(top, "limitations", "receipt")?, "limitations")?;
-    if !field(top, "claim_boundary", "receipt")?.as_str().is_some_and(|text| !text.is_empty()) {
+    if field(top, "claim_boundary", "receipt")?.as_str().is_none_or(|text| text.is_empty()) {
         return Err("claim_boundary must be a non-empty string".to_string());
     }
 

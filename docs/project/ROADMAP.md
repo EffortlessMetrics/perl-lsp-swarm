@@ -24,7 +24,7 @@ in [features.toml](../../features.toml).
 
 - Workspace version line: `v0.17.0`
 - Current release train: `v0.17.0` shipped public beta; channel receipts remain independently verified
-- Published crate surface target: 33 crates from `[workspace.metadata.publish.allow]`
+- Published crate surface target: 34 crates from `[workspace.metadata.publish.allow]`
 Publication discipline: `v0.17.0` uses a normal SemVer package version while the human-facing product posture remains public beta, not stable/GA. See [RELEASE_HISTORY.md](../../RELEASE_HISTORY.md) for independently verified channel receipts.
 
 
@@ -169,7 +169,7 @@ The release train is complete only when each criterion has an evidence link in t
 | Area | Exit criterion | Evidence source |
 | --- | --- | --- |
 | Version surface | Workspace package version, `features.toml` metadata, extension packaging, release notes, and changelog align with the current `v0.17.0` train | [`../../Cargo.toml`](../../Cargo.toml), [`../../features.toml`](../../features.toml), [docs/releases/v0.17.0.md](../releases/v0.17.0.md) |
-| Publish surface | The 33-crate allowlist has dry-run or publish receipts, and deferred items have successor issues rather than silent drops | [`[workspace.metadata.publish.allow]`](../../Cargo.toml), [docs/releases/v0.17.0.md](../releases/v0.17.0.md) |
+| Publish surface | The 34-crate allowlist has dry-run or publish receipts, and deferred items have successor issues rather than silent drops | [`[workspace.metadata.publish.allow]`](../../Cargo.toml), [docs/releases/v0.17.0.md](../releases/v0.17.0.md) |
 | Install channels | GitHub assets, crates.io, Docker, VS Code Marketplace, Open VSX, and Homebrew each have an install/smoke receipt or an explicit pending/deferred state | [status/release.md](status/release.md), [CURRENT_STATUS.md](CURRENT_STATUS.md), [docs/releases/v0.17.0.md](../releases/v0.17.0.md) |
 | Local gate | The canonical merge receipt is fresh for the branch being released or the post-release closeout branch | [protocols/verification.md](protocols/verification.md) |
 | Public wording | User-facing docs call the release public beta and avoid stable/GA promises | [docs/releases/v0.17.0.md](../releases/v0.17.0.md), [CURRENT_STATUS.md](CURRENT_STATUS.md) |
@@ -427,7 +427,7 @@ dedicated release-lineage plan.
 - VSCode extension lint/quality audit (eslint v10 landed in #3179)
 - AI inline completion (#3018) shipped in the live 0.12.x line — feature wired end-to-end via #3157–#3168, awaiting E2E user validation
 - Workspace-wide rename slice: multi-root support shipped in 0.12.x (#3984); workspace-wide rename/module-move remains roughly 30% complete and only conditionally in scope pending #3522 verification
-- Coroutine support issue #3539 is re-scoped: defer hypothetical core syntax, split upstream-tracking from CPAN-library IDE support planning
+- Coroutine scope was historically re-scoped via issue #3539 (defer hypothetical core syntax, split upstream-tracking from CPAN-library IDE support planning); #3539 is no longer the owner — current coroutine ownership lives in programme #8290 and its children (scope note: [ISSUE_3539_COROUTINES_SCOPE.md](ISSUE_3539_COROUTINES_SCOPE.md))
 - Semantic substrate migration status now tracks Wave 2/Wave 3 reality in [SEMANTIC_SUBSTRATE_FIRST_WAVE_PLAN.md](SEMANTIC_SUBSTRATE_FIRST_WAVE_PLAN.md): core semantic facts, HIR-backed `ImportSpec` / `ExportSet`, `visible_symbols_at`, and shadow receipts have fixture evidence; fact-source trace receipts are in place; and provider cutover now has narrow diagnostics, hover, definition, and references live-with-fallback behavior plus shadow/provenance receipts for completion, rename, safe-delete, workspace symbols, document symbols, and semantic tokens. The longer compiler-backed LSP direction is tracked in [COMPILER_BACKED_LSP_ROADMAP.md](COMPILER_BACKED_LSP_ROADMAP.md), with lane status in [COMPILER_CAPABILITY_STATUS.md](COMPILER_CAPABILITY_STATUS.md), fact-layer state in [compiler_facts.md](status/compiler_facts.md), and provider staging plus the navigation live quality dashboard in [provider_cutover.md](status/provider_cutover.md). The import/export proof lane [#8264](https://github.com/EffortlessMetrics/perl-lsp/issues/8264), compile-environment state lane [#8280](https://github.com/EffortlessMetrics/perl-lsp/issues/8280), Exporter adapter registry lane [#8245](https://github.com/EffortlessMetrics/perl-lsp/issues/8245), first compile-effect log slice [#8291](https://github.com/EffortlessMetrics/perl-lsp/pull/8291), symbolic-ref boundary slice [#8297](https://github.com/EffortlessMetrics/perl-lsp/pull/8297), differential oracle proof [#8300](https://github.com/EffortlessMetrics/perl-lsp/pull/8300), provider fact-source trace receipts [#8305](https://github.com/EffortlessMetrics/perl-lsp/pull/8305), diagnostics proof/cutover [#8319](https://github.com/EffortlessMetrics/perl-lsp/issues/8319) / [#8327](https://github.com/EffortlessMetrics/perl-lsp/issues/8327), completion proof [#8342](https://github.com/EffortlessMetrics/perl-lsp/pull/8342), hover proof [#8344](https://github.com/EffortlessMetrics/perl-lsp/pull/8344), hover live provenance slice [#8369](https://github.com/EffortlessMetrics/perl-lsp/issues/8369), definition/reference proof and runtime receipts [#8349](https://github.com/EffortlessMetrics/perl-lsp/pull/8349) / [#8382](https://github.com/EffortlessMetrics/perl-lsp/issues/8382) / [#8462](https://github.com/EffortlessMetrics/perl-lsp/issues/8462), definition live cutover [#8803](https://github.com/EffortlessMetrics/perl-lsp/issues/8803), references live cutovers [#8828](https://github.com/EffortlessMetrics/perl-lsp/issues/8828) / [#8836](https://github.com/EffortlessMetrics/perl-lsp/issues/8836), rename/safe-delete proof [#8351](https://github.com/EffortlessMetrics/perl-lsp/pull/8351), workspace-symbol source/freshness proof [#8353](https://github.com/EffortlessMetrics/perl-lsp/issues/8353), document-symbol source/freshness proof [#8359](https://github.com/EffortlessMetrics/perl-lsp/issues/8359), and semantic-token source/freshness proof [#8360](https://github.com/EffortlessMetrics/perl-lsp/issues/8360) are complete; broader real-Perl conformance expansion remains tracked under [#8199](https://github.com/EffortlessMetrics/perl-lsp/issues/8199).
 - Receiver expression facts are planned in [PLSP-SPEC-0005](../specs/PLSP-SPEC-0005-receiver-expression-facts.md) and sequenced in [RECEIVER_FACTS_IMPLEMENTATION_PLAN.md](RECEIVER_FACTS_IMPLEMENTATION_PLAN.md); the lane must land semantic facts and receipts before provider-visible receiver completion claims.
 - CI/control-plane next-wave execution sequencing is tracked in [CI_WAVE_EXECUTION_PLAN.md](CI_WAVE_EXECUTION_PLAN.md), with #7404 (`update-status --write` streaming) as the top urgency lane.
@@ -511,18 +511,20 @@ is open on `master` readiness tracking.
 
 ## LSP Feature Implementation
 
-The LSP compliance table is auto-generated from `features.toml`.
+The LSP declared-catalog table is auto-generated from `features.toml`.
 
 <!-- BEGIN: COMPLIANCE_TABLE -->
-| Area | Implemented | Total | Coverage |
-|------|-------------|-------|----------|
-| debug | 24 | 24 | 100% |
-| notebook | 2 | 2 | 100% |
-| protocol | 9 | 9 | 100% |
-| text_document | 53 | 53 | 100% |
-| window | 9 | 9 | 100% |
-| workspace | 28 | 28 | 100% |
-| **Overall** | **125** | **125** | **100%** |
+| Area | Declared proven/preview rows | Total rows |
+|------|---------------------------|------------|
+| debug | 0 | 24 |
+| notebook | 2 | 2 |
+| protocol | 0 | 9 |
+| text_document | 15 | 53 |
+| window | 0 | 9 |
+| workspace | 1 | 28 |
+| **Overall** | **18** | **125** |
+
+Counts are navigation only (#6731): maturity labels are declarations without per-row behavior-evidence ownership.
 <!-- END: COMPLIANCE_TABLE -->
 
 For live capability posture, run `just status-check` or read [CURRENT_STATUS.md](CURRENT_STATUS.md).

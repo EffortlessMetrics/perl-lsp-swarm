@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Fixed
+body: A failed or incomplete startup health check no longer reports that Perl is missing. The extension now names a root cause only when an explicit check result establishes it, and otherwise says the cause could not be determined.
+time: 2026-08-16T00:00:00Z
+custom:
+  PR: "10149"
+  Slug: startup-diagnostic-uncertainty
+  Breaking: "no"

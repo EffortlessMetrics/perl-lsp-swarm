@@ -1,0 +1,35 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10413"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves only the CP00 contradiction class."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 990002,
+    "title": "fix(query): gate one stale caller (#9000101)",
+    "body": "## Controlling issue\n\n#9000101\n\n## Claim Boundary\n\nThis PR does not prove the complete remaining call-site cohort.\n\nCloses #9000101."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 9000101,
+      "title": "fix(query): gate the complete stale-query cohort",
+      "body": "## Acceptance\n\nEvery current caller is generation-gated and the exact five-row denominator is reconciled."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "FAIL_EXPLICIT_UNPROVEN_REQUIRED_WORK",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9000101,
+        "code": "FAIL_EXPLICIT_UNPROVEN_REQUIRED_WORK"
+      }
+    ]
+  }
+}

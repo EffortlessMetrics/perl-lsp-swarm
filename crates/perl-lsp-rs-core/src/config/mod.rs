@@ -18,12 +18,15 @@ use std::{fs::File, io::Read};
 
 use crate::tooling::perl_critic::NativeCriticProfile;
 
+mod critic_state;
 mod dependency_detection;
 mod metadata_dependencies;
 mod native_build_hints;
 pub mod perl_oracle_env;
 pub mod toolchain_profile;
 
+pub(crate) use critic_state::CriticSettingsCandidate;
+pub use critic_state::{EffectiveCriticState, EffectiveNativeCriticConfig};
 pub use dependency_detection::detect_dependency_include_paths;
 pub use metadata_dependencies::{
     DeclaredDependency, DeclaredDependencySource, detect_declared_dependencies,
@@ -53,8 +56,8 @@ pub enum CriticEngine {
 
 /// Server configuration
 ///
-/// Runtime configuration for the LSP server features including inlay hints
-/// and test runner integration. Updated dynamically via `didChangeConfiguration`.
+/// Runtime configuration for LSP server features. Updated dynamically via
+/// `didChangeConfiguration`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerConfig {
     /// Whether inlay hints are globally enabled.
@@ -67,15 +70,6 @@ pub struct ServerConfig {
     pub inlay_hints_chained_hints: bool,
     /// Maximum character length for hint labels before truncation.
     pub inlay_hints_max_length: usize,
-
-    /// Whether the integrated test runner is enabled.
-    pub test_runner_enabled: bool,
-    /// Command to execute tests (e.g., "perl", "prove").
-    pub test_runner_command: String,
-    /// Additional arguments passed to the test command.
-    pub test_runner_args: Vec<String>,
-    /// Test execution timeout in milliseconds.
-    pub test_runner_timeout: u64,
 
     /// Whether telemetry events are enabled.
     pub telemetry_enabled: bool,
@@ -185,22 +179,46 @@ pub struct ServerConfig {
     /// Timeout in seconds for perltidy.
     pub perltidy_timeout_secs: u64,
 
-    /// Feature gate for future next-edit suggestions.
-    pub next_edit: NextEditConfig,
-
     /// AI-powered inline completion configuration.
     pub ai_completion: AiCompletionConfig,
 }
 
-/// Configuration for gated next-edit suggestions.
+/// A server-owned activation disposition for credentialed remote AI egress.
 ///
-/// Disabled by default. Enabling this only opens the runtime boundary; no
-/// editor-visible next-edit provider is registered yet.
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct NextEditConfig {
-    /// Whether the future next-edit runtime boundary is explicitly enabled.
-    pub enabled: bool,
+/// This type is deliberately not constructible from any client payload: no LSP
+/// channel (`initializationOptions`, `workspace/didChangeConfiguration`,
+/// `workspace/configuration` results, project files) can prove user/machine
+/// provenance, so generic arrivals never strengthen this disposition (#4997).
+/// Transport position, key spelling, client names, and client-supplied scope
+/// labels confer no authority.
+///
+/// [`AiActivationAuthority::TrustedUserOperator`] is reserved for a future
+/// server-owned operator adapter (#10817) and for tests proving the rule is
+/// not "activation is impossible"; constructing it from client-derived data is
+/// a security defect. Mirrors the [`ExternalIncludePathAuthority`] pattern
+/// landed for external include roots (#4998) so the canonical observation
+/// train (#10807/#10813/#10817) consumes one vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum AiActivationAuthority {
+    /// No accepted trusted-user/operator activation evidence exists. Remote
+    /// backend construction fails closed (#4997).
+    #[default]
+    Unavailable,
+    /// An explicitly trusted user/operator adapter admitted activation.
+    TrustedUserOperator,
+}
+
+impl AiCompletionConfig {
+    /// Admit a trusted user/operator activation (#4997).
+    ///
+    /// The only sanctioned way to make remote AI backend construction eligible.
+    /// Intentionally takes no client-derived arguments: a future server-owned
+    /// adapter (#10817) supplies independently verified user/machine evidence;
+    /// until then only tests and internal fixtures may call this. Passing
+    /// client payload content here is a security defect.
+    pub fn admit_trusted_user_operator_activation(&mut self) {
+        self.activation_authority = AiActivationAuthority::TrustedUserOperator;
+    }
 }
 
 /// Configuration for AI-powered inline completions.
@@ -208,10 +226,26 @@ pub struct NextEditConfig {
 /// Disabled by default. When enabled, the server calls an external AI provider
 /// for inline completion suggestions, falling back to deterministic rules on
 /// timeout, error, or when AI is disabled.
+///
+/// Arming the remote backend additionally requires
+/// [`AiActivationAuthority::TrustedUserOperator`]; no current client channel
+/// can supply it (#4997), so remote activation fails closed in production
+/// until the trusted-operator adapter lands (#10817).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AiCompletionConfig {
-    /// Whether the user explicitly enabled AI completions via the LSP client
-    /// configuration channel. Default: false.
+    /// Whether a trusted user/operator activation was admitted (#4997).
+    ///
+    /// Only [`Self::admit_trusted_user_operator_activation`] may set the
+    /// underlying authority to trusted. Generic LSP traffic cannot write this
+    /// field; malformed or absent client values never clear an accepted
+    /// activation either.
+    #[serde(default)]
+    pub activation_authority: AiActivationAuthority,
+    /// Whether trusted user/operator activation requested AI completions.
+    ///
+    /// Generic LSP payloads cannot write this field (#4997); before the
+    /// trusted-operator adapter lands it can only be set by internal fixtures
+    /// and tests. Default: false.
     pub user_enabled: bool,
     /// Whether a workspace/project `.perl-lsp.toml` opted out (`enabled = false`).
     /// Project config may only disable AI, never enable it (issue #4997).
@@ -292,8 +326,11 @@ fn is_http_header_name_byte(byte: u8) -> bool {
 /// Streaming sub-configuration for AI completions.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AiStreamingConfig {
-    /// Whether the user enabled streaming via the LSP client configuration channel.
-    /// Default: true (streaming is on when AI completions are enabled).
+    /// Whether trusted user/operator activation enabled streaming.
+    ///
+    /// Generic LSP payloads cannot write this field (#4997); streaming
+    /// presentation preferences never imply backend authorization. Default:
+    /// true (streaming is on when AI completions are legitimately armed).
     pub user_enabled: bool,
     /// Effective runtime flag, currently mirrors `user_enabled`.
     pub enabled: bool,
@@ -305,6 +342,8 @@ pub struct AiStreamingConfig {
 ///
 /// `enabled` is true only when the user enabled AI and the project did not
 /// opt out. Streaming `enabled` currently mirrors streaming `user_enabled`.
+/// Remote backend construction additionally requires an accepted trusted
+/// activation authority (#4997), enforced at [`crate::config`] consumers.
 pub fn recompute_ai_completion_effective(ai: &mut AiCompletionConfig) {
     ai.enabled = ai.user_enabled && !ai.project_opt_out;
     ai.streaming.enabled = ai.streaming.user_enabled;
@@ -313,6 +352,7 @@ pub fn recompute_ai_completion_effective(ai: &mut AiCompletionConfig) {
 impl Default for AiCompletionConfig {
     fn default() -> Self {
         Self {
+            activation_authority: AiActivationAuthority::Unavailable,
             user_enabled: false,
             project_opt_out: false,
             enabled: false,
@@ -347,10 +387,6 @@ impl Default for ServerConfig {
             inlay_hints_type_hints: true,
             inlay_hints_chained_hints: false,
             inlay_hints_max_length: 30,
-            test_runner_enabled: true,
-            test_runner_command: "perl".to_string(),
-            test_runner_args: vec![],
-            test_runner_timeout: 60000,
             telemetry_enabled: false,
             perlcritic_enabled: true,
             perlcritic_severity: 3,
@@ -377,7 +413,6 @@ impl Default for ServerConfig {
             perltidy_block_comment_indentation: Some(0),
             perltidy_extra_args: Vec::new(),
             perltidy_timeout_secs: 10,
-            next_edit: NextEditConfig::default(),
             ai_completion: AiCompletionConfig::default(),
         }
     }
@@ -404,128 +439,38 @@ impl ServerConfig {
             }
         }
 
-        if let Some(test) = settings.get("testRunner") {
-            if let Some(enabled) = test.get("enabled").and_then(|v| v.as_bool()) {
-                self.test_runner_enabled = enabled;
-            }
-            if let Some(cmd) = test.get("command").and_then(|v| v.as_str()) {
-                self.test_runner_command = cmd.to_string();
-            }
-            if let Some(args) = test.get("args").and_then(|v| v.as_array()) {
-                self.test_runner_args =
-                    args.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
-            }
-            if let Some(timeout) = test.get("timeout").and_then(|v| v.as_u64()) {
-                self.test_runner_timeout = timeout;
-            }
-        }
-
         if let Some(telemetry) = settings.get("telemetry")
             && let Some(enabled) = telemetry.get("enabled").and_then(|v| v.as_bool())
         {
             self.telemetry_enabled = enabled;
         }
 
-        if let Some(next_edit) = settings.get("nextEdit")
-            && let Some(enabled) = next_edit.get("enabled").and_then(|v| v.as_bool())
-        {
-            self.next_edit.enabled = enabled;
+        // #8311: `nextEdit.enabled` is no longer a public setting. The key is
+        // recognized only to answer legacy payloads with one bounded
+        // ignored/deprecation reason; it can never enable the internal
+        // next-edit scaffold gate, and no editor-visible provider exists.
+        if settings.get("nextEdit").is_some() {
+            tracing::warn!(
+                target: "perl_lsp::config",
+                setting = "nextEdit.enabled",
+                "ignoring deprecated `nextEdit` settings key; no editor next-edit provider is \
+                 registered, so it can never report ready or enabled (#8311)",
+            );
         }
 
-        if let Some(critic) = settings.get("perlcritic") {
-            if let Some(enabled) = critic.get("enabled").and_then(|v| v.as_bool()) {
-                self.perlcritic_enabled = enabled;
-            }
-            if let Some(severity) = critic.get("severity").and_then(|v| v.as_u64()) {
-                let clamped = severity.clamp(1, 5) as u8;
-                if clamped as u64 != severity {
-                    tracing::warn!(
-                        target: "perl_lsp::config",
-                        setting = "perlcritic.severity",
-                        value = severity,
-                        valid_range = "1-5",
-                        "perlcritic severity out of range; clamped to {}",
-                        clamped,
-                    );
-                }
-                self.perlcritic_severity = clamped;
-            }
-            // Security: do NOT honour LSP-channel perlcritic.profile / theme (issue #5001).
-            // Subprocess profile paths may only be applied via trusted project config
-            // (`.perl-lsp.toml` → `apply_to_server_config`).
-        }
-
-        // Native `critic.*` settings are the product-surface keys. They are parsed
-        // after `perlcritic.*` so they win when both are present (see #3276): the
-        // legacy `perlcritic.*` block above seeds the shared severity/enabled state,
-        // and the native block below overrides it.
-        if let Some(critic) = settings.get("critic") {
-            if let Some(enabled) = critic.get("enabled").and_then(|v| v.as_bool()) {
-                self.perlcritic_enabled = enabled;
-            }
-            if let Some(severity) = critic.get("severity").and_then(|v| v.as_u64()) {
-                let clamped = severity.clamp(1, 5) as u8;
-                if clamped as u64 != severity {
-                    tracing::warn!(
-                        target: "perl_lsp::config",
-                        setting = "critic.severity",
-                        value = severity,
-                        valid_range = "1-5",
-                        "critic severity out of range; clamped to {}",
-                        clamped,
-                    );
-                }
-                self.perlcritic_severity = clamped;
-            }
-            if let Some(engine) = critic.get("engine").and_then(|v| v.as_str()) {
-                match parse_critic_engine(engine) {
-                    Some(CriticEngine::Native) => self.critic_engine = CriticEngine::Native,
-                    Some(CriticEngine::Legacy) => {
-                        tracing::warn!(
-                            target: "perl_lsp::config",
-                            setting = "critic.engine",
-                            value = %engine,
-                            "ignoring legacy critic.engine from LSP settings channel; \
-                             use .perl-lsp.toml for trusted legacy subprocess configuration",
-                        );
-                    }
-                    None => tracing::warn!(
-                        target: "perl_lsp::config",
-                        setting = "critic.engine",
-                        value = %engine,
-                        valid = CRITIC_ENGINE_VALID_OPTIONS,
-                        "unrecognized critic.engine value; keeping current setting",
-                    ),
+        // Critic settings advance as ONE accepted transaction (#8253): the
+        // legacy `perlcritic.*` keys seed shared enablement/severity and the
+        // native `critic.*` keys override them (#3276), but both blocks are
+        // validated together before any sibling mutates. A payload with any
+        // invalid critic sibling is rejected whole, retaining the complete
+        // prior accepted state and emitting exactly one deduplicated condition.
+        match CriticSettingsCandidate::parse_lsp_update(settings) {
+            Ok(candidate) => {
+                if !candidate.is_empty() {
+                    candidate.apply_to(self);
                 }
             }
-            if let Some(profile) = critic.get("profile").and_then(|v| v.as_str()) {
-                match NativeCriticProfile::parse(profile) {
-                    Some(profile) => self.native_critic_profile = profile.to_string(),
-                    None => tracing::warn!(
-                        target: "perl_lsp::config",
-                        setting = "critic.profile",
-                        value = %profile,
-                        valid = NativeCriticProfile::VALID_OPTIONS,
-                        "unrecognized critic.profile value; keeping current setting",
-                    ),
-                }
-            }
-            if let Some(include) = string_array(critic.get("include")) {
-                warn_unknown_rule_ids(
-                    CriticRuleIdSource::ClientSettings,
-                    "critic.include",
-                    &include,
-                );
-                self.native_critic_include = include;
-            }
-            if let Some(exclude) = string_array(critic.get("exclude")) {
-                warn_unknown_rule_ids(
-                    CriticRuleIdSource::ClientSettings,
-                    "critic.exclude",
-                    &exclude,
-                );
-                self.native_critic_exclude = exclude;
-            }
+            Err(rejection) => rejection.emit_single_condition(),
         }
 
         if let Some(formatting) = settings.get("formatting") {
@@ -536,13 +481,13 @@ impl ServerConfig {
                 self.format_on_save = format_on_save;
             }
             if let Some(engine) = formatting.get("engine").and_then(|v| v.as_str()) {
-                match parse_formatter_mode(engine) {
+                match parse_client_formatter_mode(engine) {
                     Some(mode) => self.formatting_engine = mode,
                     None => tracing::warn!(
                         target: "perl_lsp::config",
                         setting = "formatting.engine",
                         value = %engine,
-                        valid = FORMATTER_MODE_VALID_OPTIONS,
+                        valid = CLIENT_FORMATTER_MODE_VALID_OPTIONS,
                         "unrecognized formatting.engine value; keeping current setting",
                     ),
                 }
@@ -581,27 +526,52 @@ impl ServerConfig {
         }
 
         if let Some(ai) = settings.get("aiCompletion") {
-            if let Some(enabled) = ai.get("enabled").and_then(|v| v.as_bool()) {
-                self.ai_completion.user_enabled = enabled;
+            // Security (#4997): activation and selection authority cannot be
+            // written from any LSP client payload. The same parser serves
+            // initialization options, didChangeConfiguration, and unscoped or
+            // folder-scoped workspace/configuration results, so no arrival
+            // here can prove user/machine provenance. Rejections preserve any
+            // previously accepted trusted state instead of clearing it.
+            if let Some(_enabled) = ai.get("enabled") {
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    "ignoring aiCompletion.enabled from a generic LSP settings channel \
+                     (security: #4997): this channel cannot prove user/machine provenance, \
+                     so it can neither arm nor disable remote AI egress"
+                );
             }
-            if let Some(provider) = ai.get("provider").and_then(|v| v.as_str()) {
-                self.ai_completion.provider = provider.to_string();
+            if let Some(provider) = ai.get("provider") {
+                let _ = provider;
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    "ignoring aiCompletion.provider from a generic LSP settings channel \
+                     (security: #4997): backend/egress identity selection requires \
+                     trusted user/operator authority"
+                );
             }
             // Security (#5684): do NOT honour LSP-channel endpoint, apiKeyEnv,
             // apiKeyHeader, or apiKeyPrefix. A hostile workspace could redirect
             // AI completion requests to an attacker-controlled endpoint and
             // exfiltrate source code, or change the env var name to read an
-            // arbitrary secret. These settings must arrive only via user-level
-            // config (machine-scoped VS Code settings or .perl-lsp.toml at the
-            // workspace root, which is already gated in merge_project_config).
+            // arbitrary secret. No configuration path currently sets them:
+            // `.perl-lsp.toml` does not carry these fields at all (#4955),
+            // no client channel may supply them (#5684), and the primary VS
+            // Code extension exposes no endpoint/credential surface (known
+            // gap documented in docs/reference/AI_COMPLETION.md and #4997).
             if let Some(_endpoint) = ai.get("endpoint").and_then(|v| v.as_str()) {
                 tracing::warn!(
                     target: "perl_lsp::config",
                     "ignoring aiCompletion.endpoint from didChangeConfiguration (security: #5684)"
                 );
             }
-            if let Some(model) = ai.get("model").and_then(|v| v.as_str()) {
-                self.ai_completion.model = model.to_string();
+            if let Some(model) = ai.get("model") {
+                let _ = model;
+                tracing::warn!(
+                    target: "perl_lsp::config",
+                    "ignoring aiCompletion.model from a generic LSP settings channel \
+                     (security: #4997): request identity selection requires \
+                     trusted user/operator authority"
+                );
             }
             if let Some(_key_env) = ai.get("apiKeyEnv").and_then(|v| v.as_str()) {
                 tracing::warn!(
@@ -640,8 +610,16 @@ impl ServerConfig {
                 self.ai_completion.local_model_mode = local_model_mode;
             }
             if let Some(streaming) = ai.get("streaming") {
-                if let Some(enabled) = streaming.get("enabled").and_then(|v| v.as_bool()) {
-                    self.ai_completion.streaming.user_enabled = enabled;
+                // Security (#4997): streaming activation follows the same
+                // authority law as backend arming; a generic payload may not
+                // imply authorization either way.
+                if let Some(_enabled) = streaming.get("enabled") {
+                    tracing::warn!(
+                        target: "perl_lsp::config",
+                        "ignoring aiCompletion.streaming.enabled from a generic LSP \
+                         settings channel (security: #4997): streaming preferences \
+                         never imply or revoke remote egress authorization"
+                    );
                 }
                 if let Some(debounce) = streaming.get("updateDebounceMs").and_then(|v| v.as_u64()) {
                     self.ai_completion.streaming.update_debounce_ms = debounce;
@@ -656,9 +634,7 @@ impl ServerConfig {
         warn_on_type_mismatch(settings, "inlayHints", "enabled", "boolean");
         warn_on_type_mismatch(settings, "inlayHints", "parameterHints", "boolean");
         warn_on_type_mismatch(settings, "inlayHints", "typeHints", "boolean");
-        warn_on_type_mismatch(settings, "testRunner", "enabled", "boolean");
         warn_on_type_mismatch(settings, "diagnostics", "enabled", "boolean");
-        warn_on_type_mismatch(settings, "critic", "enabled", "boolean");
         warn_on_type_mismatch(settings, "formatting", "enabled", "boolean");
     }
 
@@ -707,14 +683,16 @@ impl ServerConfig {
         if let Some(formatting) = settings.get("formatting")
             && let Some(engine) = formatting.get("engine")
         {
-            let invalid_engine =
-                engine.as_str().map(|value| parse_formatter_mode(value).is_none()).unwrap_or(true);
+            let invalid_engine = engine
+                .as_str()
+                .map(|value| parse_client_formatter_mode(value).is_none())
+                .unwrap_or(true);
             if invalid_engine {
                 invalid.push(InvalidClientSetting {
                     setting: "formatting.engine",
                     value: client_setting_display_value(engine),
                     value_type: client_setting_value_type(engine),
-                    valid_options: FORMATTER_MODE_VALID_OPTIONS,
+                    valid_options: CLIENT_FORMATTER_MODE_VALID_OPTIONS,
                 });
             }
         }
@@ -789,6 +767,15 @@ fn parse_formatter_mode(value: &str) -> Option<FormatterMode> {
     }
 }
 
+fn parse_client_formatter_mode(value: &str) -> Option<FormatterMode> {
+    match normalize_formatter_mode_value(value).as_str() {
+        "native" => Some(FormatterMode::Native),
+        "compat" | "perltidy-compat" => Some(FormatterMode::Compat),
+        "off" | "disabled" | "none" => Some(FormatterMode::Off),
+        _ => None,
+    }
+}
+
 fn parse_critic_engine(value: &str) -> Option<CriticEngine> {
     match value.trim().to_ascii_lowercase().as_str() {
         "legacy" | "external" | "perlcritic" => Some(CriticEngine::Legacy),
@@ -810,10 +797,10 @@ fn parse_lsp_critic_engine(value: &str) -> Option<CriticEngine> {
 const FORMATTER_MODE_VALID_OPTIONS: &str = "native, compat (perltidy-compat), external-legacy (external-perltidy, perltidy), \
      off (disabled, none)";
 
-/// Human-readable list of accepted `critic.engine` values, used in
-/// `tracing::warn!` messages when a user supplies an unrecognized value.
-/// Kept in sync with [`parse_critic_engine`].
-const CRITIC_ENGINE_VALID_OPTIONS: &str = "native, legacy (external, perlcritic)";
+/// Human-readable values accepted for `formatting.engine` on the LSP
+/// client-settings channel. External process selection remains project-owned.
+const CLIENT_FORMATTER_MODE_VALID_OPTIONS: &str =
+    "native, compat (perltidy-compat), off (disabled, none)";
 
 /// Human-readable values accepted for `critic.engine` on the LSP client-settings
 /// channel. Legacy subprocess aliases remain available only through trusted
@@ -1002,6 +989,33 @@ pub enum Perl5LibPrecedence {
     Append,
 }
 
+/// Outcome of a system `@INC` probe.
+///
+/// The outcome is retained separately from the fail-closed path returned
+/// by [`WorkspaceConfig::get_system_inc`], so callers that need to decide
+/// whether a retry is safe do not have to infer process failures from an empty
+/// include-path list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SystemIncProbeOutcome {
+    /// System include probing is disabled for this configuration.
+    Disabled,
+    /// No Perl oracle could be constructed for the requested probe.
+    Unavailable,
+    /// The Perl probe timed out before producing a result.
+    TimedOut,
+    /// The probe process failed at the I/O level — the spawn itself or a
+    /// later `try_wait`/pipe error. The underlying helper reports these
+    /// identically, so the stage is deliberately NOT distinguished here;
+    /// callers must not read this as "spawn-only" (#11840 review).
+    IoFailed,
+    /// The Perl process exited unsuccessfully.
+    NonZeroExit,
+    /// The Perl process succeeded but produced no usable `@INC` paths.
+    SuccessfulEmpty,
+    /// The Perl process succeeded and produced usable `@INC` paths.
+    Paths(Vec<PathBuf>),
+}
+
 /// Workspace configuration for module resolution
 ///
 /// Controls how the LSP server resolves module imports and finds
@@ -1019,8 +1033,12 @@ pub struct WorkspaceConfig {
 
     /// Machine-scoped external include roots (absolute paths).
     ///
-    /// Populated from `perl.workspace.externalIncludePaths`, which VS Code
-    /// exposes as `perl-lsp.externalIncludePaths` with `scope: machine`.
+    /// Admitted only through
+    /// [`ExternalIncludePathAuthority::TrustedUserOperator`] (a future
+    /// server-owned operator adapter; #10817). Every current client channel is
+    /// unauthorized (#4998), so this stays empty in production until that
+    /// adapter lands. The VS Code `perl-lsp.externalIncludePaths` setting
+    /// (`scope: machine`) remains client-side defence in depth only.
     pub external_include_paths: Vec<String>,
 
     /// Additional file extensions accepted during workspace discovery.
@@ -1033,8 +1051,8 @@ pub struct WorkspaceConfig {
     /// Default: false (avoids blocking on network filesystems)
     pub use_system_inc: bool,
 
-    /// Cached system @INC paths (populated lazily when use_system_inc is true)
-    system_inc_cache: Option<Vec<PathBuf>>,
+    /// Cached system @INC probe outcome (populated lazily when use_system_inc is true).
+    system_inc_cache: Option<SystemIncProbeOutcome>,
 
     /// Perl interpreter used for startup `@INC` probing.
     ///
@@ -1089,13 +1107,79 @@ impl Default for WorkspaceConfig {
     }
 }
 
+/// A configuration channel that cannot prove user/machine provenance.
+///
+/// The label only names the channel for diagnostics; it never grants
+/// authority (#4998).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnauthorizedExternalIncludePathSource {
+    /// Client-supplied `initializationOptions`.
+    InitializationOptions,
+    /// `workspace/didChangeConfiguration` notification payload.
+    DidChangeConfiguration,
+    /// The unscoped (first) item of a `workspace/configuration` response.
+    GenericUnscopedConfiguration,
+    /// A per-folder item of a `workspace/configuration` response.
+    FolderConfiguration,
+    /// Project/resource configuration (`.perl-lsp.toml`).
+    ProjectResource,
+    /// Unclassified or unknown channel; fails closed like every other source.
+    Unknown,
+}
+
+impl UnauthorizedExternalIncludePathSource {
+    /// Human-readable channel name for rejection messages and logs.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::InitializationOptions => "initialization options",
+            Self::DidChangeConfiguration => "workspace/didChangeConfiguration",
+            Self::GenericUnscopedConfiguration => "unscoped workspace/configuration",
+            Self::FolderConfiguration => "folder-scoped workspace/configuration",
+            Self::ProjectResource => "project configuration",
+            Self::Unknown => "unclassified",
+        }
+    }
+}
+
+/// Server-owned authority disposition for machine-scoped external include
+/// roots (`workspace.externalIncludePaths`).
+///
+/// Transport position (result-array slot), key spelling, client names, and
+/// client-supplied scope labels confer no authority (#4998): any LSP client
+/// can forge them. No production channel currently carries independently
+/// verified user/machine provenance, so every current call site passes
+/// [`ExternalIncludePathAuthority::Untrusted`] and `externalIncludePaths`
+/// entries are rejected without clearing previously accepted values. The
+/// [`ExternalIncludePathAuthority::TrustedUserOperator`] variant is reserved
+/// for a future server-owned operator adapter and for tests proving the rule
+/// is not "absolute paths are impossible"; constructing it from client input
+/// is a security defect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalIncludePathAuthority {
+    /// The channel cannot prove user/machine provenance.
+    Untrusted(UnauthorizedExternalIncludePathSource),
+    /// An explicitly trusted user/operator adapter. Entries still pass the
+    /// existing absolute-path validation.
+    TrustedUserOperator,
+}
+
+impl Default for ExternalIncludePathAuthority {
+    fn default() -> Self {
+        Self::Untrusted(UnauthorizedExternalIncludePathSource::Unknown)
+    }
+}
+
 /// Context for [`WorkspaceConfig::update_from_value_with_context`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WorkspaceConfigUpdateContext<'a> {
     /// Workspace root used to reject traversal in resource-scoped `includePaths`.
     pub workspace_root: Option<&'a Path>,
-    /// When `false`, ignore `externalIncludePaths` (folder-scoped client payloads).
-    pub apply_external_include_paths: bool,
+    /// Authority disposition for machine-scoped `externalIncludePaths`.
+    ///
+    /// Defaults to [`ExternalIncludePathAuthority::Untrusted`] with an
+    /// unclassified source, so omitted context fails closed.
+    pub external_include_paths: ExternalIncludePathAuthority,
 }
 
 /// A resource-scoped `includePaths` entry rejected during client-settings validation.
@@ -1118,6 +1202,9 @@ pub enum RejectedClientIncludePathReason {
     ExternalRelative,
     /// `externalIncludePaths` entries must not contain null/control characters.
     ExternalInvalidCharacters,
+    /// Machine-scoped external roots arrived on a channel that cannot prove
+    /// user/machine provenance (#4998). The stored value is preserved.
+    ExternalUnauthorized(UnauthorizedExternalIncludePathSource),
 }
 
 impl RejectedClientIncludePath {
@@ -1142,6 +1229,13 @@ impl RejectedClientIncludePath {
             RejectedClientIncludePathReason::ExternalInvalidCharacters => format!(
                 "'{}': contains null bytes or disallowed control characters",
                 escape_for_display(&self.entry)
+            ),
+            RejectedClientIncludePathReason::ExternalUnauthorized(source) => format!(
+                "'{}': `perl.workspace.externalIncludePaths` was ignored because the {} \
+                 channel cannot prove user/machine provenance. External include roots are \
+                 not applied yet; use workspace-relative paths in `includePaths` instead.",
+                self.entry,
+                source.label()
             ),
         }
     }
@@ -1406,29 +1500,26 @@ impl WorkspaceConfig {
 
     /// Update workspace configuration from LSP settings.
     ///
-    /// Fail-closed for `externalIncludePaths`: the default context ignores them.
-    /// Callers on the global / machine configuration channel must use
-    /// [`Self::update_from_value_with_context`] with
-    /// `apply_external_include_paths: true`.
+    /// Fail-closed for `externalIncludePaths`: the default context carries no
+    /// external-root authority, so entries are rejected and the stored value
+    /// is preserved. Callers must name their channel through
+    /// [`Self::update_from_value_with_context`].
     pub fn update_from_value(
         &mut self,
         settings: &serde_json::Value,
     ) -> Vec<RejectedClientIncludePath> {
-        self.update_from_value_with_context(
-            settings,
-            WorkspaceConfigUpdateContext {
-                workspace_root: None,
-                apply_external_include_paths: false,
-            },
-        )
+        self.update_from_value_with_context(settings, WorkspaceConfigUpdateContext::default())
     }
 
     /// Update workspace configuration from LSP settings with validation context.
     ///
     /// Resource-scoped `includePaths` reject absolute entries and any relative
     /// entry that escapes `workspace_root` when provided. `externalIncludePaths`
-    /// are accepted only when `apply_external_include_paths` is true (global /
-    /// machine channel).
+    /// are accepted only from
+    /// [`ExternalIncludePathAuthority::TrustedUserOperator`]; every untrusted
+    /// channel (initialization options, didChangeConfiguration, unscoped and
+    /// folder-scoped configuration results, project config, unknown) gets its
+    /// non-empty entries rejected without clearing previously accepted values.
     pub fn update_from_value_with_context(
         &mut self,
         settings: &serde_json::Value,
@@ -1450,13 +1541,48 @@ impl WorkspaceConfig {
                 }
                 self.include_paths = valid;
             }
-            if context.apply_external_include_paths
-                && let Some(paths) =
-                    workspace.get("externalIncludePaths").and_then(|v| v.as_array())
-            {
-                let (accepted, external_rejected) = parse_external_include_paths(paths);
-                self.external_include_paths = accepted;
-                rejected.extend(external_rejected);
+            if let Some(paths) = workspace.get("externalIncludePaths").and_then(|v| v.as_array()) {
+                match context.external_include_paths {
+                    ExternalIncludePathAuthority::TrustedUserOperator => {
+                        let (accepted, external_rejected) = parse_external_include_paths(paths);
+                        if external_rejected.is_empty() {
+                            self.external_include_paths = accepted;
+                        } else {
+                            // Atomic admission (catalog fallback `RejectSource`):
+                            // a candidate with any invalid entry is rejected as
+                            // a whole, so a malformed or partially valid
+                            // payload never clears or partially replaces the
+                            // previously accepted complete set (INC-AUTH-007).
+                            rejected.extend(external_rejected);
+                        }
+                    }
+                    ExternalIncludePathAuthority::Untrusted(source) => {
+                        // Fail closed (#4998): reject non-empty unauthorized
+                        // arrivals without clearing previously accepted values.
+                        let entries: Vec<&str> = paths
+                            .iter()
+                            .filter_map(|value| value.as_str())
+                            .map(str::trim)
+                            .filter(|entry| !entry.is_empty())
+                            .collect();
+                        if !entries.is_empty() {
+                            tracing::warn!(
+                                target: "perl_lsp::config",
+                                source = source.label(),
+                                count = entries.len(),
+                                "ignored unauthorized externalIncludePaths entries"
+                            );
+                            rejected.extend(entries.into_iter().map(|entry| {
+                                RejectedClientIncludePath {
+                                    entry: entry.to_string(),
+                                    reason: RejectedClientIncludePathReason::ExternalUnauthorized(
+                                        source,
+                                    ),
+                                }
+                            }));
+                        }
+                    }
+                }
             }
             if let Some(extensions) = string_array(workspace.get("discoveryExtensions")) {
                 self.discovery_extra_extensions = extensions;
@@ -1507,14 +1633,43 @@ impl WorkspaceConfig {
         rejected
     }
 
-    /// Get system @INC paths (lazily populated).
+    fn ensure_system_inc_probe(&mut self) {
+        if self.system_inc_cache.is_some() {
+            return;
+        }
+
+        // Snapshot the fields needed by the oracle constructor before the
+        // mutable borrow below.
+        let perl_args = self.perl_args.clone();
+        let result = Self::fetch_perl_inc(self, &perl_args);
+        self.system_inc_cache = Some(result);
+    }
+
+    /// Get the typed system `@INC` probe outcome (lazily populated).
     ///
     /// The probe (`perl -e 'print join("\n", @INC)'`) is bounded by
-    /// `SYSTEM_INC_PROBE_TIMEOUT`. If it times out — common when the
-    /// interpreter is on a slow filesystem, hangs, or is a perlbrew shim
-    /// that takes a long time on first run — an empty vector is cached
-    /// so subsequent requests don't re-probe. The user can re-trigger
-    /// probing by toggling `useSystemInc`, which invalidates the cache.
+    /// `SYSTEM_INC_PROBE_TIMEOUT`. The typed result is cached so callers can
+    /// distinguish a transient timeout from a spawn failure, nonzero exit,
+    /// unavailable oracle, or a successful empty output without changing the
+    /// fail-closed behaviour of [`Self::get_system_inc`].
+    pub fn get_system_inc_probe_outcome(&mut self) -> SystemIncProbeOutcome {
+        if !self.use_system_inc {
+            return SystemIncProbeOutcome::Disabled;
+        }
+
+        self.ensure_system_inc_probe();
+        match self.system_inc_cache.as_ref() {
+            Some(outcome) => outcome.clone(),
+            None => SystemIncProbeOutcome::Unavailable,
+        }
+    }
+
+    /// Get system @INC paths (lazily populated).
+    ///
+    /// Any unavailable or failed probe remains fail-closed as an empty slice;
+    /// use [`Self::get_system_inc_probe_outcome`] when the caller needs to
+    /// distinguish the failure class. The user can re-trigger probing by
+    /// toggling `useSystemInc`, which invalidates the cache.
     ///
     /// The PERL5LIB environment variable is stripped from the probe subprocess
     /// when `use_perl5lib` is false, so interpreter startup `@INC` does not
@@ -1527,22 +1682,25 @@ impl WorkspaceConfig {
             return &[];
         }
 
-        if self.system_inc_cache.is_none() {
-            // Snapshot the fields needed by the oracle constructor before the
-            // mutable borrow below.
-            let perl_args = self.perl_args.clone();
-            let result = Self::fetch_perl_inc(self, &perl_args);
-            self.system_inc_cache = Some(result);
-        }
+        self.ensure_system_inc_probe();
 
-        self.system_inc_cache.as_deref().unwrap_or(&[])
+        match self.system_inc_cache.as_ref() {
+            Some(SystemIncProbeOutcome::Paths(paths)) => paths.as_slice(),
+            _ => &[],
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn fetch_perl_inc(config: &WorkspaceConfig, perl_args: &[String]) -> Vec<PathBuf> {
+    fn fetch_perl_inc(config: &WorkspaceConfig, perl_args: &[String]) -> SystemIncProbeOutcome {
         let oracle = match PerlOracleEnv::for_module_resolution(config) {
             Some(o) => o,
-            None => return Vec::new(),
+            None => {
+                tracing::warn!(
+                    target: "perl_lsp::config::system_inc",
+                    "startup @INC probe unavailable; caching an unavailable outcome"
+                );
+                return SystemIncProbeOutcome::Unavailable;
+            }
         };
         let timeout = oracle.timeout;
         let mut command = oracle.into_command();
@@ -1550,11 +1708,8 @@ impl WorkspaceConfig {
         command.args(["-e", "print join(\"\\n\", @INC)"]);
         let output = output_with_timeout(command, timeout);
 
-        match output {
-            Ok(out) if out.status.success() => {
-                Self::parse_perl_inc_output(&String::from_utf8_lossy(&out.stdout))
-            }
-            Ok(out) => {
+        match &output {
+            Ok(out) if !out.status.success() => {
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 tracing::warn!(
                     target: "perl_lsp::config::system_inc",
@@ -1562,7 +1717,6 @@ impl WorkspaceConfig {
                     stderr = %stderr.trim(),
                     "startup @INC probe exited non-zero; caching empty result"
                 );
-                Vec::new()
             }
             Err(err) if err.kind() == std::io::ErrorKind::TimedOut => {
                 tracing::warn!(
@@ -1572,7 +1726,6 @@ impl WorkspaceConfig {
                      Set perl.workspace.useSystemInc=false to disable probing, \
                      or pin a faster perl interpreter."
                 );
-                Vec::new()
             }
             Err(err) => {
                 tracing::warn!(
@@ -1580,8 +1733,29 @@ impl WorkspaceConfig {
                     error = %err,
                     "startup @INC probe failed to spawn perl; caching empty result"
                 );
-                Vec::new()
             }
+            _ => {}
+        }
+
+        Self::classify_perl_inc_output(output)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn classify_perl_inc_output(output: std::io::Result<Output>) -> SystemIncProbeOutcome {
+        match output {
+            Ok(out) if out.status.success() => {
+                let paths = Self::parse_perl_inc_output(&String::from_utf8_lossy(&out.stdout));
+                if paths.is_empty() {
+                    SystemIncProbeOutcome::SuccessfulEmpty
+                } else {
+                    SystemIncProbeOutcome::Paths(paths)
+                }
+            }
+            Ok(_) => SystemIncProbeOutcome::NonZeroExit,
+            Err(err) if err.kind() == std::io::ErrorKind::TimedOut => {
+                SystemIncProbeOutcome::TimedOut
+            }
+            Err(_) => SystemIncProbeOutcome::IoFailed,
         }
     }
 
@@ -1610,8 +1784,8 @@ impl WorkspaceConfig {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn fetch_perl_inc(_config: &WorkspaceConfig, _perl_args: &[String]) -> Vec<PathBuf> {
-        Vec::new()
+    fn fetch_perl_inc(_config: &WorkspaceConfig, _perl_args: &[String]) -> SystemIncProbeOutcome {
+        SystemIncProbeOutcome::Unavailable
     }
 }
 
@@ -1679,7 +1853,10 @@ pub struct ProjectConfig {
     pub features: ProjectFeaturesConfig,
     /// `[ai_completion]` section: AI completion settings.
     pub ai_completion: ProjectAiCompletionConfig,
-    /// `[next_edit]` section: gated next-edit settings.
+    /// Deprecated `[next_edit]` section of `.perl-lsp.toml` (#8311).
+    ///
+    /// Recognized only so legacy files can be answered with one bounded
+    /// ignored/deprecation reason; it never affects server state.
     pub next_edit: ProjectNextEditConfig,
     /// `[formatting]` section: native formatter and legacy adapter configuration.
     pub formatting: ProjectFormattingConfig,
@@ -1767,12 +1944,18 @@ pub struct ProjectAiCompletionConfig {
     pub enabled: Option<bool>,
 }
 
-/// `[next_edit]` section of `.perl-lsp.toml`.
+/// Deprecated `[next_edit]` section of `.perl-lsp.toml` (#8311).
+///
+/// No longer part of public configuration: no editor-visible next-edit
+/// provider is registered. The section is retained only as a legacy
+/// recognizer so supplying it can be reported with one bounded
+/// ignored/deprecation reason instead of apparent success; it can never
+/// enable the internal scaffold gate or report ready/enabled.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectNextEditConfig {
-    /// Whether the future next-edit runtime boundary is explicitly enabled.
+    /// Legacy `enabled` flag. Ignored; kept only for the deprecation reason.
     pub enabled: Option<bool>,
 }
 
@@ -2026,23 +2209,6 @@ impl ProjectConfig {
     /// Only fields explicitly set in the TOML override defaults; unset fields are untouched.
     /// LSP `didChangeConfiguration` is expected to run after this, overriding any values here.
     pub fn apply_to_server_config(&self, config: &mut ServerConfig) {
-        if let Some(enabled) = self.diagnostics.perlcritic {
-            config.perlcritic_enabled = enabled;
-        }
-        if let Some(severity) = self.diagnostics.perlcritic_severity {
-            let clamped = severity.clamp(1, 5);
-            if clamped != severity {
-                tracing::warn!(
-                    target: "perl_lsp::config",
-                    setting = "diagnostics.perlcritic_severity",
-                    value = severity,
-                    valid_range = "1-5",
-                    "perlcritic_severity out of range; clamped to {}",
-                    clamped,
-                );
-            }
-            config.perlcritic_severity = clamped;
-        }
         if let Some(hints) = self.features.inlay_hints {
             config.inlay_hints_enabled = hints;
         }
@@ -2061,14 +2227,23 @@ impl ProjectConfig {
         // api_key_header / api_key_prefix. Allowing a hostile project to pick
         // both the destination and the process-environment credential name
         // would let it exfiltrate an arbitrary named secret (issue #4955).
-        // These settings arrive only via the LSP client/server configuration
-        // channel. Project activation is closed here (#4997); VS Code declares
-        // AI toggles `scope: machine`. Non-VS Code clients that forward
-        // workspace settings into `didChangeConfiguration` remain a residual
-        // provenance gap (documented in AI_COMPLETION.md).
+        // Endpoint and credential-routing fields remain excluded from project and
+        // generic client channels (#5684). Activation, provider/model selection,
+        // and streaming activation are rejected by `ServerConfig::update_from_value`
+        // regardless of client shape (#4997). A future server-owned adapter (#10817)
+        // must admit trusted user/operator authority explicitly.
         recompute_ai_completion_effective(&mut config.ai_completion);
+        // #8311: `[next_edit]` is no longer public configuration. Recognized
+        // only to report one bounded ignored/deprecation reason; it can never
+        // enable the internal scaffold gate or report ready/enabled.
         if let Some(enabled) = self.next_edit.enabled {
-            config.next_edit.enabled = enabled;
+            tracing::warn!(
+                target: "perl_lsp::config",
+                setting = "next_edit.enabled",
+                value = enabled,
+                "ignoring deprecated .perl-lsp.toml [next_edit] setting; no editor next-edit \
+                 provider is registered, so it can never report ready or enabled (#8311)",
+            );
         }
 
         // Apply formatting configuration
@@ -2091,41 +2266,18 @@ impl ProjectConfig {
                 ),
             }
         }
-        if let Some(ref engine) = self.critic.engine {
-            match parse_critic_engine(engine) {
-                Some(engine) => config.critic_engine = engine,
-                None => tracing::warn!(
-                    target: "perl_lsp::config",
-                    setting = "critic.engine",
-                    value = %engine,
-                    valid = CRITIC_ENGINE_VALID_OPTIONS,
-                    "unrecognized critic.engine value in .perl-lsp.toml; \
-                     keeping current setting",
-                ),
+        // Critic initialization from the trusted project file also advances as
+        // ONE accepted transaction (#8253): `[diagnostics]` enablement/severity
+        // and `[critic]` engine/profile/include/exclude are validated together,
+        // and an invalid sibling rejects the whole candidate while the complete
+        // prior accepted state is retained with one deduplicated condition.
+        match CriticSettingsCandidate::parse_project_config(&self.diagnostics, &self.critic) {
+            Ok(candidate) => {
+                if !candidate.is_empty() {
+                    candidate.apply_to(config);
+                }
             }
-        }
-        if let Some(ref profile) = self.critic.profile {
-            match NativeCriticProfile::parse(profile) {
-                Some(profile) => config.native_critic_profile = profile.to_string(),
-                None => tracing::warn!(
-                    target: "perl_lsp::config",
-                    setting = "critic.profile",
-                    value = %profile,
-                    valid = NativeCriticProfile::VALID_OPTIONS,
-                    "unrecognized critic.profile value in .perl-lsp.toml; \
-                     keeping current setting",
-                ),
-            }
-        }
-        if let Some(ref include) = self.critic.include {
-            let normalized = normalize_string_list(include);
-            warn_unknown_rule_ids(CriticRuleIdSource::ProjectFile, "critic.include", &normalized);
-            config.native_critic_include = normalized;
-        }
-        if let Some(ref exclude) = self.critic.exclude {
-            let normalized = normalize_string_list(exclude);
-            warn_unknown_rule_ids(CriticRuleIdSource::ProjectFile, "critic.exclude", &normalized);
-            config.native_critic_exclude = normalized;
+            Err(rejection) => rejection.emit_single_condition(),
         }
         if let Some(ref profile) = self.formatting.perltidy_profile {
             config.perltidy_profile = Some(profile.clone());
@@ -2423,9 +2575,11 @@ impl RejectedIncludePathReason {
 ///
 /// Produced by [`merge_project_configs_for_server`]. The `[perl]` section is
 /// intentionally excluded because it is already scoped per-folder via
-/// `WorkspaceConfig`; only the six server-global sections (`[diagnostics]`,
-/// `[critic]`, `[features]`, `[formatting]`, `[ai_completion]`, `[next_edit]`)
-/// participate in the merge.
+/// `WorkspaceConfig`; only the five server-global sections (`[diagnostics]`,
+/// `[critic]`, `[features]`, `[formatting]`, `[ai_completion]`) participate in
+/// the merge. The deprecated `[next_edit]` section (#8311) is ignored with a
+/// bounded deprecation reason and no longer represents server state, so it is
+/// deliberately not merged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MultiRootConfigConflict {
     /// Dotted path of the conflicting key, e.g. `"diagnostics.perlcritic"`.
@@ -2456,10 +2610,12 @@ impl MultiRootConfigConflict {
 ///
 /// In a multi-root workspace, each folder's `.perl-lsp.toml` is loaded
 /// independently. The `[perl]` section is correctly scoped per-folder through
-/// `WorkspaceConfig`, but the other six sections (`[diagnostics]`, `[critic]`,
-/// `[features]`, `[formatting]`, `[ai_completion]`, `[next_edit]`) target the
+/// `WorkspaceConfig`, but the other five sections (`[diagnostics]`, `[critic]`,
+/// `[features]`, `[formatting]`, `[ai_completion]`) target the
 /// single shared `ServerConfig`. Applying every folder's config in a loop would
 /// silently let the last folder win for any field set by more than one folder.
+/// The deprecated `[next_edit]` section (#8311) carries no server state and is
+/// not merged; it is reported as ignored when applied.
 ///
 /// This function instead produces a merged `ProjectConfig` where each field
 /// takes the value from the **first** folder (in iteration order) that sets it,
@@ -2511,14 +2667,13 @@ pub fn merge_project_configs_for_server(
     // are intentionally absent from `ProjectAiCompletionConfig` (issue #4955)
     // and therefore have nothing to merge here.
 
-    // `[next_edit]`
-    merge_opt_field(
-        &mut merged.next_edit.enabled,
-        &mut conflicts,
-        "next_edit.enabled",
-        folders,
-        |c| c.next_edit.enabled,
-    );
+    // `[next_edit]` — deprecated and ignored (#8311). Carry the first-set value
+    // only so `apply_to_server_config` can still report the bounded
+    // deprecation reason; no conflict is recorded because the key no longer
+    // represents server state.
+    if merged.next_edit.enabled.is_none() {
+        merged.next_edit.enabled = folders.iter().find_map(|(_, c)| c.next_edit.enabled);
+    }
 
     // `[formatting]`
     merge_opt_field(
@@ -3274,7 +3429,7 @@ profile = "recommended"
     }
 
     #[test]
-    fn server_config_update_from_value_applies_lsp_settings() -> TestResult {
+    fn server_config_update_from_value_ignores_removed_test_runner_authority() -> TestResult {
         let mut config = ServerConfig::default();
 
         config.update_from_value(&serde_json::json!({
@@ -3287,8 +3442,10 @@ profile = "recommended"
             },
             "testRunner": {
                 "enabled": false,
-                "command": "prove",
-                "args": ["-lv", 42, "t/unit.t"],
+                "command": "CANARY-EXECUTABLE",
+                "args": ["CANARY-ARG"],
+                "cwd": "CANARY-CWD",
+                "env": {"CANARY": "CANARY-VALUE"},
                 "timeout": 12_345
             },
             "telemetry": {
@@ -3307,10 +3464,6 @@ profile = "recommended"
         assert!(!config.inlay_hints_type_hints);
         assert!(config.inlay_hints_chained_hints);
         assert_eq!(config.inlay_hints_max_length, 12);
-        assert!(!config.test_runner_enabled);
-        assert_eq!(config.test_runner_command, "prove");
-        assert_eq!(config.test_runner_args, vec!["-lv".to_string(), "t/unit.t".to_string()]);
-        assert_eq!(config.test_runner_timeout, 12_345);
         assert!(config.telemetry_enabled);
         assert!(!config.perlcritic_enabled);
         assert_eq!(config.perlcritic_severity, 5);
@@ -3332,26 +3485,52 @@ profile = "recommended"
     }
 
     #[test]
-    fn server_config_update_from_value_applies_next_edit_gate() -> TestResult {
+    fn server_config_update_from_value_ignores_deprecated_next_edit_key() {
         let mut config = ServerConfig::default();
-        assert!(!config.next_edit.enabled);
 
-        config.update_from_value(&serde_json::json!({
-            "nextEdit": {
-                "enabled": true
-            }
-        }));
+        // #8311: the legacy `nextEdit` key must fail closed. Any supplied
+        // shape produces exactly one bounded ignored/deprecation reason and
+        // never mutates server state, so the internal scaffold gate can never
+        // report ready or enabled from user configuration.
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "nextEdit": {
+                    "enabled": true
+                }
+            }));
+        });
+        let combined = captured.join("\n");
+        assert_eq!(
+            combined.matches("ignoring deprecated").count(),
+            1,
+            "legacy nextEdit key must produce exactly one deprecation reason; captured: {combined}"
+        );
+        assert!(combined.contains("nextEdit.enabled"), "captured: {combined}");
+        assert!(combined.contains("#8311"), "captured: {combined}");
 
-        assert!(config.next_edit.enabled);
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "nextEdit": {
+                    "enabled": false
+                }
+            }));
+        });
+        let combined = captured.join("\n");
+        assert_eq!(
+            combined.matches("ignoring deprecated").count(),
+            1,
+            "legacy nextEdit key must produce exactly one deprecation reason; captured: {combined}"
+        );
 
-        config.update_from_value(&serde_json::json!({
-            "nextEdit": {
-                "enabled": false
-            }
-        }));
-
-        assert!(!config.next_edit.enabled);
-        Ok(())
+        // Unrelated keys are unaffected and produce no deprecation reason.
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "inlayHints": { "enabled": false }
+            }));
+        });
+        let combined = captured.join("\n");
+        assert!(!combined.contains("nextEdit"), "captured: {combined}");
+        assert!(!config.inlay_hints_enabled);
     }
 
     #[test]
@@ -3409,22 +3588,39 @@ profile = "recommended"
         assert_eq!(config.perltidy_block_comment_indentation, Some(1));
         assert!(config.perltidy_extra_args.is_empty());
         assert_eq!(config.perltidy_timeout_secs, 7);
-        assert!(config.ai_completion.enabled);
-        assert!(config.ai_completion.user_enabled);
-        assert_eq!(config.ai_completion.provider, "local");
-        // #5684: endpoint, apiKeyEnv, apiKeyHeader, apiKeyPrefix are NOT
+        // #4997: activation and selection authority cannot be written by any
+        // generic LSP settings channel; previously accepted/default state is
+        // preserved instead of being mutated or cleared.
+        assert!(!config.ai_completion.enabled);
+        assert!(!config.ai_completion.user_enabled);
+        assert_eq!(
+            config.ai_completion.activation_authority,
+            AiActivationAuthority::Unavailable,
+            "generic channel must not admit activation authority",
+        );
+        assert_eq!(
+            config.ai_completion.provider, "openai_compat",
+            "provider from didChangeConfiguration must not select egress identity",
+        );
+        // #5684/#4997: endpoint, apiKeyEnv, apiKeyHeader, apiKeyPrefix are NOT
         // settable via didChangeConfiguration. They remain at defaults.
         assert_eq!(config.ai_completion.endpoint, "");
-        assert_eq!(config.ai_completion.model, "codellama");
+        assert_eq!(
+            config.ai_completion.model, "gpt-4o-mini",
+            "model from didChangeConfiguration must not move request identity",
+        );
         assert_eq!(config.ai_completion.api_key_env, "OPENAI_API_KEY");
         assert_eq!(config.ai_completion.api_key_header, "Authorization");
         assert_eq!(config.ai_completion.api_key_prefix, Some("Bearer".to_string()));
+        // Envelope/presentation fields remain client-settable.
         assert_eq!(config.ai_completion.timeout_ms, 2500);
         assert_eq!(config.ai_completion.max_output_tokens, 128);
         assert_eq!(config.ai_completion.rate_limit_rps, 2.5);
         assert_eq!(config.ai_completion.max_inflight, 3);
         assert!(!config.ai_completion.fallback);
-        assert!(!config.ai_completion.streaming.enabled);
+        // streaming.enabled=false from the generic channel is ignored;
+        // streaming stays at its compiled default (on).
+        assert!(config.ai_completion.streaming.enabled);
         assert_eq!(config.ai_completion.streaming.update_debounce_ms, 125);
 
         config.update_from_value(&serde_json::json!({
@@ -3437,7 +3633,7 @@ profile = "recommended"
     }
 
     #[test]
-    fn server_config_accepts_formatter_engine_aliases() {
+    fn server_config_rejects_external_formatter_engine_from_client_settings() {
         let mut config = ServerConfig::default();
 
         config.update_from_value(&serde_json::json!({
@@ -3445,7 +3641,7 @@ profile = "recommended"
                 "engine": "external-perltidy"
             }
         }));
-        assert_eq!(config.formatting_engine, FormatterMode::ExternalLegacy);
+        assert_eq!(config.formatting_engine, FormatterMode::Native);
 
         config.update_from_value(&serde_json::json!({
             "formatting": {
@@ -3911,7 +4107,7 @@ profile = "recommended"
                     setting: "formatting.engine",
                     value: "perltide".to_string(),
                     value_type: "string",
-                    valid_options: FORMATTER_MODE_VALID_OPTIONS,
+                    valid_options: CLIENT_FORMATTER_MODE_VALID_OPTIONS,
                 },
             ]
         );
@@ -3920,9 +4116,40 @@ profile = "recommended"
             "critic": { "engine": " LEGACY ", "profile": "STRICT" },
             "formatting": { "engine": "external_perltidy" }
         }));
-        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy.len(), 2);
         assert_eq!(legacy[0].setting, "critic.engine");
         assert_eq!(legacy[0].valid_options, CLIENT_CRITIC_ENGINE_VALID_OPTIONS);
+        assert_eq!(legacy[1].setting, "formatting.engine");
+        assert_eq!(legacy[1].valid_options, CLIENT_FORMATTER_MODE_VALID_OPTIONS);
+    }
+
+    #[test]
+    fn client_formatter_external_aliases_are_rejected_but_project_alias_remains_supported() {
+        for value in ["external-legacy", "external_perltidy", "perltidy"] {
+            let mut config = ServerConfig::default();
+            config.update_from_value(&serde_json::json!({
+                "formatting": { "engine": value }
+            }));
+            assert_eq!(config.formatting_engine, FormatterMode::Native, "client value {value}");
+            assert_eq!(
+                ServerConfig::invalid_client_setting_values(&serde_json::json!({
+                    "formatting": { "engine": value }
+                }))[0]
+                    .valid_options,
+                CLIENT_FORMATTER_MODE_VALID_OPTIONS
+            );
+        }
+
+        let mut config = ServerConfig::default();
+        let project = ProjectConfig {
+            formatting: ProjectFormattingConfig {
+                engine: Some("external-legacy".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        project.apply_to_server_config(&mut config);
+        assert_eq!(config.formatting_engine, FormatterMode::ExternalLegacy);
     }
 
     #[test]
@@ -4015,26 +4242,33 @@ profile = "recommended"
     }
 
     #[test]
-    fn project_config_applies_next_edit_gate() {
+    fn project_config_ignores_deprecated_next_edit_section() {
         let mut config = ServerConfig::default();
         let mut project = ProjectConfig::default();
         project.next_edit.enabled = Some(true);
 
-        project.apply_to_server_config(&mut config);
+        // #8311: `[next_edit]` is no longer public configuration. Supplying it
+        // produces one bounded ignored/deprecation reason and never changes
+        // server state, in either direction.
+        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        let combined = captured.join("\n");
+        assert_eq!(
+            combined.matches("ignoring deprecated").count(),
+            1,
+            "legacy [next_edit] section must produce exactly one deprecation reason; captured: {combined}"
+        );
+        assert!(combined.contains("next_edit.enabled"), "captured: {combined}");
+        assert!(combined.contains("#8311"), "captured: {combined}");
 
-        assert!(config.next_edit.enabled);
-    }
-
-    #[test]
-    fn project_config_can_disable_next_edit_gate() {
-        let mut config = ServerConfig::default();
-        config.next_edit.enabled = true;
         let mut project = ProjectConfig::default();
         project.next_edit.enabled = Some(false);
-
-        project.apply_to_server_config(&mut config);
-
-        assert!(!config.next_edit.enabled);
+        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        let combined = captured.join("\n");
+        assert_eq!(
+            combined.matches("ignoring deprecated").count(),
+            1,
+            "legacy [next_edit] section must produce exactly one deprecation reason; captured: {combined}"
+        );
     }
 
     #[test]
@@ -4042,7 +4276,6 @@ profile = "recommended"
         let mut config = ServerConfig {
             perlcritic_enabled: true,
             inlay_hints_enabled: true,
-            next_edit: NextEditConfig { enabled: true },
             ..ServerConfig::default()
         };
         let project = ProjectConfig::default();
@@ -4051,7 +4284,6 @@ profile = "recommended"
 
         assert!(config.perlcritic_enabled);
         assert!(config.inlay_hints_enabled);
-        assert!(config.next_edit.enabled);
     }
 
     #[test]
@@ -4291,7 +4523,9 @@ profile = "recommended"
             &serde_json::json!({ "workspace": { "includePaths": [absolute, "lib"] } }),
             WorkspaceConfigUpdateContext {
                 workspace_root: Some(temp.path()),
-                apply_external_include_paths: true,
+                external_include_paths: ExternalIncludePathAuthority::Untrusted(
+                    UnauthorizedExternalIncludePathSource::Unknown,
+                ),
             },
         );
 
@@ -4316,7 +4550,9 @@ profile = "recommended"
             &serde_json::json!({ "workspace": { "includePaths": ["../../../../etc", "vendor/lib"] } }),
             WorkspaceConfigUpdateContext {
                 workspace_root: Some(temp.path()),
-                apply_external_include_paths: true,
+                external_include_paths: ExternalIncludePathAuthority::Untrusted(
+                    UnauthorizedExternalIncludePathSource::Unknown,
+                ),
             },
         );
 
@@ -4328,7 +4564,7 @@ profile = "recommended"
     }
 
     #[test]
-    fn update_from_value_accepts_external_include_paths_from_global_channel() {
+    fn update_from_value_accepts_external_include_paths_from_trusted_operator() {
         let mut workspace = WorkspaceConfig::default();
         let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
 
@@ -4341,7 +4577,7 @@ profile = "recommended"
             }),
             WorkspaceConfigUpdateContext {
                 workspace_root: None,
-                apply_external_include_paths: true,
+                external_include_paths: ExternalIncludePathAuthority::TrustedUserOperator,
             },
         );
 
@@ -4355,30 +4591,48 @@ profile = "recommended"
     }
 
     #[test]
-    fn update_from_value_rejects_relative_external_include_paths() {
+    fn trusted_channel_rejects_mixed_external_candidate_atomically() {
         let mut workspace = WorkspaceConfig::default();
         let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
 
+        // Seed an accepted complete set first.
+        workspace
+            .update_from_value_with_context(
+                &serde_json::json!({
+                    "workspace": { "externalIncludePaths": [absolute] }
+                }),
+                WorkspaceConfigUpdateContext {
+                    workspace_root: None,
+                    external_include_paths: ExternalIncludePathAuthority::TrustedUserOperator,
+                },
+            )
+            .into_iter()
+            .for_each(|_| {});
+
+        // A later mixed candidate (one valid, one relative) is rejected as a
+        // whole; the previously accepted complete set survives untouched.
         let rejected = workspace.update_from_value_with_context(
             &serde_json::json!({
-                "workspace": {
-                    "externalIncludePaths": ["lib", absolute, ""]
-                }
+                "workspace": { "externalIncludePaths": ["lib", absolute] }
             }),
             WorkspaceConfigUpdateContext {
                 workspace_root: None,
-                apply_external_include_paths: true,
+                external_include_paths: ExternalIncludePathAuthority::TrustedUserOperator,
             },
         );
 
         assert_eq!(rejected.len(), 1);
         assert_eq!(rejected[0].entry, "lib");
         assert!(matches!(rejected[0].reason, RejectedClientIncludePathReason::ExternalRelative));
-        assert_eq!(workspace.external_include_paths, vec![absolute.to_string()]);
+        assert_eq!(
+            workspace.external_include_paths,
+            vec![absolute.to_string()],
+            "mixed candidate must not partially replace the accepted set"
+        );
     }
 
     #[test]
-    fn update_from_value_default_ignores_external_include_paths() {
+    fn update_from_value_default_rejects_external_include_paths_as_unclassified() {
         let mut workspace = WorkspaceConfig::default();
         let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
 
@@ -4388,12 +4642,24 @@ profile = "recommended"
             }
         }));
 
-        assert!(rejected.is_empty());
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].entry, absolute);
+        assert_eq!(
+            rejected[0].reason,
+            RejectedClientIncludePathReason::ExternalUnauthorized(
+                UnauthorizedExternalIncludePathSource::Unknown
+            )
+        );
+        assert!(
+            rejected[0].render().contains("includePaths"),
+            "rejection message should name the supported alternative: {}",
+            rejected[0].render()
+        );
         assert!(workspace.external_include_paths.is_empty());
     }
 
     #[test]
-    fn update_from_value_ignores_external_include_paths_from_folder_channel() {
+    fn update_from_value_rejects_external_include_paths_from_folder_channel() {
         let mut workspace = WorkspaceConfig::default();
         let absolute = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
 
@@ -4405,7 +4671,78 @@ profile = "recommended"
             }),
             WorkspaceConfigUpdateContext {
                 workspace_root: None,
-                apply_external_include_paths: false,
+                external_include_paths: ExternalIncludePathAuthority::Untrusted(
+                    UnauthorizedExternalIncludePathSource::FolderConfiguration,
+                ),
+            },
+        );
+
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(
+            rejected[0].reason,
+            RejectedClientIncludePathReason::ExternalUnauthorized(
+                UnauthorizedExternalIncludePathSource::FolderConfiguration
+            )
+        );
+        assert!(
+            rejected[0].render().contains("folder-scoped"),
+            "rejection should name the channel: {}",
+            rejected[0].render()
+        );
+        assert!(workspace.external_include_paths.is_empty());
+    }
+
+    #[test]
+    fn unauthorized_external_candidate_preserves_accepted_trusted_values() {
+        let mut workspace = WorkspaceConfig::default();
+        let trusted_root = if cfg!(windows) { "C:\\perl\\lib" } else { "/opt/perl/lib" };
+        let hostile_root = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+
+        workspace
+            .update_from_value_with_context(
+                &serde_json::json!({ "workspace": { "externalIncludePaths": [trusted_root] } }),
+                WorkspaceConfigUpdateContext {
+                    workspace_root: None,
+                    external_include_paths: ExternalIncludePathAuthority::TrustedUserOperator,
+                },
+            )
+            .into_iter()
+            .for_each(|_| {});
+
+        // A later unauthorized candidate (hostile or stale) must not clear or
+        // partially replace the previously accepted trusted set.
+        let rejected = workspace.update_from_value_with_context(
+            &serde_json::json!({ "workspace": { "externalIncludePaths": [hostile_root] } }),
+            WorkspaceConfigUpdateContext {
+                workspace_root: None,
+                external_include_paths: ExternalIncludePathAuthority::Untrusted(
+                    UnauthorizedExternalIncludePathSource::DidChangeConfiguration,
+                ),
+            },
+        );
+
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(
+            rejected[0].reason,
+            RejectedClientIncludePathReason::ExternalUnauthorized(
+                UnauthorizedExternalIncludePathSource::DidChangeConfiguration
+            )
+        );
+        assert_eq!(workspace.external_include_paths, vec![trusted_root.to_string()]);
+        assert!(!workspace.effective_include_paths(&[]).iter().any(|p| p == hostile_root));
+    }
+
+    #[test]
+    fn empty_unauthorized_external_include_paths_produce_no_noise() {
+        let mut workspace = WorkspaceConfig::default();
+
+        let rejected = workspace.update_from_value_with_context(
+            &serde_json::json!({ "workspace": { "externalIncludePaths": [] } }),
+            WorkspaceConfigUpdateContext {
+                workspace_root: None,
+                external_include_paths: ExternalIncludePathAuthority::Untrusted(
+                    UnauthorizedExternalIncludePathSource::GenericUnscopedConfiguration,
+                ),
             },
         );
 
@@ -4734,8 +5071,9 @@ profile = "recommended"
 
     /// `get_system_inc` must respect `SYSTEM_INC_PROBE_TIMEOUT` so a hung
     /// interpreter cannot block the LSP request thread. Verifies the full
-    /// path: `use_system_inc=true`, slow `perl_path`, lazy probe times out,
-    /// returned slice is empty, cache holds the empty result.
+    /// path: `use_system_inc=true`, slow `perl_path`, the lazy probe lands
+    /// in a bounded failure outcome, the returned slice is empty, and the
+    /// typed cache holds that outcome for reuse.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn get_system_inc_does_not_stall_on_slow_interpreter() -> TestResult {
@@ -4754,9 +5092,28 @@ profile = "recommended"
         };
 
         let start = Instant::now();
+        let outcome = config.get_system_inc_probe_outcome();
         let paths = config.get_system_inc().to_vec();
         let elapsed = start.elapsed();
 
+        // The contract under test is bounded, empty, and cached — NOT which
+        // failure class the runner's perl produces. The resolved interpreter
+        // varies by environment (msys-vs-Strawberry on Windows, shimmed
+        // perls on CI) and a `-e "sleep 10"` program can exit nonzero or
+        // fail to spawn before the 1s timeout fires; both were observed
+        // (CI red with NonZeroExit where the author saw TimedOut locally).
+        // SuccessfulEmpty/Paths WOULD be failures here: the sleep program
+        // must never produce paths.
+        assert!(
+            matches!(
+                outcome,
+                SystemIncProbeOutcome::TimedOut
+                    | SystemIncProbeOutcome::NonZeroExit
+                    | SystemIncProbeOutcome::IoFailed
+                    | SystemIncProbeOutcome::Unavailable
+            ),
+            "expected a bounded failure outcome, got {outcome:?}"
+        );
         assert!(paths.is_empty(), "expected empty @INC on timeout, got {paths:?}");
         // Generous bound: SYSTEM_INC_PROBE_TIMEOUT (1s) + spawn + poll overhead.
         assert!(
@@ -4776,6 +5133,114 @@ profile = "recommended"
         Ok(())
     }
 
+    /// A second lookup must reuse the first probe result rather than launch a
+    /// new interpreter. The missing path makes a reprobe observably fail with
+    /// `IoFailed`, so a fast second process cannot satisfy this oracle.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn get_system_inc_reuses_cached_probe_without_relaunching() -> TestResult {
+        let perl_path = match resolve_perl_path_with_toolchain() {
+            Ok(path) => path,
+            Err(_) => return Ok(()),
+        };
+        let missing_perl = tempfile::tempdir()?.path().join("missing-perl");
+        let mut config = WorkspaceConfig {
+            use_system_inc: true,
+            perl_path: Some(perl_path.to_string_lossy().into_owned()),
+            // Quote-, space-, and backslash-free program: the sentinel arg
+            // passes through the oracle's env-stripped command, where
+            // embedded double quotes broke arg quoting into a NonZeroExit,
+            // and msys perl on Windows ate the backslash of a qq newline
+            // escape. The trailing semicolon is load-bearing —
+            // `fetch_perl_inc` appends its own `-e` block and perl
+            // concatenates -e programs into ONE script, so without it the
+            // concatenation is a syntax error — and the chr(10) keeps the
+            // sentinel on its own line so it never fuses with the first
+            // @INC entry.
+            perl_args: vec!["-e".into(), "print(qq(cache-sentinel).chr(10));".into()],
+            ..WorkspaceConfig::default()
+        };
+
+        let cached = config.get_system_inc_probe_outcome();
+        let cached_paths = match &cached {
+            SystemIncProbeOutcome::Paths(paths)
+                if paths.iter().any(|path| path == Path::new("cache-sentinel")) =>
+            {
+                paths.clone()
+            }
+            other => {
+                return Err(
+                    format!("expected the sentinel probe to produce Paths, got {other:?}").into()
+                );
+            }
+        };
+
+        // Changing the public probe input after the first lookup is only a
+        // test discriminator; normal settings updates invalidate the cache.
+        config.perl_path = Some(missing_perl.to_string_lossy().into_owned());
+        let reused = config.get_system_inc_probe_outcome();
+        assert_eq!(reused, cached, "second lookup must reuse the cached outcome");
+        assert_eq!(config.get_system_inc().to_vec(), cached_paths);
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn synthetic_exit_status(code: i32) -> std::process::ExitStatus {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            ExitStatusExt::from_raw(code)
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::ExitStatusExt;
+            ExitStatusExt::from_raw(code as u32)
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn synthetic_output(code: i32, stdout: &str) -> std::process::Output {
+        std::process::Output {
+            status: synthetic_exit_status(code),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn system_inc_probe_outcome_preserves_execution_classes() {
+        assert_eq!(
+            WorkspaceConfig::classify_perl_inc_output(Ok(synthetic_output(0, ".\n"))),
+            SystemIncProbeOutcome::SuccessfulEmpty,
+        );
+        assert_eq!(
+            WorkspaceConfig::classify_perl_inc_output(Ok(synthetic_output(0, "lib\n"))),
+            SystemIncProbeOutcome::Paths(vec![PathBuf::from("lib")]),
+        );
+        assert_eq!(
+            WorkspaceConfig::classify_perl_inc_output(Ok(synthetic_output(1, ""))),
+            SystemIncProbeOutcome::NonZeroExit,
+        );
+        assert_eq!(
+            WorkspaceConfig::classify_perl_inc_output(Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "synthetic timeout",
+            ))),
+            SystemIncProbeOutcome::TimedOut,
+        );
+        assert_eq!(
+            WorkspaceConfig::classify_perl_inc_output(Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "synthetic spawn-or-io failure",
+            ))),
+            SystemIncProbeOutcome::IoFailed,
+        );
+
+        let disabled = WorkspaceConfig::default().get_system_inc_probe_outcome();
+        assert_eq!(disabled, SystemIncProbeOutcome::Disabled);
+    }
+
     /// `usePerl5lib` and `useSystemInc` must produce independent startup-`@INC`
     /// caches. When `usePerl5lib` toggles, the cache must be invalidated so the
     /// next `get_system_inc` call re-probes Perl with the correct PERL5LIB
@@ -4786,7 +5251,8 @@ profile = "recommended"
         assert!(config.use_perl5lib, "default usePerl5lib should be true");
 
         // Pre-populate the cache; flipping usePerl5lib must clear it.
-        config.system_inc_cache = Some(vec![PathBuf::from("/sentinel/cached")]);
+        config.system_inc_cache =
+            Some(SystemIncProbeOutcome::Paths(vec![PathBuf::from("/sentinel/cached")]));
         config.update_from_value(&serde_json::json!({
             "workspace": { "usePerl5lib": false }
         }));
@@ -4799,7 +5265,8 @@ profile = "recommended"
         );
 
         // Flip back the other direction.
-        config.system_inc_cache = Some(vec![PathBuf::from("/sentinel/cached2")]);
+        config.system_inc_cache =
+            Some(SystemIncProbeOutcome::Paths(vec![PathBuf::from("/sentinel/cached2")]));
         config.update_from_value(&serde_json::json!({
             "workspace": { "usePerl5lib": true }
         }));
@@ -4813,13 +5280,13 @@ profile = "recommended"
 
         // No-op (same value) must NOT clear the cache.
         let stable = vec![PathBuf::from("/sentinel/stable")];
-        config.system_inc_cache = Some(stable.clone());
+        config.system_inc_cache = Some(SystemIncProbeOutcome::Paths(stable.clone()));
         config.update_from_value(&serde_json::json!({
             "workspace": { "usePerl5lib": true }
         }));
         assert_eq!(
-            config.system_inc_cache.as_deref(),
-            Some(stable.as_slice()),
+            config.system_inc_cache,
+            Some(SystemIncProbeOutcome::Paths(stable)),
             "cache must survive when usePerl5lib value does not change",
         );
     }
@@ -4884,7 +5351,8 @@ profile = "recommended"
         assert!(!config.use_system_inc, "default useSystemInc should be false");
 
         // Pre-populate the cache; enabling useSystemInc must clear it.
-        config.system_inc_cache = Some(vec![PathBuf::from("/sentinel/cached")]);
+        config.system_inc_cache =
+            Some(SystemIncProbeOutcome::Paths(vec![PathBuf::from("/sentinel/cached")]));
         config.update_from_value(&serde_json::json!({
             "workspace": { "useSystemInc": true }
         }));
@@ -4897,7 +5365,8 @@ profile = "recommended"
         );
 
         // Flip back the other direction.
-        config.system_inc_cache = Some(vec![PathBuf::from("/sentinel/cached2")]);
+        config.system_inc_cache =
+            Some(SystemIncProbeOutcome::Paths(vec![PathBuf::from("/sentinel/cached2")]));
         config.update_from_value(&serde_json::json!({
             "workspace": { "useSystemInc": false }
         }));
@@ -4911,13 +5380,13 @@ profile = "recommended"
 
         // No-op (same value) must NOT clear the cache.
         let stable = vec![PathBuf::from("/sentinel/stable")];
-        config.system_inc_cache = Some(stable.clone());
+        config.system_inc_cache = Some(SystemIncProbeOutcome::Paths(stable.clone()));
         config.update_from_value(&serde_json::json!({
             "workspace": { "useSystemInc": false }
         }));
         assert_eq!(
-            config.system_inc_cache.as_deref(),
-            Some(stable.as_slice()),
+            config.system_inc_cache,
+            Some(SystemIncProbeOutcome::Paths(stable)),
             "cache must survive when useSystemInc value does not change",
         );
     }
@@ -5053,14 +5522,16 @@ api_key_prefix = "Attacker "
         Ok(())
     }
 
-    /// Project config may opt out of AI completions when the user enabled them.
+    /// Project config may opt out of AI completions when a trusted user/operator
+    /// activation enabled them (#4997). The user enable is admitted through the
+    /// internal trusted constructor — the same seam the future server-owned
+    /// operator adapter (#10817) will own — never through a client payload.
     #[test]
     fn project_config_can_opt_out_of_user_enabled_ai_completions() {
         let mut config = ServerConfig::default();
-        config.update_from_value(&serde_json::json!({
-            "aiCompletion": { "enabled": true }
-        }));
-        assert!(config.ai_completion.user_enabled);
+        config.ai_completion.user_enabled = true;
+        config.ai_completion.admit_trusted_user_operator_activation();
+        recompute_ai_completion_effective(&mut config.ai_completion);
         assert!(config.ai_completion.enabled);
 
         let mut project = ProjectConfig::default();
@@ -5074,9 +5545,9 @@ api_key_prefix = "Attacker "
     #[test]
     fn project_opt_out_clears_when_ai_completion_section_removed() {
         let mut config = ServerConfig::default();
-        config.update_from_value(&serde_json::json!({
-            "aiCompletion": { "enabled": true }
-        }));
+        config.ai_completion.user_enabled = true;
+        config.ai_completion.admit_trusted_user_operator_activation();
+        recompute_ai_completion_effective(&mut config.ai_completion);
 
         let mut project = ProjectConfig::default();
         project.ai_completion.enabled = Some(false);
@@ -5091,16 +5562,11 @@ api_key_prefix = "Attacker "
         assert!(config.ai_completion.enabled);
     }
 
-    /// Companion to the regression above: the LSP client/server configuration
-    /// channel (the `aiCompletion` block of `ServerConfig::update_from_value`)
-    /// can still set endpoint/credential fields. This proves the fix closes the
-    /// `.perl-lsp.toml` route rather than disabling the feature.
-    ///
-    /// It asserts nothing about that channel's authority for non-VS Code
-    /// clients. `update_from_value` cannot tell machine, user, workspace, or
-    /// folder settings apart; the VS Code extension closes activation via
-    /// `scope: machine` (#4997), while endpoint/credential user UI remains a
-    /// documented gap.
+    /// Companion to the regression above: endpoint/credential fields are
+    /// rejected on the LSP client/server configuration channel. Activation
+    /// and selection rejection for that same channel is proven by
+    /// `generic_channel_ai_activation_shapes_fail_closed_across_clients`
+    /// below (#4997).
     #[test]
     fn client_configuration_ignores_ai_endpoint_and_credential_fields_from_didChange() {
         let mut config = ServerConfig::default();
@@ -5118,6 +5584,171 @@ api_key_prefix = "Attacker "
         assert_eq!(config.ai_completion.api_key_env, "OPENAI_API_KEY");
         assert_eq!(config.ai_completion.api_key_header, "Authorization");
         assert_eq!(config.ai_completion.api_key_prefix, Some("Bearer".to_string()));
+    }
+
+    /// Security regression (issue #4997): every generic LSP settings shape —
+    /// `workspace/didChangeConfiguration` payloads, `initializationOptions`,
+    /// unscoped `workspace/configuration` results, and per-folder
+    /// `workspace/configuration` results — flows through this one parser, so
+    /// a non-VS-Code client forwarding workspace-derived configuration must
+    /// not be able to arm the remote AI backend or select its request
+    /// identity. All shapes are rejected identically; previously accepted
+    /// state is preserved.
+    #[test]
+    fn generic_channel_ai_activation_shapes_fail_closed_across_clients() {
+        let shapes: Vec<(&str, serde_json::Value)> = vec![
+            (
+                "didChangeConfiguration",
+                serde_json::json!({
+                    "aiCompletion": {
+                        "enabled": true,
+                        "provider": "openai",
+                        "model": "attacker-model",
+                        "streaming": { "enabled": true }
+                    }
+                }),
+            ),
+            ("initializationOptions", serde_json::json!({ "aiCompletion": { "enabled": true } })),
+            (
+                "workspace/configuration unscoped",
+                serde_json::json!({ "aiCompletion": { "enabled": true, "model": "attacker-model" } }),
+            ),
+            (
+                "workspace/configuration folder",
+                serde_json::json!({ "aiCompletion": { "provider": "openai" } }),
+            ),
+        ];
+
+        for (channel, payload) in shapes {
+            let mut config = ServerConfig::default();
+            config.update_from_value(&payload);
+
+            assert!(
+                !config.ai_completion.user_enabled && !config.ai_completion.enabled,
+                "{channel}: generic enablement must not arm user/effective flags",
+            );
+            assert_eq!(
+                config.ai_completion.activation_authority,
+                AiActivationAuthority::Unavailable,
+                "{channel}: generic traffic must not admit activation authority",
+            );
+            assert_eq!(
+                config.ai_completion.provider, "openai_compat",
+                "{channel}: generic provider selection must be rejected",
+            );
+            assert_eq!(
+                config.ai_completion.model, "gpt-4o-mini",
+                "{channel}: generic model selection must be rejected",
+            );
+            // Streaming activation follows the same authority law; the
+            // compiled default stays untouched by generic arrivals.
+            assert!(
+                config.ai_completion.streaming.user_enabled,
+                "{channel}: generic streaming toggle must not change trusted default",
+            );
+        }
+    }
+
+    /// Security regression (issue #4997): hostile or malformed generic traffic
+    /// must never clear an already-accepted trusted activation. A disable
+    /// request from a channel that cannot prove provenance may not silently
+    /// revoke a user/operator decision, and malformed values change nothing.
+    #[test]
+    fn hostile_and_malformed_traffic_preserves_accepted_trusted_ai_state() {
+        let mut config = ServerConfig::default();
+        config.ai_completion.user_enabled = true;
+        config.ai_completion.provider = "user-chosen-provider".to_string();
+        config.ai_completion.model = "user-chosen-model".to_string();
+        config.ai_completion.admit_trusted_user_operator_activation();
+        recompute_ai_completion_effective(&mut config.ai_completion);
+        assert!(config.ai_completion.enabled);
+
+        // Unauthorized disable + selection attempt.
+        config.update_from_value(&serde_json::json!({
+            "aiCompletion": {
+                "enabled": false,
+                "provider": "attacker-provider",
+                "model": "attacker-model",
+                "streaming": { "enabled": false }
+            }
+        }));
+
+        assert_eq!(
+            config.ai_completion.activation_authority,
+            AiActivationAuthority::TrustedUserOperator,
+            "unauthorized traffic must not clear accepted activation authority",
+        );
+        assert!(
+            config.ai_completion.user_enabled,
+            "unauthorized disable must not clear the accepted user enable",
+        );
+        assert!(
+            config.ai_completion.enabled,
+            "effective flag must survive unauthorized reduction attempts \
+             (reduction authority stays with project opt-out)",
+        );
+        assert_eq!(config.ai_completion.provider, "user-chosen-provider");
+        assert_eq!(config.ai_completion.model, "user-chosen-model");
+
+        // Malformed values are ignored and reset nothing.
+        config.update_from_value(&serde_json::json!({
+            "aiCompletion": {
+                "enabled": "yes",
+                "provider": 42,
+                "model": true,
+                "streaming": { "enabled": "no" }
+            }
+        }));
+        assert_eq!(
+            config.ai_completion.activation_authority,
+            AiActivationAuthority::TrustedUserOperator,
+            "malformed generic values must not reset trusted state",
+        );
+        assert!(config.ai_completion.enabled);
+    }
+
+    /// Selection authority can never exceed activation authority (#4997):
+    /// provider/model payloads alone admit no activation and select nothing.
+    #[test]
+    fn provider_and_model_selection_cannot_exceed_activation_authority() {
+        let mut config = ServerConfig::default();
+        config.update_from_value(&serde_json::json!({
+            "aiCompletion": { "provider": "openai", "model": "attacker-model" }
+        }));
+
+        assert_eq!(
+            config.ai_completion.activation_authority,
+            AiActivationAuthority::Unavailable,
+            "selection payloads must not manufacture activation authority",
+        );
+        assert!(!config.ai_completion.enabled);
+    }
+
+    /// Positive control for the #4997 gate: the internal trusted constructor
+    /// arms construction eligibility while generic traffic cannot. Without
+    /// this companion the hostile regressions above could pass merely because
+    /// arming became impossible in every direction.
+    #[test]
+    fn trusted_operator_admission_arms_eligibility_generic_traffic_cannot() {
+        let mut trusted = ServerConfig::default();
+        trusted.ai_completion.user_enabled = true;
+        trusted.ai_completion.admit_trusted_user_operator_activation();
+        recompute_ai_completion_effective(&mut trusted.ai_completion);
+        assert!(trusted.ai_completion.enabled);
+        assert_eq!(
+            trusted.ai_completion.activation_authority,
+            AiActivationAuthority::TrustedUserOperator,
+        );
+
+        let mut generic = ServerConfig::default();
+        generic.update_from_value(&serde_json::json!({
+            "aiCompletion": { "enabled": true, "streaming": { "enabled": true } }
+        }));
+        assert_ne!(
+            generic.ai_completion.activation_authority, trusted.ai_completion.activation_authority,
+            "generic channel admission must differ from trusted-operator admission",
+        );
+        assert!(!generic.ai_completion.enabled);
     }
 
     // ── critic include/exclude rule-ID validation ──────────────────────────

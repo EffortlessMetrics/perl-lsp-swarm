@@ -1,5 +1,4 @@
 //! Tests for `require VERSION` pragma handling (#5106).
-#![expect(clippy::panic, reason = "test code")]
 
 use perl_ast::SourceLocation;
 use perl_ast::ast::{Node, NodeKind};

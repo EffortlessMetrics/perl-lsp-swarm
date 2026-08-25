@@ -41,6 +41,65 @@ fn lsp_feature_snapshot_path() -> PathBuf {
     )
 }
 
+/// Crate-local vendored catalog projections generated from the root authority
+/// (#7029).
+pub const VENDORED_PROJECTIONS: &[&str] = &[
+    "crates/perl-lsp-rs/features_sot.toml",
+    "crates/perl-lsp-rs-core/features_sot.toml",
+    "crates/perl-parser/features_sot.toml",
+    "crates/perl-dap/features_sot.toml",
+];
+
+/// Regenerate every crate-local `features_sot.toml` as a byte projection of
+/// the root authority (#7029). The copies are deterministic: the same root
+/// file always produces the same bytes.
+pub fn regen_vendored() -> Result<()> {
+    println!("♻️  Regenerating vendored feature-catalog projections from features.toml...");
+
+    let authority = fs::read("features.toml").context("reading root features.toml")?;
+    for relative in VENDORED_PROJECTIONS {
+        let path = repo_relative_path(relative);
+        let previous = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            // A missing projection simply needs generating; any other read
+            // failure must not silently masquerade as drift (#7029).
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => {
+                return Err(error).context(format!("reading current projection {relative}"));
+            }
+        };
+        if previous != authority {
+            fs::write(&path, &authority)
+                .with_context(|| format!("writing projection {relative}"))?;
+            println!("  updated {relative}");
+        } else {
+            println!("  up-to-date {relative}");
+        }
+    }
+    println!("✅ Vendored projections regenerated.");
+    Ok(())
+}
+
+/// Fail when any vendored projection drifts from the root authority (#7029).
+/// Runs as part of `features invariants` so CI catches drift without a test
+/// harness.
+fn check_vendored_projection_drift(violations: &mut Vec<String>) {
+    let Ok(authority) = fs::read("features.toml") else {
+        violations.push("DRIFT_READ: cannot read root features.toml".to_string());
+        return;
+    };
+    for relative in VENDORED_PROJECTIONS {
+        match fs::read(repo_relative_path(relative)) {
+            Ok(bytes) if bytes == authority => {}
+            Ok(_) => violations.push(format!(
+                "VENDORED_DRIFT: {relative} differs from root features.toml (#7029); \
+                 run `cargo xtask features regen-vendored`"
+            )),
+            Err(error) => violations.push(format!("DRIFT_READ: cannot read {relative}: {error}")),
+        }
+    }
+}
+
 fn snapshot_comparable_feature_ids() -> BTreeSet<String> {
     let mut ids: BTreeSet<String> =
         catalog_advertised_feature_ids(FeatureProfile::All).into_iter().map(String::from).collect();
@@ -75,17 +134,53 @@ fn check_invariants() -> Result<()> {
             violations.push(format!("DUPLICATE_ID: {:?} appears more than once", feature.id));
         }
 
-        if feature.advertised
-            && feature.maturity == Maturity::Ga
-            && feature.tests.is_empty()
-            && feature.counts_in_coverage
-        {
+        if feature.advertised && !feature.maturity.may_advertise() {
             violations.push(format!(
-                "UNTESTED_GA: {:?} is advertised+GA but has no tests. Either add tests or set counts_in_coverage=false (if it's protocol plumbing).",
+                "UNADVERTISABLE: {:?} is advertised but maturity {:?} can never advertise (#7029)",
+                feature.id,
+                feature.maturity.label()
+            ));
+        }
+
+        if matches!(feature.maturity, Maturity::Proven) {
+            if feature.evidence.is_empty() {
+                violations.push(format!(
+                    "PROVEN_WITHOUT_EVIDENCE: {:?} claims proven with no evidence entries (#7029)",
+                    feature.id
+                ));
+            }
+            for (field, value) in [
+                ("direction", &feature.direction),
+                ("capability_gate", &feature.capability_gate),
+                ("registration", &feature.registration),
+                ("implementation_owner", &feature.implementation_owner),
+                ("state_owner", &feature.state_owner),
+            ] {
+                if value.is_empty() || value == "missing" {
+                    violations.push(format!(
+                        "PROVEN_METADATA_MISSING: {:?} records {field} as missing but claims \
+                         proven (#7029)",
+                        feature.id
+                    ));
+                }
+            }
+            if feature.claim_boundary.trim().is_empty() {
+                violations.push(format!(
+                    "PROVEN_BOUNDARY_MISSING: {:?} claims proven without a claim boundary \
+                     (#7029)",
+                    feature.id
+                ));
+            }
+        } else if feature.advertised && feature.counts_in_coverage && feature.tests.is_empty() {
+            violations.push(format!(
+                "UNTESTED_ADVERTISED: {:?} is advertised and counted in coverage but has no \
+                 named tests. Either add tests or set counts_in_coverage=false.",
                 feature.id
             ));
         }
     }
+
+    check_vendored_projection_drift(&mut violations);
 
     if !violations.is_empty() {
         let violations_count = violations.len();
@@ -100,16 +195,14 @@ fn check_invariants() -> Result<()> {
     }
 
     let total = catalog.features().len();
-    let ga_advertised =
-        catalog.features().iter().filter(|f| f.advertised && f.maturity == Maturity::Ga).count();
-    let headline_features = catalog
-        .features()
-        .iter()
-        .filter(|f| f.advertised && f.maturity == Maturity::Ga && f.counts_in_coverage)
-        .count();
+    let proven = catalog.features().iter().filter(|f| f.maturity == Maturity::Proven).count();
+    let not_proven =
+        catalog.features().iter().filter(|f| f.maturity == Maturity::NotProven).count();
+    let advertised = catalog.advertised_feature_ids().len();
 
     println!(
-        "Feature invariants OK: {total} features, {ga_advertised} GA+advertised, {headline_features} in headline metric"
+        "Feature invariants OK: {total} features, {proven} proven, {not_proven} not_proven, \
+         {advertised} advertised"
     );
     Ok(())
 }
@@ -118,10 +211,8 @@ fn sync_docs_impl() -> Result<()> {
     println!("📝 Syncing documentation from features.toml...");
 
     let catalog = load_features()?;
-    let area_stats = catalog.area_statistics();
-
     // Update ROADMAP.md
-    update_roadmap(&catalog, &area_stats)?;
+    update_roadmap(&catalog)?;
 
     // Update LSP_ACTUAL_STATUS.md
     update_lsp_status(&catalog)?;
@@ -130,41 +221,14 @@ fn sync_docs_impl() -> Result<()> {
     Ok(())
 }
 
-fn update_roadmap(
-    catalog: &Catalog,
-    area_stats: &BTreeMap<String, perl_lsp_rs_core::feature_catalog::AreaStats>,
-) -> Result<()> {
+fn update_roadmap(catalog: &Catalog) -> Result<()> {
     let roadmap_path = Path::new("ROADMAP.md");
     let mut content = fs::read_to_string(roadmap_path)?;
 
     // Ensure fence markers exist
     ensure_fence(&content, "COMPLIANCE_TABLE")?;
 
-    // Calculate overall compliance
-    let total: usize = area_stats.values().map(|s| s.total).sum();
-    let advertised: usize = area_stats.values().map(|s| s.advertised).sum();
-    let compliance =
-        if total == 0 { 0 } else { (advertised as f64 / total as f64 * 100.0).round() as u32 };
-
-    // Update compliance percentage in header
-    let new_text = format!("partial LSP 3.18 compliance (~{}%)", compliance);
-    let old_pattern = r"partial LSP 3.18 compliance \(~\d+%\)";
-    content = regex::Regex::new(old_pattern)?.replace_all(&content, new_text.as_str()).to_string();
-
-    // Update the compliance table
-    let mut table = String::new();
-    table.push_str("| Area | Implemented | Total | Coverage |\n");
-    table.push_str("|------|-------------|-------|----------|\n");
-
-    for (area, stats) in area_stats {
-        table.push_str(&format!(
-            "| {} | {} | {} | {}% |\n",
-            area.replace('_', " "),
-            stats.advertised,
-            stats.total,
-            stats.coverage_percent()
-        ));
-    }
+    let table = perl_lsp_rs_core::feature_catalog::render_navigation_table(catalog);
 
     // Inject the compliance table into the fenced section
     content = replace_fence(&content, "COMPLIANCE_TABLE", &table)?;
@@ -213,9 +277,10 @@ fn update_lsp_status(catalog: &Catalog) -> Result<()> {
 
         for feature in features {
             let status = match (feature.maturity, feature.advertised) {
-                (Maturity::Ga | Maturity::Production, true) => "✅ Complete",
+                (Maturity::Proven, true) => "✅ Proven",
                 (Maturity::Preview, true) => "🔧 Preview",
-                (Maturity::Experimental, _) => "⚠️ Experimental",
+                (Maturity::Planned | Maturity::Unsupported, _) => "❌ Planned/Unsupported",
+                (Maturity::NotProven, true) => "⚠️ Not proven (advertised)",
                 _ => "❌ Not Implemented",
             };
 
@@ -377,35 +442,6 @@ fn verify_features() -> Result<()> {
         );
     }
 
-    // Verify compliance percentage matches ROADMAP documentation.
-    let computed_compliance = catalog.compliance_percent() as u32;
-    if let Ok(roadmap) = fs::read_to_string("ROADMAP.md") {
-        let regex = regex::Regex::new(r"partial LSP 3\.18 compliance \(~(\d+)%\)")?;
-        if let Some(cap) = regex.captures(&roadmap)
-            && let Some(doc_percent) = cap.get(1).and_then(|m| m.as_str().parse::<u32>().ok())
-            && doc_percent != computed_compliance
-        {
-            if env::var("CI_ALLOW_COMPLIANCE_DRIFT").is_err() {
-                errors.push(format!(
-                    "Compliance percentage drift detected: documented {}% vs computed {}% - run 'cargo xtask features sync-docs' to fix",
-                    doc_percent, computed_compliance
-                ));
-            } else {
-                warnings.push(format!(
-                    "Compliance percentage mismatch (allowed): documented {}% vs computed {}%",
-                    doc_percent, computed_compliance
-                ));
-            }
-        }
-    }
-
-    let non_planned = catalog.trackable_feature_count();
-    let advertised_ga_prod = catalog.advertised_trackable_count();
-    println!(
-        "📊 Computed compliance: {}% ({}/{} non-planned features)",
-        computed_compliance, advertised_ga_prod, non_planned
-    );
-
     if !errors.is_empty() {
         println!("❌ Errors found:");
         for error in &errors {
@@ -426,53 +462,40 @@ fn verify_features() -> Result<()> {
 }
 
 fn generate_report() -> Result<()> {
-    println!("📊 Generating compliance report...");
+    println!("📊 Generating feature declaration report...");
 
     let catalog = load_features()?;
     let area_stats = catalog.area_statistics();
 
     let total = catalog.feature.len();
     let advertised = catalog.feature.iter().filter(|f| f.advertised).count();
-    let ga = catalog
-        .feature
-        .iter()
-        .filter(|f| matches!(f.maturity, Maturity::Ga | Maturity::Production) && f.advertised)
-        .count();
+    let proven =
+        catalog.feature.iter().filter(|f| f.maturity == Maturity::Proven && f.advertised).count();
     let preview = catalog
         .feature
         .iter()
         .filter(|f| matches!(f.maturity, Maturity::Preview) && f.advertised)
         .count();
-    let experimental =
-        catalog.feature.iter().filter(|f| matches!(f.maturity, Maturity::Experimental)).count();
+    let not_proven =
+        catalog.feature.iter().filter(|f| matches!(f.maturity, Maturity::NotProven)).count();
     let planned =
         catalog.feature.iter().filter(|f| matches!(f.maturity, Maturity::Planned)).count();
+    let unsupported =
+        catalog.feature.iter().filter(|f| matches!(f.maturity, Maturity::Unsupported)).count();
 
-    println!("\n=== LSP Compliance Report ===");
+    println!("\n=== LSP Feature Declaration Report ===");
     println!("Version: {} | LSP: {}", catalog.meta.version, catalog.meta.lsp_version);
-    let overall =
-        if total == 0 { 0 } else { (advertised as f64 / total as f64 * 100.0).round() as usize };
-    println!("\nOverall: {}/{} features ({}%)", advertised, total, overall);
+    println!("\nOverall declaration counts: {}/{} advertised", advertised, total);
     println!("\nBreakdown:");
-    println!("  GA:           {} features", ga);
+    println!("  Proven:       {} features", proven);
     println!("  Preview:      {} features", preview);
-    println!("  Experimental: {} features", experimental);
+    println!("  Not proven:   {} features", not_proven);
     println!("  Planned:      {} features", planned);
+    println!("  Unsupported:  {} features", unsupported);
 
     println!("\nBy Area:");
     for (area, stats) in area_stats {
-        let coverage = if stats.total == 0 {
-            0
-        } else {
-            (stats.advertised as f64 / stats.total as f64 * 100.0).round() as u32
-        };
-        println!(
-            "  {:20} {}/{} ({}%)",
-            area.replace('_', " "),
-            stats.advertised,
-            stats.total,
-            coverage
-        );
+        println!("  {:20} {}/{} declared", area.replace('_', " "), stats.advertised, stats.total);
     }
 
     Ok(())

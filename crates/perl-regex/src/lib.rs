@@ -16,6 +16,9 @@ pub use validator::RegexValidator;
 
 #[cfg(test)]
 mod tests {
+    // Test assertions favor `unwrap_err()` over propagating errors; the
+    // workspace-wide deny is a production-code rule.
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::validator::RegexValidationConfig;
 

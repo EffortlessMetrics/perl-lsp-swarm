@@ -2,7 +2,17 @@
 //!
 //! All items are re-exported from internal modules via this facade.
 //! Consumers should import from `perl_module` only, not from submodules.
-
+//!
+//! Implementation modules are private (#8810), so internal paths must not
+//! compile:
+///
+/// ```compile_fail
+/// let _ = perl_module::resolution::resolve_module_path;
+/// ```
+///
+/// ```compile_fail
+/// let _ = perl_module::rename::plan_module_rename_edits;
+/// ```
 // name module
 pub use crate::name::legacy_package_separator;
 pub use crate::name::module_variant_pairs;
@@ -31,6 +41,7 @@ pub use crate::import::RequireForm;
 pub use crate::import::RequireImportEntry;
 pub use crate::import::extract_require_import_symbols;
 pub use crate::import::parse_module_import_head;
+pub use crate::import::parse_qw_arg_list;
 pub use crate::import::resolve_known_export_tag;
 
 // boundary module
@@ -72,7 +83,23 @@ pub use crate::resolution::IncRootKind;
 pub use crate::resolution::ModuleUriCandidate;
 pub use crate::resolution::ModuleUriCandidateReport;
 pub use crate::resolution::ModuleUriResolution;
+pub use crate::resolution::build_effective_inc_roots;
 pub use crate::resolution::collect_module_uri_candidates_with_effective_inc;
 pub use crate::resolution::resolve_module_path;
 pub use crate::resolution::resolve_module_uri;
 pub use crate::resolution::resolve_module_uri_with_effective_inc;
+
+// resolution::use_lib family — include-path facts extracted from `use lib`
+// and `FindBin` pragmas; consumed by workspace inc-context assembly.
+pub use crate::resolution::use_lib::UseLibAction;
+pub use crate::resolution::use_lib::UseLibOperation;
+pub use crate::resolution::use_lib::UseLibPath;
+pub use crate::resolution::use_lib::extract_use_lib_operations;
+pub use crate::resolution::use_lib::extract_use_lib_operations_with_offsets;
+pub use crate::resolution::use_lib::extract_use_lib_paths;
+pub use crate::resolution::use_lib::no_lib_cancelled_paths_at_offset;
+pub use crate::resolution::use_lib::no_lib_cancelled_paths_from_operations_at_offset;
+pub use crate::resolution::use_lib::resolve_use_lib_paths;
+pub use crate::resolution::use_lib::resolve_use_lib_paths_from_operations_at_offset;
+pub use crate::resolution::use_lib::resolve_use_lib_paths_from_source;
+pub use crate::resolution::use_lib::resolve_use_lib_paths_from_source_at_offset;

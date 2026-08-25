@@ -87,7 +87,7 @@ struct CheckSpec {
 
 pub fn run(config: CiContractConfig) -> Result<()> {
     let root = project_root()?;
-    let resolved = change_set::resolve_change_set(
+    let mut resolved = change_set::resolve_change_set(
         ArtifactIdentity::CommitRange { base: config.base, head: config.head },
         &root,
     )?;
@@ -95,6 +95,20 @@ pub fn run(config: CiContractConfig) -> Result<()> {
         bail!("ci-contract requires a commit range");
     }
     let (base_sha, head_sha) = validate_resolved_identity(resolved.base_sha, resolved.head_sha)?;
+    // The caller's base can be a stale PR-open SHA: main landings after the PR
+    // opened would then appear as reverse-diffs, polluting both the changed-file
+    // list and `git diff --check`. The candidate's own commits are exactly
+    // merge-base(base, head)..head, so every diff-facing consumer uses that.
+    let diff_base = merge_base_sha(&root, &base_sha, &head_sha)?;
+    if diff_base != base_sha {
+        println!(
+            "ci-contract: caller base {base_sha} is not the merge-base; using {diff_base} for diff semantics"
+        );
+        resolved = change_set::resolve_change_set(
+            ArtifactIdentity::CommitRange { base: diff_base.clone(), head: head_sha.clone() },
+            &root,
+        )?;
+    }
 
     let metadata = ci_scope::load_metadata(&root)?;
     let workspace_root = root.to_string_lossy().replace('\\', "/");
@@ -111,7 +125,7 @@ pub fn run(config: CiContractConfig) -> Result<()> {
         checks.push(head_identity_check(&head_sha, &checkout_head));
     } else {
         let specs =
-            select_checks(&resolved.changed_paths, &base_sha, &head_sha, &changed_files_path);
+            select_checks(&resolved.changed_paths, &diff_base, &head_sha, &changed_files_path);
         checks.reserve(specs.len() + 1);
         for spec in specs {
             checks.push(run_check(&root, &spec));
@@ -256,16 +270,16 @@ fn select_checks(
 
 fn run_check(root: &Path, spec: &CheckSpec) -> ContractCheck {
     let command = format_command(spec.program, &spec.args);
-    if spec.id == "repo_hygiene" {
-        if let Err(error) = clear_repo_hygiene_receipt(root, &spec.args) {
-            return ContractCheck {
-                id: spec.id.to_string(),
-                reason: spec.reason.clone(),
-                command,
-                result: ContractResultClass::NotProven,
-                detail: format!("could not prepare repo-hygiene receipt: {error}"),
-            };
-        }
+    if spec.id == "repo_hygiene"
+        && let Err(error) = clear_repo_hygiene_receipt(root, &spec.args)
+    {
+        return ContractCheck {
+            id: spec.id.to_string(),
+            reason: spec.reason.clone(),
+            command,
+            result: ContractResultClass::NotProven,
+            detail: format!("could not prepare repo-hygiene receipt: {error}"),
+        };
     }
     match execute_check(root, spec) {
         Ok(output) => {
@@ -577,6 +591,26 @@ fn repository_identity(root: &Path) -> Result<String> {
     Ok(repository.to_string())
 }
 
+fn merge_base_sha(root: &Path, base: &str, head: &str) -> Result<String> {
+    let output = Command::new("git")
+        .args(["merge-base", base, head])
+        .current_dir(root)
+        .output()
+        .with_context(|| format!("failed to compute merge-base of {base} and {head}"))?;
+    if !output.status.success() {
+        bail!(
+            "could not compute merge-base of {base} and {head}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let sha = String::from_utf8(output.stdout)
+        .context("merge-base SHA was not UTF-8")?
+        .trim()
+        .to_string();
+    validate_object_id(&sha, "merge-base SHA")?;
+    Ok(sha)
+}
+
 fn resolve_sha(root: &Path, reference: &str) -> Result<String> {
     let output = Command::new("git")
         .args(["rev-parse", "--verify", &format!("{reference}^{{commit}}")])
@@ -678,6 +712,53 @@ fn bounded_output_with_prefix(prefix: &str, detail: &str) -> String {
 mod tests {
     use super::*;
     use color_eyre::eyre::{Result, ensure, eyre};
+
+    fn git_in(repo: &Path, args: &[&str]) -> Result<String> {
+        let output = Command::new("git").args(args).current_dir(repo).output()?;
+        ensure!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    fn commit_file(repo: &Path, name: &str, content: &str, message: &str) -> Result<()> {
+        fs::write(repo.join(name), content)?;
+        git_in(repo, &["add", name])?;
+        git_in(repo, &["commit", "-m", message])?;
+        Ok(())
+    }
+
+    /// A stale PR-open base must not leak post-fork main landings into the diff
+    /// range: the merge-base of (stale base, candidate head) is the fork point,
+    /// so diff semantics stay pinned to the candidate's own commits (#12054).
+    #[test]
+    fn merge_base_ignores_post_fork_main_landings() -> Result<()> {
+        let repo = tempfile::tempdir()?;
+        let path = repo.path();
+        git_in(path, &["init", "--initial-branch=main"])?;
+        git_in(path, &["config", "user.email", "test@example.com"])?;
+        git_in(path, &["config", "user.name", "ci-contract test"])?;
+        commit_file(path, "fork.txt", "fork point\n", "fork point")?;
+        let fork = git_in(path, &["rev-parse", "HEAD"])?;
+
+        git_in(path, &["checkout", "-b", "candidate"])?;
+        commit_file(path, "candidate.txt", "candidate change\n", "candidate change")?;
+        let head = git_in(path, &["rev-parse", "HEAD"])?;
+
+        git_in(path, &["checkout", "main"])?;
+        commit_file(path, "post-fork-main.txt", "landed after fork\n", "post-fork main landing")?;
+        let stale_base = git_in(path, &["rev-parse", "HEAD"])?;
+
+        let resolved = merge_base_sha(path, &stale_base, &head)?;
+        ensure!(
+            resolved == fork,
+            "merge-base must be the fork point {fork}, got {resolved} (stale base {stale_base})"
+        );
+        Ok(())
+    }
 
     fn check(result: ContractResultClass) -> ContractCheck {
         ContractCheck {

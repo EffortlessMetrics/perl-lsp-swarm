@@ -26,6 +26,24 @@ use super::variable_cache::VariableCache;
 use perl_info::detect_perl_info;
 use perl_spawn::{format_perl_spawn_error, is_valid_perl_interpreter};
 
+const SCOPE_FRAME_ID_MAX: u64 = 99_999;
+
+/// Return the authoritative frame id for the current suspension.
+///
+/// The output reader may observe a context line followed by a prompt for the
+/// same stop, so the prompt path must preserve the generation established by
+/// the context path. A prompt without a preceding context advances the
+/// generation itself. Scope references have a bounded frame-id wire space; once
+/// the generation exceeds it, return an unencodable sentinel rather than
+/// reusing an older frame id and reviving stale references.
+fn current_stopped_frame_id(session: &mut DebugSession, advance_generation: bool) -> i32 {
+    if advance_generation {
+        session.stopped_generation = session.stopped_generation.saturating_add(1);
+    }
+    let generation = session.stopped_generation.max(1);
+    if generation <= SCOPE_FRAME_ID_MAX { generation as i32 } else { i32::MAX }
+}
+
 impl DebugAdapter {
     /// Handle initialize request
     pub(super) fn handle_initialize(
@@ -521,6 +539,7 @@ impl DebugAdapter {
                     variable_cache: VariableCache::default(),
                     thread_id,
                     last_resume_mode: ResumeMode::Unknown,
+                    stopped_generation: 0,
                 };
 
                 if let Ok(mut guard) = self.session.lock() {
@@ -980,9 +999,11 @@ impl DebugAdapter {
                                 };
 
                                 if let Some(ref mut s) = *guard {
+                                    let was_running = matches!(s.state, DebugState::Running);
+                                    let current_frame_id = current_stopped_frame_id(s, was_running);
                                     if !current_file.is_empty() && current_line > 0 {
                                         s.stack_frames = vec![StackFrame {
-                                            id: 1,
+                                            id: current_frame_id,
                                             name: if current_func.is_empty() {
                                                 "main".to_string()
                                             } else {
@@ -1007,7 +1028,7 @@ impl DebugAdapter {
                                         s.stack_frame_arguments.clear();
                                     }
 
-                                    if matches!(s.state, DebugState::Running) {
+                                    if was_running {
                                         should_emit_stopped = true;
                                         let resume_mode = s.last_resume_mode.clone();
 
@@ -1190,10 +1211,21 @@ impl DebugAdapter {
                                     continue;
                                 };
                                 if let Some(ref mut s) = *guard {
+                                    // A prompt can be observed after the context
+                                    // branch (which already advanced the
+                                    // suspension generation), or without a
+                                    // parseable context. Preserve the existing
+                                    // generation in the former case and advance
+                                    // it in the latter; never reset the frame id
+                                    // to the historical constant 1.
+                                    let current_frame_id = current_stopped_frame_id(
+                                        s,
+                                        matches!(s.state, DebugState::Running),
+                                    );
                                     // Create stack frame with enhanced context validation
                                     if !current_file.is_empty() && current_line > 0 {
                                         let frame = StackFrame {
-                                            id: 1,
+                                            id: current_frame_id,
                                             name: if current_func.is_empty() {
                                                 "main".to_string()
                                             } else {
@@ -1220,7 +1252,7 @@ impl DebugAdapter {
                                     } else {
                                         // Provide a fallback frame for when we don't have perfect context
                                         let frame = StackFrame {
-                                            id: 1,
+                                            id: current_frame_id,
                                             name: "main".to_string(),
                                             source: Source {
                                                 name: Some("<unknown>".to_string()),
@@ -1397,9 +1429,15 @@ impl DebugAdapter {
                 tracing::error!("Debuggee watchdog: failed to kill hung debuggee process");
             }
 
-            // Deliver the reserved timeout reason after kill. Blocking send is OK:
-            // the debuggee is already dead; the emitted flag was set at reserve time.
-            if let Some(ref sender) = sender {
+            // Deliver the reserved timeout reason after kill, but only if the
+            // session generation has not been closed or replaced since the
+            // reservation was claimed (before the kill): a stale timeout event
+            // must not leak into a newer client conversation (#12092 review).
+            // Blocking send is OK: the debuggee is already dead; the emitted
+            // flag was set at reserve time.
+            if let Some(ref sender) = sender
+                && terminated_delivery_is_current(&termination_state, Some(session_generation))
+            {
                 let _ = emit_event_safe(
                     sender,
                     &seq,
@@ -1906,6 +1944,7 @@ impl DebugAdapter {
             emit_terminated_event(sender, &self.seq, &self.termination_state, None, None);
         }
         self.clear_active_session_state();
+        self.close_terminal_session_generation();
 
         DapMessage::Response {
             seq,
@@ -1940,6 +1979,7 @@ impl DebugAdapter {
             );
         }
         self.clear_active_session_state();
+        self.close_terminal_session_generation();
 
         DapMessage::Response {
             seq,
@@ -2212,6 +2252,30 @@ fn reserve_terminated_event(
     true
 }
 
+/// Whether a terminal emission reserved under `expected_generation` may still be
+/// delivered: the session generation must not have been closed or replaced since
+/// the reservation was claimed.
+///
+/// A reservation can be held across slow work before its send (the debuggee
+/// watchdog reserves before killing the process and delivers after), so a client
+/// terminal request or a replacement launch can advance the generation while the
+/// send is still outstanding. Delivering that stale send would leak an old
+/// session's `terminated` event into a newer client conversation (e.g. a client
+/// reading it as the replacement session terminating), so delivery must
+/// revalidate and retire it (#12092 review).
+///
+/// `None` (the synchronous client `terminate`/`disconnect` path) is always
+/// current: reservation, send, and generation close run sequentially on the
+/// caller's thread, so nothing can interleave.
+fn terminated_delivery_is_current(
+    termination_state: &Mutex<TerminationState>,
+    expected_generation: Option<u64>,
+) -> bool {
+    let Some(expected) = expected_generation else { return true };
+    let state = lock_or_recover(termination_state, "debug_adapter.termination_state");
+    state.generation == expected
+}
+
 /// Emit interpolated logpoint text on the debug console.
 fn emit_logpoint_messages(
     sender: Option<&SyncSender<DapMessage>>,
@@ -2244,18 +2308,132 @@ fn emit_terminated_event(
     if !reserve_terminated_event(termination_state, expected_generation) {
         return false;
     }
+    if !terminated_delivery_is_current(termination_state, expected_generation) {
+        // The generation was closed or replaced between reservation and
+        // delivery; retire the stale send rather than leak an old session's
+        // terminal event into a newer client conversation (#12092 review).
+        return false;
+    }
     emit_event_safe(sender, seq, "terminated", body)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        DebugAdapter, detect_perl_info, emit_terminated_event, format_perl_spawn_error,
-        is_valid_perl_interpreter,
+        DebugAdapter, DebugState, current_stopped_frame_id, detect_perl_info,
+        emit_terminated_event, format_perl_spawn_error, is_valid_perl_interpreter,
+        reserve_terminated_event, terminated_delivery_is_current,
     };
     use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn context_then_prompt_preserves_current_suspension_frame_id() -> Result<(), String> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+
+        let mut guard = adapter.session.lock().map_err(|_| "session lock poisoned".to_string())?;
+        let session = guard.as_mut().ok_or("test session was not installed")?;
+
+        // The context branch sees the running session and establishes the
+        // generation that the stopped event exposes.
+        session.state = DebugState::Running;
+        let context_frame_id = current_stopped_frame_id(session, true);
+        session.state = DebugState::Stopped;
+
+        // The prompt branch follows that same stop. It must retain the id
+        // rather than reviving the historical constant frame id 1.
+        let prompt_frame_id = current_stopped_frame_id(session, false);
+        if prompt_frame_id != context_frame_id {
+            return Err(format!(
+                "prompt changed the current frame id: context={context_frame_id}, prompt={prompt_frame_id}"
+            ));
+        }
+
+        // A subsequent context starts a fresh suspension and receives a new
+        // authority, preventing the old scope reference from reviving.
+        session.state = DebugState::Running;
+        let next_context_frame_id = current_stopped_frame_id(session, true);
+        if next_context_frame_id == context_frame_id {
+            return Err("next suspension reused the previous frame id".to_string());
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn generation_frame_id_fails_closed_at_scope_reference_ceiling() -> Result<(), String> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        let mut guard = adapter.session.lock().map_err(|_| "session lock poisoned".to_string())?;
+        let session = guard.as_mut().ok_or("session was not installed")?;
+        session.stopped_generation = 99_999;
+        session.state = DebugState::Running;
+
+        let exhausted = current_stopped_frame_id(session, true);
+        if exhausted != i32::MAX {
+            return Err(format!("generation 100000 must fail closed, got {exhausted}"));
+        }
+        session.stopped_generation = u64::MAX;
+        let still_exhausted = current_stopped_frame_id(session, false);
+        if still_exhausted != i32::MAX {
+            return Err(format!("exhausted generation revived a scope frame: {still_exhausted}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn exhausted_generation_rejects_old_scope_reference_without_query() -> Result<(), String> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        let mut guard = adapter.session.lock().map_err(|_| "session lock poisoned".to_string())?;
+        let session = guard.as_mut().ok_or("session was not installed")?;
+        session.state = DebugState::Stopped;
+        session.stopped_generation = 1;
+        session.stack_frames = vec![super::StackFrame {
+            id: 1,
+            name: "main".to_string(),
+            source: super::Source {
+                name: Some("test.pl".to_string()),
+                path: "test.pl".to_string(),
+                source_reference: None,
+            },
+            line: 1,
+            column: 1,
+            end_line: None,
+            end_column: None,
+        }];
+        drop(guard);
+
+        let old_scope =
+            adapter.handle_variables(1, 1, Some(serde_json::json!({ "variablesReference": 11 })));
+        match old_scope {
+            super::DapMessage::Response { .. } => {}
+            other => return Err(format!("old scope returned unexpected response: {other:?}")),
+        }
+        let before_stale = adapter.debugger_query_count_for_test();
+
+        let mut guard = adapter.session.lock().map_err(|_| "session lock poisoned".to_string())?;
+        let session = guard.as_mut().ok_or("session was not installed")?;
+        session.stopped_generation = 100_001;
+        session.stack_frames =
+            vec![super::StackFrame { id: i32::MAX, ..session.stack_frames[0].clone() }];
+        drop(guard);
+
+        let stale =
+            adapter.handle_variables(1, 1, Some(serde_json::json!({ "variablesReference": 11 })));
+        let stale_body = match stale {
+            super::DapMessage::Response { body: Some(body), .. } => body,
+            other => return Err(format!("stale scope returned unexpected response: {other:?}")),
+        };
+        if stale_body.get("variables") != Some(&serde_json::json!([]))
+            || adapter.debugger_query_count_for_test() != before_stale
+        {
+            return Err(format!("stale scope revived or queried: {stale_body}"));
+        }
+        Ok(())
+    }
 
     #[test]
     fn competing_termination_sources_emit_one_structured_event() -> Result<(), String> {
@@ -2334,6 +2512,67 @@ mod tests {
             return Err("current session failed to emit termination".to_string());
         }
         Ok(())
+    }
+
+    #[test]
+    fn reserved_termination_retired_when_generation_advances_before_delivery() -> Result<(), String>
+    {
+        let (sender, receiver) = sync_channel(64);
+        let seq = Arc::new(Mutex::new(0));
+        let termination_state =
+            Arc::new(Mutex::new(super::TerminationState { generation: 3, emitted: false }));
+
+        // Watchdog-style early reservation: the debuggee watchdog reserves
+        // before killing the process and delivers only after, so a client
+        // terminal request (or replacement launch) can advance the generation
+        // while this send is still outstanding.
+        if !reserve_terminated_event(&termination_state, Some(3)) {
+            return Err("watchdog-style reservation under the current generation failed".into());
+        }
+
+        // The generation advances while the reserved send is in flight
+        // (`close_terminal_session_generation` / replacement launch shape).
+        {
+            let mut state = termination_state
+                .lock()
+                .map_err(|_| "termination state lock poisoned".to_string())?;
+            state.generation = 4;
+            state.emitted = false;
+        }
+
+        // The stale delivery is retired, not sent.
+        if terminated_delivery_is_current(&termination_state, Some(3)) {
+            return Err("stale delivery reported current after generation advanced".into());
+        }
+
+        // A delivery under the now-current generation is still acknowledged.
+        if !emit_terminated_event(
+            &sender,
+            &seq,
+            &termination_state,
+            Some(4),
+            Some(serde_json::json!({"reason": "current_generation"})),
+        ) {
+            return Err("current-generation emission was suppressed".into());
+        }
+
+        // Exactly one event reached the channel: the current generation's.
+        match receiver.try_recv() {
+            Ok(super::DapMessage::Event { event, body, .. }) => {
+                if event != "terminated"
+                    || body.as_ref().and_then(|v| v.get("reason")).and_then(|v| v.as_str())
+                        != Some("current_generation")
+                {
+                    return Err(format!("unexpected termination event: {event}, {body:?}"));
+                }
+            }
+            other => return Err(format!("expected termination event, got {other:?}")),
+        }
+        match receiver.try_recv() {
+            Err(TryRecvError::Empty) => Ok(()),
+            Err(error) => Err(format!("termination channel error: {error}")),
+            Ok(other) => Err(format!("stale reservation leaked a duplicate event: {other:?}")),
+        }
     }
 
     #[test]
@@ -2862,6 +3101,7 @@ mod tests {
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
+            stopped_generation: 0,
         };
         *lock_or_recover(&adapter.session, "test.session") = Some(session);
 
@@ -2966,6 +3206,7 @@ mod tests {
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
+            stopped_generation: 0,
         };
         *lock_or_recover(&adapter.session, "test.session") = Some(session);
 

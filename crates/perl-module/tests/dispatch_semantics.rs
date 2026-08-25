@@ -3,7 +3,7 @@
 //! Covers the distinction between compile-time `use` and runtime `require`,
 //! including import call behaviour, load timing, and file-path `require` syntax.
 
-use perl_module::import::{
+use perl_module::{
     ImportBehavior, ImportListForm, LoadTiming, ModuleImportKind, RequireForm,
     parse_module_import_head,
 };

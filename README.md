@@ -18,7 +18,7 @@
 
 <p align="center">
   <!-- perl-lsp:vs-marketplace-installs-badge:start -->
-  <a href="https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs"><img src="https://img.shields.io/badge/VS%20Marketplace-313%20installs-0078D4" alt="VS Marketplace installs" /></a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs"><img src="https://img.shields.io/badge/VS%20Marketplace-656%20installs-0078D4" alt="VS Marketplace installs" /></a>
   <!-- perl-lsp:vs-marketplace-installs-badge:end -->
   <a href="https://open-vsx.org/extension/EffortlessMetrics/perl-lsp-rs"><img src="https://img.shields.io/open-vsx/dt/EffortlessMetrics/perl-lsp-rs?label=Open%20VSX%20downloads" alt="Open VSX downloads" /></a>
 </p>
@@ -141,7 +141,7 @@ Do not install `perl-lsp` from crates.io; that is a different project.
 
 ## Crate surface
 
-The current architecture collapsed the old microcrate graph into a smaller published surface. Most implementation detail now lives in modules behind focused public crates. The published surface is 33 crates, listed in `[workspace.metadata.publish.allow]` in [`Cargo.toml`](Cargo.toml).
+The current architecture collapsed the old microcrate graph into a smaller published surface. Most implementation detail now lives in modules behind focused public crates. The published surface is 34 crates, listed in `[workspace.metadata.publish.allow]` in [`Cargo.toml`](Cargo.toml).
 
 | Need | Crate |
 |---|---|

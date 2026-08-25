@@ -35,10 +35,14 @@ before committing derived state.
 
 ## Current Inventory
 
+The live `LspServer` does not retain an AST-only parse cache. `didOpen`,
+`didChange`, and the asynchronous parse-worker route run the full parser for
+each current document parse and publish its complete outcome, including
+recovery diagnostics. A complete parse-artifact store is future work.
+
 | Owner | State | Key type | Byte-risk | Bounds and cleanup | Pressure counter or signal | Regression test or receipt |
 |-------|-------|----------|-----------|--------------------|----------------------------|----------------------------|
 | `LspServer` | Open documents in `documents` | Normalized URI `String` | Raw source text and document metadata | `didClose` uses `evict_open_document_session_state`; delete and folder removal route through stronger helpers | `MemoryStateSnapshot.documents`; `MemoryStateSnapshot.open_text_bytes` | `test_did_close_zeroes_memory_state_snapshot`; folder-removal tests in `workspace.rs` |
-| `LspServer` | `ast_cache` | URI `String` with cached content hash | Parsed ASTs for recently used documents | `AstCache::new(100, 300)` in runtime constructors; explicit `AstCache::remove` on close/delete | `MemoryStateSnapshot.ast_cache_entries` | `ast_cache_remove_evicts_entry_immediately` |
 | `LspServer` | `semantic_analyzer_cache` | `(normalized_uri, content_hash)` | Semantic analyzer graphs and derived scope state | Invalidated on `didChange`, close, and delete; hard-clears when the cache reaches 50 entries | `MemoryStateSnapshot.semantic_analyzer_cache_entries` | semantic analyzer invalidation tests in `text_sync.rs`; `MemoryStateSnapshot` |
 | `LspServer` | `parse_cancel_flags` | URI `String` | Per-document cancellation tokens and stale parse coordination | New parses cancel prior tokens; close/delete/folder cleanup trips and removes flags | `MemoryStateSnapshot.parse_cancel_flags` | `test_did_close_cancels_and_removes_flag`; snapshot tests |
 | `LspServer` | `pod_cache` | Filesystem `PathBuf` | Parsed POD hover docs | Soft cap 1024 entries, prune target 512; close/delete removes the file path entry | `MemoryStateSnapshot.pod_cache_entries` | POD hover cache cap and close/delete eviction test; `MemoryStateSnapshot.pod_cache_entries` |
@@ -67,7 +71,6 @@ before committing derived state.
 | Nightly workspace-symbol churn | 300 files, 10 changes, strict plateau |
 | POD cache | Soft cap 1024 entries, prune target 512 |
 | Semantic analyzer cache | 50 entries before clear |
-| Runtime AST cache | 100 entries, 300 second TTL, explicit remove on close/delete |
 | Workspace index caches | Use configured workspace resource limits; delete/reindex must not duplicate secondary indexes |
 
 ## Regression Surfaces

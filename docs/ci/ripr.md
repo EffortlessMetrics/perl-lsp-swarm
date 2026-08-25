@@ -87,18 +87,39 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
   lives on the upstream receipts: `ripr_pr.receipt_head_sha` is the PR head,
   `head` is the evaluated merge-test SHA, and `review_guidance.changed_production_files`
   records the production scope used for the required-vs-advisory decision.
+- Attributes diff-scoped findings through the real workspace dependency graph
+  rather than the analyzer's caller expansion (#11690). Counted and named seams
+  must sit in a changed workspace package or one of its transitive dependents,
+  derived from `cargo metadata` resolve edges; archived sources under
+  `archive/**` and non-dependent crates drop out of the per-PR count. The
+  packet records this as `attribution.basis =
+  changed_plus_workspace_dependents` with `graph_source = cargo_metadata` plus
+  a per-run status. Fail-open rules keep the gate honest: shared workspace
+  inputs (root `Cargo.toml`, `Cargo.lock`, `.cargo/**`) and unreadable metadata
+  exclude nothing, and paths that cannot be tied to the repository stay
+  counted, so the gate never under-attributes a genuinely reachable gap.
 - Applies the documented suppression policy to diff-scoped PR evidence as well
   as repo-wide RIPR+ receipts. Suppressed paths remain visible in receipts, but
   they do not count as new blocking gaps.
-- In CI, review guidance has an explicit timeout. If guidance cannot produce an
-  actionable receipt for a new gap, the quality gate reports the missing repair
-  packet instead of hiding the failure.
+- In CI, review guidance has an explicit timeout. When the guidance pass does
+  not finish, the harness emits an `incomplete` receipt that names the
+  gate-actionable seams (`reachable_unrevealed` / `no_static_path`) from the
+  completed diff-scoped raw check, so the quality gate blocks on named
+  file/line/seam evidence instead of an unnameable count (#10054). The
+  suggested-proof text on these fallback names is generic, not
+  analyzer-derived, and the receipt warning says so. Only when the raw check
+  is also unavailable does the gate report the missing repair packet.
 - Emits non-blocking warning annotations from `comments[]` only.
 - Produces mutation-routing evidence under
   `target/xtask/impacted-evidence/`.
 - Uploads the `ripr-pr-evidence` artifact with required-artifact semantics.
 - Appends `target/ripr/pr/summary.md` and
   `target/receipts/quality/quality-gate-ripr.md` to the GitHub step summary.
+- Queues newer PR heads behind an active RIPR run. RIPR is evidence production,
+  so normal synchronization must not terminate the current analysis and turn
+  the resulting no-verdict into a false required-check failure. A lane that is
+  still externally or manually cancelled remains blocking because it produced
+  no proof.
 
 The evaluated `HEAD` in CI is a merge-test ref. It is not silently presented as
 the contributor's PR head: PR runs pass both identities to `xtask`, while

@@ -1,0 +1,241 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.com/schemas/perl_compiler_concept_proof.v1.schema.json",
+  "title": "Perl compiler concept proof obligations v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "matrix_id",
+    "controller_issue",
+    "concept_ledger_schema",
+    "proof_policy_schema",
+    "coverage_scope",
+    "claim_boundary",
+    "complete",
+    "defaults",
+    "requirements"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "perl_compiler_concept_proof.v1"
+    },
+    "matrix_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "controller_issue": {
+      "$ref": "#/$defs/issue"
+    },
+    "concept_ledger_schema": {
+      "const": "perl_compiler_concepts.v1"
+    },
+    "proof_policy_schema": {
+      "const": "perl_compiler_proof_policy.v1"
+    },
+    "coverage_scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "claim_boundary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "defaults": {
+      "$ref": "#/$defs/proof_cell_set"
+    },
+    "requirements": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/requirement"
+      }
+    }
+  },
+  "$defs": {
+    "issue": {
+      "type": "string",
+      "pattern": "^#[1-9][0-9]*$"
+    },
+    "concept_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_.-]*[a-z0-9]$"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+    },
+    "proof_status": {
+      "enum": [
+        "required_missing",
+        "satisfied",
+        "deferred",
+        "not_observable",
+        "not_applicable"
+      ]
+    },
+    "proof_cell_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "positive_gold",
+        "negative_gold",
+        "boundary_gold",
+        "recovery_gold",
+        "hir_snapshot",
+        "pir_snapshot",
+        "verifier_mutation",
+        "effects_world_fixture",
+        "eir_differential",
+        "real_perl_oracle",
+        "composition_coverage"
+      ],
+      "properties": {
+        "positive_gold": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "negative_gold": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "boundary_gold": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "recovery_gold": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "hir_snapshot": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "pir_snapshot": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "verifier_mutation": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "effects_world_fixture": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "eir_differential": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "real_perl_oracle": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "composition_coverage": {
+          "$ref": "#/$defs/proof_status"
+        }
+      }
+    },
+    "requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "concept_id",
+        "owner_issue",
+        "composition_dimensions",
+        "basis",
+        "evidence"
+      ],
+      "properties": {
+        "concept_id": {
+          "$ref": "#/$defs/concept_id"
+        },
+        "owner_issue": {
+          "$ref": "#/$defs/issue"
+        },
+        "composition_dimensions": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "basis": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/issue"
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "evidence_by_class": {
+          "type": "object",
+          "description": "Receipt references per proof class. A `satisfied` cell requires a non-empty entry keyed by that exact class id; the concept-level `evidence` list cannot admit a cell because it does not say which receipt earned which class.",
+          "propertyNames": {
+            "$ref": "#/$defs/proofClassId"
+          },
+          "additionalProperties": {
+            "type": "array",
+            "uniqueItems": true,
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "positive_gold": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "negative_gold": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "boundary_gold": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "recovery_gold": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "hir_snapshot": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "pir_snapshot": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "verifier_mutation": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "effects_world_fixture": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "eir_differential": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "real_perl_oracle": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "composition_coverage": {
+          "$ref": "#/$defs/proof_status"
+        }
+      }
+    },
+    "proofClassId": {
+      "type": "string",
+      "enum": [
+        "positive_gold",
+        "negative_gold",
+        "boundary_gold",
+        "recovery_gold",
+        "hir_snapshot",
+        "pir_snapshot",
+        "verifier_mutation",
+        "effects_world_fixture",
+        "eir_differential",
+        "real_perl_oracle",
+        "composition_coverage"
+      ]
+    }
+  }
+}

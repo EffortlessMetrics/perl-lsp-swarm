@@ -41,7 +41,7 @@ fn perl_lsp_rs_is_library_only_and_perllsp_is_the_product_bin() -> Result<()> {
         implementation["targets"].as_array().context("perl-lsp-rs targets missing")?;
     ensure!(
         implementation_targets.iter().all(|target| {
-            target["kind"].as_array().map_or(true, |kinds| !kinds.iter().any(|kind| kind == "bin"))
+            target["kind"].as_array().is_none_or(|kinds| !kinds.iter().any(|kind| kind == "bin"))
         }),
         "perl-lsp-rs unexpectedly publishes a binary target"
     );

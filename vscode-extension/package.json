@@ -223,15 +223,15 @@
                 ],
                 "enumDescriptions": [
                   "Native perl -d adapter (default)",
-                  "External debugger peer (e.g. Devel::ptkdb) over the Perl Debugger Peer Protocol",
-                  "Generate a .ptkdbrc bootstrap and launch perl -d:ptkdb (no live bridge)"
+                  "Experimental external live peer (e.g. a peer implementation; stock Devel::ptkdb compatibility is not proven) over the Perl Debugger Peer Protocol",
+                  "Generate a .ptkdbrc best-effort bootstrap helper and launch perl -d:ptkdb (no live bridge)"
                 ],
                 "description": "Which debug backend perl-dap should drive",
                 "default": "native"
               },
               "externalDebugger": {
                 "type": "object",
-                "description": "Configuration for debuggerBackend=external (the Perl Debugger Peer Protocol)",
+                "description": "Experimental live-peer configuration; fake/reference-peer proof only; stock Devel::ptkdb compatibility is not proven",
                 "properties": {
                   "kind": {
                     "type": "string",
@@ -239,22 +239,20 @@
                       "ptkdb",
                       "custom"
                     ],
-                    "description": "The external debugger engine to cooperate with",
+                    "description": "Peer implementation kind for the experimental protocol; stock Devel::ptkdb compatibility is not proven",
                     "default": "ptkdb"
                   },
                   "mode": {
                     "type": "string",
                     "enum": [
                       "connect",
-                      "listen",
                       "launchPeer"
                     ],
                     "enumDescriptions": [
-                      "perl-dap connects out to a peer already listening at host:port (the supported rendezvous)",
-                      "perl-dap listens for the peer to connect (not yet implemented)",
-                      "perl-dap launches the peer itself (not yet implemented)"
+                      "Experimental mirror rendezvous: perl-dap connects to a peer already listening at host:port; stock ptkdb compatibility is not proven",
+                      "Launching a peer is not implemented and is rejected"
                     ],
-                    "description": "How perl-dap rendezvous with the peer. 'connect' is the supported mode; 'listen'/'launchPeer' are future work.",
+                    "description": "How the experimental live peer rendezvous occurs. Connect is mirror-only; listen and launchPeer are rejected until the peer session token can be delivered to a separately launched peer.",
                     "default": "connect"
                   },
                   "control": {
@@ -264,12 +262,12 @@
                       "cooperative",
                       "dapControlled"
                     ],
-                    "description": "Who owns stepping/control. 'mirror' (the peer's UI stays authoritative) is the supported default",
+                    "description": "Experimental mirror only: the peer UI stays authoritative; cooperative and dapControlled are rejected until separately proven",
                     "default": "mirror"
                   },
                   "host": {
                     "type": "string",
-                    "description": "Host for the peer socket",
+                    "description": "Peer host for connect mode",
                     "default": "127.0.0.1"
                   },
                   "port": {
@@ -324,7 +322,7 @@
           {
             "type": "perl",
             "request": "launch",
-            "name": "Perl: ptkdb peer (mirror)",
+            "name": "Perl: External Debugger Peer (experimental)",
             "program": "${workspaceFolder}/script.pl",
             "debuggerBackend": "external",
             "externalDebugger": {
@@ -387,7 +385,7 @@
             "scope": "machine",
             "order": 31,
             "description": "Absolute external library roots for module resolution. User/machine scope only — workspace settings cannot set this key.",
-            "markdownDescription": "Absolute external library roots for module resolution. **User/machine scope only** — committed workspace settings cannot set this key. Use this when your CPAN/local library lives outside the workspace."
+            "markdownDescription": "Absolute external library roots for module resolution. **User/machine scope only** — committed workspace settings cannot set this key. Server-side application is pending a trusted configuration transport, so the language server does not apply these roots yet; workspace-relative paths in `#perl-lsp.includePaths#` remain fully supported."
           },
           "perl-lsp.enableSemanticTokens": {
             "type": "boolean",
@@ -758,9 +756,6 @@
                 "lsp.signature_help",
                 "lsp.document_highlight",
                 "lsp.formatting",
-                "lsp.range_formatting",
-                "lsp.ranges_formatting",
-                "lsp.on_type_formatting",
                 "lsp.inline_completion",
                 "lsp.inline_value",
                 "lsp.notebook_document_sync",
@@ -902,12 +897,6 @@
         "title": "%command.checkForUpdate.title%",
         "category": "Perl",
         "icon": "$(sync)"
-      },
-      {
-        "command": "perl-lsp.organizeImports",
-        "title": "%command.organizeImports.title%",
-        "category": "Perl",
-        "icon": "$(organization)"
       },
       {
         "command": "perl-lsp.runTests",
@@ -1091,10 +1080,6 @@
           "when": "perl-lsp.activated"
         },
         {
-          "command": "perl-lsp.organizeImports",
-          "when": "editorLangId == perl"
-        },
-        {
           "command": "perl-lsp.runTests",
           "when": "editorLangId == perl && resourceExtname =~ /\\.(t|pl)$/"
         },
@@ -1239,11 +1224,6 @@
       ]
     },
     "keybindings": [
-      {
-        "command": "perl-lsp.organizeImports",
-        "key": "shift+alt+o",
-        "when": "editorTextFocus && editorLangId == perl"
-      },
       {
         "command": "perl-lsp.runTests",
         "key": "shift+alt+t",
@@ -1450,13 +1430,14 @@
     "@types/vscode": "~1.125.0",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "3.9.2",
+    "ajv": "^8.20.0",
     "jest": "^30.4.2",
     "mocha": "^11.8.0",
-    "ovsx": "1.0.2",
-    "oxfmt": "0.62.0",
-    "oxlint": "1.77.0",
+    "ovsx": "1.1.1",
+    "oxfmt": "0.63.0",
+    "oxlint": "1.78.0",
     "oxlint-tsgolint": "7.0.2001",
-    "rolldown": "1.2.3",
+    "rolldown": "1.2.4",
     "source-map": "0.8.0",
     "typescript": "^7.0.2",
     "vscode-tmgrammar-test": "^0.1.3"

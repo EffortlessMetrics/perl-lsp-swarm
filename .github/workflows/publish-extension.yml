@@ -25,6 +25,7 @@ jobs:
     timeout-minutes: 15
     outputs:
       artifact_name: ${{ steps.version.outputs.artifact_name }}
+      build_sha: ${{ github.sha }}
       is_prerelease: ${{ steps.version.outputs.is_prerelease }}
       release_tag: ${{ steps.version.outputs.release_tag }}
       version: ${{ steps.version.outputs.version }}
@@ -32,7 +33,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -139,7 +140,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -192,7 +193,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -229,6 +230,7 @@ jobs:
     permissions:
       contents: write
     env:
+      BUILD_SHA: ${{ needs.prepare-vsix.outputs.build_sha }}
       RELEASE_TAG: ${{ needs.prepare-vsix.outputs.release_tag }}
       VSIX_FILE: ${{ needs.prepare-vsix.outputs.vsix_file }}
 
@@ -238,6 +240,58 @@ jobs:
         with:
           name: ${{ needs.prepare-vsix.outputs.artifact_name }}
           path: vscode-extension
+
+      # `release_tag` is derived from the dispatch version input alone, while the
+      # VSIX is built from the dispatch-selected ref. Nothing else proves those
+      # are the same subject, so a dispatch naming an older version would rebuild
+      # current source and `--clobber` that version's historical asset (#9597).
+      # Bind the two before the upload can run: resolve the tag to its commit and
+      # require it to be the commit we built. Fail closed on any unresolved tag.
+      - name: Verify release tag resolves to the built subject
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if ! [[ "$BUILD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Built subject SHA is not a full commit SHA: ${BUILD_SHA}"
+            exit 1
+          fi
+
+          for attempt in $(seq 1 30); do
+            if ref_json=$(gh api "repos/${GH_REPO}/git/ref/tags/${RELEASE_TAG}" 2>/dev/null); then
+              break
+            fi
+            ref_json=""
+            echo "Waiting for tag ${RELEASE_TAG} to become available..."
+            sleep 10
+          done
+
+          if [ -z "$ref_json" ]; then
+            echo "::error::Tag ${RELEASE_TAG} was not available in time; refusing to attach a VSIX."
+            exit 1
+          fi
+
+          object_sha=$(printf '%s' "$ref_json" | jq -r '.object.sha // empty')
+          object_type=$(printf '%s' "$ref_json" | jq -r '.object.type // empty')
+
+          # Annotated tags resolve to a tag object; dereference to the commit.
+          if [ "$object_type" = "tag" ]; then
+            object_sha=$(gh api "repos/${GH_REPO}/git/tags/${object_sha}" --jq '.object.sha // empty')
+          fi
+
+          if ! [[ "$object_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Could not resolve ${RELEASE_TAG} to a commit; refusing to attach a VSIX."
+            exit 1
+          fi
+
+          if [ "$object_sha" != "$BUILD_SHA" ]; then
+            echo "::error::Release identity mismatch: ${RELEASE_TAG} points at ${object_sha}, but this VSIX was built from ${BUILD_SHA}. Re-run this workflow with the release tag selected as the ref so the published asset matches the release it claims to be."
+            exit 1
+          fi
+
+          printf 'Release %s and the built VSIX share subject %s.\n' "$RELEASE_TAG" "$BUILD_SHA"
 
       - name: Create GitHub Release asset
         env:
@@ -281,7 +335,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -314,7 +368,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
