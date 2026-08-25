@@ -95,9 +95,9 @@ impl fmt::Debug for NodeKind {
 pub(super) fn render_node<O: DebugObserver>(node: &Node, observer: &mut O) -> String {
     let sketch = sketch_node(node, observer);
     let mut out = String::new();
-    let mut writer = BoundedWriter { out: &mut out, truncated: sketch.truncated };
+    let mut writer = BoundedWriter { out: &mut out, truncated: false };
     let _ = write_sketch(&mut writer, &sketch);
-    if writer.truncated {
+    if writer.truncated || sketch.truncated {
         out.push_str(MARKER_SUFFIX);
         if out.len() > NODE_DEBUG_MAX_BYTES {
             let keep = NODE_DEBUG_MAX_BYTES.saturating_sub(MARKER_SUFFIX.len());
@@ -109,7 +109,7 @@ pub(super) fn render_node<O: DebugObserver>(node: &Node, observer: &mut O) -> St
     out
 }
 
-fn sketch_node<'a, O: DebugObserver>(root: &'a Node, observer: &mut O) -> Sketch {
+fn sketch_node<O: DebugObserver>(root: &Node, observer: &mut O) -> Sketch {
     let mut stack = vec![open_frame(root, None, 0)];
     observer.on_stack_depth(stack.len());
     let mut sketched = 0usize;
@@ -561,23 +561,23 @@ mod tests {
     fn leaf_shows_kind_range_and_payload() {
         let node = numbered("42", 3);
         let rendered = format!("{node:?}");
-        assert!(rendered.contains("Number"), "{rendered}");
-        assert!(rendered.contains("@3..4"), "{rendered}");
-        assert!(rendered.contains("value:\"42\""), "{rendered}");
+        assert!(rendered.contains("Number"), "rendered = {rendered:?}");
+        assert!(rendered.contains("@3..4"), "rendered = {rendered:?}");
+        assert!(rendered.contains("value:\"42\""), "rendered = {rendered:?}");
         assert!(
             !rendered.contains("location: SourceLocation"),
             "must not be derived Debug: {rendered}"
         );
-        assert!(!rendered.contains(NODE_DEBUG_TRUNCATION_MARKER), "{rendered}");
+        assert!(!rendered.contains(NODE_DEBUG_TRUNCATION_MARKER), "rendered = {rendered:?}");
     }
 
     #[test]
     fn parent_projects_named_children() {
         let node = wrap_expr(numbered("1", 0));
         let rendered = format!("{node:?}");
-        assert!(rendered.contains("ExpressionStatement"), "{rendered}");
-        assert!(rendered.contains("expression:"), "{rendered}");
-        assert!(rendered.contains("Number"), "{rendered}");
+        assert!(rendered.contains("ExpressionStatement"), "rendered = {rendered:?}");
+        assert!(rendered.contains("expression:"), "rendered = {rendered:?}");
+        assert!(rendered.contains("Number"), "rendered = {rendered:?}");
     }
 
     #[test]
@@ -586,9 +586,9 @@ mod tests {
         let node =
             Node::new(NodeKind::String { value: value.clone(), interpolated: false }, loc(0, 1));
         let rendered = format!("{node:?}");
-        assert!(rendered.contains("String"), "{rendered}");
-        assert!(rendered.contains("..."), "{rendered}");
-        assert!(rendered.contains(NODE_DEBUG_TRUNCATION_MARKER), "{rendered}");
+        assert!(rendered.contains("String"), "rendered = {rendered:?}");
+        assert!(rendered.contains("..."), "rendered = {rendered:?}");
+        assert!(rendered.contains(NODE_DEBUG_TRUNCATION_MARKER), "rendered = {rendered:?}");
         assert!(!rendered.contains(&value), "full payload must not appear: {rendered}");
         assert!(rendered.len() <= NODE_DEBUG_MAX_BYTES, "len={}", rendered.len());
     }
@@ -608,9 +608,13 @@ mod tests {
             loc(0, 80),
         );
         let rendered = format!("{node:?}");
-        assert!(rendered.contains("delimiter:\"EOF\""), "{rendered}");
-        assert!(rendered.contains(NODE_DEBUG_TRUNCATION_MARKER), "{rendered}");
-        assert!(!rendered.contains(&content), "{rendered}");
+        assert!(rendered.contains("delimiter:\"EOF\""), "missing delimiter in {}", rendered);
+        assert!(
+            rendered.contains(NODE_DEBUG_TRUNCATION_MARKER),
+            "missing truncation marker in {}",
+            rendered
+        );
+        assert!(!rendered.contains(&content), "full heredoc leaked in {}", rendered);
     }
 
     #[test]
@@ -620,9 +624,9 @@ mod tests {
         let omitted = statements.len() - NODE_DEBUG_MAX_CHILDREN;
         let node = program(statements);
         let rendered = format!("{node:?}");
-        assert!(rendered.contains("Program"), "{rendered}");
-        assert!(rendered.contains(&format!("... +{omitted}")), "{rendered}");
-        assert!(rendered.contains(NODE_DEBUG_TRUNCATION_MARKER), "{rendered}");
+        assert!(rendered.contains("Program"), "rendered = {rendered:?}");
+        assert!(rendered.contains(&format!("... +{omitted}")), "rendered = {rendered:?}");
+        assert!(rendered.contains(NODE_DEBUG_TRUNCATION_MARKER), "rendered = {rendered:?}");
         assert!(rendered.len() <= NODE_DEBUG_MAX_BYTES, "len={}", rendered.len());
     }
 
@@ -634,8 +638,8 @@ mod tests {
         let left_dbg = format!("{left:?}");
         let right_dbg = format!("{right:?}");
         assert_eq!(left_dbg, right_dbg, "truncated Debug must not be identity");
-        assert!(left_dbg.contains(NODE_DEBUG_TRUNCATION_MARKER), "{left_dbg}");
-        assert!(!left_dbg.contains("leaf-hidden"), "{left_dbg}");
+        assert!(left_dbg.contains(NODE_DEBUG_TRUNCATION_MARKER), "left = {left_dbg:?}");
+        assert!(!left_dbg.contains("leaf-hidden"), "left = {left_dbg:?}");
         assert_eq!(hash_debug(&left_dbg), hash_debug(&right_dbg));
     }
 
@@ -672,7 +676,7 @@ mod tests {
         );
         assert!(work.max_explicit_stack_depth >= 1, "must use the heap stack");
         assert!(work.max_explicit_stack_depth <= NODE_DEBUG_MAX_DEPTH + 2);
-        assert!(rendered.contains(NODE_DEBUG_TRUNCATION_MARKER), "{rendered}");
+        assert!(rendered.contains(NODE_DEBUG_TRUNCATION_MARKER), "rendered = {rendered:?}");
         let _ = sketch_node(&node, &mut ());
     }
 
@@ -681,7 +685,7 @@ mod tests {
         let statements: Vec<Node> = (0..40).map(|i| numbered(&"x".repeat(8), i)).collect();
         let node = program(statements);
         let rendered = format!("{:?}", node.kind);
-        assert!(rendered.starts_with("Program"), "{rendered}");
+        assert!(rendered.starts_with("Program"), "rendered = {rendered:?}");
         assert!(!rendered.contains("Number"), "NodeKind Debug must not dump children: {rendered}");
         assert!(rendered.len() <= NODE_DEBUG_MAX_BYTES, "len={}", rendered.len());
     }
@@ -690,8 +694,8 @@ mod tests {
     fn derived_recursive_shape_is_absent() {
         let node = wrap_expr(numbered("1", 0));
         let rendered = format!("{node:?}");
-        assert!(!rendered.contains("kind: ExpressionStatement"), "{rendered}");
-        assert!(!rendered.contains("location: SourceLocation"), "{rendered}");
-        assert!(rendered.starts_with("Node("), "{rendered}");
+        assert!(!rendered.contains("kind: ExpressionStatement"), "rendered = {rendered:?}");
+        assert!(!rendered.contains("location: SourceLocation"), "rendered = {rendered:?}");
+        assert!(rendered.starts_with("Node("), "rendered = {rendered:?}");
     }
 }

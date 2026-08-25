@@ -5674,10 +5674,10 @@ mod deep_tree_destruction_tests {
         run_on_small_stack(|| {
             let node = chain_of(DEEP_DEPTH, wrap_boxed);
             let (rendered, work) = debug_and_count(&node);
-            assert!(rendered.contains("ExpressionStatement"), "{rendered}");
+            assert!(rendered.contains("ExpressionStatement"), "rendered = {rendered:?}");
             assert!(
                 rendered.contains(NODE_DEBUG_TRUNCATION_MARKER),
-                "truncation must be visible: {rendered}"
+                "truncation must be visible: {rendered:?}"
             );
             assert!(
                 rendered.len() <= NODE_DEBUG_MAX_BYTES,
@@ -5685,7 +5685,7 @@ mod deep_tree_destruction_tests {
                 rendered.len(),
                 NODE_DEBUG_MAX_BYTES
             );
-            assert!(!rendered.contains("location: SourceLocation"), "{rendered}");
+            assert!(!rendered.contains("location: SourceLocation"), "rendered = {rendered:?}");
             assert!(work.nodes_entered > 0);
             assert!(work.nodes_entered <= NODE_DEBUG_MAX_NODES as u64);
             assert!(work.max_explicit_stack_depth >= 1, "debug must use the explicit stack");
@@ -5702,12 +5702,12 @@ mod deep_tree_destruction_tests {
             let left_dbg = format!("{left:?}");
             let right_dbg = format!("{right:?}");
             assert_eq!(left_dbg, right_dbg, "truncated Debug must not be an equality oracle");
-            assert!(left_dbg.contains(NODE_DEBUG_TRUNCATION_MARKER), "{left_dbg}");
+            assert!(left_dbg.contains(NODE_DEBUG_TRUNCATION_MARKER), "left = {left_dbg:?}");
             assert!(left_dbg.len() <= NODE_DEBUG_MAX_BYTES);
             let kind_dbg = format!("{:?}", left.kind);
             assert!(
                 !kind_dbg.contains("ExpressionStatement @"),
-                "NodeKind Debug must not dump the child tree: {kind_dbg}"
+                "NodeKind Debug must not dump the child tree: {kind_dbg:?}"
             );
             assert!(kind_dbg.len() <= NODE_DEBUG_MAX_BYTES, "kind debug len={}", kind_dbg.len());
             drop(right);
@@ -5723,7 +5723,7 @@ mod deep_tree_destruction_tests {
                 let rendered = format!("{node:?}");
                 assert!(
                     rendered.contains(NODE_DEBUG_TRUNCATION_MARKER),
-                    "family {name}: truncation missing: {rendered}"
+                    "family {name}: truncation missing: {rendered:?}"
                 );
                 assert!(
                     rendered.len() <= NODE_DEBUG_MAX_BYTES,
@@ -5747,7 +5747,7 @@ mod deep_tree_destruction_tests {
                 node = wrap(node);
             }
             let rendered = format!("{node:?}");
-            assert!(rendered.contains(NODE_DEBUG_TRUNCATION_MARKER), "{rendered}");
+            assert!(rendered.contains(NODE_DEBUG_TRUNCATION_MARKER), "rendered = {rendered:?}");
             assert!(rendered.len() <= NODE_DEBUG_MAX_BYTES, "len={}", rendered.len());
             drop(node);
         })
@@ -5759,9 +5759,9 @@ mod deep_tree_destruction_tests {
             let statements: Vec<Node> = (0..10_000).map(|i| number_leaf(&i.to_string())).collect();
             let node = Node::new(NodeKind::Program { statements }, loc());
             let rendered = format!("{node:?}");
-            assert!(rendered.contains("Program"), "{rendered}");
-            assert!(rendered.contains("... +"), "{rendered}");
-            assert!(rendered.contains(NODE_DEBUG_TRUNCATION_MARKER), "{rendered}");
+            assert!(rendered.contains("Program"), "rendered = {rendered:?}");
+            assert!(rendered.contains("... +"), "rendered = {rendered:?}");
+            assert!(rendered.contains(NODE_DEBUG_TRUNCATION_MARKER), "rendered = {rendered:?}");
             assert!(rendered.len() <= NODE_DEBUG_MAX_BYTES, "len={}", rendered.len());
             drop(node);
         })
