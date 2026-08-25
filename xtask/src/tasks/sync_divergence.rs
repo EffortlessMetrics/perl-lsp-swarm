@@ -368,6 +368,17 @@ fn resolve_subject(label: &str, state: &SubjectState, directory: Option<&Path>) 
             if resolved.is_empty() {
                 return Err(unresolved_subject(label, state, directory));
             }
+            // Quiet mode suppresses git's refname-ambiguity warning, so a
+            // branch+tag name collision would silently resolve by internal
+            // precedence. A loud re-probe fails closed on that case.
+            let loud_stderr = git_stderr_in(["rev-parse", "--end-of-options", &peeled], directory)
+                .unwrap_or_default();
+            if loud_stderr.contains("is ambiguous") {
+                return Err(eyre!(
+                    "{label} ref `{}` was ambiguous; pass a full 40-hex object id or an unambiguous ref name",
+                    state.input
+                ));
+            }
             Ok(resolved)
         }
         Err(_) => Err(unresolved_subject(label, state, directory)),
@@ -532,10 +543,10 @@ fn git_output_in<const N: usize>(args: [&str; N], directory: Option<&Path>) -> R
     String::from_utf8(output.stdout).context("git output was not valid UTF-8")
 }
 
-fn git_stderr_in<const N: usize>(args: [&str; N], _directory: Option<&Path>) -> Result<String> {
+fn git_stderr_in<const N: usize>(args: [&str; N], directory: Option<&Path>) -> Result<String> {
     let mut command = Command::new("git");
     command.args(args);
-    if let Some(directory) = _directory {
+    if let Some(directory) = directory {
         command.current_dir(directory);
     }
     let output = command.output().context("running git for sync-divergence preflight")?;
@@ -630,6 +641,30 @@ mod tests {
             Err(error) => error,
             Ok(resolved) => {
                 return Err(eyre!("ambiguous prefix `{prefix}` resolved to {resolved}"));
+            }
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("ambiguous"), "{message}");
+        Ok(())
+    }
+
+    /// Quiet `rev-parse --verify` resolves a branch+tag name collision by
+    /// internal precedence while suppressing git's ambiguity warning; the
+    /// loud re-probe must fail closed instead of picking an arbitrary side.
+    #[test]
+    fn ambiguous_refnames_fail_closed_instead_of_silent_precedence() -> Result<()> {
+        let directory = init_fixture_repo()?;
+        let path = directory.path();
+        commit_file(path, "a.txt", "a\n", "base")?;
+        run_git_fixture(path, &["branch", "dup-7968"])?;
+        commit_file(path, "b.txt", "b\n", "second")?;
+        run_git_fixture(path, &["tag", "dup-7968"])?;
+
+        let state = SubjectState { input: "dup-7968".to_string(), commit: None };
+        let error = match resolve_subject("source", &state, Some(path)) {
+            Err(error) => error,
+            Ok(resolved) => {
+                return Err(eyre!("an ambiguous refname must not silently resolve to {resolved}"));
             }
         };
         let message = format!("{error:#}");

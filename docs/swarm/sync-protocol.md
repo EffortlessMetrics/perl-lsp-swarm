@@ -78,8 +78,9 @@ Required before opening the old-repo sync PR:
 - run the relevant support/provider/status checks in swarm
 - preserve release notes and package-lineage docs
 - state whether the sync changes user-facing package behavior
-- run `cargo xtask sync-divergence check` against the target first parent and
-  attach its source-sync receipt
+- run `cargo xtask sync-divergence check` with the release repository head as
+  `--target`, the exact prepared swarm commit as `--source`, and the completed
+  reconciliation boundary as `--boundary`; attach its source-sync receipt
 
 The old-repo PR body must link to the swarm source PRs and list verification.
 
@@ -148,9 +149,9 @@ exact subjects resolved to immutable full SHAs:
 
 ```bash
 cargo xtask sync-divergence check \
-  --source <swarm-main-ref> \
+  --source <exact-prepared-swarm-commit> \
   --boundary <completed-reconciliation-boundary> \
-  --target <source-sync-first-parent> \
+  --target <release-repository-head> \
   --ledger docs/swarm/source-syncs/<sync>-reconciliation.json \
   --receipt docs/swarm/source-syncs/<sync>-receipt.json
 ```
@@ -170,7 +171,9 @@ syntactically single commit-ish values, the boundary must be an ancestor
 of the target, and the source must not already be contained in the target
 (which means the subjects are reversed — swarm passed as the target — or
 reconciliation is already complete); otherwise the command fails closed and
-records the failure in the receipt.
+records the failure in the receipt. A boundary equal to the target resolves
+cleanly and yields an empty comparison population with full identity recorded
+in the receipt.
 
 The check excludes merge commits from the target-unique row population and
 records their ancestry (subject and parents) in the receipt's
