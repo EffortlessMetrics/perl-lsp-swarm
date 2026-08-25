@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11833 |
-| Rust-family files | 3582 |
-| Non-Rust files | 8251 |
-| Allowlisted | 5926 |
+| Total tracked files | 11878 |
+| Rust-family files | 3594 |
+| Non-Rust files | 8284 |
+| Allowlisted | 5959 |
 | Unclassified | 2325 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 420 |
-| documentation | 2688 |
+| config | 424 |
+| documentation | 2689 |
 | generated | 2 |
-| production | 323 |
-| test | 1941 |
-| tooling | 552 |
+| production | 324 |
+| test | 1966 |
+| tooling | 554 |
 | unclassified | 2325 |
 
 ## Unclassified files
@@ -2411,6 +2411,7 @@
 | `.changes/unreleased/product-12094-Fixed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12180-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12185-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12213-Added-053344.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12425-Changed-064000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12428-Changed-071500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12489-Changed-095500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2960,6 +2961,7 @@
 | `.github/workflows/ux-regression-gate.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/validate-ci-lane-history.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/version-bump.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/vim-hermetic-host.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/vscode-current-source-linux-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/vscode-managed-binary-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/vscode-published-extension-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -5982,6 +5984,29 @@
 | `fixtures/agent_review_packet/shuffled/challenger_service_marker_shuffled.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
 | `fixtures/debug-peer/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `fixtures/debug-peer/perl/minimal_ptkdb_peer.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/experience/standalone_candidate_selection/01_complete_archive_pair.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/02_historical_server_only.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/03_exact_source_server_only.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/04_mixed_pair_rejected.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/05_published_unselected.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/06_failed_b_preserves_a.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/07_ab_selection_committed.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/08_rollback_b_to_a.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/09_malformed_current_record.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/10a_wrong_root_selection.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/10b_wrong_target_selection.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/11_cross_attempt_transition.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/12_independent_outcomes.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/13_source_mode_as_pair_rejected.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/14_dap_preview_cannot_weaken_pair.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/15_local_development_non_authoritative.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/16_candidate_identity_drift.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/17_generation_regression.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/18_revert_without_rollback.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/19_rollback_target_not_governed.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/20_previous_current_alias.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/21_private_path_leakage.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/22_current_names_missing_candidate.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
 | `fixtures/train_edge_contract/external_stages.v1.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
 | `fixtures/train_edge_contract/invalid/expected_errors.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
 | `fixtures/train_edge_contract/invalid/external_stage_satisfied_internally.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
@@ -6144,6 +6169,9 @@
 | `schemas/publication_runtime_identity.v1.schema.json` | config | `non-rust-publication-runtime-identity-schema` | release/ci |
 | `schemas/release_topology.v1.schema.json` | config | `non-rust-release-topology-schema` | release/ci |
 | `schemas/stage_closure_projection.v1.schema.json` | config | `non-rust-stage-closure-projection-schema` | tooling/agent-review |
+| `schemas/standalone_candidate.v1.schema.json` | config | `non-rust-standalone-candidate-schema` | release/ci |
+| `schemas/standalone_current_selection.v1.schema.json` | config | `non-rust-standalone-current-selection-schema` | release/ci |
+| `schemas/standalone_install_transition.v1.schema.json` | config | `non-rust-standalone-install-transition-schema` | release/ci |
 | `schemas/train_edge_contract.v1.schema.json` | config | `non-rust-train-edge-contract-schema` | tooling/train-graph |
 | `schemas/vsix_candidate_payload.v1.schema.json` | config | `non-rust-vsix-candidate-payload-schema` | release/ci |
 | `scripts/.ignored-baseline` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6465,6 +6493,8 @@
 | `scripts/test/emacs-clients/eglot-released-config.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-clients/eglot-released.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-host-driver.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/vim-clients/vim-lsp-adapter.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/vim-host-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_iterative_parser.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -8246,6 +8276,8 @@
 | `vscode-extension/test/grammar/fixtures/keywords_control.pl.snap` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/test/grammar/fixtures/numbers.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `vscode-extension/test/grammar/fixtures/numbers.pl.snap` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/test/grammar/fixtures/operator_boundaries.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `vscode-extension/test/grammar/fixtures/operator_boundaries.pl.snap` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/test/grammar/fixtures/operators.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `vscode-extension/test/grammar/fixtures/operators.pl.snap` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/test/grammar/fixtures/pod.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
