@@ -266,13 +266,8 @@ fn try_git_discovery(
     // not enumerate the linked tree. Expand those entries separately so a
     // linked library remains visible in the fast path as well as the walk
     // fallback. The same skip and extension policy is applied to the expansion.
-    let (linked_files, linked_excluded, linked_cancelled) = discover_linked_git_directories(
-        root,
-        &stdout,
-        allowlist,
-        config,
-        should_cancel,
-    );
+    let (linked_files, linked_excluded, linked_cancelled) =
+        discover_linked_git_directories(root, &stdout, allowlist, config, should_cancel);
     if linked_cancelled {
         return Ok(GitDiscoveryOutcome::Cancelled);
     }
@@ -351,10 +346,7 @@ fn is_skipped_path(
 ) -> bool {
     !is_safe_relative_git_path(relative_path)
         || allowlist.has_unallowed_skipped_component(relative_path)
-        || path_contains_skipped_component_with_extra(
-            relative_path,
-            &config.extra_skipped_dirs,
-        )
+        || path_contains_skipped_component_with_extra(relative_path, &config.extra_skipped_dirs)
         || !root.join(relative_path).is_dir()
 }
 
