@@ -24,15 +24,19 @@
 
 use crate::framework::AdapterDetectionResult;
 use crate::framework_adapters::dancer2::{
-    DANCER2_ADAPTER_ID, DANCER2_FRAMEWORK_NAME, Dancer2ActivationFacts, Dancer2KeywordState,
+    DANCER2_ADAPTER_ID, DANCER2_DSL_CONTRACT_VERSION, DANCER2_FRAMEWORK_NAME,
+    Dancer2ActivationFacts, Dancer2KeywordState,
 };
 use crate::route::{
-    RouteDeclaration, RouteFact, RouteHandler, RouteMethodSet, RouteOptions, RoutePatternKind,
-    route_envelope, route_fact_identity,
+    RouteDeclaration, RouteEffectivePattern, RouteFact, RouteHandler, RouteHandlerContextFact,
+    RouteMethodSet, RouteOptions, RouteParameterFact, RouteParameterKind, RouteParameterSegment,
+    RoutePatternKind, RoutePrefixDeclaration, RoutePrefixFact, route_fact_identity,
+    route_family_envelope, route_handler_context_identity, route_parameter_fact_identity,
+    route_prefix_fact_identity,
 };
 use crate::{
-    AnchorId, BoundaryKind, FileId, InvalidationDependency, SemanticReasonCode, SourceAnchor,
-    SourceGeneration,
+    AnchorId, BoundaryKind, FileId, InvalidationDependency, SemanticFactKind, SemanticReasonCode,
+    SourceAnchor, SourceGeneration,
 };
 
 /// Reviewed default method vocabulary for a bare `any` route.
@@ -51,7 +55,8 @@ pub const DANCER2_ROUTE_KEYWORDS: &[&str] =
 ///
 /// Produced by the AST extractor in
 /// `perl_semantic_analyzer::analysis::dancer2_routes`; this carrier adds the
-/// package/file/declaration identity around the canonical payload.
+/// package/file/declaration identity around the canonical payload and the
+/// route-local parameter segments extracted from the pattern operand.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dancer2RouteDeclaration {
     /// Package the declaration appears in (activation scope).
@@ -61,8 +66,42 @@ pub struct Dancer2RouteDeclaration {
     /// Full declaration range (keyword start to last operand end).
     pub declaration_start_byte: u32,
     pub declaration_end_byte: u32,
-    /// Canonical route payload (name/methods/pattern/options/handler).
+    /// Canonical route payload (name/methods/pattern/effective/options/handler).
     pub route: RouteDeclaration,
+    /// Route-local parameter/capture segments of the pattern operand, in
+    /// source order (#8921).
+    pub parameters: Vec<RouteParameterSegment>,
+}
+
+/// One source-extracted Dancer2 prefix declaration awaiting minting (#8921).
+///
+/// Produced by the AST extractor in
+/// `perl_semantic_analyzer::analysis::dancer2_routes`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dancer2PrefixDeclaration {
+    /// Package the declaration appears in (activation scope).
+    pub package: Option<String>,
+    /// File the declaration appears in.
+    pub file_id: FileId,
+    /// Full declaration range (keyword start to last operand end).
+    pub declaration_start_byte: u32,
+    /// End of the full declaration range.
+    pub declaration_end_byte: u32,
+    /// Canonical prefix payload (selection/scope).
+    pub prefix: RoutePrefixDeclaration,
+}
+
+/// Minted canonical route-family facts for one activating package (#8921).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Dancer2RouteFacts {
+    /// Route declaration facts.
+    pub routes: Vec<RouteFact>,
+    /// Prefix declaration facts.
+    pub prefixes: Vec<RoutePrefixFact>,
+    /// Route-local parameter/capture facts.
+    pub parameters: Vec<RouteParameterFact>,
+    /// Inline handler-context facts.
+    pub handler_contexts: Vec<RouteHandlerContextFact>,
 }
 
 /// Normalize one method name from a route method list.
@@ -111,8 +150,34 @@ pub fn dancer2_route_facts(
     package: Option<&str>,
     declarations: &[Dancer2RouteDeclaration],
 ) -> Vec<RouteFact> {
+    dancer2_route_family_facts(detection, activation, package, declarations, &[]).routes
+}
+
+/// Mint the canonical Dancer2 route fact family for one activating package
+/// (#8921): route facts, prefix declaration facts, route-local parameter
+/// facts, and inline handler-context facts.
+///
+/// Same registry-activated gating as [`dancer2_route_facts`]: zero facts of
+/// any kind without a detected framework plus an exact activation. A prefix
+/// declaration whose `prefix` keyword the activating import excluded mints
+/// nothing (`!prefix` means the keyword was never imported). Route facts with
+/// a composed effective pattern carry additional invalidation dependencies
+/// over every contributing prefix declaration (`route-prefix:<file>:<index>`),
+/// so a prefix edit invalidates the dependent route projections in the current
+/// generation. Parameter and handler-context facts mint only for minted
+/// routes, share the owning route's entity, and stay route/application
+/// scoped and generation owned.
+#[must_use]
+pub fn dancer2_route_family_facts(
+    detection: &AdapterDetectionResult,
+    activation: &Dancer2ActivationFacts,
+    package: Option<&str>,
+    declarations: &[Dancer2RouteDeclaration],
+    prefix_declarations: &[Dancer2PrefixDeclaration],
+) -> Dancer2RouteFacts {
+    let mut facts = Dancer2RouteFacts::default();
     if !detection.is_detected() || !activation.is_exact() {
-        return Vec::new();
+        return facts;
     }
     let Dancer2ActivationFacts { state, keywords, .. } = activation;
     let crate::framework_adapters::dancer2::Dancer2ActivationState::Exact {
@@ -121,10 +186,12 @@ pub fn dancer2_route_facts(
         source_generation,
     } = state
     else {
-        return Vec::new();
+        return facts;
     };
 
-    let mut facts = Vec::new();
+    let mut route_facts = Vec::new();
+    let mut parameter_facts = Vec::new();
+    let mut handler_context_facts = Vec::new();
     for declaration in declarations {
         if declaration.package.as_deref() != package {
             continue;
@@ -138,13 +205,57 @@ pub fn dancer2_route_facts(
             // imported, so this declaration is not a route of this activation.
             continue;
         }
-        facts.push(mint_route_fact(
-            declaration,
+        let route_fact =
+            mint_route_fact(declaration, application_name, framework_version, source_generation);
+        // Parameter facts exist only for minted routes: route-local keys of an
+        // excluded or foreign-package route are never published.
+        for (parameter_index, segment) in declaration.parameters.iter().enumerate() {
+            parameter_facts.push(mint_parameter_fact(
+                declaration,
+                segment,
+                parameter_index as u32,
+                application_name,
+                framework_version,
+                source_generation,
+            ));
+        }
+        // Handler context exists only for an exact inline handler: a bounded
+        // handler relation (string/coderef/computed) has no source interval
+        // where route-handler-only DSL is proven available.
+        if let crate::route::RouteHandler::InlineSub { .. } = declaration.route.handler {
+            handler_context_facts.push(mint_handler_context_fact(
+                declaration,
+                application_name,
+                framework_version,
+                source_generation,
+            ));
+        }
+        route_facts.push(route_fact);
+    }
+
+    let mut prefix_facts = Vec::new();
+    for prefix_declaration in prefix_declarations {
+        if prefix_declaration.package.as_deref() != package {
+            continue;
+        }
+        let Some(keyword_fact) = keywords.iter().find(|fact| fact.keyword == "prefix") else {
+            continue;
+        };
+        if keyword_fact.state == Dancer2KeywordState::Excluded {
+            continue;
+        }
+        prefix_facts.push(mint_prefix_fact(
+            prefix_declaration,
             application_name,
             framework_version,
             source_generation,
         ));
     }
+
+    facts.routes = route_facts;
+    facts.prefixes = prefix_facts;
+    facts.parameters = parameter_facts;
+    facts.handler_contexts = handler_context_facts;
     facts
 }
 
@@ -164,7 +275,68 @@ fn mint_route_fact(
     );
     let exact = !declaration.route.has_boundary();
     let (boundary_kind, boundary_reason) = primary_boundary(&declaration.route);
-    let envelope = route_envelope(
+    // A composed effective pattern depends on every contributing prefix
+    // declaration: editing any of them invalidates the projection in the
+    // current generation.
+    let mut dependencies = vec![
+        InvalidationDependency::new(
+            format!("source:{}", declaration.file_id.0),
+            generation.clone(),
+        ),
+        InvalidationDependency::new("module:Dancer2", generation.clone()),
+    ];
+    if let RouteEffectivePattern::Composed { prefix_declarations, .. } =
+        &declaration.route.effective_pattern
+    {
+        dependencies.extend(prefix_declarations.iter().map(|index| {
+            InvalidationDependency::new(
+                format!("route-prefix:{}:{}", declaration.file_id.0, index),
+                generation.clone(),
+            )
+        }));
+    }
+    let envelope = route_family_envelope(
+        SemanticFactKind::Route,
+        fact_id,
+        entity_id,
+        declaration.package.as_deref(),
+        declaration_anchor,
+        generation,
+        dependencies,
+        boundary_kind,
+        boundary_reason,
+        exact,
+    );
+    RouteFact::new(
+        envelope,
+        DANCER2_FRAMEWORK_NAME,
+        DANCER2_ADAPTER_ID,
+        framework_version,
+        application_name,
+        declaration.route.clone(),
+    )
+}
+
+fn mint_prefix_fact(
+    declaration: &Dancer2PrefixDeclaration,
+    application_name: &str,
+    framework_version: &str,
+    generation: &SourceGeneration,
+) -> RoutePrefixFact {
+    let (fact_id, entity_id) = route_prefix_fact_identity(
+        declaration.file_id,
+        declaration.prefix.declaration_index,
+        generation,
+    );
+    let declaration_anchor = SourceAnchor::new(
+        Some(AnchorId(u64::from(declaration.declaration_start_byte))),
+        declaration.file_id,
+        declaration.declaration_start_byte,
+        declaration.declaration_end_byte,
+    );
+    let exact = !declaration.prefix.has_boundary();
+    let envelope = route_family_envelope(
+        SemanticFactKind::RoutePrefix,
         fact_id,
         entity_id,
         declaration.package.as_deref(),
@@ -177,17 +349,114 @@ fn mint_route_fact(
             ),
             InvalidationDependency::new("module:Dancer2", generation.clone()),
         ],
-        boundary_kind,
-        boundary_reason,
+        (!exact).then_some(BoundaryKind::DynamicValue),
+        SemanticReasonCode::DynamicValue,
         exact,
     );
-    RouteFact::new(
+    RoutePrefixFact::new(
         envelope,
         DANCER2_FRAMEWORK_NAME,
         DANCER2_ADAPTER_ID,
         framework_version,
         application_name,
-        declaration.route.clone(),
+        declaration.prefix.clone(),
+    )
+}
+
+fn mint_parameter_fact(
+    declaration: &Dancer2RouteDeclaration,
+    segment: &RouteParameterSegment,
+    parameter_index: u32,
+    application_name: &str,
+    framework_version: &str,
+    generation: &SourceGeneration,
+) -> RouteParameterFact {
+    let (fact_id, entity_id) = route_parameter_fact_identity(
+        declaration.file_id,
+        declaration.route.declaration_index,
+        parameter_index,
+        generation,
+    );
+    let exact = !matches!(segment.kind, RouteParameterKind::CaptureUnsupported);
+    let envelope = route_family_envelope(
+        SemanticFactKind::RouteParameter,
+        fact_id,
+        entity_id,
+        declaration.package.as_deref(),
+        segment.anchor,
+        generation,
+        vec![
+            InvalidationDependency::new(
+                format!("source:{}", declaration.file_id.0),
+                generation.clone(),
+            ),
+            InvalidationDependency::new("module:Dancer2", generation.clone()),
+        ],
+        (!exact).then_some(BoundaryKind::DynamicValue),
+        SemanticReasonCode::DynamicValue,
+        exact,
+    );
+    RouteParameterFact::new(
+        envelope,
+        DANCER2_FRAMEWORK_NAME,
+        DANCER2_ADAPTER_ID,
+        framework_version,
+        application_name,
+        declaration.route.declaration_index,
+        segment.clone(),
+    )
+}
+
+fn mint_handler_context_fact(
+    declaration: &Dancer2RouteDeclaration,
+    application_name: &str,
+    framework_version: &str,
+    generation: &SourceGeneration,
+) -> RouteHandlerContextFact {
+    let (fact_id, entity_id) = route_handler_context_identity(
+        declaration.file_id,
+        declaration.route.declaration_index,
+        generation,
+    );
+    let handler_anchor = match &declaration.route.handler {
+        crate::route::RouteHandler::InlineSub { anchor } => *anchor,
+        crate::route::RouteHandler::Bounded { .. } => {
+            // Unreachable from the mint loop (guarded by the InlineSub match);
+            // fall back to the declaration anchor rather than panicking.
+            SourceAnchor::new(
+                Some(AnchorId(u64::from(declaration.declaration_start_byte))),
+                declaration.file_id,
+                declaration.declaration_start_byte,
+                declaration.declaration_end_byte,
+            )
+        }
+    };
+    let envelope = route_family_envelope(
+        SemanticFactKind::RouteHandlerContext,
+        fact_id,
+        entity_id,
+        declaration.package.as_deref(),
+        handler_anchor,
+        generation,
+        vec![
+            InvalidationDependency::new(
+                format!("source:{}", declaration.file_id.0),
+                generation.clone(),
+            ),
+            InvalidationDependency::new("module:Dancer2", generation.clone()),
+        ],
+        None,
+        SemanticReasonCode::ExactSource,
+        true,
+    );
+    RouteHandlerContextFact::new(
+        envelope,
+        DANCER2_FRAMEWORK_NAME,
+        DANCER2_ADAPTER_ID,
+        framework_version,
+        application_name,
+        declaration.route.declaration_index,
+        DANCER2_DSL_CONTRACT_VERSION,
     )
 }
 
@@ -209,7 +478,8 @@ fn primary_boundary(route: &RouteDeclaration) -> (Option<BoundaryKind>, Semantic
             SemanticReasonCode::DynamicValue,
         );
     }
-    if matches!(route.options, RouteOptions::Dynamic { .. })
+    if matches!(route.effective_pattern, RouteEffectivePattern::Boundary { .. })
+        || matches!(route.options, RouteOptions::Dynamic { .. })
         || matches!(&route.options, RouteOptions::Map(entries)
             if entries.iter().any(|entry| matches!(entry.value, crate::route::RouteOptionValue::Dynamic { .. })))
         || matches!(route.route_name, crate::route::RouteNameSelection::Dynamic { .. })
@@ -290,11 +560,13 @@ mod tests {
                     value: Some("/x".to_string()),
                     anchor: SourceAnchor::new(Some(AnchorId(4)), FileId(1), 4, 8),
                 },
+                effective_pattern: RouteEffectivePattern::Local { value: "/x".to_string() },
                 options: RouteOptions::Map(Vec::new()),
                 handler: RouteHandler::InlineSub {
                     anchor: SourceAnchor::new(Some(AnchorId(12)), FileId(1), 12, 21),
                 },
             },
+            parameters: Vec::new(),
         }
     }
 
@@ -463,7 +735,7 @@ mod tests {
         assert_eq!(name_value.as_deref(), Some("user_show"));
         assert_eq!(fact.route.pattern.value.as_deref(), Some("/users/:id"));
         assert_ne!(
-            fact.route.route_name_literal_value().as_deref(),
+            fact.route.route_name_literal_value(),
             fact.route.pattern.value.as_deref(),
             "name and pattern stay distinct fields"
         );
@@ -508,6 +780,160 @@ mod tests {
                 &[literal_get_declaration(0)]
             )
             .is_empty()
+        );
+    }
+
+    fn sticky_prefix_declaration(index: u32) -> Dancer2PrefixDeclaration {
+        Dancer2PrefixDeclaration {
+            package: Some("App".to_string()),
+            file_id: FileId(1),
+            declaration_start_byte: 0,
+            declaration_end_byte: 13,
+            prefix: crate::route::RoutePrefixDeclaration {
+                declaration_index: index,
+                keyword: "prefix".to_string(),
+                keyword_anchor: SourceAnchor::new(Some(AnchorId(0)), FileId(1), 0, 6),
+                selection: crate::route::RoutePrefixSelection::Literal(
+                    crate::route::RoutePrefixLiteral {
+                        value: "/api".to_string(),
+                        anchor: SourceAnchor::new(Some(AnchorId(7)), FileId(1), 7, 12),
+                    },
+                ),
+                scope: crate::route::RoutePrefixScope::Sticky,
+            },
+        }
+    }
+
+    #[test]
+    fn family_minting_gates_on_activation_and_excluded_prefix() {
+        let detection = detect_dancer2(&detected_input("gen-1"));
+        let activation = exact_activation("gen-1");
+        let mut composed = literal_get_declaration(0);
+        composed.route.effective_pattern = RouteEffectivePattern::Composed {
+            value: "/api/x".to_string(),
+            prefix_declarations: vec![0],
+        };
+        let family = dancer2_route_family_facts(
+            &detection,
+            &activation,
+            Some("App"),
+            &[composed],
+            &[sticky_prefix_declaration(0)],
+        );
+        assert_eq!(family.routes.len(), 1);
+        assert_eq!(family.prefixes.len(), 1);
+        // Composed projections carry per-prefix invalidation dependencies.
+        assert!(
+            family.routes[0]
+                .envelope
+                .invalidation_dependencies()
+                .iter()
+                .any(|dependency| dependency.dependency_key == "route-prefix:1:0"),
+            "composed route carries a prefix declaration dependency"
+        );
+
+        // `!prefix` at the activating import: no prefix fact, and the route
+        // keeps its (already composed) projection — the exclusion only stops
+        // the keyword's own declarations.
+        let args: Vec<String> = ["qw(!prefix)"].iter().map(ToString::to_string).collect();
+        let evidence = parse_dancer2_import_args(&args);
+        let excluded = dancer2_activation_facts(&detection, Some("App"), &evidence);
+        let family = dancer2_route_family_facts(
+            &detection,
+            &excluded,
+            Some("App"),
+            &[literal_get_declaration(0)],
+            &[sticky_prefix_declaration(0)],
+        );
+        assert_eq!(family.routes.len(), 1);
+        assert!(family.prefixes.is_empty());
+
+        // No activation: nothing of any kind mints.
+        let mut inactive = exact_activation("gen-1");
+        inactive.state = Dancer2ActivationState::NotActivated { reason: "test".to_string() };
+        let family = dancer2_route_family_facts(
+            &detection,
+            &inactive,
+            Some("App"),
+            &[literal_get_declaration(0)],
+            &[sticky_prefix_declaration(0)],
+        );
+        assert_eq!(family, Dancer2RouteFacts::default());
+    }
+
+    #[test]
+    fn parameter_and_handler_context_facts_are_route_scoped() {
+        let detection = detect_dancer2(&detected_input("gen-1"));
+        let activation = exact_activation("gen-1");
+        let mut declaration = literal_get_declaration(0);
+        declaration.parameters = vec![
+            RouteParameterSegment {
+                kind: RouteParameterKind::Named,
+                name: Some("id".to_string()),
+                anchor: SourceAnchor::new(Some(AnchorId(10)), FileId(1), 10, 13),
+                limitation: None,
+            },
+            RouteParameterSegment {
+                kind: RouteParameterKind::CaptureUnsupported,
+                name: None,
+                anchor: SourceAnchor::new(Some(AnchorId(4)), FileId(1), 4, 8),
+                limitation: None,
+            },
+        ];
+        let family =
+            dancer2_route_family_facts(&detection, &activation, Some("App"), &[declaration], &[]);
+        assert_eq!(family.parameters.len(), 2);
+        assert_eq!(family.handler_contexts.len(), 1);
+        let (_, route_entity) =
+            route_fact_identity(FileId(1), 0, &SourceGeneration::known("gen-1"));
+        for parameter in &family.parameters {
+            assert_eq!(parameter.envelope.entity_id, Some(route_entity));
+            assert_eq!(parameter.route_declaration_index, 0);
+            assert_eq!(parameter.application_name, "App");
+        }
+        assert_eq!(family.parameters[0].status(), crate::SemanticFactStatus::Exact);
+        assert_eq!(family.parameters[1].status(), crate::SemanticFactStatus::Degraded);
+        assert!(
+            family.parameters[1].envelope.boundary.is_some(),
+            "an unsupported capture carries an envelope boundary link"
+        );
+        let context = &family.handler_contexts[0];
+        assert_eq!(context.envelope.entity_id, Some(route_entity));
+        assert_eq!(context.envelope.kind, crate::SemanticFactKind::RouteHandlerContext);
+        assert_eq!(context.dsl_contract_version, DANCER2_DSL_CONTRACT_VERSION);
+        assert_eq!(context.status(), crate::SemanticFactStatus::Exact);
+
+        // A bounded handler mints no handler context.
+        let mut bounded = literal_get_declaration(0);
+        bounded.route.handler = RouteHandler::Bounded {
+            boundary: RouteHandlerBoundary::String,
+            anchor: None,
+            reason: "string handler".to_string(),
+        };
+        let family =
+            dancer2_route_family_facts(&detection, &activation, Some("App"), &[bounded], &[]);
+        assert!(family.handler_contexts.is_empty());
+    }
+
+    #[test]
+    fn dynamic_prefix_degrades_composition_without_guessing() {
+        let detection = detect_dancer2(&detected_input("gen-1"));
+        let activation = exact_activation("gen-1");
+        let mut route = literal_get_declaration(0);
+        route.route.effective_pattern =
+            RouteEffectivePattern::Boundary { reason: "computed prefix".to_string() };
+        let mut prefix = sticky_prefix_declaration(0);
+        prefix.prefix.selection = crate::route::RoutePrefixSelection::Dynamic {
+            reason: "computed prefix operand".to_string(),
+            anchor: Some(SourceAnchor::new(Some(AnchorId(7)), FileId(1), 7, 12)),
+        };
+        let family =
+            dancer2_route_family_facts(&detection, &activation, Some("App"), &[route], &[prefix]);
+        assert_eq!(family.routes[0].status(), crate::SemanticFactStatus::Degraded);
+        assert_eq!(family.prefixes[0].status(), crate::SemanticFactStatus::Degraded);
+        assert!(
+            family.prefixes[0].envelope.boundary.is_some(),
+            "a computed prefix carries an envelope boundary link"
         );
     }
 }

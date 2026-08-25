@@ -42,8 +42,11 @@ pub const DANCER2_ADAPTER_ID: AdapterId = AdapterId(0x0044_4E43);
 ///
 /// The keyword table and its global/route-handler-only split follow the
 /// Dancer2 1.x `Dancer2::Core::DSL` registration contract; the workspace
-/// skeleton fixture mirrors the keyword list.
-pub const DANCER2_DSL_CONTRACT_VERSION: &str = "dancer2-dsl.1-1.v1";
+/// skeleton fixture mirrors the keyword list (it is a trimmed fixture and
+/// does not carry every registered keyword). v2 adds the keywords the #8921
+/// route context needs, both registered by the reviewed upstream v1.1.1
+/// contract: `prefix` (global) and `route_parameters` (route-handler-only).
+pub const DANCER2_DSL_CONTRACT_VERSION: &str = "dancer2-dsl.1-1.v2";
 
 /// Reviewed versioned-descriptor schema revision for this adapter.
 pub const DANCER2_DESCRIPTOR_REVISION: u32 = 1;
@@ -87,6 +90,9 @@ pub const DANCER2_DSL_KEYWORDS: &[Dancer2DslKeyword] = &[
     kw("patch", GLOBAL),
     kw("any", GLOBAL),
     kw("route", GLOBAL),
+    // Route path grouping (#8921 prefix facts); global per the reviewed
+    // upstream v1.1.1 registration (`prefix => { is_global => 1 }`).
+    kw("prefix", GLOBAL),
     // Hooks and dispatch phases.
     kw("hook", GLOBAL),
     kw("before", GLOBAL),
@@ -107,6 +113,10 @@ pub const DANCER2_DSL_KEYWORDS: &[Dancer2DslKeyword] = &[
     kw("vars", ROUTE),
     kw("captures", ROUTE),
     kw("splat", ROUTE),
+    // Route-local parameter access (#8921); route-handler-only per the
+    // reviewed upstream v1.1.1 registration (`route_parameters =>
+    // { is_global => 0 }`).
+    kw("route_parameters", ROUTE),
     // Application-level configuration and utilities.
     kw("redirect", GLOBAL),
     kw("cookie", GLOBAL),
@@ -676,6 +686,11 @@ mod tests {
                 .any(|keyword| keyword.name == "get" && keyword.scope == DslKeywordScope::Global)
         );
         assert!(DANCER2_DSL_KEYWORDS.iter().any(|keyword| keyword.name == "request"
+            && keyword.scope == DslKeywordScope::RouteHandlerOnly));
+        // v2 additions registered by the reviewed upstream v1.1.1 contract.
+        assert!(DANCER2_DSL_KEYWORDS.iter().any(|keyword| keyword.name == "prefix"
+            && keyword.scope == DslKeywordScope::Global));
+        assert!(DANCER2_DSL_KEYWORDS.iter().any(|keyword| keyword.name == "route_parameters"
             && keyword.scope == DslKeywordScope::RouteHandlerOnly));
         // Table entries are unique.
         let mut sorted = names.clone();
