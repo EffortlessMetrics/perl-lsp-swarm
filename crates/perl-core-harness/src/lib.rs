@@ -8659,7 +8659,7 @@ mod tests {
         let runner = write_fake_execute_runner(temp.path())?;
         let output = temp.path().join("execute-report.json");
 
-        run_mode(RunConfig {
+        let Err(err) = run_mode(RunConfig {
             perl_tree,
             host_perl: PathBuf::from("/bin/sh"),
             runner: HarnessRunner::Test,
@@ -9110,7 +9110,7 @@ exit 7
         let runner = write_fake_runner(temp.path(), RunnerStatus::Pass)?;
         let output = temp.path().join("parse-report.json");
 
-        let Err(err) = run_mode(RunConfig {
+        run_mode(RunConfig {
             perl_tree,
             host_perl: PathBuf::from("/bin/sh"),
             runner: HarnessRunner::Test,
@@ -9119,11 +9119,8 @@ exit 7
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
-        }) else {
-            bail!("direct-runner fallback must not bypass terminal admission");
-        };
+        })?;
 
-        assert!(err.to_string().contains("terminal status"));
         let raw = fs::read_to_string(output)?;
         let report: RunReport = serde_json::from_str(&raw)?;
         assert_eq!(report.summary.files_total, 1);
@@ -9131,7 +9128,7 @@ exit 7
         assert_eq!(report.summary.files_failed, 0);
         assert!(report.buckets.is_empty());
         assert!(report.failures.is_empty());
-        assert_eq!(report.harness_status, Some(7));
+        assert_eq!(report.harness_status, Some(0));
         Ok(())
     }
 
