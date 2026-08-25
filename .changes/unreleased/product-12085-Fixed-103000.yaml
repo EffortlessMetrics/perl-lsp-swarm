@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: Gate-receipt CI artifacts can no longer present cache-restored receipts from unrelated SHAs as fresh evidence. The merge-gate shard lane clears every uploaded receipt surface before running, the shard runner sweeps its receipt directory before executing gates, and a fail-closed freshness verifier re-checks each uploaded JSON binding (shard summary subject_sha, gate receipt metadata.git_sha) against the proven subject SHA before upload, JUnit conversion, and LEM actuals.
+time: 2026-08-24T10:30:00Z
+custom:
+  PR: "12085"
+  Slug: gate-receipt-freshness-binding
+  Breaking: "no"
