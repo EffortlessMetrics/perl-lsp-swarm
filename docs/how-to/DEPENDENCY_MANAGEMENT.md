@@ -8,7 +8,7 @@ The project uses **GitHub Dependabot** to automatically check for and propose de
 
 - Check for updates weekly (every Monday at 09:00 UTC)
 - Group related dependencies together to reduce PR noise
-- Automatically label PRs for easy filtering
+- Expose updates through the `app/dependabot` author filter instead of custom labels
 - Apply appropriate commit message prefixes for changelog generation
 
 ## Configuration
@@ -144,28 +144,25 @@ Example configuration for auto-merge via CLI:
 gh pr merge <pr-number> --auto --squash
 
 # Enable for all patch updates from Dependabot
-gh pr list --author "app/dependabot" --label "patch" --json number --jq '.[].number' | \
+gh pr list --author "app/dependabot" --search "status:success" --json number --jq '.[].number' | \
   xargs -I {} gh pr merge {} --auto --squash
 ```
 
-## Labels and Filtering
+## Filtering
 
-Dependabot PRs are automatically labeled:
+Dependabot PRs do not carry automatic labels. The configuration previously asked
+Dependabot to apply `dependencies`, `cargo`, `automated`, `github-actions`, and
+`npm` labels, but none of those labels existed in the repository, so every update
+PR triggered a bot warning ("The following labels could not be found"). Those
+entries were removed; no current dependency-PR routing or search automation
+consumed them.
 
-- `dependencies` - All dependency updates
-- `cargo` - Rust dependencies
-- `github-actions` - Workflow dependencies
-- `npm` - Node.js dependencies
-- `vscode-extension` - VS Code extension specific
-- `automated` - Automated PRs
+Filter Dependabot PRs by author instead — the ecosystem is visible from the bumped
+package name in each title:
 
-**Filter examples**:
 ```bash
 # View all dependency PRs
-gh pr list --label "dependencies"
-
-# View only Cargo updates
-gh pr list --label "cargo"
+gh pr list --author "app/dependabot"
 
 # View Dependabot PRs ready to merge
 gh pr list --author "app/dependabot" --search "status:success"
@@ -391,6 +388,6 @@ For issues with dependency updates:
 
 ---
 
-**Last Updated**: 2026-01-28
+**Last Updated**: 2026-08-25
 **Configuration Version**: 1.0
 **Dependabot Version**: v2

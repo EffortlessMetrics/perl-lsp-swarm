@@ -7,16 +7,11 @@ Quick commands and workflows for handling dependency updates.
 ### View Dependabot PRs
 
 ```bash
-# All dependency PRs
-gh pr list --label "dependencies"
+# All dependency PRs (Dependabot applies no labels in this repo; filter by author)
+gh pr list --author "app/dependabot"
 
 # Ready to merge (CI passing)
 gh pr list --author "app/dependabot" --search "status:success"
-
-# By ecosystem
-gh pr list --label "cargo"
-gh pr list --label "github-actions"
-gh pr list --label "npm"
 ```
 
 ### Merge Dependabot PRs
@@ -26,7 +21,7 @@ gh pr list --label "npm"
 gh pr merge <pr-number> --auto --squash
 
 # Batch merge all passing patch updates
-gh pr list --author "app/dependabot" --label "patch" --search "status:success" --json number --jq '.[].number' | \
+gh pr list --author "app/dependabot" --search "status:success" --json number --jq '.[].number' | \
   xargs -I {} gh pr merge {} --auto --squash
 
 # Manual merge with review
@@ -104,24 +99,24 @@ gh pr comment <pr-number> -b "@dependabot ignore this major version"
 gh pr list --author "app/dependabot"
 
 # Review security updates
-gh pr list --author "app/dependabot" --label "security"
+# Fixes for Dependabot alerts arrive as ordinary Dependabot PRs; browse the
+# alerts themselves under Security -> Dependabot alerts.
+gh pr list --author "app/dependabot"
 ```
 
 ### Weekly: Batch Review (Monday)
 
 ```bash
 # 1. List all new dependency PRs
-gh pr list --label "dependencies" --json number,title,labels
+gh pr list --author "app/dependabot" --json number,title
 
 # 2. Merge passing patch updates
 gh pr list --author "app/dependabot" --search "status:success" --json number --jq '.[].number' | \
   xargs -I {} gh pr merge {} --auto --squash
 
-# 3. Review minor updates
-gh pr list --label "dependencies" --search "minor" --json number,title
-
-# 4. Schedule major updates for dedicated review
-gh pr list --label "dependencies" --search "major" --json number,title
+# 3. Triage the rest by semver impact read from each title:
+#    x.y.Z -> patch, x.Y.0 -> minor (review changelog), X.0.0 -> major
+#    (dedicated review)
 ```
 
 ### Monthly: Audit
@@ -269,7 +264,8 @@ schedule:
 **Add labels**:
 ```yaml
 labels:
-  - "dependencies"
+  # Each name must already exist in the repository, otherwise Dependabot
+  # logs "The following labels could not be found" on every update PR.
   - "custom-label"
 ```
 
