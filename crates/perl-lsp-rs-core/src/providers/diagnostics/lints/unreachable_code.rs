@@ -248,7 +248,17 @@ fn summarize_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowSummary
             FlowSummary::transfer(ControlTransfer::Return)
         }
         NodeKind::LoopControl { op, label } => summarize_loop_control(op, label),
-        NodeKind::Goto { target, form } => summarize_goto(target, form),
+        NodeKind::Goto { target, form } => {
+            // A computed goto target (`goto EXPR`, `goto &sub`) executes at
+            // runtime before the transfer happens, so executable children
+            // inside it (for example a `do { ... }` block) receive the same
+            // local PL406 analysis as any other evaluated expression. Only
+            // the plain-label form is a bare name with nothing to execute.
+            if !matches!(form, GotoTargetForm::Label) {
+                let _ = summarize_expression(target, diagnostics);
+            }
+            summarize_goto(target, form)
+        }
 
         NodeKind::ExpressionStatement { expression } => {
             summarize_expression(expression, diagnostics)

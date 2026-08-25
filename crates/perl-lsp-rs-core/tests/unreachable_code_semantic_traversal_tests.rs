@@ -127,6 +127,93 @@ fn declared_child_fields_match_canonical_traversal() -> Result<(), Box<dyn std::
     Ok(())
 }
 
+/// Non-executable child fields that a traversing disposition intentionally
+/// leaves undeclared, keyed by kind name. Every entry must stay observed by
+/// the canonical #7298 traversal and remain undeclared in the registry row
+/// (`pl406_field_exclusions_stay_observed_and_undeclared`), so the map cannot
+/// silently grow to mask a missing executable-child declaration.
+fn pl406_non_executable_field_exclusions()
+-> std::collections::BTreeMap<&'static str, &'static [&'static str]> {
+    let mut exclusions = std::collections::BTreeMap::new();
+    // Signature and prototype variables are parameter bindings evaluated at
+    // dispatch, not flow-relevant executable children of the body list.
+    exclusions.insert("Method", &["signature"][..]);
+    exclusions.insert("Subroutine", &["prototype", "signature"][..]);
+    exclusions
+}
+
+/// Negative control 9 (completeness direction): every child field the
+/// canonical #7298 traversal observes on a non-leaf disposition must be
+/// declared as executable, analyzed-not-propagated, or explicitly excluded.
+/// The forward gate alone cannot see a declaration being removed; this
+/// direction fails when an observed executable child loses its declaration,
+/// so registry rows can no longer silently shrink coverage.
+#[test]
+fn canonically_observed_children_are_declared_or_excluded() -> Result<(), Box<dyn std::error::Error>>
+{
+    let observed = canonically_observed_fields();
+    let exclusions = pl406_non_executable_field_exclusions();
+    let mut violations: Vec<String> = Vec::new();
+    for row in all_pl406_dispositions() {
+        if matches!(row.class, Pl406SemanticClass::Leaf) {
+            continue;
+        }
+        let observed_fields = observed
+            .get(row.kind_name)
+            .ok_or_else(|| format!("canonical fixture inventory must cover {}", row.kind_name))?;
+        let excluded = exclusions.get(row.kind_name).copied().unwrap_or(&[] as &[&str]);
+        for field in observed_fields {
+            let declared = row
+                .executable_children
+                .iter()
+                .chain(row.analyzed_not_propagated)
+                .any(|declared| declared == field);
+            if !declared && !excluded.contains(&field.as_str()) {
+                violations.push(format!(
+                    "{} observes child field {field:?} that is neither declared nor excluded",
+                    row.kind_name
+                ));
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "PL406 registry completeness violated:\n  {}",
+        violations.join("\n  ")
+    );
+    Ok(())
+}
+
+/// Exclusion entries are honest: each one is still canonically observed for
+/// its kind and still undeclared, so stale or masking entries fail here.
+#[test]
+fn pl406_field_exclusions_stay_observed_and_undeclared() -> Result<(), Box<dyn std::error::Error>> {
+    let observed = canonically_observed_fields();
+    for (kind_name, excluded) in pl406_non_executable_field_exclusions() {
+        let observed_fields = observed
+            .get(kind_name)
+            .ok_or_else(|| format!("canonical fixture inventory must cover {kind_name}"))?;
+        let row = all_pl406_dispositions()
+            .iter()
+            .find(|row| row.kind_name == kind_name)
+            .ok_or_else(|| format!("PL406 registry must cover {kind_name}"))?;
+        for field in excluded {
+            assert!(
+                observed_fields.iter().any(|observed| observed == field),
+                "{kind_name} excludes {field:?} but the canonical #7298 traversal no \
+                 longer observes it; drop the stale exclusion"
+            );
+            assert!(
+                !row.executable_children.contains(field)
+                    && !row.analyzed_not_propagated.contains(field),
+                "{kind_name} excludes {field:?} but the registry declares it; the \
+                 exclusion is a mask, not a disposition"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Negative control 2: a structurally child-bearing variant may only be
 /// disposed as a PL406 leaf with an explicit reason.
 #[test]
@@ -524,6 +611,25 @@ fn goto_target_carried_by_a_fallthrough_branch_restores_reachability()
         r#"sub f { return; NEXT: print "dead"; }"#,
         1,
         "labels alone never restore reachability",
+    )
+}
+
+#[test]
+fn computed_goto_targets_receive_local_analysis() -> Result<(), Box<dyn std::error::Error>> {
+    // A computed goto target executes at runtime before the transfer: the
+    // `do { ... }` block runs, so a dead statement inside it must receive
+    // nested PL406 analysis instead of being skipped by the transfer summary.
+    assert_pl406_count(
+        r#"sub f { goto(do { return 1; print "dead"; }); }"#,
+        1,
+        "the dead statement inside the computed do-block target is reported",
+    )?;
+    // Plain-label targets are bare names with nothing to execute; they must
+    // stay free of expression traversal (no diagnostics invented for labels).
+    assert_pl406_count(
+        r#"sub f { goto NEXT; NEXT: print "alive"; }"#,
+        0,
+        "label targets carry no executable children to analyze",
     )
 }
 
