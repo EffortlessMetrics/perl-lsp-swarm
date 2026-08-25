@@ -528,6 +528,7 @@ fn projected_native_range(
         options,
         admitted.end_byte == content.len(),
         admitted_end_is_line_end(formatted, formatted_end),
+        formatted.get(..admitted.start_byte).is_some_and(|prefix| prefix.ends_with(['\r', '\n'])),
     );
     let mut updated = String::with_capacity(formatted.len() - native_slice.len() + projected.len());
     updated.push_str(&formatted[..admitted.start_byte]);
@@ -547,9 +548,10 @@ fn whitespace_within_admitted(
     admitted: &AdmittedFormatRange,
     options: &FormattingOptions,
 ) -> Option<(String, String)> {
-    if admitted.is_empty() {
-        return None;
-    }
+    // An empty admitted interval stays a no-op for trimming (nothing is
+    // selectable), yet a zero-width target at true EOF still honors the
+    // final-newline option exactly like the applied-native projection of the
+    // same request.
     let slice = content.get(admitted.start_byte..admitted.end_byte)?;
     let mut projected = String::with_capacity(slice.len());
     if options.trim_trailing_whitespace.unwrap_or(false) {
@@ -569,7 +571,14 @@ fn whitespace_within_admitted(
                 projected.pop();
             }
         }
-        if options.insert_final_newline.unwrap_or(false) && !projected.ends_with(['\r', '\n']) {
+        if options.insert_final_newline.unwrap_or(false)
+            && !projected_tail_is_terminated(
+                &projected,
+                content
+                    .get(..admitted.start_byte)
+                    .is_some_and(|prefix| prefix.ends_with(['\r', '\n'])),
+            )
+        {
             projected.push('\n');
         }
     }
@@ -741,7 +750,7 @@ fn native_edit_to_format_edit(edit: crate::tooling::perltidy::TextEdit) -> Forma
 }
 
 fn apply_lsp_whitespace_options(content: &str, options: &FormattingOptions) -> String {
-    apply_lsp_whitespace_options_with_eof(content, options, true, true)
+    apply_lsp_whitespace_options_with_eof(content, options, true, true, false)
 }
 
 fn apply_lsp_whitespace_options_with_eof(
@@ -749,6 +758,7 @@ fn apply_lsp_whitespace_options_with_eof(
     options: &FormattingOptions,
     allow_final_newline: bool,
     trim_tail: bool,
+    prefix_terminated: bool,
 ) -> String {
     let mut output = content.to_string();
 
@@ -760,12 +770,25 @@ fn apply_lsp_whitespace_options_with_eof(
     }
     if allow_final_newline
         && options.insert_final_newline.unwrap_or(false)
-        && !output.ends_with(['\r', '\n'])
+        && !projected_tail_is_terminated(&output, prefix_terminated)
     {
         output.push('\n');
     }
 
     output
+}
+
+/// Whether the document tail is already line-terminated after projection.
+///
+/// A non-empty replacement decides from its own final byte; an empty
+/// replacement inherits the termination state of the untouched prefix before
+/// the admitted interval, so an already-terminated document never grows a
+/// blank line and an unterminated one still receives its final newline.
+fn projected_tail_is_terminated(projected: &str, prefix_terminated: bool) -> bool {
+    match projected.as_bytes().last() {
+        Some(byte) => matches!(byte, b'\r' | b'\n'),
+        None => prefix_terminated,
+    }
 }
 
 /// Trim trailing spaces and tabs before every line separator fully contained
@@ -1263,6 +1286,144 @@ mod decision_projection_tests {
             &FormatRange::new(FormatPosition::new(sl, sc), FormatPosition::new(el, ec)),
         )
         .expect("test fixture range must admit")
+    }
+
+    #[test]
+    fn empty_true_eof_range_inserts_one_final_newline_into_an_unterminated_document() {
+        // A zero-width target at true EOF is admissible, so the no-change
+        // projection must honor the final-newline option exactly once there;
+        // an already-terminated document must never grow a blank line.
+        let mut options = range_options();
+        options.insert_final_newline = Some(true);
+
+        let unterminated = "my $x = 1;";
+        let geometry = SourceGeometry::new(unterminated);
+        let eof_zero_width = admitted_fixture(unterminated, 0, 10, 0, 10);
+        let decision = project_native_range(
+            unterminated,
+            &geometry,
+            &eof_zero_width,
+            &options,
+            no_change_typed(unterminated),
+        )
+        .expect("projection must not error");
+        assert_eq!(decision.outcome.disposition, FormatDisposition::Applied);
+        assert_eq!(decision.document.text, "my $x = 1;\n");
+        assert_eq!(decision.document.edits.len(), 1);
+        assert_eq!(decision.document.edits[0].range, eof_zero_width.requested);
+        assert_eq!(decision.document.edits[0].new_text, "\n");
+
+        let terminated = "my $x = 1;\n";
+        let geometry = SourceGeometry::new(terminated);
+        let eof_zero_width = admitted_fixture(terminated, 1, 0, 1, 0);
+        let decision = project_native_range(
+            terminated,
+            &geometry,
+            &eof_zero_width,
+            &options,
+            no_change_typed(terminated),
+        )
+        .expect("projection must not error");
+        assert_eq!(decision.outcome.disposition, FormatDisposition::NoChange);
+        assert!(decision.document.edits.is_empty(), "no extra blank line");
+        assert_eq!(decision.document.text, terminated);
+
+        // An interior zero-width interval stays a pure no-op.
+        let interior_source = "ab\ncd\n";
+        let geometry = SourceGeometry::new(interior_source);
+        let interior = admitted_fixture(interior_source, 0, 1, 0, 1);
+        let decision = project_native_range(
+            interior_source,
+            &geometry,
+            &interior,
+            &options,
+            no_change_typed(interior_source),
+        )
+        .expect("projection must not error");
+        assert_eq!(decision.outcome.disposition, FormatDisposition::NoChange);
+        assert_eq!(decision.document.text, interior_source);
+    }
+
+    #[test]
+    fn empty_eof_range_produces_one_outcome_regardless_of_native_disposition() {
+        // One-outcome policy: the identical zero-width EOF request must yield
+        // the identical document whether the native engine reported Applied
+        // or NoChange; only the engine evidence differs, never the edit set.
+        let mut options = range_options();
+        options.insert_final_newline = Some(true);
+
+        let unterminated = "my $x = 1;";
+        let geometry = SourceGeometry::new(unterminated);
+        let admitted = admitted_fixture(unterminated, 0, 10, 0, 10);
+        let zero_width_noop_edit = crate::tooling::perltidy::TextEdit {
+            range: crate::tooling::perltidy::TextRange::new(
+                crate::tooling::perltidy::TextPosition::new(0, 10),
+                crate::tooling::perltidy::TextPosition::new(0, 10),
+            ),
+            new_text: String::new(),
+        };
+
+        let via_no_change = project_native_range(
+            unterminated,
+            &geometry,
+            &admitted,
+            &options,
+            no_change_typed(unterminated),
+        )
+        .expect("projection must not error");
+        let via_applied = project_native_range(
+            unterminated,
+            &geometry,
+            &admitted,
+            &options,
+            applied_typed(unterminated, zero_width_noop_edit.clone()),
+        )
+        .expect("projection must not error");
+        assert_eq!(via_no_change.document.text, via_applied.document.text);
+        assert_eq!(via_no_change.document.edits.len(), via_applied.document.edits.len());
+        for (no_change_edit, applied_edit) in
+            via_no_change.document.edits.iter().zip(via_applied.document.edits.iter())
+        {
+            assert_eq!(no_change_edit.range, applied_edit.range);
+            assert_eq!(no_change_edit.new_text, applied_edit.new_text);
+        }
+        assert_eq!(via_no_change.outcome.disposition, FormatDisposition::Applied);
+        assert_eq!(via_applied.outcome.disposition, FormatDisposition::Applied);
+        assert_eq!(via_applied.outcome.reason, FormatReasonCode::Applied);
+
+        let terminated = "my $x = 1;\n";
+        let geometry = SourceGeometry::new(terminated);
+        let admitted = admitted_fixture(terminated, 1, 0, 1, 0);
+        let zero_width_noop_edit = crate::tooling::perltidy::TextEdit {
+            range: crate::tooling::perltidy::TextRange::new(
+                crate::tooling::perltidy::TextPosition::new(1, 0),
+                crate::tooling::perltidy::TextPosition::new(1, 0),
+            ),
+            new_text: String::new(),
+        };
+        let via_no_change = project_native_range(
+            terminated,
+            &geometry,
+            &admitted,
+            &options,
+            no_change_typed(terminated),
+        )
+        .expect("projection must not error");
+        let via_applied = project_native_range(
+            terminated,
+            &geometry,
+            &admitted,
+            &options,
+            applied_typed(terminated, zero_width_noop_edit),
+        )
+        .expect("projection must not error");
+        assert_eq!(via_no_change.document.text, via_applied.document.text);
+        assert_eq!(via_no_change.document.edits.len(), via_applied.document.edits.len());
+        assert!(
+            via_no_change.document.edits.is_empty(),
+            "a terminated document must not grow a blank line on either path"
+        );
+        assert_eq!(via_no_change.document.text, terminated);
     }
 
     fn no_change_typed(source: &str) -> TypedFormatResult {
