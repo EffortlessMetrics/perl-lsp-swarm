@@ -328,10 +328,8 @@ fn discover_linked_git_directories(
         }
 
         let mut candidates = Vec::new();
-        for linked_entry in WalkDir::new(&path)
-            .follow_links(true)
-            .into_iter()
-            .filter_entry(|entry| {
+        for linked_entry in
+            WalkDir::new(&path).follow_links(true).into_iter().filter_entry(|entry| {
                 !should_skip_dir_with_allowlist(root, entry, allowlist, config)
                     && is_allowed_link_target(root, entry.path(), allowlist)
             })
@@ -434,8 +432,7 @@ fn parse_git_ls_files_output_with_cancel(
         }
 
         let path = root.join(relative_path);
-        if std::fs::symlink_metadata(&path)
-            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink())
             && !is_allowed_link_target(root, &path, allowlist)
         {
             excluded_count += 1;
@@ -539,11 +536,7 @@ fn git_ignored_paths(root: &Path, paths: &[PathBuf]) -> HashSet<PathBuf> {
         .collect()
 }
 
-fn is_allowed_link_target(
-    root: &Path,
-    link: &Path,
-    allowlist: &DiscoveryIncludeAllowlist,
-) -> bool {
+fn is_allowed_link_target(root: &Path, link: &Path, allowlist: &DiscoveryIncludeAllowlist) -> bool {
     let Ok(target) = link.canonicalize() else {
         return false;
     };
