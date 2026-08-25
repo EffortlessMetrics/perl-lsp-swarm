@@ -76,9 +76,6 @@
       "perl.explainMissingModuleLookup"
     ]
   },
-  "experimental": {
-    "typeHierarchyProvider": true
-  },
   "foldingRangeProvider": true,
   "hoverProvider": true,
   "implementationProvider": true,
@@ -161,9 +158,7 @@
     "save": true
   },
   "typeDefinitionProvider": true,
-  "typeHierarchyProvider": {
-    "workDoneProgressOptions": {}
-  },
+  "typeHierarchyProvider": {},
   "workspaceSymbolProvider": {
     "resolveProvider": true
   }
