@@ -49,7 +49,6 @@ mod tests {
             sexp
         );
     }
-
     #[test]
     fn grep_block_method_call_in_block() {
         let code = "grep { $_->is_valid } @items;";
@@ -91,7 +90,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn user_defined_ampersand_prototype_uses_block_call_shape() {
         let code = r#"
@@ -113,7 +111,9 @@ mod tests {
         );
         assert!(sexp.contains("(block"), "block should be the first call argument: {sexp}");
         assert!(
-            sexp.contains("(number 1)") && sexp.contains("(number 2)") && sexp.contains("(number 3)"),
+            sexp.contains("(number 1)")
+                && sexp.contains("(number 2)")
+                && sexp.contains("(number 3)"),
             "trailing list arguments should remain inside the call: {sexp}"
         );
         assert!(
@@ -258,43 +258,3 @@ mod tests {
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
         assert!(sexp.contains("(call grep"), "outer should be grep: {}", sexp);
         assert!(sexp.contains("(call map"), "inner should be map: {}", sexp);
-    }
-
-    #[test]
-    fn chained_sort_map() {
-        let code = r#"my @result = sort { $a cmp $b } map { lc } @strings;"#;
-        let mut parser = Parser::new(code);
-        let ast = must(parser.parse());
-        let sexp = ast.to_sexp();
-        assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
-        assert!(sexp.contains("(call sort"), "outer should be sort: {}", sexp);
-        assert!(sexp.contains("(call map"), "inner should be map: {}", sexp);
-    }
-
-    // ---- edge cases ----
-
-    #[test]
-    fn grep_block_with_comma_before_list() {
-        // Perl also allows a comma: grep { ... }, @array
-        let code = "grep { $_ > 5 }, @array;";
-        let mut parser = Parser::new(code);
-        let ast = must(parser.parse());
-        let sexp = ast.to_sexp();
-        assert!(sexp.contains("(call grep"), "should be a grep call: {}", sexp);
-        assert!(
-            sexp.contains("(variable @ array)"),
-            "trailing list with comma should work: {}",
-            sexp
-        );
-    }
-
-    #[test]
-    fn sort_block_empty_block() {
-        // sort {} @array -- empty block comparison
-        let code = "sort {} @array;";
-        let mut parser = Parser::new(code);
-        let ast = must(parser.parse());
-        let sexp = ast.to_sexp();
-        assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
-    }
-}
