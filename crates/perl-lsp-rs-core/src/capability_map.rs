@@ -207,6 +207,18 @@ pub fn caps_from_feature_ids(features: &[&str]) -> ServerCapabilities {
                 caps.document_range_formatting_provider =
                     Some(DocumentRangeFormattingProvider::Bool(true));
             }
+            LSP_RANGES_FORMATTING => {
+                // Reverse of PATCH-RANGESSUPPORT: advertise multi-range
+                // support through the typed `ranges_support` field so
+                // feature_ids_from_caps reads it back (#11803 repair).
+                caps.document_range_formatting_provider =
+                    Some(DocumentRangeFormattingProvider::DocumentRangeFormattingOptions(
+                        DocumentRangeFormattingOptions {
+                            ranges_support: Some(true),
+                            ..Default::default()
+                        },
+                    ));
+            }
             LSP_RENAME => {
                 caps.rename_provider = Some(RenameProvider::Bool(true));
             }
@@ -292,10 +304,29 @@ pub fn caps_from_feature_ids(features: &[&str]) -> ServerCapabilities {
             LSP_CALL_HIERARCHY => {
                 caps.call_hierarchy_provider = Some(CallHierarchyProvider::Bool(true));
             }
+            LSP_TYPE_HIERARCHY => {
+                // Reverse of PATCH-TYPEHIERARCHY: advertisement through the
+                // typed top-level `type_hierarchy_provider` field, matching
+                // the production construction in protocol::capabilities::sections
+                // (#11803 repair; the former experimental-object workaround is
+                // retired, so this mapper must rebuild the typed field).
+                caps.type_hierarchy_provider = Some(TypeHierarchyProvider::TypeHierarchyOptions(
+                    TypeHierarchyOptions { work_done_progress_options: WorkDoneProgressOptions::default() },
+                ));
+            }
             LSP_MONIKER => {
                 caps.moniker_provider = Some(MonikerProvider::MonikerOptions(MonikerOptions {
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 }));
+            }
+            LSP_INLINE_COMPLETION => {
+                // Reverse of PATCH-INLINECOMPLETION: static advertisement
+                // through the typed top-level provider field, matching the
+                // production construction in protocol::capabilities::sections
+                // (#11803 repair).
+                caps.inline_completion_provider = Some(InlineCompletionProvider::InlineCompletionOptions(
+                    InlineCompletionOptions { work_done_progress_options: WorkDoneProgressOptions::default() },
+                ));
             }
             LSP_INLINE_VALUE => {
                 caps.inline_value_provider =
@@ -401,12 +432,15 @@ mod tests {
             LSP_DOCUMENT_COLOR,
             LSP_FORMATTING,
             LSP_RANGE_FORMATTING,
+            LSP_RANGES_FORMATTING,
+            LSP_INLINE_COMPLETION,
             LSP_ON_TYPE_FORMATTING,
             LSP_RENAME,
             LSP_FOLDING_RANGE,
             LSP_SELECTION_RANGE,
             LSP_LINKED_EDITING_RANGE,
             LSP_CALL_HIERARCHY,
+            LSP_TYPE_HIERARCHY,
             LSP_SEMANTIC_TOKENS,
             LSP_MONIKER,
             LSP_INLINE_VALUE,
@@ -540,5 +574,47 @@ mod tests {
             !ids.contains(&LSP_TYPE_HIERARCHY),
             "feature_ids_from_caps must not report lsp.type_hierarchy when not advertised"
         );
+    }
+
+    /// Round-trip discriminator (#11803 repair): `lsp.ranges_formatting` must
+    /// survive `caps_from_feature_ids` → `feature_ids_from_caps`. The reverse
+    /// arm advertises through the typed `ranges_support` field, which the
+    /// forward arm reads back. The output necessarily also reports
+    /// `lsp.range_formatting`, because multi-range support implies the
+    /// singular provider.
+    #[test]
+    fn round_trip_ranges_formatting_via_typed_ranges_support() {
+        let caps = caps_from_feature_ids(&[LSP_RANGES_FORMATTING]);
+        let ids = feature_ids_from_caps(&caps);
+        assert!(
+            ids.contains(&LSP_RANGES_FORMATTING),
+            "round-trip lost lsp.ranges_formatting; got ids={ids:?}"
+        );
+        assert!(
+            ids.contains(&LSP_RANGE_FORMATTING),
+            "multi-range advertisement must imply the singular range provider; got ids={ids:?}"
+        );
+    }
+
+    /// Round-trip discriminator (#11803 repair): `lsp.inline_completion` must
+    /// round-trip with exact identity — the reverse arm sets only the typed
+    /// top-level `inline_completion_provider`, so no other feature may be
+    /// reported.
+    #[test]
+    fn round_trip_inline_completion_identity() {
+        let caps = caps_from_feature_ids(&[LSP_INLINE_COMPLETION]);
+        let ids = feature_ids_from_caps(&caps);
+        assert_eq!(ids, vec![LSP_INLINE_COMPLETION], "lsp.inline_completion must round-trip alone");
+    }
+
+    /// Round-trip discriminator (#11803 repair): `lsp.type_hierarchy` must
+    /// round-trip with exact identity — the reverse arm rebuilds the typed
+    /// top-level `type_hierarchy_provider` that the forward arm reads back,
+    /// replacing the retired experimental-object workaround.
+    #[test]
+    fn round_trip_type_hierarchy_identity() {
+        let caps = caps_from_feature_ids(&[LSP_TYPE_HIERARCHY]);
+        let ids = feature_ids_from_caps(&caps);
+        assert_eq!(ids, vec![LSP_TYPE_HIERARCHY], "lsp.type_hierarchy must round-trip alone");
     }
 }
