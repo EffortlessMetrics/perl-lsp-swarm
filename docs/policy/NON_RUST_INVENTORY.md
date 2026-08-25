@@ -6046,6 +6046,7 @@
 | `schemas/perl_core_harness_runner_parity.v1.schema.json` | config | `non-rust-core-harness-runner-parity-schema` | compiler |
 | `schemas/perl_core_harness_runner_plan.v1.schema.json` | config | `non-rust-core-harness-runner-plan-schema` | compiler |
 | `schemas/perl_core_harness_runner_plan.v2.schema.json` | config | `non-rust-core-harness-runner-plan-v2-schema` | compiler |
+| `schemas/perl_core_harness_upstream_runner_discovery.v1.schema.json` | config | `non-rust-core-harness-upstream-runner-discovery-schema` | compiler |
 | `schemas/perl_core_harness_target_matrix.v1.schema.json` | config | `non-rust-core-harness-target-matrix-schema` | compiler |
 | `schemas/perl_core_harness_target_matrix_index.v1.schema.json` | config | `non-rust-core-harness-target-matrix-index-schema` | compiler |
 | `schemas/perl_core_harness_target_matrix_part.v1.schema.json` | config | `non-rust-core-harness-target-matrix-part-schema` | compiler |
