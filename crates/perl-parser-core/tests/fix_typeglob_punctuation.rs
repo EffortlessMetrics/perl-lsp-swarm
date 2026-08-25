@@ -6,23 +6,58 @@
 
 mod cpan_test_helpers;
 use cpan_test_helpers::assert_clean_parse;
+use perl_ast::ast::{Node, NodeKind};
+use perl_parser_core::Parser;
+use perl_tdd_support::must;
+
+fn collect_typeglob_names(node: &Node, names: &mut Vec<String>) {
+    if let NodeKind::Typeglob { name } = &node.kind {
+        names.push(name.clone());
+    }
+
+    for child in node.children() {
+        collect_typeglob_names(child, names);
+    }
+}
+
+fn contains_error_node(node: &Node) -> bool {
+    matches!(node.kind, NodeKind::Error { .. })
+        || node.children().into_iter().any(contains_error_node)
+}
+
+fn assert_typeglob_rhs(source: &str, expected: &str) {
+    let mut parser = Parser::new(source);
+    let ast = must(parser.parse());
+    let mut names = Vec::new();
+    collect_typeglob_names(&ast, &mut names);
+
+    assert!(
+        !contains_error_node(&ast),
+        "typeglob should not produce Error nodes in {source:?}"
+    );
+    assert!(
+        names.iter().any(|name| name == expected),
+        "missing RHS typeglob {expected:?} in {source:?}: {names:?}"
+    );
+}
 
 #[test]
 fn typeglob_backtick_name_parses() {
-    assert_clean_parse("*STDOUT = *`;");
+    assert_typeglob_rhs("*STDOUT = *`;", "`");
 }
 
 #[test]
 fn typeglob_apostrophe_name_parses() {
-    assert_clean_parse("*STDOUT = *';");
+    assert_typeglob_rhs("*STDOUT = *';", "'");
 }
 
 #[test]
 fn punctuation_typeglobs_can_be_declared_together() {
-    assert_clean_parse(
-        r#"
+    let source = r#"
 *STDOUT = *`;
 *STDERR = *';
-"#,
-    );
+"#;
+    assert_clean_parse(source);
+    assert_typeglob_rhs(source, "`");
+    assert_typeglob_rhs(source, "'");
 }
