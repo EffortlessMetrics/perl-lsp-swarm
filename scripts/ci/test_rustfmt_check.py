@@ -312,6 +312,45 @@ raise SystemExit(64)
         self.assertEqual(receipt["findings"][0]["path"], "pkg-a/src/lib.rs")
         self.assertEqual(receipt["findings"][0]["line"], 1)
 
+    def test_indented_context_decoy_does_not_become_instrument_failure(self) -> None:
+        source = self.root / "pkg-a/src/lib.rs"
+        self.set_fmt(
+            {
+                "pkg-a/Cargo.toml": {
+                    "exit": 1,
+                    "stdout": (
+                        f"Diff in {source}:1:\n"
+                        " Diff in /outside.rs:1:\n"
+                        "-old\n+new"
+                    ),
+                }
+            }
+        )
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        receipt = self.read_receipt()
+        self.assertEqual(receipt["result"], "format_failure", receipt)
+        self.assertEqual(receipt["instrument_failures"], [])
+        self.assertEqual(receipt["findings"][0]["path"], "pkg-a/src/lib.rs")
+
+    def test_colon_header_with_at_line_in_path_is_format_failure(self) -> None:
+        source = self.root / "pkg-a/src/dir at line 7/lib.rs"
+        self.set_fmt(
+            {
+                "pkg-a/Cargo.toml": {
+                    "exit": 1,
+                    "stdout": f"Diff in {source}:1:\n-old\n+new",
+                }
+            }
+        )
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        receipt = self.read_receipt()
+        self.assertEqual(receipt["result"], "format_failure", receipt)
+        self.assertEqual(receipt["instrument_failures"], [])
+        self.assertEqual(receipt["findings"][0]["path"], "pkg-a/src/dir at line 7/lib.rs")
+        self.assertEqual(receipt["findings"][0]["line"], 1)
+
     def test_verbose_diff_header_is_a_format_failure(self) -> None:
         source = self.root / "pkg-a/src/lib.rs"
         self.set_fmt(
@@ -350,6 +389,25 @@ raise SystemExit(64)
             f"Diff in {self.root / 'pkg-a/src/lib.rs'} at line 4:"
         )
         self.assertEqual(parsed, (str(self.root / "pkg-a/src/lib.rs"), 4))
+
+    def test_parse_diff_header_ignores_indented_context_decoys(self) -> None:
+        """rustfmt context lines indent the source; they are not headers."""
+        self.assertIsNone(rustfmt_check.parse_diff_header(" Diff in /outside.rs:1:"))
+        self.assertIsNone(rustfmt_check.parse_diff_header("\tDiff in /outside.rs at line 3:"))
+        source = self.root / "pkg-a/src/lib.rs"
+        output = f" Diff in /outside.rs:1:\nDiff in {source}:3:\n-old\n+new\n"
+        locations = rustfmt_check.parse_diff_locations(output, self.root)
+        self.assertEqual(locations, [("pkg-a/src/lib.rs", 3)])
+
+    def test_parse_diff_header_falls_through_when_path_contains_at_line(self) -> None:
+        """Colon-form headers must still parse when a path contains `` at line ``."""
+        source = self.root / "pkg-a/src/dir at line 7/lib.rs"
+        parsed = rustfmt_check.parse_diff_header(f"Diff in {source}:1:")
+        self.assertEqual(parsed, (str(source), 1))
+        locations = rustfmt_check.parse_diff_locations(
+            f"Diff in {source}:1:\n-old\n+new\n", self.root
+        )
+        self.assertEqual(locations, [("pkg-a/src/dir at line 7/lib.rs", 1)])
 
     def test_producer_rejects_changed_file_narrowing_flags(self) -> None:
         for argv in (

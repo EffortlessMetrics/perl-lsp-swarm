@@ -485,27 +485,31 @@ def parse_diff_header(line: str) -> tuple[str, int] | None:
     * ``Diff in <path> at line N:``  (older / verbose-diff)
     * ``Diff in <path>:<N>:``        (current default)
 
-    The verbose marker is tried first so a path containing ``:`` (Windows
-    ``\\\\?\\C:\\...``) is not split on a drive-letter colon. Returns
-    ``None`` for non-header lines.
+    Headers are recognized only at column zero. rustfmt context lines indent
+    source text, so a leading space must not turn `` Diff in /outside.rs:1:``
+    into a header. The verbose marker is tried first so a path containing
+    ``:`` (Windows ``\\\\?\\C:\\...``) is not split on a drive-letter colon,
+    but only when the suffix is a valid line number; otherwise the colon
+    form is tried so a path that itself contains `` at line `` still parses.
+    Returns ``None`` for non-header lines.
     """
-    stripped = line.strip()
-    if not stripped.startswith(DIFF_PREFIX):
+    candidate = line.rstrip()
+    if not candidate.startswith(DIFF_PREFIX):
         return None
-    rest = stripped[len(DIFF_PREFIX) :]
+    rest = candidate[len(DIFF_PREFIX) :]
     verbose_at = rest.rfind(VERBOSE_LINE_MARKER)
     if verbose_at != -1:
         raw_path = rest[:verbose_at].strip()
-        if not raw_path:
-            return None
-        tail = rest[verbose_at + len(VERBOSE_LINE_MARKER) :].strip()
-        if tail.endswith(":"):
-            tail = tail[:-1].strip()
-        try:
-            line_no = int(tail)
-        except ValueError:
-            return None
-        return raw_path, line_no
+        if raw_path:
+            tail = rest[verbose_at + len(VERBOSE_LINE_MARKER) :].strip()
+            if tail.endswith(":"):
+                tail = tail[:-1].strip()
+            try:
+                line_no = int(tail)
+            except ValueError:
+                line_no = None
+            if line_no is not None:
+                return raw_path, line_no
 
     if not rest.endswith(":"):
         return None
