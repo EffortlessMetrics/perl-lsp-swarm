@@ -220,10 +220,6 @@ impl FamilyStore {
         self.state.lock().note(identity)
     }
 
-    fn forget(&self, identity: &SessionWarningIdentity) {
-        self.state.lock().forget(identity);
-    }
-
     fn clear_for_lifecycle(&self) {
         self.state.lock().clear_for_lifecycle();
     }
@@ -271,12 +267,6 @@ impl SessionWarningDedupStore {
         identity: SessionWarningIdentity,
     ) -> SessionWarningDecision {
         self.family(family).note(identity)
-    }
-
-    /// Reverse a retention after the outbound send failed, so a warning the
-    /// client never received can be retried on the next occurrence.
-    pub(crate) fn forget(&self, family: SessionWarningFamily, identity: &SessionWarningIdentity) {
-        self.family(family).forget(identity);
     }
 
     /// Decide and emit under one family-lock hold, rolling the retention back

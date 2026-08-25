@@ -194,21 +194,6 @@ fn lifecycle_clear_releases_only_its_own_family() {
 }
 
 #[test]
-fn forget_releases_an_identity_so_a_failed_send_can_retry() {
-    let server = LspServer::new();
-    let auth = SessionWarningIdentity::subjectless(SessionWarningCode::AiBackendAuthFailure);
-    assert_eq!(
-        server.session_warning_dedup.note(SessionWarningFamily::AiBackend, auth),
-        SessionWarningDecision::EmitFirst
-    );
-    server.session_warning_dedup.forget(SessionWarningFamily::AiBackend, &auth);
-    assert_eq!(
-        server.session_warning_dedup.note(SessionWarningFamily::AiBackend, auth),
-        SessionWarningDecision::EmitFirst
-    );
-}
-
-#[test]
 fn guarded_emission_holds_the_reservation_through_the_send() {
     let server = LspServer::new();
     let auth = SessionWarningIdentity::subjectless(SessionWarningCode::AiBackendAuthFailure);
