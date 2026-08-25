@@ -49,8 +49,13 @@
 //!   row-aspect cell, a duplicate row-aspect registration, or a cell outside
 //!   the finite #7762 denominator is rejected;
 //! - every cell binds exactly one `activation.row.*` dimension that matches
-//!   its own cell-ID slug and its row's `activation.expect.*` expectation, so
-//!   one row's observation cannot inherit another row's identity;
+//!   its own cell-ID slug, its row's `activation.expect.*` expectation, and
+//!   its row's `activation.row_binding.*` authority identity (a sha256 over
+//!   every #7762 row field), so one row's observation cannot inherit another
+//!   row's identity and a denominator edit of any authority field — fixture
+//!   path, controls, boundaries included — is digest-visible;
+//! - each aspect is classified by its one pinned #11380 action, so an
+//!   attachment observation can never classify a semantic cell;
 //! - a `semantic_result` cell of a row whose #7762 expectation is not `perl`
 //!   never admits a semantic-support-affirming result, so a successfully
 //!   attached adjacent-language false subject still fails the semantic
@@ -66,6 +71,7 @@
 //!   `vim_first_class_exact_source`.
 
 use anyhow::{Context as _, Result, ensure};
+use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
 
 use super::{
@@ -122,15 +128,60 @@ const ACTIVATION_PROFILE: &str = "vim_first_class_exact_source";
 const CELL_PREFIX: &str = "vim.vim_lsp.activation.";
 const ROW_DIMENSION_PREFIX: &str = "activation.row.";
 const EXPECT_DIMENSION_PREFIX: &str = "activation.expect.";
+const ROW_BINDING_PREFIX: &str = "activation.row_binding.";
 
 /// Dimensions every activation cell must bind: the pinned client/server/stage
 /// identity plus exactly one denominator row dimension.
 const REQUIRED_DIMENSIONS: &[&str] =
     &["client.pinned_commit", "server.executable_identity", "stage.exact_source_local"];
 
-/// The five aspects every denominator row registers (#11388).
+/// The five aspects every denominator row registers (#11388), each pinned to
+/// its one classifying #11380 action: the validator enforces the mapping, not
+/// only the factory, so an attachment observation can never classify a
+/// semantic cell even through a reviewed row edit.
 pub const ACTIVATION_ASPECTS: &[&str] =
     &["native_filetype", "override", "attachment", "semantic_result", "ambiguity_preserved"];
+
+/// The classifying action of one aspect (`ACTIVATION_ASPECTS` order).
+const ASPECT_OBSERVATION_CLASSES: &[&str] = &[
+    OBSERVE_NATIVE_FILETYPE,
+    DECLARED_OVERRIDE_ROW,
+    OBSERVE_SERVICE_ATTACHMENT,
+    ROOT_SEMANTIC_DISCRIMINATOR,
+    ROOT_SEMANTIC_DISCRIMINATOR,
+];
+
+const HEX: &[u8; 16] = b"0123456789abcdef";
+
+/// The stable authority identity of one denominator row: a sha256 over every
+/// authority field the #7762 artifact carries for the row (case, path,
+/// expectation, detection source, negative control, override boundary,
+/// independent semantic support). Every cell of the row binds it as a
+/// `activation.row_binding.sha256-<hex>` dimension, so an artifact edit of
+/// *any* row field — including the fixture path or a control flag, which no
+/// other binding names — changes every cell digest of that row and the
+/// catalog digest: denominator edits stay digest-visible, never silent.
+pub fn row_binding_identity(row: &ActivationDenominatorRow) -> String {
+    let canonical = format!(
+        "case={}|path={}|expect={}|source={}|negative_control={}|manual_override={}|semantic_support={}",
+        row.case_id,
+        row.path,
+        row.expect,
+        row.source.unwrap_or("none"),
+        row.negative_control,
+        row.manual_override.unwrap_or("none"),
+        row.semantic_support.unwrap_or("none"),
+    );
+    let digest = Sha256::digest(canonical.as_bytes());
+    let mut identity = String::with_capacity(ROW_BINDING_PREFIX.len() + "sha256-".len() + 64);
+    identity.push_str(ROW_BINDING_PREFIX);
+    identity.push_str("sha256-");
+    for byte in digest {
+        identity.push(HEX[(byte >> 4) as usize] as char);
+        identity.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    identity
+}
 
 /// One row of the finite #7762 activation-root denominator, mirrored from
 /// `.ci/editor-clients/vim-vim-lsp-activation-root.v1.json` in artifact order.
@@ -427,12 +478,15 @@ fn row_by_slug(slug: &str) -> Option<&'static ActivationDenominatorRow> {
 }
 
 /// The row-scoped dimensions every activation cell binds: its denominator row
-/// identity and the row's artifact expectation, so a receipt must name the
-/// exact row and cannot inherit another row's expectation.
+/// identity, the row's artifact expectation, and the row's full authority
+/// identity (see [`row_binding_identity`]), so a receipt must name the exact
+/// row, cannot inherit another row's expectation, and a denominator edit of
+/// any authority field is digest-visible.
 fn row_dimensions(row: &ActivationDenominatorRow) -> Vec<String> {
     vec![
         format!("{}{}", ROW_DIMENSION_PREFIX, row.slug),
         format!("{}{}", EXPECT_DIMENSION_PREFIX, row.expect),
+        row_binding_identity(row),
     ]
 }
 
@@ -655,13 +709,13 @@ pub fn validate_activation_catalog(catalog: &CellCatalog, ledger: &ScenarioLedge
             cell.cell_id
         );
         let name = &cell.cell_id[CELL_PREFIX.len()..];
-        let aspect = ACTIVATION_ASPECTS
+        let aspect_index = ACTIVATION_ASPECTS
             .iter()
-            .copied()
-            .find(|aspect| name.ends_with(&format!("_{aspect}")))
+            .position(|candidate| name.ends_with(&format!("_{}", candidate)))
             .with_context(|| {
                 format!("cell {} does not end in a known #11388 activation aspect", cell.cell_id)
             })?;
+        let aspect = ACTIVATION_ASPECTS[aspect_index];
         let slug = &name[..name.len() - aspect.len() - 1];
         let row = row_by_slug(slug).with_context(|| {
             format!(
@@ -677,6 +731,16 @@ pub fn validate_activation_catalog(catalog: &CellCatalog, ledger: &ScenarioLedge
         ensure!(
             actions.contains(cell.observation_class.as_str()),
             "cell {} observation class {} is not a landed activation action; another family's action or an invented token cannot classify an activation cell",
+            cell.cell_id,
+            cell.observation_class
+        );
+        // Each aspect is classified by its one pinned action — not merely a
+        // landed action the cell cites — so an attachment observation can
+        // never classify a semantic cell even through a reviewed row edit.
+        let required_class = ASPECT_OBSERVATION_CLASSES[aspect_index];
+        ensure!(
+            cell.observation_class == required_class,
+            "cell {} must be classified by {required_class} for aspect {aspect}, found {}; the wrong activation proposition cannot satisfy this cell",
             cell.cell_id,
             cell.observation_class
         );
@@ -727,6 +791,20 @@ pub fn validate_activation_catalog(catalog: &CellCatalog, ledger: &ScenarioLedge
             cell.cell_id,
             row.expect,
             row.slug
+        );
+        // Row authority identity: exactly one binding dimension, equal to the
+        // digest over the row's full #7762 authority content, so denominator
+        // edits of any field (path, controls, boundaries) are digest-visible.
+        let binding = row_binding_identity(row);
+        let bindings: Vec<&String> = cell
+            .subject_dimensions
+            .iter()
+            .filter(|token| token.starts_with(ROW_BINDING_PREFIX))
+            .collect();
+        ensure!(
+            bindings.len() == 1 && bindings[0].as_str() == binding,
+            "cell {} must bind exactly one {ROW_BINDING_PREFIX}* dimension equal to its row's authority identity {binding}; a #7762 denominator edit cannot stay digest-invisible",
+            cell.cell_id
         );
 
         // Semantic honesty: a semantic cell of a row whose #7762 expectation

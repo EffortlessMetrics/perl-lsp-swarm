@@ -1536,6 +1536,140 @@ fn activation_row_identity_dimensions_fail_closed() -> Result<()> {
     )
 }
 
+/// The row-binding authority identity makes every #7762 denominator field
+/// digest-visible: two rows differing in any single authority field carry
+/// different identities, and every compiled cell binds its own row's
+/// identity exactly.
+#[test]
+fn activation_row_authority_identity_is_digest_visible() -> Result<()> {
+    use xtask::vim_lsp_cell_catalog::activation::row_binding_identity;
+    let base = xtask::vim_lsp_cell_catalog::activation::ActivationDenominatorRow {
+        case_id: "pl",
+        slug: "pl",
+        path: "sample.pl",
+        expect: "perl",
+        source: Some("native_vim"),
+        negative_control: false,
+        manual_override: None,
+        semantic_support: None,
+    };
+    let baseline = row_binding_identity(&base);
+    // A path-only change moves the identity.
+    let edited_path = xtask::vim_lsp_cell_catalog::activation::ActivationDenominatorRow {
+        path: "other-sample.pl",
+        ..base
+    };
+    ensure!(
+        baseline != row_binding_identity(&edited_path),
+        "a fixture-path denominator edit left the row authority identity unchanged"
+    );
+    // So do control-flag, boundary, semantic-support, expectation, and
+    // detection-source edits.
+    for edited in [
+        xtask::vim_lsp_cell_catalog::activation::ActivationDenominatorRow {
+            negative_control: true,
+            ..base
+        },
+        xtask::vim_lsp_cell_catalog::activation::ActivationDenominatorRow {
+            manual_override: Some("not_authorized_by_extension_alone"),
+            ..base
+        },
+        xtask::vim_lsp_cell_catalog::activation::ActivationDenominatorRow {
+            semantic_support: Some("independent"),
+            ..base
+        },
+        xtask::vim_lsp_cell_catalog::activation::ActivationDenominatorRow {
+            expect: "observe",
+            ..base
+        },
+        xtask::vim_lsp_cell_catalog::activation::ActivationDenominatorRow { source: None, ..base },
+    ] {
+        ensure!(
+            baseline != row_binding_identity(&edited),
+            "a denominator authority edit left the row authority identity unchanged"
+        );
+    }
+    // Identical fields keep the identity stable.
+    ensure!(
+        baseline == row_binding_identity(&base),
+        "the row authority identity is not deterministic"
+    );
+
+    // Every compiled cell binds exactly its own row's authority identity
+    // (matched by the cell's parsed row slug, not a name prefix, so e.g. the
+    // `pl` row cannot capture `pl_uppercase` cells).
+    let compiled = activation::activation_catalog();
+    for cell in &compiled.cells {
+        let name = cell
+            .cell_id
+            .strip_prefix("vim.vim_lsp.activation.")
+            .context("activation cell outside its namespace")?;
+        let aspect = PUBLISHED_ACTIVATION_ASPECTS
+            .iter()
+            .copied()
+            .find(|aspect| name.ends_with(&format!("_{aspect}")))
+            .with_context(|| format!("activation cell {name} carries no published aspect"))?;
+        let slug = &name[..name.len() - aspect.len() - 1];
+        let row = activation::ACTIVATION_DENOMINATOR
+            .iter()
+            .find(|row| row.slug == slug)
+            .with_context(|| format!("activation row {slug} missing from the mirror"))?;
+        let identity = row_binding_identity(row);
+        let bound = cell
+            .subject_dimensions
+            .iter()
+            .filter(|token| token.starts_with("activation.row_binding."))
+            .collect::<Vec<_>>();
+        ensure!(
+            bound.len() == 1 && bound[0].as_str() == identity,
+            "cell {} does not bind its row's authority identity exactly",
+            cell.cell_id
+        );
+    }
+
+    // A stale or hand-copied binding dimension fails the family law.
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pm_perl_override")?;
+            let index = cell
+                .subject_dimensions
+                .iter()
+                .position(|token| token.starts_with("activation.row_binding."))
+                .context("row binding dimension missing")?;
+            cell.subject_dimensions[index] = "activation.row_binding.sha256-0".to_string();
+            Ok(())
+        },
+        "row's authority identity",
+    )
+}
+
+/// Each aspect is classified by its one pinned action: an attachment
+/// observation cannot classify a semantic cell even though the attachment
+/// action is one of the semantic cell's own scenario owners.
+#[test]
+fn activation_aspect_classes_are_pinned_to_their_propositions() -> Result<()> {
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_semantic_result")?;
+            cell.observation_class =
+                "vim.vim_lsp.specialized.activation.observe_service_attachment".to_string();
+            Ok(())
+        },
+        "must be classified by",
+    )?;
+    // Same law on the filetype aspect: the override stimulus cannot classify
+    // the native-filetype proposition.
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_native_filetype")?;
+            cell.observation_class =
+                "vim.vim_lsp.specialized.activation.declared_override_row".to_string();
+            Ok(())
+        },
+        "must be classified by",
+    )
+}
+
 /// The #11388 law: a successfully attached adjacent-language false subject
 /// still fails the semantic and ambiguity cells — attachment can never be
 /// relabeled semantic support.
@@ -1625,13 +1759,14 @@ fn activation_aspect_vocabularies_cannot_stand_in_for_each_other() -> Result<()>
             "{cell_id} admits a native result"
         );
     }
-    // Cross-classifying an attachment cell with the native observation action
-    // fails the owner-binding law.
+    // Keeping the pinned class but dropping it from the cell's own scenario
+    // owners fails the owner-binding law.
     assert_activation_rejects(
         |catalog| {
             let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_attachment")?;
-            cell.observation_class =
-                "vim.vim_lsp.specialized.activation.observe_native_filetype".to_string();
+            cell.scenario_owners.retain(|owner| {
+                owner != "vim.vim_lsp.specialized.activation.observe_service_attachment"
+            });
             Ok(())
         },
         "must be one of its own scenario owners",
