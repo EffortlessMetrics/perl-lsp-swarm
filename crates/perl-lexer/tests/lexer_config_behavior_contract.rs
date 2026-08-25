@@ -36,6 +36,24 @@ fn collect_remaining(lexer: &mut PerlLexer<'_>) -> Vec<TokenSignature> {
         .collect()
 }
 
+fn assert_spans_slice_source(input: &str, tokens: &[TokenSignature]) {
+    for (token_type, text, start, end) in tokens {
+        assert!(start <= end, "reversed token span for {token_type:?} in {input:?}");
+        assert_eq!(
+            input.get(*start..*end),
+            Some(text.as_ref()),
+            "token {token_type:?} text {text:?} is not the source slice [{start}, {end}) of {input:?}"
+        );
+    }
+}
+
+fn assert_track_positions_is_ignored(input: &str, base: LexerConfig) {
+    let tracked = signatures(input, base.clone());
+    let untracked = signatures(input, LexerConfig { track_positions: false, ..base });
+    assert_eq!(tracked, untracked, "track_positions changed tokens for {input:?}");
+    assert_spans_slice_source(input, &untracked);
+}
+
 fn assert_symbol_table_invariant(label: &str, input: &str) {
     let without_table = signatures(input, LexerConfig::default());
     let with_table = signatures(
@@ -136,17 +154,34 @@ fn malformed_double_quote_recovery_is_configuration_invariant() {
 
 #[test]
 fn position_compatibility_field_does_not_change_authoritative_tokens() {
-    let input = "my $café = 1;\r\nprint $café;";
-    let enabled = signatures(input, LexerConfig::default());
-    let disabled =
-        signatures(input, LexerConfig { track_positions: false, ..LexerConfig::default() });
+    // `assert!(LexerConfig::POSITIONS_ARE_ALWAYS_TRACKED)` cannot fail: the
+    // const is `true` by construction. These cases fail if `track_positions:
+    // false` drops, zeros, or rewrites byte spans — including on empty input
+    // and EOF, which the previous non-EOF filter could not see.
+    let interpolating = r#""hello $name""#;
+    assert_ne!(
+        signatures(interpolating, LexerConfig::default()),
+        signatures(
+            interpolating,
+            LexerConfig { parse_interpolation: false, ..LexerConfig::default() }
+        ),
+        "interpolation must remain a real switch so position-field equality is not vacuous"
+    );
 
-    assert_eq!(enabled, disabled);
-    for (token_type, text, start, end) in
-        disabled.iter().filter(|token| !matches!(&token.0, TokenType::EOF))
-    {
-        assert!(start <= end, "reversed token span for {token_type:?}");
-        assert_eq!(input.get(*start..*end), Some(text.as_ref()));
+    for input in ["", " ", "# c\n", "my $café = 1;\r\nprint $café;", interpolating] {
+        assert_track_positions_is_ignored(input, LexerConfig::default());
+        assert_track_positions_is_ignored(
+            input,
+            LexerConfig { parse_interpolation: false, ..LexerConfig::default() },
+        );
+        assert_track_positions_is_ignored(
+            input,
+            LexerConfig { max_lookahead: 0, ..LexerConfig::default() },
+        );
+        assert_track_positions_is_ignored(
+            input,
+            LexerConfig { track_positions: false, ..LexerConfig::default() }.clone(),
+        );
     }
 }
 

@@ -376,5 +376,9 @@ mod tests {
         assert_eq!(transform_offset(14, 10, 5, 8), None);
         assert_eq!(transform_offset(15, 10, 5, 8), Some(18));
         assert_eq!(transform_offset(20, 10, 5, 8), Some(23));
+        assert_eq!(transform_offset(0, 0, 0, 3), Some(0));
+        assert_eq!(transform_offset(5, 0, 0, 3), Some(8));
+        assert_eq!(transform_offset(2, 0, 5, 0), None);
+        assert_eq!(transform_offset(5, 0, 5, 0), Some(0));
     }
 }

@@ -2830,6 +2830,20 @@ fn full_sigs_all_entries_exist_in_builtin_sigs() -> Result<(), String> {
     Ok(())
 }
 
+fn full_sig_suffix_is_token_boundary(rest: &str) -> bool {
+    !rest.chars().next().is_some_and(|next| next.is_ascii_alphanumeric() || next == '_')
+}
+
+#[test]
+fn full_sig_suffix_token_boundary_rejects_glued_identifier_text() {
+    assert!(full_sig_suffix_is_token_boundary(""));
+    assert!(full_sig_suffix_is_token_boundary(" FILEHANDLE LIST"));
+    assert!(full_sig_suffix_is_token_boundary(", MODE, FILENAME"));
+    assert!(!full_sig_suffix_is_token_boundary("X"));
+    assert!(!full_sig_suffix_is_token_boundary("_LIST"));
+    assert!(!full_sig_suffix_is_token_boundary("er"));
+}
+
 #[test]
 fn full_sigs_all_variants_start_with_function_name() -> Result<(), String> {
     for (name, sigs) in BUILTIN_FULL_SIGS.entries() {
@@ -2839,7 +2853,7 @@ fn full_sigs_all_variants_start_with_function_name() -> Result<(), String> {
                     "Full sig {sig:?} for {name} should start with the function name"
                 ));
             };
-            if rest.chars().next().is_some_and(|next| next.is_ascii_alphanumeric() || next == '_') {
+            if !full_sig_suffix_is_token_boundary(rest) {
                 return Err(format!(
                     "Full sig {sig:?} for {name} should keep the builtin name as a token boundary"
                 ));
