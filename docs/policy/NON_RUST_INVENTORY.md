@@ -6,21 +6,21 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11798 |
-| Rust-family files | 3575 |
-| Non-Rust files | 8223 |
-| Allowlisted | 5898 |
+| Total tracked files | 11806 |
+| Rust-family files | 3580 |
+| Non-Rust files | 8226 |
+| Allowlisted | 5901 |
 | Unclassified | 2325 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 419 |
-| documentation | 2686 |
+| config | 420 |
+| documentation | 2687 |
 | generated | 2 |
 | production | 321 |
-| test | 1939 |
+| test | 1940 |
 | tooling | 531 |
 | unclassified | 2325 |
 
@@ -2413,6 +2413,7 @@
 | `.changes/unreleased/product-12185-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12425-Changed-064000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12428-Changed-071500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12489-Changed-095500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2628,6 +2629,7 @@
 | `.ci/dap/protocol-authority.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/dead-code-baseline.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/debt-ledger.yaml` | config | `non-rust-ci-config` | release/ci |
+| `.ci/editor-clients/emacs-subjects.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vim-vim-lsp-activation-root.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vim-vim-lsp-configuration.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vim-vim-lsp-public-surface.v1.json` | config | `non-rust-ci-config` | release/ci |
@@ -3678,6 +3680,7 @@
 | `crates/perl-lexer/tests/fixtures/substitution_operators/valid_s.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-lexer/tests/fixtures/substitution_operators/valid_tr.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-lexer/tests/fixtures/substitution_operators/valid_y.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-lexer/tests/lexer_robustness_tests.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
 | `crates/perl-lexer/tests/prop_lexer_termination.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
 | `crates/perl-line-index/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-line-index/README.md` | documentation | `non-rust-root-governance-docs` | docs |
