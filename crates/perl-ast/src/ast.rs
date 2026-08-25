@@ -22,7 +22,8 @@
 //! - Location tracking for precise error reporting in large files
 //!
 //! Ownership stays recursively owned (`Box`, `Vec`, optional children). [`Node`]
-//! destruction and [`Clone`] are iterative and depth-independent; derived
+//! destruction is iterative and depth-independent. [`Clone`] is iterative;
+//! overflow is proven on a 50,000-node chain with a 256 KiB worker. Derived
 //! [`Debug`] and [`PartialEq`] remain recursive. See [`Node`] for the
 //! depth-safety contract.
 //!
@@ -139,16 +140,6 @@ thread_local! {
     /// Incremented on entry and decremented on exit, so interleaved calls on
     /// separate trees (e.g. in the same thread between tests) always start from 0.
     static TO_SEXP_DEPTH: Cell<usize> = const { Cell::new(0) };
-
-    /// When true, [`Node`]'s [`Clone`] implementation returns a childless placeholder.
-    ///
-    /// Derived [`NodeKind`] clone copies every non-child payload and every child
-    /// slot. The iterative [`Node`] clone needs that payload/shape copy without
-    /// recursively cloning descendants, so child `Node::clone` calls made while
-    /// this flag is set become placeholders that `for_each_child_mut` then
-    /// replaces with already-cloned children. The flag is operation-scoped
-    /// (saved/restored, including on unwind) and is not a work counter.
-    static CLONE_PAYLOAD_SHELL: Cell<bool> = const { Cell::new(false) };
 }
 
 struct ToSexpDepthGuard;
@@ -1929,149 +1920,7 @@ impl Drop for Node {
     }
 }
 
-/// Duplicate an owned [`Node`] tree without unbounded stack growth.
-///
-/// Cloning walks canonical child fields iteratively and rebuilds each parent
-/// only after its cloned children are available. Non-child payloads, ranges,
-/// child order, optional/repeated cardinality, and recovery state follow the
-/// ordinary derived [`NodeKind`] clone. The public [`Clone`] contract is
-/// unchanged: `node.clone()` still returns an independent owned tree.
-///
-/// Cloning is a full structural duplication, not a cheap shared projection.
-impl Clone for Node {
-    fn clone(&self) -> Self {
-        if CLONE_PAYLOAD_SHELL.with(Cell::get) {
-            return clone_slot_placeholder();
-        }
-        clone_node(self, &mut ())
-    }
-}
-
-/// Operation-local clone work recorded by [`clone_node`].
-///
-/// Counts are the clone operations actually performed for one call, not the
-/// depth-bounded [`Node::count_nodes`] population of the result.
-#[cfg(test)]
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct CloneWork {
-    nodes_entered: u64,
-    nodes_rebuilt: u64,
-    child_edges: u64,
-    max_explicit_stack_depth: usize,
-}
-
-trait CloneObserver {
-    fn on_enter(&mut self, child_count: usize);
-    fn on_rebuild(&mut self);
-    fn on_stack_depth(&mut self, depth: usize);
-}
-
-impl CloneObserver for () {
-    fn on_enter(&mut self, _child_count: usize) {}
-    fn on_rebuild(&mut self) {}
-    fn on_stack_depth(&mut self, _depth: usize) {}
-}
-
-#[cfg(test)]
-impl CloneObserver for CloneWork {
-    fn on_enter(&mut self, child_count: usize) {
-        self.nodes_entered = self.nodes_entered.saturating_add(1);
-        self.child_edges = self.child_edges.saturating_add(child_count as u64);
-    }
-
-    fn on_rebuild(&mut self) {
-        self.nodes_rebuilt = self.nodes_rebuilt.saturating_add(1);
-    }
-
-    fn on_stack_depth(&mut self, depth: usize) {
-        if depth > self.max_explicit_stack_depth {
-            self.max_explicit_stack_depth = depth;
-        }
-    }
-}
-
-struct ShellCloneGuard {
-    previous: bool,
-}
-
-impl ShellCloneGuard {
-    fn enter() -> Self {
-        Self { previous: CLONE_PAYLOAD_SHELL.with(|flag| flag.replace(true)) }
-    }
-}
-
-impl Drop for ShellCloneGuard {
-    fn drop(&mut self) {
-        CLONE_PAYLOAD_SHELL.with(|flag| flag.set(self.previous));
-    }
-}
-
-fn clone_slot_placeholder() -> Node {
-    Node { kind: NodeKind::Ellipsis, location: SourceLocation { start: 0, end: 0 } }
-}
-
-fn clone_payload_shell(source: &Node) -> Node {
-    let _guard = ShellCloneGuard::enter();
-    Node { kind: source.kind.clone(), location: source.location }
-}
-
-fn take_last_n_reversed(done: &mut Vec<Node>, n: usize) -> Vec<Node> {
-    let start = done.len().saturating_sub(n);
-    let mut children = done.split_off(start);
-    children.reverse();
-    children
-}
-
-fn install_cloned_children(shell: &mut Node, children: Vec<Node>) {
-    let mut next = children.into_iter();
-    shell.for_each_child_mut(|slot| {
-        if let Some(child) = next.next() {
-            *slot = child;
-        }
-    });
-}
-
-fn clone_node<O: CloneObserver>(root: &Node, observer: &mut O) -> Node {
-    enum Work<'a> {
-        Enter(&'a Node),
-        Assemble { source: &'a Node, child_count: usize },
-    }
-
-    let mut work = vec![Work::Enter(root)];
-    let mut done: Vec<Node> = Vec::new();
-    observer.on_stack_depth(work.len());
-
-    while let Some(item) = work.pop() {
-        match item {
-            Work::Enter(source) => {
-                // One child walk: record the Assemble frame first so children
-                // stay on top (postorder), then count those frames in place.
-                work.push(Work::Assemble { source, child_count: 0 });
-                let assemble_at = work.len().saturating_sub(1);
-                source.for_each_child(|child| work.push(Work::Enter(child)));
-                let child_count = work.len().saturating_sub(assemble_at.saturating_add(1));
-                if let Some(Work::Assemble { child_count: stored, .. }) = work.get_mut(assemble_at)
-                {
-                    *stored = child_count;
-                }
-                observer.on_enter(child_count);
-                observer.on_stack_depth(work.len());
-            }
-            Work::Assemble { source, child_count } => {
-                let cloned_children = take_last_n_reversed(&mut done, child_count);
-                let mut cloned = clone_payload_shell(source);
-                install_cloned_children(&mut cloned, cloned_children);
-                observer.on_rebuild();
-                done.push(cloned);
-            }
-        }
-    }
-
-    match done.pop() {
-        Some(cloned) => cloned,
-        None => clone_payload_shell(root),
-    }
-}
+mod node_clone;
 
 #[cfg(test)]
 mod drop_audit {
@@ -4468,6 +4317,7 @@ mod depth_guard_tests {
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod deep_tree_destruction_tests {
+    use super::node_clone::{CloneObserver, CloneWork, clone_node};
     use super::*;
 
     const SMALL_STACK_BYTES: usize = 256 * 1024;
@@ -4560,6 +4410,19 @@ mod deep_tree_destruction_tests {
                 expected: Vec::new(),
                 found: None,
                 partial: Some(Box::new(inner)),
+            },
+            loc(),
+        )
+    }
+
+    fn wrap_if_else(inner: Node) -> Node {
+        Node::new(
+            NodeKind::If {
+                condition: Box::new(number_leaf("c")),
+                then_branch: Box::new(number_leaf("t")),
+                elsif_branches: Vec::new(),
+                else_branch: Some(Box::new(inner)),
+                keyword: None,
             },
             loc(),
         )
@@ -4757,6 +4620,34 @@ mod deep_tree_destruction_tests {
         let mut work = CloneWork::default();
         let cloned = clone_node(node, &mut work);
         (cloned, work)
+    }
+
+    /// Iterative structure check for trees too deep for derived [`PartialEq`].
+    fn assert_iterative_shape_eq(left: &Node, right: &Node) {
+        let mut stack = vec![(left, right)];
+        while let Some((left, right)) = stack.pop() {
+            assert_eq!(left.kind.kind_name(), right.kind.kind_name(), "cloned kind diverged");
+            assert_eq!(left.location, right.location, "cloned location diverged");
+            if let (
+                NodeKind::Number { value: left_value },
+                NodeKind::Number { value: right_value },
+            ) = (&left.kind, &right.kind)
+            {
+                assert_eq!(left_value, right_value, "cloned number payload diverged");
+            }
+            let mut left_children = Vec::new();
+            left.for_each_child(|child| left_children.push(child));
+            let mut right_children = Vec::new();
+            right.for_each_child(|child| right_children.push(child));
+            assert_eq!(
+                left_children.len(),
+                right_children.len(),
+                "cloned child cardinality diverged"
+            );
+            for (left_child, right_child) in left_children.into_iter().zip(right_children).rev() {
+                stack.push((left_child, right_child));
+            }
+        }
     }
 
     fn assert_boxed_chain_eq(original: &Node, cloned: &Node, depth: usize) {
@@ -5256,5 +5147,221 @@ mod deep_tree_destruction_tests {
                 assert_eq!(other.kind_name(), "Try");
             }
         }
+    }
+
+    #[test]
+    fn deep_mixed_family_chain_clones_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let wraps = all_family_wrappers();
+            let mut node = number_leaf("1");
+            for depth in 0..MIXED_DEPTH {
+                let (_, wrap) = wraps[depth % wraps.len()];
+                node = wrap(node);
+            }
+            let original = node;
+            let cloned = original.clone();
+            let (counted, work) = clone_and_count(&original);
+            assert!(
+                work.nodes_rebuilt > MAX_AST_DEPTH as u64,
+                "mixed clone work must exceed the depth-bounded population counter"
+            );
+            assert_iterative_shape_eq(&original, &cloned);
+            assert_iterative_shape_eq(&original, &counted);
+            drop(counted);
+            drop(cloned);
+            drop(original);
+        })
+    }
+
+    #[test]
+    fn wide_repeated_children_clone_preserves_order_and_work() {
+        const WIDTH: usize = 128;
+        let elements: Vec<Node> = (0..WIDTH)
+            .map(|index| {
+                Node::new(
+                    NodeKind::Number { value: index.to_string() },
+                    SourceLocation { start: index, end: index + 1 },
+                )
+            })
+            .collect();
+        let original = Node::new(NodeKind::Program { statements: elements }, loc());
+        let cloned = original.clone();
+        let (counted, work) = clone_and_count(&original);
+        assert_eq!(work.nodes_entered, (WIDTH + 1) as u64);
+        assert_eq!(work.nodes_rebuilt, (WIDTH + 1) as u64);
+        assert_eq!(work.child_edges, WIDTH as u64);
+        assert!(
+            work.max_explicit_stack_depth >= WIDTH,
+            "wide clone stack must hold every child frame, got {}",
+            work.max_explicit_stack_depth
+        );
+        assert_eq!(original, cloned);
+        assert_eq!(original, counted);
+        match &cloned.kind {
+            NodeKind::Program { statements } => {
+                assert_eq!(statements.len(), WIDTH);
+                match &statements[0].kind {
+                    NodeKind::Number { value } => assert_eq!(value, "0"),
+                    other => assert_eq!(other.kind_name(), "Number"),
+                }
+                match &statements[WIDTH - 1].kind {
+                    NodeKind::Number { value } => assert_eq!(value, &(WIDTH - 1).to_string()),
+                    other => assert_eq!(other.kind_name(), "Number"),
+                }
+                assert_eq!(statements[1].location.start, 1);
+                assert_ne!(
+                    statements[0].kind.kind_name(),
+                    "Ellipsis",
+                    "install must replace shell placeholders"
+                );
+            }
+            other => assert_eq!(other.kind_name(), "Program"),
+        }
+    }
+
+    #[test]
+    fn leaf_and_ellipsis_clone_is_not_a_placeholder() {
+        let leaf = number_leaf("7");
+        let (cloned_leaf, leaf_work) = clone_and_count(&leaf);
+        assert_eq!(leaf_work.nodes_entered, 1);
+        assert_eq!(leaf_work.nodes_rebuilt, 1);
+        assert_eq!(leaf_work.child_edges, 0);
+        assert_eq!(leaf, cloned_leaf);
+
+        let ellipsis = Node::new(NodeKind::Ellipsis, SourceLocation { start: 10, end: 13 });
+        let cloned_ellipsis = ellipsis.clone();
+        assert_eq!(ellipsis, cloned_ellipsis);
+        assert_eq!(cloned_ellipsis.location.start, 10);
+        assert_eq!(cloned_ellipsis.kind.kind_name(), "Ellipsis");
+
+        let _ = ellipsis.clone();
+        assert_eq!(
+            number_leaf("1").clone(),
+            number_leaf("1"),
+            "payload-shell flag must not leak into a later public clone"
+        );
+    }
+
+    #[test]
+    fn sibling_and_else_branch_clone_edges() {
+        let original = Node::new(
+            NodeKind::Program {
+                statements: vec![number_leaf("a"), number_leaf("b"), number_leaf("c")],
+            },
+            loc(),
+        );
+        let mut cloned = original.clone();
+        match &mut cloned.kind {
+            NodeKind::Program { statements } => match &mut statements[1].kind {
+                NodeKind::Number { value } => value.push_str("-mut"),
+                other => assert_eq!(other.kind_name(), "Number"),
+            },
+            other => assert_eq!(other.kind_name(), "Program"),
+        }
+        match &original.kind {
+            NodeKind::Program { statements } => match &statements[1].kind {
+                NodeKind::Number { value } => assert_eq!(value, "b"),
+                other => assert_eq!(other.kind_name(), "Number"),
+            },
+            other => assert_eq!(other.kind_name(), "Program"),
+        }
+
+        let with_else = wrap_if_else(number_leaf("e"));
+        let without_else = Node::new(
+            NodeKind::If {
+                condition: Box::new(number_leaf("c")),
+                then_branch: Box::new(number_leaf("t")),
+                elsif_branches: Vec::new(),
+                else_branch: None,
+                keyword: None,
+            },
+            loc(),
+        );
+        assert_eq!(with_else.clone(), with_else);
+        assert_eq!(without_else.clone(), without_else);
+        assert_ne!(with_else, without_else);
+        assert_eq!(with_else.child_count(), 3);
+        assert_eq!(without_else.child_count(), 2);
+        let (cloned_else, else_work) = clone_and_count(&with_else);
+        assert_eq!(else_work.child_edges, 3);
+        assert_eq!(cloned_else, with_else);
+    }
+
+    #[test]
+    fn pair_and_clause_lists_clone_preserve_order() {
+        let numbered = |value: &str, start: usize| {
+            Node::new(
+                NodeKind::Number { value: value.to_string() },
+                SourceLocation { start, end: start + 1 },
+            )
+        };
+        let hash = Node::new(
+            NodeKind::HashLiteral {
+                pairs: vec![
+                    (numbered("k0", 0), numbered("v0", 1)),
+                    (numbered("k1", 2), numbered("v1", 3)),
+                ],
+            },
+            loc(),
+        );
+        let cloned_hash = hash.clone();
+        match &cloned_hash.kind {
+            NodeKind::HashLiteral { pairs } => {
+                assert_eq!(pairs.len(), 2);
+                match (&pairs[0].0.kind, &pairs[0].1.kind) {
+                    (NodeKind::Number { value: key }, NodeKind::Number { value: value }) => {
+                        assert_eq!(key, "k0");
+                        assert_eq!(value, "v0");
+                    }
+                    (left, _) => assert_eq!(left.kind_name(), "Number"),
+                }
+                match (&pairs[1].0.kind, &pairs[1].1.kind) {
+                    (NodeKind::Number { value: key }, NodeKind::Number { value: value }) => {
+                        assert_eq!(key, "k1");
+                        assert_eq!(value, "v1");
+                    }
+                    (left, _) => assert_eq!(left.kind_name(), "Number"),
+                }
+            }
+            other => assert_eq!(other.kind_name(), "HashLiteral"),
+        }
+        assert_eq!(hash, cloned_hash);
+        let (_, hash_work) = clone_and_count(&hash);
+        assert_eq!(hash_work.nodes_entered, 5);
+        assert_eq!(hash_work.nodes_rebuilt, 5);
+        assert_eq!(hash_work.child_edges, 4);
+
+        let two_elsif = Node::new(
+            NodeKind::If {
+                condition: Box::new(number_leaf("c")),
+                then_branch: Box::new(number_leaf("t")),
+                elsif_branches: vec![
+                    (Box::new(number_leaf("e0")), Box::new(number_leaf("b0"))),
+                    (Box::new(number_leaf("e1")), Box::new(number_leaf("b1"))),
+                ],
+                else_branch: None,
+                keyword: None,
+            },
+            loc(),
+        );
+        let cloned_if = two_elsif.clone();
+        match &cloned_if.kind {
+            NodeKind::If { elsif_branches, .. } => {
+                assert_eq!(elsif_branches.len(), 2);
+                match &elsif_branches[0].0.kind {
+                    NodeKind::Number { value } => assert_eq!(value, "e0"),
+                    other => assert_eq!(other.kind_name(), "Number"),
+                }
+                match &elsif_branches[1].0.kind {
+                    NodeKind::Number { value } => assert_eq!(value, "e1"),
+                    other => assert_eq!(other.kind_name(), "Number"),
+                }
+            }
+            other => assert_eq!(other.kind_name(), "If"),
+        }
+        assert_eq!(two_elsif, cloned_if);
+        let (_, if_work) = clone_and_count(&two_elsif);
+        assert_eq!(if_work.child_edges, 6);
+        assert_eq!(if_work.nodes_rebuilt, 7);
     }
 }
