@@ -49,6 +49,17 @@
 //! recursive call stack. The policy registry is reconciled directly with
 //! [`NodeKind::ALL_KIND_NAMES`], so a new variant cannot inherit an undocumented
 //! permissive policy.
+//!
+//! # Depth safety
+//!
+//! [`Node`] remains recursively owned. Destruction is iterative: a 50,000-node
+//! chain on a 256 KiB worker does not overflow the thread stack.
+//! Construct/destroy equality is proven at 10,000-node cycle depth, not on
+//! the overflow fixture. [`Clone`] is likewise iterative: a 50,000-node chain
+//! on a 256 KiB worker does not overflow the thread stack. Derived [`Debug`]
+//! and [`PartialEq`] stay recursive: they are supported for ordinary
+//! parser-produced nesting and are not stack-safe for adversarial 50,000-node
+//! chains. See [`Node`] for the operation-by-operation contract.
 
 pub mod ast;
 /// Static classification metadata for [`NodeKind`] variants: categories and flags.

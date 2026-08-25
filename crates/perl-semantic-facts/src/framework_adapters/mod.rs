@@ -7,5 +7,9 @@
 
 /// Dancer2 framework adapter (#8914).
 pub mod dancer2;
+
 /// Registry-activated Dancer2 route fact minting (#8918).
 pub mod dancer2_routes;
+
+/// Mojo::Base framework adapter (#9681).
+pub mod mojo_base;

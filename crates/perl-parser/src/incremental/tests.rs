@@ -1,7 +1,7 @@
 use super::*;
 use crate::Parser;
 use anyhow::Result;
-use perl_ast::NodeKind;
+use perl_ast::{Node, NodeKind, SourceLocation};
 use proptest::prelude::*;
 
 #[derive(Clone, Debug)]
@@ -115,6 +115,82 @@ fn incremental_state_records_lex_and_parse_restart_points() -> Result<()> {
         "subroutine checkpoint must retain the package scope"
     );
     anyhow::ensure!(sub_checkpoint.node_id > 0, "subroutine checkpoint must retain a node id");
+    Ok(())
+}
+
+#[test]
+fn parse_checkpoints_capture_scalar_and_list_locals_before_nested_blocks() -> Result<()> {
+    // The block under test is a top-level statement: `walk_ast_for_checkpoints`
+    // recurses only through `Program`/`Block` statement lists and never enters
+    // `Subroutine.body`, so a subroutine-body block is not a reachable fixture.
+    let source = "package Example;\nmy $scalar;\nmy ($first, @items);\nsub run { my $local = 1; }\n{ my $block_local = 1; }\n";
+    let state = IncrementalState::new(source.to_string());
+
+    let sub_start = source
+        .find("sub run")
+        .ok_or_else(|| anyhow::anyhow!("subroutine declaration not found in source"))?;
+    let sub_checkpoint = state
+        .find_parse_checkpoint(sub_start)
+        .ok_or_else(|| anyhow::anyhow!("subroutine declaration must create a checkpoint"))?;
+    assert_eq!(
+        sub_checkpoint.scope_snapshot.locals,
+        vec!["$scalar".to_string(), "$first".to_string(), "@items".to_string()],
+        "scalar and list declarations before the subroutine must be retained"
+    );
+
+    let block_start = source
+        .find("{ my $block_local")
+        .ok_or_else(|| anyhow::anyhow!("top-level block not found in source"))?;
+    let block_checkpoint = state
+        .find_parse_checkpoint(block_start)
+        .ok_or_else(|| anyhow::anyhow!("nested blocks must create a checkpoint"))?;
+    // `find_parse_checkpoint` returns the nearest checkpoint at or before the
+    // byte; require the block's own checkpoint so a missing block emission
+    // cannot be masked by the preceding subroutine checkpoint.
+    assert_eq!(
+        block_checkpoint.byte, block_start,
+        "the lookup must return the block's own checkpoint, not a predecessor"
+    );
+    assert_eq!(
+        block_checkpoint.scope_snapshot.locals,
+        vec!["$scalar".to_string(), "$first".to_string(), "@items".to_string()],
+        "the block checkpoint must retain the enclosing lexical scope"
+    );
+    assert!(
+        !block_checkpoint.scope_snapshot.locals.contains(&"$block_local".to_string()),
+        "a block's entry checkpoint must not include declarations inside the block"
+    );
+    Ok(())
+}
+
+#[test]
+fn parse_checkpoints_accumulate_nested_scalar_locals_in_source_order() -> Result<()> {
+    let location = |start, end| SourceLocation { start, end };
+    let first = Node::new(
+        NodeKind::VariableDeclaration {
+            declarator: "my".to_string(),
+            variable: Box::new(Node::new(
+                NodeKind::Variable { sigil: "$".to_string(), name: "first".to_string() },
+                location(1, 7),
+            )),
+            attributes: vec![],
+            initializer: None,
+        },
+        location(1, 7),
+    );
+    let nested_block = Node::new(NodeKind::Block { statements: vec![] }, location(20, 22));
+    let outer_block =
+        Node::new(NodeKind::Block { statements: vec![first, nested_block] }, location(0, 23));
+    let checkpoints = IncrementalState::create_parse_checkpoints(&outer_block);
+    let checkpoint = checkpoints
+        .iter()
+        .find(|checkpoint| checkpoint.byte == 20)
+        .ok_or_else(|| anyhow::anyhow!("nested block must create a checkpoint"))?;
+    assert_eq!(
+        checkpoint.scope_snapshot.locals,
+        vec!["$first".to_string()],
+        "a nested block checkpoint must see locals declared before it"
+    );
     Ok(())
 }
 
