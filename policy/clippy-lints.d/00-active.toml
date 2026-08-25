@@ -99,6 +99,13 @@ class = "numeric"
 reason = "Keep stale numeric type drift visible without claiming every boundary cast should be removed."
 
 [[lint]]
+name = "clippy::manual_clear"
+level = "deny"
+status = "active"
+class = "reviewability"
+reason = "Retain allocation identity when a collection or buffer is intentionally reused instead of replacing it with a fresh empty value."
+
+[[lint]]
 name = "clippy::manual_ilog2"
 level = "warn"
 status = "active"
