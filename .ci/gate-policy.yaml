@@ -995,7 +995,7 @@ gates:
   # by #9831.
   - name: unit_parser_stack_full
     tier: merge_gate
-    description: "Parser, lexer, and parser-core library tests, plus deterministic incremental integration targets"
+    description: "Parser, lexer, and parser-core library tests, deterministic AST/error-recovery snapshot proof, plus deterministic incremental integration targets"
     required: true
     command: >-
       cargo test --locked --lib
@@ -1005,6 +1005,7 @@ gates:
       &&
       cargo test --locked -p perl-parser --features incremental
       --test advanced_reuse_analyzer_heuristics_tests
+      --test ast_snap
       --test facade_pattern_edge_cases
       --test g2_api_regression_guards
       --test incremental_edit_set_normalization

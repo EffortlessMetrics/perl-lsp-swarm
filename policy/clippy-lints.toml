@@ -19,6 +19,13 @@ activate_when_msrv = "1.96"
 class = "reviewability"
 reason = "Activate after #9864 moves the product workspace to Rust 1.97.1 and #1803 proves predicate, mutation, ownership, and drop-order equivalence."
 
+[[planned]]
+name = "clippy::manual_clear"
+level = "deny"
+activate_when_msrv = "1.97"
+class = "reviewability"
+reason = "Activate after the selected product toolchain provides the lint; #9913 records the current buffer-reuse dispositions without changing the pinned Rust 1.95 product gate."
+
 # These lints are already available at or below the current product MSRV. They
 # retain named, review-dated owners instead of remaining silently planned.
 [[deferred_due]]
