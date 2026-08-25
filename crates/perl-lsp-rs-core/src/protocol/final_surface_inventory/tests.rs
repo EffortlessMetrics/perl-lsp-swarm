@@ -572,8 +572,6 @@ fn competing_builder_diff_preserves_known_dual_writers() {
     let rendered = render_final_surface_inventory_json().expect("render must succeed");
     for dual_writer in [
         "cap.workspaceSymbolProvider.resolveProvider",
-        "cap.experimental.typeHierarchyProvider",
-        "cap.typeHierarchyProvider.workDoneProgressOptions",
         "cap.textDocumentSync.save",
         "cap.declarationProvider",
         "cap.inlineCompletionProvider",
@@ -586,10 +584,19 @@ fn competing_builder_diff_preserves_known_dual_writers() {
     // The former dual writers `cap.experimental.typeHierarchyProvider` and
     // `cap.typeHierarchyProvider.workDoneProgressOptions` exited with #11803:
     // the selected substrate carries the typed field, and the JSON patch plus
-    // experimental workaround were removed together (single writer remains).
+    // experimental workaround were removed together (single writer remains,
+    // ledgered as cap.typeHierarchyProvider).
+    assert!(
+        rendered.contains("cap.typeHierarchyProvider"),
+        "typed typeHierarchyProvider writer must remain ledgered"
+    );
     assert!(
         !rendered.contains("cap.experimental.typeHierarchyProvider"),
         "experimental typeHierarchyProvider workaround must stay retired"
+    );
+    assert!(
+        !rendered.contains("typeHierarchyProvider.workDoneProgressOptions"),
+        "the workDoneProgressOptions sub-pointer must stay retired with the JSON patch"
     );
 }
 
