@@ -83,15 +83,35 @@ pub fn validate_registry(registry: &Registry) -> Result<()> {
         ensure!(!rail.subject.is_empty(), "rail {} has no exact subject", rail.rail_id);
         ensure!(!rail.currentness.is_empty(), "rail {} has no currentness relation", rail.rail_id);
         ensure!(!rail.claim_ceiling.is_empty(), "rail {} has no claim ceiling", rail.rail_id);
-        ensure!(rail.result != RailResult::Pass || rail.limitations.is_empty(),
-            "pass rail {} must use pass_with_declared_limitations for limitations", rail.rail_id);
+        ensure!(
+            rail.result != RailResult::Pass || rail.limitations.is_empty(),
+            "pass rail {} must use pass_with_declared_limitations for limitations",
+            rail.rail_id
+        );
+        ensure!(
+            rail.result != RailResult::PassWithDeclaredLimitations || !rail.limitations.is_empty(),
+            "limited pass rail {} must declare at least one limitation",
+            rail.rail_id
+        );
     }
     let mut adapter_ids = std::collections::BTreeSet::new();
     for adapter in &registry.adapters {
         ensure!(adapter.schema == "product_health_rail_adapter.v1", "unsupported adapter schema");
-        ensure!(adapter_ids.insert(&adapter.adapter_id), "duplicate adapter id {}", adapter.adapter_id);
-        ensure!(!adapter.accepted_source_schemas.is_empty(), "adapter {} accepts no schemas", adapter.adapter_id);
-        ensure!(!adapter.validator_id.is_empty(), "adapter {} has no validator", adapter.adapter_id);
+        ensure!(
+            adapter_ids.insert(&adapter.adapter_id),
+            "duplicate adapter id {}",
+            adapter.adapter_id
+        );
+        ensure!(
+            !adapter.accepted_source_schemas.is_empty(),
+            "adapter {} accepts no schemas",
+            adapter.adapter_id
+        );
+        ensure!(
+            !adapter.validator_id.is_empty(),
+            "adapter {} has no validator",
+            adapter.adapter_id
+        );
     }
     Ok(())
 }
@@ -101,6 +121,10 @@ pub fn canonical_json(registry: &Registry) -> Result<String> {
     let mut normalized = registry.clone();
     normalized.rails.sort_by(|a, b| a.rail_id.cmp(&b.rail_id));
     normalized.adapters.sort_by(|a, b| a.adapter_id.cmp(&b.adapter_id));
+    for adapter in &mut normalized.adapters {
+        adapter.accepted_source_schemas.sort();
+        adapter.accepted_source_schemas.dedup();
+    }
     Ok(serde_json::to_string(&normalized)?)
 }
 
@@ -108,7 +132,11 @@ pub fn run() -> Result<()> {
     let registry = fixture_registry();
     validate_registry(&registry)?;
     let first = canonical_json(&registry)?;
-    let second = canonical_json(&Registry { rails: registry.rails.iter().rev().cloned().collect(), adapters: registry.adapters.iter().rev().cloned().collect(), ..registry.clone() })?;
+    let second = canonical_json(&Registry {
+        rails: registry.rails.iter().rev().cloned().collect(),
+        adapters: registry.adapters.iter().rev().cloned().collect(),
+        ..registry.clone()
+    })?;
     ensure!(first == second, "canonical rail serialization is order-dependent");
     println!("validated {SCHEMA} and product_health_rail_registry.v1");
     Ok(())
@@ -117,8 +145,31 @@ pub fn run() -> Result<()> {
 fn fixture_registry() -> Registry {
     Registry {
         schema: "product_health_rail_registry.v1".into(),
-        adapters: vec![Adapter { schema: "product_health_rail_adapter.v1".into(), adapter_id: "fixture.adapter".into(), source_family: "fixture".into(), accepted_source_schemas: vec!["fixture.v1".into()], validator_id: "fixture.validator.v1".into(), subject_selector: "fixture.subject".into(), currentness_authority: "fixture.currentness".into() }],
-        rails: vec![Rail { schema: SCHEMA.into(), rail_id: "fixture.parser".into(), area: "parser".into(), proposition: "fixture parser contract holds".into(), source_schema: "fixture.v1".into(), source_digest: "sha256:fixture".into(), subject: "fixture-subject".into(), currentness: "exact:fixture".into(), result: RailResult::Pass, applicability: Applicability::Required, limitations: vec![], nonclaims: vec!["does not establish release authority".into()], claim_ceiling: "fixture parser proposition only".into(), source_detail: BTreeMap::new() }],
+        adapters: vec![Adapter {
+            schema: "product_health_rail_adapter.v1".into(),
+            adapter_id: "fixture.adapter".into(),
+            source_family: "fixture".into(),
+            accepted_source_schemas: vec!["fixture.v1".into()],
+            validator_id: "fixture.validator.v1".into(),
+            subject_selector: "fixture.subject".into(),
+            currentness_authority: "fixture.currentness".into(),
+        }],
+        rails: vec![Rail {
+            schema: SCHEMA.into(),
+            rail_id: "fixture.parser".into(),
+            area: "parser".into(),
+            proposition: "fixture parser contract holds".into(),
+            source_schema: "fixture.v1".into(),
+            source_digest: "sha256:fixture".into(),
+            subject: "fixture-subject".into(),
+            currentness: "exact:fixture".into(),
+            result: RailResult::Pass,
+            applicability: Applicability::Required,
+            limitations: vec![],
+            nonclaims: vec!["does not establish release authority".into()],
+            claim_ceiling: "fixture parser proposition only".into(),
+            source_detail: BTreeMap::new(),
+        }],
     }
 }
 
@@ -129,7 +180,11 @@ mod tests {
     #[test]
     fn canonical_bytes_ignore_registration_order() {
         let registry = fixture_registry();
-        let reversed = Registry { rails: registry.rails.iter().rev().cloned().collect(), adapters: registry.adapters.iter().rev().cloned().collect(), ..registry.clone() };
+        let reversed = Registry {
+            rails: registry.rails.iter().rev().cloned().collect(),
+            adapters: registry.adapters.iter().rev().cloned().collect(),
+            ..registry.clone()
+        };
         assert_eq!(canonical_json(&registry).unwrap(), canonical_json(&reversed).unwrap());
     }
 
@@ -140,6 +195,23 @@ mod tests {
         assert!(validate_registry(&registry).is_err());
         registry.rails[0].result = RailResult::PassWithDeclaredLimitations;
         validate_registry(&registry).unwrap();
+    }
+
+    #[test]
+    fn accepted_source_schema_order_does_not_change_canonical_bytes() {
+        let mut registry = fixture_registry();
+        registry.adapters[0].accepted_source_schemas =
+            vec!["b.v1".into(), "a.v1".into(), "a.v1".into()];
+        let mut equivalent = registry.clone();
+        equivalent.adapters[0].accepted_source_schemas = vec!["a.v1".into(), "b.v1".into()];
+        assert_eq!(canonical_json(&registry).unwrap(), canonical_json(&equivalent).unwrap());
+    }
+
+    #[test]
+    fn limited_pass_requires_a_limitation() {
+        let mut registry = fixture_registry();
+        registry.rails[0].result = RailResult::PassWithDeclaredLimitations;
+        assert!(validate_registry(&registry).is_err());
     }
 
     #[test]
