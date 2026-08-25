@@ -2992,6 +2992,10 @@ enum PerlCoreHarnessCommand {
         /// Prebuilt perl-core-test-runner binary. Defaults to target/agent/perl-core-test-runner.
         #[arg(long)]
         runner_binary: Option<PathBuf>,
+
+        /// Disable bounded direct diagnostic probes for missing upstream rows.
+        #[arg(long)]
+        no_diagnostic_probes: bool,
     },
 
     /// Render the latest Perl core harness report (future slice).
@@ -5279,6 +5283,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 tests,
                 output,
                 runner_binary,
+                no_diagnostic_probes,
             } => perl_core_harness::run_mode(perl_core_harness::RunConfig {
                 perl_tree,
                 host_perl,
@@ -5288,6 +5293,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 tests,
                 output,
                 runner_binary,
+                diagnostic_probes: !no_diagnostic_probes,
             }),
             PerlCoreHarnessCommand::Report => perl_core_harness::report(),
             PerlCoreHarnessCommand::Baseline {
@@ -6144,6 +6150,7 @@ mod tests {
                     tests: Vec::new(),
                     output: None,
                     runner_binary: None,
+                    no_diagnostic_probes: false,
                 },
                 "requires one or more explicit --test",
             ),

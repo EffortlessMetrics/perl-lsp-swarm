@@ -27,6 +27,7 @@ mod target_contract_tests;
 
 mod normalization;
 pub mod public_evidence;
+mod run_authority;
 mod series;
 pub mod transition;
 
@@ -56,6 +57,10 @@ use perl_core_harness_types::{
     SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
 };
 pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
+use run_authority::{
+    DirectDiagnosticReceipt, DirectDiagnosticSet, SettledDiagnosticProbe, UpstreamObservationSet,
+    direct_diagnostics_receipt, direct_diagnostics_receipt_path,
+};
 pub use series::{SeriesManifestConfig, series_manifest};
 
 use normalization::{hex_lower, sha256_digest_bytes};
@@ -226,6 +231,12 @@ pub struct RunConfig {
     pub tests: Vec<String>,
     pub output: Option<PathBuf>,
     pub runner_binary: Option<PathBuf>,
+    /// Whether missing upstream rows may be investigated by bounded direct
+    /// diagnostic probes after the upstream report is frozen (#8173).
+    ///
+    /// Diagnostics are retained under a separate receipt and can never change
+    /// the upstream result, totals, or verdict.
+    pub diagnostic_probes: bool,
 }
 
 /// Configuration for `perl-core-harness baseline`.
@@ -3024,25 +3035,22 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
     )
     .with_context(|| format!("running Perl core tests via {} {}", config.runner, config.profile))?;
 
-    let mut records = read_runner_records_or_empty(&context_path)?;
-    let used_direct_runner = invoke_runner_for_missing_records(
-        &t_dir,
-        &discovered,
-        &records,
-        &runner_binary,
-        &context_path,
+    // Freeze the upstream observation from exactly one context read before
+    // any direct diagnostic work is planned or executed (#8173). Missing
+    // expected rows stay missing; nothing repairs upstream membership here.
+    let observation = UpstreamObservationSet::settle(
+        config.runner,
         config.mode,
+        config.profile,
+        &discovered,
+        &read_runner_records_or_empty(&context_path)?,
+        output.status.code(),
     )?;
-    if used_direct_runner {
-        records = read_runner_records_or_empty(&context_path)?;
-    }
     let report = build_run_report(BuildRunReportInput {
         config: &config,
         perl_tree: &perl_tree,
         run_tree: &run_tree,
-        discovered: &discovered,
-        records: &records,
-        harness_status: output.status.code(),
+        observation: &observation,
     });
     let output_path =
         config.output.unwrap_or_else(|| default_run_report_path(config.mode, config.profile));
@@ -3057,6 +3065,17 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
     );
     tracing::info!("wrote {}", output_path.display());
 
+    if config.diagnostic_probes && !observation.missing().is_empty() {
+        run_direct_diagnostic_probes(
+            &observation,
+            &t_dir,
+            &run_tree,
+            &runner_binary,
+            config.mode,
+            &output_path,
+        );
+    }
+
     if report.summary.files_failed > 0 {
         bail!(
             "perl-core-harness {} {} failed for {} of {} files; see {}",
@@ -3067,7 +3086,7 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
             output_path.display()
         );
     }
-    if !output.status.success() && !used_direct_runner {
+    if !output.status.success() {
         bail!(
             "upstream harness exited with status {} despite no recorded file failures\nstdout:\n{}\nstderr:\n{}",
             output.status,
@@ -3076,6 +3095,92 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Run bounded direct diagnostic probes for missing upstream rows.
+///
+/// Diagnostics execute only after the upstream report has been written, read a
+/// separate probe context, and are retained under a separate receipt. Any
+/// diagnostic failure is recorded as a limitation and never changes the
+/// authoritative upstream result (#8173).
+fn run_direct_diagnostic_probes(
+    observation: &UpstreamObservationSet,
+    t_dir: &Path,
+    run_tree: &Path,
+    runner_binary: &Path,
+    mode: HarnessMode,
+    report_output_path: &Path,
+) {
+    let probe_context_path = run_tree.join("target").join("perl-lsp-direct-diagnostics.jsonl");
+    if probe_context_path.exists() {
+        let context = format!("removing stale probe context {}", probe_context_path.display());
+        if let Err(err) = fs::remove_file(&probe_context_path) {
+            tracing::warn!("{context}: {err}");
+        }
+    }
+
+    let mut diagnostics = DirectDiagnosticSet::plan(observation);
+    let mut executed = Vec::<(String, Option<i32>)>::new();
+    for missing in observation.missing() {
+        let subject_path = missing.as_str().to_string();
+        match invoke_direct_probe_runner(
+            t_dir,
+            runner_binary,
+            &probe_context_path,
+            mode,
+            &subject_path,
+        ) {
+            Ok(probe_output) => executed.push((subject_path, probe_output.status.code())),
+            Err(err) => {
+                tracing::warn!("direct diagnostic probe for {subject_path} failed: {err}");
+                diagnostics.add_probe(SettledDiagnosticProbe::unavailable(&subject_path, None));
+            }
+        }
+    }
+
+    let settled_rows = match read_runner_records_or_empty(&probe_context_path) {
+        Ok(rows) => {
+            let mut by_path = BTreeMap::<String, Vec<RunnerRecord>>::new();
+            for row in rows {
+                if let Some(path) = normalize_test_path(&row.path) {
+                    by_path.entry(path).or_default().push(row);
+                }
+            }
+            by_path
+        }
+        Err(err) => {
+            tracing::warn!("direct diagnostic probe context unreadable: {err}");
+            BTreeMap::new()
+        }
+    };
+    for (subject_path, process_status) in executed {
+        match settled_rows.get(&subject_path).and_then(|rows| rows.last()) {
+            Some(record) => diagnostics.add_probe(SettledDiagnosticProbe::settled(
+                &subject_path,
+                process_status,
+                record.clone(),
+            )),
+            None => diagnostics
+                .add_probe(SettledDiagnosticProbe::unavailable(&subject_path, process_status)),
+        }
+    }
+
+    let receipt = direct_diagnostics_receipt(
+        &diagnostics,
+        mode,
+        observation.subject().as_str(),
+        observation.terminal().status_code(),
+        observation.counts(),
+    );
+    let receipt_path = direct_diagnostics_receipt_path(report_output_path);
+    match write_direct_diagnostics_receipt(&receipt_path, &receipt) {
+        Ok(()) => tracing::info!(
+            "perl-core-harness: retained {} direct diagnostic probes in {}",
+            receipt.probes.len(),
+            receipt_path.display()
+        ),
+        Err(err) => tracing::warn!("writing direct diagnostics receipt failed: {err}"),
+    }
 }
 
 /// Stub for future report rendering.
@@ -3252,6 +3357,7 @@ pub fn smoke(config: SmokeConfig) -> Result<()> {
             tests: Vec::new(),
             output: Some(report_path.clone()),
             runner_binary: config.runner_binary.clone(),
+            diagnostic_probes: true,
         });
         if let Err(err) = &run_result {
             if !report_path.is_file() {
@@ -3560,67 +3666,29 @@ fn invoke_harness_run(
     command.output().with_context(|| format!("spawning host Perl: {}", host_perl.display()))
 }
 
-fn invoke_runner_for_missing_records(
-    t_dir: &Path,
-    discovered: &[DiscoveredTest],
-    records: &[RunnerRecord],
-    runner_binary: &Path,
-    context_path: &Path,
-    mode: HarnessMode,
-) -> Result<bool> {
-    let recorded = records
-        .iter()
-        .filter_map(|record| normalize_test_path(&record.path))
-        .collect::<BTreeSet<_>>();
-    let missing =
-        discovered.iter().filter(|test| !recorded.contains(&test.path)).collect::<Vec<_>>();
-    if missing.is_empty() {
-        return Ok(false);
-    }
-
-    if let Some(parent) = context_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating runner context directory {}", parent.display()))?;
-    }
-
-    for test in &missing {
-        let output = invoke_direct_runner(t_dir, runner_binary, context_path, mode, &test.path)?;
-        if !context_path.is_file() {
-            bail!(
-                "direct runner did not write context for {}\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
-                test.path,
-                output.status,
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-    }
-
-    let refreshed = read_runner_records_or_empty(context_path)?;
-    let recorded_after = refreshed
-        .iter()
-        .filter_map(|record| normalize_test_path(&record.path))
-        .collect::<BTreeSet<_>>();
-    if let Some(test) = missing.iter().find(|test| !recorded_after.contains(&test.path)) {
-        bail!("direct runner did not write a record for {}", test.path);
-    }
-
-    Ok(true)
-}
-
-fn invoke_direct_runner(
+/// Invoke the compatibility runner directly for one diagnostic probe.
+///
+/// The probe writes to its own context path, never to the upstream runner
+/// context, so direct rows stay physically outside upstream membership
+/// (#8173).
+fn invoke_direct_probe_runner(
     t_dir: &Path,
     runner_binary: &Path,
-    context_path: &Path,
+    probe_context_path: &Path,
     mode: HarnessMode,
     test_path: &str,
 ) -> Result<Output> {
+    if let Some(parent) = probe_context_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating probe context directory {}", parent.display()))?;
+    }
+
     let mut command = Command::new(runner_binary);
     command.current_dir(t_dir);
     command.arg(test_path);
     command.env("LC_ALL", "C");
     command.env("PERL_LSP_HARNESS_MODE", mode.as_str());
-    command.env("PERL_LSP_HARNESS_CONTEXT", context_path);
+    command.env("PERL_LSP_HARNESS_CONTEXT", probe_context_path);
     sanitize_perl_env(&mut command);
 
     command
@@ -3745,6 +3813,16 @@ fn read_run_report(path: &Path) -> Result<RunReport> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("reading run report {}", path.display()))?;
     serde_json::from_str(&raw).with_context(|| format!("decoding run report {}", path.display()))
+}
+
+fn write_direct_diagnostics_receipt(path: &Path, receipt: &DirectDiagnosticReceipt) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        let context = format!("creating diagnostics directory {}", parent.display());
+        fs::create_dir_all(parent).context(context)?;
+    }
+    let json = serde_json::to_string_pretty(receipt).context("serializing direct diagnostics")?;
+    fs::write(path, format!("{json}\n"))
+        .with_context(|| format!("writing direct diagnostics {}", path.display()))
 }
 
 fn read_compile_baseline(path: &Path) -> Result<CompileBaseline> {
@@ -5279,30 +5357,28 @@ struct BuildRunReportInput<'a> {
     config: &'a RunConfig,
     perl_tree: &'a Path,
     run_tree: &'a Path,
-    discovered: &'a [DiscoveredTest],
-    records: &'a [RunnerRecord],
-    harness_status: Option<i32>,
+    observation: &'a UpstreamObservationSet,
 }
 
+/// Assemble the authoritative run report from frozen upstream evidence only.
+///
+/// The typed observation set is the sole input for membership and totals:
+/// direct diagnostic products cannot reach this function (#8173).
 fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
-    let records_by_path = input
-        .records
-        .iter()
-        .filter_map(|record| normalize_test_path(&record.path).map(|path| (path, record)))
-        .collect::<BTreeMap<_, _>>();
     let mut file_results = Vec::new();
     let mut failures = Vec::new();
     let mut buckets = BTreeMap::new();
     let mut assertions_total = 0usize;
     let mut assertions_passed = 0usize;
+    let mut semantic_boundaries = Vec::new();
 
-    for test in input.discovered {
-        match records_by_path.get(&test.path) {
+    for expected in input.observation.expected() {
+        match input.observation.observed_record(expected) {
             Some(record) => {
                 assertions_total = assertions_total.saturating_add(record.assertions_total);
                 assertions_passed = assertions_passed.saturating_add(record.assertions_passed);
                 file_results.push(RunFileResult {
-                    path: test.path.clone(),
+                    path: expected.as_str().to_string(),
                     status: record.status,
                     assertions_passed: record.assertions_passed,
                     assertions_total: record.assertions_total,
@@ -5310,13 +5386,29 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
                 if record.status == RunnerStatus::Fail {
                     let bucket = record.bucket.clone().unwrap_or_else(|| "unknown".to_string());
                     *buckets.entry(bucket.clone()).or_insert(0) += 1;
-                    failures.push(failure_for_record(&test.path, &bucket, record));
+                    failures.push(failure_for_record(expected.as_str(), &bucket, record));
                 }
+                semantic_boundaries.extend(record.semantic_boundaries.iter().map(|boundary| {
+                    ObservedSemanticBoundary {
+                        path: expected.as_str().to_string(),
+                        id: boundary.id.clone(),
+                        disposition: boundary.disposition,
+                        reason: boundary.reason.clone(),
+                        source_span: boundary.source_span,
+                        source_kind: boundary.source_kind.clone(),
+                        confidence: boundary.confidence,
+                        blocks_compilation: boundary.blocks_compilation,
+                        blocks_downstream_static_facts: boundary.blocks_downstream_static_facts,
+                        lock_scope: boundary.lock_scope,
+                        owner_workstream: boundary.owner_workstream.clone(),
+                        supporting_test: boundary.supporting_test.clone(),
+                    }
+                }));
             }
             None => {
                 assertions_total = assertions_total.saturating_add(1);
                 file_results.push(RunFileResult {
-                    path: test.path.clone(),
+                    path: expected.as_str().to_string(),
                     status: RunnerStatus::Fail,
                     assertions_passed: 0,
                     assertions_total: 1,
@@ -5324,7 +5416,7 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
                 let bucket = "harness_prepare".to_string();
                 *buckets.entry(bucket.clone()).or_insert(0) += 1;
                 failures.push(RunFailure {
-                    path: test.path.clone(),
+                    path: expected.as_str().to_string(),
                     phase: input.config.mode.as_str().to_string(),
                     bucket,
                     first_diagnostic: "test was discovered but produced no runner record"
@@ -5340,31 +5432,6 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
         file_results.iter().filter(|result| result.status == RunnerStatus::Fail).count();
     let files_total = file_results.len();
     let files_passed = files_total.saturating_sub(files_failed);
-    let semantic_boundaries = input
-        .discovered
-        .iter()
-        .filter_map(|test| {
-            let path = normalize_test_path(&test.path)?;
-            let record = records_by_path.get(&path)?;
-            Some((path, *record))
-        })
-        .flat_map(|(path, record)| {
-            record.semantic_boundaries.iter().map(move |boundary| ObservedSemanticBoundary {
-                path: path.clone(),
-                id: boundary.id.clone(),
-                disposition: boundary.disposition,
-                reason: boundary.reason.clone(),
-                source_span: boundary.source_span,
-                source_kind: boundary.source_kind.clone(),
-                confidence: boundary.confidence,
-                blocks_compilation: boundary.blocks_compilation,
-                blocks_downstream_static_facts: boundary.blocks_downstream_static_facts,
-                lock_scope: boundary.lock_scope,
-                owner_workstream: boundary.owner_workstream.clone(),
-                supporting_test: boundary.supporting_test.clone(),
-            })
-        })
-        .collect::<Vec<_>>();
 
     RunReport {
         schema_version: RUN_REPORT_SCHEMA_VERSION.to_string(),
@@ -5377,7 +5444,7 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
         runner: input.config.runner,
         mode: input.config.mode,
         profile: input.config.profile,
-        harness_status: input.harness_status,
+        harness_status: input.observation.terminal().status_code(),
         summary: RunSummary {
             files_total,
             files_passed,
@@ -5471,6 +5538,24 @@ mod tests {
     };
 
     type TestResult<T = ()> = Result<T>;
+
+    /// Freeze a test observation set the way `run_mode` does: one settle call
+    /// from discovered membership plus upstream rows only.
+    fn settle_test_observation(
+        mode: HarnessMode,
+        discovered: &[DiscoveredTest],
+        records: &[RunnerRecord],
+        harness_status: Option<i32>,
+    ) -> Result<UpstreamObservationSet> {
+        UpstreamObservationSet::settle(
+            HarnessRunner::Test,
+            mode,
+            HarnessProfile::Base,
+            discovered,
+            records,
+            harness_status,
+        )
+    }
 
     /// Parity: the declared-path validator must not be weaker than the
     /// structural classifier. If a form is host-path material anywhere in a
@@ -5657,6 +5742,7 @@ mod tests {
             tests: Vec::new(),
             output: None,
             runner_binary: None,
+            diagnostic_probes: false,
         };
 
         let Err(err) = run_mode(config) else {
@@ -5678,6 +5764,7 @@ mod tests {
             tests: vec!["base/rs.t".into()],
             output: None,
             runner_binary: None,
+            diagnostic_probes: false,
         };
 
         let Err(err) = run_mode(config) else {
@@ -5706,6 +5793,7 @@ mod tests {
             tests: Vec::new(),
             output: None,
             runner_binary: Some(PathBuf::from("runner")),
+            diagnostic_probes: false,
         };
         let discovered = vec![
             DiscoveredTest { path: "base/ok.t".into(), root: "base".into() },
@@ -5749,14 +5837,14 @@ mod tests {
             },
         ];
         let run_tree = temp.path().join("run");
+        let observation =
+            settle_test_observation(HarnessMode::Parse, &discovered, &records, Some(1))?;
 
         let report = build_run_report(BuildRunReportInput {
             config: &config,
             perl_tree: temp.path(),
             run_tree: &run_tree,
-            discovered: &discovered,
-            records: &records,
-            harness_status: Some(1),
+            observation: &observation,
         });
 
         assert_eq!(report.summary.files_total, 3);
@@ -5790,6 +5878,7 @@ mod tests {
             tests: Vec::new(),
             output: None,
             runner_binary: Some(PathBuf::from("runner")),
+            diagnostic_probes: false,
         };
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let boundary = SemanticBoundaryRecord {
@@ -5816,20 +5905,251 @@ mod tests {
             first_diagnostic: None,
             semantic_boundaries: vec![boundary.clone()],
         };
-        let records = vec![record("base/ok.t"), record("base/ok.t"), record("stale.t")];
+        let records = vec![record("base/ok.t"), record("stale.t")];
 
+        let observation =
+            settle_test_observation(HarnessMode::Compile, &discovered, &records, Some(0))?;
         let report = build_run_report(BuildRunReportInput {
             config: &config,
             perl_tree: temp.path(),
             run_tree: &temp.path().join("run"),
-            discovered: &discovered,
-            records: &records,
-            harness_status: Some(0),
+            observation: &observation,
         });
 
         assert_eq!(report.semantic_boundaries.len(), 1);
         assert_eq!(report.semantic_boundaries[0].path, "base/ok.t");
         Ok(())
+    }
+
+    #[test]
+    fn duplicate_upstream_records_fail_closed_instead_of_silently_collapsing() -> TestResult {
+        let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
+        let record = |path: &str| RunnerRecord {
+            schema_version: "perl_core_harness.runner_record.v1".into(),
+            mode: "compile".into(),
+            path: path.into(),
+            status: RunnerStatus::Pass,
+            assertions_passed: 1,
+            assertions_total: 1,
+            bucket: None,
+            first_diagnostic: None,
+            semantic_boundaries: Vec::new(),
+        };
+        // Equal payloads for one normalized path must never merge into one
+        // authority row (#8173): the second row fails the freeze closed.
+        let records = vec![record("base/ok.t"), record("base/ok.t")];
+
+        let Err(err) = UpstreamObservationSet::settle(
+            HarnessRunner::Test,
+            HarnessMode::Compile,
+            HarnessProfile::Base,
+            &discovered,
+            &records,
+            Some(0),
+        ) else {
+            bail!("duplicate upstream rows should fail closed");
+        };
+
+        assert!(err.to_string().contains("duplicate upstream runner record"));
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_upstream_record_paths_fail_closed_before_report_assembly() -> TestResult {
+        let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
+        let record = RunnerRecord {
+            schema_version: "perl_core_harness.runner_record.v1".into(),
+            mode: "parse".into(),
+            path: "not-a-normalized-test.txt".into(),
+            status: RunnerStatus::Pass,
+            assertions_passed: 1,
+            assertions_total: 1,
+            bucket: None,
+            first_diagnostic: None,
+            semantic_boundaries: Vec::new(),
+        };
+
+        let settled = UpstreamObservationSet::settle(
+            HarnessRunner::Test,
+            HarnessMode::Parse,
+            HarnessProfile::Base,
+            &discovered,
+            std::slice::from_ref(&record),
+            Some(0),
+        );
+
+        let message = match settled {
+            Err(err) => err.to_string(),
+            Ok(_) => bail!("malformed upstream rows should fail closed"),
+        };
+        assert!(message.contains("did not normalize"));
+        Ok(())
+    }
+
+    #[test]
+    fn direct_probe_rows_cannot_enter_upstream_membership_or_totals() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let config = RunConfig {
+            perl_tree: temp.path().join("perl"),
+            host_perl: PathBuf::from("perl"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Parse,
+            profile: HarnessProfile::Base,
+            tests: Vec::new(),
+            output: None,
+            runner_binary: Some(PathBuf::from("runner")),
+            diagnostic_probes: false,
+        };
+        let discovered = vec![
+            DiscoveredTest { path: "base/ok.t".into(), root: "base".into() },
+            DiscoveredTest { path: "base/gap.t".into(), root: "base".into() },
+        ];
+        let upstream_only = RunnerRecord {
+            schema_version: "perl_core_harness.runner_record.v1".into(),
+            mode: "parse".into(),
+            path: "base/ok.t".into(),
+            status: RunnerStatus::Pass,
+            assertions_passed: 1,
+            assertions_total: 1,
+            bucket: None,
+            first_diagnostic: None,
+            semantic_boundaries: Vec::new(),
+        };
+        let observation = settle_test_observation(
+            HarnessMode::Parse,
+            &discovered,
+            &[upstream_only.clone()],
+            Some(0),
+        )?;
+
+        // The frozen observation keeps the missing row missing even though a
+        // direct probe later reproduces a passing result for it.
+        let mut diagnostics = DirectDiagnosticSet::plan(&observation);
+        diagnostics.add_probe(SettledDiagnosticProbe::settled(
+            "base/gap.t",
+            Some(0),
+            upstream_only,
+        ));
+
+        assert_eq!(observation.missing().len(), 1);
+        assert_eq!(observation.missing()[0].as_str(), "base/gap.t");
+        let report = build_run_report(BuildRunReportInput {
+            config: &config,
+            perl_tree: temp.path(),
+            run_tree: &temp.path().join("run"),
+            observation: &observation,
+        });
+        assert_eq!(report.summary.files_total, 2);
+        assert_eq!(report.summary.files_passed, 1);
+        assert_eq!(report.summary.files_failed, 1);
+
+        // The receipt records the passing probe plus explicit non-claims.
+        let receipt = run_authority::direct_diagnostics_receipt(
+            &diagnostics,
+            HarnessMode::Parse,
+            observation.subject().as_str(),
+            Some(0),
+            observation.counts(),
+        );
+        assert_eq!(receipt.probes.len(), 1);
+        assert_eq!(
+            receipt.probes[0].outcome,
+            run_authority::DiagnosticProbeOutcome::ReproducedPass
+        );
+        assert_eq!(receipt.declared_non_claims.rows_considered_by_report_totals, 0);
+        assert_eq!(receipt.declared_non_claims.rows_considered_by_upstream_completeness, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn equal_payload_upstream_and_probe_rows_stay_distinct_authority_rows() -> TestResult {
+        let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
+        let payload = RunnerRecord {
+            schema_version: "perl_core_harness.runner_record.v1".into(),
+            mode: "parse".into(),
+            path: "base/ok.t".into(),
+            status: RunnerStatus::Pass,
+            assertions_passed: 4,
+            assertions_total: 4,
+            bucket: None,
+            first_diagnostic: None,
+            semantic_boundaries: Vec::new(),
+        };
+        let observation =
+            settle_test_observation(HarnessMode::Parse, &discovered, &[payload.clone()], Some(0))?;
+        let mut diagnostics = DirectDiagnosticSet::plan(&observation);
+        diagnostics.add_probe(SettledDiagnosticProbe::settled("base/ok.t", Some(0), payload));
+
+        let receipt = run_authority::direct_diagnostics_receipt(
+            &diagnostics,
+            HarnessMode::Parse,
+            observation.subject().as_str(),
+            Some(0),
+            observation.counts(),
+        );
+
+        // Identical bytes do not deduplicate across authority classes.
+        assert_eq!(
+            observation.observed_record(&observation.expected()[0]).map(|r| r.status),
+            Some(RunnerStatus::Pass)
+        );
+        assert_eq!(receipt.probes.len(), 1);
+        assert_eq!(receipt.probes[0].authority, "direct_probe");
+        assert_eq!(receipt.probes[0].status, Some(RunnerStatus::Pass));
+        Ok(())
+    }
+
+    #[test]
+    fn diagnostic_receipt_is_not_admissible_as_a_run_report() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let discovered = vec![DiscoveredTest { path: "base/gap.t".into(), root: "base".into() }];
+        let observation = settle_test_observation(HarnessMode::Parse, &discovered, &[], Some(3))?;
+        let mut diagnostics = DirectDiagnosticSet::plan(&observation);
+        diagnostics.add_probe(SettledDiagnosticProbe::unavailable("base/gap.t", None));
+        let receipt = run_authority::direct_diagnostics_receipt(
+            &diagnostics,
+            HarnessMode::Parse,
+            observation.subject().as_str(),
+            Some(3),
+            observation.counts(),
+        );
+        let json = serde_json::to_string(&receipt)?;
+
+        let decoded = serde_json::from_str::<RunReport>(&json);
+        assert!(decoded.is_err(), "diagnostic receipt must not decode as RunReport");
+        let roundtrip: run_authority::DirectDiagnosticReceipt = serde_json::from_str(&json)?;
+        assert_eq!(roundtrip, receipt);
+        let _ = temp;
+        Ok(())
+    }
+
+    #[test]
+    fn recurrence_guard_bans_direct_backfill_from_the_authoritative_run_path() {
+        let library_source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"));
+        let authority_source =
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/run_authority.rs"));
+
+        // Assemble the banned identifiers so this guard does not match its
+        // own text.
+        let banned = [
+            format!("used_direct_{runner}", runner = "runner"),
+            format!("invoke_runner_for_missing_{records}", records = "records"),
+        ];
+        for name in banned {
+            assert!(
+                !library_source.contains(&name),
+                "recurrence guard: {name} must not return to the authoritative run path"
+            );
+        }
+        assert!(
+            authority_source.contains("struct DirectDiagnosticSet"),
+            "the typed diagnostic product must stay physically separate"
+        );
+
+        // The two context files stay distinct so probes cannot append to
+        // upstream membership storage.
+        assert!(library_source.contains("perl-lsp-runner-records.jsonl"));
+        assert!(library_source.contains("perl-lsp-direct-diagnostics.jsonl"));
     }
 
     #[test]
@@ -7485,6 +7805,7 @@ mod tests {
             tests: Vec::new(),
             output: Some(run_path.clone()),
             runner_binary: Some(PathBuf::from("runner")),
+            diagnostic_probes: false,
         };
         let discovered = vec![DiscoveredTest { path: "base/if.t".into(), root: "base".into() }];
         let records = vec![RunnerRecord {
@@ -7499,13 +7820,13 @@ mod tests {
             semantic_boundaries: Vec::new(),
         }];
         let run_tree = temp.path().join("run");
+        let observation =
+            settle_test_observation(HarnessMode::Parse, &discovered, &records, Some(0))?;
         let report = build_run_report(BuildRunReportInput {
             config: &config,
             perl_tree: temp.path(),
             run_tree: &run_tree,
-            discovered: &discovered,
-            records: &records,
-            harness_status: Some(0),
+            observation: &observation,
         });
         write_run_report(&run_path, &report)?;
         assert!(run_path.is_file());
@@ -8477,6 +8798,7 @@ mod tests {
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            diagnostic_probes: true,
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -8507,6 +8829,7 @@ mod tests {
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            diagnostic_probes: true,
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -8540,6 +8863,7 @@ mod tests {
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            diagnostic_probes: true,
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -8567,6 +8891,7 @@ mod tests {
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            diagnostic_probes: true,
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -8601,6 +8926,7 @@ mod tests {
             tests: vec!["base/if.t".into()],
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            diagnostic_probes: true,
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -8641,6 +8967,7 @@ mod tests {
             ],
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            diagnostic_probes: true,
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -8984,6 +9311,7 @@ mod tests {
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            diagnostic_probes: true,
         }) else {
             bail!("failing runner record should fail the harness run");
         };
@@ -9025,6 +9353,7 @@ exit 7
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            diagnostic_probes: true,
         }) else {
             bail!("nonzero harness status should fail even when runner records pass");
         };
@@ -9040,15 +9369,95 @@ exit 7
 
     #[cfg(unix)]
     #[test]
-    fn run_mode_invokes_runner_directly_when_harness_writes_no_records() -> TestResult {
+    fn run_mode_keeps_all_pass_direct_probes_diagnostic_only_when_harness_writes_no_records()
+    -> TestResult {
         let temp = tempfile::tempdir()?;
+        // Upstream harness exits nonzero and writes no records: every expected
+        // row is missing after the frozen run (#8173).
         let perl_tree = write_fake_perl_tree_with_run_body(
             temp.path(),
-            r#"# Deliberately do not invoke ./perl; real harness integration bugs should fall
-# back to direct runner invocation for harness-selected files.
+            r#"# Deliberately do not invoke ./perl; the upstream selection stays unproven.
 exit 7
 "#,
         )?;
+        let runner = write_fake_runner(temp.path(), RunnerStatus::Pass)?;
+        let output = temp.path().join("parse-report.json");
+
+        let Err(err) = run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Parse,
+            profile: HarnessProfile::Base,
+            tests: Vec::new(),
+            output: Some(output.clone()),
+            runner_binary: Some(runner.clone()),
+            diagnostic_probes: true,
+        }) else {
+            bail!("all-pass direct probes must not turn a missing upstream run into success");
+        };
+        assert!(err.to_string().contains("failed for 1 of 1 files"));
+
+        // The authoritative report keeps the upstream verdict: missing row,
+        // nonzero terminal, no direct participation in totals.
+        let raw = fs::read_to_string(&output)?;
+        let report: RunReport = serde_json::from_str(&raw)?;
+        assert_eq!(report.summary.files_total, 1);
+        assert_eq!(report.summary.files_passed, 0);
+        assert_eq!(report.summary.files_failed, 1);
+        assert_eq!(report.harness_status, Some(7));
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(report.failures[0].bucket, "harness_prepare");
+
+        // The direct probes are retained separately as pure diagnosis.
+        let receipt_path = temp.path().join("parse-report.json.direct-diagnostics.json");
+        let receipt_raw = fs::read_to_string(receipt_path)?;
+        let receipt: serde_json::Value = serde_json::from_str(&receipt_raw)?;
+        assert_eq!(receipt["schema_version"], "perl_core_harness.direct_diagnostics.v1");
+        assert_eq!(receipt["probes"].as_array().map(Vec::len), Some(1));
+        assert_eq!(receipt["probes"][0]["authority"], "direct_probe");
+        assert_eq!(receipt["probes"][0]["path"], "base/ok.t");
+        assert_eq!(receipt["probes"][0]["outcome"], "reproduced_pass");
+        assert_eq!(receipt["declared_non_claims"]["rows_considered_by_report_totals"], 0);
+        assert_eq!(receipt["parent_observation"]["missing_rows"], 1);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_disabling_diagnostics_skips_probe_receipt_without_changing_verdict() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree_with_run_body(temp.path(), "exit 7\n")?;
+        let runner = write_fake_runner(temp.path(), RunnerStatus::Pass)?;
+        let output = temp.path().join("parse-report.json");
+
+        let Err(_err) = run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Parse,
+            profile: HarnessProfile::Base,
+            tests: Vec::new(),
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+            diagnostic_probes: false,
+        }) else {
+            bail!("upstream failure must fail closed with diagnostics disabled too");
+        };
+
+        let raw = fs::read_to_string(&output)?;
+        let report: RunReport = serde_json::from_str(&raw)?;
+        assert_eq!(report.summary.files_failed, 1);
+        assert_eq!(report.harness_status, Some(7));
+        assert!(!temp.path().join("parse-report.json.direct-diagnostics.json").exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_completes_upstream_run_without_direct_processes_or_receipt() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree(temp.path())?;
         let runner = write_fake_runner(temp.path(), RunnerStatus::Pass)?;
         let output = temp.path().join("parse-report.json");
 
@@ -9061,17 +9470,61 @@ exit 7
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            diagnostic_probes: true,
         })?;
 
-        let raw = fs::read_to_string(output)?;
-        let report: RunReport = serde_json::from_str(&raw)?;
-        assert_eq!(report.summary.files_total, 1);
+        let report: RunReport = serde_json::from_str(&fs::read_to_string(output)?)?;
         assert_eq!(report.summary.files_passed, 1);
-        assert_eq!(report.summary.files_failed, 0);
-        assert!(report.buckets.is_empty());
-        assert!(report.failures.is_empty());
-        assert_eq!(report.harness_status, Some(7));
+        assert!(!temp.path().join("parse-report.json.direct-diagnostics.json").exists());
         Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_records_unavailable_probe_when_direct_runner_writes_nothing() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree_with_run_body(temp.path(), "exit 7\n")?;
+        let runner = root_join_script(temp.path())?;
+        let output = temp.path().join("parse-report.json");
+
+        let Err(err) = run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Parse,
+            profile: HarnessProfile::Base,
+            tests: Vec::new(),
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+            diagnostic_probes: true,
+        }) else {
+            bail!("an unavailable probe cannot repair the upstream result");
+        };
+        assert!(err.to_string().contains("failed for 1 of 1 files"));
+
+        let receipt_raw =
+            fs::read_to_string(temp.path().join("parse-report.json.direct-diagnostics.json"))?;
+        let receipt: serde_json::Value = serde_json::from_str(&receipt_raw)?;
+        assert_eq!(receipt["probes"][0]["outcome"], "unavailable");
+        assert_eq!(
+            receipt["probes"][0]["limitations"][0],
+            "direct_probe_produced_no_runner_record"
+        );
+        Ok(())
+    }
+
+    /// A diagnostic runner that executes cleanly but never records anything.
+    #[cfg(unix)]
+    fn root_join_script(root: &Path) -> TestResult<PathBuf> {
+        let runner = root.join("fake-runner-silent.sh");
+        let body = r#"#!/bin/sh
+set -eu
+printf 'no records will be written\n'
+exit 3
+"#;
+        fs::write(&runner, body)?;
+        set_executable(&runner)?;
+        Ok(runner)
     }
 
     #[cfg(unix)]
