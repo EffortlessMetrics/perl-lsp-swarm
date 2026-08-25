@@ -312,11 +312,8 @@ const ROWS: &[MatrixRow] = &[
 ];
 
 #[cfg(test)]
-const CLOSED_STATUSES: &[&str] = &[
-    "implemented+tested+documented",
-    "negative-gated+documented",
-    "not-applicable+documented",
-];
+const CLOSED_STATUSES: &[&str] =
+    &["implemented+tested+documented", "negative-gated+documented", "not-applicable+documented"];
 
 pub fn run(check: bool) -> Result<()> {
     let root = project_root()?;

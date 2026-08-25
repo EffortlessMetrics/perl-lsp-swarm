@@ -273,8 +273,7 @@ mod tests {
             .expect("generated-status-pages allowlist entry");
         let live_glob = status.glob.as_deref().expect("generated-status-pages glob");
         assert_eq!(
-            live_glob,
-            "docs/project/status/**.md",
+            live_glob, "docs/project/status/**.md",
             "live status glob is currently the invalid **.md form; repairing it is a generated-policy claim because it reclassifies status pages and churns NON_RUST_INVENTORY"
         );
         assert!(
