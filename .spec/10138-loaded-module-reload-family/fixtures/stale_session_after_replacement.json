@@ -1,0 +1,35 @@
+{
+  "schema": "perl_dap.loaded_module_reload_family.vector.v1",
+  "name": "stale_session_after_replacement",
+  "description": "A session restart or replacement invalidates prior family and operation identities: the old epoch receives session_stale, never a current result.",
+  "negotiation": {
+    "client": {
+      "family": "perl-lsp/loadedModuleReload",
+      "versions": [
+        1
+      ]
+    },
+    "adapter": {
+      "epoch": 8,
+      "backed": true
+    }
+  },
+  "request": {
+    "family": "perl-lsp/loadedModuleReload",
+    "familyVersion": 1,
+    "sessionEpoch": 7,
+    "operationId": 48,
+    "subject": {
+      "moduleIdentity": "opaque-module-token-1a2b",
+      "savedSourceDigest": "sha256:0f12e4d6a9b8c7d5e3f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d",
+      "logicalSourceUri": "perl-lsp-subject:epoch=7;observation=3",
+      "observationGeneration": 3
+    }
+  },
+  "expect": {
+    "evaluation": "rejected",
+    "code": "session_stale",
+    "kind": "request_rejected",
+    "success": false
+  }
+}
