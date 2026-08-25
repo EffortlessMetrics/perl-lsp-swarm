@@ -2847,3 +2847,33 @@ created = "2026-08-24"
 review_after = "2026-09-24"
 expires = "2026-10-24"
 removal_criteria = "ripr#1428 lands (test-harness plumbing distinguished from production seams) or RIPR traces the harness helpers to their executing matrix rows, then delete this entry and expect the 29-row suite to clear without it. A new reachable_unrevealed seam that a real focused test could cover must be fixed by test, not by extending this entry."
+
+# -----------------------------------------------------------------------------
+# #12121 semantic-identity contract: two ripr#1429-class constructor seams in
+# one new contract module. (A) SemanticContributionId::new's private
+# `family_ordinal` field — RIPR cannot trace the u32 literal through the
+# private constructor into the fingerprint fold, even though
+# contribution_id_binds_family_and_ordinal asserts the ordinal changes the
+# fingerprint (7 vs 8) and empty-field rejection covers the guard. (B)
+# SemanticSubjectGeneration::mix_subject_fields' private `fp` accumulator
+# parameter — RIPR cannot trace the SemanticIdentityFingerprint builder chain
+# (new/field/discriminant/finish, all by-value) to the 21 semantic_identity
+# fixtures that assert fingerprint distinctness, determinism under input-order
+# permutation, and separator-content non-collision. Suppression is narrow
+# (two files of the new semantic_identity module, one PR #12255). Remove when
+# ripr#1429 is fixed upstream or targeted mutation is scheduled per #1289.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-12121-semantic-identity-constructor-seams"
+kind = "predicate_infection_untraceable"
+paths = [
+  "crates/perl-semantic-facts/src/semantic_identity/contribution.rs",
+  "crates/perl-semantic-facts/src/semantic_identity/scope.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "Two ripr#1429-class seams in PR #12255 semantic_identity module: SemanticContributionId::new's private family_ordinal field and mix_subject_fields' private fingerprint accumulator parameter. RIPR cannot statically trace either through private constructors/by-value builder chains to the covering tests, which assert ordinal-sensitive and order-permutation-stable fingerprints plus separator-content non-collision across 21 inline unit tests. Suppression is narrow (two files of one new contract module, one PR #12255). Remove when ripr#1429 is fixed upstream or targeted mutation is scheduled per #1289."
+created = "2026-08-24"
+review_after = "2026-09-23"
+expires = "2026-10-24"
