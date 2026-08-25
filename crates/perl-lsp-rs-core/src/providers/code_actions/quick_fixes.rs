@@ -1553,12 +1553,15 @@ pub fn fix_parse_error(
 /// must suppress the edit rather than authorize an unrelated token.
 fn has_unclosed_brace(source: &str) -> bool {
     let mut depth = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
     let mut in_single = false;
     let mut in_double = false;
     let mut escaped = false;
     let mut in_comment = false;
 
-    for ch in source.chars() {
+    let mut chars = source.chars().peekable();
+    while let Some(ch) = chars.next() {
         if in_comment {
             if ch == '\n' {
                 in_comment = false;
@@ -1585,17 +1588,30 @@ fn has_unclosed_brace(source: &str) -> bool {
             in_comment = true;
             continue;
         }
+        if !in_single && !in_double && ch == '/' {
+            // Regex and substitution delimiters need Perl-aware lexing.
+            return false;
+        }
+        if !in_single && !in_double && ch == '<' && chars.peek() == Some(&'<') {
+            // Heredocs can contain arbitrary brace text until a later
+            // terminator, so the source is ambiguous without lexer facts.
+            return false;
+        }
         if in_single || in_double {
             continue;
         }
         match ch {
             '{' => depth += 1,
             '}' => depth = depth.saturating_sub(1),
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
             _ => {}
         }
     }
 
-    depth > 0
+    depth == 1 && paren_depth == 0 && bracket_depth == 0 && !in_single && !in_double && !in_comment
 }
 
 /// Fix unused parameter by adding underscore prefix
