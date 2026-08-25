@@ -308,7 +308,7 @@ fn discover_linked_git_directories(
         let is_linked_directory = std::fs::symlink_metadata(&path)
             .is_ok_and(|metadata| metadata.file_type().is_symlink())
             && std::fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir());
-        if !is_linked_directory || is_skipped_path(root, &relative_path, allowlist, config) {
+        if !is_linked_directory || is_skipped_path(root, &relative_path, allowlist) {
             continue;
         }
 
@@ -342,7 +342,6 @@ fn is_skipped_path(
     root: &Path,
     relative_path: &Path,
     allowlist: &DiscoveryIncludeAllowlist,
-    config: &DiscoveryConfig,
 ) -> bool {
     !is_safe_relative_git_path(relative_path)
         || allowlist.has_unallowed_skipped_component(relative_path)
