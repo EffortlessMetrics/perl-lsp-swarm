@@ -1,0 +1,5 @@
+component: "Developer experience"
+kind: Added
+body: "Defined the in-memory maintained compiler-profile domain model with closure laws and order-independent semantic fingerprints (#12186)."
+time: 
+09:30:11
