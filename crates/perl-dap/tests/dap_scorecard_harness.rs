@@ -9,6 +9,10 @@
 //! cargo test -p perl-dap --test dap_scorecard_harness -- --nocapture
 //! ```
 
+#![expect(
+    clippy::print_stderr,
+    reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
+)]
 mod common;
 
 use common::{DapWorkflowSession, perl_available, workflow_timeout};
@@ -383,11 +387,7 @@ fn print_marker_friendly_summary(receipt: &ScorecardReceipt) {
     eprintln!("<!-- BEGIN: DAP_LAUNCH_SCORECARD -->");
     eprintln!("| Metric | Value | Target | Status |");
     eprintln!("|---|---|---|---|");
-    let launch_pct = if receipt.launch.total == 0 {
-        0
-    } else {
-        (receipt.launch.passed * 100) / receipt.launch.total
-    };
+    let launch_pct = (receipt.launch.passed * 100).checked_div(receipt.launch.total).unwrap_or(0);
     let launch_status =
         if launch_pct >= usize::from(receipt.launch.threshold_pct) { "PASS" } else { "FAIL" };
     eprintln!(
@@ -414,11 +414,7 @@ fn print_marker_friendly_summary(receipt: &ScorecardReceipt) {
     eprintln!("| Metric | Value | Target | Status |");
     eprintln!("|---|---|---|---|");
 
-    let attach_pct = if receipt.attach.total == 0 {
-        0
-    } else {
-        (receipt.attach.passed * 100) / receipt.attach.total
-    };
+    let attach_pct = (receipt.attach.passed * 100).checked_div(receipt.attach.total).unwrap_or(0);
     let attach_status =
         if attach_pct >= usize::from(receipt.attach.threshold_pct) { "PASS" } else { "FAIL" };
     eprintln!(

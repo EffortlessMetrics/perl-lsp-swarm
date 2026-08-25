@@ -25,6 +25,30 @@ No new `NodeKind` variant should land without all of the following:
 - Semantic analyzer decision: handled, intentionally ignored, or explicitly
   deferred.
 
+## Depth safety
+
+`perl_ast::Node` stays recursively owned. That is the public geometry; it is
+not an arena or index tree.
+
+- **Drop** is iterative and depth-independent. New child fields must be
+  visited by the canonical mutable child walk so they inherit destruction
+  safety. Overflow is proven on a 50,000-node chain with a 256 KiB worker;
+  construct/destroy equality is proven at 10,000-node cycle depth.
+- **Clone** is iterative over the same canonical child fields. Overflow is
+  proven on a 50,000-node chain with a 256 KiB worker. Cloning is a full
+  owned duplication, not a shared projection.
+- **PartialEq** is iterative exact structural equality over the same
+  canonical child fields. Overflow is proven on a 50,000-node chain with a
+  256 KiB worker. This preserves current `==` semantics; it is not
+  S-expression, fingerprint, or source-text equality.
+- **Debug** remains derived and recursive. It is supported only for ordinary
+  parser-produced nesting. Adversarial 50,000-node chains are outside that
+  precondition, and the precondition is not runtime-enforced. Replacement is
+  [#8840](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8840).
+- Recursive read helpers may stay depth-guarded and may truncate. Silent
+  truncation of an operation advertised as exact is a separate claim
+  ([#8867](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8867)).
+
 ## Contributor checklist (AST behavior changes)
 
 Before opening a PR that adds or changes an AST node shape, verify:

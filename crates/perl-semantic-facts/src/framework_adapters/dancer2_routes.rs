@@ -463,7 +463,7 @@ mod tests {
         assert_eq!(name_value.as_deref(), Some("user_show"));
         assert_eq!(fact.route.pattern.value.as_deref(), Some("/users/:id"));
         assert_ne!(
-            fact.route.route_name_literal_value().as_deref(),
+            fact.route.route_name_literal_value(),
             fact.route.pattern.value.as_deref(),
             "name and pattern stay distinct fields"
         );

@@ -700,19 +700,29 @@ end
 ---@param fieldset string A field spec in the format
 ---"parent[.child][.subchild]" eg: "myProp.subProp.subSubProp"
 ---@return any|nil The value of the given field or nil if not found.
+---@return boolean found Whether the field exists, tracked separately from
+---the value so an explicitly configured false stays distinct from a missing
+---section (#10845). Traversal recurses only into tables; a missing or
+---non-table intermediate keeps the whole path not-found.
 function util.table_get_field(t, fieldset)
   local fields = util.split(fieldset, ".", "%.")
   local field = fields[1]
   local value = nil
+  local found = false
 
-  if field and #fields > 1 and t[field] then
-    local sub_fields = table.concat(fields, ".", 2)
-    value = util.table_get_field(t[field], sub_fields)
-  elseif field and #fields > 0 and t[field] then
-    value = t[field]
+  if field then
+    if #fields > 1 then
+      if type(t[field]) == "table" then
+        value, found = util.table_get_field(
+          t[field], table.concat(fields, ".", 2))
+      end
+    elseif t[field] ~= nil then
+      value = t[field]
+      found = true
+    end
   end
 
-  return value
+  return value, found
 end
 
 -- Local patch (#11143): typed settings-value helpers for deep_merge. Every
