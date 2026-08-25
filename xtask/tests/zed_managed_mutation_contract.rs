@@ -56,6 +56,7 @@ fn downloads_extract_into_attempt_private_staging() -> Result<(), Box<dyn Error>
         "fn next_attempt_id",
         "fn attempt_staging_dir",
         "fn selection_manifest_tmp_path",
+        "fn claim_attempt_staging",
         "fn publish_staged_attempt",
         "fn remove_owned_attempt",
         "fn classify_durable_subject",
@@ -67,6 +68,28 @@ fn downloads_extract_into_attempt_private_staging() -> Result<(), Box<dyn Error>
             "the attempt-private protocol must expose `{required}`"
         );
     }
+
+    // Attempt identities are claimed via exclusive create, so two Zed
+    // processes cannot share a staging root even within one clock tick.
+    let claim = function_body(&classified, "fn claim_attempt_staging(", "\n}\n")?;
+    assert!(
+        claim.contains("fs::create_dir") && claim.contains("AlreadyExists"),
+        "staging claims must rely on exclusive create-and-retry, not clock or PID guesses"
+    );
+
+    // Destructive replacement swaps the durable name to an owned graveyard
+    // instead of unlinking in place, so a stale replacer can never leave a
+    // concurrent winner's published tree missing.
+    let publish = function_body(&classified, "fn publish_staged_attempt(", "\n}\n")?;
+    assert!(
+        publish.contains("swap_durable_aside"),
+        "replacement must swap the durable directory aside atomically"
+    );
+    assert!(
+        !publish.contains("remove_dir_all(&durable_dir)"),
+        "the protocol must never unlink the durable destination in place"
+    );
+
     let body = function_body(&classified, "fn download_perllsp(", "fn perl_dap_binary(")?;
     assert!(
         body.contains("zed::download_file(&asset.download_url, &attempt_dir"),
@@ -117,6 +140,12 @@ fn success_requires_an_exact_accepted_state_reread() -> Result<(), Box<dyn Error
         body.contains("published perllsp subject failed accepted-state reread"),
         "reread failure must be typed, never treated as success"
     );
+    // The served command path must be exactly what the final reread accepted,
+    // so a rollover race cannot launch this attempt's superseded subject.
+    let served = body
+        .find("if accepted_path != binary_path {")
+        .ok_or("the resolved command path must come from the accepted-state reread")?;
+    assert!(reread < served, "accepted-path comparison must follow the reread");
 
     Ok(())
 }

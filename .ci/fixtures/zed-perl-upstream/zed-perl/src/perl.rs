@@ -330,6 +330,30 @@ fn attempt_staging_dir(version_dir: &str, attempt: &str) -> String {
     format!("{version_dir}.attempt-{attempt}")
 }
 
+/// Claim a cross-process-unique attempt staging root (#11316).
+///
+/// Uniqueness comes from `create_dir`'s exclusive semantics, not from clock
+/// or PID guessing: a candidate name that already exists (including one
+/// generated in the same clock tick by another Zed process) is rejected and a
+/// fresh identity is generated, up to a bounded number of retries. Returns
+/// the attempt id and its claimed, empty staging root.
+fn claim_attempt_staging(work_dir: &Path, version_dir: &str) -> Result<(String, String), String> {
+    for _ in 0..16 {
+        let attempt = next_attempt_id();
+        let attempt_dir = attempt_staging_dir(version_dir, &attempt);
+        match fs::create_dir(work_dir.join(&attempt_dir)) {
+            Ok(()) => return Ok((attempt, attempt_dir)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "failed to claim perllsp attempt staging `{attempt_dir}`: {error}"
+                ));
+            }
+        }
+    }
+    Err("could not claim a unique perllsp attempt staging root".to_string())
+}
+
 /// The attempt-private staging path for one selection-manifest promotion.
 fn selection_manifest_tmp_path(attempt: &str) -> String {
     format!("{SELECTION_MANIFEST_TMP_PATH}-{attempt}")
@@ -387,8 +411,13 @@ fn classify_durable_subject(work_dir: &Path, binary_path: &str) -> DurableSubjec
 /// - `BoundCorrupted`: replace it only behind a fresh reread guard that
 ///   cancels into adoption when a concurrent repair lands first.
 /// - `UnboundMember`: leave the complete member in place; the caller binds it.
-/// - `Absent`: retry the publish once rather than treat either state as
-///   success.
+/// - `Absent` (interrupted legacy shell): swap the shell out and retry once.
+///
+/// Destructive replacement is never an in-place unlink: the durable name is
+/// first swapped atomically to this attempt's `.superseded` graveyard, so a
+/// stale replacer can only ever overwrite the destination with its own
+/// equally staged subject, never leave it missing after deleting a concurrent
+/// winner's tree (#11316).
 fn publish_staged_attempt(
     work_dir: &Path,
     version_dir: &str,
@@ -412,12 +441,11 @@ fn publish_staged_attempt(
             // corrupted bytes. A concurrent repair wins this race and turns
             // replacement into plain adoption.
             if classify_durable_subject(work_dir, binary_path) == DurableSubject::BoundCorrupted {
-                fs::remove_dir_all(&durable_dir).map_err(|error| {
-                    format!("failed to replace corrupted perllsp subject `{version_dir}`: {error}")
-                })?;
+                swap_durable_aside(work_dir, attempt_dir, version_dir)?;
                 fs::rename(&staged_dir, &durable_dir).map_err(|error| {
                     format!("failed to publish replacement perllsp `{version_dir}`: {error}")
                 })?;
+                cleanup_superseded_graveyard(work_dir, attempt_dir);
                 Ok(MutationOutcome::Published)
             } else {
                 remove_owned_attempt(&staged_dir)?;
@@ -431,19 +459,47 @@ fn publish_staged_attempt(
         DurableSubject::Absent => {
             // A destination holding neither a bound subject nor a complete
             // member is an interrupted legacy shell left by older shared-name
-            // downloads. Remove it behind a second fresh reread (a concurrent
-            // publisher's win cancels this cleanup), then retry once rather
-            // than treat either state as success.
+            // downloads. Swap it aside behind a second fresh reread (a
+            // concurrent publisher's win cancels this recovery), then retry
+            // once rather than treat either state as success.
             if fs::metadata(&durable_dir).is_ok()
                 && classify_durable_subject(work_dir, binary_path) == DurableSubject::Absent
             {
-                let _ = fs::remove_dir_all(&durable_dir);
+                swap_durable_aside(work_dir, attempt_dir, version_dir)?;
+                if fs::rename(&staged_dir, &durable_dir).is_ok() {
+                    cleanup_superseded_graveyard(work_dir, attempt_dir);
+                    return Ok(MutationOutcome::Published);
+                }
             }
             fs::rename(&staged_dir, &durable_dir).map(|()| MutationOutcome::Published).map_err(
                 |error| format!("failed to publish staged perllsp `{version_dir}`: {error}"),
             )
         }
     }
+}
+
+/// The graveyard sibling where this attempt parks a durable directory it is
+/// about to replace. Single naming owner for the swap-aside protocol so
+/// cleanup and sweeps stay exact (#11316).
+fn superseded_graveyard(work_dir: &Path, attempt_dir: &str) -> std::path::PathBuf {
+    work_dir.join(format!("{attempt_dir}.superseded"))
+}
+
+/// Atomically move the durable directory to this attempt's graveyard sibling
+/// so the destination name becomes free for one atomic re-publish. The
+/// graveyard stays inside this attempt's owned namespace and is swept only by
+/// [`cleanup_superseded_graveyard`] (#11316).
+fn swap_durable_aside(work_dir: &Path, attempt_dir: &str, version_dir: &str) -> Result<(), String> {
+    let durable_dir = work_dir.join(version_dir);
+    fs::rename(&durable_dir, superseded_graveyard(work_dir, attempt_dir)).map_err(|error| {
+        format!("failed to set aside corrupted perllsp subject `{version_dir}`: {error}")
+    })
+}
+
+/// Remove this attempt's superseded-subject graveyard after its replacement
+/// was published successfully.
+fn cleanup_superseded_graveyard(work_dir: &Path, attempt_dir: &str) {
+    let _ = fs::remove_dir_all(superseded_graveyard(work_dir, attempt_dir));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -819,23 +875,20 @@ impl PerlExtension {
         let binary_path = perllsp_binary_path(&version_dir, version, target, os);
         let work_dir = Path::new(".");
 
-        // Attempt-private mutation protocol (#11316): every download extracts
-        // into a unique non-launchable staging root and reaches the durable
-        // name only through one atomic publish. Concurrent Zed processes
-        // electing the same subject produce exactly one winner and explicitly
-        // settled losers; no attempt ever mutates the durable directory in
-        // place.
-        let attempt = next_attempt_id();
-        let attempt_dir = attempt_staging_dir(&version_dir, &attempt);
-
-        // Exact-attempt-owned cleanup: a stale tree under THIS attempt id is
-        // removed; nothing else ever is. No other live attempt, accepted or
-        // prior-known-good subject, provider, target, or user-managed path
-        // can be reached from here.
-        if let Err(error) = remove_owned_attempt(&work_dir.join(&attempt_dir)) {
-            self.update_state = UpdateState::CandidateRejected;
-            return Err(error);
-        }
+        // Attempt-private mutation protocol (#11316): every download claims a
+        // unique non-launchable staging root (exclusive create, so identities
+        // stay cross-process-unique even within one clock tick) and reaches
+        // the durable name only through one atomic publish. Concurrent Zed
+        // processes electing the same subject produce exactly one winner and
+        // explicitly settled losers; no attempt ever mutates the durable
+        // directory in place.
+        let (attempt, attempt_dir) = match claim_attempt_staging(work_dir, &version_dir) {
+            Ok(claimed) => claimed,
+            Err(error) => {
+                self.update_state = UpdateState::CandidateRejected;
+                return Err(error);
+            }
+        };
 
         // A durable manifest that names exactly this binary path while offline
         // verification rejected it marks corrupted or tampered bytes: replace
@@ -929,15 +982,26 @@ impl PerlExtension {
 
         // Exact accepted-state reread before reporting success (#11316):
         // publication, lock, or directory disappearance during contention is
-        // never success, and the returned command path must be a durably
-        // verified subject.
-        if let Err(error) = load_accepted_current_in(work_dir, os, arch) {
-            self.update_state = UpdateState::CandidateRejected;
-            let _ = remove_owned_attempt(&work_dir.join(&attempt_dir));
-            return Err(format!("published perllsp subject failed accepted-state reread: {error}"));
-        }
+        // never success. During a release rollover race the accepted subject
+        // may be another attempt's promotion; exactly that path is served so
+        // the launched source and the durably accepted state stay identical.
+        let accepted_path = match load_accepted_current_in(work_dir, os, arch) {
+            Ok(path) => path,
+            Err(error) => {
+                self.update_state = UpdateState::CandidateRejected;
+                let _ = remove_owned_attempt(&work_dir.join(&attempt_dir));
+                return Err(format!(
+                    "published perllsp subject failed accepted-state reread: {error}"
+                ));
+            }
+        };
 
         let _ = remove_owned_attempt(&work_dir.join(&attempt_dir));
+
+        if accepted_path != binary_path {
+            self.perllsp_path = Some(accepted_path.clone());
+            return Ok(accepted_path);
+        }
 
         self.perllsp_path = Some(binary_path.clone());
         Ok(binary_path)
@@ -2308,6 +2372,32 @@ mod tests {
     }
 
     #[test]
+    fn staging_claims_are_cross_process_unique_even_on_collisions(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let base = dir.path();
+
+        // A first claim takes whatever identity is generated first.
+        let (first_attempt, first_dir) = claim_attempt_staging(base, MUTATION_TEST_SUBJECT_DIR)
+            .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
+        assert!(base.join(&first_dir).is_dir());
+
+        // A simultaneous claim from another process whose generated name
+        // collides is rejected by exclusive create and retried into a fresh
+        // identity: two live attempts can never share a staging root.
+        let (second_attempt, second_dir) =
+            claim_attempt_staging(base, MUTATION_TEST_SUBJECT_DIR)
+                .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
+        assert_ne!(first_attempt, second_attempt);
+        assert_ne!(first_dir, second_dir);
+        assert!(base.join(&second_dir).is_dir());
+
+        remove_owned_attempt(&base.join(&first_dir))?;
+        remove_owned_attempt(&base.join(&second_dir))?;
+        Ok(())
+    }
+
+    #[test]
     fn concurrent_manifest_promotions_never_tear_accepted_state(
     ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         fn mutation_manifest(digest_byte: char) -> SelectionManifest {
@@ -2431,8 +2521,8 @@ mod tests {
             let tag = env::var("PERLLSP_MUTATION_WORKER_TAG").unwrap_or_else(|_| "w".to_string());
             let payload = format!("perllsp-bytes-{tag}");
 
-            let attempt = next_attempt_id();
-            let attempt_dir = attempt_staging_dir(version_dir, &attempt);
+            let (attempt, attempt_dir) = claim_attempt_staging(work_dir, version_dir)
+                .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
             write_member(
                 Path::new(&worker_dir),
                 &format!("{attempt_dir}/pkg/perllsp"),
