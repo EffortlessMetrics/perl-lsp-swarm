@@ -327,15 +327,19 @@ fn bundled_configuration_carries_only_client_behavior_settings() -> Result<()> {
 }
 
 #[test]
-fn subject_registry_pins_each_exact_client_subject_immutable() {
+fn subject_registry_pins_each_exact_client_subject_immutable() -> Result<()> {
     assert_eq!(
         host_run_task::EmacsClientSubject::known_ids(),
-        &["bundled_eglot_emacs_30_1", "released_eglot_gnu_elpa_1_23"],
+        &["bundled_eglot_emacs_29_4", "bundled_eglot_emacs_30_1", "released_eglot_gnu_elpa_1_23"],
         "each subject is an immutable registry row; new releases are new rows, never silent \
          replacements"
     );
-    let subject = host_run_task::EmacsClientSubject::BundledEglotEmacs301
-        .client_identity(format!("sha256:{}", "0".repeat(64)), None);
+    let manifest = xtask::emacs_subject_manifest::SubjectManifest::load(&workspace_root()?)?;
+    let subject = host_run_task::EmacsClientSubject::BundledEglotEmacs301.client_identity(
+        &manifest,
+        format!("sha256:{}", "0".repeat(64)),
+        None,
+    )?;
     assert_eq!(subject.client_id, "bundled_eglot_emacs_30_1");
     assert_eq!(subject.kind, host_run_task::emacs_host_runner::EmacsClientKind::BundledEglot);
     assert_eq!(subject.version, "1.17.30");
@@ -345,11 +349,24 @@ fn subject_registry_pins_each_exact_client_subject_immutable() {
         subject.package_sha256.is_none(),
         "a bundled subject cannot carry a separate package identity"
     );
+    let emacs_294 = host_run_task::EmacsClientSubject::BundledEglotEmacs294.client_identity(
+        &manifest,
+        format!("sha256:{}", "9".repeat(64)),
+        None,
+    )?;
+    assert_eq!(emacs_294.client_id, "bundled_eglot_emacs_29_4");
+    assert_eq!(emacs_294.version, "1.12.29");
+    assert_eq!(emacs_294.source_ref, "emacs-29.4");
+    assert_eq!(
+        host_run_task::EmacsClientSubject::BundledEglotEmacs294.pinned_emacs_version_token(),
+        "29.4"
+    );
 
     let released = host_run_task::EmacsClientSubject::ReleasedEglotGnuElpa123.client_identity(
+        &manifest,
         format!("sha256:{}", "1".repeat(64)),
         Some(format!("sha256:{}", "2".repeat(64))),
-    );
+    )?;
     assert_eq!(released.client_id, "released_eglot_gnu_elpa_1_23");
     assert_eq!(released.kind, host_run_task::emacs_host_runner::EmacsClientKind::ExternalEglot);
     assert_eq!(released.version, "1.23");
@@ -375,6 +392,7 @@ fn subject_registry_pins_each_exact_client_subject_immutable() {
     );
     assert!(host_run_task::EmacsClientSubject::ReleasedEglotGnuElpa123.requires_client_package());
     assert!(!host_run_task::EmacsClientSubject::BundledEglotEmacs301.requires_client_package());
+    Ok(())
 }
 
 #[test]

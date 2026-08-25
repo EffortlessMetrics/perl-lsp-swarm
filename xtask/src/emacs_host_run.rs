@@ -41,6 +41,8 @@ const DEFAULT_TIMEOUT_MS: u64 = 180_000;
 /// host build is a new variant, never a silent edit of an existing row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmacsClientSubject {
+    /// Bundled Eglot inside exact Emacs 29.4 (slice 1).
+    BundledEglotEmacs294,
     /// Bundled Eglot inside exact Emacs 30.1 (slice 1).
     BundledEglotEmacs301,
     /// Standalone Eglot released as GNU ELPA 1.23 (slice 2).
@@ -52,6 +54,7 @@ impl EmacsClientSubject {
     /// registry, never a fallback to whatever matches loosely.
     pub fn from_id(id: &str) -> Result<Self> {
         match id {
+            "bundled_eglot_emacs_29_4" => Ok(Self::BundledEglotEmacs294),
             "bundled_eglot_emacs_30_1" => Ok(Self::BundledEglotEmacs301),
             "released_eglot_gnu_elpa_1_23" => Ok(Self::ReleasedEglotGnuElpa123),
             _ => bail!(
@@ -63,11 +66,12 @@ impl EmacsClientSubject {
 
     /// Every exact client subject the execution surface can run today.
     pub fn known_ids() -> &'static [&'static str] {
-        &["bundled_eglot_emacs_30_1", "released_eglot_gnu_elpa_1_23"]
+        &["bundled_eglot_emacs_29_4", "bundled_eglot_emacs_30_1", "released_eglot_gnu_elpa_1_23"]
     }
 
     pub fn id(self) -> &'static str {
         match self {
+            Self::BundledEglotEmacs294 => "bundled_eglot_emacs_29_4",
             Self::BundledEglotEmacs301 => "bundled_eglot_emacs_30_1",
             Self::ReleasedEglotGnuElpa123 => "released_eglot_gnu_elpa_1_23",
         }
@@ -78,6 +82,7 @@ impl EmacsClientSubject {
     /// subject, not this run.
     pub fn pinned_emacs_version_token(self) -> &'static str {
         match self {
+            Self::BundledEglotEmacs294 => "29.4",
             Self::BundledEglotEmacs301 | Self::ReleasedEglotGnuElpa123 => "30.1",
         }
     }
@@ -93,39 +98,60 @@ impl EmacsClientSubject {
         Ok(())
     }
 
-    /// The pinned client identity for the subject.  Public so the contract
+    /// The pinned client identity for the subject.  Bundled rows draw every
+    /// identity string from the checked subject manifest (#11744): the
+    /// manifest is the single declared authority for subject rows, and this
+    /// registry only dispatches runner mechanics.  Public so the contract
     /// tests can pin the registry row without a host.
     pub fn client_identity(
         self,
+        manifest: &crate::emacs_subject_manifest::SubjectManifest,
         source_sha256: String,
         package_sha256: Option<String>,
-    ) -> emacs_host_runner::ClientSubject {
+    ) -> Result<emacs_host_runner::ClientSubject> {
         let (kind, version, source_state, source_ref) = match self {
-            Self::BundledEglotEmacs301 => {
-                (EmacsClientKind::BundledEglot, "1.17.30", ClientSourceState::Bundled, "emacs-30.1")
+            Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => {
+                let row = manifest.row_for(self.id()).with_context(|| {
+                    format!(
+                        "bundled subject {} must be a row of the checked subject manifest",
+                        self.id()
+                    )
+                })?;
+                (
+                    EmacsClientKind::BundledEglot,
+                    row.client_version_hint.clone(),
+                    row.source_state,
+                    row.emacs_release_tag.clone(),
+                )
             }
+            // The released row predates the subject manifest; its
+            // digest-bound package identity arrives with the
+            // external-subject rows (#11745), which extend the manifest
+            // without changing these landed mechanics.
             Self::ReleasedEglotGnuElpa123 => (
                 EmacsClientKind::ExternalEglot,
-                "1.23",
+                "1.23".to_string(),
                 ClientSourceState::Released,
-                "gnu-elpa-eglot-1.23",
+                "gnu-elpa-eglot-1.23".to_string(),
             ),
         };
-        emacs_host_runner::ClientSubject {
+        Ok(emacs_host_runner::ClientSubject {
             client_id: self.id().to_string(),
             kind,
-            version: version.to_string(),
+            version,
             source_state,
-            source_ref: source_ref.to_string(),
+            source_ref,
             source_sha256,
             package_sha256,
-        }
+        })
     }
 
     /// Checked-in adapter path relative to the repository root.
     pub fn adapter_relative_path(self) -> &'static str {
         match self {
-            Self::BundledEglotEmacs301 => "scripts/test/emacs-clients/eglot-bundled.el",
+            Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => {
+                "scripts/test/emacs-clients/eglot-bundled.el"
+            }
             Self::ReleasedEglotGnuElpa123 => "scripts/test/emacs-clients/eglot-released.el",
         }
     }
@@ -133,7 +159,9 @@ impl EmacsClientSubject {
     /// Checked-in configuration path relative to the repository root.
     pub fn configuration_relative_path(self) -> &'static str {
         match self {
-            Self::BundledEglotEmacs301 => "scripts/test/emacs-clients/eglot-bundled-config.el",
+            Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => {
+                "scripts/test/emacs-clients/eglot-bundled-config.el"
+            }
             Self::ReleasedEglotGnuElpa123 => "scripts/test/emacs-clients/eglot-released-config.el",
         }
     }
@@ -141,7 +169,7 @@ impl EmacsClientSubject {
     /// Journey selector token bound into the run plan and receipt.
     pub fn journey_selector(self) -> &'static str {
         match self {
-            Self::BundledEglotEmacs301 => "bundled_eglot_lifecycle.v1",
+            Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => "bundled_eglot_lifecycle.v1",
             Self::ReleasedEglotGnuElpa123 => "released_eglot_lifecycle.v1",
         }
     }
@@ -149,7 +177,7 @@ impl EmacsClientSubject {
     /// Fixture identity token for the materialized journey fixture.
     pub fn fixture_id(self) -> &'static str {
         match self {
-            Self::BundledEglotEmacs301 => "bundled_eglot_lifecycle_v1",
+            Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => "bundled_eglot_lifecycle_v1",
             Self::ReleasedEglotGnuElpa123 => "released_eglot_lifecycle_v1",
         }
     }
@@ -158,7 +186,7 @@ impl EmacsClientSubject {
     /// cannot (`validate_client_subject` rejects that combination).
     pub fn requires_client_package(self) -> bool {
         match self {
-            Self::BundledEglotEmacs301 => false,
+            Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => false,
             Self::ReleasedEglotGnuElpa123 => true,
         }
     }
@@ -167,7 +195,7 @@ impl EmacsClientSubject {
     /// declared package inputs, never by searching the host installation.
     pub fn resolves_client_source_from_installation(self) -> bool {
         match self {
-            Self::BundledEglotEmacs301 => true,
+            Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => true,
             Self::ReleasedEglotGnuElpa123 => false,
         }
     }
@@ -354,6 +382,10 @@ pub fn build_client_subject_run_plan(
     let configuration = repo_root.join(subject.configuration_relative_path());
     let fixture_root = materialize_client_subject_fixture(&run.out_root.join("fixture"))?;
     let layout = HermeticLayout::prepare(&run.out_root.join("hermetic"))?;
+    // The checked subject manifest (#11744) is the declared identity
+    // authority for bundled rows; a missing or invalid manifest fails the
+    // plan closed rather than falling back to embedded identity strings.
+    let subject_manifest = crate::emacs_subject_manifest::SubjectManifest::load(repo_root)?;
     let package_sha256 = match (&run.client_package, subject.requires_client_package()) {
         (Some(package), true) => Some(file_sha256(package)?),
         (None, true) => bail!(
@@ -375,7 +407,11 @@ pub fn build_client_subject_run_plan(
             candidate_sha: commit.to_string(),
             emacs_version: emacs_version.to_string(),
             emacs_build_sha256: file_sha256(&run.emacs_executable)?,
-            client: subject.client_identity(file_sha256(&run.client_source)?, package_sha256),
+            client: subject.client_identity(
+                &subject_manifest,
+                file_sha256(&run.client_source)?,
+                package_sha256,
+            )?,
             driver_sha256: file_sha256(&driver)?,
             adapter_sha256: file_sha256(&adapter)?,
             configuration_sha256: file_sha256(&configuration)?,

@@ -11,6 +11,7 @@ pub mod close_proof;
 pub mod contributor_topology;
 pub mod editor_client_compat;
 pub mod emacs_host_run;
+pub mod emacs_subject_manifest;
 pub mod file_identity;
 pub mod git_ancestry;
 pub mod publication_drift;
