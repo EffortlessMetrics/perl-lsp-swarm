@@ -587,6 +587,21 @@ impl HermeticVimLayout {
         server_name: &str,
         root_markers: &[String],
     ) -> Result<BTreeMap<OsString, OsString>> {
+        self.environment_with_extras(plan, server_name, root_markers, &[])
+    }
+
+    /// Same hermetic environment plus journey-scoped extras (#10946): the
+    /// scenario module delivers its own fail-closed run contract (expected
+    /// and decoy root identities, the governed defect coordinates) through
+    /// the same explicit absolute-value channel, never through the ambient
+    /// environment.
+    pub fn environment_with_extras(
+        &self,
+        plan: &VimHostRunPlan,
+        server_name: &str,
+        root_markers: &[String],
+        extras: &[(OsString, OsString)],
+    ) -> Result<BTreeMap<OsString, OsString>> {
         let mut environment = BTreeMap::new();
         for key in [
             "PATH",
@@ -651,6 +666,14 @@ impl HermeticVimLayout {
         // debug build and CI runners are slower; 90s keeps every barrier honest
         // while the parent-owned run deadline still bounds the whole journey.
         environment.insert(OsString::from("PERLLSP_VIM_HOST_BUDGET_MS"), OsString::from("90000"));
+        for (key, value) in extras {
+            ensure!(
+                key.to_str().is_some_and(|text| text.starts_with("PERLLSP_VIM_HOST_")),
+                "journey extras must stay inside the PERLLSP_VIM_HOST_ channel: {:?}",
+                key
+            );
+            environment.insert(key.clone(), value.clone());
+        }
         Ok(environment)
     }
 }
@@ -667,10 +690,21 @@ pub fn build_vim_command(
     server_name: &str,
     root_markers: &[String],
 ) -> Result<Command> {
+    build_vim_command_with_extras(plan, layout, server_name, root_markers, &[])
+}
+
+/// [`build_vim_command`] plus journey-scoped environment extras (#10946).
+pub fn build_vim_command_with_extras(
+    plan: &VimHostRunPlan,
+    layout: &HermeticVimLayout,
+    server_name: &str,
+    root_markers: &[String],
+    extras: &[(OsString, OsString)],
+) -> Result<Command> {
     plan.validate()?;
     let mut command = Command::new(&plan.paths.vim_executable);
     command.env_clear();
-    for (key, value) in layout.environment(plan, server_name, root_markers)? {
+    for (key, value) in layout.environment_with_extras(plan, server_name, root_markers, extras)? {
         command.env(key, value);
     }
     command
@@ -704,6 +738,13 @@ pub enum DriverEventKind {
     RootSelected,
     FixtureOpened,
     DiagnosticsObserved,
+    /// #10946 diagnostics-lifecycle events. They extend the minimal #10944
+    /// journey (same ordering tier as `diagnostics_observed`); the minimal
+    /// journey never emits them and `require_complete` still binds only the
+    /// #10944 barriers, so the two journeys stay independently valid.
+    DefectStateObserved,
+    DefectFixApplied,
+    CurrentStateObserved,
     ShutdownStarted,
     ShutdownCompleted,
     DriverFailed,
@@ -769,12 +810,7 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                     .get("candidate_sha256")
                     .context("registration_selected omitted candidate_sha256")?;
                 validate_sha256(digest, "registration candidate_sha256")?;
-                let rank = lifecycle_rank(event.kind);
-                ensure!(
-                    rank >= last_lifecycle_rank,
-                    "driver lifecycle events arrived out of order"
-                );
-                last_lifecycle_rank = rank;
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::BufferEnabled => {
                 ensure!(
@@ -809,6 +845,52 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                     event.details.get("mode") == Some(&"push".to_string()),
                     "diagnostics_observed must bind the observed push update path"
                 );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::DefectStateObserved => {
+                ensure!(
+                    singleton.insert(DriverEventKind::DefectStateObserved),
+                    "duplicate singleton driver event"
+                );
+                ensure!(
+                    event.details.get("state_source") == Some(&"client_state".to_string()),
+                    "defect_state_observed must come from the client's own diagnostics state"
+                );
+                ensure!(
+                    event.details.get("errors").is_some_and(|value| value.parse::<u32>().is_ok()),
+                    "defect_state_observed must report the client-state error count"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::DefectFixApplied => {
+                ensure!(
+                    singleton.insert(DriverEventKind::DefectFixApplied),
+                    "duplicate singleton driver event"
+                );
+                ensure!(
+                    event.details.get("edit_path") == Some(&"buffer_did_change".to_string()),
+                    "defect_fix_applied must bind the real buffer didChange flush path"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::CurrentStateObserved => {
+                ensure!(
+                    singleton.insert(DriverEventKind::CurrentStateObserved),
+                    "duplicate singleton driver event"
+                );
+                ensure!(
+                    event.details.get("state_source") == Some(&"client_state".to_string()),
+                    "current_state_observed must come from the client's own diagnostics state"
+                );
+                ensure!(
+                    event.details.get("discriminator_absent") == Some(&"1".to_string()),
+                    "current_state_observed must prove the old discriminator absent"
+                );
+                ensure!(
+                    event.details.get("barrier") == Some(&"diagnostics_event_and_wire".to_string()),
+                    "current_state_observed must bind the deterministic currentness barrier"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             kind => {
                 ensure!(singleton.insert(kind), "duplicate singleton driver event");
@@ -856,11 +938,29 @@ fn lifecycle_rank(kind: DriverEventKind) -> u8 {
         DriverEventKind::BufferEnabled => 6,
         DriverEventKind::InitializeObserved => 7,
         DriverEventKind::RootSelected => 8,
-        DriverEventKind::DiagnosticsObserved => 9,
-        DriverEventKind::ShutdownStarted => 10,
-        DriverEventKind::ShutdownCompleted => 11,
-        DriverEventKind::DriverFailed => 11,
+        // The #10946 diagnostics tier carries its own strict order: wire push
+        // observed, then the client-state defect observation, then the fix
+        // edit, then the post-edit current state — all strictly before
+        // shutdown. Ranks are internal; only their order is contractual.
+        DriverEventKind::DiagnosticsObserved => 40,
+        DriverEventKind::DefectStateObserved => 41,
+        DriverEventKind::DefectFixApplied => 42,
+        DriverEventKind::CurrentStateObserved => 43,
+        DriverEventKind::ShutdownStarted => 50,
+        DriverEventKind::ShutdownCompleted => 51,
+        DriverEventKind::DriverFailed => 51,
     }
+}
+
+/// Advance the observed lifecycle rank, rejecting any event that arrives out
+/// of order. Used by every dedicated match arm so no event kind can bypass
+/// the ordering law (#10946 review finding: the dedicated arms must enforce
+/// the same ordering the fallback arm enforces).
+fn update_lifecycle_rank(kind: DriverEventKind, last_lifecycle_rank: &mut u8) -> Result<()> {
+    let rank = lifecycle_rank(kind);
+    ensure!(rank >= *last_lifecycle_rank, "driver lifecycle events arrived out of order");
+    *last_lifecycle_rank = rank;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1365,6 +1465,22 @@ fn bound_capture(bytes: &[u8]) -> &[u8] {
 // Wire-evidence extraction from the vim-lsp client log
 // ---------------------------------------------------------------------------
 
+/// One mined `textDocument/publishDiagnostics` batch from the client log
+/// (#10946). The batch is the client's own record of what the server pushed:
+/// which document (by file-name token), how many diagnostics, how many at
+/// error severity, and how many carry a parser-family code (`PL0xx`), the
+/// stable discriminator of a perllsp syntax defect. The line index preserves
+/// wire ordering so a post-edit batch can be distinguished from a pre-edit
+/// one by its position relative to the `textDocument/didChange` request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishDiagnosticsBatch {
+    pub line_index: usize,
+    pub uri_file: String,
+    pub diagnostics_count: usize,
+    pub error_severity_count: usize,
+    pub parser_code_count: usize,
+}
+
 /// The minimal LSP wire facts mined from the vim-lsp client log
 /// (`g:lsp_log_file`), the same proven extraction surface the #7810 shell
 /// harness used, now owned by Rust so the receipt rests on parsed evidence
@@ -1380,6 +1496,12 @@ pub struct WireEvidence {
     /// editor-side evidence that the client observed the server process end,
     /// including when it only arrives during the editor's teardown.
     pub saw_client_exit_log: bool,
+    /// Line index of the first `textDocument/didChange` notification, for
+    /// post-edit currentness ordering (#10946).
+    pub did_change_line: Option<usize>,
+    /// Every parsed `textDocument/publishDiagnostics` batch in wire order
+    /// (#10946).
+    pub publish_diagnostics_batches: Vec<PublishDiagnosticsBatch>,
     /// The whole first `initialize` request envelope, if the log carried one.
     pub initialize_request: Option<serde_json::Value>,
     /// The client capabilities object of the first `initialize` request, if
@@ -1397,7 +1519,7 @@ pub struct WireEvidence {
 pub fn extract_wire_evidence(log: &[u8]) -> WireEvidence {
     let text = String::from_utf8_lossy(log);
     let mut evidence = WireEvidence::default();
-    for line in text.lines() {
+    for (index, line) in text.lines().enumerate() {
         let Some(value) = parse_first_json_value(line) else {
             continue;
         };
@@ -1407,7 +1529,7 @@ pub fn extract_wire_evidence(log: &[u8]) -> WireEvidence {
             evidence.saw_client_exit_log = true;
         }
         let mut first_initialize: Option<serde_json::Value> = None;
-        walk_wire_value(&value, &mut evidence, &mut first_initialize);
+        walk_wire_value(&value, index, &mut evidence, &mut first_initialize);
         if let (Some(request), None) = (&first_initialize, &evidence.initialize_request) {
             evidence.initialize_request = Some(request.clone());
             evidence.client_capabilities =
@@ -1428,8 +1550,10 @@ fn parse_first_json_value(line: &str) -> Option<serde_json::Value> {
     None
 }
 
+#[allow(clippy::too_many_lines)]
 fn walk_wire_value(
     value: &serde_json::Value,
+    line_index: usize,
     evidence: &mut WireEvidence,
     first_initialize: &mut Option<serde_json::Value>,
 ) {
@@ -1446,21 +1570,66 @@ fn walk_wire_value(
                     "initialized" => evidence.saw_initialized = true,
                     "shutdown" => evidence.saw_shutdown = true,
                     "exit" => evidence.saw_exit = true,
-                    "textDocument/publishDiagnostics" => evidence.saw_publish_diagnostics = true,
+                    "textDocument/publishDiagnostics" => {
+                        evidence.saw_publish_diagnostics = true;
+                        if let Some(batch) = mine_publish_diagnostics_batch(map, line_index) {
+                            evidence.publish_diagnostics_batches.push(batch);
+                        }
+                    }
+                    "textDocument/didChange" => {
+                        if evidence.did_change_line.is_none() {
+                            evidence.did_change_line = Some(line_index);
+                        }
+                    }
                     _ => {}
                 }
             }
             for child in map.values() {
-                walk_wire_value(child, evidence, first_initialize);
+                walk_wire_value(child, line_index, evidence, first_initialize);
             }
         }
         serde_json::Value::Array(items) => {
             for child in items {
-                walk_wire_value(child, evidence, first_initialize);
+                walk_wire_value(child, line_index, evidence, first_initialize);
             }
         }
         _ => {}
     }
+}
+
+/// Mine one publishDiagnostics batch from its notification object: the
+/// document's file-name token, diagnostic count, error-severity count, and
+/// parser-code count. Batches whose params are absent or malformed are
+/// skipped (the boolean `saw_publish_diagnostics` stays the only fact then).
+fn mine_publish_diagnostics_batch(
+    map: &serde_json::Map<String, serde_json::Value>,
+    line_index: usize,
+) -> Option<PublishDiagnosticsBatch> {
+    let params = map.get("params")?;
+    let uri = params.get("uri")?.as_str()?;
+    let uri_file = uri.rsplit('/').next().unwrap_or("").to_string();
+    if uri_file.is_empty() || uri_file.contains('\\') {
+        return None;
+    }
+    let diagnostics = params.get("diagnostics")?.as_array()?;
+    let mut error_severity_count = 0;
+    let mut parser_code_count = 0;
+    for diagnostic in diagnostics {
+        if diagnostic.get("severity").and_then(serde_json::Value::as_i64) == Some(1) {
+            error_severity_count += 1;
+        }
+        let code = diagnostic.get("code").and_then(serde_json::Value::as_str).unwrap_or("");
+        if code.len() == 5 && code.starts_with("PL0") {
+            parser_code_count += 1;
+        }
+    }
+    Some(PublishDiagnosticsBatch {
+        line_index,
+        uri_file,
+        diagnostics_count: diagnostics.len(),
+        error_severity_count,
+        parser_code_count,
+    })
 }
 
 // ---------------------------------------------------------------------------

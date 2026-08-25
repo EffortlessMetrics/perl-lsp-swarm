@@ -13,6 +13,7 @@ from .common import ReceiptError, load_json
 from .dap_cache import run_recovery_scenarios
 from .dap_contract import validate_dap_contract
 from .dap_producer import execute_dap
+from .dap_public import load_registry_manifest, validate_dap_public_receipt
 from .dap_validation import validate_dap_receipt
 
 
@@ -60,6 +61,22 @@ def command_dap_cache_recovery(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_validate_dap_public_receipt(args: argparse.Namespace) -> int:
+    manifest_path = args.registry_manifest
+    validate_dap_public_receipt(
+        load_json(args.receipt),
+        args.contract,
+        load_json(args.contract),
+        args.asset_receipt,
+        load_json(args.asset_receipt),
+        manifest_path,
+        load_registry_manifest(manifest_path),
+        receipts_dir=args.receipts_dir,
+    )
+    print("Zed perl-dap public registry receipt checks passed.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -94,6 +111,34 @@ def build_parser() -> argparse.ArgumentParser:
     recovery_parser.add_argument("--work-dir", type=Path, required=True)
     recovery_parser.add_argument("--output", type=Path)
     recovery_parser.set_defaults(func=command_dap_cache_recovery)
+
+    public_parser = subparsers.add_parser("validate-dap-public-receipt")
+    public_parser.add_argument("--receipt", type=Path, required=True)
+    public_parser.add_argument(
+        "--contract",
+        type=Path,
+        required=True,
+        help="checked #9516 managed-download contract the receipt is bound to",
+    )
+    public_parser.add_argument(
+        "--asset-receipt",
+        type=Path,
+        required=True,
+        help="committed #9516 aggregate asset receipt the receipt is bound to",
+    )
+    public_parser.add_argument(
+        "--registry-manifest",
+        type=Path,
+        required=True,
+        help="DU01 registry acceptance manifest owning the official-registry subject",
+    )
+    public_parser.add_argument(
+        "--receipts-dir",
+        type=Path,
+        default=Path(".ci/fixtures/zed-perl-upstream/receipts"),
+        help="committed receipts directory used for exact-source gate accounting",
+    )
+    public_parser.set_defaults(func=command_validate_dap_public_receipt)
     return parser
 
 
