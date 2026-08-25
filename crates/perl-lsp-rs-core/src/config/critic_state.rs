@@ -627,12 +627,11 @@ mod tests {
             "critic": { "enabled": false }
         }));
 
-        match config.effective_critic_state(Some("root")) {
-            EffectiveCriticState::Disabled => {}
-            EffectiveCriticState::Native(_) => {
-                unreachable!("disabled state must not expose a native policy object")
-            }
-        }
+        let disabled_state = config.effective_critic_state(Some("root"));
+        assert!(
+            matches!(disabled_state, EffectiveCriticState::Disabled),
+            "disabled state must not expose a native policy object, got {disabled_state:?}"
+        );
         assert!(
             config.effective_critic_state(Some("root")).owning_root().is_none(),
             "disabled carries no policy subject that could run"
