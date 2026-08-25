@@ -34,26 +34,17 @@ impl From<&GatePlan> for LegacyGatePlanInput {
             direct_crates: scope
                 .direct_crates
                 .iter()
-                .map(|row| ScopedIdentity {
-                    name: row.name.clone(),
-                    reason: row.reason.clone(),
-                })
+                .map(|row| ScopedIdentity { name: row.name.clone(), reason: row.reason.clone() })
                 .collect(),
             reverse_dependencies: scope
                 .reverse_dep_closure
                 .iter()
-                .map(|row| ScopedIdentity {
-                    name: row.name.clone(),
-                    reason: row.reason.clone(),
-                })
+                .map(|row| ScopedIdentity { name: row.name.clone(), reason: row.reason.clone() })
                 .collect(),
             architecture_wideners: scope
                 .architecture_wideners
                 .iter()
-                .map(|row| ScopedIdentity {
-                    name: row.name.clone(),
-                    reason: row.rule.clone(),
-                })
+                .map(|row| ScopedIdentity { name: row.name.clone(), reason: row.rule.clone() })
                 .collect(),
             risk_tags: scope.risk_tags.clone(),
         });

@@ -4,8 +4,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use super::{
-    Applicability, CI_ROUTE_PLAN_PRODUCER, CI_ROUTE_PLAN_SCHEMA, CiRoutePlanV1,
-    PlannedOutcome, RoutePlanRow, RoutePlanSummary, RouteSelectionEvidence, RouteSubjectRef,
+    Applicability, CI_ROUTE_PLAN_PRODUCER, CI_ROUTE_PLAN_SCHEMA, CiRoutePlanV1, PlannedOutcome,
+    RoutePlanRow, RoutePlanSummary, RouteSelectionEvidence, RouteSubjectRef,
 };
 
 #[derive(Serialize)]
@@ -21,8 +21,7 @@ struct SemanticPlan<'a> {
 }
 
 pub(super) fn normalize(plan: &mut CiRoutePlanV1) -> Result<(), String> {
-    plan.rows
-        .sort_by(|left, right| left.gate_id.cmp(&right.gate_id));
+    plan.rows.sort_by(|left, right| left.gate_id.cmp(&right.gate_id));
     plan.summary = summarize(&plan.rows)?;
     plan.semantic_fingerprint = semantic_fingerprint(plan)?;
     validate(plan)
@@ -33,10 +32,7 @@ pub(super) fn validate(plan: &CiRoutePlanV1) -> Result<(), String> {
         return Err(format!("unsupported route-plan schema {:?}", plan.schema));
     }
     if plan.producer != CI_ROUTE_PLAN_PRODUCER {
-        return Err(format!(
-            "unsupported route-plan producer {:?}",
-            plan.producer
-        ));
+        return Err(format!("unsupported route-plan producer {:?}", plan.producer));
     }
     validate_subject(&plan.subject)?;
     validate_nonempty("profile", &plan.profile)?;
@@ -89,15 +85,10 @@ fn semantic_fingerprint(plan: &CiRoutePlanV1) -> Result<String, String> {
 }
 
 fn summarize(rows: &[RoutePlanRow]) -> Result<RoutePlanSummary, String> {
-    let mut summary = RoutePlanSummary {
-        governed: rows.len() as u64,
-        ..RoutePlanSummary::default()
-    };
+    let mut summary =
+        RoutePlanSummary { governed: rows.len() as u64, ..RoutePlanSummary::default() };
     for row in rows {
-        *summary
-            .by_policy_role
-            .entry(row.policy_role)
-            .or_default() += 1;
+        *summary.by_policy_role.entry(row.policy_role).or_default() += 1;
         match &row.outcome {
             PlannedOutcome::Run { .. } => summary.run += 1,
             PlannedOutcome::ScopedNoop { .. } => summary.scoped_noop += 1,
@@ -114,11 +105,7 @@ fn summarize(rows: &[RoutePlanRow]) -> Result<RoutePlanSummary, String> {
 
 fn validate_row(row: &RoutePlanRow) -> Result<(), String> {
     match &row.outcome {
-        PlannedOutcome::Run {
-            command,
-            timeout_seconds,
-            reason,
-        } => {
+        PlannedOutcome::Run { command, timeout_seconds, reason } => {
             require_applicability(row, Applicability::Applicable)?;
             validate_nonempty("run command", command)?;
             validate_nonempty("run reason", reason)?;
@@ -126,26 +113,16 @@ fn validate_row(row: &RoutePlanRow) -> Result<(), String> {
                 return Err(format!("run gate {:?} has zero timeout", row.gate_id));
             }
         }
-        PlannedOutcome::ScopedNoop {
-            reason,
-            selector_digest,
-        } => {
+        PlannedOutcome::ScopedNoop { reason, selector_digest } => {
             require_applicability(row, Applicability::NotApplicable)?;
             validate_nonempty("scoped-noop reason", reason)?;
             validate_digest("selector_digest", selector_digest)?;
         }
-        PlannedOutcome::Quarantined {
-            reason,
-            owner_issue,
-            review_after,
-        } => {
+        PlannedOutcome::Quarantined { reason, owner_issue, review_after } => {
             require_applicability(row, Applicability::Applicable)?;
             validate_nonempty("quarantine reason", reason)?;
             if *owner_issue == 0 {
-                return Err(format!(
-                    "quarantined gate {:?} has no owner",
-                    row.gate_id
-                ));
+                return Err(format!("quarantined gate {:?} has no owner", row.gate_id));
             }
             if let Some(review_after) = review_after {
                 validate_nonempty("quarantine review_after", review_after)?;
@@ -162,10 +139,7 @@ fn validate_row(row: &RoutePlanRow) -> Result<(), String> {
 
 fn require_applicability(row: &RoutePlanRow, expected: Applicability) -> Result<(), String> {
     if row.applicability != expected {
-        return Err(format!(
-            "gate {:?} has contradictory applicability/outcome",
-            row.gate_id
-        ));
+        return Err(format!("gate {:?} has contradictory applicability/outcome", row.gate_id));
     }
     Ok(())
 }
@@ -222,9 +196,7 @@ fn is_sorted_unique(values: &[String]) -> bool {
 
 pub(super) fn validate_gate_id(value: &str) -> Result<(), String> {
     if value.is_empty() || !value.bytes().all(valid_gate_byte) {
-        return Err(format!(
-            "gate identity must match ^[a-z0-9_.-]+$: {value:?}"
-        ));
+        return Err(format!("gate identity must match ^[a-z0-9_.-]+$: {value:?}"));
     }
     Ok(())
 }
@@ -235,9 +207,7 @@ fn valid_gate_byte(byte: u8) -> bool {
 
 pub(super) fn validate_reason_token(subject: &str, value: &str) -> Result<(), String> {
     if value.is_empty() || !value.bytes().all(valid_reason_byte) {
-        return Err(format!(
-            "{subject} must match ^[a-z0-9_]+$: {value:?}"
-        ));
+        return Err(format!("{subject} must match ^[a-z0-9_]+$: {value:?}"));
     }
     Ok(())
 }
@@ -262,9 +232,7 @@ pub(super) fn validate_sha(subject: &str, value: &str) -> Result<(), String> {
 
 pub(super) fn validate_digest(subject: &str, value: &str) -> Result<(), String> {
     if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(format!(
-            "{subject} must be a 64-character hexadecimal digest"
-        ));
+        return Err(format!("{subject} must be a 64-character hexadecimal digest"));
     }
     Ok(())
 }

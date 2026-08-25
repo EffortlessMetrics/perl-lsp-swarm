@@ -144,10 +144,7 @@ fn ownerless_quarantine_becomes_explicit_error_row() {
     let plan = CiRoutePlanV1::compile(input).expect("ownerless quarantine is represented");
     assert_eq!(plan.summary.error, 1);
     assert_eq!(plan.rows[0].applicability, Applicability::Unknown);
-    assert!(matches!(
-        &plan.rows[0].outcome,
-        PlannedOutcome::Error { .. }
-    ));
+    assert!(matches!(&plan.rows[0].outcome, PlannedOutcome::Error { .. }));
 }
 
 #[test]
@@ -179,12 +176,6 @@ fn explain_is_bounded_to_summary_or_one_gate() {
 #[test]
 fn run_and_noop_outcomes_remain_closed() {
     let plan = CiRoutePlanV1::compile(input(false)).expect("plan");
-    assert!(matches!(
-        &plan.rows[0].outcome,
-        PlannedOutcome::Run { .. }
-    ));
-    assert!(matches!(
-        &plan.rows[1].outcome,
-        PlannedOutcome::ScopedNoop { .. }
-    ));
+    assert!(matches!(&plan.rows[0].outcome, PlannedOutcome::Run { .. }));
+    assert!(matches!(&plan.rows[1].outcome, PlannedOutcome::ScopedNoop { .. }));
 }

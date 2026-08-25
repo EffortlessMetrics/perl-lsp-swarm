@@ -89,10 +89,7 @@ pub(super) fn compile(input: CompileRoutePlanInput) -> Result<CiRoutePlanV1, Str
         let policy = policy_by_name
             .remove(&skipped.name)
             .ok_or_else(|| format!("skipped gate {:?} has no policy row", skipped.name))?;
-        let selector_role = skipped
-            .role
-            .map(selector_role)
-            .unwrap_or(SelectorRole::Unspecified);
+        let selector_role = skipped.role.map(selector_role).unwrap_or(SelectorRole::Unspecified);
         rows.push(RoutePlanRow {
             gate_id: policy.name,
             policy_role: policy_role(policy.required, input.plan.tier.as_str()),
