@@ -9594,7 +9594,10 @@ exit 7
         }) else {
             bail!("all-pass direct probes must not turn a missing upstream run into success");
         };
-        assert!(err.to_string().contains("failed for 1 of 1 files"));
+        assert!(
+            err.to_string().contains("is not admitted"),
+            "unproven nonzero upstream terminal must fail closed: {err}"
+        );
 
         // The authoritative report keeps the upstream verdict: missing row,
         // nonzero terminal, no direct participation in totals.
@@ -9774,7 +9777,10 @@ exit 7
         }) else {
             bail!("an unavailable probe cannot repair the upstream result");
         };
-        assert!(err.to_string().contains("failed for 1 of 1 files"));
+        assert!(
+            err.to_string().contains("is not admitted"),
+            "unproven nonzero upstream terminal must fail closed: {err}"
+        );
 
         let receipt_raw =
             fs::read_to_string(temp.path().join("parse-report.json.direct-diagnostics.json"))?;
