@@ -654,6 +654,9 @@ pub fn perl_available() -> bool {
 /// different signature (e.g. returning `Option<Value>` or taking `timeout_ms`)
 /// keep their local variant — only the byte-identical copies were consolidated
 /// here (#5232).
+// Shared helper: each integration-test binary compiles `common` separately, so
+// binaries that do not call it would otherwise trip per-target dead_code.
+#[allow(dead_code)]
 pub fn wait_for_event(
     rx: &Receiver<DapMessage>,
     event_name: &str,

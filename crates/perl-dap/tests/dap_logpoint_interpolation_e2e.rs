@@ -355,10 +355,10 @@ fn collect_output_and_track_stops(session: &DapWorkflowSession) -> AllOutputEven
         let Some(body) = body.as_ref() else {
             continue;
         };
-        if body.get("category").and_then(Value::as_str) == Some("console") {
-            if let Some(text) = body.get("output").and_then(Value::as_str) {
-                out.console.push(text.trim_end().to_string());
-            }
+        if body.get("category").and_then(Value::as_str) == Some("console")
+            && let Some(text) = body.get("output").and_then(Value::as_str)
+        {
+            out.console.push(text.trim_end().to_string());
         }
     }
 
