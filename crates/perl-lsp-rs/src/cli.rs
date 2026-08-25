@@ -238,12 +238,15 @@ fn run_check(command_name: &str, files: &[String]) -> i32 {
                     eprintln!(
                         "  hint: '{path}' is a directory. Use --check-project <dir> to check all files in a directory."
                     );
-                } else if e.kind() == std::io::ErrorKind::NotFound {
-                    eprintln!("  hint: '{path}' does not exist. Check the path for typos.");
-                } else if e.kind() == std::io::ErrorKind::NotADirectory {
+                } else if e.kind() == std::io::ErrorKind::NotADirectory
+                    || (e.kind() == std::io::ErrorKind::NotFound
+                        && traverses_regular_file_component(path_obj))
+                {
                     eprintln!(
                         "  hint: an intermediate component of '{path}' is a regular file, not a directory. Check the path for typos."
                     );
+                } else if e.kind() == std::io::ErrorKind::NotFound {
+                    eprintln!("  hint: '{path}' does not exist. Check the path for typos.");
                 } else {
                     eprintln!(
                         "  hint: check file permissions or encoding. The file may be binary or use an unsupported encoding."
@@ -310,6 +313,22 @@ fn run_check(command_name: &str, files: &[String]) -> i32 {
     }
 
     if errors > 0 { 1 } else { 0 }
+}
+
+/// Detects the "intermediate component is a regular file" situation behind a
+/// failed read. Linux reports it as `NotADirectory`, but Windows reports
+/// traversal through a regular-file component as `ERROR_PATH_NOT_FOUND`
+/// (`NotFound`), so the recovery hint must consult the path structure to name
+/// the real cause on every platform (#5808, #11688).
+fn traverses_regular_file_component(path: &Path) -> bool {
+    let mut ancestor = path.parent();
+    while let Some(component) = ancestor {
+        if std::fs::metadata(component).is_ok_and(|metadata| !metadata.is_dir()) {
+            return true;
+        }
+        ancestor = component.parent();
+    }
+    false
 }
 
 pub(crate) fn format_parse_error_context(
@@ -595,9 +614,34 @@ fn print_version(command_name: &str) {
 mod tests {
     use super::{
         format_parse_error_context, invocation_name, render_help_text, render_shell_completion,
-        run_cli,
+        run_cli, traverses_regular_file_component,
     };
     use std::ffi::OsString;
+
+    #[test]
+    fn traverses_regular_file_component_detects_file_between_root_and_leaf()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let file_parent = dir.path().join("not-a-directory");
+        std::fs::write(&file_parent, "not a directory")?;
+        let child = file_parent.join("file.pl");
+
+        assert!(traverses_regular_file_component(&child));
+        Ok(())
+    }
+
+    #[test]
+    fn traverses_regular_file_component_is_false_for_missing_or_directory_components()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let missing_child = dir.path().join("missing-dir").join("file.pl");
+        let real_dir_child = dir.path().join("real-dir").join("file.pl");
+        std::fs::create_dir(dir.path().join("real-dir"))?;
+
+        assert!(!traverses_regular_file_component(&missing_child));
+        assert!(!traverses_regular_file_component(&real_dir_child));
+        Ok(())
+    }
 
     #[test]
     fn invocation_name_uses_file_stem_from_first_arg() {
