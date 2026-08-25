@@ -1,0 +1,95 @@
+//! BDD coverage for the bounded PL003 (UnexpectedEof) quick fixes.
+
+use perl_lsp_rs_core::providers::code_actions::{CodeAction, CodeActionsProvider};
+use perl_lsp_rs_core::providers::diagnostics::{Diagnostic, DiagnosticSeverity};
+use perl_parser::Parser;
+use perl_tdd_support::must;
+
+fn diagnostic(source: &str, message: &str) -> Diagnostic {
+    Diagnostic {
+        range: (source.len(), source.len()),
+        severity: DiagnosticSeverity::Error,
+        code: Some("PL003".to_string()),
+        message: message.to_string(),
+        related_information: Vec::new(),
+        tags: Vec::new(),
+        suggestion: None,
+        fixable: false,
+        critic_observation: None,
+    }
+}
+
+fn actions_for(source: &str, message: &str) -> Vec<CodeAction> {
+    let mut parser = Parser::new(source);
+    let ast = must(parser.parse());
+    CodeActionsProvider::new(source.to_string()).get_code_actions(
+        &ast,
+        (0, source.len()),
+        &[diagnostic(source, message)],
+    )
+}
+
+fn apply_first(source: &str, action: &CodeAction) -> String {
+    let edit = &action.edit.changes[0];
+    let mut result = source.to_string();
+    result.replace_range(edit.location.start..edit.location.end, &edit.new_text);
+    result
+}
+
+#[test]
+fn pl003_routes_to_a_bounded_closing_brace_fix() {
+    let source = "sub greet {\n    print 'hello';\n";
+    let actions = actions_for(source, "The file ended unexpectedly");
+
+    let action = must(actions.iter().find(|action| action.title.contains("closing brace")));
+    assert_eq!(apply_first(source, action), format!("{source}\n}}"));
+}
+
+#[test]
+fn pl003_inserts_the_brace_at_end_of_source() {
+    let source = "if ($ok) { print 'yes'; }\nsub greet {";
+    let actions = actions_for(source, "Unexpected end of input");
+
+    let action = must(actions.iter().find(|action| action.title.contains("closing brace")));
+    let edit = &action.edit.changes[0];
+    assert_eq!((edit.location.start, edit.location.end), (source.len(), source.len()));
+    assert_eq!(edit.new_text, "\n}");
+}
+
+#[test]
+fn pl003_prefers_missing_semicolon_when_message_identifies_it() {
+    let source = "my $value = 1";
+    let actions = actions_for(source, "Unexpected end of input: missing semicolon");
+
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].title, "Add missing semicolon");
+    assert_eq!(apply_first(source, &actions[0]), "my $value = 1;");
+}
+
+#[test]
+fn pl003_missing_semicolon_fix_preserves_trailing_newline() {
+    let source = "my $value = 1   \n";
+    let actions = actions_for(source, "missing semicolon at end of input");
+
+    assert_eq!(actions.len(), 1);
+    assert_eq!(apply_first(source, &actions[0]), "my $value = 1;   \n");
+}
+
+#[test]
+fn other_parse_codes_do_not_receive_the_pl003_eof_fallback() {
+    let source = "my $value = 1;\n";
+    let mut parser = Parser::new(source);
+    let ast = must(parser.parse());
+    let diagnostic = Diagnostic {
+        code: Some("PL001".to_string()),
+        message: "Unexpected end of input".to_string(),
+        ..diagnostic(source, "Unexpected end of input")
+    };
+
+    let actions = CodeActionsProvider::new(source.to_string()).get_code_actions(
+        &ast,
+        (0, source.len()),
+        &[diagnostic],
+    );
+    assert!(actions.is_empty());
+}

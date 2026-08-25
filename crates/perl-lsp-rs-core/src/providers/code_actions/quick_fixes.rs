@@ -1418,7 +1418,7 @@ pub fn fix_parse_error(
                 is_preferred: true,
             });
         }
-        "PL001" | "PL002"
+        "PL001" | "PL002" | "PL003"
             if diagnostic.message.to_ascii_lowercase().contains("missing semicolon") =>
         {
             // PL001/PL002 are general parse error codes. When the message indicates a missing
@@ -1450,6 +1450,22 @@ pub fn fix_parse_error(
                     is_preferred: true,
                 });
             }
+        }
+        "PL003" => {
+            // Unexpected EOF has no interior delimiter location. Offer the
+            // bounded fallback for the common unclosed-block case at EOF.
+            actions.push(CodeAction {
+                title: "Add closing brace at end of file".to_string(),
+                kind: CodeActionKind::QuickFix,
+                diagnostics: vec![code.to_string()],
+                edit: CodeActionEdit {
+                    changes: vec![TextEdit {
+                        location: SourceLocation { start: source.len(), end: source.len() },
+                        new_text: "\n}".to_string(),
+                    }],
+                },
+                is_preferred: true,
+            });
         }
         "parse-error-unclosedstring" => {
             // Add closing quote
