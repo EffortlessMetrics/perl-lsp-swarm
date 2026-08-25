@@ -4769,10 +4769,15 @@ mod deep_tree_destruction_tests {
                     right = right_inner;
                 }
                 (left_kind, right_kind) => {
-                    panic!(
-                        "boxed chain expected ExpressionStatement at layer {layer}, got {} vs {}",
+                    assert_eq!(
                         left_kind.kind_name(),
-                        right_kind.kind_name()
+                        "ExpressionStatement",
+                        "boxed chain left kind at layer {layer}"
+                    );
+                    assert_eq!(
+                        right_kind.kind_name(),
+                        "ExpressionStatement",
+                        "boxed chain right kind at layer {layer}"
                     );
                 }
             }
@@ -4782,20 +4787,31 @@ mod deep_tree_destruction_tests {
                 assert_eq!(left.location, right.location, "boxed leaf locations");
                 assert_eq!(left_value, right_value, "boxed leaf values");
             }
-            (left_kind, right_kind) => panic!(
-                "boxed chain expected Number leaf, got {} vs {}",
-                left_kind.kind_name(),
-                right_kind.kind_name()
-            ),
+            (left_kind, right_kind) => {
+                assert_eq!(left_kind.kind_name(), "Number", "boxed chain left leaf");
+                assert_eq!(right_kind.kind_name(), "Number", "boxed chain right leaf");
+            }
         }
     }
 
     fn spine_child_index(family: &str) -> usize {
+        assert!(
+            matches!(
+                family,
+                "boxed"
+                    | "repeated"
+                    | "recovery"
+                    | "optional_boxed"
+                    | "pair_record"
+                    | "try_catch_pair_and_finally"
+                    | "clause_pair"
+            ),
+            "unknown family {family}"
+        );
         match family {
-            "boxed" | "repeated" | "recovery" => 0,
             "optional_boxed" | "pair_record" | "try_catch_pair_and_finally" => 1,
             "clause_pair" => 3,
-            other => panic!("unknown family {other}"),
+            _ => 0,
         }
     }
 
@@ -4830,7 +4846,13 @@ mod deep_tree_destruction_tests {
                         assert_eq!(left_decl, right_decl, "{family} declarator at layer {layer}");
                         assert_eq!(left_attrs, right_attrs, "{family} attributes at layer {layer}");
                     }
-                    _ => panic!("{family} expected VariableDeclaration at layer {layer}"),
+                    (left_kind, _) => {
+                        assert_eq!(
+                            left_kind.kind_name(),
+                            "VariableDeclaration",
+                            "{family} at layer {layer}"
+                        );
+                    }
                 },
                 "clause_pair" => match (&left.kind, &right.kind) {
                     (
@@ -4839,7 +4861,9 @@ mod deep_tree_destruction_tests {
                     ) => {
                         assert_eq!(left_kw, right_kw, "{family} keyword at layer {layer}");
                     }
-                    _ => panic!("{family} expected If at layer {layer}"),
+                    (left_kind, _) => {
+                        assert_eq!(left_kind.kind_name(), "If", "{family} at layer {layer}");
+                    }
                 },
                 "try_catch_pair_and_finally" => match (&left.kind, &right.kind) {
                     (
@@ -4860,7 +4884,9 @@ mod deep_tree_destruction_tests {
                             "{family} catch binding at layer {layer}"
                         );
                     }
-                    _ => panic!("{family} expected Try at layer {layer}"),
+                    (left_kind, _) => {
+                        assert_eq!(left_kind.kind_name(), "Try", "{family} at layer {layer}");
+                    }
                 },
                 "recovery" => match (&left.kind, &right.kind) {
                     (
@@ -4890,7 +4916,9 @@ mod deep_tree_destruction_tests {
                             "{family} found token at layer {layer}"
                         );
                     }
-                    _ => panic!("{family} expected Error at layer {layer}"),
+                    (left_kind, _) => {
+                        assert_eq!(left_kind.kind_name(), "Error", "{family} at layer {layer}");
+                    }
                 },
                 _ => {}
             }
@@ -4972,30 +5000,36 @@ mod deep_tree_destruction_tests {
             let mut cloned = original.clone();
             let mut cursor = &mut cloned;
             for _ in 0..DEEP_DEPTH {
-                match &mut cursor.kind {
-                    NodeKind::ExpressionStatement { expression } => cursor = expression,
-                    other => panic!("expected ExpressionStatement, got {}", other.kind_name()),
-                }
+                let kind_name = cursor.kind.kind_name();
+                let NodeKind::ExpressionStatement { expression } = &mut cursor.kind else {
+                    assert_eq!(kind_name, "ExpressionStatement");
+                    return;
+                };
+                cursor = expression;
             }
-            match &mut cursor.kind {
-                NodeKind::Number { value } => value.push_str("-cloned"),
-                other => panic!("expected Number leaf, got {}", other.kind_name()),
-            }
+            let leaf_name = cursor.kind.kind_name();
+            let NodeKind::Number { value } = &mut cursor.kind else {
+                assert_eq!(leaf_name, "Number");
+                return;
+            };
+            value.push_str("-cloned");
 
             let mut original_cursor = &original;
             for _ in 0..DEEP_DEPTH {
-                match &original_cursor.kind {
-                    NodeKind::ExpressionStatement { expression } => original_cursor = expression,
-                    other => {
-                        panic!("original expected ExpressionStatement, got {}", other.kind_name())
-                    }
-                }
+                let kind_name = original_cursor.kind.kind_name();
+                let NodeKind::ExpressionStatement { expression } = &original_cursor.kind else {
+                    assert_eq!(kind_name, "ExpressionStatement");
+                    return;
+                };
+                original_cursor = expression;
             }
             match &original_cursor.kind {
                 NodeKind::Number { value } => {
                     assert_eq!(value, "1", "mutating the clone must not change the original leaf");
                 }
-                other => panic!("original expected Number leaf, got {}", other.kind_name()),
+                other => {
+                    assert_eq!(other.kind_name(), "Number");
+                }
             }
             drop(cloned);
             drop(original);
@@ -5063,7 +5097,9 @@ mod deep_tree_destruction_tests {
                     "equal-looking repeated children must keep source order"
                 );
             }
-            _ => panic!("expected ArrayLiteral"),
+            (left_kind, _) => {
+                assert_eq!(left_kind.kind_name(), "ArrayLiteral");
+            }
         }
 
         let present = wrap_optional_boxed(number_leaf("init"));
@@ -5091,7 +5127,8 @@ mod deep_tree_destruction_tests {
         assert_eq!(empty.clone(), empty);
         assert_eq!(one.clone(), one);
         assert_eq!(many.clone(), many);
-        match many.clone().kind {
+        let cloned_many = many.clone();
+        match &cloned_many.kind {
             NodeKind::Program { statements } => {
                 assert_eq!(statements[0].kind.kind_name(), "Number");
                 match (&statements[0].kind, &statements[2].kind) {
@@ -5099,15 +5136,19 @@ mod deep_tree_destruction_tests {
                         assert_eq!(first, "1");
                         assert_eq!(last, "3");
                     }
-                    _ => panic!("expected Number statements"),
+                    (left_kind, _) => {
+                        assert_eq!(left_kind.kind_name(), "Number");
+                    }
                 }
             }
-            _ => panic!("expected Program"),
+            other => {
+                assert_eq!(other.kind_name(), "Program");
+            }
         }
     }
 
     #[test]
-    fn clone_work_is_operation_local_and_concurrent() {
+    fn clone_work_is_operation_local_and_concurrent() -> Result<(), String> {
         let tree = broad_multi_family_tree(3);
         let (_, expected) = clone_and_count(&tree);
 
@@ -5115,14 +5156,15 @@ mod deep_tree_destruction_tests {
             let first = scope.spawn(|| clone_and_count(&tree));
             let second = scope.spawn(|| clone_and_count(&tree));
             let (first_clone, first_work) =
-                first.join().unwrap_or_else(|_| panic!("first clone thread"));
+                first.join().map_err(|_| "first clone thread aborted".to_string())?;
             let (second_clone, second_work) =
-                second.join().unwrap_or_else(|_| panic!("second clone thread"));
+                second.join().map_err(|_| "second clone thread aborted".to_string())?;
             assert_eq!(first_work, expected);
             assert_eq!(second_work, expected);
             assert_eq!(first_clone, tree);
             assert_eq!(second_clone, tree);
-        });
+            Ok(())
+        })
     }
 
     #[test]
@@ -5141,7 +5183,7 @@ mod deep_tree_destruction_tests {
                 self.inner.on_rebuild();
                 self.remaining_rebuilds = self.remaining_rebuilds.saturating_sub(1);
                 if self.remaining_rebuilds == 0 {
-                    panic!("clone observer panic");
+                    std::panic::resume_unwind(Box::new("clone observer panic"));
                 }
             }
 
@@ -5182,7 +5224,9 @@ mod deep_tree_destruction_tests {
                     value.push_str("-mutated");
                 }
             }
-            other => panic!("expected Try, got {}", other.kind_name()),
+            other => {
+                assert_eq!(other.kind_name(), "Try");
+            }
         }
         match &original.kind {
             NodeKind::Try { catch_blocks, finally_block, .. } => {
@@ -5193,10 +5237,17 @@ mod deep_tree_destruction_tests {
                 assert_eq!(name, Some("error"));
                 match finally_block.as_ref().map(|node| &node.kind) {
                     Some(NodeKind::Number { value }) => assert_eq!(value, "finally"),
-                    other => panic!("expected Number finally, got {other:?}"),
+                    other => {
+                        assert!(
+                            matches!(other, Some(NodeKind::Number { .. })),
+                            "expected Number finally, got {other:?}"
+                        );
+                    }
                 }
             }
-            other => panic!("expected Try, got {}", other.kind_name()),
+            other => {
+                assert_eq!(other.kind_name(), "Try");
+            }
         }
     }
 }
