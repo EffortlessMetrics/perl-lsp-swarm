@@ -493,6 +493,7 @@ semantic_wire_id!(
 /// The fingerprint is recomputed and checked by the validator, so a wire
 /// payload cannot mix one part of one triple with another part of another.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticProfileIdentity {
     /// Semantic schema family (#12121 spec text).
     pub schema: SemanticSchemaId,
@@ -550,6 +551,7 @@ impl SemanticProfileIdentity {
 /// normalized or truncated variant), so it carries its own digest and length
 /// instead of aliasing the full-source revision.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ParserInputRevision {
     /// Digest of the exact parser-input bytes.
     pub digest: ContentDigest,
@@ -568,6 +570,7 @@ impl ParserInputRevision {
 /// The exact analysis subject of one snapshot: logical source, document
 /// instance, checked source generation, and both exact revisions.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticSubjectIdentity {
     /// Stable revision-independent logical source identity.
     pub logical_source_id: LogicalSourceId,
@@ -614,7 +617,7 @@ impl SemanticSubjectIdentity {
             &[
                 self.logical_source_id.as_wire().as_bytes(),
                 self.document_instance.as_wire().as_bytes(),
-                self.source_generation_label_bytes(),
+                &self.source_generation_label_bytes(),
                 self.full_source_revision.content_digest.as_wire().as_bytes(),
                 self.parser_input_revision.digest.as_wire().as_bytes(),
                 &self.parser_input_revision.byte_len.to_be_bytes(),
@@ -622,10 +625,21 @@ impl SemanticSubjectIdentity {
         )
     }
 
-    fn source_generation_label_bytes(&self) -> &[u8] {
-        match self.source_generation.as_label() {
-            Some(label) => label.as_bytes(),
-            None => b"generation:unknown",
+    /// Fingerprint bytes of the source-generation part: the variant is
+    /// tagged separately from the label so `Unknown`, `Known("")`, and any
+    /// `Known` label whose text collides with a sentinel can never share
+    /// subject fingerprints. Variants from a newer `perl-source-identity`
+    /// share the `future` tag: still distinct from every local variant.
+    fn source_generation_label_bytes(&self) -> Vec<u8> {
+        match &self.source_generation {
+            SourceGeneration::Unknown => b"unknown".to_vec(),
+            SourceGeneration::Known(label) => {
+                let mut bytes = Vec::with_capacity(6 + label.len());
+                bytes.extend_from_slice(b"known:");
+                bytes.extend_from_slice(label.as_bytes());
+                bytes
+            }
+            _ => b"future".to_vec(),
         }
     }
 }
@@ -700,6 +714,7 @@ impl SemanticParseStrategy {
 /// The snapshot *object* (with its native parser output) stays with the
 /// parser crate; only its identity crosses into this envelope.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ParseSnapshotIdentity {
     /// Accepted parse generation value (`ParseGeneration`).
     pub accepted_generation: u64,
@@ -731,6 +746,7 @@ impl ParseSnapshotIdentity {
 /// The accepted parser ticket reference bound into a snapshot (#11665 spec
 /// text; constructor owner #12151).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AcceptedParserTicketRef {
     /// Ticket id, derived from document instance + generation + snapshot
     /// source digest and recomputed on validation.
@@ -766,6 +782,7 @@ pub enum SemanticContributionSetCompleteness {
 /// this exact subject and profile, and that the referenced subject is this
 /// subject.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticContributionSetRef {
     /// Identity of the contribution set.
     pub set_id: SemanticContributionSetId,
@@ -849,6 +866,7 @@ impl std::fmt::Display for SemanticQueryViewKind {
 
 /// Reference to one #12138 materialized neutral query view by identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MaterializedQueryViewRef {
     /// Identity of the view, derived from owning set + kind and recomputed
     /// on validation.
@@ -910,6 +928,7 @@ impl SemanticInstrumentKind {
 /// work-receipt id that binds instance + sequence *is* rederived, so an
 /// instrument instance cannot be spliced into another receipt.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InstrumentIdentity {
     /// Instrument class.
     pub kind: SemanticInstrumentKind,
@@ -965,6 +984,7 @@ impl std::fmt::Display for SemanticWorkKind {
 /// Deliberately carries no wall-clock time: ordering is the authority-owned
 /// `work_sequence`, so fingerprints stay deterministic.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticWorkReceipt {
     /// Receipt identity, derived from instrument + sequence and recomputed
     /// on validation.
@@ -1001,9 +1021,21 @@ pub enum SemanticReuseRelation {
     NoChangeReuse,
 }
 
+impl SemanticReuseRelation {
+    /// Wire name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Incremental => "incremental",
+            Self::NoChangeReuse => "no_change_reuse",
+        }
+    }
+}
+
 /// Predecessor/reuse identity, applicable only where a reuse-capable
 /// producer was selected (#12151).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticPredecessorRef {
     /// Fingerprint of the predecessor snapshot.
     pub predecessor_fingerprint: ContentDigest,
@@ -1093,6 +1125,7 @@ impl SemanticLimitationKind {
 
 /// One limitation entry: a closed kind plus a bounded count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticLimitationEntry {
     /// Limitation kind.
     pub kind: SemanticLimitationKind,
@@ -1103,6 +1136,7 @@ pub struct SemanticLimitationEntry {
 /// Recovery/dynamic/unsupported limitation inventory, canonically ordered by
 /// kind with duplicate kinds merged (counts summed) at construction.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticLimitations {
     /// Canonical, kind-sorted, duplicate-free entries.
     pub entries: Vec<SemanticLimitationEntry>,
@@ -1168,6 +1202,7 @@ impl SemanticLimitations {
 /// (#4772 seam). The projection fingerprint is #4772 authority; the id is
 /// rederived from the logical source and profile triple on validation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectFactProjectionRef {
     /// Identity of the projection.
     pub projection_id: ProjectFactProjectionId,
@@ -1307,9 +1342,14 @@ impl std::fmt::Display for SemanticSnapshotFingerprint {
 ///
 /// Inputs are wire/canonical forms only; absent options contribute a fixed
 /// marker so `Some`/`None` never collide. The fingerprint covers every
-/// identity-bearing field including terminal state, completeness,
+/// identity-bearing field including the full work-receipt record (work kind,
+/// instrument class, instrument instance, and sequence — the receipt id alone
+/// is not sufficient because the validator cannot rederive an instrument
+/// instance from its authority-held key), the full predecessor record
+/// (fingerprint, generation, and relation), terminal state, completeness,
 /// confidence, limitations, and generation — so source-identical later
-/// generations and close/reopen instances stay distinct.
+/// generations and close/reopen instances stay distinct, and no relabeling of
+/// a validated envelope keeps its fingerprint.
 #[allow(clippy::too_many_arguments)]
 fn snapshot_fingerprint_over(
     schema_version: u32,
@@ -1345,7 +1385,18 @@ fn snapshot_fingerprint_over(
         push(view.fingerprint.as_wire().as_bytes());
     }
     push(work_receipt.receipt_id.as_wire().as_bytes());
-    push(predecessor.map_or(ABSENT, |p| p.predecessor_fingerprint.as_wire().as_bytes()));
+    push(work_receipt.work_kind.as_str().as_bytes());
+    push(work_receipt.instrument.kind.as_str().as_bytes());
+    push(work_receipt.instrument.instance.as_wire().as_bytes());
+    push(&work_receipt.work_sequence.to_be_bytes());
+    match predecessor {
+        None => push(ABSENT),
+        Some(predecessor) => {
+            push(predecessor.predecessor_fingerprint.as_wire().as_bytes());
+            push(&predecessor.predecessor_generation.to_be_bytes());
+            push(predecessor.relation.as_str().as_bytes());
+        }
+    }
     push(terminal_state.as_str().as_bytes());
     push(match completeness {
         SemanticCompleteness::Complete => b"complete",
@@ -1565,6 +1616,17 @@ pub enum FileSemanticSnapshotValidationError {
     /// duplicates.
     #[error("limitation entries must be canonically ordered and duplicate-free")]
     LimitationOrder,
+    /// The parse disposition contradicts the terminal-state family: a
+    /// complete family requires a clean parse, and a partial-recovered
+    /// terminal requires a recovered parse. Any other pairing presents
+    /// partial or failed parser evidence as exact complete facts.
+    #[error("parse disposition {disposition:?} contradicts terminal state {terminal}")]
+    ParseDispositionContradiction {
+        /// The terminal state.
+        terminal: SemanticSnapshotTerminalState,
+        /// The contradicting parse disposition.
+        disposition: SemanticParseDisposition,
+    },
     /// The stored fingerprint is not the fingerprint of the payload.
     #[error("snapshot fingerprint does not match its canonical identity parts")]
     FingerprintMismatch,
@@ -1857,6 +1919,29 @@ impl FileSemanticSnapshotV1 {
             if pair[0].kind >= pair[1].kind {
                 return Err(E::LimitationOrder);
             }
+        }
+
+        // Parse disposition agrees with the terminal-state family: only a
+        // clean parse can back exact complete facts, and a partial-recovered
+        // terminal is parser recovery. Absent-family terminals are
+        // deliberately unconstrained: a clean parse can legitimately precede
+        // a later cancellation, budget stop, supersession, or product
+        // failure, and a failed parse can precede an absent-family failure.
+        if terminal_state.is_complete_family()
+            && parse_snapshot.disposition != SemanticParseDisposition::Clean
+        {
+            return Err(E::ParseDispositionContradiction {
+                terminal: terminal_state,
+                disposition: parse_snapshot.disposition,
+            });
+        }
+        if terminal_state == SemanticSnapshotTerminalState::PartialRecovered
+            && parse_snapshot.disposition != SemanticParseDisposition::Recovered
+        {
+            return Err(E::ParseDispositionContradiction {
+                terminal: terminal_state,
+                disposition: parse_snapshot.disposition,
+            });
         }
 
         // Terminal-state families govern facts, completeness, confidence.
@@ -2536,7 +2621,6 @@ mod tests {
                 parts
             }
         };
-        let _ = terminal;
         parts
     }
 
@@ -2636,6 +2720,41 @@ mod tests {
     }
 
     #[test]
+    fn fingerprint_covers_terminal_state_and_limitations() {
+        // Two absent-family snapshots differing only in terminal state.
+        let unavailable = FileSemanticSnapshotV1::from_parts(parts_for_terminal(
+            SemanticSnapshotTerminalState::Unavailable,
+        ))
+        .unwrap();
+        let cancelled = FileSemanticSnapshotV1::from_parts(parts_for_terminal(
+            SemanticSnapshotTerminalState::Cancelled,
+        ))
+        .unwrap();
+        assert_ne!(
+            unavailable.fingerprint(),
+            cancelled.fingerprint(),
+            "terminal state alone must change the fingerprint"
+        );
+
+        // Two partial-recovered snapshots differing only in limitation counts.
+        let base = FileSemanticSnapshotV1::from_parts(parts_for_terminal(
+            SemanticSnapshotTerminalState::PartialRecovered,
+        ))
+        .unwrap();
+        let mut more = parts_for_terminal(SemanticSnapshotTerminalState::PartialRecovered);
+        more.limitations = SemanticLimitations::new(vec![SemanticLimitationEntry {
+            kind: SemanticLimitationKind::RecoveredRegion,
+            count: 9,
+        }]);
+        let more = FileSemanticSnapshotV1::from_parts(more).unwrap();
+        assert_ne!(
+            base.fingerprint(),
+            more.fingerprint(),
+            "limitation inventory must change the fingerprint"
+        );
+    }
+
+    #[test]
     fn source_identical_later_generation_does_not_collapse() {
         let earlier = FileSemanticSnapshotV1::from_parts(complete_fresh_full_parts()).unwrap();
         let later = FileSemanticSnapshotV1::from_parts(complete_fresh_full_parts_for(
@@ -2728,8 +2847,12 @@ mod tests {
         parts.parse_snapshot = parse_snapshot(8);
         assert_ne!(FileSemanticSnapshotV1::from_parts(parts).unwrap().fingerprint(), &base);
 
-        // Different parse disposition.
-        let mut parts = complete_fresh_full_parts();
+        // Different parse disposition. Complete terminals can only carry a
+        // clean parse (family law), so distinctness is asserted through an
+        // absent-family pair where both dispositions validate.
+        let with_clean =
+            FileSemanticSnapshotV1::from_parts(unavailable_parts()).unwrap().fingerprint().clone();
+        let mut parts = unavailable_parts();
         parts.parse_snapshot = ParseSnapshotIdentity::new(
             7,
             ContentDigest::of_bytes(SOURCE),
@@ -2737,7 +2860,114 @@ mod tests {
             SemanticParseDisposition::Recovered,
             SemanticParseStrategy::Fresh,
         );
-        assert_ne!(FileSemanticSnapshotV1::from_parts(parts).unwrap().fingerprint(), &base);
+        assert_ne!(FileSemanticSnapshotV1::from_parts(parts).unwrap().fingerprint(), &with_clean);
+    }
+
+    #[test]
+    fn fingerprint_covers_receipt_and_predecessor_records() {
+        // An absent-family terminal leaves work_kind free (only the complete
+        // family pins it), so two valid receipts differing only in work kind
+        // must not share a snapshot fingerprint.
+        let base = FileSemanticSnapshotV1::from_parts(unavailable_parts()).unwrap();
+        let mut parts = unavailable_parts();
+        parts.work_receipt = SemanticWorkReceipt::new(
+            SemanticWorkKind::NoChangeReuse,
+            parts.work_receipt.instrument.clone(),
+            parts.work_receipt.work_sequence,
+        );
+        let relabeled = FileSemanticSnapshotV1::from_parts(parts).unwrap();
+        assert_ne!(
+            base.fingerprint(),
+            relabeled.fingerprint(),
+            "work-kind relabeling must change the snapshot fingerprint"
+        );
+
+        // The validator cannot rederive an instrument instance from its
+        // authority-held key, so relabeling the instrument class while
+        // keeping the opaque instance passes validation — the fingerprint
+        // must still change.
+        let mut parts = unavailable_parts();
+        let same_instance = parts.work_receipt.instrument.instance.clone();
+        parts.work_receipt.instrument = InstrumentIdentity {
+            kind: SemanticInstrumentKind::ExternalProducer,
+            instance: same_instance,
+        };
+        let relabeled = FileSemanticSnapshotV1::from_parts(parts).unwrap();
+        assert_ne!(
+            base.fingerprint(),
+            relabeled.fingerprint(),
+            "instrument-class relabeling over the same opaque instance must change the snapshot \
+             fingerprint"
+        );
+
+        // Predecessor generation is not derivable from the predecessor
+        // fingerprint, so a validated incremental pair differing only in the
+        // predecessor generation must not share a fingerprint.
+        let incremental = FileSemanticSnapshotV1::from_parts(parts_for_terminal(
+            SemanticSnapshotTerminalState::CompleteIncremental,
+        ))
+        .unwrap();
+        let mut parts = parts_for_terminal(SemanticSnapshotTerminalState::CompleteIncremental);
+        if let Some(predecessor) = &mut parts.predecessor {
+            predecessor.predecessor_generation = 5;
+        }
+        assert_ne!(
+            incremental.fingerprint(),
+            FileSemanticSnapshotV1::from_parts(parts).unwrap().fingerprint(),
+            "predecessor generation must change the snapshot fingerprint"
+        );
+
+        // Non-complete terminals do not pin the predecessor relation, so a
+        // validated absent-family pair differing only in relation must not
+        // share a fingerprint.
+        let mut with_incremental = unavailable_parts();
+        with_incremental.predecessor = Some(SemanticPredecessorRef {
+            predecessor_fingerprint: ContentDigest::of_bytes(b"predecessor"),
+            predecessor_generation: 6,
+            relation: SemanticReuseRelation::Incremental,
+        });
+        let incremental = FileSemanticSnapshotV1::from_parts(with_incremental).unwrap();
+        let mut with_reuse = unavailable_parts();
+        with_reuse.predecessor = Some(SemanticPredecessorRef {
+            predecessor_fingerprint: ContentDigest::of_bytes(b"predecessor"),
+            predecessor_generation: 6,
+            relation: SemanticReuseRelation::NoChangeReuse,
+        });
+        assert_ne!(
+            incremental.fingerprint(),
+            FileSemanticSnapshotV1::from_parts(with_reuse).unwrap().fingerprint(),
+            "predecessor relation must change the snapshot fingerprint"
+        );
+    }
+
+    #[test]
+    fn subject_fingerprint_distinguishes_source_generation_variants() {
+        let known = subject("open-1", "7");
+        let unknown = SemanticSubjectIdentity {
+            source_generation: SourceGeneration::Unknown,
+            ..known.clone()
+        };
+        let empty_known = SemanticSubjectIdentity {
+            source_generation: SourceGeneration::known(""),
+            ..known.clone()
+        };
+        // A known label whose text collides with the previous `Unknown`
+        // sentinel must not collapse onto the unknown variant.
+        let sentinel_named = subject("open-1", "generation:unknown");
+        let fingerprints = [
+            known.fingerprint(),
+            unknown.fingerprint(),
+            empty_known.fingerprint(),
+            sentinel_named.fingerprint(),
+        ];
+        for (left, right) in fingerprints.iter().enumerate().flat_map(|(left, value)| {
+            fingerprints.iter().skip(left + 1).map(move |right| (value, right))
+        }) {
+            assert_ne!(
+                left, right,
+                "distinct source-generation states must not share subject fingerprints"
+            );
+        }
     }
 
     // ── Constructor falsifiers: empty-as-complete, families ───────────────
@@ -2781,6 +3011,79 @@ mod tests {
             err,
             FileSemanticSnapshotValidationError::RequiredViewFamilyMissing { .. }
         ));
+    }
+
+    #[test]
+    fn refuses_parse_dispositions_contradicting_the_terminal_family() {
+        let non_clean = [
+            SemanticParseDisposition::Recovered,
+            SemanticParseDisposition::Catastrophic,
+            SemanticParseDisposition::Cancelled,
+            SemanticParseDisposition::BudgetExhausted,
+        ];
+        let complete_family = [
+            SemanticSnapshotTerminalState::CompleteFreshFull,
+            SemanticSnapshotTerminalState::CompleteIncremental,
+            SemanticSnapshotTerminalState::CompleteNoChangeReuse,
+            SemanticSnapshotTerminalState::CompleteFullFallback,
+        ];
+        for terminal in complete_family {
+            for disposition in non_clean {
+                let mut parts = parts_for_terminal(terminal);
+                parts.parse_snapshot = ParseSnapshotIdentity::new(
+                    7,
+                    ContentDigest::of_bytes(SOURCE),
+                    SOURCE.len() as u64,
+                    disposition,
+                    SemanticParseStrategy::Fresh,
+                );
+                let err = FileSemanticSnapshotV1::from_parts(parts).unwrap_err();
+                assert!(
+                    matches!(
+                        err,
+                        FileSemanticSnapshotValidationError::ParseDispositionContradiction {
+                            terminal: found,
+                            ..
+                        } if found == terminal
+                    ),
+                    "{terminal:?} with {disposition:?} must be refused as contradicting the \
+                         terminal family: {err}"
+                );
+            }
+        }
+
+        // PartialRecovered is parser recovery: a clean parse cannot back it.
+        let mut parts = parts_for_terminal(SemanticSnapshotTerminalState::PartialRecovered);
+        parts.parse_snapshot = ParseSnapshotIdentity::new(
+            7,
+            ContentDigest::of_bytes(SOURCE),
+            SOURCE.len() as u64,
+            SemanticParseDisposition::Clean,
+            SemanticParseStrategy::Fresh,
+        );
+        let err = FileSemanticSnapshotV1::from_parts(parts).unwrap_err();
+        assert!(matches!(
+            err,
+            FileSemanticSnapshotValidationError::ParseDispositionContradiction { .. }
+        ));
+
+        // Absent-family terminals stay unconstrained: a clean parse can
+        // precede a later cancellation, and a failed parse can precede an
+        // absent-family failure.
+        for disposition in non_clean {
+            let mut parts = unavailable_parts();
+            parts.parse_snapshot = ParseSnapshotIdentity::new(
+                7,
+                ContentDigest::of_bytes(SOURCE),
+                SOURCE.len() as u64,
+                disposition,
+                SemanticParseStrategy::Fresh,
+            );
+            assert!(
+                FileSemanticSnapshotV1::from_parts(parts).is_ok(),
+                "absent-family terminals accept a {disposition:?} parse"
+            );
+        }
     }
 
     #[test]
@@ -3179,6 +3482,60 @@ mod tests {
         assert!(
             serde_json::from_value::<FileSemanticSnapshotV1>(value).is_err(),
             "unknown fields (including compiler contributions) must be refused"
+        );
+    }
+
+    #[test]
+    fn wire_refuses_unknown_fields_inside_nested_records() {
+        // Unknown keys must be refused inside every module-owned nested
+        // record, not only at the top level: an extra nested key is a newer
+        // schema this version cannot interpret, and silently dropping it
+        // would reserialize a different payload under the same fingerprint.
+        let injections: [(&str, serde_json::Value); 8] = [
+            ("parse_snapshot", json!({"future_disposition_detail": "notes"})),
+            ("subject", json!({"ephemeral_instance_flag": true})),
+            ("accepted_ticket", json!({"queue_position": 3})),
+            ("profile", json!({"experimental_profile": "beta"})),
+            ("work_receipt", json!({"retry_count": 1})),
+            ("limitations", json!({"future_limitation_scope": "v2"})),
+            ("materialized_views", json!([{"future_view_field": 1}])),
+            ("contribution_set", json!({"future_set_scope": "v2"})),
+        ];
+        for (record, addition) in injections {
+            let mut value = complete_json();
+            match (record, &addition) {
+                ("materialized_views", serde_json::Value::Array(entries)) => {
+                    let mut views = value["materialized_views"].as_array().unwrap().clone();
+                    assert!(!views.is_empty());
+                    for entry in entries {
+                        if let Some(object) = views[0].as_object_mut() {
+                            for (key, field) in entry.as_object().into_iter().flatten() {
+                                object.insert(key.clone(), field.clone());
+                            }
+                        }
+                    }
+                    value["materialized_views"] = json!(views);
+                }
+                _ => {
+                    for (key, field) in addition.as_object().into_iter().flatten() {
+                        value[record][key] = field.clone();
+                    }
+                }
+            }
+            assert!(
+                serde_json::from_value::<FileSemanticSnapshotV1>(value).is_err(),
+                "unknown field inside `{record}` must be refused at the serde boundary"
+            );
+        }
+
+        // The instrument record nests inside the work receipt: an extra key
+        // there must be refused too, not silently dropped while the receipt
+        // id (derived from instance + sequence) still validates.
+        let mut value = complete_json();
+        value["work_receipt"]["instrument"]["host_path"] = json!("/tmp/cell");
+        assert!(
+            serde_json::from_value::<FileSemanticSnapshotV1>(value).is_err(),
+            "unknown field inside `work_receipt.instrument` must be refused"
         );
     }
 
