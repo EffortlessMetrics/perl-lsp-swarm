@@ -685,6 +685,22 @@ sub modify_it {
     Ok(())
 }
 
+#[test]
+fn scope_local_typeglob_alias_keeps_rhs_target_visible() -> Result<(), Box<dyn std::error::Error>> {
+    let issues = scope_issues_strict(
+        "use strict;\nour *TARGET;\nlocal *ALIAS = *TARGET;\n",
+    );
+
+    assert!(
+        issues.iter().all(|issue| {
+            !(issue.kind == IssueKind::UndeclaredVariable
+                && (issue.variable_name == "*TARGET" || issue.variable_name == "TARGET"))
+        }),
+        "typeglob alias target should be recognized by scope analysis: {issues:?}"
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // 3b. local with builtin special variables — issue #3502
 // ---------------------------------------------------------------------------
