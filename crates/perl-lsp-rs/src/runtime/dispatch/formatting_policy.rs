@@ -1,8 +1,10 @@
 //! Dispatch cutover for the shared formatting outcome policy.
 //!
-//! The legacy routing table retains its formatting arms as a bounded rollback
-//! seam, but live requests are intercepted here after preflight and before that
-//! table so all four formatting surfaces receive the same request identity.
+//! Live requests are intercepted here after preflight so all four formatting
+//! surfaces reach one policy owner. The secondary routes are currently
+//! withdrawn, and the policy returns the truthful method-not-advertised refusal;
+//! restoration belongs to their named follow-up claims rather than to a
+//! duplicate legacy handler.
 
 use super::super::{JsonRpcRequest, LspServer, Value};
 use super::response::RoutedResponse;

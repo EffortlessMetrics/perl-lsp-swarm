@@ -1,6 +1,6 @@
-use perl_module::import::{ModuleImportKind, parse_module_import_head};
-use perl_module::path::module_name_to_path;
-use perl_module::reference::{
+use perl_module::module_name_to_path;
+use perl_module::{ModuleImportKind, parse_module_import_head};
+use perl_module::{
     extract_module_reference, extract_module_reference_extended, find_module_reference,
     find_module_reference_extended,
 };

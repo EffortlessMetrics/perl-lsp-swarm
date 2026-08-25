@@ -1,7 +1,5 @@
-use perl_module::boundary::{
-    contains_standalone_module_token, find_standalone_module_token_ranges,
-};
-use perl_module::name::legacy_package_separator;
+use perl_module::legacy_package_separator;
+use perl_module::{contains_standalone_module_token, find_standalone_module_token_ranges};
 use proptest::prelude::*;
 
 fn module_name_strategy() -> impl Strategy<Value = String> {

@@ -143,10 +143,55 @@ fn no_production_route_references_the_withdrawn_organizer() -> Result<(), String
     Ok(())
 }
 
+#[test]
+fn withdrawn_route_patterns_discriminate_live_routes_from_inventory_mentions() -> Result<(), String>
+{
+    // Truthful withdrawal-inventory strings that legitimately appear in
+    // production source (final_surface_inventory/rows.rs) must not trip
+    // the guard.
+    let inventory_mentions = [
+        "build_profile_config_tool_inputs: \
+         &[\"BuildFlags.source_organize_imports field removed (#8305)\"]",
+        "\"#8305 withdrawal; restoration path #8319 (bounded cohort) + #10696 (proven cutover); \
+         organize_imports_containment_tests.rs\"",
+        "protocol_field: \"profile:source.organizeImports withdrawn from advertisement\"",
+    ];
+    for mention in inventory_mentions {
+        assert!(
+            !WITHDRAWN_ROUTE_PATTERNS.iter().any(|(needle, _)| mention.contains(needle)),
+            "truthful inventory mention must not be treated as a live route: {mention}"
+        );
+    }
+
+    // Realistic restorations of the withdrawn organizer must still fail.
+    let live_route_restorations = [
+        "let sorted = import_management::organize_imports(&ast);",
+        "use crate::providers::code_actions::import_management::organize_imports;",
+        "fn organize_imports(source: &str) -> String {",
+        "actions.push(organize_imports(client));",
+    ];
+    for route in live_route_restorations {
+        assert!(
+            WITHDRAWN_ROUTE_PATTERNS.iter().any(|(needle, _)| route.contains(needle)),
+            "live-route restoration must still fail the guard: {route}"
+        );
+    }
+    Ok(())
+}
+
 /// Byte patterns whose presence under any `crates/*/src` path means the
 /// withdrawn sorter regained a production reference.
+///
+/// The withdrawn organizer symbol (`organize_imports`) is matched through its
+/// live-route shapes only: a path reference (`::organize_imports`) or a
+/// call/definition site (`organize_imports(`). Bare snake_case mentions are
+/// legitimate in truthful withdrawal-inventory rows (for example
+/// `final_surface_inventory/rows.rs` records the #8305 withdrawal and names
+/// this very guard file), so a bare-substring match would flag documentation
+/// of the withdrawal as a restored route.
 const WITHDRAWN_ROUTE_PATTERNS: &[(&str, &str)] = &[
-    ("organize_imports", "references the withdrawn organize_imports symbol"),
+    ("::organize_imports", "path-references the withdrawn organize_imports symbol"),
+    ("organize_imports(", "calls or defines the withdrawn organize_imports symbol"),
     ("import_management::collect_imports", "re-wires the withdrawn line collector into production"),
     (
         "import_management::{collect_imports",

@@ -78,6 +78,22 @@ created = "2026-05-07"
 review_after = "2026-08-07"
 
 [[allow]]
+id = "non-rust-agent-review-packet-golden-markdown"
+glob = "fixtures/agent_review_packet/golden/*.md"
+kind = "test_fixture"
+language = "markdown"
+surface = "fixtures"
+classification = "test"
+owner = "tooling/agent-review"
+reason = "Golden Markdown projection vectors proving the deterministic phone-readable rendering of the #10881 review documents; regenerated only by the explicit --update-golden writer action. Declared before the broad root-governance *.md glob so the specific fixture rule wins (PR #12220 review finding)."
+covered_by = [
+  "cargo xtask check-agent-review-packet",
+  "cargo test -p xtask --bin xtask agent_review_packet --locked",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
 id = "non-rust-root-governance-docs"
 glob = "*.md"
 kind = "documentation"
@@ -1675,6 +1691,21 @@ created = "2026-08-15"
 review_after = "2026-09-15"
 
 [[allow]]
+id = "non-rust-module-train-live-observation-fixtures"
+glob = "xtask/tests/fixtures/module-train-live/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "devex/module-train"
+reason = "Deterministic raw-observation fixtures for the read-only module live frontier (#11627): one 12-PR corpus covering every candidate-state family and one clean-surface baseline. They pin the normalizer/classifier laws (byte-identical double normalization, order permutation, fail-closed instruments) so GitHub observation failures can never silently become absence or pass."
+covered_by = [
+  "cargo test -p xtask --locked --bins module_train_live",
+]
+created = "2026-08-24"
+review_after = "2026-09-24"
+
+[[allow]]
 id = "non-rust-dependency-hygiene-machete-fixtures"
 glob = "xtask/tests/fixtures/dependency-hygiene/*.json"
 kind = "test_fixture"
@@ -2579,22 +2610,6 @@ review_after = "2026-09-16"
 # =============================================================================
 
 [[allow]]
-id = "non-rust-litexl-json-codec"
-path = "clients/lite-xl/upstream/json.lua"
-kind = "editor_extension"
-language = "lua"
-surface = "editor"
-classification = "production"
-owner = "editor/lite-xl"
-reason = "Exact upstream lite-xl-lsp json.lua (base d1432ae, blob eb36b8fa) staged for the Lite XL integration train, carrying the #11155 bounded-diagnostics, #11197 typed-decode-error, #11136 typed-value, #11183 numeric-identity, #11194 Unicode-validity, and #11186 structural-budget patches."
-covered_by = [
-  "lua clients/lite-xl/tests/json_decode_test.lua",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-22"
-review_after = "2026-09-22"
-
-[[allow]]
 id = "non-rust-litexl-json-decode-tests"
 path = "clients/lite-xl/tests/json_decode_test.lua"
 kind = "editor_extension_test"
@@ -2629,6 +2644,21 @@ covered_by = [
 ]
 created = "2026-08-23"
 review_after = "2026-11-23"
+
+[[allow]]
+id = "non-rust-core-harness-runner-plan-v2-schema"
+path = "schemas/perl_core_harness_runner_plan.v2.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Published JSON Schema for the versioned perl_core_harness.runner_plan.v2 receipt; typed discovery frames and lexical source identity are exercised by the Rust runner-plan contract tests (#12145)."
+covered_by = [
+  "cargo test -p perl-core-harness --locked --test runner_plan_contracts",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
 
 [[allow]]
 id = "non-rust-core-harness-runner-parity-schema"
@@ -2791,6 +2821,22 @@ created = "2026-08-23"
 review_after = "2026-09-23"
 
 [[allow]]
+id = "non-rust-litexl-json-codec"
+path = "clients/lite-xl/upstream/json.lua"
+kind = "editor_extension"
+language = "lua"
+surface = "editor"
+classification = "production"
+owner = "editor/lite-xl"
+reason = "Exact upstream lite-xl-lsp json.lua (base d1432ae, blob eb36b8fa) staged for the Lite XL integration train, carrying the #11155 bounded-diagnostics, #11197 typed-decode-error, #11136 typed-value, #11183 numeric-identity, #11194 Unicode-validity, and #11186 structural-budget patches."
+covered_by = [
+  "lua clients/lite-xl/tests/json_decode_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-22"
+review_after = "2026-09-22"
+
+[[allow]]
 id = "non-rust-litexl-util-support"
 path = "clients/lite-xl/upstream/util.lua"
 kind = "editor_extension"
@@ -2798,10 +2844,12 @@ language = "lua"
 surface = "editor"
 classification = "production"
 owner = "editor/lite-xl"
-reason = "Exact upstream lite-xl-lsp util.lua (base d1432ae, blob 588c101a) staged for the Lite XL integration train, carrying the #11155 guarded sensitive-trace patch (log_file append failures warn once without recursion, documented source-bearing surface, no automatic retention) and the #11162 shell-free external-launch patch (URI classification policy, argv-only platform launchers, testable show_document sequence)."
+reason = "Exact upstream lite-xl-lsp util.lua (base d1432ae, blob 588c101a) staged for the Lite XL integration train, carrying the #11155 guarded sensitive-trace patch (log_file append failures warn once without recursion, documented source-bearing surface, no automatic retention), the #11162 shell-free external-launch patch (URI classification policy, argv-only platform launchers, testable show_document sequence), the #11143 typed configuration merge patch (deep_merge folds whole typed values: object recursion, atomic array replacement, exact scalar/null overrides, codec-authority container classification, immutable inputs), and the #11165 single local file-URI/path conversion authority patch (typed uri_to_path/path_to_uri with Windows drive/UNC/percent/separator semantics; legacy touri/tofilename removed)."
 covered_by = [
   "lua clients/lite-xl/tests/server_logging_test.lua",
   "lua clients/lite-xl/tests/util_show_document_test.lua",
+  "lua clients/lite-xl/tests/util_config_merge_test.lua",
+  "lua clients/lite-xl/tests/util_file_uri_test.lua",
   "cargo xtask check-file-policy",
 ]
 created = "2026-08-23"
@@ -2838,6 +2886,38 @@ covered_by = [
 ]
 created = "2026-08-23"
 review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-file-uri-tests"
+path = "clients/lite-xl/tests/util_file_uri_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free conversion-authority suite proving typed file-URI<->path round trips (POSIX, Windows drive, UNC as data), single percent decode/encode honesty, platform-parameterized UNC admission, and explicit rejection of non-file schemes, malformed escapes, decoded control bytes, relative/device/remote shapes; runs against the staged module or the pristine pre-#11165 module for red-first falsifier checks."
+covered_by = [
+  "lua clients/lite-xl/tests/util_file_uri_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-24"
+review_after = "2026-09-24"
+
+[[allow]]
+id = "non-rust-litexl-config-merge-tests"
+path = "clients/lite-xl/tests/util_config_merge_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic typed-merge falsifier suite proving the #11143 deep_merge contract: object recursion, atomic array replacement with no inherited tail, empty-array clearing, typed empty-container identity, exact scalar/null overrides, input immutability, determinism, and sparse/mixed container failures through the codec constructors; runs against the staged module, the pristine upstream blob, or an array-replacement-removed mutation."
+covered_by = [
+  "lua clients/lite-xl/tests/util_config_merge_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-24"
+review_after = "2026-09-24"
 
 [[allow]]
 id = "non-rust-litexl-journey-harness"
@@ -2914,6 +2994,150 @@ reason = "Programme-neutral fixture documents for the shared train edge contract
 covered_by = [
   "cargo xtask check-train-edge-contract",
   "cargo test -p xtask --bin xtask train_edge_contract --locked",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-agent-implementation-packet-schema"
+path = "schemas/agent_implementation_packet.v1.schema.json"
+kind = "agent_contract"
+language = "json"
+surface = "tooling"
+classification = "config"
+owner = "tooling/agent-packet"
+reason = "JSON Schema pinning the closed agent_implementation_packet.v1 shared builder-packet contract (#10872); the closed vocabularies are cross-checked against pinned constants by the validator."
+covered_by = [
+  "cargo xtask check-agent-implementation-packet",
+  "cargo test -p xtask --bin xtask agent_implementation_packet --locked",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-agent-implementation-packet-fixtures"
+glob = "fixtures/agent_implementation_packet/**/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "tooling/agent-packet"
+reason = "Programme-neutral fixture documents for the shared builder-packet contract: the valid offline/live/consumer-shape packets, the shuffled canonical-semantics control, the golden projection vectors, and invalid documents each naming its expected fail-closed reason code."
+covered_by = [
+  "cargo xtask check-agent-implementation-packet",
+  "cargo test -p xtask --bin xtask agent_implementation_packet --locked",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-agent-implementation-packet-golden-markdown"
+glob = "fixtures/agent_implementation_packet/golden/*.md"
+kind = "test_fixture"
+language = "markdown"
+surface = "fixtures"
+classification = "test"
+owner = "tooling/agent-packet"
+reason = "Golden Markdown projection vectors proving the deterministic phone-readable rendering of agent_implementation_packet.v1 (#10872); regenerated only by the explicit --update-golden writer action."
+covered_by = [
+  "cargo xtask check-agent-implementation-packet",
+  "cargo test -p xtask --bin xtask agent_implementation_packet --locked",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-agent-implementation-packet-golden-text"
+glob = "fixtures/agent_implementation_packet/golden/*.txt"
+kind = "test_fixture"
+language = "text"
+surface = "fixtures"
+classification = "test"
+owner = "tooling/agent-packet"
+reason = "Golden compact-prompt projection vectors proving the deterministic compact rendering of agent_implementation_packet.v1 (#10872); regenerated only by the explicit --update-golden writer action."
+covered_by = [
+  "cargo xtask check-agent-implementation-packet",
+  "cargo test -p xtask --bin xtask agent_implementation_packet --locked",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-agent-review-packet-schema"
+path = "schemas/agent_review_packet.v1.schema.json"
+kind = "agent_contract"
+language = "json"
+surface = "tooling"
+classification = "config"
+owner = "tooling/agent-review"
+reason = "JSON Schema pinning the closed agent_review_packet.v1 shared adversarial review-packet contract (#10881); the closed vocabularies are cross-checked against pinned constants by the validator."
+covered_by = [
+  "cargo xtask check-agent-review-packet",
+  "cargo test -p xtask --bin xtask agent_review_packet --locked",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-agent-review-finding-schema"
+path = "schemas/agent_review_finding.v1.schema.json"
+kind = "agent_contract"
+language = "json"
+surface = "tooling"
+classification = "config"
+owner = "tooling/agent-review"
+reason = "JSON Schema pinning the closed agent_review_finding.v1 shared review-finding and current-head resolution contract (#10881); the closed vocabularies are cross-checked against pinned constants by the validator."
+covered_by = [
+  "cargo xtask check-agent-review-packet",
+  "cargo test -p xtask --bin xtask agent_review_packet --locked",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-stage-closure-projection-schema"
+path = "schemas/stage_closure_projection.v1.schema.json"
+kind = "agent_contract"
+language = "json"
+surface = "tooling"
+classification = "config"
+owner = "tooling/agent-review"
+reason = "JSON Schema pinning the closed stage_closure_projection.v1 shared advisory closure-projection contract (#10881); the closed vocabularies are cross-checked against pinned constants by the validator."
+covered_by = [
+  "cargo xtask check-agent-review-packet",
+  "cargo test -p xtask --bin xtask agent_review_packet --locked",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-agent-review-packet-fixtures"
+glob = "fixtures/agent_review_packet/**/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "tooling/agent-review"
+reason = "Fixture documents for the shared review-packet/finding/closure contracts (#10881): valid packet/finding/closure shapes including an issue-controller consumer shape, the shuffled canonical-semantics control, the golden projection vectors, and invalid documents each naming its expected fail-closed reason code."
+covered_by = [
+  "cargo xtask check-agent-review-packet",
+  "cargo test -p xtask --bin xtask agent_review_packet --locked",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-agent-review-packet-golden-text"
+glob = "fixtures/agent_review_packet/golden/*.txt"
+kind = "test_fixture"
+language = "text"
+surface = "fixtures"
+classification = "test"
+owner = "tooling/agent-review"
+reason = "Golden compact-prompt projection vectors proving the deterministic compact rendering of the #10881 review documents; regenerated only by the explicit --update-golden writer action."
+covered_by = [
+  "cargo xtask check-agent-review-packet",
+  "cargo test -p xtask --bin xtask agent_review_packet --locked",
 ]
 created = "2026-08-24"
 review_after = "2026-11-24"

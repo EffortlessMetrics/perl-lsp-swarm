@@ -1,9 +1,14 @@
 //! Discovery-path normalization and target-selector matching.
 
 use crate::model::{ManifestPopulation, TargetScriptForm, TargetSelector};
-use crate::runner_model::{InvocationContextClass, RunnerSourceItem, SourceForm, SourcePathClass};
+use crate::runner_model::{
+    DiscoveryFrame, InvocationContextClass, RunnerSourceItem, SourceForm, SourcePathClass,
+};
 
-pub(crate) fn normalize_source_item(raw: &str) -> Result<RunnerSourceItem, String> {
+pub(crate) fn normalize_source_item(
+    raw: &str,
+    discovery_frame: DiscoveryFrame,
+) -> Result<RunnerSourceItem, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err("discovery path cannot be empty".to_string());
@@ -11,32 +16,8 @@ pub(crate) fn normalize_source_item(raw: &str) -> Result<RunnerSourceItem, Strin
     if trimmed.contains('\0') {
         return Err("discovery path contains NUL".to_string());
     }
-    let mut path = trimmed.replace('\\', "/");
-    while let Some(rest) = path.strip_prefix("./") {
-        path = rest.to_string();
-    }
-    if let Some(rest) = path.strip_prefix("../") {
-        path = rest.to_string();
-    }
-    if path.starts_with('/')
-        || path.get(1..2) == Some(":")
-        || path
-            .split('/')
-            .any(|component| component.is_empty() || component == "." || component == "..")
-    {
-        return Err(format!("invalid discovery path {trimmed}"));
-    }
-
-    let canonical_path = if path.starts_with("t/")
-        || path.starts_with("lib/")
-        || path.starts_with("dist/")
-        || path.starts_with("ext/")
-        || path.starts_with("cpan/")
-    {
-        path
-    } else {
-        format!("t/{path}")
-    };
+    let path = trimmed.replace('\\', "/");
+    let canonical_path = resolve_path(&path, discovery_frame)?;
     let source_form = if canonical_path.ends_with("/test.pl") {
         SourceForm::TestPl
     } else if canonical_path.ends_with(".t") {
@@ -68,11 +49,45 @@ pub(crate) fn normalize_source_item(raw: &str) -> Result<RunnerSourceItem, Strin
 
     Ok(RunnerSourceItem {
         raw_path: trimmed.to_string(),
+        discovery_frame,
         canonical_path,
         source_form,
         path_class,
         invocation_context,
     })
+}
+
+fn resolve_path(raw: &str, frame: DiscoveryFrame) -> Result<String, String> {
+    if raw.starts_with('/') || raw.get(1..2) == Some(":") {
+        return Err(format!("invalid absolute discovery path {raw}"));
+    }
+    let mut components = Vec::new();
+    match frame {
+        DiscoveryFrame::RunnerTDirectoryRelative => components.push("t"),
+        DiscoveryFrame::RepositoryRootRelative | DiscoveryFrame::CanonicalRepositoryPath => {}
+    }
+    for component in raw.split('/') {
+        match component {
+            "" => return Err(format!("invalid discovery path {raw}")),
+            "." => {}
+            ".." => {
+                if components.pop().is_none() {
+                    return Err(format!("discovery path escapes repository root: {raw}"));
+                }
+            }
+            value => components.push(value),
+        }
+    }
+    if matches!(frame, DiscoveryFrame::CanonicalRepositoryPath)
+        && raw.split('/').any(|component| component == "." || component == "..")
+    {
+        return Err(format!("canonical discovery path contains unresolved components: {raw}"));
+    }
+    let path = components.join("/");
+    if path.is_empty() {
+        return Err(format!("discovery path resolves to repository root: {raw}"));
+    }
+    Ok(path)
 }
 
 pub(crate) fn source_form_allowed(source_form: SourceForm, allowed: &[TargetScriptForm]) -> bool {
@@ -135,13 +150,38 @@ mod tests {
 
     #[test]
     fn normalizes_local_and_root_external_paths() -> Result<(), String> {
-        let local = normalize_source_item("base/if.t")?;
+        let local = normalize_source_item("base/if.t", DiscoveryFrame::RunnerTDirectoryRelative)?;
         assert_eq!(local.canonical_path, "t/base/if.t");
-        let external = normalize_source_item("../ext/re/t/basic.t")?;
+        let external =
+            normalize_source_item("../ext/re/t/basic.t", DiscoveryFrame::RunnerTDirectoryRelative)?;
         assert_eq!(external.canonical_path, "ext/re/t/basic.t");
-        let root_lib = normalize_source_item("lib/Foo/test.pl")?;
+        let root_lib =
+            normalize_source_item("lib/Foo/test.pl", DiscoveryFrame::RepositoryRootRelative)?;
         assert_eq!(root_lib.source_form, SourceForm::TestPl);
         Ok(())
+    }
+
+    #[test]
+    fn frame_is_load_bearing_and_traversal_is_lexical() {
+        let from_t =
+            normalize_source_item("lib/Foo/test.pl", DiscoveryFrame::RunnerTDirectoryRelative)
+                .unwrap();
+        let from_root =
+            normalize_source_item("lib/Foo/test.pl", DiscoveryFrame::RepositoryRootRelative)
+                .unwrap();
+        assert_eq!(from_t.canonical_path, "t/lib/Foo/test.pl");
+        assert_eq!(from_root.canonical_path, "lib/Foo/test.pl");
+        assert_ne!(from_t, from_root);
+        assert_eq!(
+            normalize_source_item("../lib/Foo/test.pl", DiscoveryFrame::RunnerTDirectoryRelative)
+                .unwrap()
+                .canonical_path,
+            "lib/Foo/test.pl"
+        );
+        assert!(
+            normalize_source_item("../../escape.t", DiscoveryFrame::RunnerTDirectoryRelative)
+                .is_err()
+        );
     }
 
     #[test]
@@ -161,7 +201,9 @@ mod tests {
 
     #[test]
     fn unsupported_discovery_source_form_is_named_with_expected_forms() {
-        let Err(error) = normalize_source_item("t/base/readme.txt") else {
+        let Err(error) =
+            normalize_source_item("t/base/readme.txt", DiscoveryFrame::CanonicalRepositoryPath)
+        else {
             panic!("non-.t and non-test.pl discovery must be rejected");
         };
         assert_eq!(
@@ -169,7 +211,9 @@ mod tests {
             "unsupported discovery source form for t/base/readme.txt; expected .t or test.pl"
         );
 
-        let Err(error) = normalize_source_item("lib/x/notes.md") else {
+        let Err(error) =
+            normalize_source_item("lib/x/notes.md", DiscoveryFrame::CanonicalRepositoryPath)
+        else {
             panic!("root-lib markdown discovery must be rejected");
         };
         assert_eq!(
