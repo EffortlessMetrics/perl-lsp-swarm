@@ -46,13 +46,7 @@ just doctor
 
 Rust toolchain is pinned in `rust-toolchain.toml` (MSRV 1.95, channel `1.95.0`). `rustup` picks it up automatically.
 
-**Windows users:** Enable long path support before building (one-time, requires admin terminal):
-
-```
-reg add HKLM\SYSTEM\CurrentControlSet\Control\FileSystem /v LongPathsEnabled /t REG_DWORD /d 1 /f
-```
-
-Without this, `cargo fmt` may fail with "os error 206" from deep worktree paths. Start a new terminal after setting the key.
+**Windows users:** format with `cargo xtask fmt` (or `cargo fmt -p <package>`) instead of `cargo fmt --all`. Bare `cargo fmt --all` passes every workspace file as a command-line argument — across this workspace that sums to roughly six times the 32,767-character `CreateProcessW` command-line limit, so the invocation fails with "The filename or extension is too long. (os error 206)". This is a command-line-length limit, not a path-length limit: enabling `LongPathsEnabled` does not affect it, and worktree depth is irrelevant. The xtask formatter runs rustfmt per package, which stays well under the limit and is the normative formatting entry point on Windows (CI runs `--all` on Linux, where the limit does not apply).
 
 Install the pre-push hook so the fast gate runs before every push:
 
