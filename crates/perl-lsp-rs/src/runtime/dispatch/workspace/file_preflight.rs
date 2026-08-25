@@ -24,10 +24,13 @@ impl LspServer {
     ) -> Result<Option<Value>, JsonRpcError> {
         #[cfg(feature = "workspace")]
         {
-            let Some(files) =
-                params.as_ref().and_then(|value| value.get("files")).and_then(Value::as_array)
-            else {
-                return Ok(Some(empty_workspace_edit()));
+            let files = match params
+                .as_ref()
+                .and_then(|value| value.get("files"))
+                .and_then(Value::as_array)
+            {
+                Some(files) => files,
+                None => return Ok(Some(empty_workspace_edit())),
             };
 
             let mut planned_workspace_texts: BTreeMap<String, (String, String)> = BTreeMap::new();

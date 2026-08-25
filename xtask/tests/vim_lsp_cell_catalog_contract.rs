@@ -1,10 +1,12 @@
 //! Contract tests for the #11374 additive Vim/vim-lsp cell-catalog API.
 //!
 //! Positive proof: the compiled registry (the #11371 baseline catalog plus the
-//! #11381 freshness family catalog) validates, the baseline covers exactly the
-//! 23 baseline #11371 scenarios, the freshness family covers exactly its
-//! landed #11380 action vocabulary, both bind only fixture authorities that
-//! exist on disk, and digests are deterministic.
+//! #11381 freshness, #11384 save, and #11388 expanded-activation family
+//! catalogs) validates, the baseline covers exactly the 23 baseline #11371
+//! scenarios, each family covers exactly its landed #11380 action vocabulary,
+//! the activation denominator mirror matches the landed #7762 artifact, all
+//! catalogs bind only fixture authorities that exist on disk, and digests are
+//! deterministic.
 //!
 //! Negative controls: every fail-closed law of the registration model —
 //! duplicate/unknown/conflicting cell IDs, unknown or optional scenarios,
@@ -12,22 +14,26 @@
 //! escapes, version and vocabulary violations, missing profiles and ceilings —
 //! plus the #11381 freshness family laws (landed-action observation classes,
 //! ledger/vocabulary mirroring, required dimensions, fail/not_proven
-//! expressibility, action coverage) are executed as mutations of otherwise
-//! valid catalogs and must be rejected for their own reason.
+//! expressibility, action coverage), the #11384 save-family laws, and the
+//! #11388 activation family laws (finite #7762 denominator membership,
+//! row-aspect completeness, row-dimension identity, semantic honesty on
+//! non-perl rows, aspect vocabularies, override authorization boundaries,
+//! cleanup evidence) are executed as mutations of otherwise valid catalogs
+//! and must be rejected for their own reason.
 //!
-//! Forward compatibility: #11384-shaped save-family cells register through
-//! the same API without changing any baseline or freshness identity (additive
-//! extension without semantic drift).
+//! Forward compatibility: later family-shaped cells register through the same
+//! API without changing any earlier catalog identity (additive extension
+//! without semantic drift).
 
 use anyhow::{Context, Result, bail, ensure};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use xtask::editor_client_compat::EvidenceStage;
 use xtask::vim_lsp_cell_catalog::{
     self as catalog, CellCatalog, CellRegistration, CoverageRule, InstrumentEvidence,
-    RegistrySummary, Scenario, ScenarioClass, ScenarioLedger, baseline, freshness, save_format,
-    scenario_ledger,
+    RegistrySummary, Scenario, ScenarioClass, ScenarioLedger, activation, baseline, freshness,
+    save_format, scenario_ledger,
 };
 
 fn repository_root() -> Result<PathBuf> {
@@ -88,6 +94,14 @@ const PUBLISHED_SAVE_CELL_IDS: &[&str] = &[
 
 const SAVE_ACTION_COUNT: usize = 5;
 
+/// The five #11388 activation aspects every denominator row registers, pinned
+/// so a rename or an ad hoc aspect cannot slip in as an edit.
+const PUBLISHED_ACTIVATION_ASPECTS: &[&str] =
+    &["native_filetype", "override", "attachment", "semantic_result", "ambiguity_preserved"];
+
+const ACTIVATION_ACTION_COUNT: usize = 6;
+const ACTIVATION_ROW_COUNT: usize = 18;
+
 fn validate_baseline_with(
     mutation: impl FnOnce(&mut CellCatalog) -> Result<()>,
 ) -> Result<RegistrySummary> {
@@ -134,7 +148,8 @@ fn compiled_registry_validates_covers_baseline_and_is_deterministic() -> Result<
     ensure!(first == second, "registry validation is not deterministic across runs");
     let expected_cells = PUBLISHED_BASELINE_CELL_IDS.len()
         + PUBLISHED_FRESHNESS_CELL_IDS.len()
-        + PUBLISHED_SAVE_CELL_IDS.len();
+        + PUBLISHED_SAVE_CELL_IDS.len()
+        + ACTIVATION_ROW_COUNT * PUBLISHED_ACTIVATION_ASPECTS.len();
     ensure!(
         first.cell_count == expected_cells,
         "compiled registry registers {} cells, expected {expected_cells}",
@@ -238,6 +253,55 @@ fn compiled_registry_validates_covers_baseline_and_is_deterministic() -> Result<
         save_ids.len() == PUBLISHED_SAVE_CELL_IDS.len(),
         "save catalog registers cells beyond the published table"
     );
+
+    let activation_summary = first
+        .catalogs
+        .iter()
+        .find(|summary| summary.catalog_id == activation::ACTIVATION_CATALOG_ID)
+        .context("compiled registry omitted the activation family catalog")?;
+    ensure!(
+        activation_summary.cell_count == ACTIVATION_ROW_COUNT * PUBLISHED_ACTIVATION_ASPECTS.len(),
+        "activation catalog carries {} cells, expected {} denominator rows x {} aspects",
+        activation_summary.cell_count,
+        ACTIVATION_ROW_COUNT,
+        PUBLISHED_ACTIVATION_ASPECTS.len()
+    );
+    ensure!(
+        activation_summary.scenario_ids.len() == ACTIVATION_ACTION_COUNT,
+        "activation catalog cites {} scenarios, expected the {ACTIVATION_ACTION_COUNT} landed #11380 activation actions",
+        activation_summary.scenario_ids.len()
+    );
+    let compiled_activation = activation::activation_catalog();
+    let mut activation_pairs: BTreeSet<(String, &str)> = BTreeSet::new();
+    for cell in &compiled_activation.cells {
+        let name = cell
+            .cell_id
+            .strip_prefix("vim.vim_lsp.activation.")
+            .context("activation cell outside its namespace")?;
+        let aspect = PUBLISHED_ACTIVATION_ASPECTS
+            .iter()
+            .copied()
+            .find(|aspect| name.ends_with(&format!("_{aspect}")))
+            .with_context(|| format!("activation cell {name} carries no published aspect"))?;
+        let slug = &name[..name.len() - aspect.len() - 1];
+        ensure!(
+            activation::ACTIVATION_DENOMINATOR.iter().any(|row| row.slug == slug),
+            "activation cell {name} names a row outside the compiled denominator mirror"
+        );
+        ensure!(
+            activation_pairs.insert((slug.to_string(), aspect)),
+            "activation row-aspect registered twice: {slug}::{aspect}"
+        );
+    }
+    for row in activation::ACTIVATION_DENOMINATOR {
+        for &aspect in PUBLISHED_ACTIVATION_ASPECTS {
+            ensure!(
+                activation_pairs.contains(&(row.slug.to_string(), aspect)),
+                "denominator row {} aspect {aspect} has no registered cell",
+                row.slug
+            );
+        }
+    }
     Ok(())
 }
 
@@ -740,12 +804,27 @@ fn save_family_registration_leaves_earlier_catalogs_byte_identical() -> Result<(
         .context("freshness summary missing")?
         .digest
         .clone();
+    let activation_before = before
+        .catalogs
+        .iter()
+        .find(|summary| summary.catalog_id == activation::ACTIVATION_CATALOG_ID)
+        .context("activation summary missing")?
+        .digest
+        .clone();
 
     // Registering the save family over the pre-save registry (baseline +
-    // freshness) leaves both prior catalog digests byte-identical.
-    let prior_catalogs = vec![baseline::baseline_catalog(), freshness::freshness_catalog()];
-    let prior_ledgers =
-        vec![scenario_ledger::vim_bdd_ledger_11371(), freshness::freshness_action_ledger()];
+    // freshness + the later #11388 activation family) leaves every prior
+    // catalog digest byte-identical.
+    let prior_catalogs = vec![
+        baseline::baseline_catalog(),
+        freshness::freshness_catalog(),
+        activation::activation_catalog(),
+    ];
+    let prior_ledgers = vec![
+        scenario_ledger::vim_bdd_ledger_11371(),
+        freshness::freshness_action_ledger(),
+        activation::activation_action_ledger(),
+    ];
     let prior = catalog::validate_registry(&prior_catalogs, &prior_ledgers)?;
     let prior_baseline = prior
         .catalogs
@@ -761,10 +840,21 @@ fn save_family_registration_leaves_earlier_catalogs_byte_identical() -> Result<(
         .context("freshness summary missing")?
         .digest
         .clone();
+    let prior_activation = prior
+        .catalogs
+        .iter()
+        .find(|summary| summary.catalog_id == activation::ACTIVATION_CATALOG_ID)
+        .context("activation summary missing")?
+        .digest
+        .clone();
     ensure!(prior_baseline == baseline_before, "the save family changed the baseline digest");
     ensure!(
         prior_freshness == freshness_before,
         "the save family changed the freshness catalog digest"
+    );
+    ensure!(
+        prior_activation == activation_before,
+        "the save family changed the activation catalog digest"
     );
     ensure!(before.cell_count == prior.cell_count + PUBLISHED_SAVE_CELL_IDS.len());
     Ok(())
@@ -1013,6 +1103,833 @@ fn save_cross_client_subjects_fail_closed() -> Result<()> {
         )
         .with_context(|| format!("cross-client subject {impostor} was accepted"))?;
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// #11388 activation family: landed-authority bindings and family laws
+// ---------------------------------------------------------------------------
+
+#[test]
+fn activation_ledger_mirrors_the_landed_11380_action_vocabulary() -> Result<()> {
+    let ledger = activation::activation_action_ledger();
+    let mirrored: BTreeSet<String> =
+        ledger.scenarios.iter().map(|scenario| scenario.id.clone()).collect();
+    let landed: BTreeSet<String> = xtask::vim_lsp_specialized_driver::ACTIONS
+        .iter()
+        .filter(|action| {
+            action.family == xtask::vim_lsp_specialized_driver::ActionFamily::Activation
+        })
+        .map(|action| action.action_id.to_string())
+        .collect();
+    ensure!(
+        mirrored == landed && mirrored.len() == ACTIVATION_ACTION_COUNT,
+        "activation ledger drifted from the landed #11380 activation action vocabulary"
+    );
+    Ok(())
+}
+
+/// The compiled denominator mirror must match the landed #7762 activation-root
+/// artifact row for row (case, path, expectation, source, negative control,
+/// override boundary, independent semantic support), and every slug must be a
+/// stable reason token equal to the artifact case id whenever that case id is
+/// itself a stable reason token.
+#[test]
+fn activation_denominator_mirror_matches_the_landed_7762_artifact() -> Result<()> {
+    let root = repository_root()?;
+    let path = root.join(".ci/editor-clients").join("vim-vim-lsp-activation-root.v1.json");
+    let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    let artifact: serde_json::Value =
+        serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))?;
+    let rows = artifact
+        .get("filetypes")
+        .and_then(|value| value.as_array())
+        .context("activation-root artifact carries no filetypes array")?;
+    ensure!(
+        rows.len() == ACTIVATION_ROW_COUNT,
+        "activation-root artifact carries {} rows, mirror carries {ACTIVATION_ROW_COUNT}",
+        rows.len()
+    );
+
+    let mut slugs: BTreeSet<&str> = BTreeSet::new();
+    for (index, row) in rows.iter().enumerate() {
+        let mirror = &activation::ACTIVATION_DENOMINATOR[index];
+        let field = |name: &str| row.get(name).and_then(|value| value.as_str()).map(str::to_string);
+        let case = field("case").context("artifact row missing case")?;
+        ensure!(
+            mirror.case_id == case,
+            "mirror row {index} case {} drifted from artifact case {case}",
+            mirror.case_id
+        );
+        let path_row = field("path").context("artifact row missing path")?;
+        ensure!(
+            mirror.path == path_row,
+            "mirror row {case} path {} drifted from artifact path {path_row}",
+            mirror.path
+        );
+        let expect = field("expect").context("artifact row missing expect")?;
+        ensure!(
+            mirror.expect == expect,
+            "mirror row {case} expectation {} drifted from artifact expectation {expect}",
+            mirror.expect
+        );
+        let source = field("source");
+        ensure!(
+            mirror.source == source.as_deref(),
+            "mirror row {case} detection source drifted from artifact"
+        );
+        let negative =
+            row.get("negative_control").and_then(|value| value.as_bool()).unwrap_or(false);
+        ensure!(
+            mirror.negative_control == negative,
+            "mirror row {case} negative-control flag drifted from artifact flag {negative}"
+        );
+        let boundary = field("manual_override");
+        ensure!(
+            mirror.manual_override == boundary.as_deref(),
+            "mirror row {case} manual-override boundary drifted from artifact"
+        );
+        let semantic = field("semantic_support");
+        ensure!(
+            mirror.semantic_support == semantic.as_deref(),
+            "mirror row {case} independent-semantic-support marker drifted from artifact"
+        );
+
+        ensure!(
+            xtask::client_compat_fixture::is_reason_token(mirror.slug),
+            "row {case} slug {} is not a stable reason token",
+            mirror.slug
+        );
+        ensure!(slugs.insert(mirror.slug), "denominator slug {} is not unique", mirror.slug);
+        if xtask::client_compat_fixture::is_reason_token(&case) {
+            ensure!(
+                mirror.slug == case,
+                "row {case} carries slug {} although its case id is already a stable reason token",
+                mirror.slug
+            );
+        }
+    }
+    // The discriminators that keep ambiguity honest stay negative controls.
+    for control in ["pm_xpm", "t_tads"] {
+        let row = activation::ACTIVATION_DENOMINATOR
+            .iter()
+            .find(|row| row.slug == control)
+            .with_context(|| format!("negative-control row {control} missing"))?;
+        ensure!(row.negative_control, "row {control} lost its negative-control flag");
+    }
+    Ok(())
+}
+
+#[test]
+fn activation_fixture_substrate_is_landed_on_disk() -> Result<()> {
+    let root = repository_root()?;
+    for fixture in activation::ACTIVATION_FIXTURE_SUBSTRATE {
+        let path = root.join(".ci/editor-clients").join(format!("{fixture}.json"));
+        ensure!(
+            path.is_file(),
+            "activation fixture substrate id {fixture} has no landed authority artifact at {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn activation_family_registration_leaves_earlier_catalogs_byte_identical() -> Result<()> {
+    let before = catalog::validate_compiled_registry()?;
+    let earlier_digests: BTreeMap<String, String> = before
+        .catalogs
+        .iter()
+        .map(|summary| (summary.catalog_id.clone(), summary.digest.clone()))
+        .collect();
+
+    // Registering the activation family over the pre-activation registry
+    // (baseline + freshness + save) leaves every prior catalog digest
+    // byte-identical.
+    let prior_catalogs = vec![
+        baseline::baseline_catalog(),
+        freshness::freshness_catalog(),
+        save_format::save_catalog(),
+    ];
+    let prior_ledgers = vec![
+        scenario_ledger::vim_bdd_ledger_11371(),
+        freshness::freshness_action_ledger(),
+        save_format::save_action_ledger(),
+    ];
+    let prior = catalog::validate_registry(&prior_catalogs, &prior_ledgers)?;
+    for summary in &prior.catalogs {
+        let digest = earlier_digests.get(&summary.catalog_id).with_context(|| {
+            format!("prior catalog {} missing from compiled registry", summary.catalog_id)
+        })?;
+        ensure!(
+            digest == &summary.digest,
+            "the activation family changed the {} catalog digest",
+            summary.catalog_id
+        );
+    }
+    ensure!(
+        before.cell_count
+            == prior.cell_count + ACTIVATION_ROW_COUNT * PUBLISHED_ACTIVATION_ASPECTS.len(),
+        "the activation family changed the cell count of an earlier catalog"
+    );
+    Ok(())
+}
+
+/// Positive binding proof: every registered cell is present, typed by a
+/// landed activation action, keyed to its own denominator row dimension, and
+/// bound to that row's #7762 expectation; semantic affirmation stays where
+/// the row claims it.
+#[test]
+fn activation_cells_bind_row_identity_expectation_and_claim() -> Result<()> {
+    let compiled = activation::activation_catalog();
+    ensure!(
+        compiled.cells.len() == ACTIVATION_ROW_COUNT * PUBLISHED_ACTIVATION_ASPECTS.len(),
+        "activation catalog carries {} cells",
+        compiled.cells.len()
+    );
+    let landed: BTreeSet<&str> = xtask::vim_lsp_specialized_driver::ACTIONS
+        .iter()
+        .filter(|action| {
+            action.family == xtask::vim_lsp_specialized_driver::ActionFamily::Activation
+        })
+        .map(|action| action.action_id)
+        .collect();
+
+    for row in activation::ACTIVATION_DENOMINATOR {
+        for aspect in PUBLISHED_ACTIVATION_ASPECTS {
+            let cell_id = format!("vim.vim_lsp.activation.{}_{}", row.slug, aspect);
+            let cell = compiled
+                .cells
+                .iter()
+                .find(|cell| cell.cell_id == cell_id)
+                .with_context(|| format!("activation catalog omitted cell {cell_id}"))?;
+            ensure!(
+                landed.contains(cell.observation_class.as_str()),
+                "cell {cell_id} is typed by non-landed action {}",
+                cell.observation_class
+            );
+            ensure!(
+                cell.subject_dimensions
+                    .iter()
+                    .any(|token| token == &format!("activation.row.{}", row.slug)),
+                "cell {cell_id} does not bind its own denominator row dimension"
+            );
+            ensure!(
+                cell.subject_dimensions
+                    .iter()
+                    .any(|token| token == &format!("activation.expect.{}", row.expect)),
+                "cell {cell_id} does not bind its row's #7762 expectation",
+            );
+            let semantic_affirming = cell.allowed_results.iter().any(|result| {
+                result == "native_supported" || result == "bounded_override_supported"
+            });
+            if aspect == &"semantic_result" {
+                if row.expect == "perl" {
+                    ensure!(
+                        semantic_affirming,
+                        "perl row {} lost its semantic-support-affirming results",
+                        row.slug
+                    );
+                } else {
+                    ensure!(
+                        !semantic_affirming
+                            && cell
+                                .allowed_results
+                                .iter()
+                                .any(|result| result == "activation_only"),
+                        "non-perl row {} semantic cell still affirms semantic support",
+                        row.slug
+                    );
+                }
+            }
+        }
+        // The native-filetype cell binds the row's landed detection route
+        // wherever the #7762 artifact declares one.
+        let native = compiled
+            .cells
+            .iter()
+            .find(|cell| {
+                cell.cell_id == format!("vim.vim_lsp.activation.{}_native_filetype", row.slug)
+            })
+            .context("native filetype cell missing")?;
+        if let Some(source) = row.source {
+            ensure!(
+                native
+                    .subject_dimensions
+                    .iter()
+                    .any(|token| token == &format!("activation.detection.{source}")),
+                "row {} native cell does not bind its #7762 detection source",
+                row.slug
+            );
+        } else {
+            ensure!(
+                !native
+                    .subject_dimensions
+                    .iter()
+                    .any(|token| token.starts_with("activation.detection.")),
+                "row {} native cell invented a detection source its #7762 row does not declare",
+                row.slug
+            );
+        }
+        // Override cells of boundary rows keep the authorization limitation.
+        if let Some(boundary) = row.manual_override {
+            let override_cell = compiled
+                .cells
+                .iter()
+                .find(|cell| {
+                    cell.cell_id == format!("vim.vim_lsp.activation.{}_override", row.slug)
+                })
+                .context("override cell missing")?;
+            ensure!(
+                override_cell.allowed_limitations.iter().any(|token| token == boundary),
+                "row {} override cell lost its {boundary} limitation",
+                row.slug
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Validate a mutated activation family catalog against the family laws and
+/// then the shared laws over the compiled sibling catalogs plus the mutated
+/// family; both must pass for the mutation to count as accepted.
+fn validate_activation_with(
+    mutation: impl FnOnce(&mut CellCatalog) -> Result<()>,
+) -> Result<RegistrySummary> {
+    let mut mutated = activation::activation_catalog();
+    mutation(&mut mutated)?;
+    activation::validate_activation_catalog(&mutated, &activation::activation_action_ledger())?;
+    let mut catalogs = catalog::registry();
+    let slot = catalogs
+        .iter_mut()
+        .find(|candidate| candidate.catalog_id == activation::ACTIVATION_CATALOG_ID)
+        .context("compiled registry omitted the activation catalog")?;
+    *slot = mutated;
+    catalog::validate_registry(&catalogs, &catalog::scenario_ledgers())
+}
+
+fn activation_cell_mut<'a>(
+    catalog: &'a mut CellCatalog,
+    cell_id: &str,
+) -> Result<&'a mut CellRegistration> {
+    catalog
+        .cells
+        .iter_mut()
+        .find(|cell| cell.cell_id == cell_id)
+        .with_context(|| format!("activation catalog omitted cell {cell_id}"))
+}
+
+/// Assert that a mutated activation registry is rejected — by the family laws
+/// or the shared laws — for a reason containing `needle`.
+fn assert_activation_rejects(
+    mutation: impl FnOnce(&mut CellCatalog) -> Result<()>,
+    needle: &str,
+) -> Result<()> {
+    let error = match validate_activation_with(mutation) {
+        Ok(_) => {
+            bail!(
+                "mutated activation registry was accepted; expected rejection containing {needle}"
+            )
+        }
+        Err(error) => error.to_string(),
+    };
+    ensure!(
+        error.contains(needle),
+        "wrong rejection reason: {error} (wanted something containing {needle})"
+    );
+    Ok(())
+}
+
+#[test]
+fn activation_denominator_membership_fails_closed() -> Result<()> {
+    // A cell for a row outside the finite #7762 denominator cannot register,
+    // even with a consistent row dimension and expectation.
+    assert_activation_rejects(
+        |catalog| {
+            let mut clone =
+                activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_native_filetype")?.clone();
+            clone.cell_id = "vim.vim_lsp.activation.scala_native_filetype".to_string();
+            clone.subject_dimensions.retain(|token| {
+                !token.starts_with("activation.row.") && !token.starts_with("activation.expect.")
+            });
+            clone.subject_dimensions.push("activation.row.scala".to_string());
+            clone.subject_dimensions.push("activation.expect.perl".to_string());
+            catalog.cells.push(clone);
+            Ok(())
+        },
+        "outside the finite #7762 activation-root denominator",
+    )?;
+    // A misspelled row slug is an unknown row, not a new row.
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_native_filetype")?;
+            cell.cell_id = "vim.vim_lsp.activation.pl_typo_native_filetype".to_string();
+            Ok(())
+        },
+        "outside the finite #7762 activation-root denominator",
+    )
+}
+
+#[test]
+fn activation_row_aspect_completeness_fails_closed() -> Result<()> {
+    // Dropping one cell leaves a denominator row-aspect unregistered.
+    assert_activation_rejects(
+        |catalog| {
+            catalog
+                .cells
+                .retain(|cell| cell.cell_id != "vim.vim_lsp.activation.cpanfile_attachment");
+            Ok(())
+        },
+        "missing from the #11388 activation family",
+    )?;
+    // Duplicating one row-aspect registration fails closed.
+    assert_activation_rejects(
+        |catalog| {
+            let clone =
+                activation_cell_mut(catalog, "vim.vim_lsp.activation.bin_shebang_semantic_result")?
+                    .clone();
+            catalog.cells.push(clone);
+            Ok(())
+        },
+        "duplicate activation row-aspect registration",
+    )
+}
+
+#[test]
+fn activation_row_identity_dimensions_fail_closed() -> Result<()> {
+    // A cell must keep exactly one row dimension.
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pod_override")?;
+            cell.subject_dimensions.retain(|token| !token.starts_with("activation.row."));
+            Ok(())
+        },
+        "must bind exactly one activation.row.* dimension",
+    )?;
+    // A cell cannot inherit another row's identity.
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_attachment")?;
+            *cell
+                .subject_dimensions
+                .iter_mut()
+                .find(|token| token.as_str() == "activation.row.pl")
+                .context("pl cell missing its row dimension")? =
+                "activation.row.pm_perl".to_string();
+            Ok(())
+        },
+        "does not match its own row",
+    )?;
+    // A cell must carry its row's exact #7762 expectation.
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_attachment")?;
+            *cell
+                .subject_dimensions
+                .iter_mut()
+                .find(|token| token.as_str() == "activation.expect.perl")
+                .context("pl cell missing its expectation dimension")? =
+                "activation.expect.observe".to_string();
+            Ok(())
+        },
+        "must bind the #7762 expectation dimension",
+    )
+}
+
+/// The row-binding authority identity makes every #7762 denominator field
+/// digest-visible: two rows differing in any single authority field carry
+/// different identities, and every compiled cell binds its own row's
+/// identity exactly.
+#[test]
+fn activation_row_authority_identity_is_digest_visible() -> Result<()> {
+    use xtask::vim_lsp_cell_catalog::activation::row_binding_identity;
+    let base = xtask::vim_lsp_cell_catalog::activation::ActivationDenominatorRow {
+        case_id: "pl",
+        slug: "pl",
+        path: "sample.pl",
+        expect: "perl",
+        source: Some("native_vim"),
+        negative_control: false,
+        manual_override: None,
+        semantic_support: None,
+    };
+    let baseline = row_binding_identity(&base);
+    // A path-only change moves the identity.
+    let edited_path = xtask::vim_lsp_cell_catalog::activation::ActivationDenominatorRow {
+        path: "other-sample.pl",
+        ..base
+    };
+    ensure!(
+        baseline != row_binding_identity(&edited_path),
+        "a fixture-path denominator edit left the row authority identity unchanged"
+    );
+    // So do control-flag, boundary, semantic-support, expectation, and
+    // detection-source edits.
+    for edited in [
+        xtask::vim_lsp_cell_catalog::activation::ActivationDenominatorRow {
+            negative_control: true,
+            ..base
+        },
+        xtask::vim_lsp_cell_catalog::activation::ActivationDenominatorRow {
+            manual_override: Some("not_authorized_by_extension_alone"),
+            ..base
+        },
+        xtask::vim_lsp_cell_catalog::activation::ActivationDenominatorRow {
+            semantic_support: Some("independent"),
+            ..base
+        },
+        xtask::vim_lsp_cell_catalog::activation::ActivationDenominatorRow {
+            expect: "observe",
+            ..base
+        },
+        xtask::vim_lsp_cell_catalog::activation::ActivationDenominatorRow { source: None, ..base },
+    ] {
+        ensure!(
+            baseline != row_binding_identity(&edited),
+            "a denominator authority edit left the row authority identity unchanged"
+        );
+    }
+    // Identical fields keep the identity stable.
+    ensure!(
+        baseline == row_binding_identity(&base),
+        "the row authority identity is not deterministic"
+    );
+
+    // Every compiled cell binds exactly its own row's authority identity
+    // (matched by the cell's parsed row slug, not a name prefix, so e.g. the
+    // `pl` row cannot capture `pl_uppercase` cells).
+    let compiled = activation::activation_catalog();
+    for cell in &compiled.cells {
+        let name = cell
+            .cell_id
+            .strip_prefix("vim.vim_lsp.activation.")
+            .context("activation cell outside its namespace")?;
+        let aspect = PUBLISHED_ACTIVATION_ASPECTS
+            .iter()
+            .copied()
+            .find(|aspect| name.ends_with(&format!("_{aspect}")))
+            .with_context(|| format!("activation cell {name} carries no published aspect"))?;
+        let slug = &name[..name.len() - aspect.len() - 1];
+        let row = activation::ACTIVATION_DENOMINATOR
+            .iter()
+            .find(|row| row.slug == slug)
+            .with_context(|| format!("activation row {slug} missing from the mirror"))?;
+        let identity = row_binding_identity(row);
+        let bound = cell
+            .subject_dimensions
+            .iter()
+            .filter(|token| token.starts_with("activation.row_binding."))
+            .collect::<Vec<_>>();
+        ensure!(
+            bound.len() == 1 && bound[0].as_str() == identity,
+            "cell {} does not bind its row's authority identity exactly",
+            cell.cell_id
+        );
+    }
+
+    // A stale or hand-copied binding dimension fails the family law.
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pm_perl_override")?;
+            let index = cell
+                .subject_dimensions
+                .iter()
+                .position(|token| token.starts_with("activation.row_binding."))
+                .context("row binding dimension missing")?;
+            cell.subject_dimensions[index] = "activation.row_binding.sha256-0".to_string();
+            Ok(())
+        },
+        "row's authority identity",
+    )
+}
+
+/// Each aspect is classified by its one pinned action: an attachment
+/// observation cannot classify a semantic cell even though the attachment
+/// action is one of the semantic cell's own scenario owners.
+#[test]
+fn activation_aspect_classes_are_pinned_to_their_propositions() -> Result<()> {
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_semantic_result")?;
+            cell.observation_class =
+                "vim.vim_lsp.specialized.activation.observe_service_attachment".to_string();
+            Ok(())
+        },
+        "must be classified by",
+    )?;
+    // Same law on the filetype aspect: the override stimulus cannot classify
+    // the native-filetype proposition.
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_native_filetype")?;
+            cell.observation_class =
+                "vim.vim_lsp.specialized.activation.declared_override_row".to_string();
+            Ok(())
+        },
+        "must be classified by",
+    )
+}
+
+/// The #11388 law: a successfully attached adjacent-language false subject
+/// still fails the semantic and ambiguity cells — attachment can never be
+/// relabeled semantic support.
+#[test]
+fn activation_attached_false_subject_still_fails_semantic_and_ambiguity_cells() -> Result<()> {
+    // vim-lsp attaches to Image.pm (XPM negative control): relabeling that
+    // attachment as semantic support fails closed.
+    assert_activation_rejects(
+        |catalog| {
+            let cell =
+                activation_cell_mut(catalog, "vim.vim_lsp.activation.pm_xpm_semantic_result")?;
+            cell.allowed_results.push("native_supported".to_string());
+            Ok(())
+        },
+        "semantic-support-affirming result",
+    )?;
+    // Same law on the TADS false subject's semantic cell.
+    assert_activation_rejects(
+        |catalog| {
+            let cell =
+                activation_cell_mut(catalog, "vim.vim_lsp.activation.t_tads_semantic_result")?;
+            cell.allowed_results.push("bounded_override_supported".to_string());
+            Ok(())
+        },
+        "semantic-support-affirming result",
+    )?;
+    // The ambiguity cell keeps only its preservation disposition: a bounded
+    // override cannot stand in for ambiguity preservation either.
+    assert_activation_rejects(
+        |catalog| {
+            let cell =
+                activation_cell_mut(catalog, "vim.vim_lsp.activation.t_tads_ambiguity_preserved")?;
+            cell.allowed_results.push("bounded_override_supported".to_string());
+            Ok(())
+        },
+        "drifted from the pinned ambiguity_preserved aspect vocabulary",
+    )?;
+    // And the compiled registry keeps those cells non-affirming by default.
+    let compiled = activation::activation_catalog();
+    for (row, aspect) in [("pm_xpm", "semantic_result"), ("t_tads", "semantic_result")] {
+        let cell_id = format!("vim.vim_lsp.activation.{row}_{aspect}");
+        let cell = compiled
+            .cells
+            .iter()
+            .find(|cell| cell.cell_id == cell_id)
+            .with_context(|| format!("{cell_id} missing"))?;
+        ensure!(
+            !cell.allowed_results.iter().any(|result| result == "native_supported"),
+            "{cell_id} affirms semantic support by default"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn activation_aspect_vocabularies_cannot_stand_in_for_each_other() -> Result<()> {
+    // A filetype cell cannot admit the attachment-only disposition.
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_native_filetype")?;
+            cell.allowed_results.push("activation_only".to_string());
+            Ok(())
+        },
+        "drifted from the pinned native_filetype aspect vocabulary",
+    )?;
+    // An attachment cell cannot admit a filetype/override disposition.
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_attachment")?;
+            cell.allowed_results.push("native_supported".to_string());
+            Ok(())
+        },
+        "drifted from the pinned attachment aspect vocabulary",
+    )?;
+    // The override cell never admits a native result: an override is not
+    // native detection.
+    let compiled = activation::activation_catalog();
+    for row in activation::ACTIVATION_DENOMINATOR {
+        let cell_id = format!("vim.vim_lsp.activation.{}_override", row.slug);
+        let cell = compiled
+            .cells
+            .iter()
+            .find(|cell| cell.cell_id == cell_id)
+            .with_context(|| format!("{cell_id} missing"))?;
+        ensure!(
+            !cell.allowed_results.iter().any(|result| result == "native_supported"),
+            "{cell_id} admits a native result"
+        );
+    }
+    // Keeping the pinned class but dropping it from the cell's own scenario
+    // owners fails the owner-binding law.
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_attachment")?;
+            cell.scenario_owners.retain(|owner| {
+                owner != "vim.vim_lsp.specialized.activation.observe_service_attachment"
+            });
+            Ok(())
+        },
+        "must be one of its own scenario owners",
+    )
+}
+
+#[test]
+fn activation_override_boundary_and_cleanup_laws_fail_closed() -> Result<()> {
+    // The cgi/fcgi override rows keep their extension-alone authorization
+    // boundary.
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.cgi_override")?;
+            cell.allowed_limitations.retain(|token| token != "not_authorized_by_extension_alone");
+            Ok(())
+        },
+        "must keep the not_authorized_by_extension_alone limitation",
+    )?;
+    // Cells citing the between-rows reset action keep cleanup evidence.
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_override")?;
+            cell.instrument_evidence
+                .retain(|token| !matches!(token, InstrumentEvidence::CleanupObservation));
+            Ok(())
+        },
+        "must require cleanup evidence",
+    )
+}
+
+#[test]
+fn activation_cannot_be_filled_by_another_family_or_baseline_row() -> Result<()> {
+    // A freshness action cannot classify an activation cell.
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_native_filetype")?;
+            cell.observation_class =
+                "vim.vim_lsp.specialized.freshness.observe_route_and_generation".to_string();
+            Ok(())
+        },
+        "is not a landed activation action",
+    )?;
+    // A save action cannot own an activation cell.
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_override")?;
+            cell.scenario_owners
+                .push("vim.vim_lsp.specialized.save_format.observe_save_settlement".to_string());
+            Ok(())
+        },
+        "absent from ledger",
+    )?;
+    // A baseline scenario stays owned by the baseline catalog.
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_attachment")?;
+            cell.scenario_owners.push("vim.bdd.lifecycle.03".to_string());
+            Ok(())
+        },
+        "absent from ledger",
+    )
+}
+
+#[test]
+fn activation_family_vocabulary_stage_profile_and_subject_laws_fail_closed() -> Result<()> {
+    // The family vocabulary is pinned.
+    assert_activation_rejects(
+        |catalog| {
+            catalog.allowed_result_vocabulary.push("blanket_override_pass".to_string());
+            Ok(())
+        },
+        "activation result vocabulary drifted",
+    )?;
+    // Every cell must be able to fail and to stay honestly unproven.
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_override")?;
+            cell.allowed_results.retain(|token| token != "fail");
+            Ok(())
+        },
+        "must admit fail and not_proven",
+    )?;
+    // Required dimensions stay load-bearing.
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_semantic_result")?;
+            cell.subject_dimensions.retain(|token| token != "client.pinned_commit");
+            Ok(())
+        },
+        "must bind required dimension client.pinned_commit",
+    )?;
+    // Stage escapes stay rejected by the shared bound.
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_attachment")?;
+            cell.allowed_stages = vec![EvidenceStage::PublicArtifact];
+            Ok(())
+        },
+        "outside catalog",
+    )?;
+    assert_activation_rejects(
+        |catalog| {
+            catalog.allowed_stages = vec![EvidenceStage::ReleaseCandidate];
+            Ok(())
+        },
+        "stage bound is exact_source_local only",
+    )?;
+    // Cells feed only the exact-source profile.
+    assert_activation_rejects(
+        |catalog| {
+            let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_attachment")?;
+            cell.allowed_profiles = vec!["vim_programme_closeout".to_string()];
+            Ok(())
+        },
+        "may feed only vim_first_class_exact_source",
+    )?;
+    // Cross-client receipts cannot register here.
+    for impostor in ["coc", "yegappan/lsp", "neovim", "vimspector"] {
+        assert_activation_rejects(
+            |catalog| {
+                let cell = activation_cell_mut(catalog, "vim.vim_lsp.activation.pl_attachment")?;
+                cell.subject.client_id = impostor.to_string();
+                Ok(())
+            },
+            "not the pinned Vim + vim-lsp + perllsp --stdio subject",
+        )
+        .with_context(|| format!("cross-client subject {impostor} was accepted"))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn activation_cell_digests_discriminate_binding_edits() -> Result<()> {
+    let compiled = activation::activation_catalog();
+    let cell_id = "vim.vim_lsp.activation.pm_xpm_ambiguity_preserved";
+    let cell = compiled
+        .cells
+        .iter()
+        .find(|cell| cell.cell_id == cell_id)
+        .with_context(|| format!("{cell_id} missing"))?;
+    let before = catalog::cell_digest(cell)?;
+    let catalog_before = catalog::catalog_digest(&compiled)?;
+    let registry_before = catalog::validate_compiled_registry()?.digest;
+
+    let mut edited = compiled.clone();
+    let cell = edited
+        .cells
+        .iter_mut()
+        .find(|cell| cell.cell_id == cell_id)
+        .with_context(|| format!("{cell_id} missing"))?;
+    cell.subject_dimensions.push("activation.adjacent.reroll".to_string());
+    ensure!(
+        before != catalog::cell_digest(cell)?,
+        "an activation binding edit did not change the cell digest"
+    );
+    ensure!(
+        catalog_before != catalog::catalog_digest(&edited)?,
+        "an activation binding edit did not change the family catalog digest"
+    );
+    ensure!(
+        registry_before.starts_with("sha256:"),
+        "registry digest is not a sha256 identity: {registry_before}"
+    );
     Ok(())
 }
 
