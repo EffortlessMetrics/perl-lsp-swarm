@@ -58,10 +58,11 @@
 //! the overflow fixture. [`Clone`] is likewise iterative: a 50,000-node chain
 //! on a 256 KiB worker does not overflow the thread stack. [`PartialEq`] is
 //! iterative exact structural equality: a 50,000-node chain on a 256 KiB
-//! worker does not overflow the thread stack. Derived [`Debug`] stays
-//! recursive: it is supported for ordinary parser-produced nesting and is not
-//! stack-safe for adversarial 50,000-node chains. See [`Node`] for the
-//! operation-by-operation contract.
+//! worker does not overflow the thread stack. [`Debug`] is an iterative
+//! bounded human projection: a 50,000-node chain on a 256 KiB worker does
+//! not overflow the thread stack, output stays under the documented byte
+//! bound, and truncation is visible. Rust [`Debug`] is not machine identity.
+//! See [`Node`] for the operation-by-operation contract.
 
 pub mod ast;
 /// Static classification metadata for [`NodeKind`] variants: categories and flags.

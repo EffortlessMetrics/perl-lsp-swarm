@@ -41,10 +41,12 @@ not an arena or index tree.
   canonical child fields. Overflow is proven on a 50,000-node chain with a
   256 KiB worker. This preserves current `==` semantics; it is not
   S-expression, fingerprint, or source-text equality.
-- **Debug** remains derived and recursive. It is supported only for ordinary
-  parser-produced nesting. Adversarial 50,000-node chains are outside that
-  precondition, and the precondition is not runtime-enforced. Replacement is
-  [#8840](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8840).
+- **Debug** is an iterative bounded human projection over the same
+  canonical child fields. Overflow is proven on a 50,000-node chain with a
+  256 KiB worker. Output stays at or under the documented byte bound, and
+  truncation is visible. Rust `Debug` is not machine identity, equality, or
+  a durable metric. Configured complete/truncated rendering is
+  [#8832](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8832).
 - Recursive read helpers may stay depth-guarded and may truncate. Silent
   truncation of an operation advertised as exact is a separate claim
   ([#8867](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8867)).
