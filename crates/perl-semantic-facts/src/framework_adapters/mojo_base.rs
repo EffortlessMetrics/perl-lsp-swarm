@@ -77,28 +77,61 @@ pub fn mojo_base_descriptor() -> AdapterDescriptor {
 /// Run the registry-backed Mojo::Base detection over one checked input.
 ///
 /// Only the descriptor-owned `Mojo::Base` selector participates; nested
-/// `Mojo::Base::*` modules never activate this adapter. A pre-cancelled
-/// admission snapshot fails closed to `DetectionOutcome::Cancelled` before
-/// any module evidence is evaluated.
+/// `Mojo::Base::*` modules never activate this adapter. The input descriptor
+/// must be the canonical [`mojo_base_descriptor`] value: a foreign
+/// descriptor's selectors are never adopted as Mojo::Base evidence. A
+/// pre-cancelled admission snapshot fails closed to
+/// `DetectionOutcome::Cancelled` before any module evidence is evaluated,
+/// and duplicate or contradictory rows for one owned selector stay a
+/// conflict instead of becoming first-wins evidence.
 #[must_use]
 pub fn detect_mojo_base(input: &AdapterDetectionInput) -> AdapterDetectionResult {
+    if input.descriptor != mojo_base_descriptor() {
+        return AdapterDetectionResult::for_input(
+            input,
+            DetectionOutcome::Unsupported {
+                reason: "input descriptor does not match the canonical Mojo::Base adapter \
+                                                 descriptor"
+                    .to_string(),
+            },
+        );
+    }
     if input.cancellation.is_cancelled {
         return AdapterDetectionResult::for_input(input, DetectionOutcome::Cancelled);
     }
     let descriptor = &input.descriptor;
-    let Some(evaluation) = input.module_observation.evaluations.iter().find(
-        |evaluation: &&ModuleSelectorEvaluation| {
+    let owned: Vec<&ModuleSelectorEvaluation> = input
+        .module_observation
+        .evaluations
+        .iter()
+        .filter(|evaluation| {
             descriptor
                 .required_module_selectors
                 .iter()
                 .any(|selector| selector == &evaluation.selector)
-        },
-    ) else {
-        return AdapterDetectionResult::for_input(
-            input,
-            DetectionOutcome::Unavailable { reason: UnavailableReason::NoModulesAvailable },
-        );
+        })
+        .collect();
+    let [evaluation] = owned.as_slice() else {
+        return if owned.is_empty() {
+            AdapterDetectionResult::for_input(
+                input,
+                DetectionOutcome::Unavailable { reason: UnavailableReason::NoModulesAvailable },
+            )
+        } else {
+            AdapterDetectionResult::for_input(
+                input,
+                DetectionOutcome::Conflicting {
+                    conflict_descriptions: vec![format!(
+                        "selector `{}` carries {} terminal evaluations; completeness requires \
+                         exactly one",
+                        descriptor.required_module_selectors[0],
+                        owned.len()
+                    )],
+                },
+            )
+        };
     };
+    let evaluation = *evaluation;
     match &evaluation.outcome {
         ModuleSelectorOutcome::Absent => AdapterDetectionResult::for_input(
             input,
@@ -473,6 +506,12 @@ pub struct MojoBaseActivationFacts {
     pub source_interval: (u32, u32),
     /// Literal parent spelling's source range when present.
     pub parent_range: Option<(u32, u32)>,
+    /// Exact root/scope identity of the observation receipt, when the
+    /// detection carries a current input identity.
+    pub scope_identity: Option<String>,
+    /// Exact project environment identity of the observation receipt, when
+    /// the detection carries a current input identity.
+    pub environment_identity: Option<String>,
     /// Resolved module/source identity that made the detection current.
     pub resolved_module: Option<ModuleActivationIdentity>,
     /// Observed supported framework version (exact activations only).
@@ -507,10 +546,13 @@ const SHADOW_LIMITATIONS: &[&str] = &[
 ///
 /// Ordering is fail-closed: instrument failures and module availability
 /// first, then source-level classification (malformed, dynamic, strict-only),
-/// then evidence completeness, generation staleness, and the reviewed-profile
-/// check. Only a `Detected` outcome carrying contributing module and version
-/// evidence with current site, module, and version generations and no
-/// unreviewed import options yields an exact activation.
+/// then evidence completeness (contributing module, version evidence, and a
+/// reconciled current input identity), generation staleness with
+/// known-generation requirements, and the reviewed-profile check. Only a
+/// `Detected` outcome carrying contributing module and version evidence
+/// under a reconciled input identity with current known site, module, and
+/// version generations and no unreviewed import options yields an exact
+/// activation.
 #[must_use]
 pub fn mojo_base_activation_facts(
     detection: &AdapterDetectionResult,
@@ -523,6 +565,14 @@ pub fn mojo_base_activation_facts(
         package: anchor.package.clone(),
         source_interval: (anchor.span_start_byte, anchor.span_end_byte),
         parent_range: anchor.parent_range,
+        scope_identity: detection
+            .input_identity
+            .as_ref()
+            .map(|identity| identity.module_observation.scope_identity.clone()),
+        environment_identity: detection
+            .input_identity
+            .as_ref()
+            .map(|identity| identity.module_observation.environment_identity.clone()),
         resolved_module: detection.contributing_modules.first().cloned(),
         framework_version: String::new(),
         confidence: Confidence::Low,
@@ -618,8 +668,10 @@ pub fn mojo_base_activation_facts(
     facts.framework_version = framework_version.clone().unwrap_or_default();
 
     // 6. Evidence completeness: a raw or deserialized `Detected` result does
-    // not become exact activation without its contributing module identity
-    // and version evidence attached.
+    // not become exact activation without its contributing module identity,
+    // version evidence, and a current input identity whose descriptor,
+    // owned selector, module name, scope, and generations reconcile with
+    // this detection.
     if detection.contributing_modules.is_empty() || detection.version_evidence.is_none() {
         facts.outcome = MojoBaseActivationOutcome::StaleOrIncompleteInput {
             reason: "detected result lacks contributing module or version evidence; raw \
@@ -628,9 +680,13 @@ pub fn mojo_base_activation_facts(
         };
         return facts;
     }
+    if let Some(reason) = identity_reconciliation_reason(detection) {
+        facts.outcome = MojoBaseActivationOutcome::StaleOrIncompleteInput { reason };
+        return facts;
+    }
 
     // 7. Generation staleness: site, module, and version evidence must all be
-    // current for the detection generation.
+    // known and current for the detection generation.
     if let Some(reason) = staleness_reason(detection, anchor) {
         facts.outcome = MojoBaseActivationOutcome::StaleOrIncompleteInput { reason };
         return facts;
@@ -648,11 +704,24 @@ pub fn mojo_base_activation_facts(
         return facts;
     }
 
-    // 9. Exact activation under the reviewed profile.
+    // 9. Exact activation under the reviewed profile. A literal parent
+    // additionally requires its located source range to sit inside the
+    // import interval (source anchors are load-bearing, not decorative).
     facts.outcome = match &evidence.parent {
         MojoBaseParentSelection::Base => MojoBaseActivationOutcome::ExactBaseActivation,
         MojoBaseParentSelection::Literal(parent) => {
-            MojoBaseActivationOutcome::ExactLiteralParentActivation { parent: parent.clone() }
+            if let Some((range_start, range_end)) = anchor.parent_range
+                && range_start >= anchor.span_start_byte
+                && range_end <= anchor.span_end_byte
+                && range_end > range_start
+            {
+                MojoBaseActivationOutcome::ExactLiteralParentActivation { parent: parent.clone() }
+            } else {
+                MojoBaseActivationOutcome::StaleOrIncompleteInput {
+                    reason: "literal parent lacks a source range inside the import interval"
+                        .to_string(),
+                }
+            }
         }
         other => MojoBaseActivationOutcome::AbsentWithCompleteEvidence {
             reason: format!("parent selection {other:?} does not carry an exact profile"),
@@ -676,10 +745,81 @@ fn instrument_failure_reason(outcome: &DetectionOutcome) -> Option<String> {
     }
 }
 
+/// Reconcile the detection's current input identity with this adapter before
+/// its evidence may support exact activation: the identity must exist, carry
+/// the canonical descriptor, one terminal `Mojo::Base` selector evaluation
+/// whose matched module is `Mojo::Base`, and an observation receipt from the
+/// detection generation.
+fn identity_reconciliation_reason(detection: &AdapterDetectionResult) -> Option<String> {
+    let Some(identity) = &detection.input_identity else {
+        return Some(
+            "detected result carries no current input identity; fabricated evidence cannot \
+             become exact activation"
+                .to_string(),
+        );
+    };
+    if identity.descriptor != mojo_base_descriptor() {
+        return Some(
+            "input identity belongs to a different adapter descriptor; it cannot support \
+             Mojo::Base exact activation"
+                .to_string(),
+        );
+    }
+    let observation = &identity.module_observation;
+    if observation.generation != detection.project_generation {
+        return Some(format!(
+            "observation receipt generation {:?} does not match the detection generation {:?}",
+            observation.generation, detection.project_generation
+        ));
+    }
+    let owned: Vec<&ModuleSelectorEvaluation> = observation
+        .evaluations
+        .iter()
+        .filter(|evaluation| evaluation.selector == MOJO_BASE_FRAMEWORK_NAME)
+        .collect();
+    let [evaluation] = owned.as_slice() else {
+        return Some(format!(
+            "input identity carries {} terminal evaluations for selector `{MOJO_BASE_FRAMEWORK_NAME}`; \
+             exactly one is required",
+            owned.len()
+        ));
+    };
+    match &evaluation.outcome {
+        ModuleSelectorOutcome::Matched { activation, .. }
+            if activation.module_name == MOJO_BASE_FRAMEWORK_NAME
+                && activation.generation == detection.project_generation =>
+        {
+            None
+        }
+        _ => Some(
+            "the owned selector's terminal evaluation does not reconcile with the detection"
+                .to_string(),
+        ),
+    }
+}
+
 fn staleness_reason(
     detection: &AdapterDetectionResult,
     anchor: &MojoBaseSiteAnchor,
 ) -> Option<String> {
+    // Exact current activation requires every load-bearing generation to be
+    // known: all-`Unknown` generations compare equal but identify nothing.
+    if !anchor.source_generation.is_known() {
+        return Some("site source generation is unknown".to_string());
+    }
+    if !detection.project_generation.is_known() {
+        return Some("detection generation is unknown".to_string());
+    }
+    if let Some(module) = detection.contributing_modules.first()
+        && !module.generation.is_known()
+    {
+        return Some("module activation generation is unknown".to_string());
+    }
+    if let Some(version) = &detection.version_evidence
+        && !version.generation.is_known()
+    {
+        return Some("version evidence generation is unknown".to_string());
+    }
     if anchor.source_generation != detection.project_generation {
         return Some(format!(
             "site generation {:?} does not match detection generation {:?}",
@@ -898,5 +1038,232 @@ mod tests {
             matches!(facts.outcome, MojoBaseActivationOutcome::StaleOrIncompleteInput { .. }),
             "a raw Detected result without contributing evidence must not become exact"
         );
+    }
+
+    #[test]
+    fn foreign_descriptor_inputs_are_rejected() {
+        let mut foreign = mojo_base_descriptor();
+        foreign.framework_name = "Foo".to_string();
+        foreign.required_module_selectors = vec!["Foo".to_string()];
+        let input = AdapterDetectionInput::new(
+            foreign,
+            crate::framework::ModuleObservationReceipt::new(
+                "module-resolver.v1",
+                "root:fixture",
+                "project-environment.v1",
+                SourceGeneration::known("gen-1"),
+                "sha256:fixture-input",
+                vec![ModuleSelectorEvaluation::new(
+                    "Foo",
+                    ModuleSelectorOutcome::Matched {
+                        activation: ModuleActivationIdentity::new(
+                            "Foo",
+                            None,
+                            SourceGeneration::known("gen-1"),
+                        )
+                        .with_observed_version(
+                            crate::framework::ModuleVersionEvidence::new(
+                                "9.34",
+                                SourceGeneration::known("gen-1"),
+                            ),
+                        ),
+                        evidence_class: crate::framework::DetectionEvidenceClass::ResolvedModule,
+                    },
+                )],
+            ),
+            None,
+            crate::framework::AdapterCancellation::active(),
+        );
+        let detection = detect_mojo_base(&input);
+        assert!(
+            matches!(detection.outcome, DetectionOutcome::Unsupported { .. }),
+            "a foreign descriptor's selectors must not become Mojo::Base evidence, got {:?}",
+            detection.outcome
+        );
+    }
+
+    #[test]
+    fn duplicate_selector_rows_are_a_conflict() {
+        let input = AdapterDetectionInput::new(
+            mojo_base_descriptor(),
+            crate::framework::ModuleObservationReceipt::new(
+                "module-resolver.v1",
+                "root:fixture",
+                "project-environment.v1",
+                SourceGeneration::known("gen-1"),
+                "sha256:fixture-input",
+                vec![
+                    matched_mojo_base_row("gen-1"),
+                    ModuleSelectorEvaluation::new("Mojo::Base", ModuleSelectorOutcome::Absent),
+                ],
+            ),
+            None,
+            crate::framework::AdapterCancellation::active(),
+        );
+        let detection = detect_mojo_base(&input);
+        assert!(
+            matches!(detection.outcome, DetectionOutcome::Conflicting { .. }),
+            "duplicate terminal evaluations must not become first-wins evidence, got {:?}",
+            detection.outcome
+        );
+    }
+
+    fn matched_mojo_base_row(generation: &str) -> ModuleSelectorEvaluation {
+        ModuleSelectorEvaluation::new(
+            "Mojo::Base",
+            ModuleSelectorOutcome::Matched {
+                activation: ModuleActivationIdentity::new(
+                    "Mojo::Base",
+                    None,
+                    SourceGeneration::known(generation),
+                )
+                .with_observed_version(
+                    crate::framework::ModuleVersionEvidence::new(
+                        "9.34",
+                        SourceGeneration::known(generation),
+                    ),
+                ),
+                evidence_class: crate::framework::DetectionEvidenceClass::ResolvedModule,
+            },
+        )
+    }
+
+    #[test]
+    fn fabricated_evidence_without_input_identity_is_not_exact() {
+        // Contributing module and version evidence attached to a raw result
+        // with no input identity still cannot reach exact activation.
+        let detection = AdapterDetectionResult::new(
+            mojo_base_descriptor(),
+            SourceGeneration::known("gen-1"),
+            DetectionOutcome::Detected {
+                confidence: Confidence::High,
+                framework_version: Some("9.34".to_string()),
+            },
+        )
+        .with_contributing_modules(vec![
+            ModuleActivationIdentity::new("Mojo::Base", None, SourceGeneration::known("gen-1"))
+                .with_observed_version(crate::framework::ModuleVersionEvidence::new(
+                    "9.34",
+                    SourceGeneration::known("gen-1"),
+                )),
+        ])
+        .with_version_evidence(crate::framework::ModuleVersionEvidence::new(
+            "9.34",
+            SourceGeneration::known("gen-1"),
+        ));
+        let anchor = MojoBaseSiteAnchor::new(
+            Some("App".to_string()),
+            0,
+            1,
+            None,
+            SourceGeneration::known("gen-1"),
+        );
+        let evidence = parse_mojo_base_import_args(&["-base".to_string()]);
+        let facts = mojo_base_activation_facts(&detection, &anchor, &evidence);
+        assert!(
+            matches!(facts.outcome, MojoBaseActivationOutcome::StaleOrIncompleteInput { .. }),
+            "fabricated evidence without a current input identity must not become exact"
+        );
+    }
+
+    #[test]
+    fn all_unknown_generations_cannot_be_exact() {
+        let input = AdapterDetectionInput::new(
+            mojo_base_descriptor(),
+            crate::framework::ModuleObservationReceipt::new(
+                "module-resolver.v1",
+                "root:fixture",
+                "project-environment.v1",
+                SourceGeneration::Unknown,
+                "sha256:fixture-input",
+                vec![ModuleSelectorEvaluation::new(
+                    "Mojo::Base",
+                    ModuleSelectorOutcome::Matched {
+                        activation: ModuleActivationIdentity::new(
+                            "Mojo::Base",
+                            None,
+                            SourceGeneration::Unknown,
+                        )
+                        .with_observed_version(
+                            crate::framework::ModuleVersionEvidence::new(
+                                "9.34",
+                                SourceGeneration::Unknown,
+                            ),
+                        ),
+                        evidence_class: crate::framework::DetectionEvidenceClass::ResolvedModule,
+                    },
+                )],
+            ),
+            None,
+            crate::framework::AdapterCancellation::active(),
+        );
+        let detection = detect_mojo_base(&input);
+        assert!(detection.is_detected());
+        let anchor =
+            MojoBaseSiteAnchor::new(Some("App".to_string()), 0, 1, None, SourceGeneration::Unknown);
+        let evidence = parse_mojo_base_import_args(&["-base".to_string()]);
+        let facts = mojo_base_activation_facts(&detection, &anchor, &evidence);
+        assert!(
+            matches!(facts.outcome, MojoBaseActivationOutcome::StaleOrIncompleteInput { .. }),
+            "mutually-equal unknown generations identify nothing and cannot be exact, got {:?}",
+            facts.outcome
+        );
+    }
+
+    #[test]
+    fn literal_parent_without_located_range_degrades() {
+        let detection = detected_result_for_facts();
+        let missing = MojoBaseSiteAnchor::new(
+            Some("App".to_string()),
+            13,
+            34,
+            None,
+            SourceGeneration::known("gen-1"),
+        );
+        let outside = MojoBaseSiteAnchor::new(
+            Some("App".to_string()),
+            13,
+            34,
+            Some((900, 950)),
+            SourceGeneration::known("gen-1"),
+        );
+        let evidence = parse_mojo_base_import_args(&["'Parent'".to_string()]);
+        for anchor in [missing, outside] {
+            let facts = mojo_base_activation_facts(&detection, &anchor, &evidence);
+            assert!(
+                matches!(facts.outcome, MojoBaseActivationOutcome::StaleOrIncompleteInput { .. }),
+                "literal parent without a contained source range must degrade, got {:?}",
+                facts.outcome
+            );
+        }
+        let contained = MojoBaseSiteAnchor::new(
+            Some("App".to_string()),
+            13,
+            34,
+            Some((24, 32)),
+            SourceGeneration::known("gen-1"),
+        );
+        let facts = mojo_base_activation_facts(&detection, &contained, &evidence);
+        assert!(
+            matches!(facts.outcome, MojoBaseActivationOutcome::ExactLiteralParentActivation { .. }),
+            "a contained literal range stays exact"
+        );
+    }
+
+    fn detected_result_for_facts() -> AdapterDetectionResult {
+        let input = AdapterDetectionInput::new(
+            mojo_base_descriptor(),
+            crate::framework::ModuleObservationReceipt::new(
+                "module-resolver.v1",
+                "root:fixture",
+                "project-environment.v1",
+                SourceGeneration::known("gen-1"),
+                "sha256:fixture-input",
+                vec![matched_mojo_base_row("gen-1")],
+            ),
+            None,
+            crate::framework::AdapterCancellation::active(),
+        );
+        detect_mojo_base(&input)
     }
 }

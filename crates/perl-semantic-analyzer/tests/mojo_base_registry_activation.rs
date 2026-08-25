@@ -424,6 +424,46 @@ fn two_roots_with_same_package_stay_isolated() {
     );
 }
 
+// Review regression: two roots with the SAME generation, package, spans, and
+// module/version stay isolated through the carried root/environment identity.
+#[test]
+fn same_generation_distinct_roots_stay_isolated() {
+    fn root_input(root: &str) -> AdapterDetectionInput {
+        AdapterDetectionInput::new(
+            mojo_base_descriptor(),
+            ModuleObservationReceipt::new(
+                "module-resolver.v1",
+                root,
+                "project-environment.v1",
+                SourceGeneration::known("gen-1"),
+                "sha256:fixture-input",
+                vec![matched_mojo_base(
+                    Some("9.34"),
+                    "gen-1",
+                    DetectionEvidenceClass::ResolvedModule,
+                )],
+            ),
+            None,
+            AdapterCancellation::active(),
+        )
+    }
+    let code = "package App;\nuse Mojo::Base 'Parent';\n";
+    let site_a = first_site(code, "gen-1");
+    let site_b = first_site(code, "gen-1");
+    let detection_a = detect_mojo_base(&root_input("root:a"));
+    let detection_b = detect_mojo_base(&root_input("root:b"));
+    let facts_a = mojo_base_activation_facts(&detection_a, &site_a.anchor, &site_a.evidence);
+    let facts_b = mojo_base_activation_facts(&detection_b, &site_b.anchor, &site_b.evidence);
+    assert!(facts_a.is_exact() && facts_b.is_exact());
+    assert_eq!(facts_a.source_generation, facts_b.source_generation);
+    assert_ne!(
+        facts_a.scope_identity.as_deref(),
+        facts_b.scope_identity.as_deref(),
+        "the observation's root/scope identity must stay load-bearing on the facts"
+    );
+    assert_ne!(facts_a, facts_b, "distinct roots produce distinct facts");
+}
+
 // Typed outcome: ambiguous module identity.
 #[test]
 fn ambiguous_module_identity_is_a_conflict() {
