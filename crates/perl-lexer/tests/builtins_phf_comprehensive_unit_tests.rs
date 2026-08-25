@@ -2839,9 +2839,7 @@ fn full_sigs_all_variants_start_with_function_name() -> Result<(), String> {
                     "Full sig {sig:?} for {name} should start with the function name"
                 ));
             };
-            if let Some(next) = rest.chars().next()
-                && (next.is_ascii_alphanumeric() || next == '_')
-            {
+            if rest.chars().next().is_some_and(|next| next.is_ascii_alphanumeric() || next == '_') {
                 return Err(format!(
                     "Full sig {sig:?} for {name} should keep the builtin name as a token boundary"
                 ));
@@ -2939,6 +2937,9 @@ fn full_sigs_split_has_four_variants() -> Result<(), String> {
         Some(sigs) => {
             if sigs.len() != 4 {
                 return Err(format!("split should have 4 full sigs, got {}", sigs.len()));
+            }
+            if sigs[0] != "split PATTERN, EXPR, LIMIT" {
+                return Err(format!("split first variant wrong: {}", sigs[0]));
             }
         }
         None => return Err("split missing from BUILTIN_FULL_SIGS".into()),
