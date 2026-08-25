@@ -143,21 +143,38 @@ Do not squash source-sync PRs that are meant to prove `source/master` ancestry.
 
 ### Sync-divergence preflight
 
-Before a swarm-to-source promotion, compute target-unique commits with the
-protocol's `git cherry` comparison from the last common sync base to the first
-parent of the target sync merge. Run:
+Before a swarm-to-source promotion, compute target-unique commits with three
+exact subjects resolved to immutable full SHAs:
 
 ```bash
 cargo xtask sync-divergence check \
-  --base <last-common-sync-base> \
   --source <swarm-main-ref> \
+  --boundary <completed-reconciliation-boundary> \
   --target <source-sync-first-parent> \
   --ledger docs/swarm/source-syncs/<sync>-reconciliation.json \
   --receipt docs/swarm/source-syncs/<sync>-receipt.json
 ```
 
-The check ignores merge commits, and requires every other `+` result from
-`git cherry` to have a ledger row with one of these classifications:
+Subject roles are strict and independent:
+
+- `--source` is the patch-equivalence upstream: the exact current or prepared
+  swarm commit. Two commits compare equivalent when their `git cherry`
+  patch-id matches a commit reachable from this subject.
+- `--boundary` is only the history limit: the completed reconciliation
+  boundary. Commits reachable from it are excluded from the comparison
+  population; it never participates in patch equivalence.
+- `--target` is the release repository head being judged.
+
+All three subjects must resolve to existing commits, must be unambiguous,
+syntactically single commit-ish values, and the boundary must be an ancestor
+of the target; otherwise the command fails closed and records the failure in
+the receipt.
+
+The check excludes merge commits from the target-unique row population and
+records their ancestry (subject and parents) in the receipt's
+`excluded_merge_ancestry`. Every other `+` result from
+`git cherry <source> <target> <boundary>` requires a ledger row with one of
+these classifications:
 
 ```text
 port_to_swarm
@@ -167,15 +184,18 @@ deliberately_abandoned
 release_lineage_only
 ```
 
-The `--source` value must resolve to a commit in the repository running the
-check. Missing or otherwise invalid refs fail closed and are recorded in the
-receipt, so a stale or malformed source ref cannot be mistaken for a valid
-promotion input.
+All three subjects must resolve to a commit in the repository running the
+check. Missing, ambiguous, malformed, or reversed subjects fail closed and are
+recorded in the receipt, so a stale or malformed subject cannot be mistaken
+for a valid promotion input. The checker resolves each subject before invoking
+Git and passes the resolved SHAs directly: the resolved source is
+`git cherry`'s upstream, the resolved target its head, and the resolved
+boundary its limit, keeping patch equivalence driven by the exact swarm commit
+and the comparison bounded below by the reconciliation boundary.
 
-The checker also resolves `--base` and `--target` before invoking Git and passes
-the resolved base as `git cherry`'s explicit limit, keeping the comparison
-bounded to the intended base-to-target range.
-
+Ledger and receipt schema version 2 records each subject as its input ref plus
+the resolved full object id; the ledger identity fields must equal the
+resolved source, boundary, and target object ids exactly.
 `release_lineage_only` is an explicit exclusion, not an implicit escape hatch.
 Missing rows, unclassified rows, invalid classifications, missing evidence, or
 ledger rows that are not target-unique non-merge commits fail the command. The
