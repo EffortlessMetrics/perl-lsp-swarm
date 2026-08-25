@@ -591,10 +591,11 @@ fn adversarial_corpus_is_total_and_deterministic() -> TestResult {
         StructuredMutationLimits { max_aggregate_bytes: 2, ..StructuredMutationLimits::default() };
     let aggregate_three =
         StructuredMutationLimits { max_aggregate_bytes: 3, ..StructuredMutationLimits::default() };
-    let budgeted: [(StructuredMutationLimits, &str, bool); 5] = [
+    let budgeted: [(StructuredMutationLimits, &str, bool); 6] = [
         (scalar_two, r#"json:"é""#, true),
         (scalar_two, r#"json:"€""#, false),
-        (aggregate_one, r#"json:"a""#, false),
+        (aggregate_one, r#"json:"a""#, true),
+        (aggregate_one, r#"json:"ab""#, false),
         (aggregate_two, r#"json:"€""#, false),
         (aggregate_three, r#"json:"€""#, true),
     ];
@@ -621,11 +622,10 @@ fn refusal_paths_are_pure_repeated_calls_are_identical() -> TestResult {
         &StructuredMutationLimits,
     )
         -> Result<perl_dap::mutation::MutationStructuredValueV1, StructuredRefusal>;
-    let shared_reference_signatures_only: (
-        ParseFn,
-        fn(&str) -> Result<&str, StructuredRefusal>,
-        fn(&StructuredValue) -> Option<FreshReferentKind>,
-    ) = (parse_structured_mutation, structured_payload, fresh_referent_kind);
+    type PayloadFn = fn(&str) -> Result<&str, StructuredRefusal>;
+    type ReferentKindFn = fn(&StructuredValue) -> Option<FreshReferentKind>;
+    let shared_reference_signatures_only: (ParseFn, PayloadFn, ReferentKindFn) =
+        (parse_structured_mutation, structured_payload, fresh_referent_kind);
     let _ = shared_reference_signatures_only;
 
     let widened = StructuredMutationLimits {
