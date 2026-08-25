@@ -426,6 +426,7 @@ describe('perl-lsp trust explanation commands', () => {
     ['perl-lsp.previewPackageRename', 'Preview Package Rename'],
     ['perl-lsp.copyProviderDecisionReceipt', 'Copy Provider Decision Receipt'],
     ['perl-lsp.showWorkspaceTrustReport', 'Show Workspace Trust Report'],
+    ['perl-lsp.showCoexistenceStatus', 'Show Coexistence Status'],
     ['perl-lsp.explainMissingModuleLookup', 'Explain Missing Module Lookup'],
     ['perl-lsp.explainDiagnostic', 'Explain This Diagnostic'],
   ])('%s is declared as a Perl command', (id, title) => {
@@ -451,6 +452,14 @@ describe('perl-lsp trust explanation commands', () => {
   test('workspace trust report is available when a workspace is open', () => {
     const entry = paletteEntries.find(
       (e: MenuEntry) => e.command === 'perl-lsp.showWorkspaceTrustReport',
+    );
+    expect(entry).toBeDefined();
+    expect(entry.when).toContain('workspaceFolderCount');
+  });
+
+  test('coexistence status is available when a workspace is open', () => {
+    const entry = paletteEntries.find(
+      (e: MenuEntry) => e.command === 'perl-lsp.showCoexistenceStatus',
     );
     expect(entry).toBeDefined();
     expect(entry.when).toContain('workspaceFolderCount');
