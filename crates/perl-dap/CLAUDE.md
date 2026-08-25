@@ -25,7 +25,6 @@ cargo doc -p perl-dap --no-deps
 cargo test -p perl-dap --no-default-features --features dap-phase2,dap-phase3
 
 ./target/release/perl-dap --stdio
-./target/release/perl-dap --socket --port 13603
 RUST_LOG=debug ./target/release/perl-dap --stdio
 ```
 
@@ -51,7 +50,7 @@ Canonical policy: `docs/reference/NATIVE_STACK_POLICY.md`.
 
 | Module | Key types | Purpose |
 |---|---|---|
-| `main.rs` | `Args` | shipped CLI, native stdio/TCP and explicit external-peer options |
+| `main.rs` | `Args` | shipped CLI, native stdio (product) plus explicit external-peer options; editor `--socket` is scheduled retirement |
 | `server/` | `DapServer`, `DapConfig`, `DapMode` | native server lifecycle |
 | `debug_adapter/` | `DebugAdapter`, `DapMessage` | native request routing, process lifecycle, stepping, frames, variables, evaluate |
 | `protocol.rs` | DAP request/response/event types | DAP wire contracts |
