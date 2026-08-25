@@ -19,6 +19,7 @@ lua clients/lite-xl/tests/util_show_document_test.lua     # util.lua showDocumen
 lua clients/lite-xl/tests/init_document_session_test.lua  # init.lua sessions/versions
 lua clients/lite-xl/tests/init_request_currentness_test.lua # init.lua request admission
 lua clients/lite-xl/tests/init_configuration_items_test.lua # init.lua configuration items
+lua clients/lite-xl/tests/init_show_document_outcome_test.lua # init.lua showDocument outcomes
 lua clients/lite-xl/tests/diagnostics_currentness_test.lua  # diagnostics.lua publications
 ```
 

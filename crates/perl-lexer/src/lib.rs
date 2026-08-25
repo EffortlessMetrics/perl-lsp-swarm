@@ -176,7 +176,7 @@ use unicode::{is_perl_identifier_continue, is_perl_identifier_start};
 use crate::heredoc::HeredocSpec;
 use crate::lexer::helpers::{
     empty_arc, is_builtin_function, is_compound_operator, is_keyword_fast,
-    is_perl_punctuation_variable, is_quote_op_word_prefix, truncate_preview,
+    is_perl_punctuation_variable, is_quote_op_word_prefix,
 };
 use crate::limits::{MAX_DELIM_NEST, MAX_HEREDOC_BYTES, MAX_HEREDOC_DEPTH, MAX_REGEX_BYTES};
 
@@ -371,7 +371,7 @@ impl<'a> PerlLexer<'a> {
                 }
             }
 
-            self.skip_whitespace_and_comments()?;
+            self.skip_whitespace_and_comments();
 
             // Check again if we're now in a heredoc body (might have been set during skip_whitespace)
             if !self.pending_heredocs.is_empty()
@@ -389,16 +389,7 @@ impl<'a> PerlLexer<'a> {
             }
 
             if self.position >= self.input.len() {
-                if self.eof_emitted {
-                    return None; // Stop the stream
-                }
-                self.eof_emitted = true;
-                return Some(Token {
-                    token_type: TokenType::EOF,
-                    text: empty_arc(),
-                    start: self.position,
-                    end: self.position,
-                });
+                return self.emit_eof();
             }
 
             let start = self.position;
@@ -452,8 +443,19 @@ impl<'a> PerlLexer<'a> {
                 return Some(token);
             }
 
-            // If nothing else matches, return an error token
-            let ch = self.current_char()?;
+            // If nothing else matches, return an error token. Never end the
+            // stream here: `None` is reserved for after `EOF` has been emitted.
+            let Some(ch) = self.current_char() else {
+                if self.position < self.input.len() {
+                    let before = self.position;
+                    self.normalize_char_boundary();
+                    if self.position == before {
+                        self.position = self.position.saturating_add(1).min(self.input.len());
+                    }
+                    continue;
+                }
+                return self.emit_eof();
+            };
             self.advance();
 
             // Optimize error token creation - avoid expensive formatting in hot path
@@ -617,8 +619,21 @@ impl<'a> PerlLexer<'a> {
 
     // Token-specific parsing methods
 
+    fn emit_eof(&mut self) -> Option<Token> {
+        if self.eof_emitted {
+            return None;
+        }
+        self.eof_emitted = true;
+        Some(Token {
+            token_type: TokenType::EOF,
+            text: empty_arc(),
+            start: self.position,
+            end: self.position,
+        })
+    }
+
     #[inline]
-    fn skip_whitespace_and_comments(&mut self) -> Option<()> {
+    fn skip_whitespace_and_comments(&mut self) {
         // Don't reset after_newline if we're at the start of a line
         if self.position > 0 && self.position != self.line_start_offset {
             self.after_newline = false;
@@ -759,7 +774,6 @@ impl<'a> PerlLexer<'a> {
                 }
             }
         }
-        Some(())
     }
 
     fn try_heredoc(&mut self) -> Option<Token> {
@@ -2179,7 +2193,7 @@ impl<'a> PerlLexer<'a> {
             if self.mode == LexerMode::ExpectTerm {
                 // Mode indicates we're expecting a term → `/` starts a regex
                 // Examples: `if (/pattern/)`, `=~ /test/`, `while (/match/)`
-                return self.parse_regex(start);
+                return Some(self.parse_regex(start));
             } else {
                 // Mode indicates we're expecting an operator → `/` is division or `//`
                 // Examples: `$x / 2`, `$x // $y`, `10 / 3`
@@ -3087,15 +3101,22 @@ impl<'a> PerlLexer<'a> {
     }
 
     #[inline]
+    pub(crate) fn line_bounded_unclosed_end(&self, start: usize) -> usize {
+        let Some(remaining) = self.input.get(start..) else {
+            return self.input.len();
+        };
+        match remaining.find('\n') {
+            Some(nl_offset) => start.saturating_add(nl_offset),
+            None => self.input.len(),
+        }
+    }
+
+    #[inline]
     fn unterminated_string_error(&mut self, start: usize) -> Token {
         // Line-bounded recovery: consume to end of line (or EOF if no newline).
         // This allows subsequent declarations to be lexed after an unterminated
         // string on the same line, instead of losing the entire rest of the file. (#5090)
-        let remaining = &self.input[start..];
-        let end = match remaining.find('\n') {
-            Some(nl_offset) => start + nl_offset, // include the newline in the error token
-            None => self.input.len(),             // single-line file or last line
-        };
+        let end = self.line_bounded_unclosed_end(start);
         self.position = end;
 
         Token {
@@ -4046,9 +4067,11 @@ impl<'a> PerlLexer<'a> {
         // No terminating semicolon before EOF: recover only when the candidate ran to
         // end-of-file cleanly — balanced delimiters, no degraded/unclosed token, and every
         // trailing byte turned into a real token. The final check rejects constructs that
-        // silently consume to EOF without emitting a token (an unterminated bare `/regex/`
-        // or heredoc body leaves its text after the last token), which would otherwise be
-        // misclassified as a complete statement and split the qw list incorrectly (#4494).
+        // consume source without a token covering it (a heredoc body can still leave text
+        // after the last token). Unterminated bare `/regex/` now emits Error (#12504) and
+        // is already rejected via `saw_incomplete`. Without the trailing-span check, a
+        // silent hole would be misclassified as a complete statement and split the qw
+        // list incorrectly (#4494).
         delimiter_depth == 0
             && !saw_incomplete
             && source[last_end..].chars().all(char::is_whitespace)
@@ -4114,118 +4137,6 @@ impl<'a> PerlLexer<'a> {
 
         let token_type = quote_handler::get_quote_token_type(&operator);
         Some(Token { token_type, text: Arc::from(text), start, end: self.position })
-    }
-
-    /// Parse regex modifiers according to the given spec
-    ///
-    /// This function includes ALL characters that could be intended as modifiers,
-    /// including invalid ones. This allows the parser to properly reject invalid
-    /// modifiers with a clear error message, rather than leaving them as separate
-    /// tokens that could be confusingly parsed.
-    fn parse_regex_modifiers(&mut self, _spec: &quote_handler::ModSpec) {
-        // Consume all alphanumeric characters that could be intended as modifiers
-        // The parser will validate and reject invalid ones
-        while let Some(ch) = self.current_char() {
-            if ch.is_ascii_alphanumeric() {
-                self.advance();
-            } else {
-                break;
-            }
-        }
-        // Note: We no longer validate here - the parser will validate and provide
-        // clear error messages for invalid modifiers (MUT_005 fix)
-    }
-
-    /// Parse a regex literal starting with `/`
-    ///
-    /// **Budget Protection (Issue #422)**:
-    /// - Budget guards prevent runaway scanning on pathological input
-    /// - `MAX_REGEX_PARSE_STEPS` bounds literal scanning before the byte budget
-    /// - `MAX_REGEX_BYTES` bounds total bytes consumed in a single regex literal
-    /// - Graceful degradation: emit UnknownRest token if budget exceeded
-    ///
-    /// **Performance**:
-    /// - Single-pass scanning with escape handling
-    /// - Budget check per iteration (amortized O(1) via inline fast path)
-    /// - Typical regex: <10μs, Large regex (64KB): ~1ms
-    fn parse_regex(&mut self, start: usize) -> Option<Token> {
-        self.advance(); // Skip opening /
-
-        let mut regex_parse_steps: usize = 0;
-        let mut in_character_class = false;
-
-        while let Some(ch) = self.current_char() {
-            regex_parse_steps += 1;
-            if regex_parse_steps > MAX_REGEX_PARSE_STEPS {
-                #[cfg(debug_assertions)]
-                {
-                    let text = &self.input[start..self.position];
-                    let preview = truncate_preview(text, 50);
-                    tracing::debug!(
-                        limit = MAX_REGEX_PARSE_STEPS,
-                        pattern_preview = %preview,
-                        "Regex parse step budget exceeded"
-                    );
-                }
-                self.position = self.input.len();
-                return Some(Token {
-                    token_type: TokenType::UnknownRest,
-                    text: empty_arc(),
-                    start,
-                    end: self.position,
-                });
-            }
-
-            // Budget guard: prevent timeout on pathological input (Issue #422)
-            // If exceeded, returns UnknownRest token for graceful degradation
-            if let Some(token) = self.budget_guard(start, 0) {
-                return Some(token);
-            }
-
-            match ch {
-                '/' if !in_character_class => {
-                    self.advance();
-                    // Parse flags - include all alphanumeric for proper validation in parser (MUT_005 fix)
-                    while let Some(ch) = self.current_char() {
-                        if ch.is_ascii_alphanumeric() {
-                            self.advance();
-                        } else {
-                            break;
-                        }
-                    }
-
-                    let text = &self.input[start..self.position];
-                    self.mode = LexerMode::ExpectOperator;
-
-                    return Some(Token {
-                        token_type: TokenType::RegexMatch,
-                        text: Arc::from(text),
-                        start,
-                        end: self.position,
-                    });
-                }
-                '\\' => {
-                    // Handle escape sequences: consume backslash + next char
-                    self.advance();
-                    if self.current_char().is_some() {
-                        self.advance();
-                    }
-                }
-                '[' => {
-                    in_character_class = true;
-                    self.advance();
-                }
-                ']' if in_character_class => {
-                    in_character_class = false;
-                    self.advance();
-                }
-                _ => self.advance(),
-            }
-        }
-
-        // Unterminated regex - EOF reached before closing /
-        // Parser will emit diagnostic for unterminated literal
-        None
     }
 }
 
