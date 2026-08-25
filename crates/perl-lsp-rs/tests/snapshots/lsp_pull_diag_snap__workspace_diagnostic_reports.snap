@@ -1,5 +1,6 @@
 ---
 source: crates/perl-lsp-rs/tests/lsp_pull_diag_snap.rs
+assertion_line: 167
 expression: workspace_result
 ---
 items:
@@ -8,7 +9,7 @@ items:
         data:
           category: StrictWarnings
           code: PL101
-          fixable: true
+          fixable: false
           tags: []
         message: "Consider adding 'use warnings;' for better error detection\nSuggestion: Add 'use warnings;' at the top of the file"
         range:
@@ -28,7 +29,7 @@ items:
                   character: 0
                   line: 0
               uri: "file:///workspace-diagnostic-a.pl"
-            message: "💡 Add 'use warnings;' at the beginning of your script"
+            message: "Suggestion: Add 'use warnings;' at the beginning of your script"
           - location:
               range:
                 end:
@@ -38,14 +39,14 @@ items:
                   character: 0
                   line: 0
               uri: "file:///workspace-diagnostic-a.pl"
-            message: "ℹ️ The 'use warnings' pragma enables helpful warning messages about questionable constructs, uninitialized values, and deprecated features."
+            message: "Note: The 'use warnings' pragma enables helpful warning messages about questionable constructs, uninitialized values, and deprecated features."
         severity: 2
         source: perl-lsp
       - code: PL102
         data:
           category: StrictWarnings
           code: PL102
-          fixable: true
+          fixable: false
           tags:
             - Unnecessary
         message: "Variable '$x' is declared but never used -- prefix with '_' or remove it\nSuggestion: Prefix as '_x'"
@@ -75,7 +76,7 @@ items:
         data:
           category: StrictWarnings
           code: PL103
-          fixable: true
+          fixable: false
           tags: []
         message: "Variable '$y' is used but not declared -- add 'my $y' to declare it in this scope\nSuggestion: Add 'my $y;' before this line"
         range:
@@ -123,7 +124,7 @@ items:
             character: 0
             line: 0
         severity: 2
-        source: perl-lsp-critic
+        source: perl-lsp
     kind: full
     resultId: "<stable-result-id>"
     uri: "file:///workspace-diagnostic-a.pl"
@@ -153,7 +154,7 @@ items:
                   character: 0
                   line: 0
               uri: "file:///workspace-diagnostic-b.pl"
-            message: "💡 Add 'use strict;' at the beginning of your script"
+            message: "Suggestion: Add 'use strict;' at the beginning of your script"
           - location:
               range:
                 end:
@@ -163,14 +164,14 @@ items:
                   character: 0
                   line: 0
               uri: "file:///workspace-diagnostic-b.pl"
-            message: "ℹ️ The 'use strict' pragma enforces good coding practices by requiring variable declarations, disabling barewords, and preventing symbolic references."
+            message: "Note: The 'use strict' pragma enforces good coding practices by requiring variable declarations, disabling barewords, and preventing symbolic references."
         severity: 2
         source: perl-lsp
       - code: PL101
         data:
           category: StrictWarnings
           code: PL101
-          fixable: true
+          fixable: false
           tags: []
         message: "Consider adding 'use warnings;' for better error detection\nSuggestion: Add 'use warnings;' at the top of the file"
         range:
@@ -190,7 +191,7 @@ items:
                   character: 0
                   line: 0
               uri: "file:///workspace-diagnostic-b.pl"
-            message: "💡 Add 'use warnings;' at the beginning of your script"
+            message: "Suggestion: Add 'use warnings;' at the beginning of your script"
           - location:
               range:
                 end:
@@ -200,7 +201,7 @@ items:
                   character: 0
                   line: 0
               uri: "file:///workspace-diagnostic-b.pl"
-            message: "ℹ️ The 'use warnings' pragma enables helpful warning messages about questionable constructs, uninitialized values, and deprecated features."
+            message: "Note: The 'use warnings' pragma enables helpful warning messages about questionable constructs, uninitialized values, and deprecated features."
         severity: 2
         source: perl-lsp
       - code: native.testing.require_use_strict
@@ -218,7 +219,7 @@ items:
             character: 0
             line: 0
         severity: 2
-        source: perl-lsp-critic
+        source: perl-lsp
       - code: native.testing.require_use_warnings
         data:
           category: Other
@@ -234,7 +235,7 @@ items:
             character: 0
             line: 0
         severity: 2
-        source: perl-lsp-critic
+        source: perl-lsp
     kind: full
     resultId: "<stable-result-id>"
     uri: "file:///workspace-diagnostic-b.pl"

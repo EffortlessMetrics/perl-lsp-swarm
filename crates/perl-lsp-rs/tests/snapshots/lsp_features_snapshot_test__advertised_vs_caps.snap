@@ -1,5 +1,6 @@
 ---
 source: crates/perl-lsp-rs/tests/lsp_features_snapshot_test.rs
+assertion_line: 37
 expression: "&snapshot_data"
 ---
 caps:
@@ -22,10 +23,7 @@ caps:
   - lsp.inline_value
   - lsp.linked_editing_range
   - lsp.moniker
-  - lsp.notebook_document_sync
-  - lsp.on_type_formatting
   - lsp.pull_diagnostics
-  - lsp.range_formatting
   - lsp.references
   - lsp.rename
   - lsp.selection_range
@@ -52,11 +50,9 @@ catalog:
   - dap.modules
   - dap.pause
   - dap.restart
-  - dap.restart_frame
   - dap.set_expression
   - dap.source
   - dap.step_in_targets
-  - dap.terminate_threads
   - dap.threads
   - dap.watchpoints
   - experimental.perlInlineCompletionStream
@@ -119,14 +115,10 @@ catalog:
   - lsp.log_message
   - lsp.log_trace
   - lsp.moniker
-  - lsp.notebook_document_sync
-  - lsp.on_type_formatting
   - lsp.prepare_rename
   - lsp.progress
   - lsp.publish_diagnostics
   - lsp.pull_diagnostics
-  - lsp.range_formatting
-  - lsp.ranges_formatting
   - lsp.refactoring
   - lsp.references
   - lsp.rename

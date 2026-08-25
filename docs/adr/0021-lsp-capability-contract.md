@@ -138,11 +138,20 @@ Advertises only GA core capabilities with extensive production validation.
 
 ## Compliance Tracking
 
-| Metric | Target | Validation |
-|--------|--------|------------|
-| Advertised coverage | 100% tested | Contract tests |
-| GA core stability | 100% passing | CI gate |
-| Documentation sync | 100% aligned | Automated checks |
+Claims are bounded by the evidence catalog, not by aggregate percentages
+(#6731, #7029). The former "100%" targets here were declaration-count claims,
+not behavior evidence; the current truth surface is `features.toml` maturity +
+evidence rows and the generated status pages.
+
+| Metric | Current source of truth | Validation |
+|--------|------------------------|------------|
+| Advertised coverage | `features.toml` advertised flags + capability snapshots | Contract tests |
+| Earned-claim maturity | `features.toml` `proven`/`preview`/`not_proven` rows with evidence citations (#7029) | Fail-closed catalog validation |
+| Documentation sync | Generated status pages (`docs/project/status/lsp.md`) | Automated drift checks |
+
+Historical note: this ADR predates the #7029 earned-claim vocabulary; its
+"GA" language maps to `proven` only where qualifying evidence and complete
+ownership metadata exist in the catalog.
 
 ## References
 

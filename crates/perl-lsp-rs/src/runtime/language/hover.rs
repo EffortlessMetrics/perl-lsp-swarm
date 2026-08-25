@@ -1336,7 +1336,7 @@ impl LspServer {
         let line = &text[line_start..line_end];
         let cursor_in_line = cursor.saturating_sub(line_start);
 
-        let head = perl_module::import::parse_module_import_head(line)?;
+        let head = perl_module::parse_module_import_head(line)?;
         if !Self::is_static_require_module(head.kind, head.require_form()) {
             return None;
         }
@@ -1344,20 +1344,20 @@ impl LspServer {
             return None;
         }
 
-        let span = perl_module::token_parser::parse_module_token(line, head.token_start)?;
+        let span = perl_module::parse_module_token(line, head.token_start)?;
         if !Self::module_token_span_matches_head(span.end, head.token_end) {
             return None;
         }
 
-        Some(perl_module::name::normalize_package_separator(head.token).into_owned())
+        Some(perl_module::normalize_package_separator(head.token).into_owned())
     }
 
     fn is_static_require_module(
-        kind: perl_module::import::ModuleImportKind,
-        require_form: Option<perl_module::import::RequireForm>,
+        kind: perl_module::ModuleImportKind,
+        require_form: Option<perl_module::RequireForm>,
     ) -> bool {
-        kind == perl_module::import::ModuleImportKind::Require
-            && require_form == Some(perl_module::import::RequireForm::ModuleName)
+        kind == perl_module::ModuleImportKind::Require
+            && require_form == Some(perl_module::RequireForm::ModuleName)
     }
 
     fn cursor_spans_module_token(

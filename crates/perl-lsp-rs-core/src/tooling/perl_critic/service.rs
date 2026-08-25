@@ -542,9 +542,11 @@ mod tests {
         use crate::config::{CriticEngine, ServerConfig};
 
         let clean = ServerConfig::default();
-        let mut contaminated = ServerConfig::default();
-        contaminated.critic_engine = CriticEngine::Legacy;
-        contaminated.perlcritic_profile = Some("/discovered/.perlcriticrc".to_string());
+        let contaminated = ServerConfig {
+            critic_engine: CriticEngine::Legacy,
+            perlcritic_profile: Some("/discovered/.perlcriticrc".to_string()),
+            ..ServerConfig::default()
+        };
 
         assert_eq!(
             clean.effective_critic_state(Some("root")).fingerprint(),

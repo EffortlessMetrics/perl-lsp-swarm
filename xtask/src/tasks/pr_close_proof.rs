@@ -1,17 +1,15 @@
-//! `cargo xtask pr-close-proof` — canonical merge-base proof verifier.
+//! `cargo xtask landing-proof` — canonical landing/content proof verifier.
 //!
-//! Implements the mandatory proof check from
+//! Implements the landing-proof layer of
 //! [`docs/agents/CLOSE_PROOF_POLICY.md`](../../docs/agents/CLOSE_PROOF_POLICY.md):
-//!
-//! > Any close that claims "superseded", "already landed", or "duplicate of
-//! > merged PR" **MUST** include the output of
-//! > `git merge-base --is-ancestor <commit-sha> origin/main` pasted verbatim
-//! > in the close comment.
+//! it proves merge-base ancestry and, optionally, content survival. It never
+//! evaluates semantic issue completion and never authorizes an issue close;
+//! every receipt reports `semantic_completion: "not_evaluated"`.
 //!
 //! # Subcommand
 //!
 //! ```text
-//! cargo xtask pr-close-proof --commit <sha> --canonical-main <ref>
+//! cargo xtask landing-proof --commit <sha> --canonical-main <ref>
 //!                            [--substance-grep <string>]
 //!                            [--format json]
 //! ```
@@ -20,9 +18,9 @@
 //!
 //! | Code | Meaning |
 //! |------|---------|
-//! | `0` | Commit **is** an ancestor of canonical-main (safe to close) |
+//! | `0` | Commit **is** an ancestor of canonical-main (landing proof passes) |
 //! | `1` | Error (git not available, bad SHA format, I/O failure) |
-//! | `2` | Commit is **not** an ancestor — do not close |
+//! | `2` | Commit is **not** an ancestor — landing proof failed |
 //!
 //! Exit code 2 is distinct from 1 (error) so callers can branch on ancestry
 //! without conflating "not reachable" with "git failed".
@@ -30,23 +28,25 @@
 //! # Output (human, default)
 //!
 //! ```text
-//! REACHABLE   sha abc1234 is ancestor of origin/main
+//! LANDING-PROVEN   sha abc1234 is ancestor of origin/main
+//!                  semantic_completion: not_evaluated
 //! ```
 //! or
 //! ```text
 //! NOT-REACHABLE   sha abc1234 is NOT ancestor of origin/main
-//!                 allowed_close_reasons: []
+//!                 semantic_completion: not_evaluated
 //! ```
 //!
 //! # Output (--format json)
 //!
 //! ```json
 //! {
-//!   "reachable": true,
+//!   "schema_version": "landing_proof.v1",
+//!   "commit_reachable": true,
 //!   "commit": "abc1234",
 //!   "canonical_main": "origin/main",
-//!   "allowed_close_reasons": ["superseded", "already-landed"],
-//!   "content_survives": null
+//!   "content_survives": null,
+//!   "semantic_completion": "not_evaluated"
 //! }
 //! ```
 //! `content_survives` is only present when `--substance-grep` is passed.
@@ -59,14 +59,14 @@ use std::process::Command;
 // Public config
 // ---------------------------------------------------------------------------
 
-/// Output format for `pr-close-proof`.
+/// Output format for `landing-proof`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CloseProofFormat {
     Human,
     Json,
 }
 
-/// Configuration for `pr-close-proof`.
+/// Configuration for `landing-proof`.
 pub struct CloseProofConfig {
     /// The commit SHA to check.
     pub commit: String,
@@ -81,24 +81,43 @@ pub struct CloseProofConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Receipt identity
+// ---------------------------------------------------------------------------
+
+/// Schema identity of the machine-readable landing-proof receipt.
+///
+/// Downstream semantic-close evidence admission consumes this exact value to
+/// know which bounded evidence vocabulary it received. Bump the version when
+/// the receipt vocabulary changes.
+pub const LANDING_PROOF_SCHEMA_V1: &str = "landing_proof.v1";
+
+/// The only `semantic_completion` value this command may ever emit.
+///
+/// Landing ancestry and content survival carry no semantic-close authority;
+/// semantic issue completion is owned by the semantic-close contract.
+pub const SEMANTIC_COMPLETION_NOT_EVALUATED: &str = "not_evaluated";
+
+// ---------------------------------------------------------------------------
 // Output type
 // ---------------------------------------------------------------------------
 
 /// Machine-readable output for `--format json`.
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct CloseProofOutput {
+    /// Receipt schema identity; always `landing_proof.v1`.
+    pub schema_version: String,
     /// Whether `commit` is an ancestor of `canonical_main`.
-    pub reachable: bool,
+    pub commit_reachable: bool,
     /// The commit SHA that was checked.
     pub commit: String,
     /// The canonical main ref that was checked against.
     pub canonical_main: String,
-    /// Allowed close reasons when reachable; empty when not reachable.
-    pub allowed_close_reasons: Vec<String>,
     /// Whether the substance grep string still exists in `canonical_main`.
     /// `None` when `--substance-grep` was not provided.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_survives: Option<bool>,
+    /// Semantic issue completion is deliberately outside this proof's authority.
+    pub semantic_completion: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +125,7 @@ pub struct CloseProofOutput {
 // correctly without process::exit
 // ---------------------------------------------------------------------------
 
-/// Run the close-proof check.
+/// Run the landing-proof check.
 ///
 /// Exit behaviour (caller must honour the returned value):
 /// - `Ok(true)` — commit **is** ancestor; caller exits 0
@@ -125,18 +144,13 @@ pub fn run(config: CloseProofConfig) -> Result<bool> {
         None
     };
 
-    let allowed_close_reasons: Vec<String> = if reachable {
-        vec!["superseded".to_string(), "already-landed".to_string()]
-    } else {
-        Vec::new()
-    };
-
     let output = CloseProofOutput {
-        reachable,
+        schema_version: LANDING_PROOF_SCHEMA_V1.to_string(),
+        commit_reachable: reachable,
         commit: config.commit.clone(),
         canonical_main: config.canonical_main.clone(),
-        allowed_close_reasons,
         content_survives,
+        semantic_completion: SEMANTIC_COMPLETION_NOT_EVALUATED.to_string(),
     };
 
     match config.format {
@@ -184,10 +198,14 @@ fn check_ancestry(commit: &str, canonical_main: &str) -> Result<bool> {
 
 /// Returns `true` if `grep_str` appears in `canonical_main` (Rule 3 of CLOSE_PROOF_POLICY.md).
 ///
-/// Runs: `git grep -F <grep_str> <canonical_main>`
+/// Runs: `git grep -F <grep_str> <canonical_main> -- :/`
+///
+/// The `:/` pathspec anchors the search at the repository root: without it
+/// `git grep` silently limits the search to the caller's current directory,
+/// which would make `content_survives` depend on where the command was run.
 fn check_substance(grep_str: &str, canonical_main: &str) -> Result<bool> {
     let output = Command::new("git")
-        .args(["grep", "-F", grep_str, canonical_main])
+        .args(["grep", "-F", grep_str, canonical_main, "--", ":/"])
         .output()
         .with_context(|| format!("running `git grep -F {grep_str:?} {canonical_main}`"))?;
 
@@ -226,12 +244,9 @@ fn validate_sha_format(sha: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn print_human(output: &CloseProofOutput) {
-    if output.reachable {
-        println!("REACHABLE   {} is ancestor of {}", output.commit, output.canonical_main);
-        println!(
-            "            allowed_close_reasons: [{}]",
-            output.allowed_close_reasons.join(", ")
-        );
+    if output.commit_reachable {
+        println!("LANDING-PROVEN   {} is ancestor of {}", output.commit, output.canonical_main);
+        println!("            semantic_completion: not_evaluated");
         if let Some(survives) = output.content_survives {
             if survives {
                 println!(
@@ -252,8 +267,8 @@ fn print_human(output: &CloseProofOutput) {
             "NOT-REACHABLE   {} is NOT an ancestor of {}",
             output.commit, output.canonical_main
         );
-        println!("                allowed_close_reasons: []");
-        println!("                Do NOT close — commit has not landed on canonical main.");
+        println!("                semantic_completion: not_evaluated");
+        println!("                Landing proof failed — commit has not landed on canonical main.");
     }
 }
 
@@ -307,43 +322,77 @@ mod tests {
 
     // ----- Output structure -------------------------------------------------
 
-    #[test]
-    fn test_output_reachable_has_close_reasons() -> Result<()> {
-        let output = CloseProofOutput {
-            reachable: true,
-            commit: "abc1234".to_string(),
+    fn receipt(reachable: bool, content_survives: Option<bool>) -> CloseProofOutput {
+        CloseProofOutput {
+            schema_version: LANDING_PROOF_SCHEMA_V1.to_string(),
+            commit_reachable: reachable,
+            commit: "abc1234d".to_string(),
             canonical_main: "origin/main".to_string(),
-            allowed_close_reasons: vec!["superseded".to_string(), "already-landed".to_string()],
-            content_survives: None,
-        };
-        assert_eq!(output.allowed_close_reasons.len(), 2);
-        assert!(output.allowed_close_reasons.contains(&"superseded".to_string()));
-        assert!(output.allowed_close_reasons.contains(&"already-landed".to_string()));
+            content_survives,
+            semantic_completion: SEMANTIC_COMPLETION_NOT_EVALUATED.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_landing_proof_v1_schema_is_ratcheted() -> Result<()> {
+        let output = receipt(true, Some(true));
+        let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&output)?)?;
+
+        assert_eq!(json["schema_version"], "landing_proof.v1");
+        assert_eq!(json["semantic_completion"], "not_evaluated");
+        assert_eq!(json["commit_reachable"], true);
+        assert_eq!(json["content_survives"], true);
+
+        let mut keys: Vec<&str> =
+            json.as_object().map(|o| o.keys().map(String::as_str).collect()).unwrap_or_default();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "canonical_main",
+                "commit",
+                "commit_reachable",
+                "content_survives",
+                "schema_version",
+                "semantic_completion"
+            ]
+        );
         Ok(())
     }
 
     #[test]
-    fn test_output_not_reachable_empty_close_reasons() -> Result<()> {
-        let output = CloseProofOutput {
-            reachable: false,
-            commit: "deadbeef1".to_string(),
-            canonical_main: "origin/main".to_string(),
-            allowed_close_reasons: Vec::new(),
-            content_survives: None,
-        };
-        assert!(output.allowed_close_reasons.is_empty());
+    fn test_receipt_never_emits_close_authority_vocabulary() -> Result<()> {
+        // #10381: neither ancestry success nor content survival may reintroduce
+        // the old `allowed_close_reasons` / "safe to close" vocabulary.
+        for reachable in [true, false] {
+            for content in [None, Some(true), Some(false)] {
+                let json = serde_json::to_string(&receipt(reachable, content))?;
+                assert!(!json.contains("allowed_close_reasons"), "json: {json}");
+                assert!(!json.contains("safe to close"), "json: {json}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_semantic_completion_not_evaluated_for_every_result() -> Result<()> {
+        // The load-bearing negative assertion: every possible landing/content
+        // result leaves semantic completion unevaluated.
+        for reachable in [true, false] {
+            for content in [None, Some(true), Some(false)] {
+                let output = receipt(reachable, content);
+                assert_eq!(
+                    output.semantic_completion, SEMANTIC_COMPLETION_NOT_EVALUATED,
+                    "reachable={reachable} content_survives={content:?}"
+                );
+            }
+        }
         Ok(())
     }
 
     #[test]
     fn test_output_json_serialization_roundtrip() -> Result<()> {
-        let output = CloseProofOutput {
-            reachable: true,
-            commit: "abc1234d".to_string(),
-            canonical_main: "origin/main".to_string(),
-            allowed_close_reasons: vec!["superseded".to_string()],
-            content_survives: Some(true),
-        };
+        let output = receipt(true, Some(true));
         let json = serde_json::to_string(&output)?;
         let parsed: CloseProofOutput = serde_json::from_str(&json)?;
         assert_eq!(output, parsed);
@@ -352,15 +401,11 @@ mod tests {
 
     #[test]
     fn test_content_survives_omitted_when_none() -> Result<()> {
-        let output = CloseProofOutput {
-            reachable: true,
-            commit: "abc1234d".to_string(),
-            canonical_main: "origin/main".to_string(),
-            allowed_close_reasons: vec![],
-            content_survives: None,
-        };
+        let output = receipt(true, None);
         let json = serde_json::to_string(&output)?;
         assert!(!json.contains("content_survives"), "should be omitted when None");
+        assert!(json.contains("semantic_completion"));
+        assert!(json.contains("not_evaluated"));
         Ok(())
     }
 
@@ -406,6 +451,112 @@ mod tests {
             Ok(false) => {} // expected: not ancestor
             Err(_) => {}    // also fine: git rejected it
         }
+        Ok(())
+    }
+
+    // ----- Failure-state discrimination --------------------------------------
+    //
+    // #10381: the command must keep "not reachable", "content overwritten",
+    // "malformed input", and "git/instrument failure" distinct, and none of
+    // them may become semantic completion.
+
+    /// Resolve `refname` to a full SHA, returning `None` when git or the ref
+    /// is unavailable (tests degrade to skip in that case).
+    fn resolve_ref(refname: &str) -> Option<String> {
+        let output = Command::new("git")
+            .args(["rev-parse", "--verify", &format!("{refname}^{{commit}}")])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let sha = String::from_utf8(output.stdout).ok()?.trim().to_string();
+        if sha.is_empty() { None } else { Some(sha) }
+    }
+
+    /// First root commit reachable from HEAD, `None` when unavailable.
+    fn root_commit() -> Option<String> {
+        let output =
+            Command::new("git").args(["rev-list", "--max-parents=0", "HEAD"]).output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8(output.stdout).ok()?;
+        stdout.lines().next().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string)
+    }
+
+    #[test]
+    fn test_malformed_sha_is_input_failure_not_unreachable() -> Result<()> {
+        // Malformed input must be an error (exit-1 class), never Ok(false)
+        // and never Ok(true).
+        let result = check_ancestry("not-a-sha", "HEAD");
+        assert!(result.is_err(), "malformed SHA must be an instrument/input failure");
+        Ok(())
+    }
+
+    #[test]
+    fn test_unknown_ref_is_instrument_failure_not_unreachable() -> Result<()> {
+        let Some(sha) = resolve_ref("HEAD") else { return Ok(()) };
+        // A ref that cannot exist: git merge-base exits 128, which must
+        // surface as Err (instrument failure), not Ok(false).
+        let result = check_ancestry(&sha, "refs/definitely/missing-10381");
+        assert!(result.is_err(), "unknown canonical ref must be an instrument failure");
+        Ok(())
+    }
+
+    #[test]
+    fn test_head_is_not_ancestor_of_root_commit() -> Result<()> {
+        let (Some(head), Some(root)) = (resolve_ref("HEAD"), root_commit()) else {
+            return Ok(());
+        };
+        if head == root {
+            // Single-commit repo: property does not apply.
+            return Ok(());
+        }
+        let reachable = check_ancestry(&head, &root)?;
+        assert!(!reachable, "HEAD cannot be an ancestor of its own root commit");
+        Ok(())
+    }
+
+    #[test]
+    fn test_content_survival_true_and_false_are_distinct() -> Result<()> {
+        if resolve_ref("HEAD").is_none() {
+            return Ok(());
+        }
+        // "Close-Proof Policy" is the title of docs/agents/CLOSE_PROOF_POLICY.md,
+        // present on main long before this change. The absent needle is
+        // assembled at runtime so it never appears contiguously in the tree —
+        // a literal here would be found by the grep once this file is committed.
+        let absent_needle = format!("zzz-10381-{}-definitely-{}", "substance", "absent");
+        let present = check_substance("Close-Proof Policy", "HEAD")?;
+        let absent = check_substance(&absent_needle, "HEAD")?;
+        assert!(present, "known-present string must survive in HEAD");
+        assert!(!absent, "crafted-absent string must not survive in HEAD");
+        Ok(())
+    }
+
+    #[test]
+    fn test_run_reachable_receipt_is_landing_only() -> Result<()> {
+        let Some(head) = resolve_ref("HEAD") else { return Ok(()) };
+        let reachable = run(CloseProofConfig {
+            commit: head.clone(),
+            canonical_main: head,
+            substance_grep: None,
+            format: CloseProofFormat::Json,
+        })?;
+        assert!(reachable, "HEAD is an ancestor of itself");
+        Ok(())
+    }
+
+    #[test]
+    fn test_run_malformed_sha_fails_before_git() -> Result<()> {
+        let result = run(CloseProofConfig {
+            commit: "not-a-sha".to_string(),
+            canonical_main: "origin/main".to_string(),
+            substance_grep: None,
+            format: CloseProofFormat::Json,
+        });
+        assert!(result.is_err(), "malformed SHA must fail as input error");
         Ok(())
     }
 }

@@ -340,6 +340,7 @@ fn variables_args_full_round_trip() -> Result<(), Box<dyn std::error::Error>> {
         filter: Some("indexed".to_string()),
         start: Some(0),
         count: Some(50),
+        format: None,
     };
     let json = serde_json::to_string(&args)?;
     assert!(json.contains("variablesReference"), "camelCase: {json}");
@@ -372,6 +373,7 @@ fn evaluate_args_hover_context() -> Result<(), Box<dyn std::error::Error>> {
         frame_id: Some(0),
         context: Some("hover".to_string()),
         allow_side_effects: Some(false),
+        format: None,
     };
     let json = serde_json::to_string(&args)?;
     assert!(json.contains("allowSideEffects"), "camelCase: {json}");
@@ -745,6 +747,7 @@ fn set_variable_args_round_trip() -> Result<(), Box<dyn std::error::Error>> {
         variables_reference: 10,
         name: "$count".to_string(),
         value: "42".to_string(),
+        format: None,
     };
     let json = serde_json::to_string(&args)?;
     assert!(json.contains("variablesReference"), "camelCase: {json}");

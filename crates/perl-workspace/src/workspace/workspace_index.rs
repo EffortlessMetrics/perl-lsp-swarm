@@ -70,7 +70,7 @@ use parking_lot::{ArcMutexGuard, Mutex, RawMutex, RwLock};
 use perl_position_tracking::{WireLocation, WirePosition, WireRange};
 use perl_semantic_facts::{
     AnchorFact, AnchorId, Confidence, EdgeFact, EntityFact, EntityId, EntityKind, FileId,
-    PackageEdge, PackageEdgeKind, Provenance,
+    OccurrenceFact, OccurrenceId, OccurrenceKind, PackageEdge, PackageEdgeKind, Provenance,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
@@ -102,6 +102,10 @@ pub use crate::workspace::monitoring::{
     DegradationReason, EarlyExitReason, EarlyExitRecord, IndexInstrumentationSnapshot,
     IndexMetrics, IndexPerformanceCaps, IndexPhase, IndexPhaseTransition, IndexResourceLimits,
     IndexStateKind, IndexStateTransition, ResourceKind,
+};
+use crate::workspace_symbol_query::{
+    WorkspaceSymbolMatchTier, WorkspaceSymbolQueryProfile, WorkspaceSymbolSearchKeyRole,
+    legacy_index_match_rank, match_searchable_key,
 };
 pub use perl_symbol::MIN_LOOSE_MATCH_QUERY_CHARS;
 use perl_symbol::surface::decl::extract_symbol_decls;
@@ -3570,6 +3574,9 @@ impl WorkspaceIndex {
         reindex_metrics::record_eval_sub(eval_sub_start.elapsed());
         let dynamic_boundaries: Vec<perl_semantic_facts::OccurrenceFact> =
             eval_sub_triples.iter().map(|(_, _, occ)| occ.clone()).collect();
+        let (hir_boundary_anchors, hir_boundary_occurrences) = dynamic_isa_facts(uri, ast, file_id);
+        let mut dynamic_boundaries = dynamic_boundaries;
+        dynamic_boundaries.extend(hir_boundary_occurrences);
         #[cfg(test)]
         let generated_member_start = Instant::now();
         let generated_member_facts =
@@ -3600,6 +3607,7 @@ impl WorkspaceIndex {
         all_synthetic_entities.extend(synthetic_entities_from_generated);
         let mut all_synthetic_anchors = synthetic_anchors_from_eval;
         all_synthetic_anchors.extend(synthetic_anchors_from_generated);
+        all_synthetic_anchors.extend(hir_boundary_anchors);
 
         // Build the canonical fact shard.
         // Synthetic entities/anchors are now passed to the builder so that
@@ -3659,8 +3667,14 @@ impl WorkspaceIndex {
             crate::semantic::eval_sub_extractor::extract_eval_sub_boundaries(ast, file_id);
         #[cfg(test)]
         reindex_metrics::record_eval_sub(eval_sub_start.elapsed());
-        let dynamic_boundaries: Vec<perl_semantic_facts::OccurrenceFact> =
+        let (hir_boundary_anchors, hir_boundary_occurrences) = dynamic_isa_facts(uri, ast, file_id);
+        // The refs path's contract (see the doc comment above) keeps every
+        // non-reference extractor identical to `build_canonical_fact_shard_for_ast`;
+        // the isa boundary occurrences must reach the shard here exactly as
+        // they do there, or the paired anchors dangle without occurrences.
+        let mut dynamic_boundaries: Vec<perl_semantic_facts::OccurrenceFact> =
             eval_sub_triples.iter().map(|(_, _, occ)| occ.clone()).collect();
+        dynamic_boundaries.extend(hir_boundary_occurrences);
         #[cfg(test)]
         let generated_member_start = Instant::now();
         let generated_member_facts =
@@ -3683,6 +3697,7 @@ impl WorkspaceIndex {
         all_synthetic_entities.extend(synthetic_entities_from_generated);
         let mut all_synthetic_anchors = synthetic_anchors_from_eval;
         all_synthetic_anchors.extend(synthetic_anchors_from_generated);
+        all_synthetic_anchors.extend(hir_boundary_anchors);
 
         crate::semantic::facts::build_canonical_fact_shard(
             uri,
@@ -4135,54 +4150,45 @@ impl WorkspaceIndex {
     /// only by exact name or prefix; the substring and subsequence tiers are
     /// skipped for them. (#5335)
     pub fn search_source_symbols(&self, query: &str, cap: Option<usize>) -> Vec<WorkspaceSymbol> {
-        let query = query.trim();
-        let query_lower = query.to_lowercase();
-        // #5335: a one-character query is too weak for the loose match tiers --
-        // substring and subsequence would both admit every name containing that
-        // character, i.e. nearly the whole workspace. Restrict it to exact and
-        // prefix matches.
-        //
-        // Length is measured on the *lowercased* query, because lowercasing can
-        // lengthen a one-character input -- 'İ' (U+0130) lowercases to the two
-        // chars "i\u{307}" -- and it is the lowercased form matched below.
-        let loose_match_allowed = query_lower.chars().count() >= MIN_LOOSE_MATCH_QUERY_CHARS;
+        let profile = WorkspaceSymbolQueryProfile::compile(query);
+        self.search_source_symbols_with_profile(&profile, cap)
+    }
+
+    /// [`Self::search_source_symbols`] against a caller-compiled
+    /// [`WorkspaceSymbolQueryProfile`] (#10794).
+    ///
+    /// One logical request compiles its query once and passes the same
+    /// profile/digest through every matching path. Admission and tiers are
+    /// owned by [`match_searchable_key`]; this method owns only iteration,
+    /// `(uri, start_byte)` dedup, and the legacy rank/name aggregation order.
+    pub fn search_source_symbols_with_profile(
+        &self,
+        profile: &WorkspaceSymbolQueryProfile,
+        cap: Option<usize>,
+    ) -> Vec<WorkspaceSymbol> {
         let search_idx = self.search_index.read();
         let mut seen: HashSet<(String, usize)> = HashSet::new();
         // Collect results with a relevance score for ranking. (#5087)
         // Match priority: exact > substring/prefix > subsequence (fuzzy).
         //
-        // An empty query still lists everything: `loose_match_allowed` is false
-        // for it, and the short-query branch below tests `starts_with("")`, which
-        // is true for every key -- the same set, and the same score, that
-        // `contains("")` produced before. That is the desired "list everything"
-        // behavior for an empty `workspace/symbol` query.
+        // An empty query still lists everything: the browse disposition of the
+        // profile admits every key at the prefix slot -- the same set, and the
+        // same score, that `contains("")` produced before. That is the desired
+        // "list everything" behavior for an empty `workspace/symbol` query.
         let mut scored: Vec<(u8, WorkspaceSymbol)> = Vec::new();
         for (name_key, symbols) in search_idx.iter() {
-            // Compare case-insensitively at query time; index keys preserve
-            // source casing so distinct Perl packages stay separate buckets.
-            let name_key_lower = name_key.to_lowercase();
-            let score = if name_key_lower == query_lower {
-                3 // exact match
-            } else if !loose_match_allowed {
-                // Short query: prefix is the only non-exact tier available.
-                // Prefix matches are a strict subset of the substring matches
-                // this replaces, so no already-returned symbol changes score.
-                if !name_key_lower.starts_with(&query_lower) {
-                    continue;
-                }
-                2 // prefix match
-            } else if name_key_lower.contains(&query_lower) {
-                2 // substring match
-            } else if is_subsequence(&query_lower, &name_key_lower) {
-                // Reaching here implies `loose_match_allowed`, i.e. a query of at
-                // least MIN_LOOSE_MATCH_QUERY_CHARS chars, so no separate
-                // subsequence-length guard is needed. (The one `main` carried was
-                // unreachable anyway: for a one-char needle `is_subsequence` is
-                // equivalent to `contains`, which is tested first.)
-                1 // fuzzy subsequence match
+            // Admission/tier policy is owned by the compiled query profile;
+            // comparison stays case-insensitive here so distinct Perl packages
+            // remain separate index buckets that do not cross-match.
+            let key_role = if name_key.contains("::") || name_key.contains('\'') {
+                WorkspaceSymbolSearchKeyRole::QualifiedName
             } else {
+                WorkspaceSymbolSearchKeyRole::BareName
+            };
+            let Some(evidence) = match_searchable_key(profile, name_key, key_role) else {
                 continue;
             };
+            let score = legacy_index_match_rank(evidence.tier());
             for sym in symbols {
                 let dedup_key = (sym.uri.clone(), sym.range.start.byte);
                 if seen.insert(dedup_key) {
@@ -4210,25 +4216,32 @@ impl WorkspaceIndex {
         query: &str,
         cap: Option<usize>,
     ) -> Vec<WorkspaceSymbol> {
-        let query = query.trim();
-        if query.is_empty() {
+        let profile = WorkspaceSymbolQueryProfile::compile(query);
+        self.search_generated_workspace_symbols_with_profile(&profile, cap)
+    }
+
+    /// [`Self::search_generated_workspace_symbols`] against a caller-compiled
+    /// [`WorkspaceSymbolQueryProfile`] (#10794).
+    ///
+    /// Admission stays with the compiled profile; this path keeps its current
+    /// membership exactly — browse queries return an empty set, and the
+    /// generated matcher never admits the subsequence tier, so only
+    /// exact/prefix/substring evidence is accepted.
+    pub fn search_generated_workspace_symbols_with_profile(
+        &self,
+        profile: &WorkspaceSymbolQueryProfile,
+        cap: Option<usize>,
+    ) -> Vec<WorkspaceSymbol> {
+        if profile.is_browse() {
             return Vec::new();
         }
 
-        let query_lower = query.to_lowercase();
         // #5335: mirror the short-query narrowing that `search_source_symbols`
         // applies. These results are appended to the *same* `workspace/symbol`
         // response, so leaving this matcher ungated would keep reproducing the
-        // one-character blowup for every framework-generated member.
-        let loose_match_allowed = query_lower.chars().count() >= MIN_LOOSE_MATCH_QUERY_CHARS;
-        let matches_query_text = |candidate: &str| -> bool {
-            let candidate_lower = candidate.to_lowercase();
-            if loose_match_allowed {
-                candidate_lower.contains(&query_lower)
-            } else {
-                candidate_lower.starts_with(&query_lower)
-            }
-        };
+        // one-character blowup for every framework-generated member. The loose
+        // gate lives inside the profile; rejecting subsequence-tier evidence
+        // preserves this path's contains/starts_with-only membership.
         let source_backed_qualified_names = self.source_backed_qualified_names();
         let shards = self.fact_shards.read();
         let mut results = Vec::new();
@@ -4249,7 +4262,17 @@ impl WorkspaceIndex {
                 else {
                     continue;
                 };
-                if !matches_query_text(bare_name) && !matches_query_text(&entity.canonical_name) {
+                let admits = |candidate: &str| -> bool {
+                    match_searchable_key(
+                        profile,
+                        candidate,
+                        WorkspaceSymbolSearchKeyRole::GeneratedFrameworkProjection,
+                    )
+                    .is_some_and(|evidence| {
+                        evidence.tier() != WorkspaceSymbolMatchTier::Subsequence
+                    })
+                };
+                if !admits(bare_name) && !admits(&entity.canonical_name) {
                     continue;
                 }
                 let Some(anchor_id) = entity.anchor_id else {
@@ -5242,6 +5265,49 @@ fn package_edges_from_stash_graph(
             ))
         })
         .collect()
+}
+
+fn dynamic_isa_facts(
+    uri: &str,
+    ast: &Node,
+    file_id: FileId,
+) -> (Vec<AnchorFact>, Vec<OccurrenceFact>) {
+    let hir = perl_parser_core::hir::lower_ast(ast);
+    let mut anchors = Vec::new();
+    let mut occurrences = Vec::new();
+    for boundary in hir.stash_graph.dynamic_boundaries.iter().filter(|boundary| {
+        boundary.kind == perl_parser_core::hir::StashDynamicBoundaryKind::DynamicInheritance
+    }) {
+        let mut anchor_hasher = DefaultHasher::new();
+        uri.hash(&mut anchor_hasher);
+        boundary.range.start.hash(&mut anchor_hasher);
+        boundary.range.end.hash(&mut anchor_hasher);
+        boundary.kind.hash(&mut anchor_hasher);
+        let anchor_id = AnchorId(anchor_hasher.finish());
+        let mut occurrence_hasher = DefaultHasher::new();
+        anchor_id.hash(&mut occurrence_hasher);
+        1u8.hash(&mut occurrence_hasher);
+        let occurrence_id = OccurrenceId(occurrence_hasher.finish());
+        anchors.push(AnchorFact {
+            id: anchor_id,
+            file_id,
+            span_start_byte: boundary.range.start.min(u32::MAX as usize) as u32,
+            span_end_byte: boundary.range.end.min(u32::MAX as usize) as u32,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        });
+        occurrences.push(OccurrenceFact {
+            id: occurrence_id,
+            kind: OccurrenceKind::DynamicBoundary,
+            entity_id: None,
+            anchor_id,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        });
+    }
+    (anchors, occurrences)
 }
 
 /// AST visitor for extracting symbols and references
@@ -13895,6 +13961,19 @@ mod extraction_bundle_shadow_compare {
     // ── Targeted edge cases ──────────────────────────────────────────────
 
     #[test]
+    fn parity_dynamic_isa_boundary() {
+        // An interpolated `push @ISA` creates a DynamicInheritance boundary
+        // whose occurrence facts must reach the canonical shard identically
+        // through both extraction paths -- the refs path dropped them while
+        // keeping the paired anchors (dangling-anchor asymmetry).
+        let text = "package Child;\npush @ISA, \"Base::$suffix\";\nsub m { 1; }\n";
+        let uri = "file:///edge/dynamic_isa.pl";
+        assert_parity("dynamic_isa", uri, text);
+        assert_unified_canonical_parity("dynamic_isa", uri, text);
+        assert_unified_legacy_is_superset("dynamic_isa", uri, text);
+    }
+
+    #[test]
     fn parity_comment_only() {
         let text = "package Foo;\nsub bar { return 1; }\n# just a comment, nothing else\n";
         let uri = "file:///edge/comment_only.pl";
@@ -14467,26 +14546,4 @@ sub bar { return $greeting; }
             Ok(IndexFileWithGenerationOutcome::RejectedStale)
         );
     }
-}
-
-/// Check if `needle` is a subsequence of `haystack` (fuzzy match).
-/// E.g. "gpn" is a subsequence of "get_page_name". (#5087)
-///
-/// Note: for a single-`char` needle this is equivalent to
-/// `haystack.contains(needle)`, so callers that test `contains` first will
-/// never reach this function for a one-character query. Restricting fuzzy
-/// matching by needle length therefore has no effect on its own -- see
-/// [`MIN_LOOSE_MATCH_QUERY_CHARS`] for how short queries are actually
-/// narrowed. (#5335)
-fn is_subsequence(needle: &str, haystack: &str) -> bool {
-    let mut needle_chars = needle.chars();
-    let mut current = needle_chars.next();
-    for ch in haystack.chars() {
-        match current {
-            Some(target) if ch == target => current = needle_chars.next(),
-            None => return true,
-            _ => {}
-        }
-    }
-    current.is_none()
 }

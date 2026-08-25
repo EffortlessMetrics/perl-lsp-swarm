@@ -2,17 +2,22 @@
 //! native CriticService cutover.
 //!
 //! Both native-critic diagnostic transports must route their evaluation
-//! through [`perl_lsp_rs_core::tooling::perl_critic::NativeCriticService`],
-//! which takes candidates from `native_finding_candidates_with_accounting`,
-//! logging and counting every finding rejected for a missing producer
-//! disposition (#7475). If a transport reverts to composing its own
-//! registry/context/candidate/policy pipeline (#9062), two paths can again
-//! snapshot configuration at different times or flatten metadata differently
-//! — this gate turns that regression red instead.
+//! through [`perl_lsp_rs_core::tooling::perl_critic::NativeCriticService`]
+//! (#9062), which composes the settled candidate/policy seams and logs and
+//! counts every finding rejected for a missing producer disposition (#7475).
+//! If a transport reverts to composing its own registry/context/candidate/
+//! policy pipeline, two paths can again snapshot configuration at different
+//! times or flatten metadata differently — this gate turns that regression
+//! red instead.
 //!
-//! The `perl.runCritic` command adapter (`execute_command/provider.rs`) is a
-//! pre-migration consumer whose own cutover is #6969; it is deliberately not
-//! asserted here.
+//! #11919 extends the accounting + post-merge-policy gate to the production
+//! sites that still collect raw native candidates directly (the quickfix
+//! command surface, pending #6969): each must feed its candidates through
+//! the accounting entrypoint AND apply the shared post-merge policy
+//! (`normalize_with_native_policy`) so alias-aware exclusion/suppression can
+//! never leave a second spelling active on a consumer surface. When such a
+//! site cuts over to the service, its obligations move with it into the
+//! service-ownership gates below.
 
 #![expect(
     clippy::panic,
@@ -38,6 +43,24 @@ const SERVICE_ONLY_COMPOSITION: [&str; 6] = [
     "built_in_observation_candidates(",
 ];
 
+const ACCOUNTING_ENTRYPOINT: &str = "native_finding_candidates_with_accounting(";
+const UNACCOUNTED_ENTRYPOINT: &str = "native_finding_candidates(";
+const POST_MERGE_POLICY_ENTRYPOINT: &str = "normalize_with_native_policy(";
+
+/// Production sites still collecting raw native candidates directly (#11919):
+/// each must use the accounting entrypoint and the shared post-merge policy
+/// until its #9062/#6969 cutover moves it behind the service gates.
+const DIRECT_NATIVE_CONSUMER_SOURCES: [&str; 1] = ["execute_command/provider.rs"];
+
+/// Every production site that turns native critic findings into user-visible
+/// rows. None may use the unaccounted candidate collection entrypoint.
+const NATIVE_CONSUMER_SOURCES: [&str; 4] = [
+    "runtime/diagnostics.rs",
+    "features/diagnostics/pull.rs",
+    "runtime/language/code_actions.rs",
+    "execute_command/provider.rs",
+];
+
 fn production_source(rel_path: &str) -> String {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let path = manifest_dir.join("src").join(rel_path);
@@ -54,6 +77,67 @@ fn core_service_source() -> String {
     })
 }
 
+/// Read one production source file of the `perl-lsp-rs-core` workspace crate.
+fn core_source(rel_path: &str) -> String {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let path = manifest_dir.join("..").join("perl-lsp-rs-core").join("src").join(rel_path);
+    fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!("production source {} must be readable: {error}", path.display())
+    })
+}
+
+/// The reviewed built-in overlap cohort (#11915/#11918): exactly these seven
+/// checked identity constructors may exist. An eighth constructor must turn
+/// this gate red until it is consciously admitted here.
+const BUILT_IN_IDENTITY_CONSTRUCTORS: [&str; 7] = [
+    "built_in_literal_undef_comparison",
+    "built_in_potentially_undef_comparison",
+    "built_in_backtick_exec",
+    "built_in_qx_exec",
+    "built_in_readpipe_exec",
+    "built_in_system_call",
+    "built_in_exec_call",
+];
+
+#[test]
+fn built_in_identity_constructors_admit_exactly_the_reviewed_overlap_cohort() {
+    let source = core_source("tooling/perl_critic/identity.rs");
+    let mut declared_constructors: Vec<String> = source
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            // Any function visibility/form declaring a built_in_ constructor
+            // counts, so a `pub(crate) fn` or non-const variant cannot sneak
+            // an eighth cohort member past the pin.
+            if !trimmed.starts_with("pub") || !trimmed.contains("fn ") {
+                return None;
+            }
+            let name = trimmed
+                .split(['(', '<', ':', ' '])
+                .find_map(|token| token.strip_prefix("built_in_"))?;
+            Some(name.to_string())
+        })
+        .collect();
+    declared_constructors.sort();
+
+    let mut expected: Vec<String> = BUILT_IN_IDENTITY_CONSTRUCTORS
+        .iter()
+        .map(|name| name.trim_start_matches("built_in_").to_string())
+        .collect();
+    expected.sort();
+
+    assert_eq!(
+        declared_constructors.len(),
+        expected.len(),
+        "the reviewed overlap cohort admits exactly {} checked built-in identity constructors; found {declared_constructors:?}",
+        expected.len()
+    );
+    assert_eq!(
+        declared_constructors, expected,
+        "a new built-in identity constructor must be consciously admitted into the reviewed overlap cohort list"
+    );
+}
+
 #[test]
 fn both_transports_route_native_evaluation_through_the_service() {
     for rel_path in MIGRATED_TRANSPORTS {
@@ -61,6 +145,33 @@ fn both_transports_route_native_evaluation_through_the_service() {
         assert!(
             source.contains(SERVICE_ENTRYPOINT),
             "{rel_path} must route native critic evaluation through NativeCriticService (#9062)"
+        );
+    }
+}
+
+#[test]
+fn direct_native_consumers_account_for_rejected_producer_identities() {
+    // #7475/#11919: sites still collecting raw candidates directly must use
+    // the accounting entrypoint. Service-routed surfaces carry the identical
+    // guarantee inside the shared service via
+    // `rejected_producer_identities_stay_accounted_inside_the_service`.
+    for rel_path in DIRECT_NATIVE_CONSUMER_SOURCES {
+        let source = production_source(rel_path);
+        assert!(
+            source.contains(ACCOUNTING_ENTRYPOINT),
+            "{rel_path} must route native candidates through the accounting entrypoint \
+             (#7475, #11919)"
+        );
+    }
+}
+
+#[test]
+fn no_production_site_uses_the_unaccounted_candidate_entrypoint() {
+    for rel_path in NATIVE_CONSUMER_SOURCES {
+        let source = production_source(rel_path);
+        assert!(
+            !source.contains(UNACCOUNTED_ENTRYPOINT),
+            "{rel_path} must not collect native candidates outside an accounted seam (#7475)"
         );
     }
 }
@@ -76,6 +187,25 @@ fn the_service_owns_candidate_collection_and_policy_composition() {
         assert!(
             service.contains(composition),
             "the service must compose through the settled {composition} seam"
+        );
+    }
+}
+
+#[test]
+fn every_direct_native_consumer_applies_the_post_merge_normalized_policy() {
+    // #11919: a consumer that filters raw findings by rule ID before (or
+    // instead of) the post-merge policy can leave a second registered spelling
+    // active after an alias-aware exclusion or suppression — exactly the
+    // bullet-7 defect. Every site still collecting raw candidates must apply
+    // `normalize_with_native_policy` itself; service-routed consumers inherit
+    // the identical guarantee from
+    // `the_service_owns_candidate_collection_and_policy_composition`.
+    for rel_path in DIRECT_NATIVE_CONSUMER_SOURCES {
+        let source = production_source(rel_path);
+        assert!(
+            source.contains(POST_MERGE_POLICY_ENTRYPOINT),
+            "{rel_path} must apply the shared post-merge policy so alias exclusion/suppression \
+             cannot leave a second spelling active (#7475 bullet 7, #11919)"
         );
     }
 }

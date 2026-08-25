@@ -1,0 +1,81 @@
+name: Emacs Train Context Contract
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - '.spec/10918-emacs-train-graph/**'
+      - '.spec/11770-emacs-train-revisions/**'
+      - '.spec/11756-emacs-context-engine/**'
+      - '.spec/11716-emacs-support-architecture/**'
+      - '.spec/11717-emacs-train-specs/**'
+      - 'xtask/src/tasks/emacs_train_context/**'
+      - 'xtask/src/tasks/emacs_train_specs.rs'
+      - 'xtask/src/tasks/agent_implementation_packet.rs'
+      - 'xtask/src/tasks/agent_review_packet.rs'
+      - 'fixtures/agent_implementation_packet/**'
+      - 'fixtures/agent_review_packet/**'
+      - 'schemas/agent_implementation_packet.v1.schema.json'
+      - 'schemas/agent_review_packet.v1.schema.json'
+      - 'schemas/agent_review_finding.v1.schema.json'
+      - 'schemas/stage_closure_projection.v1.schema.json'
+      - 'xtask/src/editor_client_compat.rs'
+      - 'xtask/src/actual_host_receipt.rs'
+      - 'xtask/tests/support/emacs_host_runner.rs'
+      - 'xtask/tests/editor_client_compat_contract.rs'
+      - 'xtask/tests/actual_host_receipt.rs'
+      - 'xtask/tests/emacs_host_runner_contract.rs'
+      - 'scripts/test/emacs-host-driver.el'
+      - '.ci/schemas/editor-client-compat.v1.schema.json'
+      - 'AGENTS.md'
+      - '.github/workflows/emacs-train-context-contract.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: emacs-train-context-contract-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate emacs_node_context.v1 exact-tree bindings
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: 1.95.0
+
+      - name: Falsifier suite
+        run: cargo test -p xtask --bin xtask emacs_train_context --locked
+
+      # Simplify-review repairs: the specs-ledger plane had no automated
+      # check run, and the two packet validators were reachable only via
+      # manual CLI. These run the same real-tree tests plus the shipped
+      # ledger's full L01-L14 law table.
+      - name: Specs ledger and packet validator tests
+        run: |
+          cargo test -p xtask --bin xtask emacs_train_specs --locked
+          cargo test -p xtask --bin xtask agent_implementation_packet --locked
+          cargo test -p xtask --bin xtask agent_review_packet --locked
+
+      - name: Validate the specs ledger (fail-closed)
+        run: cargo run -p xtask --locked -- integration emacs train specs check --format json
+
+      - name: Validate the context denominator (fail-closed)
+        run: cargo run -p xtask --locked -- integration emacs train contexts --check
+
+      - name: Determinism proof on the real tree (two renders must match)
+        run: |
+          cargo run -p xtask --locked -- integration emacs train context CTXENG --format json > /tmp/ctx-a.json
+          cargo run -p xtask --locked -- integration emacs train context CTXENG --format json > /tmp/ctx-b.json
+          diff /tmp/ctx-a.json /tmp/ctx-b.json
+
+      - name: Substrate node context resolves
+        run: cargo run -p xtask --locked -- integration emacs train context H7778 --format markdown
