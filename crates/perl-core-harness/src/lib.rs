@@ -3094,18 +3094,22 @@ pub fn baseline(config: BaselineConfig) -> Result<()> {
         .clone()
         .unwrap_or_else(|| default_baseline_path(config.mode, config.profile));
     let report = read_run_report(&report_path)?;
-    // An absent or nonzero legacy runner terminal status never proves process
-    // completion for parse/compile evidence, however green the file and
-    // assertion counts look (#6884 interim false-green block). Refuse to check
-    // or accept a baseline from it. Execute mode is excluded: its ratcheted
-    // selected-base receipt deliberately records the upstream scheduler's
-    // nonzero exit alongside green runner records (#3451), and replacing that
-    // modeling belongs to the typed terminal taxonomy on #6884.
-    if config.mode != HarnessMode::Execute && report.harness_status != Some(0) {
+    // Terminal admission precedes any count semantics (#6884): only a clean
+    // exit or a recognized runner/mode completion state proves process
+    // completion, however green the file and assertion counts look. The
+    // execute-mode recognition keeps the #3451 selected-base receipt flow
+    // working instead of permanently misclassifying it as instrument failure.
+    let terminal = transition::TerminalProcessOutcome::from_harness_status(
+        report.harness_status,
+        report.runner,
+        report.mode,
+    );
+    if !terminal.is_scoreable() {
         bail!(
-            "perl-core-harness baseline refuses {} with runner terminal status {:?}: process completion is not proven",
+            "perl-core-harness baseline refuses {} with runner terminal status {:?}: process completion is not proven ({})",
             report_path.display(),
-            report.harness_status
+            report.harness_status,
+            terminal.not_proven_reason()
         );
     }
     reject_v2_options_without_series(&config)?;
