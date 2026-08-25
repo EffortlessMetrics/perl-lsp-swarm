@@ -4396,6 +4396,24 @@ mod deep_tree_destruction_tests {
     }
 
     #[test]
+    fn into_parts_payload_releases_every_node() {
+        let _ = drop_audit::take_counts();
+        let deep = chain_of(DEEP_CYCLE_DEPTH, wrap_boxed);
+        let (kind, _) = deep.into_parts();
+        drop(kind);
+        let (constructed, destroyed) = drop_audit::take_counts();
+        assert_eq!(
+            constructed, destroyed,
+            "into_parts payload drop constructed {constructed} nodes but destroyed {destroyed}"
+        );
+        assert!(
+            destroyed >= (DEEP_CYCLE_DEPTH + 1) as u64,
+            "into_parts payload drop destroyed only {destroyed} of at least {} nodes",
+            DEEP_CYCLE_DEPTH + 1
+        );
+    }
+
+    #[test]
     fn deep_chains_through_every_child_family_destroy_on_small_stack() -> Result<(), String> {
         for (name, wrap) in all_family_wrappers() {
             run_on_small_stack(move || {
