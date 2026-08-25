@@ -544,28 +544,21 @@ pub fn host_run(repo_root: &Path, run: &VimHostRunInputs) -> Result<HostRunOutco
                 .to_string(),
         );
     }
-    // Observed on Git-for-Windows vim: killing the vim-lsp job while a
-    // noblock channel write is pending can lose the editor's exit-callback
-    // delivery, so `User lsp_server_exit` never fires even though the OS
-    // process is gone. The driver fails that barrier honestly; when the
-    // process-set comparison confirms no survivor, the receipt names the race
-    // as the typed platform boundary it is instead of implying a leak.
-    let stop_evidence_lost = observation.events.iter().any(|event| {
-        event.kind == DriverEventKind::DriverFailed
-            && event
-                .details
-                .get("reason")
-                .is_some_and(|reason| reason.starts_with("server did not exit through the vim-lsp"))
+    // The pinned vim-lsp loses the job-exit callback when its stop kill races
+    // an in-flight channel write (observed deterministically on CI linux and
+    // on Git-vim windows; the OS process dies). When the driver names
+    // `client_event_lost`, the receipt records the finding explicitly: it is
+    // missing client-side evidence, not a surviving process — the
+    // deterministic process-set comparison remains the cleanup authority.
+    let client_exit_lost = observation.events.iter().any(|event| {
+        event.kind == DriverEventKind::ShutdownCompleted
+            && event.details.get("exit_evidence").is_some_and(|value| value == "client_event_lost")
     });
-    let shutdown_barrier_reached =
-        observation.events.iter().any(|event| event.kind == DriverEventKind::ShutdownCompleted);
-    if stop_evidence_lost && shutdown_barrier_reached && observation.cleanup != CleanupResult::Fail
-    {
+    if client_exit_lost && observation.cleanup != CleanupResult::Fail {
         limitations.push(
-            "the client's server-exit evidence was not observed within budget; on platforms where \
-             the editor loses the job-exit callback in the kill/write race this names missing \
-             client-side evidence, not a surviving process (the deterministic process-set \
-             comparison remains the cleanup authority)"
+            "the client's server-exit event was lost in the pinned vim-lsp stop/kill race \
+             (recorded and transferred to the subject authority per the #10944 stop condition); \
+             process cleanup is proven by the deterministic process-set comparison instead"
                 .to_string(),
         );
     }
@@ -582,7 +575,7 @@ pub fn host_run(repo_root: &Path, run: &VimHostRunInputs) -> Result<HostRunOutco
         &observation,
         capabilities,
         diagnostics,
-        outcome_journey(&observation),
+        outcome_journey(&observation, &wire),
         judgment.result,
         judgment.failure_class,
         limitations,
@@ -689,7 +682,10 @@ pub fn evaluate_observation(
     Ok(OutcomeJudgment { result, failure_class, registration_digest_match })
 }
 
-fn outcome_journey(observation: &ProcessObservation) -> Vec<JourneyCell> {
+pub fn outcome_journey(
+    observation: &ProcessObservation,
+    wire: &vim_host_runner::WireEvidence,
+) -> Vec<JourneyCell> {
     let mut cells = Vec::new();
     for (id, kind) in [
         ("host_started", DriverEventKind::HostStarted),
@@ -700,17 +696,49 @@ fn outcome_journey(observation: &ProcessObservation) -> Vec<JourneyCell> {
         ("buffer_enabled", DriverEventKind::BufferEnabled),
         ("initialize_observed", DriverEventKind::InitializeObserved),
         ("root_selected", DriverEventKind::RootSelected),
+        ("diagnostics_observed", DriverEventKind::DiagnosticsObserved),
         ("shutdown_started", DriverEventKind::ShutdownStarted),
         ("shutdown_completed", DriverEventKind::ShutdownCompleted),
     ] {
-        let observed = observation.events.iter().any(|event| event.kind == kind);
+        let event = observation.events.iter().find(|event| event.kind == kind);
+        let observed = event.is_some();
+        // The pinned vim-lsp loses the job-exit callback when the stop kill
+        // races an in-flight channel write: `shutdown_completed` then arrives
+        // with `server_exited: 0` deferring the exit evidence to the editor's
+        // own teardown. That cell passes only on teardown evidence — the
+        // client's `s:on_exit` trace in the post-run log plus an orderly
+        // supervisor-observed process boundary — and carries the recorded
+        // finding; without teardown evidence it stays not-proven.
+        let teardown_deferred = kind == DriverEventKind::ShutdownCompleted
+            && event
+                .and_then(|event| event.details.get("exit_evidence"))
+                .is_some_and(|value| value == "deferred_to_editor_teardown");
+        let teardown_proven =
+            teardown_deferred && wire.saw_client_exit_log && observation.passed_process_boundary();
+        let result = if (observed && !teardown_deferred) || teardown_proven {
+            ObservationResult::Pass
+        } else {
+            ObservationResult::NotProven
+        };
         cells.push(JourneyCell {
             id: id.to_string(),
             capability_basis: CapabilityBasis::NotApplicable,
             observed,
-            result: if observed { ObservationResult::Pass } else { ObservationResult::NotProven },
+            result,
             evidence: vec!["vim/driver-events.jsonl".to_string()],
-            limitation: if observed {
+            limitation: if teardown_deferred {
+                Some(
+                    if teardown_proven {
+                        "the client's live exit event was lost in the pinned vim-lsp stop/kill \
+                         race (recorded finding); exit evidence comes from the client's own \
+                         teardown trace and the supervisor's deterministic process-set comparison"
+                    } else {
+                        "the client's server-exit event was lost in the pinned vim-lsp stop/kill \
+                         race and the teardown trace did not confirm it either"
+                    }
+                    .to_string(),
+                )
+            } else if observed {
                 None
             } else {
                 Some("lifecycle barrier never emitted".to_string())

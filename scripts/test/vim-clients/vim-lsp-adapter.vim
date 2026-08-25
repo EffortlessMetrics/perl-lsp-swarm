@@ -30,6 +30,9 @@
 "   VimLspHostRegister()            register the canonical perllsp server
 "   VimLspHostEnable()              enable the client
 "   VimLspHostWaitFor(expr, ms)     bounded barrier
+"   VimLspHostWaitForWireMarker(m, ms)
+"                                   bounded barrier over the client log's
+"                                   wire evidence (public logging surface)
 "   VimLspHostServerRunning()       whether the server process runs
 "   VimLspHostServerStatus()        lsp#get_server_status for the server
 "   VimLspHostRootUri()             effective root URI for the server
@@ -74,12 +77,14 @@ endif
 let g:perllsp_vim_host_server_init = 0
 let g:perllsp_vim_host_buffer_enabled = 0
 let g:perllsp_vim_host_server_exit = 0
+let g:perllsp_vim_host_diagnostics_updated = 0
 
 augroup perllsp_vim_host
   autocmd!
   autocmd User lsp_server_init let g:perllsp_vim_host_server_init += 1
   autocmd User lsp_buffer_enabled let g:perllsp_vim_host_buffer_enabled += 1
   autocmd User lsp_server_exit let g:perllsp_vim_host_server_exit += 1
+  autocmd User lsp_diagnostics_updated let g:perllsp_vim_host_diagnostics_updated += 1
 augroup END
 
 function! VimLspHostLoadClient() abort
@@ -178,6 +183,26 @@ function! VimLspHostWaitFor(expr, timeout_ms) abort
     endif
   endwhile
   return 1
+endfunction
+
+" Bounded barrier over the client's own protocol log (`g:lsp_log_file`, the
+" public logging surface this adapter configured): waits until the log
+" carries the exact wire marker (for example `textDocument/publishDiagnostics`
+" as a sent or received method). This observes the protocol itself — the
+" editor's state-update events alone do not prove a wire message.
+function! VimLspHostWaitForWireMarker(marker, timeout_ms) abort
+  let s:wire_needle = '"method":"' . a:marker . '"'
+  return VimLspHostWaitFor(
+        \ 'filereadable(s:client_log) && s:WireMarkerPresent()',
+        \ a:timeout_ms)
+endfunction
+
+function! s:WireMarkerPresent() abort
+  try
+    return stridx(join(readfile(s:client_log, 'b'), "\n"), s:wire_needle) >= 0
+  catch
+    return 0
+  endtry
 endfunction
 
 function! VimLspHostServerRunning() abort

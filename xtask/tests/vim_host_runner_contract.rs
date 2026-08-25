@@ -15,7 +15,7 @@
 // cannot diverge into two compiled copies with incompatible types.
 use xtask::vim_host_run::vim_host_runner;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -35,8 +35,8 @@ use xtask::editor_client_compat::{
 };
 use xtask::vim_host_run::{
     bind_candidate_build_revision, evaluate_observation, load_activation_root_manifest,
-    load_configuration_manifest, materialize_harness_fixture, validate_identity_packet,
-    verify_vim_features,
+    load_configuration_manifest, materialize_harness_fixture, outcome_journey,
+    validate_identity_packet, verify_vim_features,
 };
 
 fn repo_root() -> PathBuf {
@@ -100,8 +100,9 @@ fn complete_events() -> Vec<DriverEvent> {
             DriverEventKind::RootSelected,
             &[("root_source", "activation_root_marker")],
         ),
-        event(9, DriverEventKind::ShutdownStarted),
-        event(10, DriverEventKind::ShutdownCompleted),
+        detail_event(9, DriverEventKind::DiagnosticsObserved, &[("mode", "push")]),
+        event(10, DriverEventKind::ShutdownStarted),
+        event(11, DriverEventKind::ShutdownCompleted),
     ]
 }
 
@@ -180,11 +181,11 @@ fn pre_forced_filetype_cannot_manufacture_activation() -> Result<()> {
 #[test]
 fn driver_failure_is_typed_and_terminal() -> Result<()> {
     let mut events = complete_events();
-    events.push(detail_event(11, DriverEventKind::DriverFailed, &[("reason", "attach_timeout")]));
+    events.push(detail_event(12, DriverEventKind::DriverFailed, &[("reason", "attach_timeout")]));
     ensure_not_valid(&events, "a complete run cannot also carry driver_failed")?;
     let mut events = complete_events();
     events.truncate(6);
-    events.push(detail_event(7, DriverEventKind::DriverFailed, &[("reason", "budget_exhausted")]));
+    events.push(detail_event(8, DriverEventKind::DriverFailed, &[("reason", "budget_exhausted")]));
     ensure_not_valid(&events, "driver_failed before the ordered lifecycle completed is invalid")?;
     Ok(())
 }
@@ -643,6 +644,67 @@ fn candidate_build_revision_binds_the_executable_to_the_repository() -> Result<(
 }
 
 #[test]
+fn teardown_deferred_shutdown_passes_only_on_teardown_evidence() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let plan = scratch_plan(dir.path(), 60_000)?;
+    let digest = plan.identity.candidate_artifact_sha256.clone();
+    let deferred_events = {
+        let mut events = complete_events_with_digest(&digest);
+        events[10] = detail_event(
+            11,
+            DriverEventKind::ShutdownCompleted,
+            &[("server_exited", "0"), ("exit_evidence", "deferred_to_editor_teardown")],
+        );
+        events
+    };
+    // The pinned vim-lsp loses the job-exit callback in the stop/kill race;
+    // the driver defers to the editor teardown. With the client's own
+    // teardown trace (`s:on_exit`) in the post-run log plus an orderly
+    // supervisor-observed process boundary, the cell passes with the finding
+    // recorded in its limitation.
+    let observation =
+        observation_with(Some(0), false, CleanupResult::Pass, deferred_events.clone());
+    let wire = WireEvidence {
+        saw_initialize: true,
+        saw_initialized: true,
+        saw_client_exit_log: true,
+        client_capabilities: Some(serde_json::json!({})),
+        ..WireEvidence::default()
+    };
+    let judgment = evaluate_observation(&plan, &observation, &wire)?;
+    ensure!(judgment.result == ObservationResult::Pass, "the substrate judgment stays a pass");
+    let journey = outcome_journey(&observation, &wire);
+    let Some(shutdown_cell) = journey.iter().find(|cell| cell.id == "shutdown_completed") else {
+        bail!("the shutdown_completed cell is missing from the journey");
+    };
+    ensure!(
+        shutdown_cell.result == ObservationResult::Pass,
+        "teardown trace plus orderly boundary prove the cell"
+    );
+    ensure!(
+        shutdown_cell.limitation.as_deref().is_some_and(|text| text.contains("stop/kill race")),
+        "the passing cell limitation must still name the recorded finding"
+    );
+    // Without the teardown trace the same run stays not-proven: the finding
+    // alone never substitutes for evidence.
+    let no_trace = WireEvidence {
+        saw_initialize: true,
+        saw_initialized: true,
+        client_capabilities: Some(serde_json::json!({})),
+        ..WireEvidence::default()
+    };
+    let journey = outcome_journey(&observation, &no_trace);
+    let Some(shutdown_cell) = journey.iter().find(|cell| cell.id == "shutdown_completed") else {
+        bail!("the shutdown_completed cell is missing from the journey");
+    };
+    ensure!(
+        shutdown_cell.result == ObservationResult::NotProven,
+        "without the teardown trace the cell must stay not-proven"
+    );
+    Ok(())
+}
+
+#[test]
 fn observed_cleanup_leak_with_orderly_exit_is_a_failure() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let plan = scratch_plan(dir.path(), 60_000)?;
@@ -708,6 +770,39 @@ fn wire_evidence_mines_initialize_lifecycle_and_diagnostics() -> Result<()> {
 
     let empty = extract_wire_evidence(b"no json here\n");
     ensure!(!empty.saw_initialize, "an empty log proves nothing");
+    Ok(())
+}
+
+#[test]
+fn wire_evidence_mines_the_client_teardown_exit_trace() -> Result<()> {
+    let with_trace = concat!(
+        "12:00:01 [\"--->\",1,\"perllsp-under-test\",{\"method\":\"initialize\"}]
+",
+        "12:00:02 [\"<---\",1,\"perllsp-under-test\",{\"response\":{\"method\":\"initialized\"}}]
+",
+        "12:00:03 [\"s:on_exit\",1,\"perllsp-under-test\",\"exited\",-1]
+"
+    );
+    let evidence = extract_wire_evidence(with_trace.as_bytes());
+    ensure!(
+        evidence.saw_client_exit_log,
+        "the client's own teardown exit trace must be mined from the log"
+    );
+    ensure!(
+        evidence.saw_initialize && evidence.saw_initialized,
+        "the wire lifecycle still mines normally alongside the trace"
+    );
+    let without_trace = concat!(
+        "12:00:01 [\"s:on_stdout\",1,\"noise\"]
+",
+        "12:00:02 [\"s:on_request\",1,{\"id\":2,\"method\":\"workspace/configuration\"}]
+"
+    );
+    let evidence = extract_wire_evidence(without_trace.as_bytes());
+    ensure!(
+        !evidence.saw_client_exit_log,
+        "other lifecycle trace labels must not be mistaken for the exit trace"
+    );
     Ok(())
 }
 

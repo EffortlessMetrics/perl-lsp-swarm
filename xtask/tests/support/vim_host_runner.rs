@@ -703,6 +703,7 @@ pub enum DriverEventKind {
     InitializeObserved,
     RootSelected,
     FixtureOpened,
+    DiagnosticsObserved,
     ShutdownStarted,
     ShutdownCompleted,
     DriverFailed,
@@ -793,6 +794,16 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 );
                 ensure!(event.details.contains_key("reason"), "driver_failed omitted reason");
             }
+            DriverEventKind::DiagnosticsObserved => {
+                ensure!(
+                    singleton.insert(DriverEventKind::DiagnosticsObserved),
+                    "duplicate singleton driver event"
+                );
+                ensure!(
+                    event.details.get("mode") == Some(&"push".to_string()),
+                    "diagnostics_observed must bind the observed push update path"
+                );
+            }
             kind => {
                 ensure!(singleton.insert(kind), "duplicate singleton driver event");
                 let rank = lifecycle_rank(kind);
@@ -819,6 +830,7 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
             DriverEventKind::InitializeObserved,
             DriverEventKind::RootSelected,
             DriverEventKind::FixtureOpened,
+            DriverEventKind::DiagnosticsObserved,
             DriverEventKind::ShutdownStarted,
             DriverEventKind::ShutdownCompleted,
         ] {
@@ -838,9 +850,10 @@ fn lifecycle_rank(kind: DriverEventKind) -> u8 {
         DriverEventKind::BufferEnabled => 6,
         DriverEventKind::InitializeObserved => 7,
         DriverEventKind::RootSelected => 8,
-        DriverEventKind::ShutdownStarted => 9,
-        DriverEventKind::ShutdownCompleted => 10,
-        DriverEventKind::DriverFailed => 10,
+        DriverEventKind::DiagnosticsObserved => 9,
+        DriverEventKind::ShutdownStarted => 10,
+        DriverEventKind::ShutdownCompleted => 11,
+        DriverEventKind::DriverFailed => 11,
     }
 }
 
@@ -1147,9 +1160,25 @@ pub fn run_owned_process(
         layout,
     )?);
 
+    // The server trace is retained under its configured name, or under the
+    // dated variant perllsp writes (`PERL_LSP_LOG_FILE` gains a `.YYYY-MM-DD`
+    // suffix) — either satisfies the ServerStderr artifact obligation, and
+    // the retained copy keeps the resolved file name.
+    if let Some((path, id)) = resolve_server_trace(layout) {
+        let bytes =
+            fs::read(&path).with_context(|| format!("reading host artifact {}", path.display()))?;
+        artifacts.push(write_sanitized_artifact(
+            &layout.artifact_directory,
+            &id,
+            ArtifactKind::ServerStderr,
+            &bytes,
+            plan,
+            layout,
+        )?);
+    }
+
     for (path, id, kind) in [
         (layout.client_log(), "vim/vim-lsp-client.log", ArtifactKind::ClientLog),
-        (layout.server_trace(), "vim/perllsp.log", ArtifactKind::ServerStderr),
         (layout.capability_snapshot(), "vim/initialize.json", ArtifactKind::CapabilitySnapshot),
     ] {
         if path.is_file() {
@@ -1205,6 +1234,33 @@ pub fn run_owned_process(
         driver_complete,
         artifacts,
     })
+}
+
+/// Resolve the server trace file: the configured path when it exists, else
+/// the dated variant perllsp writes next to it (`perllsp.log.YYYY-MM-DD`).
+/// Returns the path and the artifact id preserving the resolved file name.
+fn resolve_server_trace(layout: &HermeticVimLayout) -> Option<(PathBuf, String)> {
+    let configured = layout.server_trace();
+    if configured.is_file() {
+        let name = configured.file_name()?.to_str()?.to_string();
+        return Some((configured, format!("vim/{name}")));
+    }
+    let parent = configured.parent()?;
+    let stem = configured.file_stem()?.to_str()?;
+    let mut candidates: Vec<PathBuf> = fs::read_dir(parent)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name().and_then(OsStr::to_str).is_some_and(|name| {
+                name.starts_with(&format!("{stem}.")) && name.len() > stem.len() + 1
+            })
+        })
+        .collect();
+    candidates.sort();
+    let path = candidates.into_iter().next()?;
+    let name = path.file_name()?.to_str()?.to_string();
+    Some((path, format!("vim/{name}")))
 }
 
 fn render_process_snapshot(lines: &[ProcessProbeLine]) -> String {
@@ -1289,6 +1345,10 @@ pub struct WireEvidence {
     pub saw_shutdown: bool,
     pub saw_exit: bool,
     pub saw_publish_diagnostics: bool,
+    /// The client logged its own job-exit handler (`s:on_exit` line) — the
+    /// editor-side evidence that the client observed the server process end,
+    /// including when it only arrives during the editor's teardown.
+    pub saw_client_exit_log: bool,
     /// The whole first `initialize` request envelope, if the log carried one.
     pub initialize_request: Option<serde_json::Value>,
     /// The client capabilities object of the first `initialize` request, if
@@ -1301,7 +1361,8 @@ pub struct WireEvidence {
 /// like the real vim-lsp client log); the JSON payload is found by trying
 /// every `[`/`{` start until one parses. The payload may be an object or an
 /// envelope array; method fields are walked recursively, like the heritage
-/// extraction.
+/// extraction. vim-lsp's own lifecycle trace lines (arrays whose first
+/// element is a label such as `s:on_exit`) are recognized separately.
 pub fn extract_wire_evidence(log: &[u8]) -> WireEvidence {
     let text = String::from_utf8_lossy(log);
     let mut evidence = WireEvidence::default();
@@ -1309,6 +1370,11 @@ pub fn extract_wire_evidence(log: &[u8]) -> WireEvidence {
         let Some(value) = parse_first_json_value(line) else {
             continue;
         };
+        if let serde_json::Value::Array(items) = &value
+            && items.first().and_then(serde_json::Value::as_str) == Some("s:on_exit")
+        {
+            evidence.saw_client_exit_log = true;
+        }
         let mut first_initialize: Option<serde_json::Value> = None;
         walk_wire_value(&value, &mut evidence, &mut first_initialize);
         if let (Some(request), None) = (&first_initialize, &evidence.initialize_request) {

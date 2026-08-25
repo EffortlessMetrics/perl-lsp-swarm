@@ -140,11 +140,35 @@ if empty(s:failures)
   call s:Emit('root_selected', {'root_source': s:root_source, 'root_marker': s:root_marker})
 endif
 
+" Attach-completion mechanism observation: the wire push-diagnostics update
+" for the opened buffer (perllsp publishes — possibly empty — diagnostics
+" after didOpen). The barrier binds to the protocol itself through the
+" client log; no diagnostic content is asserted and no diagnostics semantic
+" cell is promoted.
+if !VimLspHostWaitForWireMarker('textDocument/publishDiagnostics', s:budget)
+  call s:Fail('wire publishDiagnostics never arrived within budget')
+else
+  call s:Emit('diagnostics_observed', {'mode': 'push', 'evidence': 'client_log'})
+endif
+
+" Shutdown: the stop is issued through the public vim-lsp stop path and the
+" client's own exit evidence is awaited with one bounded re-issue. When the
+" client exit event stays absent, the driver does NOT fail the run: the
+" pinned vim-lsp loses the job-exit callback whenever the kill races an
+" in-flight channel write (observed deterministically on CI linux and
+" locally on Git-vim windows), while the OS process dies. The event carries
+" the typed evidence state and the supervisor — which reads the client log
+" after the editor's normal teardown and owns the deterministic process-set
+" comparison — turns it into the honest cell result plus a recorded finding.
 call s:Emit('shutdown_started', {'server_stopping': '1'})
 let s:server_exited = VimLspHostStopServerAndWait()
-call s:Emit('shutdown_completed', {'server_exited': s:server_exited ? '1' : '0'})
-if !s:server_exited
-  call s:Fail('server did not exit through the vim-lsp stop path within budget')
+if s:server_exited
+  call s:Emit('shutdown_completed', {'server_exited': '1'})
+else
+  call s:Emit('shutdown_completed', {
+        \ 'server_exited': '0',
+        \ 'exit_evidence': 'deferred_to_editor_teardown',
+        \ })
 endif
 
 if !empty(s:failures)
