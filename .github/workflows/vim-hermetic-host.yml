@@ -5,9 +5,12 @@ on:
     paths:
       - "xtask/**"
       - "scripts/test/vim-host-driver.vim"
+      - "scripts/test/vim-host-diagnostics-driver.vim"
       - "scripts/test/vim-clients/**"
       - ".ci/editor-clients/vim-vim-lsp-*.json"
       - "crates/perl-lsp-rs-core/**"
+      - "crates/perl-lsp-rs/**"
+      - "crates/perl-diagnostics/**"
       - "crates/perllsp/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -91,23 +94,104 @@ jobs:
           [ -s "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/run/hermetic/raw/vim-lsp-client.log" ]
           [ -s "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/run/hermetic/raw/initialize.json" ]
 
-      - name: Prove no candidate process survives the journey
+      - name: Run the #10946 bootstrap/diagnostics journey (canonical)
+        run: >-
+          cargo run --quiet --locked -p xtask --
+          editor-compat vim run
+          --subject pinned_vim_lsp_upstream
+          --journey bootstrap-diagnostics
+          --fixture-variant canonical
+          --vim "$(command -v vim)"
+          --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject"
+          --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp"
+          --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/diagnostics-canonical"
+          --timeout-ms 420000
+
+      - name: Bind the four cells (fail closed on any non-pass)
+        run: |
+          set -euo pipefail
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/diagnostics-canonical/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "bootstrap-diagnostics result: ${result}"
+          [ "${result}" = "pass" ]
+          for cell in \
+            vim.vim_lsp.core.bootstrap \
+            vim.vim_lsp.core.root \
+            vim.vim_lsp.core.diagnostics \
+            vim.vim_lsp.currentness.post_edit \
+            vim.vim_lsp.lifecycle.baseline_cleanup; do
+            observed="$(jq -r --arg id "${cell}" '.journey[] | select(.id == $id) | .result' "${receipt}")"
+            echo "cell ${cell}: ${observed}"
+            [ "${observed}" = "pass" ]
+          done
+          [ -s "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/diagnostics-canonical/hermetic/raw/vim-lsp-client.log" ]
+
+      - name: Negative control — governed defect absent must fail typed
+        run: |
+          set -euo pipefail
+          # The xtask CLI itself fail-closes (nonzero) when a negative
+          # variant does NOT fail with its exact typed reason — including
+          # when the journey wrongly passes (oracle violation) or the
+          # instrument crashed. Exit 0 here means the typed failure was
+          # observed and validated; the receipt is then bound to `fail`.
+          cargo run --quiet --locked -p xtask -- \
+            editor-compat vim run \
+            --subject pinned_vim_lsp_upstream \
+            --journey bootstrap-diagnostics \
+            --fixture-variant defect_absent \
+            --vim "$(command -v vim)" \
+            --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject" \
+            --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp" \
+            --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/diagnostics-defect-absent" \
+            --timeout-ms 420000
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/diagnostics-defect-absent/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "defect_absent control result: ${result}"
+          [ "${result}" = "fail" ]
+
+      - name: Negative control — wrong/outer root must fail typed
+        run: |
+          set -euo pipefail
+          # Same law as the defect-absent control: exit 0 means the typed
+          # root_mismatch failure was observed and validated.
+          cargo run --quiet --locked -p xtask -- \
+            editor-compat vim run \
+            --subject pinned_vim_lsp_upstream \
+            --journey bootstrap-diagnostics \
+            --fixture-variant wrong_root_decoy \
+            --vim "$(command -v vim)" \
+            --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject" \
+            --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp" \
+            --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/diagnostics-wrong-root" \
+            --timeout-ms 420000
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/diagnostics-wrong-root/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "wrong_root_decoy control result: ${result}"
+          [ "${result}" = "fail" ]
+
+      - name: Prove no candidate process survives any journey
         run: |
           if pgrep -f '[p]erllsp([[:space:]]|$)' >/dev/null; then
-            echo "a perllsp process survived the hermetic host run" >&2
+            echo "a perllsp process survived the hermetic host runs" >&2
             pgrep -af '[p]erllsp([[:space:]]|$)' >&2 || true
             exit 1
           fi
 
       - name: Upload the run evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fcf0a0  # v7.0.1
         with:
           name: vim-hermetic-host-run
-          # Only the sanitized artifact tree and the receipt are uploaded:
-          # the raw run root carries unsanitized client/server logs and full
+          # Only the sanitized artifact trees and the receipts are uploaded:
+          # the raw run roots carry unsanitized client/server logs and full
           # runner process-table snapshots that must stay on the runner.
           path: |
             target/vim-host-runs/ci/run/receipt.json
             target/vim-host-runs/ci/run/hermetic/artifacts/
+            target/vim-host-runs/ci/diagnostics-canonical/receipt.json
+            target/vim-host-runs/ci/diagnostics-canonical/hermetic/artifacts/
+            target/vim-host-runs/ci/diagnostics-defect-absent/receipt.json
+            target/vim-host-runs/ci/diagnostics-defect-absent/hermetic/artifacts/
+            target/vim-host-runs/ci/diagnostics-wrong-root/receipt.json
+            target/vim-host-runs/ci/diagnostics-wrong-root/hermetic/artifacts/
           if-no-files-found: warn
