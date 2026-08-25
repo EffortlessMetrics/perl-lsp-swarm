@@ -131,7 +131,7 @@ fn parse_checkpoints_capture_scalar_and_list_locals_before_nested_blocks() -> Re
         .ok_or_else(|| anyhow::anyhow!("subroutine declaration must create a checkpoint"))?;
     assert_eq!(
         sub_checkpoint.scope_snapshot.locals,
-        vec!["$scalar", "$first", "@items"],
+        vec!["$scalar".to_string(), "$first".to_string(), "@items".to_string()],
         "scalar and list declarations before the subroutine must be retained"
     );
 
@@ -143,7 +143,7 @@ fn parse_checkpoints_capture_scalar_and_list_locals_before_nested_blocks() -> Re
         .ok_or_else(|| anyhow::anyhow!("nested blocks must create a checkpoint"))?;
     assert_eq!(
         block_checkpoint.scope_snapshot.locals,
-        vec!["$scalar", "$first", "@items"],
+        vec!["$scalar".to_string(), "$first".to_string(), "@items".to_string()],
         "the block checkpoint must retain the enclosing lexical scope"
     );
     Ok(())
@@ -162,7 +162,7 @@ fn parse_checkpoints_accumulate_nested_scalar_locals_in_source_order() -> Result
         .ok_or_else(|| anyhow::anyhow!("nested block must create a checkpoint"))?;
     assert_eq!(
         checkpoint.scope_snapshot.locals,
-        vec!["$first"],
+        vec!["$first".to_string()],
         "a nested block checkpoint must see locals declared before it"
     );
     Ok(())
