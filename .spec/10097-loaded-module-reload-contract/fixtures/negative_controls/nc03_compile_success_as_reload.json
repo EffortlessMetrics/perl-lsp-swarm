@@ -1,0 +1,13 @@
+{
+  "name": "nc03_compile_success_as_reload",
+  "control": 3,
+  "op": "verify_mechanism_claims",
+  "input": {
+    "mechanism": "inc_deletion_and_require",
+    "claims": [
+      "available",
+      "compile_success_implies_reload_success"
+    ]
+  },
+  "expected_error": "compile_success_as_reload_success"
+}

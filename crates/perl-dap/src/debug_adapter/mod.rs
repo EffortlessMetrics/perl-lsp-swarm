@@ -26,6 +26,13 @@ mod transport;
 pub mod var_ref;
 mod variable_cache;
 
+// Single-authority re-exports of the standard DAP command list, consumed
+// by the reload contract's protocol-surface collision check (#10097). The
+// list itself is enumerated only by tests.
+#[cfg(test)]
+pub(crate) use dispatch::SUPPORTED_DAP_COMMANDS;
+pub(crate) use dispatch::is_supported_dap_command;
+
 use crate::breakpoint::{AstBreakpointValidator, BreakpointValidator};
 use crate::eval::SafeEvaluator;
 use crate::feature_catalog::has_feature as catalog_has_feature;
