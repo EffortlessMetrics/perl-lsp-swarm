@@ -6,18 +6,18 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11899 |
-| Rust-family files | 3606 |
-| Non-Rust files | 8293 |
-| Allowlisted | 5968 |
+| Total tracked files | 11904 |
+| Rust-family files | 3609 |
+| Non-Rust files | 8295 |
+| Allowlisted | 5970 |
 | Unclassified | 2325 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 427 |
-| documentation | 2691 |
+| config | 428 |
+| documentation | 2692 |
 | generated | 2 |
 | production | 324 |
 | test | 1966 |
@@ -2415,6 +2415,7 @@
 | `.changes/unreleased/product-12425-Changed-064000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12428-Changed-071500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12489-Changed-095500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12559-Fixed-213941.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12573-Changed-194700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2632,6 +2633,7 @@
 | `.ci/dap/protocol-authority.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/dead-code-baseline.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/debt-ledger.yaml` | config | `non-rust-ci-config` | release/ci |
+| `.ci/editor-clients/emacs-subjects.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vim-vim-lsp-activation-root.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vim-vim-lsp-configuration.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vim-vim-lsp-public-surface.v1.json` | config | `non-rust-ci-config` | release/ci |
