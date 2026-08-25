@@ -83,10 +83,10 @@ use perl_lsp_rs_core::tooling::perl_critic::BuiltInAnalyzer;
 use perl_parser::{
     Parser,
     ast::{Node, NodeKind},
-    declaration::ParentMap,
     tdd_basic::TestGenerator,
     test_runner::{TestKind, TestRunner},
 };
+use perl_semantic_analyzer::analysis::declaration::ParentMap;
 
 use crate::call_hierarchy_provider::CallHierarchyProvider;
 use crate::cancellation::{GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken};

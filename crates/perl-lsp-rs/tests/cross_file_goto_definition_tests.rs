@@ -1569,7 +1569,7 @@ $cat->print_info;
 #[test]
 fn symbol_at_cursor_resolves_method_call() -> TestResult {
     use perl_parser::Parser;
-    use perl_parser::declaration::{current_package_at, symbol_at_cursor};
+    use perl_semantic_analyzer::analysis::declaration::{current_package_at, symbol_at_cursor};
 
     let code = r#"package MyClass;
 
@@ -1611,7 +1611,7 @@ sub main_work {
 #[test]
 fn symbol_at_cursor_resolves_constructor_assigned_method_call() -> TestResult {
     use perl_parser::Parser;
-    use perl_parser::declaration::{current_package_at, symbol_at_cursor};
+    use perl_semantic_analyzer::analysis::declaration::{current_package_at, symbol_at_cursor};
 
     let code = r#"package main;
 use Dog;
@@ -1637,7 +1637,7 @@ $dog->fetch('stick');
 #[test]
 fn symbol_at_cursor_resolves_constructor_assigned_bare_method_call() -> TestResult {
     use perl_parser::Parser;
-    use perl_parser::declaration::{current_package_at, symbol_at_cursor};
+    use perl_semantic_analyzer::analysis::declaration::{current_package_at, symbol_at_cursor};
 
     let code = r#"package main;
 use MooDog;
@@ -1667,7 +1667,7 @@ $dog->fetch;
 #[test]
 fn symbol_at_cursor_resolves_use_statement() -> TestResult {
     use perl_parser::Parser;
-    use perl_parser::declaration::{current_package_at, symbol_at_cursor};
+    use perl_semantic_analyzer::analysis::declaration::{current_package_at, symbol_at_cursor};
 
     let code = "use Data::Dumper;\nmy $x = 1;\n";
 
@@ -2023,7 +2023,7 @@ extends 'MyApp::User';
 #[test]
 fn symbol_at_cursor_resolves_package_method_call() -> TestResult {
     use perl_parser::Parser;
-    use perl_parser::declaration::{current_package_at, symbol_at_cursor};
+    use perl_semantic_analyzer::analysis::declaration::{current_package_at, symbol_at_cursor};
 
     let code = r#"package main;
 use MyModule;
