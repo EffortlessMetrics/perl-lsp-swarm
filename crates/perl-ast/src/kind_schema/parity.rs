@@ -1,8 +1,7 @@
-//! Check-mode parity between the shadow registry and current production facts.
+//! Parity between the structural registry and production FieldId / traversal facts.
 //!
-//! The checker never becomes traversal, `FieldId`, rendering, or status
-//! authority. It compares a supplied registry against observed production
-//! surfaces so tests can inject mutated rows.
+//! The checker compares a supplied registry against observed walkers so tests can
+//! inject mutated rows. Production walkers live in [`super::visit`].
 
 use super::{
     ChildFieldSpec, FieldCardinality, GrammarNameSpec, KIND_SCHEMA_MODE, KIND_SCHEMA_VERSION,
@@ -86,6 +85,11 @@ pub enum KindSchemaMismatch {
     /// `FieldId::ALL` itself contains a duplicate name.
     DuplicateFieldIdInventory {
         /// Duplicated field name.
+        field: String,
+    },
+    /// A `FieldId` inventory entry is never named by a registry row.
+    UnusedFieldIdInventory {
+        /// Unused field name.
         field: String,
     },
     /// Observed first-occurrence fields disagree with the declared present set.
@@ -213,6 +217,9 @@ impl fmt::Display for KindSchemaMismatch {
             }
             Self::DuplicateFieldIdInventory { field } => {
                 write!(f, "FieldId inventory contains duplicate {field}")
+            }
+            Self::UnusedFieldIdInventory { field } => {
+                write!(f, "FieldId inventory contains unused {field}")
             }
             Self::ChildFieldSet { kind_name, declared, observed } => {
                 write!(
@@ -345,7 +352,7 @@ pub fn serialize_kind_schema(registry: &[KindStructuralRow<'_>]) -> String {
 #[must_use]
 pub fn check_kind_schema(evidence: &KindSchemaEvidence<'_>) -> KindSchemaReport {
     let mut report = KindSchemaReport::default();
-    check_field_id_inventory(evidence.field_ids, &mut report);
+    check_field_id_inventory(evidence, &mut report);
     check_kind_inventory(evidence, &mut report);
     check_recovery_inventory(evidence, &mut report);
     check_row_self_consistency(evidence, &mut report);
@@ -354,14 +361,27 @@ pub fn check_kind_schema(evidence: &KindSchemaEvidence<'_>) -> KindSchemaReport 
     report
 }
 
-fn check_field_id_inventory(field_ids: &[FieldId], report: &mut KindSchemaReport) {
+fn check_field_id_inventory(evidence: &KindSchemaEvidence<'_>, report: &mut KindSchemaReport) {
     let mut seen = BTreeSet::new();
-    for field in field_ids {
+    for field in evidence.field_ids {
         let name = field.name();
         if !seen.insert(name) {
             report
                 .mismatches
                 .push(KindSchemaMismatch::DuplicateFieldIdInventory { field: name.to_string() });
+        }
+    }
+    let used: BTreeSet<&str> = evidence
+        .registry
+        .iter()
+        .flat_map(|row| row.children.iter().map(|child| child.field.name()))
+        .collect();
+    for field in evidence.field_ids {
+        let name = field.name();
+        if !used.contains(name) {
+            report
+                .mismatches
+                .push(KindSchemaMismatch::UnusedFieldIdInventory { field: name.to_string() });
         }
     }
 }
@@ -455,7 +475,9 @@ fn check_representatives(evidence: &KindSchemaEvidence<'_>, report: &mut KindSch
 
     for node in all_nodes {
         let observation = observe_kind_traversal(node);
-        if observation.immutable_visit_ids != observation.mutable_visit_ids {
+        if observation.immutable_visit_ids != observation.mutable_visit_ids
+            || observation.immutable_field_sequence != observation.mutable_field_sequence
+        {
             report.mismatches.push(KindSchemaMismatch::ImmutableMutableDivergence {
                 kind_name: observation.kind_name.to_string(),
                 immutable: observation.immutable_visit_ids.clone(),
