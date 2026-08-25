@@ -43,9 +43,17 @@ subjects        --workspace --lib; --workspace --bins --no-deps;
                 whole-workspace --tests --benches --examples in three disjoint shards
 toolchain       1.95.0 (clippy restriction lint map_err_ignore present; unknown-lint count 0)
 host            Windows x86_64 MSVC, default features, CARGO_INCREMENTAL=0
-denominator     295 unique sites = 58 production (lib/bins, non-cfg(test))
+denominator     295 rows = 58 production (lib/bins, non-cfg(test))
                 + 237 test-context (cfg(test), tests/, benches/, examples/)
+                = 294 physical sites (spans normalized before dedup) + 1 deliberate
+                lossy-shape fixture row introduced by this slice's contrast control
+                (map_err_boundary_contract.rs:94, cohort CTRL)
 ```
+
+Span normalization note: raw diagnostics can cite `xtask\src\..\tests\support\...` forms;
+duplicate rows for one physical site are removed after normalization. The contrast fixture's
+own finding is accounted for rather than hidden: it is the intentional dishonest shape of the
+retain-cause control and carries `disposition=exact_exception` with a removal condition.
 
 Known masking hazard handled: `-A clippy::all` does not cover restriction lints, and cargo
 appends `[workspace.lints]` denies after user flags; without name-level allows, units such as

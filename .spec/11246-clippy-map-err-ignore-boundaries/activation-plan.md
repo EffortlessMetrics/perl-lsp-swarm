@@ -20,8 +20,8 @@ behind #11736/#12000 tranche mechanics rather than blocking production enforceme
 
 | boundary class | rows | meaning | disposition |
 |---|---:|---|---|
-| `retain_cause` | 144 | cfg(test)/tests setup conversions discard the real setup cause into a String-typed test error | repair in tests tranche T2 |
-| `classification_only` | 121 | source error carries no diagnostic payload beyond what the mapped value already states: `StripPrefixError`, `TryFromIntError`, thread-join panic fact, lock-poison class, CAS race loss, documented-impossible rejections, env-contract absence | exact exception |
+| `retain_cause` | 145 | cfg(test)/tests setup conversions discard the real setup cause into a String-typed test error (144), plus the slice's own deliberate lossy contrast fixture at `map_err_boundary_contract.rs:94` | repair in tests tranche T2; fixture = exact exception with removal condition |
+| `classification_only` | 120 | source error carries no diagnostic payload beyond what the mapped value already states: `StripPrefixError`, `TryFromIntError`, thread-join panic fact, lock-poison class, CAS race loss, documented-impossible rejections, env-contract absence | exact exception |
 | `stable_protocol_mapping` | 12 | JSON-RPC/LSP public code+message must remain stable (`invalid_params`, `JsonRpcError`); serde/ParseError internals withheld by protocol authority | exact exception |
 | `redact_deliberately` | 10 | authenticated resolve-envelope surface: serde/authenticator internals must not leak into rejections or issues (trust boundary) | exact exception |
 | `retain_class_not_details` | 5 | class retained, byte-level detail deliberately withheld at client/subprocess trust boundaries (DAP structured-value offsets, perltidy output encoding) or superseded by richer typed variants (`DocumentVersionDecodeError::OutOfRange`, `CorpusTopologyError::PathOutsideRoot`) | exact exception |
@@ -35,6 +35,9 @@ Strongest falsifier checks against dishonest repairs (issue negative controls):
   get reasoned `#[expect]`s or owned adapters, not renamed closures.
 - No row adds unconditional logging or boxed generic sources.
 - Redaction rows keep messages stable and non-leaking; the contrast tests pin this.
+- The slice's own footprint is inside its own denominator: the retain-cause control's
+  deliberate lossy form is row 295 (`cohort CTRL`) and must gain an exact reasoned
+  `#[expect(clippy::map_err_ignore, reason = ...)]` when perl-lsp-rs-core activates.
 
 ## Cohorts
 
