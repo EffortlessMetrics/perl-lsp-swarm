@@ -87,11 +87,7 @@ pub(super) fn handle_typeglob(
     // equivalent `Variable { sigil: "*", name }` shape.  Reconstruct the
     // sigil here so typeglob aliases participate in the same scope/use ledger.
     // Brace-delimited names remain dynamic and must not become literal symbols.
-    let (sigil, var_name) = if name.starts_with('{') {
-        ("", "")
-    } else {
-        ("*", name)
-    };
+    let (sigil, var_name) = if name.starts_with('{') { ("", "") } else { ("*", name) };
     if !sigil.is_empty() && !var_name.is_empty() && !var_name.contains("::") {
         analyzer.record_variable_use(
             scope,

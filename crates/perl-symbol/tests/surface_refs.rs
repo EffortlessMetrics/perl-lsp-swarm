@@ -58,11 +58,7 @@ fn localized_typeglob_alias_emits_both_boundary_names() -> Result<()> {
     let lhs = Node::new(NodeKind::Typeglob { name: "ALIAS".to_string() }, loc(7, 13));
     let rhs = Node::new(NodeKind::Typeglob { name: "STDERR".to_string() }, loc(16, 23));
     let alias = Node::new(
-        NodeKind::Assignment {
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-            op: "=".to_string(),
-        },
+        NodeKind::Assignment { lhs: Box::new(lhs), rhs: Box::new(rhs), op: "=".to_string() },
         loc(7, 23),
     );
     let declaration = Node::new(
