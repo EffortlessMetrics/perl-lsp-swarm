@@ -7194,14 +7194,21 @@ mod tests {
     #[test]
     fn baseline_refuses_report_without_proven_zero_terminal_status() -> TestResult {
         let temp = tempfile::tempdir()?;
-        for (name, status) in [("missing-status.json", None), ("nonzero-status.json", Some(7))] {
+        for (name, mode, status) in [
+            ("missing-status.json", HarnessMode::Compile, None),
+            ("nonzero-status.json", HarnessMode::Compile, Some(7)),
+            // #6884: execute mode with no recorded terminal identity is an
+            // instrument failure, not a proven observation.
+            ("execute-missing-status.json", HarnessMode::Execute, None),
+        ] {
             let report_path = temp.path().join(name);
             let mut report = sample_compile_report();
+            report.mode = mode;
             report.harness_status = status;
             write_run_report(&report_path, &report)?;
 
             let error = match baseline(BaselineConfig {
-                mode: HarnessMode::Compile,
+                mode,
                 profile: HarnessProfile::Base,
                 report: Some(report_path),
                 baseline: Some(temp.path().join("baseline.json")),
