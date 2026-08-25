@@ -496,6 +496,8 @@ def parse_diff_header(line: str) -> tuple[str, int] | None:
     verbose_at = rest.rfind(VERBOSE_LINE_MARKER)
     if verbose_at != -1:
         raw_path = rest[:verbose_at].strip()
+        if not raw_path:
+            return None
         tail = rest[verbose_at + len(VERBOSE_LINE_MARKER) :].strip()
         if tail.endswith(":"):
             tail = tail[:-1].strip()

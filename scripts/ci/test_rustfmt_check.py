@@ -344,6 +344,7 @@ raise SystemExit(64)
     def test_parse_diff_header_ignores_non_headers_and_untrusted_verbose_tails(self) -> None:
         self.assertIsNone(rustfmt_check.parse_diff_header("rustfmt crashed"))
         self.assertIsNone(rustfmt_check.parse_diff_header("Diff in nowhere at line nope:"))
+        self.assertIsNone(rustfmt_check.parse_diff_header("Diff in  at line 12:"))
         self.assertIsNone(rustfmt_check.parse_diff_header("Diff in nowhere:"))
         parsed = rustfmt_check.parse_diff_header(
             f"Diff in {self.root / 'pkg-a/src/lib.rs'} at line 4:"
