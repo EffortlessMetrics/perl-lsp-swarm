@@ -47,6 +47,33 @@
       "state": "active"
     },
     {
+      "path": "crates/perl-lexer/tests/lexer_robustness_tests.rs",
+      "enclosing_test_or_function": "lossy_invalid_utf8_after_slash_emits_recovery_then_eof",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"expected recovery for {input:?}; tokens={tokens:?}\"));",
+      "selector_identity": "invocation:61c6d955c2ec5091:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lexer/tests/lexer_robustness_tests.rs",
+      "enclosing_test_or_function": "unterminated_expect_term_slash_regex_emits_recovery_then_eof",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!( \"expected recovery covering unterminated `/' for {input:?}; tokens={tokens:?}\" )",
+      "selector_identity": "invocation:19870ad73fa012ed:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lexer/tests/lexer_robustness_tests.rs",
+      "enclosing_test_or_function": "unterminated_regex_is_line_bounded_so_followup_statement_lexes",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"expected unterminated-regex recovery; tokens={tokens:?}\"));",
+      "selector_identity": "invocation:efce44f2010a4f41:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
       "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
       "enclosing_test_or_function": "accepted_state_serializes_to_one_canonical_representation",
       "macro_family": "panic!",
@@ -395,6 +422,24 @@
       "normalized_snippet": "panic!(\"no `${name}` variable token found in source: {source:?}\");",
       "selector_identity": "invocation:e386df44afef8864:occurrence:1",
       "accepted_reason": "Intentional test-helper diagnostic; panics when no semantic token matching the named variable is found in the computed output, which means the test fixture did not produce the token under inspection.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/semantic_snapshot.rs",
+      "enclosing_test_or_function": "round_trip_every_terminal_state",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|e| panic!(\"{state:?} must be constructible: {e}\"));",
+      "selector_identity": "invocation:6834d13717db2bc0:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/semantic_snapshot.rs",
+      "enclosing_test_or_function": "round_trip_every_terminal_state",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|e| panic!(\"{state:?} must round-trip: {e}\\n{json}\"));",
+      "selector_identity": "invocation:5d2fd50d7bed4d58:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
     },
     {
@@ -1826,6 +1871,60 @@
       "normalized_snippet": "Err(error) => panic!(\"failed to read {}: {error}\", path.display()),",
       "selector_identity": "invocation:bc844d677d2e43cb:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-semantic-analyzer/src/analysis/dancer2_routes.rs",
+      "enclosing_test_or_function": "composed_value",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected a composed effective pattern, got {other:?}\"),",
+      "selector_identity": "invocation:1bfc0766e48d66ac:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-semantic-analyzer/src/analysis/dancer2_routes.rs",
+      "enclosing_test_or_function": "lexical_prefix_block_composes_and_restores",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected a composed effective pattern, got {other:?}\"),",
+      "selector_identity": "invocation:1bfc0766e48d66ac:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-semantic-analyzer/src/analysis/dancer2_routes.rs",
+      "enclosing_test_or_function": "nested_lexical_prefixes_concatenate_in_order",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected a composed effective pattern, got {other:?}\"),",
+      "selector_identity": "invocation:1bfc0766e48d66ac:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-semantic-analyzer/src/analysis/dancer2_routes.rs",
+      "enclosing_test_or_function": "prefix_keyword_anchor_and_range_are_exact",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected a literal selection, got {other:?}\"),",
+      "selector_identity": "invocation:59ecc9c7bc404084:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-semantic-analyzer/src/analysis/dancer2_routes.rs",
+      "enclosing_test_or_function": "sticky_prefix_composes_effective_pattern_with_dependency",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected a composed effective pattern, got {other:?}\"),",
+      "selector_identity": "invocation:1bfc0766e48d66ac:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-semantic-analyzer/src/analysis/dancer2_routes.rs",
+      "enclosing_test_or_function": "unprefixed_literal_pattern_normalizes_leading_slash",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected a local effective pattern, got {other:?}\"),",
+      "selector_identity": "invocation:2124080eaae2b651:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
       "state": "active"
     },
     {
