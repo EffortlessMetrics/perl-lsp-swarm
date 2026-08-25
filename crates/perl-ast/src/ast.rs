@@ -14,13 +14,16 @@
 //! - **Complete**: Supplies context for completion, hover, and signature help
 //! - **Analyze**: Feeds semantic analysis, diagnostics, and refactoring
 //!
-//! # Performance Characteristics
+//! # Performance and ownership
 //!
 //! AST structures are optimized for large codebases with:
 //! - Memory-efficient node representation using `Box<Node>` for recursive structures
 //! - Fast pattern matching via enum variants for common Perl constructs
 //! - Location tracking for precise error reporting in large files
-//! - Cheap cloning for parallel analysis tasks
+//!
+//! Ownership stays recursively owned (`Box`, `Vec`, optional children). [`Node`]
+//! destruction is iterative and depth-independent; derived [`Clone`], [`Debug`],
+//! and [`PartialEq`] remain recursive. See [`Node`] for the depth-safety contract.
 //!
 //! # Usage Examples
 //!
@@ -110,7 +113,7 @@ use std::fmt;
 use std::ops::ControlFlow;
 use strum::VariantNames as _;
 
-/// Maximum AST traversal depth for recursive operations.
+/// Maximum AST traversal depth for recursive *read* operations.
 ///
 /// Guards [`Node::to_sexp`], [`Node::count_nodes`], and
 /// [`Node::find_deepest_containing_offset`] against stack-overflow panics on
@@ -120,6 +123,13 @@ use strum::VariantNames as _;
 /// Chosen at 512: typical Perl code nests fewer than 100 levels deep;
 /// 512 provides a comfortable safety margin while staying well within
 /// Rust's default 8 MB stack.
+///
+/// This constant does **not** bound destruction. [`Node`]'s [`Drop`]
+/// implementation is iterative and does not consult this limit. Derived
+/// [`Clone`], [`Debug`], and [`PartialEq`] also ignore it: they remain
+/// recursive and are only a supported operation on trees whose nesting stays
+/// within ordinary parser-produced depth. See [`Node`] for the full
+/// depth-safety disposition.
 pub const MAX_AST_DEPTH: usize = 512;
 
 thread_local! {
@@ -261,12 +271,36 @@ define_field_ids! {
 /// - **Complete**: Provides contextual information for completion and hover
 /// - **Analyze**: Drives semantic analysis and diagnostics
 ///
-/// # Memory Optimization
+/// # Memory and ownership
 ///
 /// The structure is designed for efficient memory usage during large-scale parsing:
 /// - `SourceLocation` uses compact position encoding for large files
 /// - `NodeKind` enum variants minimize memory overhead for common constructs
-/// - Clone operations are optimized for shared analysis workflows
+/// - Child relationships stay recursively owned (`Box<Node>`, `Vec<Node>`,
+///   optional children, pair/clause records). Public node geometry is unchanged
+///   from that model; destruction, not representation, is iterative.
+///
+/// # Depth safety
+///
+/// - **[`Drop`]**: iterative. Children are detached through
+///   [`Node::for_each_child_mut`] into a heap work stack before each node's
+///   remaining fields are released. A 50,000-node chain completes without
+///   overflowing the thread stack and without leaking the tree.
+/// - **[`Clone`]**: derived recursive implementation. Supported for ordinary
+///   parser-produced trees whose nesting stays within [`MAX_AST_DEPTH`] and
+///   the parser's own recursion limit. Not stack-safe for adversarial or
+///   hand-built chains of destruction-test depth. Replacement:
+///   <https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8837>.
+/// - **[`PartialEq`]**: same derived-recursive precondition as [`Clone`].
+///   Replacement: <https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8839>.
+/// - **[`Debug`]**: same derived-recursive precondition as [`Clone`], and
+///   additionally unbounded in output size. Replacement:
+///   <https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8840>.
+///
+/// There is no runtime enforcement of that Clone/Debug/PartialEq precondition:
+/// a too-deep call overflows the stack rather than returning a typed error.
+/// Whole-tree reads such as [`Node::count_nodes`] stay separately depth-guarded
+/// and may truncate; that is not a destruction concern.
 ///
 /// # Examples
 ///
@@ -301,6 +335,9 @@ define_field_ids! {
 /// let ast = parser.parse()?;
 /// println!("AST: {}", ast.to_sexp());
 /// ```
+///
+/// Derived `Clone`/`Debug`/`PartialEq` stay recursive; see the depth-safety
+/// table above. Replacements are tracked as issues 8837, 8839, and 8840.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct Node {
@@ -337,6 +374,10 @@ impl Node {
     /// [`Drop`], so consumers that previously destructured an owned `Node`
     /// call this instead. The returned kind is the original payload; the
     /// dropped shell retains only a childless placeholder.
+    ///
+    /// The returned [`NodeKind`] still owns every former child. Dropping that
+    /// payload remains stack-safe: each owned [`Node`] runs the same iterative
+    /// [`Drop`] implementation.
     pub fn into_parts(mut self) -> (NodeKind, SourceLocation) {
         let kind = std::mem::replace(&mut self.kind, NodeKind::MissingExpression);
         (kind, self.location)
@@ -1945,8 +1986,12 @@ mod drop_audit {
 /// The enum design optimizes for large codebases:
 /// - Box pointers minimize stack usage for recursive structures
 /// - Vector storage enables efficient bulk operations on child nodes
-/// - Clone operations optimized for concurrent analysis workflows
 /// - Pattern matching performance tuned for common Perl constructs
+///
+/// Dropping a [`NodeKind`] that still owns [`Node`] children is stack-safe
+/// because each child uses [`Node`]'s iterative [`Drop`]. Derived [`Clone`],
+/// [`Debug`], and [`PartialEq`] on this enum recurse through those children
+/// under the same bounded-depth precondition documented on [`Node`].
 #[derive(Debug, Clone, PartialEq, strum::VariantNames)]
 #[non_exhaustive]
 pub enum NodeKind {
@@ -4218,9 +4263,10 @@ mod depth_guard_tests {
 // The small-stack harness (256 KiB worker threads) discriminates the naive
 // recursive drop glue from the iterative drain: destroying a 50 000-node chain
 // recursively needs multiple megabytes of frames and aborts the process, while
-// the iterative drain runs in constant stack space. A mutation that omits one
-// registered child field from `for_each_child_mut`, or that drops a detached
-// child recursively, overflows these same tests.
+// the iterative drain runs in constant stack space. `into_parts` returns the
+// original `NodeKind` payload, so dropping that extracted kind must stay
+// stack-safe as well. A mutation that restores recursive drop glue, or that
+// drops a detached child recursively, overflows these same tests.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod deep_tree_destruction_tests {
@@ -4338,6 +4384,33 @@ mod deep_tree_destruction_tests {
         run_on_small_stack(|| {
             drop(chain_of(DEEP_DEPTH, wrap_boxed));
         })
+    }
+
+    #[test]
+    fn into_parts_payload_destroys_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let deep = chain_of(DEEP_DEPTH, wrap_boxed);
+            let (kind, _) = deep.into_parts();
+            drop(kind);
+        })
+    }
+
+    #[test]
+    fn into_parts_payload_releases_every_node() {
+        let _ = drop_audit::take_counts();
+        let deep = chain_of(DEEP_CYCLE_DEPTH, wrap_boxed);
+        let (kind, _) = deep.into_parts();
+        drop(kind);
+        let (constructed, destroyed) = drop_audit::take_counts();
+        assert_eq!(
+            constructed, destroyed,
+            "into_parts payload drop constructed {constructed} nodes but destroyed {destroyed}"
+        );
+        assert!(
+            destroyed >= (DEEP_CYCLE_DEPTH + 1) as u64,
+            "into_parts payload drop destroyed only {destroyed} of at least {} nodes",
+            DEEP_CYCLE_DEPTH + 1
+        );
     }
 
     #[test]
