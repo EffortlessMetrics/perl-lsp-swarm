@@ -38,11 +38,11 @@ use tasks::{
     build, build_timing, bump_version, change_set, check, check_agent_context, check_lint_policy,
     check_test_wiring, check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_contract,
     ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route,
-    ci_scope, clean, command_evidence, compare, corpus_audit, count_ratchet, cpan_corpus,
-    dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc,
-    doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features,
-    finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates,
-    generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
+    ci_scope, clean, clippy_cost_measure, command_evidence, compare, corpus_audit, count_ratchet,
+    cpan_corpus, dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor,
+    devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs,
+    features, finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts,
+    gates, generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
     ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
     inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
     issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
@@ -1034,6 +1034,26 @@ enum Commands {
 
     /// Measure CI lane runtimes and emit timing artifacts.
     CiMeasure,
+
+    /// Time workspace Clippy by target-kind scope under controlled cache
+    /// states and write a receipt (#11736 decision-1 cost instrument).
+    ClippyCostMeasure {
+        /// Receipt output path (relative paths resolve against the project root).
+        #[arg(long, default_value = "target/receipts/clippy-cost-measurement.json")]
+        receipt: PathBuf,
+
+        /// Comma-separated scopes to measure: lib,all-targets
+        #[arg(long, value_delimiter = ',', default_value = "lib,all-targets")]
+        scopes: Vec<clippy_cost_measure::ClippyScope>,
+
+        /// Comma-separated cache states to measure: warm,members-cold
+        #[arg(long, value_delimiter = ',', default_value = "warm,members-cold")]
+        states: Vec<clippy_cost_measure::ClippyCacheState>,
+
+        /// Per-pass watchdog in seconds; a killed pass fails the measurement loudly.
+        #[arg(long, default_value_t = 2400)]
+        timeout_secs: u64,
+    },
 
     /// Analyze GitHub Actions costs over a recent period.
     CiCostMonitor {
@@ -4843,6 +4863,14 @@ fn run_cli(cli: Cli) -> Result<()> {
             })
         }
         Commands::CiMeasure => ci_measure::run(),
+        Commands::ClippyCostMeasure { receipt, scopes, states, timeout_secs } => {
+            clippy_cost_measure::run(clippy_cost_measure::ClippyCostMeasureArgs {
+                receipt,
+                scopes,
+                states,
+                timeout_secs,
+            })
+        }
         Commands::CiCostMonitor { days, json } => ci_metrics::run_cost_monitor(days, json),
         Commands::CiBaseline { branch, days, limit, output } => {
             ci_metrics::run_ci_baseline(branch, days, limit, output)
