@@ -6967,9 +6967,10 @@ esac
 
         let result = run_output(&script.display().to_string(), &[])?;
 
-        assert!(
-            result.len() >= TARGET_BYTES,
-            "Expected >= {TARGET_BYTES} bytes, streaming read captured only {}",
+        assert_eq!(
+            result.len(),
+            TARGET_BYTES,
+            "Expected exactly {TARGET_BYTES} bytes, captured {}",
             result.len()
         );
         assert!(
