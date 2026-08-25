@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -3390,7 +3391,11 @@ fn run_output(cmd: &str, args: &[String]) -> Result<String> {
             .with_context(|| format!("failed to read {cmd} stderr"))?;
     }
     let status = child.wait().with_context(|| format!("failed to wait for {cmd}"))?;
-    let stdout_bytes = fs::read(stdout_file.path())
+    let mut stdout_reader =
+        stdout_file.reopen().with_context(|| format!("failed to reopen {cmd} stdout file"))?;
+    let mut stdout_bytes = Vec::new();
+    stdout_reader
+        .read_to_end(&mut stdout_bytes)
         .with_context(|| format!("failed to read {cmd} stdout file"))?;
     if !status.success() {
         bail!(
