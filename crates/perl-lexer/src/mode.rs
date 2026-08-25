@@ -31,7 +31,8 @@
 //! - MAX_REGEX_BYTES (64KB) limit for regex literals
 //! - Graceful degradation via UnknownRest token emission
 //!
-//! See `try_operator()` and `parse_regex()` in lib.rs for implementation.
+//! See `try_operator()` in `lib.rs` and `parse_regex()` in
+//! `lexer/helpers/regex_literal.rs` for implementation.
 
 /// Perl lexer mode to disambiguate slash tokens and other context-sensitive syntax
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
