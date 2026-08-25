@@ -1,10 +1,15 @@
 # ADR-0043: Module Provenance Detection for Perl Module Resolution
 
-**Status**: Proposed
+**Status**: Historical proposal; implemented scope is the filesystem-only API
 **Date**: 2026-04-17
 **Related**: [ADR-0015](0015-supply-chain-security.md), [ADR-0035](0035-deterministic-module-resolution.md), [SUPPLY_CHAIN_SECURITY.md](../reference/SUPPLY_CHAIN_SECURITY.md)
 
 ## Context
+
+> This document is retained as design history. The shipped implementation is
+> limited to `perl-module`'s opt-in marker report. The proposed `IncRoot`
+> mutation, LSP setting, diagnostics, and trust-gated resolution described
+> below are not implemented and must not be inferred from this ADR.
 
 ### The Problem
 
